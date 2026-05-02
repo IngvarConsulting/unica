@@ -35,6 +35,25 @@ function Get-CurrentTriple {
     return "$([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)-$arch"
 }
 
+function Get-CurrentTargetId {
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+
+    if ($IsMacOS -and $arch -eq "Arm64") {
+        return "darwin-arm64"
+    }
+
+    if ($IsWindows -and $arch -eq "X64") {
+        return "win-x64"
+    }
+
+    if ($IsLinux -and $arch -eq "X64") {
+        return "linux-x64"
+    }
+
+    Write-Error "Unica does not ship binaries for $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)-$arch."
+    exit 78
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginRoot = Split-Path -Parent $scriptDir
 $manifestPath = Join-Path $pluginRoot "third-party/manifest.json"
@@ -46,11 +65,7 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentTriple = Get-CurrentTriple
-
-if ($manifest.targetTriple -and $manifest.targetTriple -ne $currentTriple) {
-    Write-Error "Unica ships binaries for $($manifest.targetTriple); current host is $currentTriple."
-    exit 78
-}
+$currentTargetId = Get-CurrentTargetId
 
 $tool = $manifest.tools | Where-Object { $_.name -eq $ToolName } | Select-Object -First 1
 if (-not $tool) {
@@ -58,14 +73,29 @@ if (-not $tool) {
     exit 64
 }
 
-$binaryPath = Join-Path $pluginRoot $tool.binaryPath
+if ($tool.binaries) {
+    $binary = $tool.binaries.PSObject.Properties[$currentTargetId].Value
+    if (-not $binary) {
+        $supported = ($tool.binaries.PSObject.Properties.Name | Sort-Object) -join ", "
+        Write-Error "tool $ToolName is not packaged for $currentTargetId; supported: $supported"
+        exit 78
+    }
+} else {
+    if ($manifest.targetTriple -and $manifest.targetTriple -ne $currentTriple) {
+        Write-Error "Unica ships binaries for $($manifest.targetTriple); current host is $currentTriple."
+        exit 78
+    }
+    $binary = $tool
+}
+
+$binaryPath = Join-Path $pluginRoot $binary.binaryPath
 if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
     Write-Error "Unica binary is missing: $binaryPath"
     exit 66
 }
 
 $actualSha = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$expectedSha = [string]$tool.sha256
+$expectedSha = [string]$binary.sha256
 if ($actualSha -ne $expectedSha.ToLowerInvariant()) {
     Write-Error "Unica binary checksum mismatch for $ToolName.`nexpected: $expectedSha`nactual:   $actualSha"
     exit 65

@@ -18,6 +18,8 @@ Tool-specific behavior is an implementation detail of those workflows.
 ## Bundled Tools
 
 The pinned bundled tools are declared in `third-party/manifest.json`.
+Release packages generate a multi-target manifest for `darwin-arm64`,
+`linux-x64`, and `win-x64` in GitHub Actions.
 
 - `bsl-analyzer`: BSL diagnostics, metadata/code inspection, and local/reference MCP profiles.
 - `v8-runner`: 1C build, syntax, test, and platform-oriented automation.
@@ -25,7 +27,9 @@ The pinned bundled tools are declared in `third-party/manifest.json`.
 - `rlm-bsl-index`: repository indexing for `rlm-tools-bsl`.
 - `unica-v8std`: remote streamable HTTP MCP endpoint for standards, APK codes, and v8-code-style context.
 
-Never replace a binary without updating the manifest SHA-256 and bumping the plugin version.
+Never replace a binary manually in a release package. Update
+`scripts/ci/build-unica-tools.py`, bump the plugin version, and let the release
+workflow generate binaries and SHA-256 entries.
 
 ## Launchers
 
@@ -35,7 +39,7 @@ different version.
 
 - `scripts/run-tool.sh <tool-name> [args...]` is the macOS/Linux launcher.
 - `scripts/run-tool.ps1 <tool-name> [args...]` is the PowerShell launcher.
-- Per-tool shell wrappers call `run-tool.sh` for current macOS MCP entries.
+- Per-tool shell wrappers call `run-tool.sh` for current stdio MCP entries.
 
 Launcher responsibilities:
 
@@ -45,6 +49,18 @@ Launcher responsibilities:
 - verify the tool binary exists;
 - verify SHA-256 before every execution;
 - forward all remaining arguments unchanged.
+
+## Release Packaging
+
+`.github/workflows/unica-plugin-release.yml` builds official marketplace
+artifacts:
+
+- each target job prepares `bin/<target>/` and a target-local `tools.json`;
+- the package job merges those target manifests into a generated
+  `third-party/manifest.json`;
+- the final artifacts are `unica-codex-marketplace-<version>.tar.gz` and
+  `unica-codex-marketplace-<version>.zip`;
+- tag builds upload the same archives to the GitHub Release.
 
 ## MCP Contract
 

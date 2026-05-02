@@ -49,13 +49,13 @@ codex debug prompt-input 'test'
 | --- | --- | --- | --- |
 | Operation skills and PowerShell scripts | Primary path | Available when PowerShell is installed | The source skills are Windows-first because 1C Designer automation is Windows-first. |
 | Python script ports | Available with Python | Available with `python3` | Used for XML/metadata operations where ports exist. |
-| Bundled binaries | Not packaged yet | Packaged under `bin/darwin-arm64/` | Add Windows binaries to `third-party/manifest.json` before claiming Windows bundled-tool support. |
-| MCP local tools | Pending Windows binaries and launcher wiring | Available through shell wrappers | Remote `unica-v8std` works independently of local binaries. |
+| Bundled binaries | Built by GitHub Actions into `bin/win-x64/` | Built by GitHub Actions into `bin/darwin-arm64/` | Linux x64 is built into `bin/linux-x64/`; release artifacts carry the generated multi-target manifest. |
+| MCP local tools | Available through PowerShell launcher when package contains Windows binaries | Available through shell wrappers | Remote `unica-v8std` works independently of local binaries. |
 | 1C platform operations | Requires local 1C platform | Requires local 1C platform or compatible tooling | Skills resolve project/database context from `v8project.yaml` when present. |
 
 ## Bundled Tools
 
-This plugin version includes pinned macOS arm64 binaries:
+Release packages include pinned binaries for `darwin-arm64`, `linux-x64`, and `win-x64`:
 
 - `bsl-analyzer` `0.1.144`
 - `v8-runner` `0.3.0`
@@ -67,9 +67,21 @@ Every bundled binary launch goes through a wrapper:
 
 - `scripts/run-tool.sh` for macOS/Linux shell environments;
 - `scripts/run-tool.ps1` for PowerShell environments;
-- per-tool shell wrappers used by the current macOS MCP entries.
+- per-tool shell wrappers used by current stdio MCP entries.
 
 Wrappers read `third-party/manifest.json`, check the host target, verify SHA-256, and then execute the pinned binary. This prevents Codex from accidentally using a global tool of another version.
+
+## Release Pipeline
+
+`.github/workflows/unica-plugin-release.yml` builds the distributable marketplace package without committing generated binaries to the repository:
+
+1. build `darwin-arm64`, `linux-x64`, and `win-x64` tool bundles;
+2. download pinned `bsl-analyzer` and `v8-runner` release assets;
+3. build `rlm-tools-bsl` and `rlm-bsl-index` with PyInstaller on the native runner for each target;
+4. generate a multi-target `third-party/manifest.json` with SHA-256 checksums;
+5. publish `unica-codex-marketplace-<version>.tar.gz` and `.zip` as workflow artifacts and, on tags, GitHub Release assets.
+
+Use the generated marketplace archive as the candidate package for the official Codex store. The checked-in repository can keep local development binaries, but official distribution must use the GitHub Actions package artifacts.
 
 ## License
 
@@ -100,7 +112,7 @@ rg '\.claude/skills' plugins/unica/skills
 codex debug prompt-input 'test'
 ```
 
-For bundled tools on macOS arm64:
+For checked-in local development tools on macOS arm64:
 
 ```sh
 plugins/unica/scripts/run-bsl-analyzer.sh --version
@@ -115,7 +127,7 @@ Do not replace binaries without bumping the plugin version and updating `third-p
 
 For every tool update:
 
-1. build or fetch the release for the target platform;
-2. place the binary under the matching `bin/<target>/` directory;
-3. update version, tag, commit, upstream URL, license, binary path, target, and SHA-256 in `third-party/manifest.json`;
-4. run JSON validation, script syntax checks, binary version/help checks, MCP smoke tests, and fresh Codex prompt-input verification.
+1. update pinned versions, tags, commits, upstream URLs, and licenses in `scripts/ci/build-unica-tools.py`;
+2. run the GitHub Actions release workflow;
+3. inspect the generated `third-party/manifest.json` inside the marketplace artifact;
+4. run JSON validation, script syntax checks, binary version/help checks, MCP smoke tests, and fresh Codex prompt-input verification against the generated artifact.
