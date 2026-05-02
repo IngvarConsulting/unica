@@ -9,7 +9,7 @@ Download the Unica package for the current platform from GitHub Releases,
 install it into Codex, and verify fresh-session visibility.
 
 Options:
-  --version VERSION       Release tag to install, for example v0.3.8 (default: latest)
+  --version VERSION       Release tag to install, for example v0.3.9 (default: latest)
   --target TARGET         Override detected target: darwin-arm64, linux-x64, win-x64
   --marketplace-name NAME Codex marketplace name (default: unica-local)
   --codex-home DIR        Codex home directory (default: $CODEX_HOME or ~/.codex)
@@ -23,7 +23,7 @@ REPO="${UNICA_REPO:-IngvarConsulting/unica}"
 VERSION="${UNICA_VERSION:-latest}"
 TARGET="${UNICA_TARGET:-}"
 MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-local}"
-CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+CODEX_HOME_DIR="${CODEX_HOME:-}"
 DO_VERIFY=1
 PRINT_DOWNLOAD_URL=0
 
@@ -88,6 +88,17 @@ archive_extension() {
       exit 78
       ;;
   esac
+}
+
+default_codex_home() {
+  if [ -n "${HOME:-}" ]; then
+    printf '%s\n' "$HOME/.codex"
+  elif [ -n "${USERPROFILE:-}" ]; then
+    printf '%s\n' "$USERPROFILE/.codex"
+  else
+    echo "CODEX_HOME, HOME, or USERPROFILE is required to install Unica." >&2
+    exit 78
+  fi
 }
 
 release_asset_url() {
@@ -186,6 +197,10 @@ URL="$(release_asset_url "$TARGET" "$VERSION")"
 if [ "$PRINT_DOWNLOAD_URL" -eq 1 ]; then
   printf '%s\n' "$URL"
   exit 0
+fi
+
+if [ -z "$CODEX_HOME_DIR" ]; then
+  CODEX_HOME_DIR="$(default_codex_home)"
 fi
 
 if ! command -v codex >/dev/null 2>&1; then

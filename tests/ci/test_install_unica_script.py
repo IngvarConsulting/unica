@@ -16,11 +16,12 @@ def script_command(*args: str) -> list[str]:
     return [str(SCRIPT), *args]
 
 
-def run_script(*args: str) -> subprocess.CompletedProcess[str]:
+def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         script_command(*args),
         check=False,
         cwd=REPO_ROOT,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -48,6 +49,21 @@ class InstallUnicaScriptTests(unittest.TestCase):
             result.stdout.strip(),
             "https://github.com/IngvarConsulting/unica/releases/download/v0.3.3/"
             "unica-codex-marketplace-linux-x64.tar.gz",
+        )
+
+    def test_print_download_url_does_not_require_codex_home(self) -> None:
+        env = os.environ.copy()
+        env.pop("CODEX_HOME", None)
+        env.pop("HOME", None)
+        env.pop("USERPROFILE", None)
+
+        result = run_script("--target", "win-x64", "--print-download-url", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "https://github.com/IngvarConsulting/unica/releases/latest/download/"
+            "unica-codex-marketplace-win-x64.zip",
         )
 
 
