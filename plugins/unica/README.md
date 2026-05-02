@@ -71,6 +71,10 @@ Every bundled binary launch goes through a wrapper:
 
 Wrappers read `third-party/manifest.json`, check the host target, verify SHA-256, and then execute the pinned binary. This prevents Codex from accidentally using a global tool of another version.
 
+## License
+
+Unica is licensed under `LGPL-3.0-or-later`. See `LICENSE`.
+
 ## MCP Servers
 
 `.mcp.json` declares internal MCP endpoints used by operation workflows:
