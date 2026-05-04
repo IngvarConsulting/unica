@@ -48,6 +48,16 @@ Unica. Если изменение нарушает инвариант, снач
 4. Dry-run operations report cache impact without writing cache state.
 5. Applied mutations may update `WorkspaceStateRepository`.
 
+## Workspace Source Sets
+
+1. Source format is a property of a source-set, not of the whole workspace.
+2. One source-set must not be treated as mixed-format; conflicting format
+   markers inside one source-set make it invalid/ambiguous.
+3. A workspace may contain several source-sets with different effective
+   formats, such as an EDT configuration and platform XML external processors.
+4. Native platform XML metadata operations must select a platform XML source-set
+   before editing XML files.
+
 ## Packaging
 
 1. Generated binaries are not committed.

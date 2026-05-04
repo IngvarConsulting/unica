@@ -509,6 +509,30 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn("## When to use", text)
                     self.assertIn("## Primary path", text)
 
+    def test_source_set_format_detection_contract_is_documented(self) -> None:
+        docs = {
+            "workspace-runtime": self.reference_root()
+            / "use-cases"
+            / "workspace-runtime.md",
+            "metadata-modeling": self.reference_root()
+            / "use-cases"
+            / "metadata-modeling.md",
+            "v8project": self.reference_root() / "tooling" / "v8project.md",
+            "format-index": self.reference_root() / "specs" / "format-index.md",
+            "invariants": self.repo_root() / "spec" / "architecture" / "invariants.md",
+        }
+        joined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
+
+        self.assertIn("unica.project.map", joined)
+        self.assertIn("sourceSets[]", joined)
+        self.assertIn("sourceFormat", joined)
+        self.assertIn("platform_xml", joined)
+        self.assertIn("EDT configuration", joined)
+        self.assertIn("platform XML external", joined)
+        self.assertIn("not of the whole workspace", joined)
+        self.assertNotIn("sourceFormat=mixed", joined)
+        self.assertNotIn("source_format=mixed", joined)
+
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
         forbidden_patterns = [
             r"references/(cc-1c-skills|ai-rules-1c)",

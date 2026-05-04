@@ -44,6 +44,19 @@ build:
 Server infobase connections use the normal 1C connection string form, for
 example `/Sserver/ref`.
 
+## Source-set format discovery
+
+Use MCP `unica.project.map` to inspect configured source-sets before choosing a
+metadata operation. It returns `sourceSets[]` where each entry has `kind`,
+`path`, `sourceFormat`, and `formatEvidence`.
+
+The top-level `format` field is a default/effective format, not proof that every
+source-set under the workspace has the same layout. A project can contain an EDT
+configuration source-set and platform XML external processor/report source-sets.
+Within one source-set the format cannot be mixed: conflicting platform XML and
+EDT markers mean the source-set is invalid/ambiguous and must be fixed or
+converted before XML metadata tools are used.
+
 ## Command Mapping
 
 Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations.

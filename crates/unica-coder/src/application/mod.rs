@@ -1,5 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
     CliAdapter, CodeSearchAdapter, RuntimeAdapter, StandardsAdapter,
@@ -38,6 +39,7 @@ pub enum ToolHandler {
         event: Option<DomainEventKind>,
     },
     ProjectStatus,
+    ProjectMap,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
@@ -107,6 +109,17 @@ pub fn tools() -> Vec<ToolSpec> {
             mutating: false,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::ProjectStatus,
+        },
+        ToolSpec {
+            name: "unica.project.map",
+            description:
+                "Inspect configured source sets and effective source format per source set.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::ProjectMap,
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -242,6 +255,7 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
         );
     let context = WorkspaceContext::discover(cwd)?;
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
+    tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let state_repo = WorkspaceStateRepository::new(&context);
     let index_report = WorkspaceIndexService::new().start_for_workspace(&context, args, dry_run);
 
@@ -264,6 +278,7 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
             spec.mutating,
         )?,
         ToolHandler::ProjectStatus => project_status(&context),
+        ToolHandler::ProjectMap => project_map(&context),
         ToolHandler::BuildRuntime { command, .. } => CliAdapter::new(
             "run-v8-runner.sh",
             command,
@@ -339,6 +354,7 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
 }
 
 fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
+    let source_map = discover_project_source_map(&context.workspace_root);
     let mut outcome = AdapterOutcome::ok(format!(
         "workspace root: {}; cache root: {}",
         context.workspace_root.display(),
@@ -350,7 +366,59 @@ fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
     outcome
         .artifacts
         .push(context.cache_root.display().to_string());
+    match source_map {
+        Ok(source_map) => {
+            outcome
+                .summary
+                .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
+            if !source_map.source_sets.is_empty() {
+                outcome.stdout = Some(source_set_summary(&source_map));
+            }
+        }
+        Err(error) => outcome
+            .warnings
+            .push(format!("source-set discovery failed: {error}")),
+    }
     outcome
+}
+
+fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
+    match discover_project_source_map(&context.workspace_root) {
+        Ok(source_map) => {
+            let mut outcome = AdapterOutcome::ok(format!(
+                "project map discovered {} source set(s)",
+                source_map.source_sets.len()
+            ));
+            outcome.stdout =
+                Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
+            outcome
+        }
+        Err(error) => AdapterOutcome {
+            ok: false,
+            summary: "project map discovery failed".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![error],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+    }
+}
+
+fn source_set_summary(source_map: &crate::domain::project_sources::ProjectSourceMap) -> String {
+    source_map
+        .source_sets
+        .iter()
+        .map(|source_set| {
+            format!(
+                "{}: {:?} {:?} {}",
+                source_set.name, source_set.kind, source_set.source_format, source_set.path
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn configuration_tools() -> Vec<ToolSpec> {
@@ -818,6 +886,7 @@ mod tests {
     fn lists_unica_orchestrator_scope() {
         let names = tools().iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert!(names.contains(&"unica.project.status"));
+        assert!(names.contains(&"unica.project.map"));
         assert!(names.contains(&"unica.form.validate"));
         assert!(names.contains(&"unica.skd.edit"));
         assert!(names.contains(&"unica.mxl.compile"));
@@ -975,6 +1044,75 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
         assert!(result.summary.contains("workspace root"));
+    }
+
+    #[test]
+    fn project_map_reports_source_sets_as_read_only_json() {
+        let root = std::env::temp_dir().join(format!("unica-project-map-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.cache.mode, "read");
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains("\"sourceSets\""));
+        assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
+        assert!(stdout.contains("\"kind\": \"configuration\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_xml_metadata_tools_reject_edt_source_set_targets() {
+        let root =
+            std::env::temp_dir().join(format!("unica-xml-tool-edt-guard-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "ConfigPath".to_string(),
+            Value::String("src/Configuration.xml".to_string()),
+        );
+
+        let error = match UnicaApplication::new().call_tool("unica.cf.info", &args) {
+            Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("sourceFormat=edt"));
+        assert!(error.contains("platform_xml"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

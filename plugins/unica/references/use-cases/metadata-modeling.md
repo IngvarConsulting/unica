@@ -12,6 +12,17 @@ runtime workflows handled by `v8-runner`.
 
 ## Primary path
 
+Before selecting XML metadata tools, inspect the project with
+`unica.project.map` and choose the target source-set. Native metadata tools work
+with platform XML source-sets (`sourceFormat=platform_xml`). If the selected
+source-set is EDT (`sourceFormat=edt`), do not apply platform XML edits directly;
+use runtime conversion/build workflows or ask for an explicit platform XML
+target.
+
+The workspace itself does not have a single source format. A project can contain
+an EDT configuration source-set and a platform XML external processor/report
+source-set. The format decision belongs to the selected source-set.
+
 Use native MCP tools exposed by the public `unica` server:
 
 - `unica.cf.*` for `Configuration.xml`, `ConfigDumpInfo.xml`, languages, roles, and child-object registration.

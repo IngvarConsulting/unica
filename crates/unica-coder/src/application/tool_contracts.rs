@@ -1,8 +1,10 @@
 use super::{ToolHandler, ToolSpec};
+use crate::domain::project_sources::{discover_project_source_map, SourceFormat};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 
@@ -371,6 +373,58 @@ pub fn validate_workspace_paths(
     Ok(())
 }
 
+pub fn validate_native_source_set_format(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    if dry_run || !matches!(tool.handler, ToolHandler::NativeOperation { .. }) {
+        return Ok(());
+    }
+
+    let source_map = discover_project_source_map(&context.workspace_root)?;
+    if source_map.source_sets.is_empty() {
+        return Ok(());
+    }
+
+    for key in native_source_path_args() {
+        let Some(Value::String(raw_path)) = args.get(*key) else {
+            continue;
+        };
+        let target = resolve_read_path(&context.cwd, raw_path);
+        let Some(source_set) = source_map
+            .source_sets
+            .iter()
+            .filter(|source_set| {
+                let source_root = normalize_lexical(&context.workspace_root.join(&source_set.path));
+                target.starts_with(source_root)
+            })
+            .max_by_key(|source_set| source_set.path.len())
+        else {
+            continue;
+        };
+
+        match source_set.source_format {
+            SourceFormat::Edt => {
+                return Err(format!(
+                    "{} targets source-set `{}` with sourceFormat=edt; native platform XML tools require sourceFormat=platform_xml",
+                    tool.name, source_set.name
+                ));
+            }
+            SourceFormat::Invalid => {
+                return Err(format!(
+                    "{} targets source-set `{}` with invalid/ambiguous format; native platform XML tools require sourceFormat=platform_xml",
+                    tool.name, source_set.name
+                ));
+            }
+            SourceFormat::PlatformXml | SourceFormat::Unknown => {}
+        }
+    }
+
+    Ok(())
+}
+
 fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => match operation {
@@ -398,6 +452,70 @@ fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
     }
 }
 
+fn native_source_path_args() -> &'static [&'static str] {
+    &[
+        "CIPath",
+        "ConfigDir",
+        "ConfigPath",
+        "DataPath",
+        "ExtensionPath",
+        "FormPath",
+        "JsonPath",
+        "MetadataPath",
+        "ModulePath",
+        "ObjectPath",
+        "OutFile",
+        "OutputDir",
+        "OutputPath",
+        "Path",
+        "RightsPath",
+        "SrcDir",
+        "SubsystemPath",
+        "TemplatePath",
+        "ciPath",
+        "configDir",
+        "configPath",
+        "dataPath",
+        "extensionPath",
+        "formPath",
+        "jsonPath",
+        "metadataPath",
+        "modulePath",
+        "objectPath",
+        "outFile",
+        "outputDir",
+        "outputPath",
+        "path",
+        "rightsPath",
+        "srcDir",
+        "subsystemPath",
+        "templatePath",
+    ]
+}
+
+fn resolve_read_path(cwd: &Path, raw_path: &str) -> PathBuf {
+    let path = PathBuf::from(raw_path);
+    if path.is_absolute() {
+        normalize_lexical(&path)
+    } else {
+        normalize_lexical(&cwd.join(path))
+    }
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
@@ -408,7 +526,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::CodeAdapter { .. } => names.extend(CODE_ARGS),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::ProjectStatus => {}
+        ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
         ToolHandler::LegacyScript { .. } => names.extend(NATIVE_XML_DSL_ARGS),
     }
     names.sort_unstable();

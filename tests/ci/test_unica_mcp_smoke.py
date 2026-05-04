@@ -40,6 +40,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "unica")
         tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("unica.project.status", tools)
+        self.assertIn("unica.project.map", tools)
         self.assertIn("unica.form.edit", tools)
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)

@@ -14,6 +14,18 @@ subsystems, interfaces, and templates.
 
 Use the `v8-runner` skill and MCP `unica.runtime.execute`.
 
+When the source layout or metadata format matters, first call
+`unica.project.map`. It returns configured `sourceSets[]` with `kind`, `path`,
+`sourceFormat`, and `formatEvidence`.
+
+`v8project.yaml` can contain several source-sets. Format is resolved per
+source-set, not for the workspace as a whole. One source-set cannot be mixed:
+conflicting platform XML and EDT markers inside the same source-set make it
+invalid/ambiguous. Different source-sets in the same project may use different
+formats, for example an EDT configuration and platform XML external processors.
+The top-level `format` value is only the default/effective format when the
+source-set path itself has no stronger structural evidence.
+
 | Intent | MCP arguments |
 | --- | --- |
 | Create config | `operation=config-init`, optional `connection`, `format`, `builder` |
