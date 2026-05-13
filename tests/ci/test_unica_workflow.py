@@ -39,6 +39,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "uses: actions/checkout@v4",
             "uses: actions/setup-python@v5",
             'python-version: "3.12"',
+            "python -m pip install -r tests/ci/requirements.txt",
             "uses: dtolnay/rust-toolchain@stable",
             "python -m unittest discover -s tests/ci",
             "python -m py_compile scripts/ci/*.py tests/ci/*.py",
