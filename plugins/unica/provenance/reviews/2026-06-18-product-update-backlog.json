@@ -18,24 +18,24 @@
     {
       "id": "rlm-tools-bsl",
       "kind": "bundled-tool",
-      "locked": "v1.12.0",
+      "locked": "v1.21.0",
       "latest": "v1.21.0",
       "risk": "medium",
       "batch": "rlm-index-contract",
-      "status": "needs-index-smoke",
+      "status": "applied",
       "contractGate": true,
-      "notes": "Update together with rlm-bsl-index because both come from the same repository and tag."
+      "notes": "Updated together with rlm-bsl-index; new navigation capabilities are exposed through typed unica.code.* tools, not raw RLM MCP guidance."
     },
     {
       "id": "rlm-bsl-index",
       "kind": "bundled-tool",
-      "locked": "v1.12.0",
+      "locked": "v1.21.0",
       "latest": "v1.21.0",
       "risk": "medium",
       "batch": "rlm-index-contract",
-      "status": "needs-index-smoke",
+      "status": "applied",
       "contractGate": true,
-      "notes": "Verify index build/update/info stdout and SQLite schema used by WorkspaceIndexService."
+      "notes": "Verified packaged index build/update/info smoke; BUILDER_VERSION 14 requires rebuild and schema gate covers index_meta, methods_fts, regions, and module_headers."
     },
     {
       "id": "v8-runner",

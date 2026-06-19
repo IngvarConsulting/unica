@@ -57,6 +57,8 @@ OUT_OF_SCOPE = [
 SCENARIO_SKILLS = {
     "api-design": [
         "unica.code.search",
+        "unica.code.definition",
+        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.project.map",
         "unica.subsystem.info",
@@ -65,7 +67,13 @@ SCENARIO_SKILLS = {
         "unica.standards.explain",
         "unica.runtime.execute",
     ],
-    "code-search": ["unica.code.search", "unica.project.map"],
+    "code-search": [
+        "unica.code.search",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.grep",
+        "unica.project.map",
+    ],
     "code-diagnostics": [
         "unica.code.diagnostics",
         "unica.code.search",
@@ -75,6 +83,9 @@ SCENARIO_SKILLS = {
     ],
     "code-review": [
         "unica.code.search",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.standards.explain",
         "unica.standards.search",
@@ -83,6 +94,8 @@ SCENARIO_SKILLS = {
     ],
     "query-optimize": [
         "unica.code.search",
+        "unica.code.outline",
+        "unica.code.grep",
         "unica.skd.info",
         "unica.meta.info",
         "unica.standards.search",
@@ -156,6 +169,8 @@ SCENARIO_SKILLS = {
     "db-performance": [
         "unica.project.map",
         "unica.code.search",
+        "unica.code.outline",
+        "unica.code.grep",
         "unica.meta.info",
         "unica.skd.info",
         "unica.code.diagnostics",

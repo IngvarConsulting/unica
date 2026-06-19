@@ -7,19 +7,20 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.skd.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.outline`, `unica.code.grep`, `unica.skd.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - Use `unica.project.map` if the source-set or format is unclear.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
-1. Extract the exact query text and its execution context: module, SKD dataset, virtual table parameters, temporary table chain, and caller loop.
-2. Inspect metadata with `unica.meta.info` for registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
-3. Inspect SKD with `unica.skd.info` when the query lives in a data composition schema.
-4. Search standards with `unica.standards.search` for platform-specific query rules before making a risky rewrite.
-5. Read `references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
-6. Optimize one cause at a time: filters before joins, virtual table parameters, temporary table materialization, repeated queries in loops, dot dereference expansion, unbounded selections, and unnecessary totals.
-7. Verify syntax with `unica.runtime.execute` and ask for real trace/log evidence when performance depends on data volume.
+1. Extract the exact query text with `unica.code.grep`, `unica.code.search`, or `unica.skd.info`.
+2. Inspect the execution context with `unica.code.outline`: module, exported entry point, region, temporary table chain, and caller loop.
+3. Inspect metadata with `unica.meta.info` for registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
+4. Inspect SKD with `unica.skd.info` when the query lives in a data composition schema.
+5. Search standards with `unica.standards.search` for platform-specific query rules before making a risky rewrite.
+6. Read `references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
+7. Optimize one cause at a time: filters before joins, virtual table parameters, temporary table materialization, repeated queries in loops, dot dereference expansion, unbounded selections, and unnecessary totals.
+8. Verify syntax with `unica.runtime.execute` and ask for real trace/log evidence when performance depends on data volume.
 
 ## DB-aware diagnostics
 

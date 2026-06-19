@@ -7,7 +7,7 @@ description: "Производительность БД и запросов 1С.
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.skd.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.outline`, `unica.code.grep`, `unica.meta.info`, `unica.skd.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - Use `unica.role.info` when performance behavior depends on rights filters, RLS, or tenant boundaries.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -19,10 +19,11 @@ description: "Производительность БД и запросов 1С.
 ## Workflow
 
 1. Name the slow scenario first: user action, API call, report, background job, exchange step, or posting.
-2. Extract exact query/SKD text with `unica.code.search` or `unica.skd.info`; inspect metadata with `unica.meta.info`.
-3. Gather evidence: row counts, generated SQL, query plan, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
-4. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.
-5. Propose one measurable change at a time and verify with `unica.runtime.execute` for syntax/tests plus the same timing/DBMS evidence after the change.
+2. Extract exact query/SKD text with `unica.code.grep`, `unica.code.search`, or `unica.skd.info`; inspect large candidate modules with `unica.code.outline`.
+3. Inspect metadata with `unica.meta.info`.
+4. Gather evidence: row counts, generated SQL, query plan, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
+5. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.
+6. Propose one measurable change at a time and verify with `unica.runtime.execute` for syntax/tests plus the same timing/DBMS evidence after the change.
 
 ## Stop rules
 
