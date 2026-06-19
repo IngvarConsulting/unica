@@ -4,10 +4,11 @@ use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
 use crate::infrastructure::AdapterOutcome;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,11 @@ pub struct RuntimeAdapter<'a> {
 pub struct CodeSearchAdapter<'a> {
     analyzer_runner: &'a dyn ProcessRunner,
     index_runner: &'a dyn IndexRunner,
+}
+
+pub struct CodeNavigationAdapter<'a> {
+    index_runner: &'a dyn IndexRunner,
+    grep_runner: &'a dyn ProcessRunner,
 }
 
 impl<'a> CliAdapter<'a> {
@@ -450,6 +456,655 @@ fn search_rlm_index(
         Ok(Some("No RLM method matches.".to_string()))
     } else {
         Ok(Some(lines.join("\n")))
+    }
+}
+
+impl<'a> CodeNavigationAdapter<'a> {
+    pub fn new() -> Self {
+        Self {
+            index_runner: &SYSTEM_INDEX_RUNNER,
+            grep_runner: &SYSTEM_PROCESS_RUNNER,
+        }
+    }
+
+    pub fn with_runners(
+        index_runner: &'a dyn IndexRunner,
+        grep_runner: &'a dyn ProcessRunner,
+    ) -> Self {
+        Self {
+            index_runner,
+            grep_runner,
+        }
+    }
+
+    pub fn invoke(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> Result<AdapterOutcome, String> {
+        if dry_run {
+            return Ok(AdapterOutcome {
+                ok: true,
+                summary: format!("dry run: {tool_name} would use typed code navigation"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            });
+        }
+
+        match tool_name {
+            "unica.code.definition" => self.definition(tool_name, args, context),
+            "unica.code.outline" => self.outline(tool_name, args, context),
+            "unica.code.grep" => self.grep(tool_name, args, context),
+            _ => Err(format!("unsupported code navigation tool: {tool_name}")),
+        }
+    }
+
+    fn definition(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<AdapterOutcome, String> {
+        let readiness =
+            WorkspaceIndexService::with_runner(self.index_runner).ready_index(context, args);
+        let db_path = match readiness {
+            IndexReadiness::Ready { db_path } => db_path,
+            other => return Ok(index_unavailable_outcome(tool_name, other)),
+        };
+        let body = find_definitions(&db_path, args)?;
+        Ok(AdapterOutcome {
+            ok: true,
+            summary: format!("{tool_name} completed through internal RLM index"),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![db_path.display().to_string()],
+            stdout: Some(format_section("rlm-definition", &body)),
+            stderr: None,
+            command: None,
+        })
+    }
+
+    fn outline(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<AdapterOutcome, String> {
+        let candidates = index_path_candidates(context, args, "path")?;
+        let readiness =
+            WorkspaceIndexService::with_runner(self.index_runner).ready_index(context, args);
+        let db_path = match readiness {
+            IndexReadiness::Ready { db_path } => db_path,
+            other => return Ok(index_unavailable_outcome(tool_name, other)),
+        };
+        let include_methods = args
+            .get("includeMethods")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let body = module_outline(&db_path, &candidates, include_methods)?;
+        Ok(AdapterOutcome {
+            ok: true,
+            summary: format!("{tool_name} completed through internal RLM index"),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![db_path.display().to_string()],
+            stdout: Some(format_section("rlm-outline", &body)),
+            stderr: None,
+            command: None,
+        })
+    }
+
+    fn grep(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<AdapterOutcome, String> {
+        let query = required_string(args, "query")?;
+        let mode = args.get("mode").and_then(Value::as_str).unwrap_or("lines");
+        if !matches!(mode, "lines" | "files") {
+            return Err(format!(
+                "{tool_name} argument `mode` must be one of: lines, files"
+            ));
+        }
+
+        let mut git_args = vec!["grep".to_string()];
+        if mode == "files" {
+            git_args.push("--name-only".to_string());
+        } else {
+            git_args.push("-n".to_string());
+        }
+        if !args.get("regex").and_then(Value::as_bool).unwrap_or(false) {
+            git_args.push("-F".to_string());
+        }
+        if args
+            .get("ignoreCase")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            git_args.push("-i".to_string());
+        }
+        git_args.push("-e".to_string());
+        git_args.push(query.to_string());
+
+        let pathspecs = grep_pathspecs(context, args)?;
+        if !pathspecs.is_empty() {
+            git_args.push("--".to_string());
+            git_args.extend(pathspecs);
+        }
+
+        let output = self.grep_runner.run(&ProcessCommand {
+            program: PathBuf::from("git"),
+            args: git_args.clone(),
+            cwd: context.workspace_root.clone(),
+            timeout: DEFAULT_PROCESS_TIMEOUT,
+        })?;
+        let limit = read_limit(args, 200);
+        let body = grep_body(&output.stdout, mode, limit);
+        let no_matches = body.is_empty() && !output.status_success;
+        if !output.status_success && !no_matches {
+            return Ok(AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} failed through git grep"),
+                changes: Vec::new(),
+                warnings: vec![format!("git grep exited with status {}", output.status)],
+                errors: vec![output.stderr.trim().to_string()],
+                artifacts: Vec::new(),
+                stdout: Some(format_section("git-grep", &body)),
+                stderr: Some(output.stderr),
+                command: Some(std::iter::once("git".to_string()).chain(git_args).collect()),
+            });
+        }
+
+        let stdout = if no_matches {
+            "No git grep matches.".to_string()
+        } else {
+            body
+        };
+        Ok(AdapterOutcome {
+            ok: true,
+            summary: format!("{tool_name} completed through git grep"),
+            changes: Vec::new(),
+            warnings: if output.timed_out {
+                vec!["git grep timed out".to_string()]
+            } else {
+                Vec::new()
+            },
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: Some(format_section("git-grep", &stdout)),
+            stderr: if output.stderr.trim().is_empty() {
+                None
+            } else {
+                Some(output.stderr)
+            },
+            command: Some(std::iter::once("git".to_string()).chain(git_args).collect()),
+        })
+    }
+}
+
+impl Default for CodeNavigationAdapter<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+struct ModuleRecord {
+    id: i64,
+    rel_path: String,
+    category: Option<String>,
+    object_name: Option<String>,
+    module_type: Option<String>,
+}
+
+fn find_definitions(db_path: &PathBuf, args: &Map<String, Value>) -> Result<String, String> {
+    let name = required_string(args, "name")?;
+    let limit = read_limit(args, 50);
+    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let mut lines = Vec::new();
+    if let Some(module_hint) = args.get("moduleHint").and_then(Value::as_str) {
+        let hint = format!("%{}%", module_hint.trim());
+        let mut stmt = conn
+            .prepare(
+                "SELECT \
+                   m.name, m.type, m.is_export, m.line, m.end_line, m.params, \
+                   mod.rel_path, mod.category, mod.object_name, mod.module_type \
+                 FROM methods m \
+                 JOIN modules mod ON mod.id = m.module_id \
+                 WHERE m.name = ? COLLATE NOCASE \
+                   AND (mod.rel_path LIKE ? OR mod.object_name LIKE ?) \
+                 ORDER BY m.is_export DESC, mod.rel_path, m.line \
+                 LIMIT ?",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(params![name, hint, hint, limit as i64], definition_line)
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            lines.push(row.map_err(|error| error.to_string())?);
+        }
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT \
+                   m.name, m.type, m.is_export, m.line, m.end_line, m.params, \
+                   mod.rel_path, mod.category, mod.object_name, mod.module_type \
+                 FROM methods m \
+                 JOIN modules mod ON mod.id = m.module_id \
+                 WHERE m.name = ? COLLATE NOCASE \
+                 ORDER BY m.is_export DESC, mod.rel_path, m.line \
+                 LIMIT ?",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(params![name, limit as i64], definition_line)
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            lines.push(row.map_err(|error| error.to_string())?);
+        }
+    }
+
+    if lines.is_empty() {
+        Ok(format!("No RLM definitions found for `{name}`."))
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+fn definition_line(row: &Row<'_>) -> rusqlite::Result<String> {
+    let method_type: String = row.get(1)?;
+    let is_export: i64 = row.get(2)?;
+    let params: Option<String> = row.get(5)?;
+    let category: Option<String> = row.get(7)?;
+    let object_name: Option<String> = row.get(8)?;
+    let module_type: Option<String> = row.get(9)?;
+    let mut meta = Vec::new();
+    if let Some(category) = category.filter(|value| !value.is_empty()) {
+        meta.push(format!("category={category}"));
+    }
+    if let Some(object_name) = object_name.filter(|value| !value.is_empty()) {
+        meta.push(format!("object={object_name}"));
+    }
+    if let Some(module_type) = module_type.filter(|value| !value.is_empty()) {
+        meta.push(format!("moduleType={module_type}"));
+    }
+    let signature_params = format!("({})", params.unwrap_or_default().trim());
+    let suffix = if meta.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", meta.join(", "))
+    };
+    Ok(format!(
+        "- {}:{} {} {}{}{}{}",
+        row.get::<_, String>(6)?,
+        row.get::<_, i64>(3)?,
+        method_type,
+        row.get::<_, String>(0)?,
+        signature_params,
+        if is_export != 0 { " export" } else { "" },
+        suffix
+    ))
+}
+
+fn module_outline(
+    db_path: &PathBuf,
+    candidates: &[String],
+    include_methods: bool,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let mut module = None;
+    for candidate in candidates {
+        module = conn
+            .query_row(
+                "SELECT id, rel_path, category, object_name, module_type \
+                 FROM modules WHERE rel_path = ?",
+                params![candidate],
+                |row| {
+                    Ok(ModuleRecord {
+                        id: row.get(0)?,
+                        rel_path: row.get(1)?,
+                        category: row.get(2)?,
+                        object_name: row.get(3)?,
+                        module_type: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if module.is_some() {
+            break;
+        }
+    }
+    let Some(module) = module else {
+        return Ok(format!(
+            "No RLM module found for path candidates: {}",
+            candidates.join(", ")
+        ));
+    };
+
+    let mut lines = vec![format!("module: {}", module.rel_path)];
+    if let Some(object_name) = module.object_name.filter(|value| !value.is_empty()) {
+        lines.push(format!("object: {object_name}"));
+    }
+    if let Some(category) = module.category.filter(|value| !value.is_empty()) {
+        lines.push(format!("category: {category}"));
+    }
+    if let Some(module_type) = module.module_type.filter(|value| !value.is_empty()) {
+        lines.push(format!("moduleType: {module_type}"));
+    }
+
+    let header = conn
+        .query_row(
+            "SELECT header_comment FROM module_headers WHERE module_id = ?",
+            params![module.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(header) = header.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("header: {}", header.trim()));
+    }
+
+    let mut region_stmt = conn
+        .prepare("SELECT name, line, end_line FROM regions WHERE module_id = ? ORDER BY line")
+        .map_err(|error| error.to_string())?;
+    let regions = region_stmt
+        .query_map(params![module.id], |row| {
+            let name: String = row.get(0)?;
+            let line: i64 = row.get(1)?;
+            let end_line: Option<i64> = row.get(2)?;
+            Ok(match end_line {
+                Some(end_line) => format!("region {name}: {line}-{end_line}"),
+                None => format!("region {name}: {line}-?"),
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    for region in regions {
+        lines.push(region.map_err(|error| error.to_string())?);
+    }
+
+    if include_methods {
+        let mut method_stmt = conn
+            .prepare(
+                "SELECT name, type, is_export, params, line, end_line \
+                 FROM methods WHERE module_id = ? ORDER BY line",
+            )
+            .map_err(|error| error.to_string())?;
+        let methods = method_stmt
+            .query_map(params![module.id], |row| {
+                let name: String = row.get(0)?;
+                let method_type: String = row.get(1)?;
+                let is_export: i64 = row.get(2)?;
+                let params: Option<String> = row.get(3)?;
+                let line: i64 = row.get(4)?;
+                let end_line: Option<i64> = row.get(5)?;
+                let range = match end_line {
+                    Some(end_line) => format!("{line}-{end_line}"),
+                    None => format!("{line}-?"),
+                };
+                Ok(format!(
+                    "{} {}{}{} at {}",
+                    method_type,
+                    name,
+                    format!("({})", params.unwrap_or_default().trim()),
+                    if is_export != 0 { " export" } else { "" },
+                    range
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        for method in methods {
+            lines.push(method.map_err(|error| error.to_string())?);
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
+fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> AdapterOutcome {
+    AdapterOutcome {
+        ok: true,
+        summary: format!("{tool_name} could not read RLM index"),
+        changes: Vec::new(),
+        warnings: vec![readiness_warning(readiness)],
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+        command: None,
+    }
+}
+
+fn readiness_warning(readiness: IndexReadiness) -> String {
+    match readiness {
+        IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
+        IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
+        IndexReadiness::Stale | IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
+            format!("rlm index unavailable: {error}")
+        }
+    }
+}
+
+fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing required `{key}` argument"))
+}
+
+fn read_limit(args: &Map<String, Value>, default: usize) -> usize {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn index_path_candidates(
+    context: &WorkspaceContext,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Vec<String>, String> {
+    let raw = required_string(args, key)?;
+    let mut candidates = BTreeSet::new();
+    let rel = safe_workspace_rel(context, raw)?;
+    if !rel.is_empty() {
+        candidates.insert(rel.clone());
+    }
+    if let Some(source_dir) = args.get("sourceDir").and_then(Value::as_str) {
+        let source_rel = safe_workspace_rel(context, source_dir)?;
+        if rel_under(&rel, &source_rel) {
+            let stripped = strip_rel_prefix(&rel, &source_rel);
+            if !stripped.is_empty() {
+                candidates.insert(stripped);
+            }
+        } else if !PathBuf::from(raw).is_absolute() {
+            candidates.insert(join_rel(&source_rel, &rel));
+        }
+    }
+    if candidates.is_empty() {
+        candidates.insert(rel);
+    }
+    Ok(candidates.into_iter().collect())
+}
+
+fn grep_pathspecs(
+    context: &WorkspaceContext,
+    args: &Map<String, Value>,
+) -> Result<Vec<String>, String> {
+    let source_rel = args
+        .get("sourceDir")
+        .and_then(Value::as_str)
+        .map(|value| safe_workspace_rel(context, value))
+        .transpose()?;
+    let include_rel = match args.get("path").and_then(Value::as_str) {
+        Some(raw_path) => {
+            let rel = safe_workspace_rel(context, raw_path)?;
+            if let Some(source_rel) = &source_rel {
+                if !PathBuf::from(raw_path).is_absolute() && !rel_under(&rel, source_rel) {
+                    join_rel(source_rel, &rel)
+                } else {
+                    rel
+                }
+            } else {
+                rel
+            }
+        }
+        None => source_rel.unwrap_or_default(),
+    };
+
+    let mut pathspecs = Vec::new();
+    let file_types = parse_file_types(args.get("fileTypes").and_then(Value::as_str))?;
+    if file_types.is_empty() {
+        if !include_rel.is_empty() {
+            pathspecs.push(include_rel.clone());
+        }
+    } else {
+        for extension in file_types {
+            if include_rel.is_empty() {
+                pathspecs.push(format!(":(glob)**/*.{extension}"));
+            } else {
+                pathspecs.push(format!(
+                    ":(glob){}/**/*.{}",
+                    include_rel.trim_end_matches('/'),
+                    extension
+                ));
+            }
+        }
+    }
+
+    if let Some(raw_exclude) = args.get("excludePath").and_then(Value::as_str) {
+        let mut exclude_rel = safe_workspace_rel(context, raw_exclude)?;
+        if let Some(source_dir) = args.get("sourceDir").and_then(Value::as_str) {
+            let source_rel = safe_workspace_rel(context, source_dir)?;
+            if !PathBuf::from(raw_exclude).is_absolute() && !rel_under(&exclude_rel, &source_rel) {
+                exclude_rel = join_rel(&source_rel, &exclude_rel);
+            }
+        }
+        if pathspecs.is_empty() {
+            pathspecs.push(".".to_string());
+        }
+        pathspecs.push(format!(":(exclude){exclude_rel}"));
+    }
+
+    Ok(pathspecs)
+}
+
+fn parse_file_types(raw: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut types = Vec::new();
+    for part in raw.split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace()) {
+        let extension = part.trim().trim_start_matches('.');
+        if extension.is_empty() {
+            continue;
+        }
+        if !extension.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            return Err(format!(
+                "fileTypes contains unsupported extension `{extension}`"
+            ));
+        }
+        types.push(extension.to_string());
+    }
+    Ok(types)
+}
+
+fn grep_body(stdout: &str, mode: &str, limit: usize) -> String {
+    let mut lines = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in stdout
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+    {
+        if mode == "files" {
+            if !seen.insert(line.to_string()) {
+                continue;
+            }
+        }
+        lines.push(line.to_string());
+        if lines.len() >= limit {
+            break;
+        }
+    }
+    lines.join("\n")
+}
+
+fn safe_workspace_rel(context: &WorkspaceContext, raw: &str) -> Result<String, String> {
+    let path = PathBuf::from(raw);
+    let resolved = if path.is_absolute() {
+        normalize_lexical_path(&path)
+    } else {
+        normalize_lexical_path(&context.cwd.join(path))
+    };
+    let workspace = normalize_lexical_path(&context.workspace_root);
+    if !resolved.starts_with(&workspace) {
+        return Err(format!(
+            "path `{raw}` resolves outside workspace root {}",
+            context.workspace_root.display()
+        ));
+    }
+    let rel = resolved
+        .strip_prefix(&workspace)
+        .map_err(|error| format!("failed to relativize `{raw}`: {error}"))?;
+    Ok(path_to_slash(rel))
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn path_to_slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn rel_under(rel: &str, base: &str) -> bool {
+    base.is_empty() || rel == base || rel.starts_with(&format!("{base}/"))
+}
+
+fn strip_rel_prefix(rel: &str, base: &str) -> String {
+    if base.is_empty() {
+        rel.to_string()
+    } else if rel == base {
+        String::new()
+    } else {
+        rel.strip_prefix(&format!("{base}/"))
+            .unwrap_or(rel)
+            .to_string()
+    }
+}
+
+fn join_rel(base: &str, rel: &str) -> String {
+    match (base.is_empty(), rel.is_empty()) {
+        (true, _) => rel.to_string(),
+        (_, true) => base.to_string(),
+        _ => format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            rel.trim_start_matches('/')
+        ),
     }
 }
 
@@ -1337,6 +1992,158 @@ mod tests {
     }
 
     #[test]
+    fn code_definition_adapter_returns_matches_from_ready_rlm_index() {
+        let context = temp_context("definition-ready");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+        create_rlm_navigation_db(&db_path);
+        let index = FakeIndexRunner {
+            outputs: RefCell::new(vec![index_success(format!(
+                "Index: {}\n  Status:   fresh\n",
+                db_path.display()
+            ))]),
+            ..Default::default()
+        };
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("name".to_string(), json!("SmokeProcedure"));
+        args.insert("limit".to_string(), json!(5));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.definition", &args, &context, false)
+            .unwrap();
+
+        let stdout = outcome.stdout.unwrap();
+        assert!(stdout.contains("=== rlm-definition ==="));
+        assert!(stdout.contains("CommonModules/SmokeModule/Ext/Module.bsl:2"));
+        assert!(stdout.contains("Procedure SmokeProcedure() export"));
+        assert!(stdout.contains("category=CommonModule"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_outline_adapter_returns_regions_headers_and_methods() {
+        let context = temp_context("outline-ready");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+        create_rlm_navigation_db(&db_path);
+        let index = FakeIndexRunner {
+            outputs: RefCell::new(vec![index_success(format!(
+                "Index: {}\n  Status:   fresh\n",
+                db_path.display()
+            ))]),
+            ..Default::default()
+        };
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        );
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.outline", &args, &context, false)
+            .unwrap();
+
+        let stdout = outcome.stdout.unwrap();
+        assert!(stdout.contains("=== rlm-outline ==="));
+        assert!(stdout.contains("module: CommonModules/SmokeModule/Ext/Module.bsl"));
+        assert!(stdout.contains("header: Smoke module header"));
+        assert!(stdout.contains("region PublicApi: 1-5"));
+        assert!(stdout.contains("Procedure SmokeProcedure() export"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_grep_adapter_maps_typed_args_to_safe_git_grep() {
+        let context = temp_context("grep-command");
+        let index = FakeIndexRunner::default();
+        let grep = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "CommonModules/SmokeModule/Ext/Module.bsl:2:SmokeProcedure\n".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+        args.insert("path".to_string(), json!("CommonModules"));
+        args.insert("fileTypes".to_string(), json!("bsl"));
+        args.insert("ignoreCase".to_string(), json!(true));
+        args.insert("excludePath".to_string(), json!("CommonModules/Generated"));
+        args.insert("limit".to_string(), json!(10));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.grep", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.stdout.as_deref(),
+            Some("=== git-grep ===\nCommonModules/SmokeModule/Ext/Module.bsl:2:SmokeProcedure")
+        );
+        let commands = grep.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].program, PathBuf::from("git"));
+        assert!(commands[0].args.contains(&"grep".to_string()));
+        assert!(commands[0].args.contains(&"-F".to_string()));
+        assert!(commands[0].args.contains(&"-i".to_string()));
+        assert!(commands[0]
+            .args
+            .contains(&":(glob)CommonModules/**/*.bsl".to_string()));
+        assert!(commands[0]
+            .args
+            .contains(&":(exclude)CommonModules/Generated".to_string()));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_grep_adapter_rejects_path_escape_before_git_execution() {
+        let context = temp_context("grep-escape");
+        let index = FakeIndexRunner::default();
+        let grep = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+        args.insert("path".to_string(), json!("../outside"));
+
+        let error = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.grep", &args, &context, false)
+            .unwrap_err();
+
+        assert!(error.contains("outside workspace root"));
+        assert!(grep.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn diagnostics_adapter_still_builds_bsl_analyzer_analyze_command() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
         let mut args = Map::new();
@@ -1621,6 +2428,80 @@ mod tests {
         conn.execute(
             "INSERT INTO methods_fts(rowid, name, object_name) VALUES (1, ?1, ?2)",
             ("ОбработкаПроведения", "Проведение"),
+        )
+        .unwrap();
+    }
+
+    fn create_rlm_navigation_db(db_path: &PathBuf) {
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE index_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            CREATE TABLE modules (
+                id INTEGER PRIMARY KEY,
+                rel_path TEXT NOT NULL,
+                category TEXT,
+                object_name TEXT,
+                module_type TEXT
+            );
+            CREATE TABLE methods (
+                id INTEGER PRIMARY KEY,
+                module_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                is_export INTEGER NOT NULL,
+                params TEXT,
+                line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                loc INTEGER
+            );
+            CREATE VIRTUAL TABLE methods_fts USING fts5(name, object_name, tokenize='trigram');
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY,
+                module_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                end_line INTEGER
+            );
+            CREATE TABLE module_headers (
+                module_id INTEGER PRIMARY KEY,
+                header_comment TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')",
+            (),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+             VALUES (1, ?1, 'CommonModule', 'SmokeModule', 'ManagerModule')",
+            ("CommonModules/SmokeModule/Ext/Module.bsl",),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO methods (id, module_id, name, type, is_export, params, line, end_line, loc)
+             VALUES (1, 1, 'SmokeProcedure', 'Procedure', 1, '', 2, 4, 3)",
+            (),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO methods_fts(rowid, name, object_name) VALUES (1, 'SmokeProcedure', 'SmokeModule')",
+            (),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO regions (id, module_id, name, line, end_line) VALUES (1, 1, 'PublicApi', 1, 5)",
+            (),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO module_headers (module_id, header_comment) VALUES (1, 'Smoke module header')",
+            (),
         )
         .unwrap();
     }

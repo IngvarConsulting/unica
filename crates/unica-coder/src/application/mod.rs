@@ -3,7 +3,7 @@ use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
-    CliAdapter, CodeSearchAdapter, RuntimeAdapter, StandardsAdapter,
+    CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter, StandardsAdapter,
 };
 use crate::infrastructure::legacy_scripts::LegacyScriptAdapter;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
@@ -206,6 +206,37 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.code.definition",
+            description: "Find BSL method definitions through the typed Unica code index boundary.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::CodeAdapter {
+                command: &["definition"],
+            },
+        },
+        ToolSpec {
+            name: "unica.code.outline",
+            description: "Read compact BSL module outline from the internal code index.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::CodeAdapter {
+                command: &["outline"],
+            },
+        },
+        ToolSpec {
+            name: "unica.code.grep",
+            description: "Run safe typed git-grep search inside the Unica workspace.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::CodeAdapter { command: &["grep"] },
+        },
+        ToolSpec {
             name: "unica.code.diagnostics",
             description: "Run BSL diagnostics through the internal code analysis adapter.",
             mutating: false,
@@ -257,7 +288,11 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
     tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let state_repo = WorkspaceStateRepository::new(&context);
-    let index_report = WorkspaceIndexService::new().start_for_workspace(&context, args, dry_run);
+    let index_report = if uses_bsl_index(spec) {
+        WorkspaceIndexService::new().start_for_workspace(&context, args, dry_run)
+    } else {
+        Default::default()
+    };
 
     let mut outcome = match spec.handler {
         ToolHandler::LegacyScript { skill, script, .. } => LegacyScriptAdapter::invoke(
@@ -290,6 +325,11 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
         }
         ToolHandler::CodeAdapter { command } if command == ["search"] => {
             CodeSearchAdapter::new().invoke(spec.name, args, &context, dry_run)?
+        }
+        ToolHandler::CodeAdapter { command }
+            if matches!(command, ["definition"] | ["outline"] | ["grep"]) =>
+        {
+            CodeNavigationAdapter::new().invoke(spec.name, args, &context, dry_run)?
         }
         ToolHandler::CodeAdapter { command } => CliAdapter::new(
             "run-bsl-analyzer.sh",
@@ -324,6 +364,11 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
 
 fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
     spec.mutating && (dry_run || outcome.ok)
+}
+
+fn uses_bsl_index(spec: ToolSpec) -> bool {
+    spec.cache_access.reads.contains(&"bsl_index")
+        || spec.cache_access.writes.contains(&"bsl_index")
 }
 
 fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> {
@@ -893,6 +938,9 @@ mod tests {
         assert!(names.contains(&"unica.role.validate"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
+        assert!(names.contains(&"unica.code.definition"));
+        assert!(names.contains(&"unica.code.outline"));
+        assert!(names.contains(&"unica.code.grep"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
     }
@@ -1073,6 +1121,56 @@ mod tests {
         assert!(stdout.contains("\"sourceSets\""));
         assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
         assert!(stdout.contains("\"kind\": \"configuration\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_grep_does_not_start_rlm_index_side_effect() {
+        let root = std::env::temp_dir().join(format!("unica-code-grep-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let module_dir = workspace.join("CommonModules/SmokeModule/Ext");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("Module.bsl"),
+            "Процедура SmokeProcedure() Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "query".to_string(),
+            Value::String("SmokeProcedure".to_string()),
+        );
+        args.insert(
+            "path".to_string(),
+            Value::String("CommonModules".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.code.grep", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result.stdout.unwrap().contains("SmokeProcedure"));
+        let context = WorkspaceContext::discover(workspace.clone()).unwrap();
+        assert!(
+            !crate::infrastructure::workspace_index::status_path(&context).exists(),
+            "unica.code.grep must not start or mark RLM index state"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

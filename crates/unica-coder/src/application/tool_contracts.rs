@@ -241,6 +241,20 @@ const CODE_ARGS: &[&str] = &[
     "sourceDir",
 ];
 
+const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
+const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
+const CODE_GREP_ARGS: &[&str] = &[
+    "excludePath",
+    "fileTypes",
+    "ignoreCase",
+    "limit",
+    "mode",
+    "path",
+    "query",
+    "regex",
+    "sourceDir",
+];
+
 const STANDARDS_ARGS: &[&str] = &[
     "body_limit",
     "bodyLimit",
@@ -524,7 +538,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         }
         ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
-        ToolHandler::CodeAdapter { .. } => names.extend(CODE_ARGS),
+        ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
         ToolHandler::LegacyScript { .. } => names.extend(NATIVE_XML_DSL_ARGS),
@@ -558,7 +572,22 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             ..
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
+        ToolHandler::CodeAdapter { .. } => match tool.name {
+            "unica.code.definition" => vec!["name"],
+            "unica.code.outline" => vec!["path"],
+            "unica.code.grep" => vec!["query"],
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
+    }
+}
+
+fn code_args_for(tool_name: &str) -> &'static [&'static str] {
+    match tool_name {
+        "unica.code.definition" => CODE_DEFINITION_ARGS,
+        "unica.code.outline" => CODE_OUTLINE_ARGS,
+        "unica.code.grep" => CODE_GREP_ARGS,
+        _ => CODE_ARGS,
     }
 }
 
@@ -589,6 +618,9 @@ fn property_schema(name: &str) -> Value {
             | "fullRebuild"
             | "server"
             | "thinClient"
+            | "includeMethods"
+            | "ignoreCase"
+            | "regex"
     ) {
         "boolean"
     } else if matches!(
@@ -665,6 +697,9 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "fullRebuild"
             | "server"
             | "thinClient"
+            | "includeMethods"
+            | "ignoreCase"
+            | "regex"
     ) {
         Some("boolean")
     } else if matches!(
@@ -781,5 +816,64 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("mcp-va")));
+    }
+
+    #[test]
+    fn code_navigation_contracts_expose_typed_arguments_without_raw_args() {
+        let definition = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.definition")
+            .expect("unica.code.definition must be registered");
+        let outline = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.outline")
+            .expect("unica.code.outline must be registered");
+        let grep = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.grep")
+            .expect("unica.code.grep must be registered");
+
+        let definition_schema = input_schema_for_tool(&definition);
+        assert_eq!(definition_schema["additionalProperties"], false);
+        assert!(definition_schema["properties"].get("name").is_some());
+        assert!(definition_schema["properties"].get("moduleHint").is_some());
+        assert!(definition_schema["properties"].get("args").is_none());
+        assert_eq!(definition_schema["properties"]["limit"]["type"], "integer");
+        assert_eq!(definition_schema["required"], json!(["name"]));
+
+        let outline_schema = input_schema_for_tool(&outline);
+        assert_eq!(outline_schema["additionalProperties"], false);
+        assert!(outline_schema["properties"].get("path").is_some());
+        assert_eq!(
+            outline_schema["properties"]["includeMethods"]["type"],
+            "boolean"
+        );
+        assert_eq!(outline_schema["required"], json!(["path"]));
+
+        let grep_schema = input_schema_for_tool(&grep);
+        assert_eq!(grep_schema["additionalProperties"], false);
+        assert!(grep_schema["properties"].get("query").is_some());
+        assert!(grep_schema["properties"].get("excludePath").is_some());
+        assert_eq!(grep_schema["properties"]["regex"]["type"], "boolean");
+        assert_eq!(grep_schema["properties"]["ignoreCase"]["type"], "boolean");
+        assert_eq!(grep_schema["required"], json!(["query"]));
+    }
+
+    #[test]
+    fn code_navigation_contracts_reject_raw_args_and_require_real_payloads() {
+        let definition = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.definition")
+            .unwrap();
+        let mut args = Map::new();
+        args.insert("args".to_string(), json!(["--unsafe"]));
+
+        let error = validate_tool_arguments(definition, &args, false).unwrap_err();
+        assert!(error.contains("does not accept argument `args`"));
+
+        let args = Map::new();
+        let error = validate_tool_arguments(definition, &args, false).unwrap_err();
+        assert!(error.contains("requires `name`"));
+        validate_tool_arguments(definition, &args, true).unwrap();
     }
 }
