@@ -254,6 +254,48 @@ const CODE_GREP_ARGS: &[&str] = &[
     "regex",
     "sourceDir",
 ];
+const CODE_GRAPH_ARGS: &[&str] = &[
+    "detail",
+    "dir",
+    "edgeKinds",
+    "id",
+    "ids",
+    "limit",
+    "maxOutputTokens",
+    "mode",
+    "provenance",
+    "query",
+    "sourceDir",
+];
+const CODE_GRAPH_MODES: &[&str] = &[
+    "status",
+    "overview",
+    "resolve",
+    "node",
+    "source",
+    "neighbors",
+    "callers",
+    "callees",
+];
+const CODE_GRAPH_DIRECTIONS: &[&str] = &["in", "out", "both"];
+const CODE_GRAPH_DETAIL: &[&str] = &["names", "signatures", "bodies"];
+const CODE_DIAGNOSTICS_ARGS: &[&str] = &[
+    "codes",
+    "config",
+    "detail",
+    "format",
+    "limit",
+    "maxFiles",
+    "minSeverity",
+    "mode",
+    "path",
+    "rangeEnd",
+    "rangeStart",
+    "sourceDir",
+];
+const CODE_DIAGNOSTIC_MODES: &[&str] = &["analyze", "status", "catalog", "file", "workspace"];
+const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
+const CODE_DIAGNOSTIC_DETAIL: &[&str] = &["concise", "detailed"];
 
 const STANDARDS_ARGS: &[&str] = &[
     "body_limit",
@@ -304,6 +346,7 @@ pub fn validate_tool_arguments(
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
+    validate_code_arguments(tool, args, dry_run)?;
 
     if !dry_run {
         for required in required_args(&tool) {
@@ -313,6 +356,60 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_code_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    match tool.name {
+        "unica.code.graph" => {
+            validate_enum_argument(tool.name, args, "mode", CODE_GRAPH_MODES)?;
+            validate_enum_argument(tool.name, args, "dir", CODE_GRAPH_DIRECTIONS)?;
+            validate_enum_argument(tool.name, args, "detail", CODE_GRAPH_DETAIL)?;
+        }
+        "unica.code.diagnostics" => {
+            validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
+            validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
+            validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
+            if !dry_run
+                && args
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .is_some_and(|mode| mode == "file")
+                && !args.contains_key("path")
+            {
+                return Err(format!(
+                    "{} mode `file` requires `path` argument",
+                    tool.name
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_enum_argument(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    let Some(value) = args.get(key) else {
+        return Ok(());
+    };
+    let Some(value) = value.as_str() else {
+        return Err(format!("{tool_name} argument `{key}` must be string"));
+    };
+    if !allowed.contains(&value) {
+        return Err(format!(
+            "{tool_name} argument `{key}` must be one of: {}",
+            allowed.join(", ")
+        ));
+    }
     Ok(())
 }
 
@@ -576,6 +673,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             "unica.code.definition" => vec!["name"],
             "unica.code.outline" => vec!["path"],
             "unica.code.grep" => vec!["query"],
+            "unica.code.graph" => vec!["mode"],
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -587,6 +685,8 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
         "unica.code.definition" => CODE_DEFINITION_ARGS,
         "unica.code.outline" => CODE_OUTLINE_ARGS,
         "unica.code.grep" => CODE_GREP_ARGS,
+        "unica.code.graph" => CODE_GRAPH_ARGS,
+        "unica.code.diagnostics" => CODE_DIAGNOSTICS_ARGS,
         _ => CODE_ARGS,
     }
 }
@@ -625,12 +725,29 @@ fn property_schema(name: &str) -> Value {
         "boolean"
     } else if matches!(
         name,
-        "limit" | "Offset" | "offset" | "MaxParams" | "maxParams" | "mcpPort"
+        "limit"
+            | "Offset"
+            | "offset"
+            | "MaxParams"
+            | "maxParams"
+            | "mcpPort"
+            | "maxOutputTokens"
+            | "maxFiles"
+            | "rangeStart"
+            | "rangeEnd"
     ) {
         "integer"
     } else if matches!(
         name,
-        "codes" | "types" | "Fields" | "fields" | "Children" | "children"
+        "codes"
+            | "types"
+            | "Fields"
+            | "fields"
+            | "Children"
+            | "children"
+            | "ids"
+            | "edgeKinds"
+            | "provenance"
     ) {
         "array"
     } else {
@@ -659,6 +776,23 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             _ => {}
         }
     }
+    match tool.name {
+        "unica.code.graph" => match name {
+            "mode" => return json!({ "type": "string", "enum": CODE_GRAPH_MODES }),
+            "dir" => return json!({ "type": "string", "enum": CODE_GRAPH_DIRECTIONS }),
+            "detail" => return json!({ "type": "string", "enum": CODE_GRAPH_DETAIL }),
+            _ => {}
+        },
+        "unica.code.diagnostics" => match name {
+            "mode" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_MODES }),
+            "minSeverity" => {
+                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES });
+            }
+            "detail" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL }),
+            _ => {}
+        },
+        _ => {}
+    }
     property_schema(name)
 }
 
@@ -670,6 +804,9 @@ fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(
         }
         Some("integer") if value.as_i64().is_none() => {
             Err(format!("{tool_name} argument `{key}` must be integer"))
+        }
+        Some("array") if !value.is_array() => {
+            Err(format!("{tool_name} argument `{key}` must be array"))
         }
         _ => Ok(()),
     }
@@ -704,9 +841,31 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
         Some("boolean")
     } else if matches!(
         key,
-        "limit" | "Offset" | "offset" | "MaxParams" | "maxParams" | "mcpPort"
+        "limit"
+            | "Offset"
+            | "offset"
+            | "MaxParams"
+            | "maxParams"
+            | "mcpPort"
+            | "maxOutputTokens"
+            | "maxFiles"
+            | "rangeStart"
+            | "rangeEnd"
     ) {
         Some("integer")
+    } else if matches!(
+        key,
+        "codes"
+            | "types"
+            | "Fields"
+            | "fields"
+            | "Children"
+            | "children"
+            | "ids"
+            | "edgeKinds"
+            | "provenance"
+    ) {
+        Some("array")
     } else {
         None
     }
@@ -875,5 +1034,71 @@ mod tests {
         let error = validate_tool_arguments(definition, &args, false).unwrap_err();
         assert!(error.contains("requires `name`"));
         validate_tool_arguments(definition, &args, true).unwrap();
+    }
+
+    #[test]
+    fn bsl_graph_contract_exposes_typed_arguments_without_raw_args() {
+        let graph = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.graph")
+            .expect("unica.code.graph must be registered");
+
+        let schema = input_schema_for_tool(&graph);
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["mode"]));
+        assert!(schema["properties"].get("args").is_none());
+        assert!(schema["properties"].get("argv").is_none());
+        assert!(schema["properties"].get("query").is_some());
+        assert_eq!(schema["properties"]["ids"]["type"], "array");
+        assert_eq!(schema["properties"]["edgeKinds"]["type"], "array");
+        assert_eq!(schema["properties"]["maxOutputTokens"]["type"], "integer");
+        assert!(schema["properties"]["mode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("callers")));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("callers"));
+        args.insert("args".to_string(), json!(["--raw"]));
+        let error = validate_tool_arguments(graph, &args, false).unwrap_err();
+        assert!(error.contains("does not accept argument `args`"));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("raw"));
+        let error = validate_tool_arguments(graph, &args, false).unwrap_err();
+        assert!(error.contains("must be one of"));
+    }
+
+    #[test]
+    fn bsl_diagnostics_contract_exposes_modes_and_keeps_analyze_default() {
+        let diagnostics = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.diagnostics")
+            .expect("unica.code.diagnostics must be registered");
+
+        let schema = input_schema_for_tool(&diagnostics);
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["properties"].get("args").is_none());
+        assert!(schema["properties"].get("argv").is_none());
+        assert_eq!(schema["properties"]["codes"]["type"], "array");
+        assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
+        assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
+        assert!(schema["properties"]["mode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("workspace")));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("requires `path`"));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("raw"));
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("must be one of"));
+
+        let args = Map::new();
+        validate_tool_arguments(diagnostics, &args, false).unwrap();
     }
 }

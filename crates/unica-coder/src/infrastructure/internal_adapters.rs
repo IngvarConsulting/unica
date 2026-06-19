@@ -8,8 +8,11 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -35,9 +38,31 @@ pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
 }
 
+#[derive(Debug, Clone)]
+pub struct BslMcpCommand {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub timeout: Duration,
+    pub tool_name: &'static str,
+    pub tool_args: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct BslMcpOutput {
+    pub result_text: String,
+    pub stderr: String,
+}
+
+pub trait BslMcpRunner {
+    fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String>;
+}
+
 struct SystemProcessRunner;
+struct SystemBslMcpRunner;
 
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
+static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
 
 pub struct CliAdapter<'a> {
     launcher: &'static str,
@@ -58,6 +83,10 @@ pub struct CodeSearchAdapter<'a> {
 pub struct CodeNavigationAdapter<'a> {
     index_runner: &'a dyn IndexRunner,
     grep_runner: &'a dyn ProcessRunner,
+}
+
+pub struct BslAnalyzerMcpAdapter<'a> {
+    runner: &'a dyn BslMcpRunner,
 }
 
 impl<'a> CliAdapter<'a> {
@@ -658,6 +687,100 @@ impl Default for CodeNavigationAdapter<'_> {
     }
 }
 
+impl<'a> BslAnalyzerMcpAdapter<'a> {
+    pub fn new() -> Self {
+        Self {
+            runner: &SYSTEM_BSL_MCP_RUNNER,
+        }
+    }
+
+    pub fn with_runner(runner: &'a dyn BslMcpRunner) -> Self {
+        Self { runner }
+    }
+
+    pub fn invoke(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> Result<AdapterOutcome, String> {
+        if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
+            let cli_args = diagnostics_analyze_args(args);
+            return CliAdapter::new("run-bsl-analyzer.sh", &["analyze"], "code analysis")
+                .invoke(tool_name, &cli_args, context, dry_run, false);
+        }
+
+        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup".to_string()
+        })?;
+        let launcher = plugin_root.join("scripts").join("run-bsl-analyzer.sh");
+        let source_dir = resolve_source_dir(context, args)?;
+        let command = bsl_mcp_command(&launcher, &source_dir, context, tool_name, args)?;
+        let mut reported_command = vec![launcher.display().to_string()];
+        reported_command.extend(command.args.clone());
+
+        if dry_run {
+            return Ok(AdapterOutcome {
+                ok: true,
+                summary: format!("dry run: {tool_name} would call typed bsl-analyzer MCP adapter"),
+                changes: Vec::new(),
+                warnings: if launcher.exists() {
+                    Vec::new()
+                } else {
+                    vec![format!(
+                        "internal adapter launcher not found: {}",
+                        launcher.display()
+                    )]
+                },
+                errors: Vec::new(),
+                artifacts: vec![source_dir.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: Some(reported_command),
+            });
+        }
+
+        if !launcher.exists() {
+            return Err(format!(
+                "internal adapter launcher not found: {}",
+                launcher.display()
+            ));
+        }
+
+        let output = self.runner.call(&command)?;
+        let section = if command.tool_name == "graph" {
+            "bsl-analyzer-graph"
+        } else {
+            "bsl-analyzer-diagnostics"
+        };
+        Ok(AdapterOutcome {
+            ok: true,
+            summary: format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
+            changes: Vec::new(),
+            warnings: bsl_mcp_readiness_warnings(&output.result_text),
+            errors: Vec::new(),
+            artifacts: vec![
+                source_dir.display().to_string(),
+                command.tool_name.to_string(),
+            ],
+            stdout: Some(format_section(section, &output.result_text)),
+            stderr: if output.stderr.trim().is_empty() {
+                None
+            } else {
+                Some(output.stderr)
+            },
+            command: Some(reported_command),
+        })
+    }
+}
+
+impl Default for BslAnalyzerMcpAdapter<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 struct ModuleRecord {
     id: i64,
@@ -1042,6 +1165,126 @@ fn grep_body(stdout: &str, mode: &str, limit: usize) -> String {
     lines.join("\n")
 }
 
+fn diagnostics_mode(args: &Map<String, Value>) -> &str {
+    args.get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("analyze")
+}
+
+fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
+    let mut filtered = Map::new();
+    for key in ["cwd", "dryRun", "confirm", "sourceDir", "config", "format"] {
+        if let Some(value) = args.get(key) {
+            filtered.insert(key.to_string(), value.clone());
+        }
+    }
+    filtered
+}
+
+fn bsl_mcp_command(
+    launcher: &Path,
+    source_dir: &Path,
+    context: &WorkspaceContext,
+    tool_name: &str,
+    args: &Map<String, Value>,
+) -> Result<BslMcpCommand, String> {
+    let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
+    Ok(BslMcpCommand {
+        program: launcher.to_path_buf(),
+        args: vec![
+            "mcp".to_string(),
+            "serve".to_string(),
+            "--profile".to_string(),
+            "workspace".to_string(),
+            "--source-dir".to_string(),
+            source_dir.display().to_string(),
+            "--mode".to_string(),
+            "stdio".to_string(),
+        ],
+        cwd: context.cwd.clone(),
+        timeout: DEFAULT_PROCESS_TIMEOUT,
+        tool_name: remote_tool,
+        tool_args,
+    })
+}
+
+fn bsl_mcp_tool_request(
+    tool_name: &str,
+    args: &Map<String, Value>,
+) -> Result<(&'static str, Value), String> {
+    match tool_name {
+        "unica.code.graph" => {
+            let mode = required_string(args, "mode")?;
+            let mut payload = Map::new();
+            payload.insert("action".to_string(), json!(mode));
+            copy_json_arg(&mut payload, args, "id", "id");
+            copy_json_arg(&mut payload, args, "ids", "ids");
+            copy_json_arg(&mut payload, args, "query", "query");
+            copy_json_arg(&mut payload, args, "dir", "dir");
+            copy_json_arg(&mut payload, args, "detail", "detail");
+            copy_json_arg(&mut payload, args, "edgeKinds", "edge_kinds");
+            copy_json_arg(&mut payload, args, "provenance", "provenance");
+            copy_json_arg(&mut payload, args, "limit", "max_nodes");
+            copy_json_arg(&mut payload, args, "maxOutputTokens", "max_output_tokens");
+            Ok(("graph", Value::Object(payload)))
+        }
+        "unica.code.diagnostics" => {
+            let mut payload = Map::new();
+            payload.insert("action".to_string(), json!(diagnostics_mode(args)));
+            copy_json_arg(&mut payload, args, "codes", "codes");
+            copy_json_arg(&mut payload, args, "path", "path");
+            copy_json_arg(&mut payload, args, "detail", "detail");
+            copy_json_arg(&mut payload, args, "minSeverity", "min_severity");
+            copy_json_arg(&mut payload, args, "rangeStart", "range_start");
+            copy_json_arg(&mut payload, args, "rangeEnd", "range_end");
+            copy_json_arg(&mut payload, args, "limit", "max_findings");
+            copy_json_arg(&mut payload, args, "maxFiles", "max_files");
+            Ok(("diagnostics", Value::Object(payload)))
+        }
+        _ => Err(format!("unsupported bsl-analyzer MCP tool: {tool_name}")),
+    }
+}
+
+fn copy_json_arg(
+    payload: &mut Map<String, Value>,
+    args: &Map<String, Value>,
+    from: &str,
+    to: &str,
+) {
+    if let Some(value) = args.get(from).filter(|value| !value.is_null()) {
+        payload.insert(to.to_string(), value.clone());
+    }
+}
+
+fn resolve_source_dir(
+    context: &WorkspaceContext,
+    args: &Map<String, Value>,
+) -> Result<PathBuf, String> {
+    match args.get("sourceDir").and_then(Value::as_str) {
+        Some(raw) => {
+            let rel = safe_workspace_rel(context, raw)?;
+            Ok(context.workspace_root.join(rel))
+        }
+        None => Ok(context.cwd.clone()),
+    }
+}
+
+fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
+    if text.contains("\"reload\":\"running\"")
+        || text.contains("\"state\":\"loading\"")
+        || text.contains("\"status\":\"loading\"")
+        || text.contains("not_ready")
+        || text.contains("not ready")
+    {
+        vec![
+            "bsl-analyzer workspace model is not ready yet; retry status or the request after reload completes"
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
 fn safe_workspace_rel(context: &WorkspaceContext, raw: &str) -> Result<String, String> {
     let path = PathBuf::from(raw);
     let resolved = if path.is_absolute() {
@@ -1154,6 +1397,162 @@ impl ProcessRunner for SystemProcessRunner {
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+}
+
+impl BslMcpRunner for SystemBslMcpRunner {
+    fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String> {
+        let mut child = Command::new(&command.program)
+            .args(&command.args)
+            .current_dir(&command.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("failed to execute bsl-analyzer MCP process: {err}"))?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "failed to open bsl-analyzer MCP stdin".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "failed to open bsl-analyzer MCP stdout".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "failed to open bsl-analyzer MCP stderr".to_string())?;
+
+        let (tx, rx) = mpsc::channel::<String>();
+        let stdout_reader = thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(line).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut text = String::new();
+            let _ = reader.read_to_string(&mut text);
+            text
+        });
+
+        let result = (|| {
+            send_mcp_json(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "unica",
+                            "version": env!("CARGO_PKG_VERSION")
+                        }
+                    }
+                }),
+            )?;
+            let _ = read_mcp_response(&rx, 1, command.timeout)?;
+            send_mcp_json(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized"
+                }),
+            )?;
+            send_mcp_json(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": command.tool_name,
+                        "arguments": command.tool_args
+                    }
+                }),
+            )?;
+            let response = read_mcp_response(&rx, 2, command.timeout)?;
+            mcp_tool_text(&response)
+        })();
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stdout_reader.join();
+        let stderr = stderr_reader.join().unwrap_or_default();
+
+        result.map(|result_text| BslMcpOutput {
+            result_text,
+            stderr,
+        })
+    }
+}
+
+fn send_mcp_json(stdin: &mut impl Write, payload: &Value) -> Result<(), String> {
+    stdin
+        .write_all(payload.to_string().as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())
+        .map_err(|err| format!("failed to write bsl-analyzer MCP request: {err}"))
+}
+
+fn read_mcp_response(
+    rx: &mpsc::Receiver<String>,
+    id: i64,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => {
+                let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+                    continue;
+                };
+                if value.get("id").and_then(Value::as_i64) == Some(id) {
+                    return Ok(value);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("bsl-analyzer MCP stdout closed before response".to_string());
+            }
+        }
+    }
+    Err(format!("bsl-analyzer MCP request {id} timed out"))
+}
+
+fn mcp_tool_text(response: &Value) -> Result<String, String> {
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("bsl-analyzer MCP JSON-RPC error");
+        return Err(message.to_string());
+    }
+    let result = response
+        .get("result")
+        .ok_or_else(|| "bsl-analyzer MCP response is missing result".to_string())?;
+    if let Some(content) = result.get("content").and_then(Value::as_array) {
+        let parts = content
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        if !parts.is_empty() {
+            return Ok(parts.join("\n"));
+        }
+    }
+    Ok(result.to_string())
 }
 
 pub struct StandardsAdapter;
@@ -2160,6 +2559,114 @@ mod tests {
     }
 
     #[test]
+    fn bsl_graph_adapter_maps_typed_args_to_allowlisted_mcp_call() {
+        let context = temp_context("graph-mcp");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"callers\",\"nodes\":[]}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("callers"));
+        args.insert("id".to_string(), json!("method:CommonModule.Smoke.Run"));
+        args.insert("edgeKinds".to_string(), json!(["call"]));
+        args.insert("provenance".to_string(), json!(["direct"]));
+        args.insert("maxOutputTokens".to_string(), json!(1200));
+        args.insert("limit".to_string(), json!(25));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.graph", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.stdout.as_deref(),
+            Some("=== bsl-analyzer-graph ===\n{\"action\":\"callers\",\"nodes\":[]}")
+        );
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].tool_name, "graph");
+        assert_eq!(commands[0].tool_args["action"], "callers");
+        assert_eq!(commands[0].tool_args["edge_kinds"], json!(["call"]));
+        assert_eq!(commands[0].tool_args["provenance"], json!(["direct"]));
+        assert_eq!(commands[0].tool_args["max_output_tokens"], 1200);
+        assert_eq!(commands[0].tool_args["max_nodes"], 25);
+        assert!(commands[0].args.contains(&"mcp".to_string()));
+        assert!(commands[0].args.contains(&"stdio".to_string()));
+        assert!(commands[0]
+            .args
+            .contains(&context.cwd.display().to_string()));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bsl_diagnostics_adapter_maps_file_mode_to_allowlisted_mcp_call() {
+        let context = temp_context("diagnostics-mcp");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        );
+        args.insert("codes".to_string(), json!(["UnusedLocalVariable"]));
+        args.insert("minSeverity".to_string(), json!("warning"));
+        args.insert("rangeStart".to_string(), json!(3));
+        args.insert("rangeEnd".to_string(), json!(7));
+        args.insert("detail".to_string(), json!("detailed"));
+        args.insert("limit".to_string(), json!(5));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].tool_name, "diagnostics");
+        assert_eq!(commands[0].tool_args["action"], "file");
+        assert_eq!(commands[0].tool_args["min_severity"], "warning");
+        assert_eq!(commands[0].tool_args["range_start"], 3);
+        assert_eq!(commands[0].tool_args["range_end"], 7);
+        assert_eq!(commands[0].tool_args["max_findings"], 5);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bsl_mcp_adapter_reports_loading_as_non_fatal_warning() {
+        let context = temp_context("graph-loading");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"status\",\"reload\":\"running\",\"state\":\"loading\"}"
+                    .to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("status"));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.graph", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("not ready")));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn cli_adapter_rejects_raw_args_vector() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
         let mut args = Map::new();
@@ -2331,6 +2838,18 @@ mod tests {
 
     impl ProcessRunner for RecordingProcessRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.commands.borrow_mut().push(command.clone());
+            Ok(self.output.clone())
+        }
+    }
+
+    struct RecordingBslMcpRunner {
+        commands: RefCell<Vec<BslMcpCommand>>,
+        output: BslMcpOutput,
+    }
+
+    impl BslMcpRunner for RecordingBslMcpRunner {
+        fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.output.clone())
         }

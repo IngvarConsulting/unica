@@ -3,7 +3,8 @@ use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
-    CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter, StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter,
+    StandardsAdapter,
 };
 use crate::infrastructure::legacy_scripts::LegacyScriptAdapter;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
@@ -237,6 +238,18 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
+            name: "unica.code.graph",
+            description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "bsl_diagnostics"],
+                writes: &[],
+            },
+            handler: ToolHandler::CodeAdapter {
+                command: &["graph"],
+            },
+        },
+        ToolSpec {
             name: "unica.code.diagnostics",
             description: "Run BSL diagnostics through the internal code analysis adapter.",
             mutating: false,
@@ -330,6 +343,9 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
             if matches!(command, ["definition"] | ["outline"] | ["grep"]) =>
         {
             CodeNavigationAdapter::new().invoke(spec.name, args, &context, dry_run)?
+        }
+        ToolHandler::CodeAdapter { command } if matches!(command, ["graph"] | ["analyze"]) => {
+            BslAnalyzerMcpAdapter::new().invoke(spec.name, args, &context, dry_run)?
         }
         ToolHandler::CodeAdapter { command } => CliAdapter::new(
             "run-bsl-analyzer.sh",
@@ -941,6 +957,7 @@ mod tests {
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
         assert!(names.contains(&"unica.code.grep"));
+        assert!(names.contains(&"unica.code.graph"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
     }
