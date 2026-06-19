@@ -32,7 +32,8 @@ class ProductContractTests(unittest.TestCase):
                 scripts_dir,
                 "run-bsl-analyzer.sh",
                 "#!/usr/bin/env sh\n"
-                "printf '%s\\n' '--source-dir baseline --profile workspace reference mcp serve analyze search'\n",
+                "printf '%s\\n' '--source-dir --format jsonl baseline --profile workspace reference "
+                "--mode stdio --scenarios --json mcp serve analyze search smoke'\n",
             )
             self.write_script(
                 scripts_dir,
@@ -58,7 +59,8 @@ class ProductContractTests(unittest.TestCase):
                 scripts_dir,
                 "run-bsl-analyzer.sh",
                 "#!/usr/bin/env sh\n"
-                "printf '%s\\n' '--source-dir baseline --profile workspace reference mcp serve analyze search'\n",
+                "printf '%s\\n' '--source-dir --format jsonl baseline --profile workspace reference "
+                "--mode stdio --scenarios --json mcp serve analyze search smoke'\n",
             )
             self.write_script(
                 scripts_dir,

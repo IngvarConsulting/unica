@@ -32,10 +32,10 @@
   "tools": [
     {
       "name": "bsl-analyzer",
-      "version": "0.1.181",
+      "version": "0.2.37",
       "repository": "https://github.com/itrous/bsl-analyzer",
-      "sourceTag": "v0.1.181",
-      "sourceCommit": "f8c49ecf2a4c1262d7a37903ec309888ab15e537",
+      "sourceTag": "v0.2.37",
+      "sourceCommit": "a59fb3e2cc11e822723e2e42257f64d92267c084",
       "license": "LGPL-3.0-or-later",
       "assetStrategy": "direct-release-asset",
       "binaryName": "bsl-analyzer",

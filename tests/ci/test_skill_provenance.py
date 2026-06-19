@@ -123,6 +123,21 @@ class SkillProvenanceTests(unittest.TestCase):
                 "4913d976fbb4eee69d380464bfebda5dfa45c635",
             )
 
+    def test_bsl_analyzer_is_locked_to_reviewed_0_2_37(self) -> None:
+        tool_lock = json.loads(
+            (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
+
+        self.assertEqual(locked_tools["bsl-analyzer"]["version"], "0.2.37")
+        self.assertEqual(locked_tools["bsl-analyzer"]["sourceTag"], "v0.2.37")
+        self.assertEqual(
+            locked_tools["bsl-analyzer"]["sourceCommit"],
+            "a59fb3e2cc11e822723e2e42257f64d92267c084",
+        )
+
     def test_all_local_and_contract_paths_exist(self) -> None:
         data = self.load_provenance()
         missing = []

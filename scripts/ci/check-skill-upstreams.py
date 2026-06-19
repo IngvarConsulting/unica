@@ -58,7 +58,7 @@ class CheckReport:
 
 def run_git(args: list[str], cwd: Path) -> None:
     subprocess.run(
-        ["git", *args],
+        ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", *args],
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
@@ -69,7 +69,7 @@ def run_git(args: list[str], cwd: Path) -> None:
 
 def git_output(args: list[str], cwd: Path) -> str:
     result = subprocess.run(
-        ["git", *args],
+        ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", *args],
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,

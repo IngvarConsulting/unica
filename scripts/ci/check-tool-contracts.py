@@ -10,9 +10,20 @@ from pathlib import Path
 
 
 TOOL_HELP_CHECKS = [
-    ("bsl-analyzer analyze source-dir", "run-bsl-analyzer.sh", ["analyze", "--help"], ["--source-dir"]),
+    (
+        "bsl-analyzer analyze source-dir/jsonl",
+        "run-bsl-analyzer.sh",
+        ["analyze", "--help"],
+        ["--source-dir", "--format", "jsonl"],
+    ),
     ("bsl-analyzer search namespace", "run-bsl-analyzer.sh", ["search", "--help"], ["baseline"]),
-    ("bsl-analyzer mcp profile", "run-bsl-analyzer.sh", ["mcp", "serve", "--help"], ["--profile"]),
+    (
+        "bsl-analyzer mcp workspace stdio",
+        "run-bsl-analyzer.sh",
+        ["mcp", "serve", "--help"],
+        ["--profile", "--source-dir", "--mode", "stdio"],
+    ),
+    ("bsl-analyzer smoke", "run-bsl-analyzer.sh", ["smoke", "--help"], ["--scenarios", "--json"]),
     ("rlm-bsl-index build", "run-rlm-bsl-index.sh", ["index", "build", "--help"], ["build"]),
     ("rlm-bsl-index update", "run-rlm-bsl-index.sh", ["index", "update", "--help"], ["update"]),
     ("rlm-bsl-index info", "run-rlm-bsl-index.sh", ["index", "info", "--help"], ["info"]),
