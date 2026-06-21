@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,31 @@ class SkillProvenanceTests(unittest.TestCase):
         report = module.validate_index(self.repo_root(), self.provenance_path())
 
         self.assertEqual(report.errors, [])
+
+    def test_tracking_ref_resolution_prefers_fetched_remote_branch(self) -> None:
+        module = load_upstream_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "CI"], cwd=repo, check=True)
+
+            marker = repo / "marker.txt"
+            marker.write_text("stale\n", encoding="utf-8")
+            subprocess.run(["git", "add", "marker.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "stale"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            stale_commit = module.git_output(["rev-parse", "HEAD"], cwd=repo)
+
+            marker.write_text("fresh\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-am", "fresh"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            fresh_commit = module.git_output(["rev-parse", "HEAD"], cwd=repo)
+            subprocess.run(["git", "update-ref", "refs/remotes/origin/main", fresh_commit], cwd=repo, check=True)
+            subprocess.run(["git", "reset", "--hard", stale_commit], cwd=repo, check=True, stdout=subprocess.PIPE)
+
+            self.assertEqual(module.git_output(["rev-parse", "main"], cwd=repo), stale_commit)
+            self.assertEqual(module.git_output(["rev-parse", "origin/main"], cwd=repo), fresh_commit)
+            self.assertEqual(module.resolve_ref(repo, "main"), fresh_commit)
 
     def test_provenance_index_lives_in_packaged_non_prompt_visible_area(self) -> None:
         path = self.provenance_path()
@@ -173,18 +199,29 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertNotIn("sha256", payload)
         self.assertNotIn("Digest", payload)
-        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 541)
-        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 41)
+        self.assertEqual(review["lastRefreshedAt"], "2026-06-22")
+        self.assertEqual(
+            upstreams["cc-1c-skills"]["targetCommit"],
+            "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+        )
+        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 564)
+        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 80)
+        self.assertEqual(len(upstreams["cc-1c-skills"]["affectedEntries"]), 38)
         self.assertNotIn("web-test", upstreams["cc-1c-skills"]["affectedEntries"])
         for skill in (
-            "skd-compile",
-            "skd-edit",
-            "skd-info",
-            "skd-validate",
             "form-add",
             "form-compile",
             "form-edit",
             "form-info",
+            "skd-compile",
+            "skd-edit",
+            "skd-info",
+            "meta-compile",
+            "meta-info",
+        ):
+            self.assertIn(skill, upstreams["cc-1c-skills"]["affectedEntries"])
+        for skill in (
+            "skd-validate",
             "form-patterns",
             "form-remove",
             "form-validate",
@@ -223,6 +260,8 @@ class SkillProvenanceTests(unittest.TestCase):
             "form-patterns",
             "form-remove",
             "form-validate",
+            "meta-compile",
+            "meta-info",
         ):
             decision = next(
                 item
@@ -230,6 +269,12 @@ class SkillProvenanceTests(unittest.TestCase):
                 if item["skill"] == skill
             )
             self.assertEqual(decision["decision"], "ported")
+            if skill in ("meta-compile", "meta-info"):
+                self.assertEqual(
+                    decision["baselineCommit"],
+                    "ae8241237753850307d94b10df93e5293e29dc74",
+                )
+                self.assertIn("Fresh support", decision["evidence"])
         self.assertEqual(upstreams["ai-rules-1c"]["commitsSinceBaseline"], 23)
         self.assertIn("code-search", upstreams["ai-rules-1c"]["affectedEntries"])
         self.assertEqual(upstreams["v8-runner-rust"]["commitsSinceBaseline"], 0)

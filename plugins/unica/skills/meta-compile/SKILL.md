@@ -23,9 +23,9 @@ allowed-tools:
 ## Порядок работы
 
 1. Составь JSON по синтаксису и примерам ниже → запиши во временный файл
-2. Запусти скрипт meta-compile
-3. Если нужно изменить созданный объект — `/meta-edit`
-4. Если нужно проверить — `/meta-validate`
+2. Вызови MCP `unica.meta.compile`
+3. Если нужно изменить созданный объект — `unica.meta.edit`
+4. Если нужно проверить — `unica.meta.validate`
 
 ## MCP вызов
 
@@ -75,6 +75,8 @@ allowed-tools:
 Составной тип: `"Значение: String + Number(15,2) + CatalogRef.Контрагенты"`.
 
 Флаги: `req`, `index`, `indexAdditional`, `nonneg`, `master`, `mainFilter`, `denyIncomplete`, `useInTotals`.
+
+В объектной форме реквизита можно задать `choiceHistoryOnInput`, чтобы управлять `<ChoiceHistoryOnInput>` (`Auto`, `DontUse` и другие платформенные значения). Не указывай поле без необходимости: по умолчанию используется `Auto`.
 
 ### Свойства по типам
 
@@ -135,4 +137,3 @@ allowed-tools:
   { "type": "Constant", "name": "ОсновнаяВалюта", "valueType": "CatalogRef.Валюты" }
 ]
 ```
-

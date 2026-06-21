@@ -879,6 +879,31 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("unica.form.info", form_edit)
         self.assertIn("unica.form.validate", form_edit)
 
+    def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
+        meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("MCP `unica`", meta_info)
+        self.assertIn("unica.meta.info", meta_info)
+        self.assertIn("Представление типа", meta_info)
+        self.assertIn("Представление объекта", meta_info)
+        self.assertNotIn("CLAUDE_SKILL_DIR", meta_info)
+        self.assertNotIn("powershell.exe", meta_info)
+        self.assertNotIn(".ps1", meta_info)
+        self.assertNotIn(".py", meta_info)
+
+    def test_meta_compile_tracks_upstream_choice_history_through_unica_boundary(self) -> None:
+        meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("MCP `unica`", meta_compile)
+        self.assertIn("unica.meta.compile", meta_compile)
+        self.assertIn("choiceHistoryOnInput", meta_compile)
+        self.assertNotIn("CLAUDE_SKILL_DIR", meta_compile)
+        self.assertNotIn("powershell.exe", meta_compile)
+        self.assertNotIn(".ps1", meta_compile)
+        self.assertNotIn(".py", meta_compile)
+
     def test_source_set_format_detection_contract_is_documented(self) -> None:
         docs = {
             "workspace-runtime": self.reference_root()

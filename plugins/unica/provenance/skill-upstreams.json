@@ -467,7 +467,7 @@
         {
           "skill": "meta-compile",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed donor metadata DSL drift through ae8241237753850307d94b10df93e5293e29dc74 and ported ChoiceHistoryOnInput through unica.meta.compile; newer support-guard drift remains open.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
             "docs/meta-guide.md",
@@ -480,8 +480,11 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74"
         },
         {
           "skill": "meta-edit",
@@ -505,7 +508,7 @@
         {
           "skill": "meta-info",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed donor metadata info drift through ae8241237753850307d94b10df93e5293e29dc74 and ported reference type/object/list presentation output through unica.meta.info; newer support-state drift remains open.",
           "upstreamPaths": [
             ".claude/skills/meta-info/**",
             "docs/meta-guide.md",
@@ -518,8 +521,11 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74"
         },
         {
           "skill": "meta-remove",

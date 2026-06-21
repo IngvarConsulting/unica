@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# meta-compile v1.10 — Compile 1C metadata object from JSON
+# meta-compile v1.12 — Compile 1C metadata object from JSON
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 
 import argparse
@@ -442,6 +442,7 @@ def parse_attribute_shorthand(val):
             'flags': [],
             'fillChecking': '',
             'indexing': '',
+            'choiceHistoryOnInput': '',
         }
         parts = val.split('|', 1)
         main_part = parts[0].strip()
@@ -465,6 +466,7 @@ def parse_attribute_shorthand(val):
         'fillChecking': str(val['fillChecking']) if val.get('fillChecking') else '',
         'indexing': str(val['indexing']) if val.get('indexing') else '',
         'multiLine': True if val.get('multiLine') is True else False,
+        'choiceHistoryOnInput': str(val['choiceHistoryOnInput']) if val.get('choiceHistoryOnInput') else '',
     }
 
 def parse_enum_value_shorthand(val):
@@ -774,7 +776,8 @@ def emit_attribute(indent, parsed, context):
     X(f'{indent}\t\t<CreateOnInput>Auto</CreateOnInput>')
     X(f'{indent}\t\t<ChoiceForm/>')
     X(f'{indent}\t\t<LinkByType/>')
-    X(f'{indent}\t\t<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
+    chi = parsed.get('choiceHistoryOnInput') or 'Auto'
+    X(f'{indent}\t\t<ChoiceHistoryOnInput>{chi}</ChoiceHistoryOnInput>')
     if context == 'catalog':
         X(f'{indent}\t\t<Use>ForItem</Use>')
     if context not in ('processor', 'processor-tabular'):

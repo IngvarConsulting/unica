@@ -2005,6 +2005,34 @@ pub(crate) fn meta_info_main_lines(
     header.push_str(" ===");
     lines.push(header);
 
+    if meta_info_is_reference_metadata_type(md_type) {
+        let object_presentation = meta_info_ml_child_text(props, "ObjectPresentation");
+        let extended_object_presentation =
+            meta_info_ml_child_text(props, "ExtendedObjectPresentation");
+        let list_presentation = meta_info_ml_child_text(props, "ListPresentation");
+        let extended_list_presentation = meta_info_ml_child_text(props, "ExtendedListPresentation");
+        let type_presentation = object_presentation
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| (!synonym.is_empty()).then_some(synonym))
+            .unwrap_or(obj_name);
+        lines.push(format!("Представление типа: {type_presentation}"));
+        if mode == "full" {
+            if let Some(value) = object_presentation.filter(|value| !value.is_empty()) {
+                lines.push(format!("Представление объекта: {value}"));
+            }
+            if let Some(value) = extended_object_presentation.filter(|value| !value.is_empty()) {
+                lines.push(format!("Расширенное представление объекта: {value}"));
+            }
+            if let Some(value) = list_presentation.filter(|value| !value.is_empty()) {
+                lines.push(format!("Представление списка: {value}"));
+            }
+            if let Some(value) = extended_list_presentation.filter(|value| !value.is_empty()) {
+                lines.push(format!("Расширенное представление списка: {value}"));
+            }
+        }
+    }
+
     if mode == "brief" {
         meta_info_append_brief(&mut lines, md_type, props, child_objs);
     } else if mode == "overview" || mode == "full" {
@@ -3299,6 +3327,14 @@ pub(crate) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
     }
 }
 
+pub(crate) fn meta_info_ml_child_text(
+    node: Option<roxmltree::Node<'_, '_>>,
+    local_name: &str,
+) -> Option<String> {
+    node.and_then(|node| meta_info_child(node, local_name))
+        .map(meta_info_ml_text)
+}
+
 pub(crate) fn meta_info_attr_by_local<'a>(
     node: roxmltree::Node<'a, '_>,
     local_name: &str,
@@ -3366,6 +3402,21 @@ pub(crate) fn meta_info_type_ru(md_type: &str) -> String {
         _ => md_type,
     }
     .to_string()
+}
+
+pub(crate) fn meta_info_is_reference_metadata_type(md_type: &str) -> bool {
+    matches!(
+        md_type,
+        "Catalog"
+            | "Document"
+            | "Enum"
+            | "ChartOfAccounts"
+            | "ChartOfCharacteristicTypes"
+            | "ChartOfCalculationTypes"
+            | "ExchangePlan"
+            | "BusinessProcess"
+            | "Task"
+    )
 }
 
 pub(crate) fn meta_info_ref_type_ru(prefix: &str) -> Option<&'static str> {
@@ -4657,6 +4708,7 @@ pub(crate) struct MetaCompileAttr {
     pub(crate) fill_checking: String,
     pub(crate) indexing: String,
     pub(crate) multi_line: bool,
+    pub(crate) choice_history_on_input: String,
 }
 
 pub(crate) struct MetaCompileTabularSection {
@@ -4744,6 +4796,7 @@ pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
             fill_checking: String::new(),
             indexing: String::new(),
             multi_line: false,
+            choice_history_on_input: String::new(),
         };
     }
     let object = value.as_object();
@@ -4788,6 +4841,11 @@ pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
             .and_then(|object| object.get("multiLine"))
             .and_then(Value::as_bool)
             == Some(true),
+        choice_history_on_input: object
+            .and_then(|object| object.get("choiceHistoryOnInput"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -4890,10 +4948,17 @@ pub(crate) fn emit_meta_attribute<F>(
         "<CreateOnInput>Auto</CreateOnInput>",
         "<ChoiceForm/>",
         "<LinkByType/>",
-        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
     ] {
         lines.push(format!("{indent}\t\t{line}"));
     }
+    let choice_history_on_input = if attr.choice_history_on_input.is_empty() {
+        "Auto"
+    } else {
+        attr.choice_history_on_input.as_str()
+    };
+    lines.push(format!(
+        "{indent}\t\t<ChoiceHistoryOnInput>{choice_history_on_input}</ChoiceHistoryOnInput>"
+    ));
     if context == "catalog" {
         lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
     }

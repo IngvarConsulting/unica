@@ -9,7 +9,8 @@
       "name": "Article",
       "type": "String",
       "length": 32,
-      "synonym": "Article"
+      "synonym": "Article",
+      "choiceHistoryOnInput": "DontUse"
     }
   ],
   "tabularSections": [

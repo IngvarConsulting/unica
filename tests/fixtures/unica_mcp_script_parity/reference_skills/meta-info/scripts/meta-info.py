@@ -1,4 +1,4 @@
-# meta-info v1.1 — Compact summary of 1C metadata object (Python port)
+# meta-info v1.2 — Compact summary of 1C metadata object (Python port)
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 import argparse
 import os
@@ -484,6 +484,21 @@ obj_name = inner_text(find(props, "md:Name"))
 syn_node = find(props, "md:Synonym")
 synonym = get_ml_text(syn_node)
 
+# Presentations (type-choice dialogs show "Представление объекта" as the ref type name)
+obj_presentation = get_ml_text(find(props, "md:ObjectPresentation"))
+ext_obj_presentation = get_ml_text(find(props, "md:ExtendedObjectPresentation"))
+list_presentation = get_ml_text(find(props, "md:ListPresentation"))
+ext_list_presentation = get_ml_text(find(props, "md:ExtendedListPresentation"))
+
+# Reference (ref-typed) metadata objects — those with a ...Ref type
+ref_md_types = {"Catalog", "Document", "Enum", "ChartOfAccounts",
+                "ChartOfCharacteristicTypes", "ChartOfCalculationTypes",
+                "ExchangePlan", "BusinessProcess", "Task"}
+is_ref_object = md_type in ref_md_types
+
+# Effective type presentation: ObjectPresentation -> Synonym -> Name
+type_presentation = obj_presentation or synonym or obj_name
+
 # ── Handle -Name drill-down ──────────────────────────────────
 
 drill_done = False
@@ -642,6 +657,19 @@ if not drill_done:
         header += f' \u2014 "{synonym}"'
     header += " ==="
     out(header)
+
+    # Type presentation (ref objects)
+    if is_ref_object:
+        out(f"Представление типа: {type_presentation}")
+        if mode == "full":
+            if obj_presentation:
+                out(f"Представление объекта: {obj_presentation}")
+            if ext_obj_presentation:
+                out(f"Расширенное представление объекта: {ext_obj_presentation}")
+            if list_presentation:
+                out(f"Представление списка: {list_presentation}")
+            if ext_list_presentation:
+                out(f"Расширенное представление списка: {ext_list_presentation}")
 
     if mode == "brief":
         # Attributes

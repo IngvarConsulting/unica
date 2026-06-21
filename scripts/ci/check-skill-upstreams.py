@@ -223,9 +223,9 @@ def clone_or_fetch(repository: str, upstream_id: str, cache_dir: Path) -> Path:
 
 
 def resolve_ref(repo_dir: Path, ref: str) -> str:
-    candidates = [ref, f"origin/{ref}", f"refs/tags/{ref}"]
+    candidates = [f"origin/{ref}", ref, f"refs/tags/{ref}"]
     last_error = ""
-    for candidate in candidates:
+    for candidate in dict.fromkeys(candidates):
         try:
             return git_output(["rev-parse", f"{candidate}^{{}}"], cwd=repo_dir)
         except subprocess.CalledProcessError as exc:

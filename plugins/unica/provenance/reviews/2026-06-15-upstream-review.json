@@ -4,12 +4,12 @@
   "generatedAt": "2026-06-15",
   "purpose": "Manual review of donor changes since the last local Unica skill adaptation. This is not a checksum attestation.",
   "summary": [
-    "cc-1c-skills still has upstream drift since the local v9 adaptation: 541 commits, 41 watched changed paths, 31 affected Unica skills remain after the web-test, SKD, and form ports.",
+    "cc-1c-skills current remote head is 3d36c2026916d2ae8915f0aca0836d55e1ccaabe after fixing the auditor to resolve origin/main before a stale local main; current drift is 564 commits, 80 watched changed paths, and 38 affected packaged Unica skills.",
+    "web-test, SKD, and form donor updates were previously reviewed and ported through Unica boundaries up to ae8241237753850307d94b10df93e5293e29dc74; fresh support-state/support-guard changes after that commit reopened drift for selected form and SKD entries.",
+    "meta-info and meta-compile donor changes through ae8241237753850307d94b10df93e5293e29dc74 were reviewed and ported: reference type/object/list presentations are exposed through unica.meta.info, and ChoiceHistoryOnInput is preserved through unica.meta.compile.",
+    "The new Shirokov donor layer after ae8241237753850307d94b10df93e5293e29dc74 is not yet adapted in Unica: support-state reporting, support-guard for mutators, support-edit, DT dump/load skills, and 1cv8 path resolver fixes need separate batches.",
     "ai-rules-1c has guidance drift since the local v17/v18 adaptation window: 23 commits, 36 watched changed paths, 17 affected Unica skills.",
-    "v8-runner-rust runtime-contract drift from locked v0.5.0 to upstream v0.5.1 was reviewed and applied; the current tool lock baseline is v0.5.1.",
-    "web-test donor updates were reviewed and ported through the Unica packaging boundary; its entry baseline is now ae8241237753850307d94b10df93e5293e29dc74.",
-    "SKD donor updates were reviewed and ported through typed unica.skd.* with hidden legacy adapters for the full donor script contract; the skd-* entry baselines are now ae8241237753850307d94b10df93e5293e29dc74.",
-    "Form donor updates were reviewed and ported through typed unica.form.* with hidden legacy adapters for the full donor script contract; the form-* entry baselines are now ae8241237753850307d94b10df93e5293e29dc74."
+    "v8-runner-rust runtime-contract drift from locked v0.5.0 to upstream v0.5.1 was reviewed and applied; the current tool lock baseline is v0.5.1."
   ],
   "decisionPolicy": {
     "allowedEntryDecisions": [
@@ -44,6 +44,38 @@
       ]
     },
     {
+      "id": "cc-support-state-and-guard",
+      "priority": 2,
+      "upstream": "cc-1c-skills",
+      "skills": [
+        "cf-info",
+        "meta-info",
+        "form-info",
+        "skd-info",
+        "mxl-info",
+        "role-info",
+        "subsystem-info",
+        "cf-edit",
+        "meta-compile",
+        "meta-edit",
+        "meta-remove",
+        "form-add",
+        "form-compile",
+        "form-edit",
+        "skd-compile",
+        "skd-edit",
+        "mxl-compile",
+        "role-compile",
+        "subsystem-compile",
+        "subsystem-edit",
+        "template-add",
+        "template-remove",
+        "help-add",
+        "interface-edit"
+      ],
+      "notes": "Review and adapt donor ParentConfigurations.bin support-state reporting plus support-guard behavior through typed Unica MCP boundaries; decide whether Unica needs a new support-edit capability or a release-support flow."
+    },
+    {
       "id": "remaining-guidance-and-command-surface",
       "priority": 4,
       "skills": "all remaining affected entries from upstreams[].affectedEntries"
@@ -54,11 +86,11 @@
       "id": "cc-1c-skills",
       "baseline": "f3466e19fdc37954c030e48daabcc192f0098fe7",
       "baselineReason": "Donor head at or before local adaptation commit 795505f2243cf3c93a95918467f99135af758e1b (2026-05-04T07:38:11+07:00).",
-      "targetCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-      "commitsSinceBaseline": 541,
-      "changedWatchedPathCount": 41,
+      "targetCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+      "commitsSinceBaseline": 564,
+      "changedWatchedPathCount": 80,
       "reviewStatus": "needs-adaptation-decision",
-      "finding": "High-impact form drift was reviewed and ported after web-test and SKD. Remaining donor work is concentrated in metadata/configuration command surfaces, MXL, roles, subsystems, templates, interface/help, and img-grid. Do not update the shared baseline; continue moving per-entry baselines only after review.",
+      "finding": "Auditor now resolves origin/main, revealing fresh Shirokov drift after ae8241237753850307d94b10df93e5293e29dc74. Metadata presentation and ChoiceHistoryOnInput changes through ae824 were ported, but current head adds support-state reporting, support-guard for mutators, new support-edit, DT dump/load, and 1cv8 path resolver changes that are not yet adapted in Unica.",
       "affectedEntries": [
         "cf-edit",
         "cf-info",
@@ -69,6 +101,10 @@
         "cfe-init",
         "cfe-patch-method",
         "cfe-validate",
+        "form-add",
+        "form-compile",
+        "form-edit",
+        "form-info",
         "help-add",
         "img-grid",
         "interface-edit",
@@ -85,6 +121,9 @@
         "role-compile",
         "role-info",
         "role-validate",
+        "skd-compile",
+        "skd-edit",
+        "skd-info",
         "subsystem-compile",
         "subsystem-edit",
         "subsystem-info",
@@ -104,7 +143,9 @@
         "form-info",
         "form-patterns",
         "form-remove",
-        "form-validate"
+        "form-validate",
+        "meta-compile",
+        "meta-info"
       ],
       "entryDecisions": [
         {
@@ -190,6 +231,20 @@
           "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
           "result": "ported",
           "evidence": "Local form-validate now uses the updated donor validation implementation through hidden Unica routing and updated parity fixture."
+        },
+        {
+          "skill": "meta-compile",
+          "decision": "ported",
+          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
+          "result": "ported",
+          "evidence": "Local meta-compile now preserves donor ChoiceHistoryOnInput through unica.meta.compile, native metadata compiler output, updated parity fixture, and skill routing that keeps raw donor scripts out of prompt-visible guidance. Fresh support-guard drift after ae824 remains open."
+        },
+        {
+          "skill": "meta-info",
+          "decision": "ported",
+          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
+          "result": "ported",
+          "evidence": "Local meta-info now exposes donor reference type/object/list presentation lines through unica.meta.info, native metadata analyzer output, updated parity fixture, and skill routing that keeps raw donor scripts out of prompt-visible guidance. Fresh support-state drift after ae824 remains open."
         }
       ]
     },
@@ -282,6 +337,18 @@
       "decision": "ported",
       "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
       "notes": "Ported Form DSL/reference updates and donor-compatible form add/compile/edit/info/remove/validate scripts behind typed unica.form.* hidden legacy adapters; prompt-visible skills route only through MCP and references use Unica wording."
+    },
+    {
+      "id": "cc-metadata-presentations-and-choice-history",
+      "upstream": "cc-1c-skills",
+      "skills": [
+        "meta-compile",
+        "meta-info"
+      ],
+      "decision": "ported",
+      "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
+      "notes": "Ported meta-info reference presentation output and meta-compile ChoiceHistoryOnInput through typed unica.meta.* and parity fixtures; current support-state/support-guard donor drift after ae824 remains a separate backlog."
     }
-  ]
+  ],
+  "lastRefreshedAt": "2026-06-22"
 }
