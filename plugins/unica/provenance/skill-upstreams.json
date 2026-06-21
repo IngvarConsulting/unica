@@ -56,7 +56,7 @@
         {
           "skill": "cf-init",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cf-init/**",
             "docs/cf-guide.md",
@@ -70,12 +70,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cf-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cf-validate/**",
             "docs/cf-guide.md",
@@ -89,12 +92,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cfe-borrow",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cfe-borrow/**",
             "docs/cfe-guide.md",
@@ -107,12 +113,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cfe-diff",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cfe-diff/**",
             "docs/cfe-guide.md",
@@ -125,12 +134,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cfe-init",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cfe-init/**",
             "docs/cfe-guide.md",
@@ -143,12 +155,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cfe-patch-method",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cfe-patch-method/**",
             "docs/cfe-guide.md",
@@ -161,12 +176,15 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "cfe-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/cfe-validate/**",
             "docs/cfe-guide.md",
@@ -179,7 +197,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "epf-bsp-add-command",
@@ -423,7 +444,7 @@
         {
           "skill": "img-grid",
           "status": "still-local-script",
-          "notes": "Adapted from the cc-1c-skills command surface for the packaged Unica skill.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/img-grid/**",
             "docs/mxl-guide.md",
@@ -435,7 +456,10 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "interface-edit",
@@ -460,7 +484,7 @@
         {
           "skill": "interface-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/interface-validate/**",
             "docs/subsystem-guide.md",
@@ -473,7 +497,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "meta-compile",
@@ -566,7 +593,7 @@
         {
           "skill": "meta-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed donor meta-validate batch recursion fix through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe and ported the behavior into native unica.meta.validate: pipe-separated ObjectPath values are validated in-process, with per-object output and batch summary behind the typed MCP boundary.",
           "upstreamPaths": [
             ".claude/skills/meta-validate/**",
             "docs/meta-guide.md",
@@ -578,9 +605,13 @@
             "tests/fixtures/unica_mcp_script_parity/reference_skills/meta-validate"
           ],
           "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs",
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ported"
         },
         {
           "skill": "mxl-compile",
@@ -606,7 +637,7 @@
         {
           "skill": "mxl-decompile",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/mxl-decompile/**",
             "docs/mxl-guide.md",
@@ -620,7 +651,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "mxl-info",
@@ -649,7 +683,7 @@
         {
           "skill": "mxl-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/mxl-validate/**",
             "docs/mxl-guide.md",
@@ -663,7 +697,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "role-compile",
@@ -713,7 +750,7 @@
         {
           "skill": "role-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/role-validate/**",
             "docs/role-guide.md",
@@ -727,7 +764,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "skd-compile",
@@ -905,7 +945,7 @@
         {
           "skill": "subsystem-validate",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing.",
           "upstreamPaths": [
             ".claude/skills/subsystem-validate/**",
             "docs/subsystem-guide.md",
@@ -918,7 +958,10 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+          ],
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Current donor drift for this entry is limited to raw script invocation examples using CLAUDE_SKILL_DIR or support-state reference text already covered by Unica support-state batches; prompt-visible Unica guidance routes through typed unica.* or packaged local scripts instead."
         },
         {
           "skill": "template-add",

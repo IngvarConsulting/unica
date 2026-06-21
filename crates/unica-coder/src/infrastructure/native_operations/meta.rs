@@ -60,9 +60,17 @@ pub(crate) struct MetaValidationReporter {
 pub(crate) struct MetaValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
-    pub(crate) artifact: PathBuf,
+    pub(crate) out_files: Vec<PathBuf>,
+    pub(crate) artifacts: Vec<PathBuf>,
     pub(crate) errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MetaValidationOptions {
+    pub(crate) detailed: bool,
+    pub(crate) max_errors: usize,
+    pub(crate) out_file_label: Option<String>,
+    pub(crate) out_file: Option<PathBuf>,
 }
 
 impl MetaValidationReporter {
@@ -136,8 +144,6 @@ pub(crate) fn validate_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
     let result = (|| -> Result<MetaValidationRun, String> {
         let raw_path = required_path(
             args,
@@ -145,199 +151,32 @@ pub(crate) fn validate_meta(
             "ObjectPath",
         )?;
         let raw_path_text = raw_path.to_string_lossy();
-        if raw_path_text.contains('|') {
-            return Err(
-                "[ERROR] Batch validation is not implemented in native meta.validate yet"
-                    .to_string(),
-            );
-        }
-        let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
-        let resolved_path = object_path
-            .canonicalize()
-            .unwrap_or_else(|_| object_path.clone());
-        let config_dir = meta_validate_config_dir(&resolved_path);
-        let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
-        let out_file = out_file_label
-            .as_ref()
-            .map(|path| absolutize(PathBuf::from(path), &context.cwd));
-        let detailed = bool_arg(args, &["detailed", "Detailed"]);
-        let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(30);
-
-        let text = read_utf8_sig(&resolved_path)?;
-        let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
-            Ok(doc) => doc,
-            Err(err) => {
-                let mut report = MetaValidationReporter::new(max_errors, detailed);
-                report.md_type = "(parse failed)".to_string();
-                report.obj_name.clear();
-                report.error(format!("1. XML parse failed: {err}"));
-                return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-            }
-        };
-
-        let root = doc.root_element();
-        let mut report = MetaValidationReporter::new(max_errors, detailed);
-        let mut check1_ok = true;
-
-        if root.tag_name().name() != "MetaDataObject" {
-            report.error(format!(
-                "1. Root element is '{}', expected 'MetaDataObject'",
-                root.tag_name().name()
-            ));
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-
-        let root_ns = root.tag_name().namespace().unwrap_or("");
-        if root_ns != MD_NS {
-            report.error(format!(
-                "1. Root namespace is '{root_ns}', expected '{MD_NS}'"
-            ));
-            check1_ok = false;
-        }
-
-        let version = root.attribute("version").unwrap_or("");
-        if version.is_empty() {
-            report.warn("1. Missing version attribute on MetaDataObject");
-        } else if !matches!(version, "2.17" | "2.20") {
-            report.warn(format!(
-                "1. Unusual version '{version}' (expected 2.17 or 2.20)"
-            ));
-        }
-
-        let child_elements = root
-            .children()
-            .filter(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
+        let paths = raw_path_text
+            .split('|')
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
             .collect::<Vec<_>>();
-        if child_elements.is_empty() {
-            report.error("1. No metadata type element found inside MetaDataObject");
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        if child_elements.len() > 1 {
-            let names = child_elements
-                .iter()
-                .map(|child| format!("'{}'", child.tag_name().name()))
-                .collect::<Vec<_>>();
-            report.error(format!(
-                "1. Multiple type elements found: [{}]",
-                names.join(", ")
-            ));
-            check1_ok = false;
+        if paths.is_empty() {
+            return Err("[ERROR] No ObjectPath values were provided".to_string());
         }
 
-        let type_node = child_elements[0];
-        let md_type = type_node.tag_name().name();
-        report.md_type = md_type.to_string();
-        if !meta_validate_valid_types().contains(&md_type) {
-            report.error(format!("1. Unrecognized metadata type: {md_type}"));
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
+        let options = meta_validation_options(args, context);
+        if paths.len() > 1 {
+            meta_validate_batch(paths, &options, context)
+        } else {
+            meta_validate_one(paths[0].clone(), &options, context)
         }
-
-        let type_uuid = type_node.attribute("uuid").unwrap_or("");
-        if type_uuid.is_empty() {
-            report.error(format!("1. Missing uuid on <{md_type}> element"));
-            check1_ok = false;
-        } else if !is_guid(type_uuid) {
-            report.error(format!("1. Invalid uuid '{type_uuid}' on <{md_type}>"));
-            check1_ok = false;
-        }
-
-        let props_node = meta_info_child(type_node, "Properties");
-        let name_node = props_node.and_then(|props| meta_info_child(props, "Name"));
-        let obj_name = name_node
-            .map(meta_info_inner_text)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "(unknown)".to_string());
-        report.obj_name = obj_name.clone();
-
-        if check1_ok {
-            report.ok(format!(
-                "1. Root structure: MetaDataObject/{md_type}, version {version}"
-            ));
-        }
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-
-        meta_validate_check_internal_info(&mut report, md_type, type_node, &obj_name);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_properties(&mut report, props_node, name_node, &obj_name);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_property_values(&mut report, props_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_standard_attributes(&mut report, md_type, props_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-
-        let child_obj_node = meta_info_child(type_node, "ChildObjects");
-        meta_validate_check_child_objects(&mut report, md_type, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_child_elements(&mut report, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_reserved_attr_names(&mut report, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_uniqueness(&mut report, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_tabular_sections(&mut report, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_cross_properties(
-            &mut report,
-            md_type,
-            props_node,
-            child_obj_node,
-            config_dir.as_deref(),
-            &obj_name,
-        );
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_services(&mut report, md_type, child_obj_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_forbidden_properties(&mut report, md_type, props_node);
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_method_reference(
-            &mut report,
-            md_type,
-            props_node,
-            config_dir.as_deref(),
-        );
-        if report.stopped {
-            return meta_validate_finish(report, out_file, out_file_label, resolved_path);
-        }
-        meta_validate_check_document_journal_columns(&mut report, md_type, child_obj_node);
-
-        meta_validate_finish(report, out_file, out_file_label, resolved_path)
     })();
 
     match result {
         Ok(run) => {
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                artifacts.push(out_file.display().to_string());
-            }
+            let mut artifacts = run
+                .artifacts
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            artifacts.extend(run.out_files.iter().map(|path| path.display().to_string()));
             AdapterOutcome {
                 ok: run.ok,
                 summary: if run.ok {
@@ -368,6 +207,380 @@ pub(crate) fn validate_meta(
     }
 }
 
+pub(crate) fn meta_validation_options(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaValidationOptions {
+    let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
+    MetaValidationOptions {
+        detailed: bool_arg(args, &["detailed", "Detailed"]),
+        max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(30),
+        out_file: out_file_label
+            .as_ref()
+            .map(|path| absolutize(PathBuf::from(path), &context.cwd)),
+        out_file_label,
+    }
+}
+
+pub(crate) fn meta_validate_batch(
+    paths: Vec<PathBuf>,
+    options: &MetaValidationOptions,
+    context: &WorkspaceContext,
+) -> Result<MetaValidationRun, String> {
+    let total = paths.len();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut stdout_blocks = Vec::<String>::new();
+    let mut errors = Vec::<String>::new();
+    let mut artifacts = Vec::<PathBuf>::new();
+    let mut out_files = Vec::<PathBuf>::new();
+
+    for path in paths {
+        let item_options = meta_validate_batch_options(options, &path, context);
+        match meta_validate_one(path.clone(), &item_options, context) {
+            Ok(run) => {
+                if run.ok {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                }
+                errors.extend(run.errors);
+                artifacts.extend(run.artifacts);
+                out_files.extend(run.out_files);
+                stdout_blocks.push(format!("--- {} ---", path.display()));
+                stdout_blocks.push(run.stdout.trim_end().to_string());
+            }
+            Err(error) => {
+                failed += 1;
+                let message = format!("[ERROR] {}: {error}", path.display());
+                errors.push(message.clone());
+                stdout_blocks.push(message);
+            }
+        }
+    }
+
+    stdout_blocks.push(String::new());
+    stdout_blocks.push("=== meta-validate batch summary ===".to_string());
+    stdout_blocks.push(format!("Validated: {total}"));
+    stdout_blocks.push(format!("Passed:    {passed}"));
+    stdout_blocks.push(format!("Failed:    {failed}"));
+
+    Ok(MetaValidationRun {
+        ok: failed == 0,
+        stdout: format!("{}\n", stdout_blocks.join("\n")),
+        out_files,
+        artifacts,
+        errors,
+    })
+}
+
+pub(crate) fn meta_validate_batch_options(
+    options: &MetaValidationOptions,
+    path: &Path,
+    context: &WorkspaceContext,
+) -> MetaValidationOptions {
+    let Some(label) = &options.out_file_label else {
+        return options.clone();
+    };
+    let label_path = PathBuf::from(label);
+    let stem = label_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("meta-validate");
+    let extension = label_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    let object_leaf = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("object");
+    let file_name = format!("{stem}_{object_leaf}{extension}");
+    let item_label = label_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join(&file_name))
+        .unwrap_or_else(|| PathBuf::from(&file_name));
+    MetaValidationOptions {
+        out_file: Some(absolutize(item_label.clone(), &context.cwd)),
+        out_file_label: Some(item_label.display().to_string()),
+        ..options.clone()
+    }
+}
+
+pub(crate) fn meta_validate_one(
+    raw_path: PathBuf,
+    options: &MetaValidationOptions,
+    context: &WorkspaceContext,
+) -> Result<MetaValidationRun, String> {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
+    let resolved_path = object_path
+        .canonicalize()
+        .unwrap_or_else(|_| object_path.clone());
+    let config_dir = meta_validate_config_dir(&resolved_path);
+
+    let text = read_utf8_sig(&resolved_path)?;
+    let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
+        Ok(doc) => doc,
+        Err(err) => {
+            let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
+            report.md_type = "(parse failed)".to_string();
+            report.obj_name.clear();
+            report.error(format!("1. XML parse failed: {err}"));
+            return meta_validate_finish(
+                report,
+                options.out_file.clone(),
+                options.out_file_label.clone(),
+                resolved_path,
+            );
+        }
+    };
+
+    let root = doc.root_element();
+    let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
+    let mut check1_ok = true;
+
+    if root.tag_name().name() != "MetaDataObject" {
+        report.error(format!(
+            "1. Root element is '{}', expected 'MetaDataObject'",
+            root.tag_name().name()
+        ));
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+
+    let root_ns = root.tag_name().namespace().unwrap_or("");
+    if root_ns != MD_NS {
+        report.error(format!(
+            "1. Root namespace is '{root_ns}', expected '{MD_NS}'"
+        ));
+        check1_ok = false;
+    }
+
+    let version = root.attribute("version").unwrap_or("");
+    if version.is_empty() {
+        report.warn("1. Missing version attribute on MetaDataObject");
+    } else if !matches!(version, "2.17" | "2.20") {
+        report.warn(format!(
+            "1. Unusual version '{version}' (expected 2.17 or 2.20)"
+        ));
+    }
+
+    let child_elements = root
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
+        .collect::<Vec<_>>();
+    if child_elements.is_empty() {
+        report.error("1. No metadata type element found inside MetaDataObject");
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    if child_elements.len() > 1 {
+        let names = child_elements
+            .iter()
+            .map(|child| format!("'{}'", child.tag_name().name()))
+            .collect::<Vec<_>>();
+        report.error(format!(
+            "1. Multiple type elements found: [{}]",
+            names.join(", ")
+        ));
+        check1_ok = false;
+    }
+
+    let type_node = child_elements[0];
+    let md_type = type_node.tag_name().name();
+    report.md_type = md_type.to_string();
+    if !meta_validate_valid_types().contains(&md_type) {
+        report.error(format!("1. Unrecognized metadata type: {md_type}"));
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+
+    let type_uuid = type_node.attribute("uuid").unwrap_or("");
+    if type_uuid.is_empty() {
+        report.error(format!("1. Missing uuid on <{md_type}> element"));
+        check1_ok = false;
+    } else if !is_guid(type_uuid) {
+        report.error(format!("1. Invalid uuid '{type_uuid}' on <{md_type}>"));
+        check1_ok = false;
+    }
+
+    let props_node = meta_info_child(type_node, "Properties");
+    let name_node = props_node.and_then(|props| meta_info_child(props, "Name"));
+    let obj_name = name_node
+        .map(meta_info_inner_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "(unknown)".to_string());
+    report.obj_name = obj_name.clone();
+
+    if check1_ok {
+        report.ok(format!(
+            "1. Root structure: MetaDataObject/{md_type}, version {version}"
+        ));
+    }
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+
+    meta_validate_check_internal_info(&mut report, md_type, type_node, &obj_name);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_properties(&mut report, props_node, name_node, &obj_name);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_property_values(&mut report, props_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_standard_attributes(&mut report, md_type, props_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+
+    let child_obj_node = meta_info_child(type_node, "ChildObjects");
+    meta_validate_check_child_objects(&mut report, md_type, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_child_elements(&mut report, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_reserved_attr_names(&mut report, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_uniqueness(&mut report, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_tabular_sections(&mut report, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_cross_properties(
+        &mut report,
+        md_type,
+        props_node,
+        child_obj_node,
+        config_dir.as_deref(),
+        &obj_name,
+    );
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_services(&mut report, md_type, child_obj_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_forbidden_properties(&mut report, md_type, props_node);
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_method_reference(&mut report, md_type, props_node, config_dir.as_deref());
+    if report.stopped {
+        return meta_validate_finish(
+            report,
+            options.out_file.clone(),
+            options.out_file_label.clone(),
+            resolved_path,
+        );
+    }
+    meta_validate_check_document_journal_columns(&mut report, md_type, child_obj_node);
+
+    meta_validate_finish(
+        report,
+        options.out_file.clone(),
+        options.out_file_label.clone(),
+        resolved_path,
+    )
+}
+
 pub(crate) fn meta_validate_finish(
     report: MetaValidationReporter,
     out_file: Option<PathBuf>,
@@ -387,8 +600,8 @@ pub(crate) fn meta_validate_finish(
     Ok(MetaValidationRun {
         ok,
         stdout,
-        out_file,
-        artifact,
+        out_files: out_file.into_iter().collect(),
+        artifacts: vec![artifact],
         errors,
     })
 }

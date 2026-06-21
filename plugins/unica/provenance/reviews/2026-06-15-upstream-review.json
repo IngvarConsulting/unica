@@ -4,9 +4,9 @@
   "generatedAt": "2026-06-15",
   "purpose": "Manual review of donor changes since the last local Unica skill adaptation. This is not a checksum attestation.",
   "summary": [
-    "cc-1c-skills current remote head is 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; current open drift after the support-guard batch is 564 commits at the source baseline, 20 watched changed paths, and 15 affected packaged Unica skills.",
-    "web-test, SKD DSL, form DSL, metadata presentation/ChoiceHistoryOnInput, read-only support-state reporting, and mutating support guard are now reviewed and ported through Unica boundaries up to 3d36c2026916d2ae8915f0aca0836d55e1ccaabe where applicable.",
-    "The remaining Shirokov donor layer is not fully adapted: support-edit, help-add non-MCP mutation flow, DT dump/load skills, 1cv8 path resolver fixes, img-grid guidance, validation/decompile command-surface drift, and some wrapper-only entries need separate decisions.",
+    "cc-1c-skills current remote head is 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; current open drift after the wrapper/meta-validate batch is 564 commits at the source baseline, 3 watched changed paths, and 1 affected packaged Unica skill.",
+    "web-test, SKD DSL, form DSL, metadata presentation/ChoiceHistoryOnInput, read-only support-state reporting, mutating support guard, and meta-validate batch mode are now reviewed and ported through Unica boundaries up to 3d36c2026916d2ae8915f0aca0836d55e1ccaabe where applicable.",
+    "The remaining Shirokov donor layer is not fully adapted: help-add is still a non-MCP mutation flow with donor support-guard drift; support-edit, DT dump/load skills, and 1cv8 path resolver fixes remain separate non-packaged or future capability decisions.",
     "ai-rules-1c has guidance drift since the local v17/v18 adaptation window: 23 commits, 36 watched changed paths, 17 affected Unica skills.",
     "v8-runner-rust runtime-contract drift from locked v0.5.0 to upstream v0.5.1 was reviewed and applied; the current tool lock baseline is v0.5.1."
   ],
@@ -50,12 +50,15 @@
         "help-add",
         "support-edit"
       ],
-      "notes": "Read-only support-state reporting and MCP-level support guard for mutators are ported. Remaining work is the explicit support-edit capability/flow plus help-add, which is still not routed through typed Unica MCP mutation handling."
+      "notes": "MCP-level support guard for mutators is ported. Remaining work is explicit support-edit capability/flow plus help-add, which still bypasses typed Unica MCP mutation handling."
     },
     {
       "id": "remaining-guidance-and-command-surface",
       "priority": 4,
-      "skills": "all remaining affected entries from upstreams[].affectedEntries"
+      "skills": [
+        "help-add"
+      ],
+      "notes": "All current packaged wrapper-only Shirokov diffs except help-add have reviewed decisions; help-add remains open because it is a real non-MCP mutating script flow, not merely guidance."
     }
   ],
   "upstreams": [
@@ -65,25 +68,11 @@
       "baselineReason": "Donor head at or before local adaptation commit 795505f2243cf3c93a95918467f99135af758e1b (2026-05-04T07:38:11+07:00).",
       "targetCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
       "commitsSinceBaseline": 564,
-      "changedWatchedPathCount": 20,
+      "changedWatchedPathCount": 3,
       "reviewStatus": "needs-adaptation-decision",
-      "finding": "Read-only support-state reporting and MCP-level support guard for mutators are now ported through shared Unica native parser/application guard. Remaining current-head drift is concentrated in support-edit/help-add, DT runtime skills, path resolver fixes, img-grid, validation/decompile guidance, and smaller command-surface entries.",
+      "finding": "Only help-add remains as current packaged Shirokov drift after porting meta-validate batch mode and closing wrapper-only CLAUDE_SKILL_DIR guidance as not applicable to typed Unica MCP routing. help-add still needs a typed Unica mutation path or an explicit script-level support-guard decision.",
       "affectedEntries": [
-        "cf-init",
-        "cf-validate",
-        "cfe-borrow",
-        "cfe-diff",
-        "cfe-init",
-        "cfe-patch-method",
-        "cfe-validate",
-        "help-add",
-        "img-grid",
-        "interface-validate",
-        "meta-validate",
-        "mxl-decompile",
-        "mxl-validate",
-        "role-validate",
-        "subsystem-validate"
+        "help-add"
       ],
       "reviewedEntries": [
         "web-test",
@@ -113,7 +102,21 @@
         "subsystem-compile",
         "subsystem-edit",
         "template-add",
-        "template-remove"
+        "template-remove",
+        "cf-init",
+        "cf-validate",
+        "cfe-borrow",
+        "cfe-diff",
+        "cfe-init",
+        "cfe-patch-method",
+        "cfe-validate",
+        "img-grid",
+        "interface-validate",
+        "meta-validate",
+        "mxl-decompile",
+        "mxl-validate",
+        "role-validate",
+        "subsystem-validate"
       ],
       "entryDecisions": [
         {
@@ -311,6 +314,104 @@
           "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
           "result": "ignored-with-reason",
           "evidence": "Donor drift is raw wrapper/version metadata and is not applicable to typed Unica MCP routing; Unica still applies support-guard policy to template removal at the application layer because it mutates the owner object."
+        },
+        {
+          "skill": "cf-init",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cf-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cfe-borrow",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cfe-diff",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cfe-init",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cfe-patch-method",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "cfe-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "img-grid",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "interface-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "meta-validate",
+          "decision": "ported",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ported",
+          "evidence": "Local unica.meta.validate now supports pipe-separated ObjectPath batch validation in-process behind the typed MCP boundary, fixing the donor batch recursion behavior without exposing raw scripts."
+        },
+        {
+          "skill": "mxl-decompile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "mxl-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "role-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+        },
+        {
+          "skill": "subsystem-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+          "result": "ignored-with-reason",
+          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
         }
       ]
     },
@@ -456,6 +557,29 @@
       "decision": "ported",
       "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
       "notes": "Ported donor support guard into the Unica MCP application layer instead of copying it into every script. Guard covers direct XML/DSL mutators with ParentConfigurations.bin rules and editingAllowedCheck deny|warn|off; template-remove wrapper drift is ignored as not applicable to typed MCP routing, while Unica still guards removal of owner metadata."
+    },
+    {
+      "id": "cc-wrapper-guidance-and-meta-validate-batch",
+      "upstream": "cc-1c-skills",
+      "skills": [
+        "cf-init",
+        "cf-validate",
+        "cfe-borrow",
+        "cfe-diff",
+        "cfe-init",
+        "cfe-patch-method",
+        "cfe-validate",
+        "img-grid",
+        "interface-validate",
+        "meta-validate",
+        "mxl-decompile",
+        "mxl-validate",
+        "role-validate",
+        "subsystem-validate"
+      ],
+      "decision": "ported-and-ignored-with-reasons",
+      "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+      "notes": "Ported the only functional remaining validation drift, meta-validate pipe-separated batch mode, through native unica.meta.validate. Reviewed remaining CLAUDE_SKILL_DIR wrapper guidance diffs as not applicable to Unica MCP/package routing."
     }
   ],
   "lastRefreshedAt": "2026-06-22"

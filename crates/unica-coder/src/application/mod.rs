@@ -1747,6 +1747,93 @@ mod tests {
     }
 
     #[test]
+    fn meta_validate_supports_pipe_separated_batch_paths() {
+        let root = std::env::temp_dir().join(format!("unica-meta-batch-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        let items_json = fixtures.join("items.json");
+        let other_json = fixtures.join("other.json");
+        std::fs::write(&items_json, support_test_catalog_definition("Items")).unwrap();
+        std::fs::write(&other_json, support_test_catalog_definition("Other")).unwrap();
+        for json_path in [&items_json, &other_json] {
+            let mut compile_args = Map::new();
+            compile_args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            compile_args.insert("dryRun".to_string(), Value::Bool(false));
+            compile_args.insert(
+                "JsonPath".to_string(),
+                Value::String(json_path.display().to_string()),
+            );
+            compile_args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+            let compile_result = UnicaApplication::new()
+                .call_tool("unica.meta.compile", &compile_args)
+                .unwrap();
+            assert!(compile_result.ok, "{:?}", compile_result.stderr);
+        }
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml|src/Catalogs/Other.xml".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.validate", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result
+            .summary
+            .contains("completed with native metadata validator"));
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains("=== meta-validate batch summary ==="));
+        assert!(stdout.contains("Validated: 2"));
+        assert!(stdout.contains("src/Catalogs/Items.xml"));
+        assert!(stdout.contains("src/Catalogs/Other.xml"));
+        assert_eq!(result.artifacts.len(), 2);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn support_test_catalog_definition(name: &str) -> String {
+        format!(
+            r#"{{
+  "type": "Catalog",
+  "name": "{name}",
+  "synonym": "{name}",
+  "codeLength": 9,
+  "descriptionLength": 50,
+  "attributes": [
+    {{
+      "name": "Article",
+      "type": "String",
+      "length": 32,
+      "synonym": "Article"
+    }}
+  ]
+}}"#
+        )
+    }
+
+    #[test]
     fn mutating_meta_edit_blocks_locked_vendor_object_by_default() {
         let root = std::env::temp_dir().join(format!("unica-meta-guard-{}", std::process::id()));
         let workspace = root.join("workspace");

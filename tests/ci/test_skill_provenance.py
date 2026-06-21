@@ -205,39 +205,45 @@ class SkillProvenanceTests(unittest.TestCase):
             "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
         )
         self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 564)
-        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 20)
-        self.assertEqual(len(upstreams["cc-1c-skills"]["affectedEntries"]), 15)
+        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 3)
+        self.assertEqual(upstreams["cc-1c-skills"]["affectedEntries"], ["help-add"])
         self.assertNotIn("web-test", upstreams["cc-1c-skills"]["affectedEntries"])
-        for skill in (
-            "help-add",
-            "img-grid",
-            "meta-validate",
-            "mxl-decompile",
-            "role-validate",
-        ):
-            self.assertIn(skill, upstreams["cc-1c-skills"]["affectedEntries"])
         for skill in (
             "cf-edit",
             "cf-info",
+            "cf-init",
+            "cf-validate",
+            "cfe-borrow",
+            "cfe-diff",
+            "cfe-init",
+            "cfe-patch-method",
+            "cfe-validate",
             "form-add",
             "form-compile",
             "form-edit",
             "form-info",
+            "img-grid",
             "interface-edit",
+            "interface-validate",
             "meta-compile",
             "meta-edit",
             "meta-info",
             "meta-remove",
+            "meta-validate",
             "mxl-compile",
+            "mxl-decompile",
             "mxl-info",
+            "mxl-validate",
             "role-compile",
             "role-info",
+            "role-validate",
             "skd-compile",
             "skd-edit",
             "skd-info",
             "subsystem-info",
             "subsystem-compile",
             "subsystem-edit",
+            "subsystem-validate",
             "template-add",
             "template-remove",
             "skd-validate",
@@ -259,6 +265,20 @@ class SkillProvenanceTests(unittest.TestCase):
             "form-patterns",
             "form-remove",
             "form-validate",
+            "cf-init",
+            "cf-validate",
+            "cfe-borrow",
+            "cfe-diff",
+            "cfe-init",
+            "cfe-patch-method",
+            "cfe-validate",
+            "img-grid",
+            "interface-validate",
+            "meta-validate",
+            "mxl-decompile",
+            "mxl-validate",
+            "role-validate",
+            "subsystem-validate",
         ):
             self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
         web_test_decision = next(
@@ -283,15 +303,29 @@ class SkillProvenanceTests(unittest.TestCase):
             "meta-edit",
             "meta-info",
             "meta-remove",
+            "meta-validate",
             "cf-info",
             "cf-edit",
+            "cf-init",
+            "cf-validate",
+            "cfe-borrow",
+            "cfe-diff",
+            "cfe-init",
+            "cfe-patch-method",
+            "cfe-validate",
+            "img-grid",
+            "interface-validate",
             "mxl-info",
             "mxl-compile",
+            "mxl-decompile",
+            "mxl-validate",
             "role-info",
             "role-compile",
+            "role-validate",
             "subsystem-info",
             "subsystem-compile",
             "subsystem-edit",
+            "subsystem-validate",
             "interface-edit",
             "template-add",
             "template-remove",
@@ -301,9 +335,24 @@ class SkillProvenanceTests(unittest.TestCase):
                 for item in upstreams["cc-1c-skills"]["entryDecisions"]
                 if item["skill"] == skill
             )
-            if skill == "template-remove":
+            if skill in (
+                "cf-init",
+                "cf-validate",
+                "cfe-borrow",
+                "cfe-diff",
+                "cfe-init",
+                "cfe-patch-method",
+                "cfe-validate",
+                "img-grid",
+                "interface-validate",
+                "mxl-decompile",
+                "mxl-validate",
+                "role-validate",
+                "subsystem-validate",
+                "template-remove",
+            ):
                 self.assertEqual(decision["decision"], "ignored-with-reason")
-                self.assertIn("not applicable", decision["evidence"])
+                self.assertIn("raw", decision["evidence"])
             else:
                 self.assertEqual(decision["decision"], "ported")
             if skill in (
@@ -323,12 +372,29 @@ class SkillProvenanceTests(unittest.TestCase):
                 "subsystem-edit",
                 "template-add",
                 "template-remove",
+                "cf-init",
+                "cf-validate",
+                "cfe-borrow",
+                "cfe-diff",
+                "cfe-init",
+                "cfe-patch-method",
+                "cfe-validate",
+                "img-grid",
+                "interface-validate",
+                "meta-validate",
+                "mxl-decompile",
+                "mxl-validate",
+                "role-validate",
+                "subsystem-validate",
             ):
                 self.assertEqual(
                     decision["baselineCommit"],
                     "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
                 )
-                self.assertIn("support-guard", decision["evidence"])
+                if skill == "meta-validate":
+                    self.assertIn("batch", decision["evidence"])
+                elif decision["decision"] == "ported":
+                    self.assertIn("support-guard", decision["evidence"])
             if skill in (
                 "cf-info",
                 "form-info",
