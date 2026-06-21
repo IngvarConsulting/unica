@@ -904,6 +904,31 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn(".ps1", meta_compile)
         self.assertNotIn(".py", meta_compile)
 
+    def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
+        for skill in (
+            "cf-info",
+            "meta-info",
+            "form-info",
+            "skd-info",
+            "mxl-info",
+            "role-info",
+            "subsystem-info",
+        ):
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
+                self.assertIn("Поддержка", text)
+                self.assertIn("ParentConfigurations.bin", text)
+                self.assertIn("unica.", text)
+                self.assertNotIn("support-edit.py", text)
+                self.assertNotIn("ParentConfigurations.bin` raw", text)
+
+        release_support = (self.skill_root() / "release-support" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("support-state", release_support)
+        self.assertIn("unica.cf.info", release_support)
+        self.assertIn("unica.meta.info", release_support)
+
     def test_source_set_format_detection_contract_is_documented(self) -> None:
         docs = {
             "workspace-runtime": self.reference_root()

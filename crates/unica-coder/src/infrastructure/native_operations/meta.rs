@@ -1878,11 +1878,17 @@ pub(crate) fn analyze_meta_info(
         let out_file =
             path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
 
-        let lines = if drill_name.is_empty() {
+        let mut lines = if drill_name.is_empty() {
             meta_info_main_lines(md_type, props, child_objs, &obj_name, &synonym, mode)?
         } else {
             meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
         };
+        if drill_name.is_empty() {
+            lines.insert(
+                1,
+                format!("Поддержка: {}", support_status_for_path(&object_path)),
+            );
+        }
         let output_text = meta_info_paginate(lines, args);
         let stdout = if let Some(out_file) = &out_file {
             write_utf8_bom(out_file, &output_text)?;

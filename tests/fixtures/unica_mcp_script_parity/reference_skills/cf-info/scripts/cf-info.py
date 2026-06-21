@@ -97,6 +97,65 @@ def get_prop_ml(prop_name):
     n = props_node.find(f"md:{prop_name}", NS)
     return get_ml_text(n)
 
+def _is_uuid_text(value):
+    if len(value) != 36:
+        return False
+    for idx, ch in enumerate(value):
+        if idx in (8, 13, 18, 23):
+            if ch != "-":
+                return False
+        elif ch not in "0123456789abcdefABCDEF":
+            return False
+    return True
+
+def _read_support_state(bin_path):
+    if not os.path.isfile(bin_path):
+        return None
+    try:
+        data = open(bin_path, "rb").read()
+        if len(data) <= 32:
+            return {"removed": True}
+        if data[:3] == b"\xef\xbb\xbf":
+            data = data[3:]
+        text = data.decode("utf-8", "replace").lstrip("\ufeff").lstrip()
+        if not text.startswith("{"):
+            return None
+        parts = [part.strip() for part in text[1:].split(",", 3)]
+        if len(parts) < 3 or parts[0] != "6":
+            return None
+        g = int(parts[1])
+        k = int(parts[2])
+        if k == 0:
+            return {"removed": True}
+        counts = [0, 0, 0]
+        for idx, ch in enumerate(text[:-40]):
+            if ch in "012" and text[idx + 1:idx + 4] == ",0,":
+                uuid = text[idx + 4:idx + 40]
+                if _is_uuid_text(uuid):
+                    counts[int(ch)] += 1
+        return {"removed": False, "g": g, "k": k, "counts": counts}
+    except Exception:
+        return None
+
+def get_support_lines():
+    cfg_ext_purpose = get_prop_text("ConfigurationExtensionPurpose")
+    bin_path = os.path.join(os.path.dirname(config_path), "Ext", "ParentConfigurations.bin")
+    st = _read_support_state(bin_path)
+    if not st:
+        if cfg_ext_purpose:
+            return ["Поддержка:      расширение (CFE), правки свободны"]
+        return ["Поддержка:      не на поддержке (своя конфигурация)"]
+    if st.get("removed"):
+        return ["Поддержка:      снята с поддержки полностью"]
+    result = ["Поддержка:      на поддержке"]
+    if st["g"] == 0:
+        result.append("  Возможность изменения: включена")
+        result.append(f"  Объектов: на замке {st['counts'][0]} / редактируется {st['counts'][1]} / снято {st['counts'][2]}")
+    else:
+        result.append("  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)")
+    result.append(f"  Конфигураций поставщика: {st['k']}")
+    return result
+
 # --- Type name maps (canonical order, 44 types) ---
 type_order = [
     "Language", "Subsystem", "StyleItem", "Style",
@@ -288,6 +347,8 @@ if args.Mode == "overview" and not args.Section:
         out(f"Поставщик:      {cfg_vendor}")
     if cfg_version:
         out(f"Версия:         {cfg_version}")
+    for support_line in get_support_lines():
+        out(support_line)
     out(f"Совместимость:  {cfg_compat}")
     out(f"Режим запуска:  {cfg_default_run}")
     out(f"Язык скриптов:  {cfg_script}")
@@ -376,6 +437,8 @@ if args.Mode == "full" and not args.Section:
         out(f"Поставщик:      {cfg_vendor}")
     if cfg_version:
         out(f"Версия:         {cfg_version}")
+    for support_line in get_support_lines():
+        out(support_line)
     cfg_update_addr = get_prop_text("UpdateCatalogAddress")
     if cfg_update_addr:
         out(f"Каталог обн.:   {cfg_update_addr}")

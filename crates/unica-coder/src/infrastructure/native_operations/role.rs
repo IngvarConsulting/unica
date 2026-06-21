@@ -176,6 +176,10 @@ pub(crate) fn analyze_role_info(
         }
         header.push_str(" ===");
         lines.push(header);
+        lines.push(format!(
+            "Поддержка: {}",
+            support_status_for_path(&rights_path)
+        ));
         lines.push(String::new());
         lines.push(format!(
             "Properties: setForNewObjects={set_for_new}, setForAttributesByDefault={set_for_attrs}, independentRightsOfChildObjects={independent_child}"

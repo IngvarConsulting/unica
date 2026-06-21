@@ -269,6 +269,10 @@ pub(crate) fn skd_info_overview(
     lines.push(format!(
         "=== DCS: {template_name} ({total_xml_lines} lines) ==="
     ));
+    lines.push(format!(
+        "Поддержка: {}",
+        support_status_for_path(resolved_path)
+    ));
     lines.push(String::new());
 
     let sources = skd_children(root, "dataSource", ns_schema)

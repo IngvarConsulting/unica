@@ -345,6 +345,10 @@ pub(crate) fn analyze_mxl_info(
         let mut lines = Vec::<String>::new();
         lines.push(format!("=== {template_name} ==="));
         lines.push(format!(
+            "Поддержка: {}",
+            support_status_for_path(&template_path)
+        ));
+        lines.push(format!(
             "  Rows: {doc_height}, Columns: {default_col_count}"
         ));
         if column_sets.is_empty() {

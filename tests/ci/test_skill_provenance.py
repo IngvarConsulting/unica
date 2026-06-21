@@ -205,22 +205,26 @@ class SkillProvenanceTests(unittest.TestCase):
             "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
         )
         self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 564)
-        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 80)
-        self.assertEqual(len(upstreams["cc-1c-skills"]["affectedEntries"]), 38)
+        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 62)
+        self.assertEqual(len(upstreams["cc-1c-skills"]["affectedEntries"]), 31)
         self.assertNotIn("web-test", upstreams["cc-1c-skills"]["affectedEntries"])
         for skill in (
             "form-add",
             "form-compile",
             "form-edit",
-            "form-info",
             "skd-compile",
             "skd-edit",
-            "skd-info",
             "meta-compile",
-            "meta-info",
         ):
             self.assertIn(skill, upstreams["cc-1c-skills"]["affectedEntries"])
         for skill in (
+            "cf-info",
+            "form-info",
+            "meta-info",
+            "mxl-info",
+            "role-info",
+            "skd-info",
+            "subsystem-info",
             "skd-validate",
             "form-patterns",
             "form-remove",
@@ -262,6 +266,10 @@ class SkillProvenanceTests(unittest.TestCase):
             "form-validate",
             "meta-compile",
             "meta-info",
+            "cf-info",
+            "mxl-info",
+            "role-info",
+            "subsystem-info",
         ):
             decision = next(
                 item
@@ -269,12 +277,26 @@ class SkillProvenanceTests(unittest.TestCase):
                 if item["skill"] == skill
             )
             self.assertEqual(decision["decision"], "ported")
-            if skill in ("meta-compile", "meta-info"):
+            if skill == "meta-compile":
                 self.assertEqual(
                     decision["baselineCommit"],
                     "ae8241237753850307d94b10df93e5293e29dc74",
                 )
                 self.assertIn("Fresh support", decision["evidence"])
+            if skill in (
+                "cf-info",
+                "form-info",
+                "meta-info",
+                "mxl-info",
+                "role-info",
+                "skd-info",
+                "subsystem-info",
+            ):
+                self.assertEqual(
+                    decision["baselineCommit"],
+                    "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+                )
+                self.assertIn("support-state", decision["evidence"])
         self.assertEqual(upstreams["ai-rules-1c"]["commitsSinceBaseline"], 23)
         self.assertIn("code-search", upstreams["ai-rules-1c"]["affectedEntries"])
         self.assertEqual(upstreams["v8-runner-rust"]["commitsSinceBaseline"], 0)

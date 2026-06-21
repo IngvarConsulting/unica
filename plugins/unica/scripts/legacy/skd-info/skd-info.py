@@ -264,6 +264,109 @@ def build_structure_tree(item_node, prefix, is_last, out_lines):
                 build_structure_tree(child, f"{prefix}{continuation}", last, out_lines)
 
 
+def _is_uuid_text(value):
+    if len(value) != 36:
+        return False
+    for idx, ch in enumerate(value):
+        if idx in (8, 13, 18, 23):
+            if ch != "-":
+                return False
+        elif ch not in "0123456789abcdefABCDEF":
+            return False
+    return True
+
+
+def _root_uuid(xml_path):
+    if not os.path.isfile(xml_path):
+        return None
+    try:
+        mx = etree.parse(xml_path).getroot()
+        if mx.get("uuid"):
+            return mx.get("uuid").lower()
+        for child in mx:
+            if isinstance(child.tag, str) and child.get("uuid"):
+                return child.get("uuid").lower()
+    except Exception:
+        pass
+    return None
+
+
+def _support_config_dir(target_path):
+    d = os.path.dirname(os.path.abspath(target_path))
+    for _ in range(20):
+        if os.path.exists(os.path.join(d, "Ext", "ParentConfigurations.bin")) or os.path.exists(os.path.join(d, "Configuration.xml")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def _support_object_uuid(target_path):
+    if os.path.isfile(target_path):
+        uuid = _root_uuid(target_path)
+        if uuid:
+            return uuid
+    d = os.path.dirname(os.path.abspath(target_path))
+    for _ in range(20):
+        candidate = d + ".xml"
+        uuid = _root_uuid(candidate)
+        if uuid:
+            return uuid
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def get_support_status_for_path(target_path):
+    try:
+        config_dir = _support_config_dir(target_path)
+        if not config_dir:
+            return "не на поддержке"
+        bin_path = os.path.join(config_dir, "Ext", "ParentConfigurations.bin")
+        if not os.path.isfile(bin_path):
+            return "не на поддержке"
+        data = open(bin_path, "rb").read()
+        if len(data) <= 32:
+            return "снято с поддержки (правки свободны)"
+        if data[:3] == b"\xef\xbb\xbf":
+            data = data[3:]
+        text = data.decode("utf-8", "replace").lstrip("\ufeff").lstrip()
+        if not text.startswith("{"):
+            return "не на поддержке"
+        parts = [part.strip() for part in text[1:].split(",", 3)]
+        if len(parts) < 3 or parts[0] != "6":
+            return "не на поддержке"
+        g = int(parts[1])
+        k = int(parts[2])
+        if k == 0:
+            return "снято с поддержки (правки свободны)"
+        if g == 1:
+            return "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
+        obj_uuid = _support_object_uuid(target_path)
+        if not obj_uuid:
+            return "не на поддержке"
+        best = None
+        for idx, ch in enumerate(text[:-40]):
+            if ch in "012" and text[idx + 1:idx + 4] == ",0,":
+                uuid = text[idx + 4:idx + 40]
+                if _is_uuid_text(uuid) and uuid.lower() == obj_uuid:
+                    flag = int(ch)
+                    best = flag if best is None else min(best, flag)
+        if best is None:
+            return "не на поддержке"
+        return {
+            0: "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
+            1: "редактируется с сохранением поддержки",
+            2: "снято с поддержки (правки свободны)",
+        }.get(best, "не на поддержке")
+    except Exception:
+        return "не на поддержке"
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -355,6 +458,7 @@ def main():
 
     def show_overview():
         lines.append(f"=== DCS: {template_name} ({total_xml_lines} lines) ===")
+        lines.append(f"Поддержка: {get_support_status_for_path(resolved_path)}")
         lines.append("")
 
         # Sources

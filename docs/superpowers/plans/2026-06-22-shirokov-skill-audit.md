@@ -14,8 +14,8 @@ cached donor checkout had a stale local `main` at
 The correct current drift from the historical baseline is:
 
 - 564 donor commits since `f3466e19fdc37954c030e48daabcc192f0098fe7`;
-- 80 watched changed paths;
-- 38 affected packaged Unica skills.
+- 62 watched changed paths remain open after the support-state info batch;
+- 31 affected packaged Unica skills remain open.
 
 This is not just a reporting detail. It changes the next backlog: the fresh donor
 work is mostly support-state and support-guard behavior, not another form/SKD DSL
@@ -33,12 +33,12 @@ batch.
   `ae8241237753850307d94b10df93e5293e29dc74` is ported through `unica.meta.info`.
 - `meta-compile`: donor `ChoiceHistoryOnInput` handling through
   `ae8241237753850307d94b10df93e5293e29dc74` is ported through `unica.meta.compile`.
+- Support-state reporting from `Ext/ParentConfigurations.bin` is ported for
+  read-only info commands: `cf-info`, `meta-info`, `form-info`, `skd-info`,
+  `mxl-info`, `role-info`, and `subsystem-info`.
 
 ## Not Yet Adapted
 
-- Support-state reporting from `Ext/ParentConfigurations.bin` in info commands:
-  `cf-info`, `meta-info`, `form-info`, `skd-info`, `mxl-info`, `role-info`,
-  `subsystem-info`.
 - Support-guard before mutating vendor-supported objects:
   `cf-edit`, `meta-compile`, `meta-edit`, `meta-remove`, `form-add`,
   `form-compile`, `form-edit`, `skd-compile`, `skd-edit`, `mxl-compile`,
@@ -56,19 +56,16 @@ batch.
 
 ## Recommended Next Batches
 
-1. Finish the current audit-gate batch: commit the `origin/main` resolver fix,
-   metadata `meta-info`/`meta-compile` adaptations, and updated provenance.
-2. Add a shared Unica support-state parser and expose read-only status in info
-   tools first. This is lower risk than blocking mutators.
-3. Add support-guard for mutating tools, but only after deciding the Unica escape
+1. Commit the support-state info batch: shared parser, hidden legacy parity for
+   `form-info`/`skd-info`, skill docs, and updated provenance.
+2. Add support-guard for mutating tools, but only after deciding the Unica escape
    hatch: `deny`, `warn`, `off`, and whether to implement `unica.support.edit`.
-4. Review DT dump/load as a separate runtime/database product batch.
-5. Review path resolver fixes against current Unica runtime tooling; do not port
+3. Review DT dump/load as a separate runtime/database product batch.
+4. Review path resolver fixes against current Unica runtime tooling; do not port
    donor PowerShell/Python launch guidance directly into prompt-visible skills.
 
 ## Main Contradiction To Avoid
 
-Do not mark form/SKD as fully current just because their previous DSL batches were
-ported. They are affected again by a different donor concern: support-state and
-support-guard. The correct unit of work is now "vendor support safety", not
-"form/SKD DSL refresh".
+Do not mark mutating form/SKD/meta/role/subsystem tools as fully current just
+because read-only support-state reporting is ported. The next unresolved donor
+concern is support-guard before mutation, not another info-output refresh.

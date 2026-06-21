@@ -945,10 +945,20 @@ pub(crate) fn analyze_subsystem_info(
                 let (data, _) = load_subsystem_info_data(&xml_path)?;
                 let mut lines = Vec::<String>::new();
                 match mode {
-                    "overview" => append_subsystem_overview(&mut lines, &data),
+                    "overview" => {
+                        append_subsystem_overview(&mut lines, &data);
+                        lines.insert(
+                            1,
+                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
+                        );
+                    }
                     "content" => append_subsystem_content(&mut lines, &data, name_filter),
                     "full" => {
                         append_subsystem_overview(&mut lines, &data);
+                        lines.insert(
+                            1,
+                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
+                        );
                         lines.push(String::new());
                         lines.push("--- content ---".to_string());
                         lines.push(String::new());

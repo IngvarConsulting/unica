@@ -996,7 +996,10 @@ mod tests {
             .unwrap();
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
-        let command = result.command.as_ref().expect("legacy dry run previews command");
+        let command = result
+            .command
+            .as_ref()
+            .expect("legacy dry run previews command");
         assert!(command.join(" ").contains("form-edit.py"));
         assert_eq!(result.cache.mode, "dry-run");
         assert!(result.cache.events.contains(&"FormChanged".to_string()));
@@ -1170,7 +1173,9 @@ mod tests {
                         prompt_visible_script.display()
                     );
                 }
-                other => panic!("{tool_name} should route through hidden legacy script, got {other:?}"),
+                other => {
+                    panic!("{tool_name} should route through hidden legacy script, got {other:?}")
+                }
             }
         }
     }
@@ -1215,7 +1220,9 @@ mod tests {
                         prompt_visible_script.display()
                     );
                 }
-                other => panic!("{tool_name} should route through hidden legacy script, got {other:?}"),
+                other => {
+                    panic!("{tool_name} should route through hidden legacy script, got {other:?}")
+                }
             }
         }
     }
@@ -1259,6 +1266,157 @@ mod tests {
         assert!(stdout.contains("\"kind\": \"configuration\""));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cf_info_reports_configuration_support_state_from_parent_configurations_bin() {
+        let root = std::env::temp_dir().join(format!("unica-cf-support-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains("Поддержка:      на поддержке"));
+        assert!(stdout.contains("Возможность изменения: включена"));
+        assert!(stdout.contains("Объектов: на замке 1 / редактируется 1 / снято 1"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_info_reports_locked_vendor_support_state_through_unica_boundary() {
+        let root = std::env::temp_dir().join(format!("unica-meta-support-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        let catalogs = src.join("Catalogs");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::create_dir_all(&catalogs).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        std::fs::write(
+            catalogs.join("Items.xml"),
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.info", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains("Поддержка: на замке"));
+        assert!(stdout.contains("cfe-*"));
+        assert!(!stdout.contains("powershell.exe"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn support_test_configuration_xml(uuid: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+  <Configuration uuid="{uuid}">
+    <Properties>
+      <Name>Demo</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Demo</v8:content></v8:item></Synonym>
+      <Version>1.0</Version>
+      <Vendor>Vendor</Vendor>
+      <CompatibilityMode>Version8_3_24</CompatibilityMode>
+      <DefaultRunMode>ManagedApplication</DefaultRunMode>
+      <ScriptVariant>Russian</ScriptVariant>
+      <DefaultLanguage>Russian</DefaultLanguage>
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <ModalityUseMode>DontUse</ModalityUseMode>
+      <InterfaceCompatibilityMode>Taxi</InterfaceCompatibilityMode>
+    </Properties>
+    <ChildObjects><Catalog>Items</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>"#
+        )
+    }
+
+    fn support_test_catalog_xml(uuid: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+  <Catalog uuid="{uuid}">
+    <Properties>
+      <Name>Items</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Items</v8:content></v8:item></Synonym>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
+</MetaDataObject>"#
+        )
+    }
+
+    fn support_test_parent_configurations_bin(
+        config_uuid: &str,
+        locked_uuid: &str,
+        removed_uuid: &str,
+    ) -> String {
+        format!(
+            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{locked_uuid},{locked_uuid},2,0,{removed_uuid},{removed_uuid}}}"
+        )
     }
 
     #[test]

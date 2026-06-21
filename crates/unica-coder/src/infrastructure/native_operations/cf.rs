@@ -1019,6 +1019,9 @@ pub(crate) fn analyze_cf_info(
         let cfg_data_lock = cf_prop_text(props, "DataLockControlMode");
         let cfg_modality = cf_prop_text(props, "ModalityUseMode");
         let cfg_intf_compat = cf_prop_text(props, "InterfaceCompatibilityMode");
+        let cfg_ext_purpose = cf_prop_text(props, "ConfigurationExtensionPurpose");
+        let support_lines =
+            support_state_lines_for_configuration(&config_path, !cfg_ext_purpose.is_empty());
 
         let counts = cf_child_object_counts(cfg);
         let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
@@ -1067,6 +1070,7 @@ pub(crate) fn analyze_cf_info(
             if !cfg_version.is_empty() {
                 lines.push(format!("Версия:         {cfg_version}"));
             }
+            lines.extend(support_lines.clone());
             lines.push(format!("Совместимость:  {cfg_compat}"));
             lines.push(format!("Режим запуска:  {cfg_default_run}"));
             lines.push(format!("Язык скриптов:  {cfg_script}"));
@@ -1109,6 +1113,7 @@ pub(crate) fn analyze_cf_info(
                 &cfg_comment,
                 &cfg_prefix,
                 &cfg_update_addr,
+                &support_lines,
                 &counts,
                 total_objects,
             );
@@ -1235,6 +1240,7 @@ pub(crate) fn cf_append_full_info(
     cfg_comment: &str,
     cfg_prefix: &str,
     cfg_update_addr: &str,
+    support_lines: &[String],
     counts: &[(String, usize)],
     total_objects: usize,
 ) {
@@ -1273,6 +1279,7 @@ pub(crate) fn cf_append_full_info(
     if !cfg_version.is_empty() {
         lines.push(format!("Версия:         {cfg_version}"));
     }
+    lines.extend(support_lines.iter().cloned());
     if !cfg_update_addr.is_empty() {
         lines.push(format!("Каталог обн.:   {cfg_update_addr}"));
     }

@@ -30,7 +30,7 @@
         {
           "skill": "cf-info",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.cf.info; output covers own config, CFE, removed support, read-only, vendor count, and object rule counts.",
           "upstreamPaths": [
             ".claude/skills/cf-info/**",
             "docs/cf-guide.md",
@@ -43,8 +43,13 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "cf-init",
@@ -293,7 +298,7 @@
         {
           "skill": "form-info",
           "status": "ported-to-unica",
-          "notes": "Reviewed and ported donor form-info updates through typed unica.form.info with hidden legacy adapter routing and refreshed Form DSL references.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.form.info for the owner metadata object; mutating support-guard stays open.",
           "upstreamPaths": [
             ".claude/skills/form-info/**",
             "docs/form-guide.md",
@@ -313,10 +318,12 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/legacy_scripts.rs"
+            "crates/unica-coder/src/infrastructure/legacy_scripts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/form.rs"
           ],
           "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74"
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "form-patterns",
@@ -508,7 +515,7 @@
         {
           "skill": "meta-info",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor metadata info drift through ae8241237753850307d94b10df93e5293e29dc74 and ported reference type/object/list presentation output through unica.meta.info; newer support-state drift remains open.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.meta.info together with prior presentation output; object status remains read-only reporting, while mutating support-guard stays open.",
           "upstreamPaths": [
             ".claude/skills/meta-info/**",
             "docs/meta-guide.md",
@@ -522,10 +529,12 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs"
           ],
           "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74"
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "meta-remove",
@@ -606,7 +615,7 @@
         {
           "skill": "mxl-info",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through text-mode unica.mxl.info for the owner metadata object; JSON output contract stays structural.",
           "upstreamPaths": [
             ".claude/skills/mxl-info/**",
             "docs/mxl-guide.md",
@@ -619,8 +628,13 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/mxl.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "mxl-validate",
@@ -663,7 +677,7 @@
         {
           "skill": "role-info",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.role.info for Rights.xml owner roles; mutating role support-guard stays open.",
           "upstreamPaths": [
             ".claude/skills/role-info/**",
             "docs/role-guide.md",
@@ -676,8 +690,13 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/role.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "role-validate",
@@ -755,7 +774,7 @@
         {
           "skill": "skd-info",
           "status": "ported-to-unica",
-          "notes": "Reviewed and ported donor SKD info expansion through typed unica.skd.info: Raw query export for exact set-query round-trip, updated modes guidance, and hidden script adapter routing.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.skd.info overview/full without changing raw query round-trip modes; mutating support-guard stays open.",
           "upstreamPaths": [
             ".claude/skills/skd-info/**",
             "docs/skd-guide.md",
@@ -774,10 +793,12 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/legacy_scripts.rs"
+            "crates/unica-coder/src/infrastructure/legacy_scripts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/skd.rs"
           ],
           "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74"
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "skd-validate",
@@ -845,7 +866,7 @@
         {
           "skill": "subsystem-info",
           "status": "ported-to-unica",
-          "notes": "Ported from the cc-1c-skills command surface and adapted to Unica MCP; local parity fixtures retain donor operation behavior.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.subsystem.info overview/full; mutating support-guard stays open.",
           "upstreamPaths": [
             ".claude/skills/subsystem-info/**",
             "docs/subsystem-guide.md",
@@ -857,8 +878,13 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ]
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/common.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
+          ],
+          "decision": "ported",
+          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe"
         },
         {
           "skill": "subsystem-validate",

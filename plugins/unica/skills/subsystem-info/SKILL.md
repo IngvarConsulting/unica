@@ -19,6 +19,8 @@ allowed-tools:
 
 Читает XML подсистемы из выгрузки конфигурации 1С и выводит компактное описание структуры.
 
+В `overview` и `full` показывает `Поддержка` подсистемы по `Ext/ParentConfigurations.bin`. Используй строку поддержки как guardrail перед `unica.subsystem.edit` или `unica.interface.edit`.
+
 ## MCP параметры
 
 | Параметр | Описание |

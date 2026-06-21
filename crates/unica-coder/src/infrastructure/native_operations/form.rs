@@ -1018,6 +1018,10 @@ pub(crate) fn analyze_form_info(
         }
         header.push_str(" ===");
         lines.push(header);
+        lines.push(format!(
+            "Поддержка: {}",
+            support_status_for_path(&form_path)
+        ));
 
         let prop_names = [
             "Width",

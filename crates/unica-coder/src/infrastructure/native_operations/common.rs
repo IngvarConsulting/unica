@@ -1474,6 +1474,308 @@ pub(crate) fn detect_format_version(start: &Path) -> String {
     "2.17".to_string()
 }
 
+pub(crate) fn support_state_lines_for_configuration(
+    config_path: &Path,
+    is_extension: bool,
+) -> Vec<String> {
+    let config_dir = if config_path.is_dir() {
+        config_path
+    } else {
+        config_path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return vec![if is_extension {
+            "Поддержка:      расширение (CFE), правки свободны".to_string()
+        } else {
+            "Поддержка:      не на поддержке (своя конфигурация)".to_string()
+        }];
+    };
+    if state.removed {
+        return vec!["Поддержка:      снята с поддержки полностью".to_string()];
+    }
+
+    let mut lines = vec!["Поддержка:      на поддержке".to_string()];
+    if state.global_editing_enabled {
+        lines.push("  Возможность изменения: включена".to_string());
+        lines.push(format!(
+            "  Объектов: на замке {} / редактируется {} / снято {}",
+            state.counts[0], state.counts[1], state.counts[2]
+        ));
+    } else {
+        lines.push(
+            "  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)"
+                .to_string(),
+        );
+    }
+    lines.push(format!("  Конфигураций поставщика: {}", state.vendor_count));
+    if state.vendor_count > 1 {
+        for vendor in &state.vendors {
+            lines.push(format!(
+                "  Поставщик: {} — {} {}",
+                vendor.vendor, vendor.name, vendor.version
+            ));
+        }
+    }
+    lines
+}
+
+pub(crate) fn support_status_for_path(target_path: &Path) -> String {
+    let Some(config_dir) = find_support_config_dir(target_path) else {
+        return "не на поддержке".to_string();
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return "не на поддержке".to_string();
+    };
+    if state.removed {
+        return "снято с поддержки (правки свободны)".to_string();
+    }
+    if !state.global_editing_enabled {
+        return "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
+            .to_string();
+    }
+    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
+        return "не на поддержке".to_string();
+    };
+    match state.object_rule(&object_uuid) {
+        Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+        Some(1) => "редактируется с сохранением поддержки".to_string(),
+        Some(2) => "снято с поддержки (правки свободны)".to_string(),
+        _ => "не на поддержке".to_string(),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SupportState {
+    global_editing_enabled: bool,
+    vendor_count: usize,
+    removed: bool,
+    counts: [usize; 3],
+    object_rules: HashMap<String, u8>,
+    vendors: Vec<SupportVendor>,
+}
+
+impl SupportState {
+    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+        self.object_rules
+            .get(&object_uuid.to_ascii_lowercase())
+            .copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SupportVendor {
+    version: String,
+    vendor: String,
+    name: String,
+}
+
+pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
+    if !bin_path.is_file() {
+        return None;
+    }
+    let data = fs::read(bin_path).ok()?;
+    if data.len() <= 32 {
+        return Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count: 0,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        });
+    }
+    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
+    let (global_flag, vendor_count) = parse_support_header(&text)?;
+    if vendor_count == 0 {
+        return Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        });
+    }
+    let (counts, object_rules) = parse_support_object_rules(&text);
+    Some(SupportState {
+        global_editing_enabled: global_flag == 0,
+        vendor_count,
+        removed: false,
+        counts,
+        object_rules,
+        vendors: parse_support_vendors(&text),
+    })
+}
+
+pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
+    let mut parts = text
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .strip_prefix('{')?
+        .split(',')
+        .map(str::trim);
+    if parts.next()? != "6" {
+        return None;
+    }
+    let global_flag = parts.next()?.parse::<u8>().ok()?;
+    let vendor_count = parts.next()?.parse::<usize>().ok()?;
+    Some((global_flag, vendor_count))
+}
+
+pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8>) {
+    let mut counts = [0usize; 3];
+    let mut object_rules = HashMap::<String, u8>::new();
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 40 <= bytes.len() {
+        let flag = bytes[i];
+        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
+            let uuid_start = i + 4;
+            let uuid_end = uuid_start + 36;
+            if uuid_end <= bytes.len() {
+                let uuid = &text[uuid_start..uuid_end];
+                if is_uuid_text(uuid) {
+                    let flag_value = flag - b'0';
+                    counts[flag_value as usize] += 1;
+                    let entry = object_rules
+                        .entry(uuid.to_ascii_lowercase())
+                        .or_insert(flag_value);
+                    if flag_value < *entry {
+                        *entry = flag_value;
+                    }
+                    i = uuid_end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    (counts, object_rules)
+}
+
+pub(crate) fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
+    let quoted = parse_quoted_support_strings(text);
+    quoted
+        .chunks(3)
+        .filter_map(|chunk| {
+            if chunk.len() == 3 {
+                Some(SupportVendor {
+                    version: chunk[0].clone(),
+                    vendor: chunk[1].clone(),
+                    name: chunk[2].clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn parse_quoted_support_strings(text: &str) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '"' {
+            continue;
+        }
+        let mut value = String::new();
+        while let Some(next) = chars.next() {
+            if next == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    value.push('"');
+                    continue;
+                }
+                break;
+            }
+            value.push(next);
+        }
+        result.push(value);
+    }
+    result
+}
+
+pub(crate) fn is_uuid_text(value: &str) -> bool {
+    value.len() == 36
+        && value.chars().enumerate().all(|(index, ch)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                ch == '-'
+            } else {
+                ch.is_ascii_hexdigit()
+            }
+        })
+}
+
+pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
+    let mut current = if target_path.is_dir() {
+        target_path.to_path_buf()
+    } else {
+        target_path.parent()?.to_path_buf()
+    };
+    for _ in 0..20 {
+        if current
+            .join("Ext")
+            .join("ParentConfigurations.bin")
+            .exists()
+            || current.join("Configuration.xml").exists()
+        {
+            return Some(current);
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    None
+}
+
+pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String> {
+    if target_path.is_file() {
+        if let Some(uuid) = support_root_uuid(target_path) {
+            return Some(uuid);
+        }
+    }
+    let mut current = if target_path.is_dir() {
+        target_path.to_path_buf()
+    } else {
+        target_path.parent()?.to_path_buf()
+    };
+    for _ in 0..20 {
+        let candidate = current.with_extension("xml");
+        if candidate.is_file() {
+            if let Some(uuid) = support_root_uuid(&candidate) {
+                return Some(uuid);
+            }
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    None
+}
+
+pub(crate) fn support_root_uuid(xml_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(xml_path).ok()?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let root = doc.root_element();
+    if let Some(uuid) = root.attribute("uuid") {
+        return Some(uuid.to_ascii_lowercase());
+    }
+    root.children()
+        .find(|node| node.is_element() && node.attribute("uuid").is_some())
+        .and_then(|node| node.attribute("uuid"))
+        .map(str::to_ascii_lowercase)
+}
+
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {
     let start = text.find(&format!("<{element}"))?;
     let rest = &text[start..];
