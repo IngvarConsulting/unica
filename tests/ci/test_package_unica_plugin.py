@@ -162,6 +162,17 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(data["name"], "unica-local")
             self.assertEqual(data["plugins"][0]["name"], "unica")
 
+    def test_installer_prompt_verification_uses_current_skill_markers(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        installer = (repo_root / "scripts" / "install-unica.sh").read_text(encoding="utf-8")
+
+        self.assertIn('"unica:meta-compile"', installer)
+        self.assertIn('"unica:v8-runner"', installer)
+        self.assertIn('"unica:db-auth-check"', installer)
+        self.assertIn("grep -Fq", installer)
+        self.assertNotIn('"workspace-init"', installer)
+        self.assertNotIn('for needle in "Unica"', installer)
+
     @unittest.skipIf(os.name == "nt", "POSIX executable bits are validated on POSIX CI")
     def test_copy_binary_tree_marks_files_executable(self) -> None:
         module = load_package_module()
@@ -200,7 +211,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             binary.write_text(
                 "#!/usr/bin/env sh\n"
                 "if [ \"$1\" = \"--help\" ]; then\n"
-                "  echo 'unica 0.4.2'\n"
+                "  echo 'unica 0.4.3'\n"
                 "  echo 'stdio MCP orchestrator for Unica workflows'\n"
                 "  exit 0\n"
                 "fi\n"
@@ -216,7 +227,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                         "tools": [
                             {
                                 "name": "unica",
-                                "version": "0.4.2",
+                                "version": "0.4.3",
                                 "repository": "https://github.com/IngvarConsulting/unica",
                                 "upstreamUrl": "https://github.com/IngvarConsulting/unica/releases/tag/workspace",
                                 "sourceTag": "workspace",
@@ -240,7 +251,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                         "tools": [
                             {
                                 "name": "unica",
-                                "version": "0.4.2",
+                                "version": "0.4.3",
                                 "repository": "https://github.com/IngvarConsulting/unica",
                                 "sourceTag": "workspace",
                                 "sourceCommit": "workspace",
@@ -322,7 +333,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 check=True,
             )
-            self.assertIn("unica 0.4.2", result.stdout)
+            self.assertIn("unica 0.4.3", result.stdout)
 
 
 if __name__ == "__main__":

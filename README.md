@@ -32,7 +32,7 @@ curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/in
 Для установки конкретного релиза:
 
 ```sh
-curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.4.2
+curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.4.3
 ```
 
 Release assets собираются отдельно под платформы:
@@ -50,7 +50,7 @@ Installer выбирает нужный архив, регистрирует mar
 codex debug prompt-input 'test'
 ```
 
-В выводе должны быть видны plugin `Unica` и навыки вида `unica:meta-compile`, `unica:v8-runner`, `unica:epf-bsp-init`.
+В выводе должны быть видны marketplace `unica-local` и навыки вида `unica:meta-compile`, `unica:v8-runner`, `unica:epf-bsp-init`.
 
 ## Установка из исходников для разработки
 

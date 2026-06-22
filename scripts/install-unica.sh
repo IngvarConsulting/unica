@@ -9,7 +9,7 @@ Download the Unica package for the current platform from GitHub Releases,
 install it into Codex, and verify fresh-session visibility.
 
 Options:
-  --version VERSION       Release tag to install, for example v0.4.2 (default: latest)
+  --version VERSION       Release tag to install, for example v0.4.3 (default: latest)
   --target TARGET         Override detected target: darwin-arm64, linux-x64, win-x64
   --marketplace-name NAME Codex marketplace name (default: unica-local)
   --codex-home DIR        Codex home directory (default: $CODEX_HOME or ~/.codex)
@@ -246,8 +246,8 @@ if [ "$DO_VERIFY" -eq 1 ]; then
   mkdir -p "$CODEX_HOME_DIR/tmp"
   PROMPT_PROOF="$CODEX_HOME_DIR/tmp/unica-install-prompt-input.json"
   codex debug prompt-input 'test' > "$PROMPT_PROOF"
-  for needle in "Unica" "workspace-init" "db-auth-check"; do
-    if ! grep -q "$needle" "$PROMPT_PROOF"; then
+  for needle in "$MARKETPLACE_NAME" "unica:meta-compile" "unica:v8-runner" "unica:db-auth-check"; do
+    if ! grep -Fq "$needle" "$PROMPT_PROOF"; then
       echo "Codex prompt verification did not contain '$needle'." >&2
       echo "Saved prompt proof: $PROMPT_PROOF" >&2
       exit 65
