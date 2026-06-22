@@ -32,7 +32,7 @@ curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/in
 Для установки конкретного релиза:
 
 ```sh
-curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.4.1
+curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.4.2
 ```
 
 Release assets собираются отдельно под платформы:

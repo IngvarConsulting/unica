@@ -367,17 +367,12 @@ fn call_tool(spec: ToolSpec, args: &Map<String, Value>) -> Result<OperationResul
         ToolHandler::CodeAdapter { command } if command == ["search"] => {
             CodeSearchAdapter::new().invoke(spec.name, args, &context, dry_run)?
         }
-        ToolHandler::CodeAdapter { command }
-            if matches!(
-                command,
-                ["definition"] | ["outline"] | ["grep"] | ["meta-profile"]
-            ) =>
-        {
-            CodeNavigationAdapter::new().invoke(spec.name, args, &context, dry_run)?
-        }
-        ToolHandler::CodeAdapter { command } if matches!(command, ["graph"] | ["analyze"]) => {
-            BslAnalyzerMcpAdapter::new().invoke(spec.name, args, &context, dry_run)?
-        }
+        ToolHandler::CodeAdapter {
+            command: ["definition"] | ["outline"] | ["grep"] | ["meta-profile"],
+        } => CodeNavigationAdapter::new().invoke(spec.name, args, &context, dry_run)?,
+        ToolHandler::CodeAdapter {
+            command: ["graph"] | ["analyze"],
+        } => BslAnalyzerMcpAdapter::new().invoke(spec.name, args, &context, dry_run)?,
         ToolHandler::CodeAdapter { command } => CliAdapter::new(
             "run-bsl-analyzer.sh",
             command,

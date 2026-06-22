@@ -872,15 +872,12 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "detail" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL }),
             _ => {}
         },
-        "unica.meta.profile" => match name {
-            "sections" => {
-                return json!({
-                    "type": "array",
-                    "items": {"type": "string", "enum": META_PROFILE_SECTIONS}
-                });
-            }
-            _ => {}
-        },
+        "unica.meta.profile" if name == "sections" => {
+            return json!({
+                "type": "array",
+                "items": {"type": "string", "enum": META_PROFILE_SECTIONS}
+            });
+        }
         _ => {}
     }
     property_schema(name)

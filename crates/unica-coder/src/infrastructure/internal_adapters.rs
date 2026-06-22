@@ -1022,11 +1022,12 @@ fn module_outline(
                     Some(end_line) => format!("{line}-{end_line}"),
                     None => format!("{line}-?"),
                 };
+                let params = params.unwrap_or_default();
                 Ok(format!(
-                    "{} {}{}{} at {}",
+                    "{} {}({}){} at {}",
                     method_type,
                     name,
-                    format!("({})", params.unwrap_or_default().trim()),
+                    params.trim(),
                     if is_export != 0 { " export" } else { "" },
                     range
                 ))
@@ -1402,7 +1403,7 @@ fn is_metadata_profile_schema_error(error: &str) -> bool {
 
 fn metadata_profile_unavailable_outcome(
     tool_name: &str,
-    db_path: &PathBuf,
+    db_path: &Path,
     error: &str,
 ) -> AdapterOutcome {
     let warning = format!(
@@ -1583,10 +1584,8 @@ fn grep_body(stdout: &str, mode: &str, limit: usize) -> String {
         .map(str::trim_end)
         .filter(|line| !line.is_empty())
     {
-        if mode == "files" {
-            if !seen.insert(line.to_string()) {
-                continue;
-            }
+        if mode == "files" && !seen.insert(line.to_string()) {
+            continue;
         }
         lines.push(line.to_string());
         if lines.len() >= limit {

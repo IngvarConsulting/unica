@@ -9,7 +9,7 @@ Download the Unica package for the current platform from GitHub Releases,
 install it into Codex, and verify fresh-session visibility.
 
 Options:
-  --version VERSION       Release tag to install, for example v0.4.1 (default: latest)
+  --version VERSION       Release tag to install, for example v0.4.2 (default: latest)
   --target TARGET         Override detected target: darwin-arm64, linux-x64, win-x64
   --marketplace-name NAME Codex marketplace name (default: unica-local)
   --codex-home DIR        Codex home directory (default: $CODEX_HOME or ~/.codex)
