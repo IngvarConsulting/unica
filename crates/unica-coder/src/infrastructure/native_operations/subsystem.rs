@@ -1356,6 +1356,9 @@ pub(crate) fn compile_subsystem(
             .unwrap_or_else(|| "false".to_string());
         let explanation = json_string_field(&defn, "explanation").unwrap_or_default();
         let picture = json_string_field(&defn, "picture").unwrap_or_default();
+        let subsystem_uuid = json_string_field(&defn, "uuid")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(fresh_uuid);
 
         let mut stdout = String::new();
         let mut normalized_count = 0usize;
@@ -1395,7 +1398,10 @@ pub(crate) fn compile_subsystem(
         lines.push(format!(
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">"
         ));
-        lines.push(format!("\t<Subsystem uuid=\"{}\">", stable_uuid(60)));
+        lines.push(format!(
+            "\t<Subsystem uuid=\"{}\">",
+            escape_xml(&subsystem_uuid)
+        ));
         lines.push("\t\t<Properties>".to_string());
         lines.push(format!("\t\t\t<Name>{}</Name>", escape_xml(&obj_name)));
         emit_mltext(&mut lines, "\t\t\t", "Synonym", &synonym);
@@ -1561,7 +1567,7 @@ pub(crate) fn compile_subsystem(
         stdout.push('\n');
         stdout.push_str("=== subsystem-compile summary ===\n");
         stdout.push_str(&format!("  Name:     {obj_name}\n"));
-        stdout.push_str(&format!("  UUID:     {}\n", stable_uuid(60)));
+        stdout.push_str(&format!("  UUID:     {subsystem_uuid}\n"));
         stdout.push_str(&format!("  Content:  {} objects\n", content_items.len()));
         stdout.push_str(&format!("  Children: {}\n", children.len()));
         stdout.push_str(&format!("  File:     {}\n", target_xml.display()));
@@ -1772,5 +1778,92 @@ pub(crate) fn invoke_mutation(
         "subsystem-compile" => Some(compile_subsystem(args, context)),
         "subsystem-edit" => Some(edit_subsystem(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::{json, Map, Value};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-subsystem-compile-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn compile_args(output_dir: &Path, definition: Value) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String(output_dir.display().to_string()),
+        );
+        args.insert("Value".to_string(), Value::String(definition.to_string()));
+        args
+    }
+
+    fn subsystem_uuid(output_dir: &Path, name: &str) -> String {
+        let xml_path = output_dir.join("Subsystems").join(format!("{name}.xml"));
+        let xml = fs::read_to_string(&xml_path).unwrap();
+        let marker = "<Subsystem uuid=\"";
+        let start = xml.find(marker).unwrap() + marker.len();
+        let end = xml[start..].find('"').unwrap() + start;
+        xml[start..end].to_string()
+    }
+
+    #[test]
+    fn compile_subsystem_preserves_explicit_uuid() {
+        let context = temp_context("explicit-uuid");
+        let explicit_uuid = "11111111-2222-3333-4444-555555555555";
+        let args = compile_args(
+            &context.cwd,
+            json!({
+                "name": "ExplicitUuidSubsystem",
+                "uuid": explicit_uuid
+            }),
+        );
+
+        let outcome = compile_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert_eq!(
+            subsystem_uuid(&context.cwd, "ExplicitUuidSubsystem"),
+            explicit_uuid
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn compile_subsystem_generates_unique_uuid_when_missing() {
+        let context = temp_context("generated-uuid");
+        for name in ["GeneratedUuidA", "GeneratedUuidB"] {
+            let args = compile_args(
+                &context.cwd,
+                json!({
+                    "name": name
+                }),
+            );
+
+            let outcome = compile_subsystem(&args, &context);
+            assert!(outcome.ok, "{:?}", outcome.errors);
+        }
+
+        let first_uuid = subsystem_uuid(&context.cwd, "GeneratedUuidA");
+        let second_uuid = subsystem_uuid(&context.cwd, "GeneratedUuidB");
+        assert_ne!(first_uuid, second_uuid);
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 }
