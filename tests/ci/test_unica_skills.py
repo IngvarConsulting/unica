@@ -755,6 +755,13 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         storage_helper = (skill_dir / "scripts" / "engine" / "storage" / "storage.mjs").read_text(
             encoding="utf-8"
         )
+        grid_script = (skill_dir / "scripts" / "dom" / "grid.mjs").read_text(encoding="utf-8")
+        select_value = (
+            skill_dir / "scripts" / "engine" / "forms" / "select-value.mjs"
+        ).read_text(encoding="utf-8")
+        row_fill = (
+            skill_dir / "scripts" / "engine" / "table" / "row-fill.mjs"
+        ).read_text(encoding="utf-8")
 
         required_files = [
             "scripts/cli/commands/test.mjs",
@@ -786,6 +793,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("page.sessionStorage", storage_helper)
         self.assertIn("getStorage, setStorage, removeStorage, clearStorage", browser_facade)
         self.assertIn("case 'test'", run_script)
+        self.assertIn("visibleSample", grid_script)
+        self.assertIn("firstTextCell", grid_script)
+        self.assertIn("typeof searchSpec === 'object'", grid_script)
+        self.assertIn("columnSearch", select_value)
+        self.assertIn("visibleSample", select_value)
+        self.assertIn("[...pending.values()].every(p => p.filled)", row_fill)
 
         for text in [skill_doc, regress_doc]:
             self.assertNotIn("CLAUDE_SKILL_DIR", text)

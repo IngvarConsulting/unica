@@ -1037,6 +1037,20 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
+        "form-validate-dangling-binding-tags",
+        "unica.form.validate",
+        "form-validate",
+        "form-validate.py",
+        {"FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml", "Detailed": True},
+        False,
+        fixtures=(
+            FileFixture(
+                "form-validate/DanglingBindings.xml",
+                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
+            ),
+        ),
+    ),
+    ParityScenario(
         "interface-edit-missing-command-interface",
         "unica.interface.edit",
         "interface-edit",

@@ -199,223 +199,43 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertNotIn("sha256", payload)
         self.assertNotIn("Digest", payload)
-        self.assertEqual(review["lastRefreshedAt"], "2026-06-22")
+        self.assertEqual(review["lastRefreshedAt"], "2026-06-26")
         self.assertEqual(
             upstreams["cc-1c-skills"]["targetCommit"],
-            "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
+            "cbde49efdaeec190432fdf4a53201a87e83c69de",
         )
-        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 564)
+        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 589)
         self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 0)
         self.assertEqual(upstreams["cc-1c-skills"]["affectedEntries"], [])
-        self.assertNotIn("web-test", upstreams["cc-1c-skills"]["affectedEntries"])
-        self.assertNotIn("help-add", upstreams["cc-1c-skills"]["affectedEntries"])
-        for skill in (
-            "cf-edit",
-            "cf-info",
-            "cf-init",
-            "cf-validate",
-            "cfe-borrow",
-            "cfe-diff",
-            "cfe-init",
-            "cfe-patch-method",
-            "cfe-validate",
-            "form-add",
-            "form-compile",
-            "form-edit",
-            "form-info",
-            "img-grid",
-            "interface-edit",
-            "interface-validate",
-            "meta-compile",
-            "meta-edit",
-            "meta-info",
-            "meta-remove",
-            "meta-validate",
-            "mxl-compile",
-            "mxl-decompile",
-            "mxl-info",
-            "mxl-validate",
-            "role-compile",
-            "role-info",
-            "role-validate",
-            "skd-compile",
-            "skd-edit",
-            "skd-info",
-            "subsystem-info",
-            "subsystem-compile",
-            "subsystem-edit",
-            "subsystem-validate",
-            "template-add",
-            "template-remove",
-            "skd-validate",
-            "form-patterns",
-            "form-remove",
-            "form-validate",
-        ):
-            self.assertNotIn(skill, upstreams["cc-1c-skills"]["affectedEntries"])
-        self.assertIn("web-test", upstreams["cc-1c-skills"]["reviewedEntries"])
-        for skill in (
-            "skd-compile",
-            "skd-edit",
-            "skd-info",
-            "skd-validate",
-            "form-add",
-            "form-compile",
-            "form-edit",
-            "form-info",
-            "form-patterns",
-            "form-remove",
-            "form-validate",
-            "cf-init",
-            "cf-validate",
-            "cfe-borrow",
-            "cfe-diff",
-            "cfe-init",
-            "cfe-patch-method",
-            "cfe-validate",
-            "img-grid",
-            "interface-validate",
-            "meta-validate",
-            "help-add",
-            "mxl-decompile",
-            "mxl-validate",
-            "role-validate",
-            "subsystem-validate",
-        ):
-            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
-        web_test_decision = next(
-            item
+        target = "cbde49efdaeec190432fdf4a53201a87e83c69de"
+        functional_skills = {"web-test", "cfe-borrow", "cfe-init", "form-validate"}
+        decisions = {
+            item["skill"]: item
             for item in upstreams["cc-1c-skills"]["entryDecisions"]
-            if item["skill"] == "web-test"
-        )
-        self.assertEqual(web_test_decision["decision"], "ported")
-        for skill in (
-            "skd-compile",
-            "skd-edit",
-            "skd-info",
-            "skd-validate",
-            "form-add",
-            "form-compile",
-            "form-edit",
-            "form-info",
-            "form-patterns",
-            "form-remove",
-            "form-validate",
-            "meta-compile",
-            "meta-edit",
-            "meta-info",
-            "meta-remove",
-            "meta-validate",
-            "cf-info",
-            "cf-edit",
-            "cf-init",
-            "cf-validate",
-            "cfe-borrow",
-            "cfe-diff",
-            "cfe-init",
-            "cfe-patch-method",
-            "cfe-validate",
-            "img-grid",
-            "interface-validate",
-            "mxl-info",
-            "mxl-compile",
-            "mxl-decompile",
-            "mxl-validate",
-            "role-info",
-            "role-compile",
-            "role-validate",
-            "subsystem-info",
-            "subsystem-compile",
-            "subsystem-edit",
-            "subsystem-validate",
-            "interface-edit",
-            "template-add",
-            "template-remove",
-            "help-add",
-        ):
-            decision = next(
-                item
-                for item in upstreams["cc-1c-skills"]["entryDecisions"]
-                if item["skill"] == skill
-            )
-            if skill in (
-                "cf-init",
-                "cf-validate",
-                "cfe-borrow",
-                "cfe-diff",
-                "cfe-init",
-                "cfe-patch-method",
-                "cfe-validate",
-                "img-grid",
-                "interface-validate",
-                "mxl-decompile",
-                "mxl-validate",
-                "role-validate",
-                "subsystem-validate",
-                "template-remove",
-            ):
-                self.assertEqual(decision["decision"], "ignored-with-reason")
-                self.assertIn("raw", decision["evidence"])
-            else:
-                self.assertEqual(decision["decision"], "ported")
-            if skill in (
-                "cf-edit",
-                "form-add",
-                "form-compile",
-                "form-edit",
-                "interface-edit",
-                "meta-compile",
-                "meta-edit",
-                "meta-remove",
-                "mxl-compile",
-                "role-compile",
-                "skd-compile",
-                "skd-edit",
-                "subsystem-compile",
-                "subsystem-edit",
-                "template-add",
-                "template-remove",
-                "cf-init",
-                "cf-validate",
-                "cfe-borrow",
-                "cfe-diff",
-                "cfe-init",
-                "cfe-patch-method",
-                "cfe-validate",
-                "img-grid",
-                "interface-validate",
-                "meta-validate",
-                "help-add",
-                "mxl-decompile",
-                "mxl-validate",
-                "role-validate",
-                "subsystem-validate",
-            ):
-                self.assertEqual(
-                    decision["baselineCommit"],
-                    "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-                )
-                if skill == "meta-validate":
-                    self.assertIn("batch", decision["evidence"])
-                elif skill == "help-add":
-                    self.assertIn("unica.help.add", decision["evidence"])
-                    self.assertIn("support guard", decision["evidence"])
-                elif decision["decision"] == "ported":
-                    self.assertIn("support-guard", decision["evidence"])
-            if skill in (
-                "cf-info",
-                "form-info",
-                "meta-info",
-                "mxl-info",
-                "role-info",
-                "skd-info",
-                "subsystem-info",
-            ):
-                self.assertEqual(
-                    decision["baselineCommit"],
-                    "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-                )
-                self.assertIn("support-state", decision["evidence"])
+        }
+
+        self.assertGreaterEqual(len(decisions), 40)
+        for skill in functional_skills:
+            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
+            self.assertEqual(decisions[skill]["decision"], "ported")
+            self.assertEqual(decisions[skill]["baselineCommit"], target)
+
+        self.assertIn("visibleSample", decisions["web-test"]["evidence"])
+        self.assertIn("BorrowMainAttribute", decisions["cfe-borrow"]["evidence"])
+        self.assertIn("MDClasses format version", decisions["cfe-init"]["evidence"])
+        self.assertIn("type_error_count", decisions["form-validate"]["evidence"])
+
+        ignored_skills = set(decisions) - functional_skills
+        self.assertIn("cf-edit", ignored_skills)
+        self.assertIn("epf-bsp-init", ignored_skills)
+        self.assertIn("help-add", ignored_skills)
+        for skill in ignored_skills:
+            decision = decisions[skill]
+            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
+            self.assertEqual(decision["decision"], "ignored-with-reason")
+            self.assertEqual(decision["baselineCommit"], target)
+            self.assertIn("EOL", decision["evidence"])
+            self.assertIn("donor-only", decision["evidence"])
         self.assertEqual(upstreams["ai-rules-1c"]["commitsSinceBaseline"], 23)
         self.assertIn("code-search", upstreams["ai-rules-1c"]["affectedEntries"])
         self.assertEqual(upstreams["v8-runner-rust"]["commitsSinceBaseline"], 0)

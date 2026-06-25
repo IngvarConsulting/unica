@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<UsualGroup name="ГруппаЗаголовок" id="1000001">
+			<HeaderDataPath>НетТакогоЗаголовка</HeaderDataPath>
+			<TitleDataPath>НетТакогоTitle</TitleDataPath>
+			<ExtendedTooltip name="ГруппаЗаголовокРасширеннаяПодсказка" id="-1"/>
+		</UsualGroup>
+		<InputField name="ПолеПодвал" id="1000002">
+			<FooterDataPath>НетТакогоПодвала</FooterDataPath>
+			<MultipleValueDataPath>НетТакогоМножественногоЗначения</MultipleValueDataPath>
+			<MultipleValuePresentDataPath>НетТакогоПредставления</MultipleValuePresentDataPath>
+			<MultipleValuePictureDataPath>НетТакойКартинкиМножественногоЗначения</MultipleValuePictureDataPath>
+			<ContextMenu name="ПолеПодвалКонтекстноеМеню" id="-1"/>
+			<ExtendedTooltip name="ПолеПодвалРасширеннаяПодсказка" id="-1"/>
+		</InputField>
+		<Table name="Таблица" id="1000003">
+			<DataPath>СуществующийРеквизит</DataPath>
+			<RowPictureDataPath>НетТакойКартинкиСтроки</RowPictureDataPath>
+			<ContextMenu name="ТаблицаКонтекстноеМеню" id="-1"/>
+			<AutoCommandBar name="ТаблицаКоманднаяПанель" id="-1"/>
+			<SearchStringAddition name="ТаблицаСтрокаПоиска" id="-1"/>
+			<ViewStatusAddition name="ТаблицаСостояниеПросмотра" id="-1"/>
+			<SearchControlAddition name="ТаблицаУправлениеПоиском" id="-1"/>
+		</Table>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="СуществующийРеквизит" id="1">
+			<Type>
+				<v8:Type>v8:ValueTable</v8:Type>
+			</Type>
+		</Attribute>
+	</Attributes>
+	<Commands/>
+</Form>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# form-validate v1.7 — Validate 1C managed form
+# form-validate v1.8 — Validate 1C managed form
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 
 import argparse
@@ -12,6 +12,17 @@ F_NS = "http://v8.1c.ru/8.3/xcf/logform"
 V8_NS = "http://v8.1c.ru/8.1/data/core"
 
 NSMAP = {"f": F_NS, "v8": V8_NS}
+
+BINDING_PATH_TAGS = (
+    "DataPath",
+    "TitleDataPath",
+    "FooterDataPath",
+    "HeaderDataPath",
+    "MultipleValueDataPath",
+    "MultipleValuePresentDataPath",
+    "RowPictureDataPath",
+    "MultipleValuePictureDataPath",
+)
 
 KNOWN_INVALID_TYPES = {
     'FormDataStructure', 'FormDataCollection', 'FormDataTree',
@@ -373,7 +384,7 @@ def main():
         if companion_errors == 0 and companion_checked > 0:
             report_ok(f"Companion elements: {companion_checked} elements checked")
 
-    # --- Check 5: DataPath -> Attribute references ---
+    # --- Check 5: binding path tags -> Attribute references ---
     if not stopped:
         path_errors = 0
         path_checked = 0
@@ -399,55 +410,56 @@ def main():
                 except (ValueError, TypeError):
                     pass
 
-            dp_node = node.find(f"{{{F_NS}}}DataPath")
-            if dp_node is None:
-                continue
-
-            data_path = (dp_node.text or "").strip()
-            if not data_path:
-                continue
-
-            # Opaque platform-internal DataPath shapes — not validatable from Form.xml alone:
-            #   - bare numeric (e.g. "10", "1000003") — internal index
-            #   - "N/M:<uuid>" — metadata reference by UUID
-            if re.match(r'^\d+$', data_path) or re.match(r'^\d+/\d+:[0-9a-fA-F-]+$', data_path):
-                continue
-
-            path_checked += 1
-
-            clean_path = re.sub(r'\[\d+\]', '', data_path)
-            # Strip leading '~' (current row of DynamicList: ~\u0421\u043f\u0438\u0441\u043e\u043a.\u041f\u043e\u043b\u0435)
-            if clean_path.startswith('~'):
-                clean_path = clean_path[1:]
-            segments = clean_path.split(".")
-            root_attr = segments[0]
-
-            # Resolve Items.<TableName>.CurrentData.<Field>... \u2014 table element, not attribute
-            if root_attr == 'Items':
-                if len(segments) < 3 or segments[2] != 'CurrentData':
-                    report_warn(f"[{tag}] '{el_name}': DataPath='{data_path}' \u2014 unknown Items.* shape, expected Items.<Table>.CurrentData.*")
+            for path_tag in BINDING_PATH_TAGS:
+                dp_node = node.find(f"{{{F_NS}}}{path_tag}")
+                if dp_node is None:
                     continue
-                table_name = segments[1]
-                table_el = None
-                for candidate in all_elements:
-                    if candidate["Tag"] == 'Table' and candidate["Name"] == table_name:
-                        table_el = candidate
-                        break
-                if table_el is None:
-                    report_error(f"[{tag}] '{el_name}': DataPath='{data_path}' \u2014 table element '{table_name}' not found")
+
+                data_path = (dp_node.text or "").strip()
+                if not data_path:
+                    continue
+
+                # Opaque platform-internal path shapes — not validatable from Form.xml alone:
+                #   - bare numeric (e.g. "10", "1000003") — internal index
+                #   - "N/M:<uuid>" — metadata reference by UUID
+                if re.match(r'^\d+$', data_path) or re.match(r'^\d+/\d+:[0-9a-fA-F-]+$', data_path):
+                    continue
+
+                path_checked += 1
+
+                clean_path = re.sub(r'\[\d+\]', '', data_path)
+                # Strip leading '~' (current row of DynamicList: ~\u0421\u043f\u0438\u0441\u043e\u043a.\u041f\u043e\u043b\u0435)
+                if clean_path.startswith('~'):
+                    clean_path = clean_path[1:]
+                segments = clean_path.split(".")
+                root_attr = segments[0]
+
+                # Resolve Items.<TableName>.CurrentData.<Field>... \u2014 table element, not attribute
+                if root_attr == 'Items':
+                    if len(segments) < 3 or segments[2] != 'CurrentData':
+                        report_warn(f"[{tag}] '{el_name}': {path_tag}='{data_path}' \u2014 unknown Items.* shape, expected Items.<Table>.CurrentData.*")
+                        continue
+                    table_name = segments[1]
+                    table_el = None
+                    for candidate in all_elements:
+                        if candidate["Tag"] == 'Table' and candidate["Name"] == table_name:
+                            table_el = candidate
+                            break
+                    if table_el is None:
+                        report_error(f"[{tag}] '{el_name}': {path_tag}='{data_path}' \u2014 table element '{table_name}' not found")
+                        path_errors += 1
+                        continue
+                    table_dp_node = table_el["Node"].find(f"{{{F_NS}}}DataPath")
+                    if table_dp_node is None or not (table_dp_node.text or "").strip():
+                        continue
+                    table_dp = re.sub(r'\[\d+\]', '', (table_dp_node.text or "").strip())
+                    if table_dp.startswith('~'):
+                        table_dp = table_dp[1:]
+                    root_attr = table_dp.split(".")[0]
+
+                if root_attr not in attr_map:
+                    report_error(f"[{tag}] '{el_name}': {path_tag}='{data_path}' \u2014 attribute '{root_attr}' not found")
                     path_errors += 1
-                    continue
-                table_dp_node = table_el["Node"].find(f"{{{F_NS}}}DataPath")
-                if table_dp_node is None or not (table_dp_node.text or "").strip():
-                    continue
-                table_dp = re.sub(r'\[\d+\]', '', (table_dp_node.text or "").strip())
-                if table_dp.startswith('~'):
-                    table_dp = table_dp[1:]
-                root_attr = table_dp.split(".")[0]
-
-            if root_attr not in attr_map:
-                report_error(f"[{tag}] '{el_name}': DataPath='{data_path}' \u2014 attribute '{root_attr}' not found")
-                path_errors += 1
 
         path_msg = ""
         if path_checked > 0:
@@ -456,7 +468,7 @@ def main():
             skip_note = f"{path_base_skipped} base skipped"
             path_msg = f"{path_msg}, {skip_note}" if path_msg else skip_note
         if path_errors == 0 and path_msg:
-            report_ok(f"DataPath references: {path_msg}")
+            report_ok(f"Binding path references: {path_msg}")
 
     # --- Check 6: Button command references ---
     if not stopped:
@@ -724,7 +736,7 @@ def main():
                     # ExternalDataProcessorObject/ExternalReportObject valid only in EPF/ERF context
                     if is_config_context and prefix in ('ExternalDataProcessorObject', 'ExternalReportObject'):
                         report_error(f'12. Type "{tv}": External* type in configuration context (use DataProcessorObject/ReportObject instead)')
-                        type_invalid += 1
+                        type_error_count += 1
                 else:
                     report_warn(f'12. Type "{tv}": unrecognized cfg prefix')
                     type_warn_count += 1

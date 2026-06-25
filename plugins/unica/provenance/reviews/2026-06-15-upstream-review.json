@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "id": "2026-06-15-upstream-review",
-  "generatedAt": "2026-06-15",
+  "generatedAt": "2026-06-26",
   "purpose": "Manual review of donor changes since the last local Unica skill adaptation. This is not a checksum attestation.",
   "summary": [
-    "cc-1c-skills current remote head is 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; the source baseline still spans 564 commits, but per-entry reviewed baselines now leave 0 watched changed paths and 0 affected packaged Unica skills.",
-    "web-test, SKD DSL, form DSL, metadata presentation/ChoiceHistoryOnInput, read-only support-state reporting, mutating support guard, meta-validate batch mode, and help-add are now reviewed and ported through Unica boundaries up to 3d36c2026916d2ae8915f0aca0836d55e1ccaabe where applicable.",
-    "No current packaged Shirokov skill drift remains open. support-edit, DT dump/load skills, and 1cv8 path resolver fixes remain separate non-packaged or future capability decisions.",
-    "ai-rules-1c has guidance drift since the local v17/v18 adaptation window: 23 commits, 36 watched changed paths, 17 affected Unica skills.",
-    "v8-runner-rust runtime-contract drift from locked v0.5.0 to upstream v0.5.1 was reviewed and applied; the current tool lock baseline is v0.5.1."
+    "cc-1c-skills reviewed through cbde49efdaeec190432fdf4a53201a87e83c69de; the raw 138 watched path count was EOL/raw-wrapper/docs-heavy and is now closed by per-entry baselines.",
+    "Functional donor drift was ported for web-test, cfe-borrow, cfe-init, and form-validate through Unica boundaries.",
+    "EOL normalization, donor-only db/epf-build/web-publish capabilities, generated port branches, and raw PowerShell wrapper churn were reviewed as outside the current packaged Unica surface.",
+    "ai-rules-1c guidance drift remains a separate prompt-guidance review: 23 commits, 36 watched changed paths, 17 affected Unica skills.",
+    "v8-runner-rust remains clean at the locked v0.5.1 baseline."
   ],
   "decisionPolicy": {
     "allowedEntryDecisions": [
@@ -55,7 +55,7 @@
       "id": "remaining-guidance-and-command-surface",
       "priority": 4,
       "skills": [],
-      "notes": "All current packaged Shirokov wrapper/guidance diffs have reviewed decisions; no packaged skill remains open in this queue."
+      "notes": "Current cbde49 Shirokov functional drift is closed. Remaining command-surface work is product-scoped donor-only capability selection, not accidental upstream drift."
     }
   ],
   "upstreams": [
@@ -63,41 +63,15 @@
       "id": "cc-1c-skills",
       "baseline": "f3466e19fdc37954c030e48daabcc192f0098fe7",
       "baselineReason": "Donor head at or before local adaptation commit 795505f2243cf3c93a95918467f99135af758e1b (2026-05-04T07:38:11+07:00).",
-      "targetCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-      "commitsSinceBaseline": 564,
+      "targetCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+      "commitsSinceBaseline": 589,
       "changedWatchedPathCount": 0,
       "reviewStatus": "reviewed",
-      "finding": "No current packaged Shirokov donor drift remains after porting help-add as typed unica.help.add and closing wrapper-only guidance diffs with reviewed decisions.",
+      "finding": "Functional cbde49 donor drift was ported for web-test, cfe-borrow, cfe-init, and form-validate; remaining changed watched paths were reviewed as EOL/raw-wrapper/docs-only or donor-only scope and ignored with reasons.",
       "affectedEntries": [],
       "reviewedEntries": [
-        "web-test",
-        "skd-compile",
-        "skd-edit",
-        "skd-info",
-        "skd-validate",
-        "form-add",
-        "form-compile",
-        "form-edit",
-        "form-info",
-        "form-patterns",
-        "form-remove",
-        "form-validate",
-        "meta-compile",
-        "meta-info",
-        "cf-info",
-        "mxl-info",
-        "role-info",
-        "subsystem-info",
         "cf-edit",
-        "interface-edit",
-        "meta-edit",
-        "meta-remove",
-        "mxl-compile",
-        "role-compile",
-        "subsystem-compile",
-        "subsystem-edit",
-        "template-add",
-        "template-remove",
+        "cf-info",
         "cf-init",
         "cf-validate",
         "cfe-borrow",
@@ -105,316 +79,313 @@
         "cfe-init",
         "cfe-patch-method",
         "cfe-validate",
+        "epf-bsp-add-command",
+        "epf-bsp-init",
+        "form-add",
+        "form-compile",
+        "form-edit",
+        "form-info",
+        "form-patterns",
+        "form-remove",
+        "form-validate",
+        "help-add",
         "img-grid",
+        "interface-edit",
         "interface-validate",
+        "meta-compile",
+        "meta-edit",
+        "meta-info",
+        "meta-remove",
         "meta-validate",
+        "mxl-compile",
         "mxl-decompile",
+        "mxl-info",
         "mxl-validate",
+        "role-compile",
+        "role-info",
         "role-validate",
+        "skd-compile",
+        "skd-edit",
+        "skd-info",
+        "skd-validate",
+        "subsystem-compile",
+        "subsystem-edit",
+        "subsystem-info",
         "subsystem-validate",
-        "help-add"
+        "template-add",
+        "template-remove",
+        "web-test"
       ],
       "entryDecisions": [
         {
-          "skill": "web-test",
-          "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-          "result": "ported",
-          "evidence": "Local web-test skill now contains donor regression mode, split runner modules, CLI test runner, DOM/grid/spreadsheet engine changes, and Unica-specific URL/bootstrap guidance."
-        },
-        {
-          "skill": "skd-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "skd-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "skd-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local skd-info now reports owner object support-state in overview/full through unica.skd.info while preserving raw query round-trip modes."
-        },
-        {
-          "skill": "skd-validate",
-          "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-          "result": "ported",
-          "evidence": "Local SKD validate now uses the updated donor validation implementation through hidden Unica routing and updated parity fixture."
-        },
-        {
-          "skill": "form-add",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "form-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "form-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "form-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local form-info now reports owner object support-state from Ext/ParentConfigurations.bin through unica.form.info."
-        },
-        {
-          "skill": "form-patterns",
-          "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-          "result": "ported",
-          "evidence": "Local form-patterns now includes the donor form-pattern updates while keeping the authoring route through unica.form.compile."
-        },
-        {
-          "skill": "form-remove",
-          "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-          "result": "ported",
-          "evidence": "Local form-remove now uses the updated donor remove implementation through hidden Unica routing. Unica also applies the shared support guard to this removal path because it mutates the owning metadata object."
-        },
-        {
-          "skill": "form-validate",
-          "decision": "ported",
-          "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-          "result": "ported",
-          "evidence": "Local form-validate now uses the updated donor validation implementation through hidden Unica routing and updated parity fixture."
-        },
-        {
-          "skill": "meta-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "meta-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local meta-info now reports object support-state from Ext/ParentConfigurations.bin through unica.meta.info while keeping previous presentation output and without exposing raw donor scripts."
+          "skill": "cf-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cf-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local cf-info now reports configuration support-state from Ext/ParentConfigurations.bin through unica.cf.info: own config/CFE/removed/on-support/read-only, vendor count, and object rule counts."
-        },
-        {
-          "skill": "mxl-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local mxl-info now reports owner object support-state in text output through unica.mxl.info while preserving JSON structural output."
-        },
-        {
-          "skill": "role-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local role-info now reports role support-state from Ext/ParentConfigurations.bin through unica.role.info."
-        },
-        {
-          "skill": "subsystem-info",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local subsystem-info now reports subsystem support-state in overview/full through unica.subsystem.info."
-        },
-        {
-          "skill": "cf-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "interface-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "meta-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "meta-remove",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "mxl-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "role-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "subsystem-compile",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "subsystem-edit",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "template-add",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local Unica applies donor support-guard semantics through the MCP application layer for this mutating tool: ParentConfigurations.bin rules plus editingAllowedCheck deny|warn|off, without exposing raw donor scripts."
-        },
-        {
-          "skill": "template-remove",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Donor drift is raw wrapper/version metadata and is not applicable to typed Unica MCP routing; Unica still applies support-guard policy to template removal at the application layer because it mutates the owner object."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cf-init",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cf-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cfe-borrow",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "decision": "ported",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Ported functional cbde49 drift in native Rust: BorrowMainAttribute collects DataPath/Field object paths, handles deep paths through tabular sections, preserves DefinedType Type XML, auto-borrows reference shells, and keeps form wrapper UUID/Module.bsl stable on re-borrow."
         },
         {
           "skill": "cfe-diff",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cfe-init",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "decision": "ported",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Ported functional cbde49 drift in native Rust: generated extension XML inherits the MDClasses format version from the base configuration instead of hard-coding 2.17."
         },
         {
           "skill": "cfe-patch-method",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "cfe-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "epf-bsp-add-command",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "epf-bsp-init",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-add",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-patterns",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-remove",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "form-validate",
+          "decision": "ported",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Ported donor v1.8 behavior: all binding path tags are validated with existing skip rules preserved, and the type_error_count bug is fixed in both legacy adapter and parity fixture."
+        },
+        {
+          "skill": "help-add",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "img-grid",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "interface-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "interface-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "meta-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "meta-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "meta-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "meta-remove",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "meta-validate",
-          "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local unica.meta.validate now supports pipe-separated ObjectPath batch validation in-process behind the typed MCP boundary, fixing the donor batch recursion behavior without exposing raw scripts."
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "mxl-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "mxl-decompile",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "mxl-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "mxl-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "role-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "role-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "role-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "skd-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "skd-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "skd-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "skd-validate",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "subsystem-compile",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "subsystem-edit",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "subsystem-info",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
           "skill": "subsystem-validate",
           "decision": "ignored-with-reason",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ignored-with-reason",
-          "evidence": "Reviewed current donor drift; changed surface is raw script invocation guidance or support-state documentation already represented by Unica provenance/support-state batches, while the local skill routes through typed Unica MCP or packaged local script semantics."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "help-add",
+          "skill": "template-add",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "template-remove",
+          "decision": "ignored-with-reason",
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "web-test",
           "decision": "ported",
-          "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
-          "result": "ported",
-          "evidence": "Local help-add now routes through typed unica.help.add. The native writer creates Ext/Help.xml and Help/<Lang>.html, updates IncludeHelpInContents in form metadata, rejects path-unsafe arguments, invalidates form/metadata caches, and shares the Unica MCP support guard instead of exposing prompt-visible scripts."
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "evidence": "Ported functional cbde49 drift: wide-grid selection clicks the first visible text cell, structured {column:value} matching prefers exact hits, not-found/not-selectable errors carry visibleSample, and fillTableRow exits before tabbing past a completed row."
         }
       ]
     },
@@ -593,7 +564,20 @@
       "decision": "ported",
       "baselineCommit": "3d36c2026916d2ae8915f0aca0836d55e1ccaabe",
       "notes": "Ported help-add from a packaged local script flow to typed native unica.help.add. Support guard is applied at the Unica MCP boundary, packaged skill-local scripts were removed, and the donor Python script is retained only as test parity evidence."
+    },
+    {
+      "id": "cc-cbde49-functional-drift-refresh",
+      "upstream": "cc-1c-skills",
+      "skills": [
+        "cfe-borrow",
+        "cfe-init",
+        "form-validate",
+        "web-test"
+      ],
+      "decision": "ported-and-ignored-with-reasons",
+      "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+      "notes": "Ported functional drift for web-test, cfe-borrow, cfe-init, and form-validate; reviewed EOL-only/raw-wrapper/docs-only and donor-only changes as ignored for the current Unica packaged surface."
     }
   ],
-  "lastRefreshedAt": "2026-06-22"
+  "lastRefreshedAt": "2026-06-26"
 }

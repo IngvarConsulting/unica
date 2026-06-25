@@ -229,6 +229,15 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
                     borrow_main_attribute.is_some(),
                     &mut stdout,
                 )?;
+                artifacts.extend(cfe_borrow_main_attribute_artifacts(
+                    &cfg_dir,
+                    &ext_dir,
+                    &spec,
+                    borrow_main_attribute.as_deref(),
+                    &format_version,
+                    &mut ext_text,
+                    &mut stdout,
+                )?);
                 cfe_borrow_register_form(
                     &ext_dir,
                     &spec.type_name,
@@ -555,6 +564,14 @@ pub(crate) fn cfe_borrow_object_xml(
             ));
         }
     }
+    if type_name == "DefinedType" {
+        if let Some(type_xml) = source_props
+            .and_then(|props| meta_info_child(props, "Type"))
+            .map(cfe_borrow_xml_node)
+        {
+            lines.push(format!("\t\t\t{type_xml}"));
+        }
+    }
     lines.push("\t\t</Properties>".to_string());
     if cfe_borrow_type_has_child_objects(type_name) {
         lines.push("\t\t<ChildObjects/>".to_string());
@@ -644,6 +661,633 @@ pub(crate) fn cfe_borrow_type_has_child_objects(type_name: &str) -> bool {
             | "AccountingRegister"
             | "CalculationRegister"
     )
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowSourceAttribute {
+    name: String,
+    source_uuid: String,
+    type_xml: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowGeneratedType {
+    name: String,
+    category: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowSourceTabularSection {
+    name: String,
+    source_uuid: String,
+    generated_types: Vec<CfeBorrowGeneratedType>,
+    attributes: Vec<CfeBorrowSourceAttribute>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CfeBorrowResolvedAttributes {
+    attributes: Vec<CfeBorrowSourceAttribute>,
+    tabular_sections: Vec<CfeBorrowSourceTabularSection>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowDeepPath {
+    segments: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CfeBorrowFormPaths {
+    first_level: HashSet<String>,
+    deep_paths: Vec<CfeBorrowDeepPath>,
+}
+
+pub(crate) fn cfe_borrow_main_attribute_artifacts(
+    cfg_dir: &Path,
+    ext_dir: &Path,
+    spec: &CfeBorrowSpec,
+    mode: Option<&str>,
+    format_version: &str,
+    ext_text: &mut String,
+    stdout: &mut String,
+) -> Result<Vec<PathBuf>, String> {
+    let Some(mode) = mode else {
+        return Ok(Vec::new());
+    };
+    let type_name = spec.type_name.as_str();
+    let object_name = spec.object_name.as_str();
+    let form_name = spec.form_name.as_deref().unwrap_or_default();
+    let dir_name =
+        cfe_borrow_type_dir(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+    stdout.push_str(&format!(
+        "[INFO] Borrowing main attribute for {type_name}.{object_name} (mode: {mode})...\n"
+    ));
+
+    let form_paths = if mode == "Form" {
+        let form_xml_path = cfg_dir
+            .join(dir_name)
+            .join(object_name)
+            .join("Forms")
+            .join(form_name)
+            .join("Ext")
+            .join("Form.xml");
+        let paths = cfe_borrow_collect_form_object_paths(&form_xml_path)?;
+        stdout.push_str(&format!(
+            "[INFO]   Collected {} first-level DataPath references, {} deep paths\n",
+            paths.first_level.len(),
+            paths.deep_paths.len()
+        ));
+        if paths.first_level.is_empty() && paths.deep_paths.is_empty() {
+            stdout.push_str("[INFO]   No main-attribute object paths found in form\n");
+            return Ok(Vec::new());
+        }
+        Some(paths)
+    } else {
+        stdout.push_str("[INFO]   Mode All: borrowing all attributes and tabular sections\n");
+        None
+    };
+
+    let wanted = form_paths.as_ref().map(|paths| &paths.first_level);
+    let resolved = cfe_borrow_resolve_source_attributes(cfg_dir, type_name, object_name, wanted)?;
+    stdout.push_str(&format!(
+        "[INFO]   Resolved: {} attributes, {} tabular section(s)\n",
+        resolved.attributes.len(),
+        resolved.tabular_sections.len()
+    ));
+
+    let object_file = cfe_borrow_target_object(ext_dir, type_name, object_name);
+    cfe_borrow_merge_resolved_into_object(&object_file, &resolved)?;
+    let mut artifacts = vec![object_file];
+
+    let mut type_xmls = Vec::<String>::new();
+    for attr in &resolved.attributes {
+        type_xmls.push(attr.type_xml.clone());
+    }
+    for section in &resolved.tabular_sections {
+        for attr in &section.attributes {
+            type_xmls.push(attr.type_xml.clone());
+        }
+    }
+    artifacts.extend(cfe_borrow_ensure_reference_shells(
+        cfg_dir,
+        ext_dir,
+        &type_xmls,
+        format_version,
+        ext_text,
+        stdout,
+    )?);
+
+    if let Some(paths) = &form_paths {
+        artifacts.extend(cfe_borrow_process_deep_paths(
+            cfg_dir,
+            ext_dir,
+            &resolved,
+            &paths.deep_paths,
+            format_version,
+            ext_text,
+            stdout,
+        )?);
+    }
+
+    stdout.push_str("[INFO]   Main attribute borrowing complete\n");
+    Ok(artifacts)
+}
+
+pub(crate) fn cfe_borrow_collect_form_object_paths(
+    form_xml_path: &Path,
+) -> Result<CfeBorrowFormPaths, String> {
+    let source_text = fs::read_to_string(form_xml_path)
+        .map_err(|err| format!("failed to read {}: {err}", form_xml_path.display()))?;
+    let source = source_text.trim_start_matches('\u{feff}');
+    let doc = Document::parse(source).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+    let mut paths = CfeBorrowFormPaths::default();
+    let binding_tags = [
+        "DataPath",
+        "TitleDataPath",
+        "FooterDataPath",
+        "HeaderDataPath",
+        "MultipleValueDataPath",
+        "MultipleValuePresentDataPath",
+        "RowPictureDataPath",
+        "MultipleValuePictureDataPath",
+        "Field",
+    ];
+    let mut deep_seen = HashSet::<String>::new();
+    for node in doc.descendants().filter(|node| node.is_element()) {
+        if !binding_tags.contains(&node.tag_name().name()) {
+            continue;
+        }
+        let Some(text) = node.text() else {
+            continue;
+        };
+        for segments in cfe_borrow_object_path_segments(text) {
+            if segments.is_empty() || cfe_borrow_is_standard_field(&segments[0]) {
+                continue;
+            }
+            paths.first_level.insert(segments[0].clone());
+            if segments.len() >= 2 && !cfe_borrow_is_standard_field(&segments[1]) {
+                let key = segments.join(".");
+                if deep_seen.insert(key) {
+                    paths.deep_paths.push(CfeBorrowDeepPath { segments });
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
+pub(crate) fn cfe_borrow_object_path_segments(text: &str) -> Vec<Vec<String>> {
+    let mut result = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find("Объект.") {
+        let after = &rest[pos + "Объект.".len()..];
+        let path = after
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '.')
+            .collect::<String>();
+        let segments = path
+            .split('.')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if !segments.is_empty() {
+            result.push(segments);
+        }
+        rest = &after[path.len()..];
+    }
+    result
+}
+
+pub(crate) fn cfe_borrow_is_standard_field(name: &str) -> bool {
+    matches!(
+        name,
+        "Code"
+            | "Description"
+            | "Ref"
+            | "Parent"
+            | "DeletionMark"
+            | "Predefined"
+            | "IsFolder"
+            | "LineNumber"
+            | "RowsCount"
+            | "PredefinedDataName"
+    )
+}
+
+pub(crate) fn cfe_borrow_resolve_source_attributes(
+    cfg_dir: &Path,
+    type_name: &str,
+    object_name: &str,
+    first_level_names: Option<&HashSet<String>>,
+) -> Result<CfeBorrowResolvedAttributes, String> {
+    let dir_name =
+        cfe_borrow_type_dir(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+    let source_file = cfg_dir.join(dir_name).join(format!("{object_name}.xml"));
+    let source_text = fs::read_to_string(&source_file)
+        .map_err(|err| format!("failed to read {}: {err}", source_file.display()))?;
+    let source = source_text.trim_start_matches('\u{feff}');
+    let doc = Document::parse(source).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+    let source_el = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| format!("No metadata element found in {dir_name}/{object_name}.xml"))?;
+    let Some(child_objects) = meta_info_child(source_el, "ChildObjects") else {
+        return Ok(CfeBorrowResolvedAttributes::default());
+    };
+    let mut resolved = CfeBorrowResolvedAttributes::default();
+    for child in child_objects.children().filter(|node| node.is_element()) {
+        let local = child.tag_name().name();
+        let props = meta_info_child(child, "Properties");
+        let name = props
+            .and_then(|props| meta_info_child_text(props, "Name"))
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        if first_level_names.is_some_and(|names| !names.contains(&name)) {
+            continue;
+        }
+        if local == "Attribute" {
+            resolved.attributes.push(cfe_borrow_source_attribute(child));
+        } else if local == "TabularSection" {
+            resolved
+                .tabular_sections
+                .push(cfe_borrow_source_tabular_section(child));
+        }
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn cfe_borrow_source_attribute(
+    node: roxmltree::Node<'_, '_>,
+) -> CfeBorrowSourceAttribute {
+    let props = meta_info_child(node, "Properties");
+    CfeBorrowSourceAttribute {
+        name: props
+            .and_then(|props| meta_info_child_text(props, "Name"))
+            .unwrap_or_default(),
+        source_uuid: node.attribute("uuid").unwrap_or("").to_string(),
+        type_xml: props
+            .and_then(|props| meta_info_child(props, "Type"))
+            .map(cfe_borrow_xml_node)
+            .unwrap_or_default(),
+    }
+}
+
+pub(crate) fn cfe_borrow_source_tabular_section(
+    node: roxmltree::Node<'_, '_>,
+) -> CfeBorrowSourceTabularSection {
+    let props = meta_info_child(node, "Properties");
+    let mut generated_types = Vec::new();
+    if let Some(internal_info) = meta_info_child(node, "InternalInfo") {
+        for generated in meta_info_children(internal_info, "GeneratedType") {
+            generated_types.push(CfeBorrowGeneratedType {
+                name: generated.attribute("name").unwrap_or("").to_string(),
+                category: generated.attribute("category").unwrap_or("").to_string(),
+            });
+        }
+    }
+    let mut attributes = Vec::new();
+    if let Some(child_objects) = meta_info_child(node, "ChildObjects") {
+        for attr in meta_info_children(child_objects, "Attribute") {
+            attributes.push(cfe_borrow_source_attribute(attr));
+        }
+    }
+    CfeBorrowSourceTabularSection {
+        name: props
+            .and_then(|props| meta_info_child_text(props, "Name"))
+            .unwrap_or_default(),
+        source_uuid: node.attribute("uuid").unwrap_or("").to_string(),
+        generated_types,
+        attributes,
+    }
+}
+
+pub(crate) fn cfe_borrow_merge_resolved_into_object(
+    object_file: &Path,
+    resolved: &CfeBorrowResolvedAttributes,
+) -> Result<(), String> {
+    let mut object_text = fs::read_to_string(object_file)
+        .map_err(|err| format!("failed to read {}: {err}", object_file.display()))?;
+    let existing_names = cfe_borrow_existing_names(&object_text);
+    let mut child_xml = Vec::<String>::new();
+    for attr in &resolved.attributes {
+        if !existing_names.contains(&attr.name) {
+            child_xml.push(cfe_borrow_adopted_attribute_xml(attr, "\t\t\t"));
+        }
+    }
+    for section in &resolved.tabular_sections {
+        if !existing_names.contains(&section.name) {
+            child_xml.push(cfe_borrow_adopted_tabular_section_xml(section, "\t\t\t"));
+        }
+    }
+    if child_xml.is_empty() {
+        return Ok(());
+    }
+    cfe_borrow_insert_child_objects(&mut object_text, &child_xml.join("\n"))?;
+    write_utf8_bom(object_file, &object_text)
+}
+
+pub(crate) fn cfe_borrow_existing_names(object_text: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut rest = object_text;
+    while let Some(start) = rest.find("<Name>") {
+        let value_start = start + "<Name>".len();
+        let Some(end_rel) = rest[value_start..].find("</Name>") else {
+            break;
+        };
+        names.insert(rest[value_start..value_start + end_rel].to_string());
+        rest = &rest[value_start + end_rel + "</Name>".len()..];
+    }
+    names
+}
+
+pub(crate) fn cfe_borrow_insert_child_objects(
+    object_text: &mut String,
+    child_xml: &str,
+) -> Result<(), String> {
+    if object_text.contains("<ChildObjects/>") {
+        *object_text = object_text.replacen(
+            "<ChildObjects/>",
+            &format!("<ChildObjects>\r\n{child_xml}\r\n\t\t</ChildObjects>"),
+            1,
+        );
+        return Ok(());
+    }
+    if let Some(pos) = object_text.find("</ChildObjects>") {
+        object_text.insert_str(pos, &format!("\r\n{child_xml}\r\n\t\t"));
+        return Ok(());
+    }
+    Err("Cannot merge attributes: <ChildObjects> not found".to_string())
+}
+
+pub(crate) fn cfe_borrow_adopted_attribute_xml(
+    attr: &CfeBorrowSourceAttribute,
+    indent: &str,
+) -> String {
+    let mut lines = vec![
+        format!("{indent}<Attribute uuid=\"{}\">", fresh_uuid()),
+        format!("{indent}\t<InternalInfo/>"),
+        format!("{indent}\t<Properties>"),
+        format!("{indent}\t\t<ObjectBelonging>Adopted</ObjectBelonging>"),
+        format!("{indent}\t\t<Name>{}</Name>", escape_xml(&attr.name)),
+        format!("{indent}\t\t<Comment/>"),
+        format!(
+            "{indent}\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
+            escape_xml(&attr.source_uuid)
+        ),
+    ];
+    if !attr.type_xml.is_empty() {
+        lines.push(format!("{indent}\t\t{}", attr.type_xml));
+    }
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</Attribute>"));
+    lines.join("\n")
+}
+
+pub(crate) fn cfe_borrow_adopted_tabular_section_xml(
+    section: &CfeBorrowSourceTabularSection,
+    indent: &str,
+) -> String {
+    let mut lines = vec![format!(
+        "{indent}<TabularSection uuid=\"{}\">",
+        fresh_uuid()
+    )];
+    if section.generated_types.is_empty() {
+        lines.push(format!("{indent}\t<InternalInfo/>"));
+    } else {
+        lines.push(format!("{indent}\t<InternalInfo>"));
+        for generated in &section.generated_types {
+            lines.push(format!(
+                "{indent}\t\t<xr:GeneratedType name=\"{}\" category=\"{}\">",
+                escape_xml(&generated.name),
+                escape_xml(&generated.category)
+            ));
+            lines.push(format!(
+                "{indent}\t\t\t<xr:TypeId>{}</xr:TypeId>",
+                fresh_uuid()
+            ));
+            lines.push(format!(
+                "{indent}\t\t\t<xr:ValueId>{}</xr:ValueId>",
+                fresh_uuid()
+            ));
+            lines.push(format!("{indent}\t\t</xr:GeneratedType>"));
+        }
+        lines.push(format!("{indent}\t</InternalInfo>"));
+    }
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!(
+        "{indent}\t\t<ObjectBelonging>Adopted</ObjectBelonging>"
+    ));
+    lines.push(format!(
+        "{indent}\t\t<Name>{}</Name>",
+        escape_xml(&section.name)
+    ));
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    lines.push(format!(
+        "{indent}\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
+        escape_xml(&section.source_uuid)
+    ));
+    lines.push(format!("{indent}\t</Properties>"));
+    if section.attributes.is_empty() {
+        lines.push(format!("{indent}\t<ChildObjects/>"));
+    } else {
+        lines.push(format!("{indent}\t<ChildObjects>"));
+        for attr in &section.attributes {
+            lines.push(cfe_borrow_adopted_attribute_xml(
+                attr,
+                &format!("{indent}\t\t"),
+            ));
+        }
+        lines.push(format!("{indent}\t</ChildObjects>"));
+    }
+    lines.push(format!("{indent}</TabularSection>"));
+    lines.join("\n")
+}
+
+pub(crate) fn cfe_borrow_ensure_reference_shells(
+    cfg_dir: &Path,
+    ext_dir: &Path,
+    type_xmls: &[String],
+    format_version: &str,
+    ext_text: &mut String,
+    stdout: &mut String,
+) -> Result<Vec<PathBuf>, String> {
+    let mut artifacts = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for (type_name, object_name) in cfe_borrow_collect_reference_types(type_xmls) {
+        let key = format!("{type_name}.{object_name}");
+        if !seen.insert(key) {
+            continue;
+        }
+        if cfe_borrow_target_object(ext_dir, &type_name, &object_name).exists() {
+            continue;
+        }
+        let source_file = cfg_dir
+            .join(cfe_borrow_type_dir(&type_name).unwrap_or(&type_name))
+            .join(format!("{object_name}.xml"));
+        if !source_file.exists() {
+            stdout.push_str(&format!(
+                "[WARN]   Source not found: {type_name}.{object_name}\n"
+            ));
+            continue;
+        }
+        let artifact = cfe_borrow_object_shell(
+            cfg_dir,
+            ext_dir,
+            &type_name,
+            &object_name,
+            format_version,
+            ext_text,
+            stdout,
+        )?;
+        stdout.push_str(&format!(
+            "[INFO]   Auto-borrowed: {type_name}.{object_name}\n"
+        ));
+        artifacts.push(artifact);
+    }
+    Ok(artifacts)
+}
+
+pub(crate) fn cfe_borrow_collect_reference_types(type_xmls: &[String]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for type_xml in type_xmls {
+        let mut rest = type_xml.as_str();
+        while let Some(pos) = rest.find("cfg:") {
+            let after = &rest[pos + "cfg:".len()..];
+            let token = after
+                .chars()
+                .take_while(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '.')
+                .collect::<String>();
+            if let Some((prefix, object_name)) = token.split_once('.') {
+                let type_name = if prefix == "DefinedType" {
+                    Some("DefinedType".to_string())
+                } else {
+                    prefix
+                        .strip_suffix("Ref")
+                        .map(ToOwned::to_owned)
+                        .or_else(|| prefix.strip_suffix("Object").map(ToOwned::to_owned))
+                };
+                if let Some(type_name) = type_name {
+                    let key = format!("{type_name}.{object_name}");
+                    if seen.insert(key) {
+                        result.push((type_name, object_name.to_string()));
+                    }
+                }
+            }
+            rest = &after[token.len()..];
+        }
+    }
+    result
+}
+
+pub(crate) fn cfe_borrow_process_deep_paths(
+    cfg_dir: &Path,
+    ext_dir: &Path,
+    resolved: &CfeBorrowResolvedAttributes,
+    deep_paths: &[CfeBorrowDeepPath],
+    format_version: &str,
+    ext_text: &mut String,
+    stdout: &mut String,
+) -> Result<Vec<PathBuf>, String> {
+    let mut artifacts = Vec::new();
+    let attrs_by_name = resolved
+        .attributes
+        .iter()
+        .map(|attr| (attr.name.as_str(), attr))
+        .collect::<BTreeMap<_, _>>();
+    let sections_by_name = resolved
+        .tabular_sections
+        .iter()
+        .map(|section| (section.name.as_str(), section))
+        .collect::<BTreeMap<_, _>>();
+    for path in deep_paths {
+        let Some(first) = path.segments.first() else {
+            continue;
+        };
+        let target = if let Some(attr) = attrs_by_name.get(first.as_str()) {
+            if path.segments.len() < 2 {
+                continue;
+            }
+            cfe_borrow_reference_target_from_type_xml(&attr.type_xml)
+                .map(|target| (target, path.segments[1].clone()))
+        } else if let Some(section) = sections_by_name.get(first.as_str()) {
+            if path.segments.len() < 3 {
+                continue;
+            }
+            let column_name = &path.segments[1];
+            let Some(column) = section
+                .attributes
+                .iter()
+                .find(|attr| attr.name == *column_name)
+            else {
+                continue;
+            };
+            cfe_borrow_reference_target_from_type_xml(&column.type_xml)
+                .map(|target| (target, path.segments[2].clone()))
+        } else {
+            None
+        };
+        let Some(((target_type, target_object), sub_attr_name)) = target else {
+            continue;
+        };
+        let target_path = cfe_borrow_target_object(ext_dir, &target_type, &target_object);
+        if !target_path.exists() {
+            let artifact = cfe_borrow_object_shell(
+                cfg_dir,
+                ext_dir,
+                &target_type,
+                &target_object,
+                format_version,
+                ext_text,
+                stdout,
+            )?;
+            stdout.push_str(&format!(
+                "[INFO]   Auto-borrowed for deep path: {target_type}.{target_object}\n"
+            ));
+            artifacts.push(artifact);
+        }
+        let mut wanted = HashSet::new();
+        wanted.insert(sub_attr_name);
+        let sub_resolved = cfe_borrow_resolve_source_attributes(
+            cfg_dir,
+            &target_type,
+            &target_object,
+            Some(&wanted),
+        )?;
+        if !sub_resolved.attributes.is_empty() || !sub_resolved.tabular_sections.is_empty() {
+            cfe_borrow_merge_resolved_into_object(&target_path, &sub_resolved)?;
+            artifacts.push(target_path.clone());
+            let mut sub_type_xmls = Vec::new();
+            for attr in &sub_resolved.attributes {
+                sub_type_xmls.push(attr.type_xml.clone());
+            }
+            for section in &sub_resolved.tabular_sections {
+                for attr in &section.attributes {
+                    sub_type_xmls.push(attr.type_xml.clone());
+                }
+            }
+            artifacts.extend(cfe_borrow_ensure_reference_shells(
+                cfg_dir,
+                ext_dir,
+                &sub_type_xmls,
+                format_version,
+                ext_text,
+                stdout,
+            )?);
+        }
+    }
+    Ok(artifacts)
+}
+
+pub(crate) fn cfe_borrow_reference_target_from_type_xml(
+    type_xml: &str,
+) -> Option<(String, String)> {
+    cfe_borrow_collect_reference_types(&[type_xml.to_string()])
+        .into_iter()
+        .next()
 }
 
 pub(crate) fn cfe_borrow_add_to_child_objects(
@@ -749,9 +1393,11 @@ pub(crate) fn cfe_borrow_form_shell(
     fs::create_dir_all(&form_meta_dir)
         .map_err(|err| format!("failed to create {}: {err}", form_meta_dir.display()))?;
     let form_meta_target = form_meta_dir.join(format!("{form_name}.xml"));
+    let form_wrapper_uuid =
+        cfe_borrow_existing_metadata_uuid(&form_meta_target, "Form").unwrap_or_else(fresh_uuid);
     write_utf8_bom(
         &form_meta_target,
-        &cfe_borrow_form_metadata_xml(form_name, source_uuid, format_version),
+        &cfe_borrow_form_metadata_xml(form_name, source_uuid, &form_wrapper_uuid, format_version),
     )?;
     stdout.push_str(&format!(
         "[INFO]   Created: {}\n",
@@ -803,13 +1449,14 @@ pub(crate) fn cfe_borrow_form_shell(
 pub(crate) fn cfe_borrow_form_metadata_xml(
     form_name: &str,
     source_uuid: &str,
+    wrapper_uuid: &str,
     format_version: &str,
 ) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo/>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>\n",
         cfe_borrow_xmlns_decl(),
         escape_xml(format_version),
-        fresh_uuid(),
+        escape_xml(wrapper_uuid),
         escape_xml(form_name),
         escape_xml(source_uuid)
     )
@@ -946,6 +1593,50 @@ pub(crate) fn cfe_borrow_register_form(
 
 pub(crate) fn cfe_borrow_xmlns_decl() -> &'static str {
     "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+}
+
+pub(crate) fn cfe_borrow_existing_metadata_uuid(path: &Path, child_name: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    doc.root_element()
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == child_name)
+        .and_then(|node| node.attribute("uuid"))
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn cfe_borrow_xml_node(node: roxmltree::Node<'_, '_>) -> String {
+    if node.is_text() {
+        return escape_xml(node.text().unwrap_or_default());
+    }
+    if !node.is_element() {
+        return String::new();
+    }
+    let tag = cfe_borrow_prefixed_name(node.tag_name().namespace(), node.tag_name().name());
+    let mut attrs = String::new();
+    for attr in node.attributes() {
+        let name = cfe_borrow_prefixed_name(attr.namespace(), attr.name());
+        attrs.push_str(&format!(" {name}=\"{}\"", escape_xml(attr.value())));
+    }
+    let children = node
+        .children()
+        .map(cfe_borrow_xml_node)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    if children.is_empty() {
+        format!("<{tag}{attrs}/>")
+    } else {
+        format!("<{tag}{attrs}>{}</{tag}>", children.join(""), tag = tag)
+    }
+}
+
+pub(crate) fn cfe_borrow_prefixed_name(namespace: Option<&str>, local_name: &str) -> String {
+    match namespace {
+        Some("http://v8.1c.ru/8.1/data/core") => format!("v8:{local_name}"),
+        Some("http://v8.1c.ru/8.3/xcf/readable") => format!("xr:{local_name}"),
+        Some("http://www.w3.org/2001/XMLSchema-instance") => format!("xsi:{local_name}"),
+        _ => local_name.to_string(),
+    }
 }
 
 pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
@@ -2602,6 +3293,7 @@ pub(crate) fn create_extension_scaffold(
         let mut compatibility = string_arg(args, &["compatibilityMode", "CompatibilityMode"])
             .unwrap_or("Version8_3_24")
             .to_string();
+        let mut format_version = "2.17".to_string();
         let interface_mode = if let Some(config_path) =
             path_arg(args, &["configPath", "ConfigPath"])
         {
@@ -2667,6 +3359,12 @@ pub(crate) fn create_extension_scaffold(
             match fs::read_to_string(&config_path) {
                 Ok(text) => match Document::parse(text.trim_start_matches('\u{feff}')) {
                     Ok(doc) => {
+                        if let Some(value) = doc.root_element().attribute("version") {
+                            format_version = value.to_string();
+                            stdout_prefix.push_str(&format!(
+                                "[INFO] Base config MDClasses format version: {format_version}\n"
+                            ));
+                        }
                         if let Some(value) = first_text(&doc, "CompatibilityMode") {
                             compatibility = value;
                             stdout_prefix.push_str(&format!(
@@ -2715,6 +3413,7 @@ pub(crate) fn create_extension_scaffold(
         let contained_object_ids = (23..30).map(stable_uuid).collect::<Vec<_>>();
         let contained_objects = contained_objects_xml(&contained_object_ids);
         let purpose = string_arg(args, &["purpose", "Purpose"]).unwrap_or("Customization");
+        let format_version_xml = escape_xml(&format_version);
         let vendor_xml = string_arg(args, &["vendor", "Vendor"])
             .map(escape_xml)
             .unwrap_or_default();
@@ -2751,7 +3450,7 @@ pub(crate) fn create_extension_scaffold(
             &config,
             &format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
 	<Configuration uuid="{uuid_cfg}">
 		<InternalInfo>
 {contained_objects}		</InternalInfo>
@@ -2791,7 +3490,7 @@ pub(crate) fn create_extension_scaffold(
             &language,
             &format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
 	<Language uuid="{uuid_lang}">
 		<InternalInfo/>
 		<Properties>
@@ -2816,7 +3515,7 @@ pub(crate) fn create_extension_scaffold(
                 role,
                 &format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
 	<Role uuid="{uuid_role}">
 		<Properties>
 			<Name>{role_name}</Name>
@@ -3111,6 +3810,30 @@ mod tests {
 </MetaDataObject>
 "#,
         );
+        let form_meta_path = ext
+            .join("Catalogs")
+            .join("ParityCatalog")
+            .join("Forms")
+            .join("MainForm.xml");
+        let existing_form_meta_uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        write_file(
+            &form_meta_path,
+            &format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
+	<Form uuid="{existing_form_meta_uuid}">
+		<InternalInfo/>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>MainForm</Name>
+			<ExtendedConfigurationObject>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</ExtendedConfigurationObject>
+			<FormType>Managed</FormType>
+		</Properties>
+	</Form>
+</MetaDataObject>
+"#
+            ),
+        );
         let module_path = ext
             .join("Catalogs")
             .join("ParityCatalog")
@@ -3135,6 +3858,12 @@ mod tests {
 
         assert!(outcome.ok, "{:?}", outcome.errors);
         assert_eq!(fs::read_to_string(&module_path).unwrap(), existing_module);
+        assert!(
+            fs::read_to_string(&form_meta_path)
+                .unwrap()
+                .contains(existing_form_meta_uuid),
+            "existing form metadata uuid must survive re-borrow"
+        );
         let stdout = outcome.stdout.as_deref().unwrap_or_default();
         assert!(
             stdout.contains("[SKIP] Module.bsl already exists"),
@@ -3146,6 +3875,282 @@ mod tests {
             .changes
             .iter()
             .any(|change| change.contains(&module_artifact)));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_init_inherits_mdclasses_format_version_from_base_config() {
+        let context = temp_context("init-format-version");
+        let src = context.cwd.join("src");
+        write_file(
+            &src.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="55555555-5555-5555-5555-555555555555">
+		<Properties>
+			<Name>ParityConfiguration</Name>
+			<CompatibilityMode>Version8_3_25</CompatibilityMode>
+			<InterfaceCompatibilityMode>TaxiEnableVersion8_5</InterfaceCompatibilityMode>
+		</Properties>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Languages").join("Русский.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Language uuid="77777777-7777-7777-7777-777777777777"/>
+</MetaDataObject>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert("Name".to_string(), json!("ParityExtension"));
+        args.insert("OutputDir".to_string(), json!("ext"));
+        args.insert("ConfigPath".to_string(), json!("src/Configuration.xml"));
+
+        let outcome = create_extension_scaffold(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        for path in [
+            context.cwd.join("ext").join("Configuration.xml"),
+            context
+                .cwd
+                .join("ext")
+                .join("Languages")
+                .join("Русский.xml"),
+            context
+                .cwd
+                .join("ext")
+                .join("Roles")
+                .join("ParityExtension_ОсновнаяРоль.xml"),
+        ] {
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains(r#"version="2.20""#),
+                "{} did not inherit base MDClasses format version:\n{text}",
+                path.display()
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn borrow_cfe_enriches_main_attribute_paths_and_reference_shells() {
+        let context = temp_context("borrow-main-attributes");
+        let src = context.cwd.join("src");
+        let ext = context.cwd.join("ext");
+        write_file(
+            &src.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="55555555-5555-5555-5555-555555555555">
+		<Properties>
+			<Name>ParityConfiguration</Name>
+			<NamePrefix/>
+		</Properties>
+		<ChildObjects>
+			<Catalog>Orders</Catalog>
+			<Catalog>Counterparty</Catalog>
+			<Catalog>Products</Catalog>
+			<DefinedType>StatusType</DefinedType>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs").join("Orders.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<Catalog uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+		<InternalInfo/>
+		<Properties>
+			<Name>Orders</Name>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+				<Properties>
+					<Name>Customer</Name>
+					<Type><v8:Type>cfg:CatalogRef.Counterparty</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="cccccccc-cccc-cccc-cccc-cccccccccccc">
+				<Properties>
+					<Name>Agreement</Name>
+					<Type><v8:Type>cfg:DefinedType.StatusType</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<TabularSection uuid="dddddddd-dddd-dddd-dddd-dddddddddddd">
+				<InternalInfo>
+					<xr:GeneratedType name="CatalogTabularSection.Orders.Items" category="TabularSection">
+						<xr:TypeId>11111111-1111-1111-1111-111111111111</xr:TypeId>
+						<xr:ValueId>22222222-2222-2222-2222-222222222222</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>Items</Name>
+				</Properties>
+				<ChildObjects>
+					<Attribute uuid="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee">
+						<Properties>
+							<Name>Product</Name>
+							<Type><v8:Type>cfg:CatalogRef.Products</v8:Type></Type>
+						</Properties>
+					</Attribute>
+					<Attribute uuid="ffffffff-ffff-ffff-ffff-ffffffffffff">
+						<Properties>
+							<Name>Quantity</Name>
+							<Type><v8:Type>xs:decimal</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs").join("Counterparty.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Catalog uuid="12345678-1234-1234-1234-123456789abc">
+		<Properties><Name>Counterparty</Name></Properties>
+		<ChildObjects>
+			<Attribute uuid="11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+				<Properties>
+					<Name>TaxId</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs").join("Products.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Catalog uuid="87654321-4321-4321-4321-cba987654321">
+		<Properties><Name>Products</Name></Properties>
+		<ChildObjects>
+			<Attribute uuid="22222222-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+				<Properties>
+					<Name>Sku</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("DefinedTypes").join("StatusType.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<DefinedType uuid="99999999-9999-9999-9999-999999999999">
+		<Properties>
+			<Name>StatusType</Name>
+			<Type><v8:Type>xs:string</v8:Type></Type>
+		</Properties>
+	</DefinedType>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs")
+                .join("Orders")
+                .join("Forms")
+                .join("MainForm.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Form uuid="aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa">
+		<Properties><Name>MainForm</Name></Properties>
+	</Form>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs")
+                .join("Orders")
+                .join("Forms")
+                .join("MainForm")
+                .join("Ext")
+                .join("Form.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ChildItems>
+		<InputField name="CustomerTaxId" id="1000001"><DataPath>Объект.Customer.TaxId</DataPath></InputField>
+		<InputField name="ProductSku" id="1000002"><DataPath>Объект.Items.Product.Sku</DataPath></InputField>
+		<InputField name="Quantity" id="1000003"><DataPath>Объект.Items.Quantity</DataPath></InputField>
+		<CommandBar name="AgreementCommand" id="1000004"><Field>Объект.Agreement</Field></CommandBar>
+	</ChildItems>
+	<Attributes/>
+</Form>
+"#,
+        );
+        write_file(
+            &ext.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="66666666-6666-6666-6666-666666666666">
+		<Properties>
+			<Name>ParityExtension</Name>
+			<NamePrefix>PE_</NamePrefix>
+		</Properties>
+		<ChildObjects/>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        args.insert("ConfigPath".to_string(), json!("src"));
+        args.insert("Object".to_string(), json!("Catalog.Orders.Form.MainForm"));
+        args.insert("BorrowMainAttribute".to_string(), json!("Form"));
+
+        let outcome = borrow_cfe(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let order_xml = fs::read_to_string(ext.join("Catalogs").join("Orders.xml")).unwrap();
+        for expected in [
+            "<Name>Customer</Name>",
+            "<Name>Agreement</Name>",
+            "<Name>Items</Name>",
+            "<Name>Product</Name>",
+            "<Name>Quantity</Name>",
+        ] {
+            assert!(
+                order_xml.contains(expected),
+                "missing {expected} in:\n{order_xml}"
+            );
+        }
+        assert!(
+            order_xml.contains("cfg:DefinedType.StatusType"),
+            "{order_xml}"
+        );
+
+        let counterparty_xml =
+            fs::read_to_string(ext.join("Catalogs").join("Counterparty.xml")).unwrap();
+        assert!(
+            counterparty_xml.contains("<Name>TaxId</Name>"),
+            "{counterparty_xml}"
+        );
+        let products_xml = fs::read_to_string(ext.join("Catalogs").join("Products.xml")).unwrap();
+        assert!(products_xml.contains("<Name>Sku</Name>"), "{products_xml}");
+        let defined_type_xml =
+            fs::read_to_string(ext.join("DefinedTypes").join("StatusType.xml")).unwrap();
+        assert!(
+            defined_type_xml.contains("<Type><v8:Type>xs:string</v8:Type></Type>"),
+            "{defined_type_xml}"
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

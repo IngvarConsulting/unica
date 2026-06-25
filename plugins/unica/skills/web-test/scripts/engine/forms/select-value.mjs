@@ -24,12 +24,12 @@ import { getFormState } from './state.mjs';
 import { filterList } from '../table/filter.mjs';
 
 /**
- * Scan visible grid rows for a text match (exact → startsWith → includes).
+ * Scan visible grid rows for a text or structured column match.
  * Returns center coords of the matched row, or null if not found.
- * When searchLower is empty, returns coords of the first row (fallback).
+ * When searchSpec is empty, returns coords of the first row (fallback).
  */
-async function scanGridRows(formNum, searchLower) {
-  return page.evaluate(scanGridRowsScript(formNum, searchLower));
+async function scanGridRows(formNum, searchSpec) {
+  return page.evaluate(scanGridRowsScript(formNum, searchSpec));
 }
 
 /**
@@ -142,9 +142,15 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
   const searchText = typeof search === 'string'
     ? search : (search ? Object.values(search).join(' ') : '');
   const searchLower = normYo((searchText || '').toLowerCase());
+  const columnSearch = typeof search === 'object' && search ? search : null;
 
   // Helper: try to select a row; returns result if ok, null if item wasn't selectable (group).
   let hadUnselectableMatch = false;
+  let visibleSample = null;
+  const rememberSample = (row) => {
+    if (row?.visibleSample) visibleSample = row.visibleSample;
+    return row;
+  };
   async function trySelect(row) {
     const r = await dblclickAndVerify(row, selFormNum, fieldName);
     if (r.ok) return r;
@@ -154,7 +160,7 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
 
   // Step 1: Scan visible rows (no filtering)
   if (searchLower) {
-    const row = await scanGridRows(selFormNum, searchLower);
+    const row = rememberSample(await scanGridRows(selFormNum, columnSearch || searchLower));
     if (row?.x) {
       const r = await trySelect(row);
       if (r) return r;
@@ -180,7 +186,7 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
     await advancedSearchInline(selFormNum, searchText);
   }
   if (searchLower) {
-    const row = await scanGridRows(selFormNum, searchLower);
+    const row = rememberSample(await scanGridRows(selFormNum, columnSearch || searchLower));
     if (row?.x) {
       const r = await trySelect(row);
       if (r) return r;
@@ -200,7 +206,7 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
         await page.keyboard.press('Enter');
         await waitForStable(selFormNum);
       } catch { /* proceed */ }
-      const row = await scanGridRows(selFormNum, searchLower);
+      const row = rememberSample(await scanGridRows(selFormNum, searchLower));
       if (row?.x) {
         const r = await trySelect(row);
         if (r) return r;
@@ -210,7 +216,7 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
 
   // Step 4: Empty search → pick first row; otherwise not found
   if (!searchLower) {
-    const row = await scanGridRows(selFormNum, '');
+    const row = rememberSample(await scanGridRows(selFormNum, ''));
     if (row?.x) {
       const r = await trySelect(row);
       if (r) return r;
@@ -220,12 +226,13 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
   await page.keyboard.press('Escape');
   await waitForStable();
   const searchDesc = typeof search === 'string' ? '"' + search + '"' : JSON.stringify(search);
+  const sample = visibleSample ? '; visibleSample=' + JSON.stringify(visibleSample) : '';
   if (hadUnselectableMatch) {
     return { field: fieldName, error: 'not_selectable',
-      message: 'Found ' + searchDesc + ' in selection form but it is not selectable (group/folder row)' };
+      message: 'Found ' + searchDesc + ' in selection form but it is not selectable (group/folder row)' + sample };
   }
   return { field: fieldName, error: 'not_found',
-    message: 'No matches in selection form for ' + searchDesc };
+    message: 'No matches in selection form for ' + searchDesc + sample };
 }
 
 /**

@@ -404,38 +404,108 @@ export function getSelectedOrLastRowIndexScript(gridSelector) {
 }
 
 /**
- * Scan a form's grid for a row matching `searchLower` (case- and ё-insensitive,
+ * Scan a form's grid for a row matching `searchSpec` (case- and ё-insensitive,
  * NBSP-normalised). Match order: exact → startsWith → includes.
  *
- * When `searchLower` is empty, returns coords of the first row (fallback).
+ * `searchSpec` can be a string or an object `{ column: value }`.
+ * When it is empty, returns coords of the first row (fallback).
  *
- * Returns `{ rowCount, x, y, isGroup } | { rowCount: 0 } | null`.
+ * Returns `{ rowCount, x, y, isGroup, visibleSample } | { rowCount: 0 } | null`.
  */
-export function scanGridRowsScript(formNum, searchLower) {
+export function scanGridRowsScript(formNum, searchSpec) {
   return `(() => {
     const p = 'form${formNum}_';
     const grid = document.querySelector('[id^="' + p + '"].grid, [id^="' + p + '"] .grid');
     if (!grid) return null;
+    const head = grid.querySelector('.gridHead');
     const body = grid.querySelector('.gridBody');
     if (!body) return null;
     const lines = [...body.querySelectorAll('.gridLine')];
     if (!lines.length) return { rowCount: 0 };
-    const searchLower = ${JSON.stringify(searchLower || '')};
+    const searchSpec = ${JSON.stringify(searchSpec || '')};
+    const norm = s => (s || '').replace(/\\u00a0/g, ' ').trim().toLowerCase().replace(/ё/gi, 'е');
+    const display = s => (s || '').replace(/\\u00a0/g, ' ').trim();
+    const headerLine = head?.querySelector('.gridLine') || head;
+    const headers = headerLine
+      ? [...headerLine.children]
+          .filter(c => c.offsetWidth > 0)
+          .map(c => {
+            const textEl = c.querySelector('.gridBoxText');
+            const text = display((textEl || c).innerText?.replace(/\\n/g, ' ') || '');
+            const title = display(c.getAttribute('title') || '');
+            const r = c.getBoundingClientRect();
+            return { name: text || title, x: r.x, right: r.x + r.width, fixed: c.classList.contains('gridBoxFix') };
+          })
+          .filter(h => h.name)
+      : [];
+    const cellText = (cell) => display(cell?.querySelector('.gridBoxText')?.innerText || cell?.innerText || '');
+    const cellsFor = (line) => [...line.children].filter(c => c.offsetWidth > 0);
+    const rowMap = (line) => {
+      const cells = cellsFor(line);
+      const result = {};
+      for (const h of headers) {
+        const cell = cells
+          .filter(c => c.classList.contains('gridBoxFix') === h.fixed)
+          .find(c => {
+            const r = c.getBoundingClientRect();
+            const cx = r.x + r.width / 2;
+            return cx >= h.x && cx < h.right;
+          });
+        result[h.name] = cellText(cell);
+      }
+      return result;
+    };
+    const visibleSample = lines.slice(0, 8).map(line => {
+      const mapped = rowMap(line);
+      return Object.keys(mapped).length ? mapped : cellText(line);
+    });
+    const matchScore = (actual, wanted) => {
+      const a = norm(actual);
+      const w = norm(String(wanted ?? ''));
+      if (!w) return 0;
+      if (a === w) return 3;
+      if (a.startsWith(w)) return 2;
+      if (a.includes(w)) return 1;
+      return 0;
+    };
     let sel = null;
-    if (searchLower) {
-      const norm = s => (s || '').replace(/\\u00a0/g, ' ').trim().toLowerCase().replace(/ё/gi, 'е');
-      const rowData = lines.map(l => ({ el: l, text: norm(l.innerText) }));
-      sel = rowData.find(r => r.text === searchLower)?.el
-        || rowData.find(r => r.text.startsWith(searchLower))?.el
-        || rowData.find(r => r.text.includes(searchLower))?.el;
+    if (typeof searchSpec === 'object' && searchSpec !== null && !Array.isArray(searchSpec)) {
+      const entries = Object.entries(searchSpec).filter(([, value]) => String(value ?? '').trim());
+      const rowData = lines.map(line => ({ el: line, map: rowMap(line), text: cellText(line) }));
+      const scored = rowData
+        .map(row => {
+          let score = 0;
+          for (const [column, value] of entries) {
+            const header = headers.find(h => norm(h.name) === norm(column))
+              || headers.find(h => norm(h.name).includes(norm(column)));
+            const actual = header ? row.map[header.name] : '';
+            const s = matchScore(actual, value);
+            if (!s) return null;
+            score += s;
+          }
+          return { row, score };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score);
+      sel = scored[0]?.row.el || null;
+    } else if (String(searchSpec || '').trim()) {
+      const rowData = lines.map(l => ({ el: l, text: cellText(l) }));
+      const exact = rowData.find(r => matchScore(r.text, searchSpec) === 3);
+      const starts = rowData.find(r => matchScore(r.text, searchSpec) === 2);
+      const includes = rowData.find(r => matchScore(r.text, searchSpec) === 1);
+      sel = exact?.el || starts?.el || includes?.el || null;
     } else {
       sel = lines[0]; // empty search → first row
     }
-    if (!sel) return null;
+    if (!sel) return { rowCount: lines.length, visibleSample };
     const imgBox = sel.querySelector('.gridBoxImg');
     const isGroup = imgBox ? !!imgBox.querySelector('.gridListH') : false;
-    const r = sel.getBoundingClientRect();
-    return { rowCount: lines.length, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), isGroup };
+    const firstTextCell = cellsFor(sel).find(cell => {
+      const r = cell.getBoundingClientRect();
+      return cellText(cell) && r.width > 0 && r.height > 0;
+    }) || sel;
+    const r = firstTextCell.getBoundingClientRect();
+    return { rowCount: lines.length, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), isGroup, visibleSample };
   })()`;
 }
 

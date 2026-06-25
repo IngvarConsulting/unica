@@ -514,6 +514,7 @@ export async function fillTableRow(fields, { tab, add, row, table, scroll } = {}
   let firstCellId = null;
 
   for (let iter = 0; iter < MAX_ITER; iter++) {
+    if ([...pending.values()].every(p => p.filled)) break;
     // Read focused element (INPUT or TEXTAREA inside grid = editable cell)
     const cell = await page.evaluate(readActiveGridCellScript());
 
