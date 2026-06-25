@@ -4395,6 +4395,55 @@ pub(crate) fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
     }
 }
 
+pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] =
+    &["Catalog", "Enum", "Constant", "CommonModule", "DefinedType"];
+
+pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[
+    "Document",
+    "InformationRegister",
+    "AccumulationRegister",
+    "AccountingRegister",
+    "CalculationRegister",
+    "ChartOfAccounts",
+    "ChartOfCharacteristicTypes",
+    "ChartOfCalculationTypes",
+    "BusinessProcess",
+    "Task",
+    "ExchangePlan",
+    "DocumentJournal",
+    "Report",
+    "DataProcessor",
+    "ScheduledJob",
+    "EventSubscription",
+    "HTTPService",
+    "WebService",
+];
+
+pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
+    match obj_type {
+        "Catalog" => Some("Catalogs"),
+        "Enum" => Some("Enums"),
+        "Constant" => Some("Constants"),
+        "CommonModule" => Some("CommonModules"),
+        "DefinedType" => Some("DefinedTypes"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
+    matches!(obj_type, "Catalog" | "Enum" | "Constant" | "CommonModule")
+}
+
+pub(crate) fn meta_compile_module_files(obj_type: &str) -> &'static [&'static str] {
+    match obj_type {
+        "Catalog" => &["ObjectModule.bsl"],
+        "Enum" => &["ManagerModule.bsl"],
+        "Constant" => &["ManagerModule.bsl", "ValueManagerModule.bsl"],
+        "CommonModule" => &["Module.bsl"],
+        _ => &[],
+    }
+}
+
 pub(crate) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -4434,40 +4483,47 @@ pub(crate) fn compile_meta(
             .and_then(Value::as_str)
             .ok_or_else(|| "JSON must have 'type' field".to_string())?;
         let obj_type = normalize_meta_object_type(raw_type);
-        if obj_type != "Catalog" {
-            return Err(format!(
-                "Unsupported type: {obj_type}. Valid: Catalog, Document, Enum, Constant, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, ChartOfAccounts, ChartOfCharacteristicTypes, ChartOfCalculationTypes, BusinessProcess, Task, ExchangePlan, DocumentJournal, Report, DataProcessor, CommonModule, ScheduledJob, EventSubscription, HTTPService, WebService, DefinedType"
-            ));
-        }
+        let type_plural = meta_compile_type_plural(&obj_type).ok_or_else(|| {
+            format!(
+                "Unsupported type: {obj_type}. Supported: {}. Documented pending: {}",
+                META_COMPILE_SUPPORTED_TYPES.join(", "),
+                META_COMPILE_PENDING_TYPES.join(", ")
+            )
+        })?;
         let obj_name = object
             .get("name")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "JSON must have 'name' field".to_string())?;
-        let type_plural = "Catalogs";
         let type_dir = output_dir.join(type_plural);
         let main_xml_path = type_dir.join(format!("{obj_name}.xml"));
         let obj_sub_dir = type_dir.join(obj_name);
         let ext_dir = obj_sub_dir.join("Ext");
 
-        fs::create_dir_all(&obj_sub_dir)
-            .map_err(|err| format!("failed to create {}: {err}", obj_sub_dir.display()))?;
+        fs::create_dir_all(&type_dir)
+            .map_err(|err| format!("failed to create {}: {err}", type_dir.display()))?;
+        if meta_compile_uses_object_subdir(&obj_type) {
+            fs::create_dir_all(&obj_sub_dir)
+                .map_err(|err| format!("failed to create {}: {err}", obj_sub_dir.display()))?;
+        }
         let format_version = detect_format_version(&output_dir);
-        let metadata_xml = meta_compile_catalog_xml(object, obj_name, &format_version)?;
+        let metadata_xml = meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
         write_utf8_bom(&main_xml_path, &metadata_xml)?;
 
         let mut artifacts = vec![main_xml_path.clone()];
         let mut modules_created = Vec::<PathBuf>::new();
-        let module_path = ext_dir.join("ObjectModule.bsl");
-        if !module_path.is_file() {
-            fs::create_dir_all(&ext_dir)
-                .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
-            write_utf8_bom(&module_path, "")?;
-            modules_created.push(module_path.clone());
-            artifacts.push(module_path.clone());
+        for module_name in meta_compile_module_files(&obj_type) {
+            let module_path = ext_dir.join(module_name);
+            if !module_path.is_file() {
+                fs::create_dir_all(&ext_dir)
+                    .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
+                write_utf8_bom(&module_path, "")?;
+                modules_created.push(module_path.clone());
+                artifacts.push(module_path.clone());
+            }
         }
 
-        let reg_result = register_compiled_meta_in_configuration(&output_dir, "Catalog", obj_name)?;
+        let reg_result = register_compiled_meta_in_configuration(&output_dir, &obj_type, obj_name)?;
 
         let attr_count = object
             .get("attributes")
@@ -4477,9 +4533,13 @@ pub(crate) fn compile_meta(
             .get("tabularSections")
             .map(meta_compile_collection_count)
             .unwrap_or(0);
+        let enum_value_count = object
+            .get("values")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
         let uid = "00000000-0000-0000-0000-000000000001";
         let mut stdout = format!(
-            "[OK] Catalog '{obj_name}' compiled\n     UUID: {uid}\n     File: {}/{type_plural}/{obj_name}.xml\n",
+            "[OK] {obj_type} '{obj_name}' compiled\n     UUID: {uid}\n     File: {}/{type_plural}/{obj_name}.xml\n",
             output_dir_label.trim_end_matches(['/', '\\'])
         );
         let mut details = Vec::new();
@@ -4488,6 +4548,9 @@ pub(crate) fn compile_meta(
         }
         if ts_count > 0 {
             details.push(format!("TabularSections: {ts_count}"));
+        }
+        if enum_value_count > 0 {
+            details.push(format!("EnumValues: {enum_value_count}"));
         }
         if !details.is_empty() {
             stdout.push_str(&format!("     {}\n", details.join(", ")));
@@ -4504,10 +4567,10 @@ pub(crate) fn compile_meta(
         }
         match reg_result.as_deref() {
             Some("added") => stdout.push_str(&format!(
-                "     Configuration.xml: <Catalog>{obj_name}</Catalog> added to ChildObjects\n"
+                "     Configuration.xml: <{obj_type}>{obj_name}</{obj_type}> added to ChildObjects\n"
             )),
             Some("already") => stdout.push_str(&format!(
-                "     Configuration.xml: <Catalog>{obj_name}</Catalog> already registered\n"
+                "     Configuration.xml: <{obj_type}>{obj_name}</{obj_type}> already registered\n"
             )),
             Some("no-childobj") => {}
             _ => stdout.push_str(&format!(
@@ -4591,6 +4654,71 @@ pub(crate) fn normalize_meta_object_type(raw: &str) -> String {
     .to_string()
 }
 
+pub(crate) fn meta_compile_object_xml(
+    defn: &Map<String, Value>,
+    obj_type: &str,
+    obj_name: &str,
+    format_version: &str,
+) -> Result<String, String> {
+    if obj_type == "Catalog" {
+        return meta_compile_catalog_xml(defn, obj_name, format_version);
+    }
+
+    let mut uuid_counter = 1usize;
+    let mut next_uuid = || {
+        let uuid = stable_uuid(uuid_counter);
+        uuid_counter += 1;
+        uuid
+    };
+    let obj_uuid = next_uuid();
+    let synonym = meta_compile_synonym(defn, obj_name);
+
+    let mut lines = Vec::<String>::new();
+    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
+    lines.push(format!(
+        "<MetaDataObject {} version=\"{format_version}\">",
+        meta_xmlns_decl()
+    ));
+    lines.push(format!("\t<{obj_type} uuid=\"{obj_uuid}\">"));
+    emit_meta_internal_info(&mut lines, "\t\t", obj_type, obj_name, &mut next_uuid);
+    lines.push("\t\t<Properties>".to_string());
+    match obj_type {
+        "Enum" => emit_meta_enum_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "Constant" => emit_meta_constant_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "CommonModule" => {
+            emit_meta_common_module_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "DefinedType" => {
+            emit_meta_defined_type_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        _ => {
+            return Err(format!(
+                "Unsupported type: {obj_type}. Supported: {}. Documented pending: {}",
+                META_COMPILE_SUPPORTED_TYPES.join(", "),
+                META_COMPILE_PENDING_TYPES.join(", ")
+            ));
+        }
+    }
+    lines.push("\t\t</Properties>".to_string());
+
+    if obj_type == "Enum" {
+        let values = meta_compile_enum_values(defn.get("values"))?;
+        if values.is_empty() {
+            lines.push("\t\t<ChildObjects/>".to_string());
+        } else {
+            lines.push("\t\t<ChildObjects>".to_string());
+            for value in &values {
+                emit_meta_enum_value(&mut lines, "\t\t\t", value, &mut next_uuid);
+            }
+            lines.push("\t\t</ChildObjects>".to_string());
+        }
+    }
+
+    lines.push(format!("\t</{obj_type}>"));
+    lines.push("</MetaDataObject>".to_string());
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
 pub(crate) fn meta_compile_catalog_xml(
     defn: &Map<String, Value>,
     obj_name: &str,
@@ -4669,6 +4797,17 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("CatalogList", "List"),
             ("CatalogManager", "Manager"),
         ],
+        "Enum" => vec![
+            ("EnumRef", "Ref"),
+            ("EnumManager", "Manager"),
+            ("EnumList", "List"),
+        ],
+        "Constant" => vec![
+            ("ConstantManager", "Manager"),
+            ("ConstantValueManager", "ValueManager"),
+            ("ConstantValueKey", "ValueKey"),
+        ],
+        "DefinedType" => vec![("DefinedType", "DefinedType")],
         _ => Vec::new(),
     };
     if generated.is_empty() {
@@ -4825,6 +4964,304 @@ pub(crate) fn emit_meta_catalog_properties(
     }
 }
 
+pub(crate) fn meta_compile_synonym(defn: &Map<String, Value>, obj_name: &str) -> String {
+    defn.get("synonym")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| split_meta_camel_case(obj_name))
+}
+
+pub(crate) fn emit_meta_base_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    lines.push(format!("{indent}<Name>{}</Name>", escape_xml(obj_name)));
+    emit_meta_mltext(lines, indent, "Synonym", synonym);
+    match defn.get("comment").and_then(Value::as_str) {
+        Some(comment) if !comment.is_empty() => {
+            lines.push(format!(
+                "{indent}<Comment>{}</Comment>",
+                escape_xml(comment)
+            ));
+        }
+        _ => lines.push(format!("{indent}<Comment/>")),
+    }
+}
+
+pub(crate) fn emit_meta_enum_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>false</UseStandardCommands>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "Enum");
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!("{indent}<QuickChoice>true</QuickChoice>"));
+    lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
+    for tag in [
+        "DefaultListForm",
+        "DefaultChoiceForm",
+        "AuxiliaryListForm",
+        "AuxiliaryChoiceForm",
+    ] {
+        lines.push(format!("{indent}<{tag}/>"));
+    }
+    lines.push(format!("{indent}<ListPresentation/>"));
+    lines.push(format!("{indent}<ExtendedListPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+    lines.push(format!(
+        "{indent}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>"
+    ));
+}
+
+pub(crate) fn emit_meta_constant_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let value_type = meta_compile_root_value_type(defn);
+    emit_meta_value_type(lines, indent, &value_type);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    for tag in ["DefaultForm", "ExtendedPresentation", "Explanation"] {
+        lines.push(format!("{indent}<{tag}/>"));
+    }
+    for line in [
+        "<PasswordMode>false</PasswordMode>",
+        "<Format/>",
+        "<EditFormat/>",
+        "<ToolTip/>",
+        "<MarkNegatives>false</MarkNegatives>",
+        "<Mask/>",
+        "<MultiLine>false</MultiLine>",
+        "<ExtendedEdit>false</ExtendedEdit>",
+        "<MinValue xsi:nil=\"true\"/>",
+        "<MaxValue xsi:nil=\"true\"/>",
+        "<FillChecking>DontCheck</FillChecking>",
+        "<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>",
+        "<ChoiceParameterLinks/>",
+        "<ChoiceParameters/>",
+        "<QuickChoice>Auto</QuickChoice>",
+        "<ChoiceForm/>",
+        "<LinkByType/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+}
+
+pub(crate) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String {
+    let mut type_name = defn
+        .get("valueType")
+        .and_then(Value::as_str)
+        .unwrap_or("String")
+        .to_string();
+    if !type_name.is_empty() && !type_name.contains('(') {
+        if type_name == "String" {
+            if let Some(length) = defn.get("length").and_then(json_i64_value) {
+                type_name = format!("String({length})");
+            }
+        } else if type_name == "Number" {
+            if let Some(length) = defn.get("length").and_then(json_i64_value) {
+                let precision = defn.get("precision").and_then(json_i64_value).unwrap_or(0);
+                let nn = if defn.get("nonneg").and_then(Value::as_bool) == Some(true)
+                    || defn.get("nonnegative").and_then(Value::as_bool) == Some(true)
+                {
+                    ",nonneg"
+                } else {
+                    ""
+                };
+                type_name = format!("Number({length},{precision}{nn})");
+            }
+        }
+    }
+    type_name
+}
+
+pub(crate) fn emit_meta_common_module_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let context = defn
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut server = bool_arg_from_json(defn, "server");
+    let mut server_call = bool_arg_from_json(defn, "serverCall");
+    let mut client_managed = bool_arg_from_json(defn, "clientManagedApplication");
+    match context {
+        "server" | "serverCall" => {
+            server = true;
+            server_call = true;
+        }
+        "client" => client_managed = true,
+        "serverClient" => {
+            server = true;
+            client_managed = true;
+        }
+        _ => {}
+    }
+    lines.push(format!(
+        "{indent}<Global>{}</Global>",
+        bool_arg_from_json(defn, "global")
+    ));
+    lines.push(format!(
+        "{indent}<ClientManagedApplication>{client_managed}</ClientManagedApplication>"
+    ));
+    lines.push(format!("{indent}<Server>{server}</Server>"));
+    lines.push(format!(
+        "{indent}<ExternalConnection>{}</ExternalConnection>",
+        bool_arg_from_json(defn, "externalConnection")
+    ));
+    lines.push(format!(
+        "{indent}<ClientOrdinaryApplication>{}</ClientOrdinaryApplication>",
+        bool_arg_from_json(defn, "clientOrdinaryApplication")
+    ));
+    lines.push(format!("{indent}<ServerCall>{server_call}</ServerCall>"));
+    lines.push(format!(
+        "{indent}<Privileged>{}</Privileged>",
+        bool_arg_from_json(defn, "privileged")
+    ));
+    lines.push(format!(
+        "{indent}<ReturnValuesReuse>{}</ReturnValuesReuse>",
+        meta_enum_prop(defn, "returnValuesReuse", "DontUse")
+    ));
+}
+
+pub(crate) fn emit_meta_defined_type_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let value_types = meta_compile_value_types(defn);
+    if value_types.is_empty() {
+        lines.push(format!("{indent}<Type/>"));
+        return;
+    }
+    lines.push(format!("{indent}<Type>"));
+    for value_type in value_types {
+        emit_meta_type_content(lines, &format!("{indent}\t"), &value_type);
+    }
+    lines.push(format!("{indent}</Type>"));
+}
+
+pub(crate) fn bool_arg_from_json(defn: &Map<String, Value>, field_name: &str) -> bool {
+    defn.get(field_name).and_then(Value::as_bool) == Some(true)
+}
+
+pub(crate) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String> {
+    let value = defn.get("valueTypes").or_else(|| defn.get("valueType"));
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect(),
+        Some(Value::String(value)) if !value.is_empty() => vec![value.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) struct MetaCompileEnumValue {
+    pub(crate) name: String,
+    pub(crate) synonym: String,
+    pub(crate) comment: String,
+}
+
+pub(crate) fn meta_compile_enum_values(
+    value: Option<&Value>,
+) -> Result<Vec<MetaCompileEnumValue>, String> {
+    let Some(Value::Array(items)) = value else {
+        return Ok(Vec::new());
+    };
+    let mut values = Vec::new();
+    for item in items {
+        if let Some(name) = item.as_str() {
+            values.push(MetaCompileEnumValue {
+                name: name.to_string(),
+                synonym: split_meta_camel_case(name),
+                comment: String::new(),
+            });
+            continue;
+        }
+        let object = item
+            .as_object()
+            .ok_or_else(|| "enum value must be a string or object".to_string())?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "enum value is missing name".to_string())?;
+        values.push(MetaCompileEnumValue {
+            name: name.to_string(),
+            synonym: object
+                .get("synonym")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| split_meta_camel_case(name)),
+            comment: object
+                .get("comment")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(values)
+}
+
+pub(crate) fn emit_meta_enum_value<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    value: &MetaCompileEnumValue,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    lines.push(format!("{indent}<EnumValue uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!(
+        "{indent}\t\t<Name>{}</Name>",
+        escape_xml(&value.name)
+    ));
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &value.synonym);
+    if value.comment.is_empty() {
+        lines.push(format!("{indent}\t\t<Comment/>"));
+    } else {
+        lines.push(format!(
+            "{indent}\t\t<Comment>{}</Comment>",
+            escape_xml(&value.comment)
+        ));
+    }
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</EnumValue>"));
+}
+
 pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, default: &str) -> String {
     defn.get(field_name)
         .and_then(Value::as_str)
@@ -4870,6 +5307,7 @@ pub(crate) fn emit_meta_standard_attributes(
             "Description",
             "Code",
         ],
+        "Enum" => vec!["Order", "Ref"],
         "TabularSection" => vec!["LineNumber"],
         _ => Vec::new(),
     };
@@ -5352,12 +5790,34 @@ pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type
             if nonnegative { "Nonnegative" } else { "Any" }
         ));
         lines.push(format!("{indent}</v8:NumberQualifiers>"));
+    } else if meta_compile_is_config_type(&resolved) {
+        lines.push(format!(
+            "{indent}<v8:Type>cfg:{}</v8:Type>",
+            escape_xml(&resolved)
+        ));
     } else {
         lines.push(format!(
             "{indent}<v8:Type>{}</v8:Type>",
             escape_xml(&resolved)
         ));
     }
+}
+
+pub(crate) fn meta_compile_is_config_type(type_name: &str) -> bool {
+    [
+        "CatalogRef.",
+        "DocumentRef.",
+        "EnumRef.",
+        "ChartOfAccountsRef.",
+        "ChartOfCharacteristicTypesRef.",
+        "ChartOfCalculationTypesRef.",
+        "ExchangePlanRef.",
+        "BusinessProcessRef.",
+        "TaskRef.",
+        "DefinedType.",
+    ]
+    .iter()
+    .any(|prefix| type_name.starts_with(prefix))
 }
 
 pub(crate) fn emit_meta_fill_value(lines: &mut Vec<String>, indent: &str, type_name: &str) {
@@ -5413,6 +5873,18 @@ pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
         "справочникссылка" | "catalogref" => Some("CatalogRef"),
         "документссылка" | "documentref" => Some("DocumentRef"),
         "перечислениессылка" | "enumref" => Some("EnumRef"),
+        "плансчетовссылка" | "chartofaccountsref" => Some("ChartOfAccountsRef"),
+        "планвидовхарактеристикссылка" | "chartofcharacteristictypesref" => {
+            Some("ChartOfCharacteristicTypesRef")
+        }
+        "планвидоврасчётассылка" | "планвидоврасчетассылка" | "chartofcalculationtypesref" => {
+            Some("ChartOfCalculationTypesRef")
+        }
+        "планобменассылка" | "exchangeplanref" => Some("ExchangePlanRef"),
+        "бизнеспроцессссылка" | "businessprocessref" => {
+            Some("BusinessProcessRef")
+        }
+        "задачассылка" | "taskref" => Some("TaskRef"),
         "определяемыйтип" | "definedtype" => Some("DefinedType"),
         _ => None,
     }

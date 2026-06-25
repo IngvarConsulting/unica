@@ -1816,6 +1816,168 @@ mod tests {
     }
 
     #[test]
+    fn meta_compile_creates_constant_with_boolean_type() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-constant-bool");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("constant-bool.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Constant",
+  "name": "DemoFlag",
+  "synonym": "Demo flag",
+  "comment": "Synthetic repro",
+  "valueType": "Boolean"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.stderr);
+        let xml_path = src.join("Constants").join("DemoFlag.xml");
+        assert!(xml_path.is_file());
+        let xml = std::fs::read_to_string(&xml_path).unwrap();
+        assert!(xml.contains("<Constant uuid=\"00000000-0000-0000-0000-000000000001\">"));
+        assert!(xml.contains("<Name>DemoFlag</Name>"));
+        assert!(xml.contains("<v8:Type>xs:boolean</v8:Type>"));
+        assert!(xml.contains("ConstantManager.DemoFlag"));
+        assert!(std::fs::read_to_string(src.join("Configuration.xml"))
+            .unwrap()
+            .contains("<Constant>DemoFlag</Constant>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_creates_constant_with_catalog_ref_type() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-constant-ref");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("constant-ref.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Constant",
+  "name": "MainCurrency",
+  "valueType": "CatalogRef.Currencies"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.stderr);
+        let xml = std::fs::read_to_string(src.join("Constants").join("MainCurrency.xml")).unwrap();
+        assert!(xml.contains("<v8:Type>cfg:CatalogRef.Currencies</v8:Type>"));
+        assert!(std::fs::read_to_string(src.join("Configuration.xml"))
+            .unwrap()
+            .contains("<Constant>MainCurrency</Constant>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_creates_common_module_with_server_context() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-common-module");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("common-module.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "CommonModule",
+  "name": "DemoServerModule",
+  "synonym": "Demo server module",
+  "comment": "Synthetic repro",
+  "context": "server",
+  "returnValuesReuse": "DuringRequest"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.stderr);
+        let xml_path = src.join("CommonModules").join("DemoServerModule.xml");
+        let module_path = src
+            .join("CommonModules")
+            .join("DemoServerModule")
+            .join("Ext")
+            .join("Module.bsl");
+        assert!(xml_path.is_file());
+        assert!(module_path.is_file());
+        let xml = std::fs::read_to_string(&xml_path).unwrap();
+        assert!(xml.contains("<CommonModule uuid=\"00000000-0000-0000-0000-000000000001\">"));
+        assert!(xml.contains("<Server>true</Server>"));
+        assert!(xml.contains("<ServerCall>true</ServerCall>"));
+        assert!(xml.contains("<ClientManagedApplication>false</ClientManagedApplication>"));
+        assert!(xml.contains("<ReturnValuesReuse>DuringRequest</ReturnValuesReuse>"));
+        assert!(std::fs::read_to_string(src.join("Configuration.xml"))
+            .unwrap()
+            .contains("<CommonModule>DemoServerModule</CommonModule>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_creates_enum_and_defined_type() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-enum-defined");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+
+        let enum_json = fixtures.join("enum.json");
+        std::fs::write(
+            &enum_json,
+            r#"{
+  "type": "Enum",
+  "name": "DemoStatuses",
+  "values": ["New", "Closed"]
+}"#,
+        )
+        .unwrap();
+        let enum_result = call_meta_compile(&workspace, &enum_json);
+        assert!(enum_result.ok, "{:?}", enum_result.stderr);
+
+        let defined_json = fixtures.join("defined.json");
+        std::fs::write(
+            &defined_json,
+            r#"{
+  "type": "DefinedType",
+  "name": "DemoValue",
+  "valueTypes": ["String(100)", "CatalogRef.Products"]
+}"#,
+        )
+        .unwrap();
+        let defined_result = call_meta_compile(&workspace, &defined_json);
+        assert!(defined_result.ok, "{:?}", defined_result.stderr);
+
+        let enum_xml = std::fs::read_to_string(src.join("Enums").join("DemoStatuses.xml")).unwrap();
+        assert!(enum_xml.contains("<EnumValue uuid=\""));
+        assert!(enum_xml.contains("<Name>New</Name>"));
+        assert!(enum_xml.contains("<Name>Closed</Name>"));
+        let defined_xml =
+            std::fs::read_to_string(src.join("DefinedTypes").join("DemoValue.xml")).unwrap();
+        assert!(defined_xml.contains("<DefinedType uuid=\"00000000-0000-0000-0000-000000000001\">"));
+        assert!(defined_xml.contains("<v8:Type>xs:string</v8:Type>"));
+        assert!(defined_xml.contains("<v8:Type>cfg:CatalogRef.Products</v8:Type>"));
+        let config = std::fs::read_to_string(src.join("Configuration.xml")).unwrap();
+        assert!(config.contains("<Enum>DemoStatuses</Enum>"));
+        assert!(config.contains("<DefinedType>DemoValue</DefinedType>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn help_add_routes_through_unica_and_creates_help_files() {
         let root = std::env::temp_dir().join(format!("unica-help-add-{}", std::process::id()));
         let workspace = root.join("workspace");
@@ -1961,6 +2123,48 @@ mod tests {
   ]
 }}"#
         )
+    }
+
+    fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        root
+    }
+
+    fn call_meta_compile(
+        workspace: &std::path::Path,
+        json_path: &std::path::Path,
+    ) -> OperationResult {
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap()
     }
 
     #[test]
