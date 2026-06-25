@@ -57,12 +57,45 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, text)
 
+    def test_pull_request_runs_cancel_stale_commits(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("concurrency:", text)
+        self.assertIn("group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", text)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
+
+    def test_workflow_is_read_only_by_default(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("permissions:\n  contents: read", text)
+        self.assertNotIn("permissions:\n  contents: write\n\njobs:", text)
+
+    def test_release_artifact_builds_are_gated_on_prs(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("classify-changes:", text)
+        self.assertIn("release_artifacts: ${{ steps.scope.outputs.release_artifacts }}", text)
+        self.assertIn("if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}", text)
+        self.assertIn("python scripts/ci/classify-workflow-changes.py", text)
+
     def test_build_tools_waits_for_source_verification_and_sets_up_rust(self) -> None:
         text = self.workflow_text()
         self.assertIn("build-tools:", text)
-        self.assertIn("needs: verify-source", text)
+        self.assertIn("needs:\n      - verify-source\n      - classify-changes", text)
         self.assertIn("uses: dtolnay/rust-toolchain@stable", text)
         self.assertIn("python scripts/ci/build-unica-tools.py", text)
+
+    def test_release_publishing_is_separate_from_packaging(self) -> None:
+        text = self.workflow_text()
+
+        package_job = text[text.index("  package:") : text.index("  publish-release-assets:")]
+        self.assertNotIn("softprops/action-gh-release", package_job)
+        self.assertNotIn("contents: write", package_job)
+
+        self.assertIn("publish-release-assets:", text)
+        self.assertIn("publish-installer-asset:", text)
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/')", text)
+        self.assertIn("permissions:\n      contents: write", text)
 
 
 if __name__ == "__main__":

@@ -20,9 +20,42 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify-changes:
+    name: Classify CI scope
+    runs-on: ubuntu-latest
+    outputs:
+      release_artifacts: ${{ steps.scope.outputs.release_artifacts }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: scope
+        name: Decide release artifact scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "release_artifacts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          changed_files="$(git diff --name-only FETCH_HEAD...HEAD)"
+          printf '%s\n' "$changed_files"
+
+          release_artifacts="$(printf '%s\n' "$changed_files" | python scripts/ci/classify-workflow-changes.py)"
+          echo "release_artifacts=$release_artifacts" >> "$GITHUB_OUTPUT"
+
   verify-source:
     name: Verify source guardrails
     runs-on: ubuntu-latest
@@ -69,7 +102,10 @@ jobs:
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    needs: verify-source
+    needs:
+      - verify-source
+      - classify-changes
+    if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -142,17 +178,11 @@ jobs:
             dist/unica-codex-marketplace-${{ matrix.target }}.zip
           if-no-files-found: error
 
-      - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/unica-codex-marketplace-${{ matrix.target }}.tar.gz
-            dist/unica-codex-marketplace-${{ matrix.target }}.zip
-
   installer:
-    name: Publish installer script
+    name: Package installer script
     runs-on: ubuntu-latest
+    needs: classify-changes
+    if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -168,8 +198,49 @@ jobs:
           path: dist/install-unica.sh
           if-no-files-found: error
 
-      - name: Publish installer asset
-        if: startsWith(github.ref, 'refs/tags/')
+  publish-release-assets:
+    name: Publish release assets (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64
+          - win-x64
+          - darwin-arm64
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-codex-marketplace-${{ matrix.target }}
+          path: dist/${{ matrix.target }}
+
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/install-unica.sh
+          files: |
+            dist/${{ matrix.target }}/unica-codex-marketplace-${{ matrix.target }}.tar.gz
+            dist/${{ matrix.target }}/unica-codex-marketplace-${{ matrix.target }}.zip
+
+  publish-installer-asset:
+    name: Publish installer asset
+    runs-on: ubuntu-latest
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-installer
+          path: dist/installer
+
+      - name: Publish installer asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/install-unica.sh
