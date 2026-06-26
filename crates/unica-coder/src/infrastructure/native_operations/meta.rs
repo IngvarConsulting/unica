@@ -8,12 +8,33 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
 use super::{
     cf::*, cfe::*, form::*, interface::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
 };
+
+static META_COMPILE_UUID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn fresh_meta_compile_uuid() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = META_COMPILE_UUID_SEQUENCE.fetch_add(1, Ordering::Relaxed) as u128;
+    let hex = format!("{:032x}", nanos.wrapping_add(sequence));
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct MetaInfoAttr<'a, 'input> {
     pub(crate) name: String,
@@ -4395,11 +4416,11 @@ pub(crate) fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] =
-    &["Catalog", "Enum", "Constant", "CommonModule", "DefinedType"];
-
-pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[
+pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
+    "Catalog",
     "Document",
+    "Enum",
+    "Constant",
     "InformationRegister",
     "AccumulationRegister",
     "AccountingRegister",
@@ -4413,34 +4434,92 @@ pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[
     "DocumentJournal",
     "Report",
     "DataProcessor",
+    "CommonModule",
     "ScheduledJob",
     "EventSubscription",
     "HTTPService",
     "WebService",
+    "DefinedType",
 ];
+
+pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
 
 pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
     match obj_type {
         "Catalog" => Some("Catalogs"),
+        "Document" => Some("Documents"),
         "Enum" => Some("Enums"),
         "Constant" => Some("Constants"),
+        "InformationRegister" => Some("InformationRegisters"),
+        "AccumulationRegister" => Some("AccumulationRegisters"),
+        "AccountingRegister" => Some("AccountingRegisters"),
+        "CalculationRegister" => Some("CalculationRegisters"),
+        "ChartOfAccounts" => Some("ChartsOfAccounts"),
+        "ChartOfCharacteristicTypes" => Some("ChartsOfCharacteristicTypes"),
+        "ChartOfCalculationTypes" => Some("ChartsOfCalculationTypes"),
+        "BusinessProcess" => Some("BusinessProcesses"),
+        "Task" => Some("Tasks"),
+        "ExchangePlan" => Some("ExchangePlans"),
+        "DocumentJournal" => Some("DocumentJournals"),
+        "Report" => Some("Reports"),
+        "DataProcessor" => Some("DataProcessors"),
         "CommonModule" => Some("CommonModules"),
+        "ScheduledJob" => Some("ScheduledJobs"),
+        "EventSubscription" => Some("EventSubscriptions"),
+        "HTTPService" => Some("HTTPServices"),
+        "WebService" => Some("WebServices"),
         "DefinedType" => Some("DefinedTypes"),
         _ => None,
     }
 }
 
 pub(crate) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
-    matches!(obj_type, "Catalog" | "Enum" | "Constant" | "CommonModule")
+    !matches!(
+        obj_type,
+        "DefinedType" | "ScheduledJob" | "EventSubscription"
+    )
 }
 
 pub(crate) fn meta_compile_module_files(obj_type: &str) -> &'static [&'static str] {
     match obj_type {
-        "Catalog" => &["ObjectModule.bsl"],
+        "Catalog"
+        | "Document"
+        | "ChartOfAccounts"
+        | "ChartOfCharacteristicTypes"
+        | "ChartOfCalculationTypes"
+        | "BusinessProcess"
+        | "Task"
+        | "ExchangePlan" => &["ObjectModule.bsl"],
         "Enum" => &["ManagerModule.bsl"],
         "Constant" => &["ManagerModule.bsl", "ValueManagerModule.bsl"],
-        "CommonModule" => &["Module.bsl"],
+        "InformationRegister"
+        | "AccumulationRegister"
+        | "AccountingRegister"
+        | "CalculationRegister" => &["RecordSetModule.bsl"],
+        "Report" | "DataProcessor" => &["ObjectModule.bsl", "ManagerModule.bsl"],
+        "CommonModule" | "HTTPService" | "WebService" => &["Module.bsl"],
         _ => &[],
+    }
+}
+
+pub(crate) fn meta_compile_extra_ext_files(
+    obj_type: &str,
+    format_version: &str,
+) -> Vec<(&'static str, String)> {
+    match obj_type {
+        "ExchangePlan" => vec![(
+            "Content.xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"{format_version}\"/>\r\n"
+            ),
+        )],
+        "BusinessProcess" => vec![(
+            "Flowchart.xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Flowchart xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{format_version}\"/>\r\n"
+            ),
+        )],
+        _ => Vec::new(),
     }
 }
 
@@ -4507,7 +4586,8 @@ pub(crate) fn compile_meta(
                 .map_err(|err| format!("failed to create {}: {err}", obj_sub_dir.display()))?;
         }
         let format_version = detect_format_version(&output_dir);
-        let metadata_xml = meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
+        let (metadata_xml, uid) =
+            meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
         write_utf8_bom(&main_xml_path, &metadata_xml)?;
 
         let mut artifacts = vec![main_xml_path.clone()];
@@ -4520,6 +4600,16 @@ pub(crate) fn compile_meta(
                 write_utf8_bom(&module_path, "")?;
                 modules_created.push(module_path.clone());
                 artifacts.push(module_path.clone());
+            }
+        }
+        for (file_name, content) in meta_compile_extra_ext_files(&obj_type, &format_version) {
+            let file_path = ext_dir.join(file_name);
+            if !file_path.is_file() {
+                fs::create_dir_all(&ext_dir)
+                    .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
+                write_utf8_bom(&file_path, &content)?;
+                modules_created.push(file_path.clone());
+                artifacts.push(file_path.clone());
             }
         }
 
@@ -4537,7 +4627,18 @@ pub(crate) fn compile_meta(
             .get("values")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        let uid = "00000000-0000-0000-0000-000000000001";
+        let dim_count = object
+            .get("dimensions")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let res_count = object
+            .get("resources")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let column_count = object
+            .get("columns")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
         let mut stdout = format!(
             "[OK] {obj_type} '{obj_name}' compiled\n     UUID: {uid}\n     File: {}/{type_plural}/{obj_name}.xml\n",
             output_dir_label.trim_end_matches(['/', '\\'])
@@ -4551,6 +4652,15 @@ pub(crate) fn compile_meta(
         }
         if enum_value_count > 0 {
             details.push(format!("EnumValues: {enum_value_count}"));
+        }
+        if dim_count > 0 {
+            details.push(format!("Dimensions: {dim_count}"));
+        }
+        if res_count > 0 {
+            details.push(format!("Resources: {res_count}"));
+        }
+        if column_count > 0 {
+            details.push(format!("Columns: {column_count}"));
         }
         if !details.is_empty() {
             stdout.push_str(&format!("     {}\n", details.join(", ")));
@@ -4659,17 +4769,12 @@ pub(crate) fn meta_compile_object_xml(
     obj_type: &str,
     obj_name: &str,
     format_version: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     if obj_type == "Catalog" {
         return meta_compile_catalog_xml(defn, obj_name, format_version);
     }
 
-    let mut uuid_counter = 1usize;
-    let mut next_uuid = || {
-        let uuid = stable_uuid(uuid_counter);
-        uuid_counter += 1;
-        uuid
-    };
+    let mut next_uuid = fresh_meta_compile_uuid;
     let obj_uuid = next_uuid();
     let synonym = meta_compile_synonym(defn, obj_name);
 
@@ -4683,10 +4788,58 @@ pub(crate) fn meta_compile_object_xml(
     emit_meta_internal_info(&mut lines, "\t\t", obj_type, obj_name, &mut next_uuid);
     lines.push("\t\t<Properties>".to_string());
     match obj_type {
+        "Document" => emit_meta_document_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
         "Enum" => emit_meta_enum_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
         "Constant" => emit_meta_constant_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "InformationRegister" => emit_meta_information_register_properties(
+            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+        ),
+        "AccumulationRegister" => emit_meta_accumulation_register_properties(
+            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+        ),
+        "AccountingRegister" => {
+            emit_meta_accounting_register_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "CalculationRegister" => emit_meta_calculation_register_properties(
+            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+        ),
+        "ChartOfAccounts" => {
+            emit_meta_chart_of_accounts_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "ChartOfCharacteristicTypes" => emit_meta_chart_of_characteristic_types_properties(
+            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+        ),
+        "ChartOfCalculationTypes" => emit_meta_chart_of_calculation_types_properties(
+            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+        ),
+        "BusinessProcess" => {
+            emit_meta_business_process_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "Task" => emit_meta_task_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "ExchangePlan" => {
+            emit_meta_exchange_plan_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "DocumentJournal" => {
+            emit_meta_document_journal_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "Report" => emit_meta_report_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "DataProcessor" => {
+            emit_meta_data_processor_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
         "CommonModule" => {
             emit_meta_common_module_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "ScheduledJob" => {
+            emit_meta_scheduled_job_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "EventSubscription" => {
+            emit_meta_event_subscription_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "HTTPService" => {
+            emit_meta_http_service_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        }
+        "WebService" => {
+            emit_meta_web_service_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
         }
         "DefinedType" => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
@@ -4701,35 +4854,19 @@ pub(crate) fn meta_compile_object_xml(
     }
     lines.push("\t\t</Properties>".to_string());
 
-    if obj_type == "Enum" {
-        let values = meta_compile_enum_values(defn.get("values"))?;
-        if values.is_empty() {
-            lines.push("\t\t<ChildObjects/>".to_string());
-        } else {
-            lines.push("\t\t<ChildObjects>".to_string());
-            for value in &values {
-                emit_meta_enum_value(&mut lines, "\t\t\t", value, &mut next_uuid);
-            }
-            lines.push("\t\t</ChildObjects>".to_string());
-        }
-    }
+    emit_meta_child_objects(&mut lines, "\t\t", defn, obj_type, obj_name, &mut next_uuid)?;
 
     lines.push(format!("\t</{obj_type}>"));
     lines.push("</MetaDataObject>".to_string());
-    Ok(format!("{}\n", lines.join("\n")))
+    Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
 pub(crate) fn meta_compile_catalog_xml(
     defn: &Map<String, Value>,
     obj_name: &str,
     format_version: &str,
-) -> Result<String, String> {
-    let mut uuid_counter = 1usize;
-    let mut next_uuid = || {
-        let uuid = stable_uuid(uuid_counter);
-        uuid_counter += 1;
-        uuid
-    };
+) -> Result<(String, String), String> {
+    let mut next_uuid = fresh_meta_compile_uuid;
     let obj_uuid = next_uuid();
     let synonym = defn
         .get("synonym")
@@ -4773,7 +4910,7 @@ pub(crate) fn meta_compile_catalog_xml(
 
     lines.push("\t</Catalog>".to_string());
     lines.push("</MetaDataObject>".to_string());
-    Ok(format!("{}\n", lines.join("\n")))
+    Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
 pub(crate) fn meta_xmlns_decl() -> &'static str {
@@ -4797,6 +4934,13 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("CatalogList", "List"),
             ("CatalogManager", "Manager"),
         ],
+        "Document" => vec![
+            ("DocumentObject", "Object"),
+            ("DocumentRef", "Ref"),
+            ("DocumentSelection", "Selection"),
+            ("DocumentList", "List"),
+            ("DocumentManager", "Manager"),
+        ],
         "Enum" => vec![
             ("EnumRef", "Ref"),
             ("EnumManager", "Manager"),
@@ -4807,6 +4951,109 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("ConstantValueManager", "ValueManager"),
             ("ConstantValueKey", "ValueKey"),
         ],
+        "InformationRegister" => vec![
+            ("InformationRegisterRecord", "Record"),
+            ("InformationRegisterManager", "Manager"),
+            ("InformationRegisterSelection", "Selection"),
+            ("InformationRegisterList", "List"),
+            ("InformationRegisterRecordSet", "RecordSet"),
+            ("InformationRegisterRecordKey", "RecordKey"),
+            ("InformationRegisterRecordManager", "RecordManager"),
+        ],
+        "AccumulationRegister" => vec![
+            ("AccumulationRegisterRecord", "Record"),
+            ("AccumulationRegisterManager", "Manager"),
+            ("AccumulationRegisterSelection", "Selection"),
+            ("AccumulationRegisterList", "List"),
+            ("AccumulationRegisterRecordSet", "RecordSet"),
+            ("AccumulationRegisterRecordKey", "RecordKey"),
+        ],
+        "AccountingRegister" => vec![
+            ("AccountingRegisterRecord", "Record"),
+            ("AccountingRegisterExtDimensions", "ExtDimensions"),
+            ("AccountingRegisterRecordSet", "RecordSet"),
+            ("AccountingRegisterRecordKey", "RecordKey"),
+            ("AccountingRegisterSelection", "Selection"),
+            ("AccountingRegisterList", "List"),
+            ("AccountingRegisterManager", "Manager"),
+        ],
+        "CalculationRegister" => vec![
+            ("CalculationRegisterRecord", "Record"),
+            ("CalculationRegisterManager", "Manager"),
+            ("CalculationRegisterSelection", "Selection"),
+            ("CalculationRegisterList", "List"),
+            ("CalculationRegisterRecordSet", "RecordSet"),
+            ("CalculationRegisterRecordKey", "RecordKey"),
+            ("RecalculationsManager", "Recalcs"),
+        ],
+        "ChartOfAccounts" => vec![
+            ("ChartOfAccountsObject", "Object"),
+            ("ChartOfAccountsRef", "Ref"),
+            ("ChartOfAccountsSelection", "Selection"),
+            ("ChartOfAccountsList", "List"),
+            ("ChartOfAccountsManager", "Manager"),
+            ("ChartOfAccountsExtDimensionTypes", "ExtDimensionTypes"),
+            (
+                "ChartOfAccountsExtDimensionTypesRow",
+                "ExtDimensionTypesRow",
+            ),
+        ],
+        "ChartOfCharacteristicTypes" => vec![
+            ("ChartOfCharacteristicTypesObject", "Object"),
+            ("ChartOfCharacteristicTypesRef", "Ref"),
+            ("ChartOfCharacteristicTypesSelection", "Selection"),
+            ("ChartOfCharacteristicTypesList", "List"),
+            ("ChartOfCharacteristicTypesCharacteristic", "Characteristic"),
+            ("ChartOfCharacteristicTypesManager", "Manager"),
+        ],
+        "ChartOfCalculationTypes" => vec![
+            ("ChartOfCalculationTypesObject", "Object"),
+            ("ChartOfCalculationTypesRef", "Ref"),
+            ("ChartOfCalculationTypesSelection", "Selection"),
+            ("ChartOfCalculationTypesList", "List"),
+            ("ChartOfCalculationTypesManager", "Manager"),
+            ("DisplacingCalculationTypes", "DisplacingCalculationTypes"),
+            (
+                "DisplacingCalculationTypesRow",
+                "DisplacingCalculationTypesRow",
+            ),
+            ("BaseCalculationTypes", "BaseCalculationTypes"),
+            ("BaseCalculationTypesRow", "BaseCalculationTypesRow"),
+            ("LeadingCalculationTypes", "LeadingCalculationTypes"),
+            ("LeadingCalculationTypesRow", "LeadingCalculationTypesRow"),
+        ],
+        "BusinessProcess" => vec![
+            ("BusinessProcessObject", "Object"),
+            ("BusinessProcessRef", "Ref"),
+            ("BusinessProcessSelection", "Selection"),
+            ("BusinessProcessList", "List"),
+            ("BusinessProcessManager", "Manager"),
+            ("BusinessProcessRoutePointRef", "RoutePointRef"),
+        ],
+        "Task" => vec![
+            ("TaskObject", "Object"),
+            ("TaskRef", "Ref"),
+            ("TaskSelection", "Selection"),
+            ("TaskList", "List"),
+            ("TaskManager", "Manager"),
+        ],
+        "ExchangePlan" => vec![
+            ("ExchangePlanObject", "Object"),
+            ("ExchangePlanRef", "Ref"),
+            ("ExchangePlanSelection", "Selection"),
+            ("ExchangePlanList", "List"),
+            ("ExchangePlanManager", "Manager"),
+        ],
+        "DocumentJournal" => vec![
+            ("DocumentJournalSelection", "Selection"),
+            ("DocumentJournalList", "List"),
+            ("DocumentJournalManager", "Manager"),
+        ],
+        "Report" => vec![("ReportObject", "Object"), ("ReportManager", "Manager")],
+        "DataProcessor" => vec![
+            ("DataProcessorObject", "Object"),
+            ("DataProcessorManager", "Manager"),
+        ],
         "DefinedType" => vec![("DefinedType", "DefinedType")],
         _ => Vec::new(),
     };
@@ -4814,6 +5061,12 @@ pub(crate) fn emit_meta_internal_info<F>(
         return;
     }
     lines.push(format!("{indent}<InternalInfo>"));
+    if object_type == "ExchangePlan" {
+        lines.push(format!(
+            "{indent}\t<xr:ThisNode>{}</xr:ThisNode>",
+            next_uuid()
+        ));
+    }
     for (prefix, category) in generated {
         lines.push(format!(
             "{indent}\t<xr:GeneratedType name=\"{prefix}.{object_name}\" category=\"{category}\">"
@@ -5069,6 +5322,812 @@ pub(crate) fn emit_meta_constant_properties(
     ));
 }
 
+pub(crate) fn emit_meta_document_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!("{indent}<Numerator/>"));
+    lines.push(format!(
+        "{indent}<NumberType>{}</NumberType>",
+        meta_enum_prop(defn, "numberType", "String")
+    ));
+    let number_length = defn
+        .get("numberLength")
+        .and_then(json_i64_value)
+        .unwrap_or(11);
+    lines.push(format!(
+        "{indent}<NumberLength>{number_length}</NumberLength>"
+    ));
+    lines.push(format!(
+        "{indent}<NumberAllowedLength>{}</NumberAllowedLength>",
+        meta_enum_prop(defn, "numberAllowedLength", "Variable")
+    ));
+    lines.push(format!(
+        "{indent}<NumberPeriodicity>{}</NumberPeriodicity>",
+        meta_enum_prop(defn, "numberPeriodicity", "Year")
+    ));
+    let check_unique = defn.get("checkUnique").and_then(Value::as_bool) != Some(false);
+    let autonumbering = defn.get("autonumbering").and_then(Value::as_bool) != Some(false);
+    lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
+    lines.push(format!(
+        "{indent}<Autonumbering>{autonumbering}</Autonumbering>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "Document");
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!("{indent}<BasedOn/>"));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>Document.{obj_name}.StandardAttribute.Number</xr:Field>"
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<Posting>{}</Posting>",
+        meta_enum_prop(defn, "posting", "Allow")
+    ));
+    lines.push(format!(
+        "{indent}<RealTimePosting>{}</RealTimePosting>",
+        meta_enum_prop(defn, "realTimePosting", "Deny")
+    ));
+    lines.push(format!(
+        "{indent}<RegisterRecordsDeletion>{}</RegisterRecordsDeletion>",
+        meta_enum_prop(defn, "registerRecordsDeletion", "AutoDelete")
+    ));
+    lines.push(format!(
+        "{indent}<RegisterRecordsWritingOnPost>{}</RegisterRecordsWritingOnPost>",
+        meta_enum_prop(defn, "registerRecordsWritingOnPost", "WriteModified")
+    ));
+    lines.push(format!(
+        "{indent}<SequenceFilling>{}</SequenceFilling>",
+        defn.get("sequenceFilling")
+            .and_then(Value::as_str)
+            .unwrap_or("AutoFill")
+    ));
+    emit_meta_md_object_refs(
+        lines,
+        indent,
+        "RegisterRecords",
+        &meta_compile_string_list(defn.get("registerRecords")),
+    );
+    let post_in_privileged =
+        defn.get("postInPrivilegedMode").and_then(Value::as_bool) != Some(false);
+    let unpost_in_privileged =
+        defn.get("unpostInPrivilegedMode").and_then(Value::as_bool) != Some(false);
+    lines.push(format!(
+        "{indent}<PostInPrivilegedMode>{post_in_privileged}</PostInPrivilegedMode>"
+    ));
+    lines.push(format!(
+        "{indent}<UnpostInPrivilegedMode>{unpost_in_privileged}</UnpostInPrivilegedMode>"
+    ));
+    emit_meta_lock_search_presentation_tail(lines, indent, "Use");
+}
+
+pub(crate) fn emit_meta_information_register_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    let _ = obj_name;
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    for tag in [
+        "DefaultRecordForm",
+        "DefaultListForm",
+        "AuxiliaryRecordForm",
+        "AuxiliaryListForm",
+    ] {
+        lines.push(format!("{indent}<{tag}/>"));
+    }
+    emit_meta_standard_attributes(lines, indent, "InformationRegister");
+    let periodicity = meta_enum_prop(defn, "periodicity", "Nonperiodical");
+    let write_mode = meta_enum_prop(defn, "writeMode", "Independent");
+    let main_filter_on_period = defn
+        .get("mainFilterOnPeriod")
+        .and_then(Value::as_bool)
+        .unwrap_or(periodicity != "Nonperiodical");
+    lines.push(format!(
+        "{indent}<InformationRegisterPeriodicity>{periodicity}</InformationRegisterPeriodicity>"
+    ));
+    lines.push(format!("{indent}<WriteMode>{write_mode}</WriteMode>"));
+    lines.push(format!(
+        "{indent}<MainFilterOnPeriod>{main_filter_on_period}</MainFilterOnPeriod>"
+    ));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<EnableTotalsSliceFirst>false</EnableTotalsSliceFirst>",
+        "<EnableTotalsSliceLast>false</EnableTotalsSliceLast>",
+        "<RecordPresentation/>",
+        "<ExtendedRecordPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+}
+
+pub(crate) fn emit_meta_accumulation_register_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!("{indent}<DefaultListForm/>"));
+    lines.push(format!("{indent}<AuxiliaryListForm/>"));
+    lines.push(format!(
+        "{indent}<RegisterType>{}</RegisterType>",
+        meta_enum_prop(defn, "registerType", "Balance")
+    ));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "AccumulationRegister");
+    emit_meta_register_tail(lines, indent, defn);
+    let enable_totals_splitting =
+        defn.get("enableTotalsSplitting").and_then(Value::as_bool) != Some(false);
+    lines.push(format!(
+        "{indent}<EnableTotalsSplitting>{enable_totals_splitting}</EnableTotalsSplitting>"
+    ));
+    lines.push(format!("{indent}<ListPresentation/>"));
+    lines.push(format!("{indent}<ExtendedListPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+}
+
+pub(crate) fn emit_meta_accounting_register_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!("{indent}<DefaultListForm/>"));
+    lines.push(format!("{indent}<AuxiliaryListForm/>"));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ChartOfAccounts",
+        defn.get("chartOfAccounts").and_then(Value::as_str),
+    );
+    let correspondence = defn.get("correspondence").and_then(Value::as_bool) == Some(true);
+    let period_adjustment_length = defn
+        .get("periodAdjustmentLength")
+        .and_then(json_i64_value)
+        .unwrap_or(0);
+    lines.push(format!(
+        "{indent}<Correspondence>{correspondence}</Correspondence>"
+    ));
+    lines.push(format!(
+        "{indent}<PeriodAdjustmentLength>{period_adjustment_length}</PeriodAdjustmentLength>"
+    ));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "AccountingRegister");
+    emit_meta_register_tail(lines, indent, defn);
+    lines.push(format!("{indent}<ListPresentation/>"));
+    lines.push(format!("{indent}<ExtendedListPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+}
+
+pub(crate) fn emit_meta_calculation_register_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!("{indent}<DefaultListForm/>"));
+    lines.push(format!("{indent}<AuxiliaryListForm/>"));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ChartOfCalculationTypes",
+        defn.get("chartOfCalculationTypes").and_then(Value::as_str),
+    );
+    lines.push(format!(
+        "{indent}<Periodicity>{}</Periodicity>",
+        meta_enum_prop(defn, "periodicity", "Month")
+    ));
+    let action_period = defn.get("actionPeriod").and_then(Value::as_bool) == Some(true);
+    let base_period = defn.get("basePeriod").and_then(Value::as_bool) == Some(true);
+    lines.push(format!(
+        "{indent}<ActionPeriod>{action_period}</ActionPeriod>"
+    ));
+    lines.push(format!("{indent}<BasePeriod>{base_period}</BasePeriod>"));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "Schedule",
+        defn.get("schedule").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ScheduleValue",
+        defn.get("scheduleValue").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ScheduleDate",
+        defn.get("scheduleDate").and_then(Value::as_str),
+    );
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "CalculationRegister");
+    emit_meta_register_tail(lines, indent, defn);
+    lines.push(format!("{indent}<ListPresentation/>"));
+    lines.push(format!("{indent}<ExtendedListPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+}
+
+pub(crate) fn emit_meta_chart_of_accounts_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ExtDimensionTypes",
+        defn.get("extDimensionTypes").and_then(Value::as_str),
+    );
+    let max_ext_dimension_count = defn
+        .get("maxExtDimensionCount")
+        .and_then(json_i64_value)
+        .unwrap_or(3);
+    lines.push(format!(
+        "{indent}<MaxExtDimensionCount>{max_ext_dimension_count}</MaxExtDimensionCount>"
+    ));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "CodeMask",
+        defn.get("codeMask").and_then(Value::as_str),
+    );
+    emit_meta_code_description_properties(lines, indent, defn, 8, 120, false, false);
+    let auto_order_by_code = defn.get("autoOrderByCode").and_then(Value::as_bool) != Some(false);
+    let order_length = defn
+        .get("orderLength")
+        .and_then(json_i64_value)
+        .unwrap_or(5);
+    lines.push(format!(
+        "{indent}<AutoOrderByCode>{auto_order_by_code}</AutoOrderByCode>"
+    ));
+    lines.push(format!("{indent}<OrderLength>{order_length}</OrderLength>"));
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    emit_meta_standard_attributes(lines, indent, "ChartOfAccounts");
+    lines.push(format!("{indent}<StandardTabularSections>"));
+    lines.push(format!(
+        "{indent}\t<xr:StandardTabularSection name=\"ExtDimensionTypes\">"
+    ));
+    lines.push(format!("{indent}\t\t<xr:StandardAttributes>"));
+    for attr in [
+        "TurnoversOnly",
+        "Predefined",
+        "ExtDimensionType",
+        "LineNumber",
+    ] {
+        emit_meta_standard_attribute(lines, &format!("{indent}\t\t\t"), attr);
+    }
+    lines.push(format!("{indent}\t\t</xr:StandardAttributes>"));
+    lines.push(format!("{indent}\t</xr:StandardTabularSection>"));
+    lines.push(format!("{indent}</StandardTabularSections>"));
+    emit_meta_choice_object_tail(lines, indent, "ChartOfAccounts", obj_name, true);
+}
+
+pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    emit_meta_code_description_properties(lines, indent, defn, 9, 25, true, true);
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "CharacteristicExtValues",
+        defn.get("characteristicExtValues").and_then(Value::as_str),
+    );
+    let value_types = meta_compile_value_types(defn);
+    if value_types.is_empty() {
+        lines.push(format!("{indent}<Type>"));
+        for value_type in ["Boolean", "String(100)", "Number(15,2)", "DateTime"] {
+            emit_meta_type_content(lines, &format!("{indent}\t"), value_type);
+        }
+        lines.push(format!("{indent}</Type>"));
+    } else {
+        lines.push(format!("{indent}<Type>"));
+        for value_type in value_types {
+            emit_meta_type_content(lines, &format!("{indent}\t"), &value_type);
+        }
+        lines.push(format!("{indent}</Type>"));
+    }
+    let hierarchical = defn.get("hierarchical").and_then(Value::as_bool) == Some(true);
+    lines.push(format!(
+        "{indent}<Hierarchical>{hierarchical}</Hierarchical>"
+    ));
+    lines.push(format!("{indent}<FoldersOnTop>true</FoldersOnTop>"));
+    emit_meta_standard_attributes(lines, indent, "ChartOfCharacteristicTypes");
+    emit_meta_choice_object_tail(lines, indent, "ChartOfCharacteristicTypes", obj_name, true);
+}
+
+pub(crate) fn emit_meta_chart_of_calculation_types_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    let code_length = defn.get("codeLength").and_then(json_i64_value).unwrap_or(9);
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(25);
+    lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
+    lines.push(format!(
+        "{indent}<CodeType>{}</CodeType>",
+        meta_enum_prop(defn, "codeType", "String")
+    ));
+    lines.push(format!(
+        "{indent}<CodeAllowedLength>{}</CodeAllowedLength>",
+        meta_enum_prop(defn, "codeAllowedLength", "Variable")
+    ));
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    lines.push(format!(
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
+    ));
+    lines.push(format!(
+        "{indent}<DependenceOnCalculationTypes>{}</DependenceOnCalculationTypes>",
+        meta_enum_prop(defn, "dependenceOnCalculationTypes", "DontUse")
+    ));
+    emit_meta_md_object_refs(
+        lines,
+        indent,
+        "BaseCalculationTypes",
+        &meta_compile_string_list(defn.get("baseCalculationTypes")),
+    );
+    let action_period_use = defn.get("actionPeriodUse").and_then(Value::as_bool) == Some(true);
+    lines.push(format!(
+        "{indent}<ActionPeriodUse>{action_period_use}</ActionPeriodUse>"
+    ));
+    emit_meta_standard_attributes(lines, indent, "ChartOfCalculationTypes");
+    emit_meta_choice_object_tail(lines, indent, "ChartOfCalculationTypes", obj_name, true);
+}
+
+pub(crate) fn emit_meta_business_process_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    lines.push(format!(
+        "{indent}<EditType>{}</EditType>",
+        meta_enum_prop(defn, "editType", "InDialog")
+    ));
+    emit_meta_number_properties(lines, indent, defn, 11);
+    emit_meta_standard_attributes(lines, indent, "BusinessProcess");
+    lines.push(format!("{indent}<Characteristics/>"));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "Task",
+        defn.get("task").and_then(Value::as_str),
+    );
+    emit_meta_numbered_object_tail(lines, indent, "BusinessProcess", obj_name);
+}
+
+pub(crate) fn emit_meta_task_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    emit_meta_number_properties(lines, indent, defn, 14);
+    lines.push(format!(
+        "{indent}<TaskNumberAutoPrefix>{}</TaskNumberAutoPrefix>",
+        defn.get("taskNumberAutoPrefix")
+            .and_then(Value::as_str)
+            .unwrap_or("BusinessProcessNumber")
+    ));
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(150);
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "Addressing",
+        defn.get("addressing").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "MainAddressingAttribute",
+        defn.get("mainAddressingAttribute").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "CurrentPerformer",
+        defn.get("currentPerformer").and_then(Value::as_str),
+    );
+    emit_meta_standard_attributes(lines, indent, "Task");
+    lines.push(format!("{indent}<Characteristics/>"));
+    emit_meta_numbered_object_tail(lines, indent, "Task", obj_name);
+}
+
+pub(crate) fn emit_meta_exchange_plan_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    let code_length = defn.get("codeLength").and_then(json_i64_value).unwrap_or(9);
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(100);
+    lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
+    lines.push(format!(
+        "{indent}<CodeAllowedLength>{}</CodeAllowedLength>",
+        meta_enum_prop(defn, "codeAllowedLength", "Variable")
+    ));
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    lines.push(format!(
+        "{indent}<DefaultPresentation>AsDescription</DefaultPresentation>"
+    ));
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    emit_meta_standard_attributes(lines, indent, "ExchangePlan");
+    let distributed = defn.get("distributedInfoBase").and_then(Value::as_bool) == Some(true);
+    let include_ext = defn
+        .get("includeConfigurationExtensions")
+        .and_then(Value::as_bool)
+        == Some(true);
+    lines.push(format!(
+        "{indent}<DistributedInfoBase>{distributed}</DistributedInfoBase>"
+    ));
+    lines.push(format!(
+        "{indent}<IncludeConfigurationExtensions>{include_ext}</IncludeConfigurationExtensions>"
+    ));
+    emit_meta_choice_object_tail(lines, indent, "ExchangePlan", obj_name, false);
+}
+
+pub(crate) fn emit_meta_document_journal_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    for tag in ["DefaultForm", "AuxiliaryForm"] {
+        let field = if tag == "DefaultForm" {
+            "defaultForm"
+        } else {
+            "auxiliaryForm"
+        };
+        emit_meta_optional_text(lines, indent, tag, defn.get(field).and_then(Value::as_str));
+    }
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    emit_meta_md_object_refs(
+        lines,
+        indent,
+        "RegisteredDocuments",
+        &meta_compile_string_list(defn.get("registeredDocuments")),
+    );
+    emit_meta_standard_attributes(lines, indent, "DocumentJournal");
+    lines.push(format!("{indent}<ListPresentation/>"));
+    lines.push(format!("{indent}<ExtendedListPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+}
+
+pub(crate) fn emit_meta_report_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>true</UseStandardCommands>"
+    ));
+    for (tag, field) in [
+        ("DefaultForm", "defaultForm"),
+        ("AuxiliaryForm", "auxiliaryForm"),
+        ("MainDataCompositionSchema", "mainDataCompositionSchema"),
+        ("DefaultSettingsForm", "defaultSettingsForm"),
+        ("AuxiliarySettingsForm", "auxiliarySettingsForm"),
+        ("DefaultVariantForm", "defaultVariantForm"),
+    ] {
+        emit_meta_optional_text(lines, indent, tag, defn.get(field).and_then(Value::as_str));
+    }
+    for line in [
+        "<VariantsStorage/>",
+        "<SettingsStorage/>",
+        "<IncludeHelpInContents>false</IncludeHelpInContents>",
+        "<ExtendedPresentation/>",
+        "<Explanation/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+}
+
+pub(crate) fn emit_meta_data_processor_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    lines.push(format!(
+        "{indent}<UseStandardCommands>false</UseStandardCommands>"
+    ));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "DefaultForm",
+        defn.get("defaultForm").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "AuxiliaryForm",
+        defn.get("auxiliaryForm").and_then(Value::as_str),
+    );
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!("{indent}<ExtendedPresentation/>"));
+    lines.push(format!("{indent}<Explanation/>"));
+}
+
+pub(crate) fn emit_meta_scheduled_job_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let method_name = meta_compile_common_module_method(
+        defn.get("methodName")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    lines.push(format!(
+        "{indent}<MethodName>{}</MethodName>",
+        escape_xml(&method_name)
+    ));
+    let description = defn
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or(synonym);
+    lines.push(format!(
+        "{indent}<Description>{}</Description>",
+        escape_xml(description)
+    ));
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "Key",
+        defn.get("key").and_then(Value::as_str),
+    );
+    let use_job = defn.get("use").and_then(Value::as_bool) == Some(true);
+    let predefined = defn.get("predefined").and_then(Value::as_bool) == Some(true);
+    let restart_count = defn
+        .get("restartCountOnFailure")
+        .and_then(json_i64_value)
+        .unwrap_or(3);
+    let restart_interval = defn
+        .get("restartIntervalOnFailure")
+        .and_then(json_i64_value)
+        .unwrap_or(10);
+    lines.push(format!("{indent}<Use>{use_job}</Use>"));
+    lines.push(format!("{indent}<Predefined>{predefined}</Predefined>"));
+    lines.push(format!(
+        "{indent}<RestartCountOnFailure>{restart_count}</RestartCountOnFailure>"
+    ));
+    lines.push(format!(
+        "{indent}<RestartIntervalOnFailure>{restart_interval}</RestartIntervalOnFailure>"
+    ));
+}
+
+pub(crate) fn emit_meta_event_subscription_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let sources = meta_compile_string_list(defn.get("source"));
+    if sources.is_empty() {
+        lines.push(format!("{indent}<Source/>"));
+    } else {
+        lines.push(format!("{indent}<Source>"));
+        for source in sources {
+            emit_meta_type_content(lines, &format!("{indent}\t"), &source);
+        }
+        lines.push(format!("{indent}</Source>"));
+    }
+    lines.push(format!(
+        "{indent}<Event>{}</Event>",
+        escape_xml(
+            defn.get("event")
+                .and_then(Value::as_str)
+                .unwrap_or("BeforeWrite")
+        )
+    ));
+    let handler = meta_compile_common_module_method(
+        defn.get("handler")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    lines.push(format!(
+        "{indent}<Handler>{}</Handler>",
+        escape_xml(&handler)
+    ));
+}
+
+pub(crate) fn emit_meta_http_service_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    let root_url = defn
+        .get("rootURL")
+        .or_else(|| defn.get("rootUrl"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| obj_name.to_lowercase());
+    lines.push(format!(
+        "{indent}<RootURL>{}</RootURL>",
+        escape_xml(&root_url)
+    ));
+    lines.push(format!(
+        "{indent}<ReuseSessions>{}</ReuseSessions>",
+        meta_enum_prop(defn, "reuseSessions", "DontUse")
+    ));
+    let session_max_age = defn
+        .get("sessionMaxAge")
+        .and_then(json_i64_value)
+        .unwrap_or(20);
+    lines.push(format!(
+        "{indent}<SessionMaxAge>{session_max_age}</SessionMaxAge>"
+    ));
+}
+
+pub(crate) fn emit_meta_web_service_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_name: &str,
+    synonym: &str,
+) {
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "Namespace",
+        defn.get("namespace").and_then(Value::as_str),
+    );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "XDTOPackages",
+        defn.get("xdtoPackages").and_then(Value::as_str),
+    );
+    lines.push(format!(
+        "{indent}<ReuseSessions>{}</ReuseSessions>",
+        meta_enum_prop(defn, "reuseSessions", "DontUse")
+    ));
+    let session_max_age = defn
+        .get("sessionMaxAge")
+        .and_then(json_i64_value)
+        .unwrap_or(20);
+    lines.push(format!(
+        "{indent}<SessionMaxAge>{session_max_age}</SessionMaxAge>"
+    ));
+}
+
 pub(crate) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String {
     let mut type_name = defn
         .get("valueType")
@@ -5188,6 +6247,294 @@ pub(crate) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String>
     }
 }
 
+pub(crate) fn emit_meta_optional_text(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    value: Option<&str>,
+) {
+    match value.filter(|value| !value.is_empty()) {
+        Some(value) => lines.push(format!("{indent}<{tag}>{}</{tag}>", escape_xml(value))),
+        None => lines.push(format!("{indent}<{tag}/>")),
+    }
+}
+
+pub(crate) fn meta_compile_string_list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                if let Some(text) = item.as_str() {
+                    Some(text.to_string())
+                } else {
+                    item.as_object()
+                        .and_then(|object| object.get("name"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                }
+            })
+            .collect(),
+        Some(Value::String(value)) if !value.is_empty() => vec![value.to_string()],
+        Some(Value::Object(object)) => object.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn meta_compile_named_items(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                item.as_str().map(ToOwned::to_owned).or_else(|| {
+                    item.as_object()
+                        .and_then(|object| object.get("name"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+            })
+            .collect(),
+        Some(Value::Object(object)) => object.keys().cloned().collect(),
+        Some(Value::String(value)) if !value.is_empty() => vec![value.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn normalize_meta_object_ref(value: &str) -> String {
+    let Some((prefix, suffix)) = value.split_once('.') else {
+        return value.to_string();
+    };
+    let normalized = normalize_meta_object_type(prefix);
+    format!("{normalized}.{suffix}")
+}
+
+pub(crate) fn emit_meta_md_object_refs(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    refs: &[String],
+) {
+    if refs.is_empty() {
+        lines.push(format!("{indent}<{tag}/>"));
+        return;
+    }
+    lines.push(format!("{indent}<{tag}>"));
+    for item in refs {
+        lines.push(format!(
+            "{indent}\t<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
+            escape_xml(&normalize_meta_object_ref(item))
+        ));
+    }
+    lines.push(format!("{indent}</{tag}>"));
+}
+
+pub(crate) fn meta_compile_common_module_method(value: &str) -> String {
+    if value.is_empty() || value.starts_with("CommonModule.") {
+        value.to_string()
+    } else {
+        format!("CommonModule.{value}")
+    }
+}
+
+pub(crate) fn emit_meta_lock_search_presentation_tail(
+    lines: &mut Vec<String>,
+    indent: &str,
+    full_text_search_default: &str,
+) {
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!("{indent}<DataLockFields/>"));
+    lines.push(format!(
+        "{indent}<DataLockControlMode>Automatic</DataLockControlMode>"
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{full_text_search_default}</FullTextSearch>"
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+}
+
+pub(crate) fn emit_meta_register_tail(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+) {
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+}
+
+pub(crate) fn emit_meta_code_description_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    default_code_length: i64,
+    default_description_length: i64,
+    include_check_unique: bool,
+    include_autonumbering: bool,
+) {
+    let code_length = defn
+        .get("codeLength")
+        .and_then(json_i64_value)
+        .unwrap_or(default_code_length);
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(default_description_length);
+    lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
+    lines.push(format!(
+        "{indent}<CodeAllowedLength>{}</CodeAllowedLength>",
+        meta_enum_prop(defn, "codeAllowedLength", "Variable")
+    ));
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    if include_check_unique {
+        let check_unique = defn.get("checkUnique").and_then(Value::as_bool) == Some(true);
+        lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
+    } else {
+        lines.push(format!("{indent}<CheckUnique>false</CheckUnique>"));
+    }
+    if include_autonumbering {
+        let autonumbering = defn.get("autonumbering").and_then(Value::as_bool) != Some(false);
+        lines.push(format!(
+            "{indent}<Autonumbering>{autonumbering}</Autonumbering>"
+        ));
+    }
+    lines.push(format!(
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
+    ));
+}
+
+pub(crate) fn emit_meta_choice_object_tail(
+    lines: &mut Vec<String>,
+    indent: &str,
+    object_type: &str,
+    obj_name: &str,
+    include_characteristics: bool,
+) {
+    if include_characteristics {
+        lines.push(format!("{indent}<Characteristics/>"));
+        lines.push(format!(
+            "{indent}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>"
+        ));
+    }
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    lines.push(format!("{indent}<QuickChoice>true</QuickChoice>"));
+    lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Description</xr:Field>"
+    ));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Code</xr:Field>"
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+        "<IncludeHelpInContents>false</IncludeHelpInContents>",
+        "<BasedOn/>",
+        "<DataLockFields/>",
+        "<DataLockControlMode>Automatic</DataLockControlMode>",
+        "<FullTextSearch>Use</FullTextSearch>",
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+}
+
+pub(crate) fn emit_meta_number_properties(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    default_number_length: i64,
+) {
+    lines.push(format!(
+        "{indent}<NumberType>{}</NumberType>",
+        meta_enum_prop(defn, "numberType", "String")
+    ));
+    let number_length = defn
+        .get("numberLength")
+        .and_then(json_i64_value)
+        .unwrap_or(default_number_length);
+    lines.push(format!(
+        "{indent}<NumberLength>{number_length}</NumberLength>"
+    ));
+    lines.push(format!(
+        "{indent}<NumberAllowedLength>{}</NumberAllowedLength>",
+        meta_enum_prop(defn, "numberAllowedLength", "Variable")
+    ));
+    let check_unique = defn.get("checkUnique").and_then(Value::as_bool) != Some(false);
+    let autonumbering = defn.get("autonumbering").and_then(Value::as_bool) != Some(false);
+    lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
+    lines.push(format!(
+        "{indent}<Autonumbering>{autonumbering}</Autonumbering>"
+    ));
+}
+
+pub(crate) fn emit_meta_numbered_object_tail(
+    lines: &mut Vec<String>,
+    indent: &str,
+    object_type: &str,
+    obj_name: &str,
+) {
+    lines.push(format!("{indent}<BasedOn/>"));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Number</xr:Field>"
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    emit_meta_lock_search_presentation_tail(lines, indent, "Use");
+}
+
 pub(crate) struct MetaCompileEnumValue {
     pub(crate) name: String,
     pub(crate) synonym: String,
@@ -5262,6 +6609,680 @@ pub(crate) fn emit_meta_enum_value<F>(
     lines.push(format!("{indent}</EnumValue>"));
 }
 
+pub(crate) fn emit_meta_child_objects<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    defn: &Map<String, Value>,
+    obj_type: &str,
+    obj_name: &str,
+    next_uuid: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut() -> String,
+{
+    match obj_type {
+        "Enum" => {
+            let values = meta_compile_enum_values(defn.get("values"))?;
+            if values.is_empty() {
+                lines.push(format!("{indent}<ChildObjects/>"));
+            } else {
+                lines.push(format!("{indent}<ChildObjects>"));
+                for value in &values {
+                    emit_meta_enum_value(lines, &format!("{indent}\t"), value, next_uuid);
+                }
+                lines.push(format!("{indent}</ChildObjects>"));
+            }
+        }
+        "Document"
+        | "Report"
+        | "DataProcessor"
+        | "ExchangePlan"
+        | "ChartOfCharacteristicTypes"
+        | "ChartOfAccounts"
+        | "ChartOfCalculationTypes"
+        | "BusinessProcess"
+        | "Task" => {
+            let attrs = meta_compile_attributes(defn.get("attributes"));
+            let tabular_sections = meta_compile_tabular_sections(defn.get("tabularSections"))?;
+            let accounting_flags = if obj_type == "ChartOfAccounts" {
+                meta_compile_named_items(defn.get("accountingFlags"))
+            } else {
+                Vec::new()
+            };
+            let ext_dimension_flags = if obj_type == "ChartOfAccounts" {
+                meta_compile_named_items(defn.get("extDimensionAccountingFlags"))
+            } else {
+                Vec::new()
+            };
+            let addressing_attrs = if obj_type == "Task" {
+                meta_compile_value_items(defn.get("addressingAttributes"))
+            } else {
+                Vec::new()
+            };
+            if attrs.is_empty()
+                && tabular_sections.is_empty()
+                && accounting_flags.is_empty()
+                && ext_dimension_flags.is_empty()
+                && addressing_attrs.is_empty()
+            {
+                lines.push(format!("{indent}<ChildObjects/>"));
+                return Ok(());
+            }
+            lines.push(format!("{indent}<ChildObjects>"));
+            let attr_context = match obj_type {
+                "Document" => "document",
+                "Report" | "DataProcessor" => "processor",
+                "ChartOfAccounts" | "ChartOfCharacteristicTypes" | "ChartOfCalculationTypes" => {
+                    "chart"
+                }
+                _ => "object",
+            };
+            for attr in &attrs {
+                emit_meta_attribute(lines, &format!("{indent}\t"), attr, attr_context, next_uuid);
+            }
+            for section in &tabular_sections {
+                emit_meta_tabular_section(
+                    lines,
+                    &format!("{indent}\t"),
+                    section,
+                    obj_type,
+                    obj_name,
+                    next_uuid,
+                );
+            }
+            for name in accounting_flags {
+                emit_meta_boolean_child(
+                    lines,
+                    &format!("{indent}\t"),
+                    "AccountingFlag",
+                    &name,
+                    next_uuid,
+                );
+            }
+            for name in ext_dimension_flags {
+                emit_meta_boolean_child(
+                    lines,
+                    &format!("{indent}\t"),
+                    "ExtDimensionAccountingFlag",
+                    &name,
+                    next_uuid,
+                );
+            }
+            for item in addressing_attrs {
+                emit_meta_addressing_attribute(lines, &format!("{indent}\t"), &item, next_uuid);
+            }
+            lines.push(format!("{indent}</ChildObjects>"));
+        }
+        "InformationRegister"
+        | "AccumulationRegister"
+        | "AccountingRegister"
+        | "CalculationRegister" => {
+            let dimensions = meta_compile_attributes(defn.get("dimensions"));
+            let resources = meta_compile_attributes(defn.get("resources"));
+            let attrs = meta_compile_attributes(defn.get("attributes"));
+            if dimensions.is_empty() && resources.is_empty() && attrs.is_empty() {
+                lines.push(format!("{indent}<ChildObjects/>"));
+                return Ok(());
+            }
+            lines.push(format!("{indent}<ChildObjects>"));
+            for resource in &resources {
+                emit_meta_register_field(
+                    lines,
+                    &format!("{indent}\t"),
+                    "Resource",
+                    resource,
+                    obj_type,
+                    next_uuid,
+                );
+            }
+            for dimension in &dimensions {
+                emit_meta_register_field(
+                    lines,
+                    &format!("{indent}\t"),
+                    "Dimension",
+                    dimension,
+                    obj_type,
+                    next_uuid,
+                );
+            }
+            let attr_context = if obj_type == "InformationRegister" {
+                "register-info"
+            } else {
+                "register-other"
+            };
+            for attr in &attrs {
+                emit_meta_attribute(lines, &format!("{indent}\t"), attr, attr_context, next_uuid);
+            }
+            lines.push(format!("{indent}</ChildObjects>"));
+        }
+        "DocumentJournal" => {
+            let columns = meta_compile_value_items(defn.get("columns"));
+            if columns.is_empty() {
+                lines.push(format!("{indent}<ChildObjects/>"));
+                return Ok(());
+            }
+            lines.push(format!("{indent}<ChildObjects>"));
+            for column in columns {
+                emit_meta_column(lines, &format!("{indent}\t"), &column, next_uuid);
+            }
+            lines.push(format!("{indent}</ChildObjects>"));
+        }
+        "HTTPService" => {
+            let templates = defn.get("urlTemplates").and_then(Value::as_object);
+            if templates.is_none_or(Map::is_empty) {
+                lines.push(format!("{indent}<ChildObjects/>"));
+                return Ok(());
+            }
+            lines.push(format!("{indent}<ChildObjects>"));
+            let mut ordered = templates.unwrap().iter().collect::<Vec<_>>();
+            ordered.sort_by(|left, right| left.0.cmp(right.0));
+            for (name, value) in ordered {
+                emit_meta_url_template(lines, &format!("{indent}\t"), name, value, next_uuid);
+            }
+            lines.push(format!("{indent}</ChildObjects>"));
+        }
+        "WebService" => {
+            let operations = defn.get("operations").and_then(Value::as_object);
+            if operations.is_none_or(Map::is_empty) {
+                lines.push(format!("{indent}<ChildObjects/>"));
+                return Ok(());
+            }
+            lines.push(format!("{indent}<ChildObjects>"));
+            let mut ordered = operations.unwrap().iter().collect::<Vec<_>>();
+            ordered.sort_by(|left, right| left.0.cmp(right.0));
+            for (name, value) in ordered {
+                emit_meta_operation(lines, &format!("{indent}\t"), name, value, next_uuid);
+            }
+            lines.push(format!("{indent}</ChildObjects>"));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_compile_value_items(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::Object(object)) => object
+            .iter()
+            .map(|(name, value)| {
+                if let Some(mut cloned) = value.as_object().cloned() {
+                    cloned
+                        .entry("name".to_string())
+                        .or_insert_with(|| Value::String(name.to_string()));
+                    Value::Object(cloned)
+                } else {
+                    Value::String(name.to_string())
+                }
+            })
+            .collect(),
+        Some(Value::String(value)) => vec![Value::String(value.to_string())],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn emit_meta_register_field<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    field_tag: &str,
+    attr: &MetaCompileAttr,
+    register_type: &str,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    lines.push(format!("{indent}<{field_tag} uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!(
+        "{indent}\t\t<Name>{}</Name>",
+        escape_xml(&attr.name)
+    ));
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    if attr.type_name.is_empty() {
+        if field_tag == "Resource" {
+            emit_meta_value_type(lines, &format!("{indent}\t\t"), "Number(15,2)");
+        } else {
+            emit_meta_value_type(lines, &format!("{indent}\t\t"), "String");
+        }
+    } else {
+        emit_meta_value_type(lines, &format!("{indent}\t\t"), &attr.type_name);
+    }
+    for line in [
+        "<PasswordMode>false</PasswordMode>",
+        "<Format/>",
+        "<EditFormat/>",
+        "<ToolTip/>",
+        "<MarkNegatives>false</MarkNegatives>",
+        "<Mask/>",
+    ] {
+        lines.push(format!("{indent}\t\t{line}"));
+    }
+    let multi_line = attr.multi_line || attr.flags.iter().any(|flag| flag == "multiline");
+    lines.push(format!("{indent}\t\t<MultiLine>{multi_line}</MultiLine>"));
+    lines.push(format!("{indent}\t\t<ExtendedEdit>false</ExtendedEdit>"));
+    lines.push(format!("{indent}\t\t<MinValue xsi:nil=\"true\"/>"));
+    lines.push(format!("{indent}\t\t<MaxValue xsi:nil=\"true\"/>"));
+    if register_type == "InformationRegister" {
+        let fill_from = field_tag == "Dimension" && attr.flags.iter().any(|flag| flag == "master");
+        lines.push(format!(
+            "{indent}\t\t<FillFromFillingValue>{fill_from}</FillFromFillingValue>"
+        ));
+        lines.push(format!("{indent}\t\t<FillValue xsi:nil=\"true\"/>"));
+    }
+    let fill_checking = if !attr.fill_checking.is_empty() {
+        attr.fill_checking.as_str()
+    } else if attr.flags.iter().any(|flag| flag == "req") {
+        "ShowError"
+    } else {
+        "DontCheck"
+    };
+    lines.push(format!(
+        "{indent}\t\t<FillChecking>{fill_checking}</FillChecking>"
+    ));
+    for line in [
+        "<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>",
+        "<ChoiceParameterLinks/>",
+        "<ChoiceParameters/>",
+        "<QuickChoice>Auto</QuickChoice>",
+        "<CreateOnInput>Auto</CreateOnInput>",
+        "<ChoiceForm/>",
+        "<LinkByType/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+    ] {
+        lines.push(format!("{indent}\t\t{line}"));
+    }
+    if field_tag == "Dimension" {
+        if register_type == "InformationRegister" {
+            let master = attr.flags.iter().any(|flag| flag == "master");
+            let main_filter = attr.flags.iter().any(|flag| flag == "mainfilter");
+            let deny_incomplete = attr.flags.iter().any(|flag| flag == "denyincomplete");
+            lines.push(format!("{indent}\t\t<Master>{master}</Master>"));
+            lines.push(format!(
+                "{indent}\t\t<MainFilter>{main_filter}</MainFilter>"
+            ));
+            lines.push(format!(
+                "{indent}\t\t<DenyIncompleteValues>{deny_incomplete}</DenyIncompleteValues>"
+            ));
+        } else if register_type == "AccumulationRegister" {
+            let deny_incomplete = attr.flags.iter().any(|flag| flag == "denyincomplete");
+            lines.push(format!(
+                "{indent}\t\t<DenyIncompleteValues>{deny_incomplete}</DenyIncompleteValues>"
+            ));
+        }
+    }
+    let indexing = if !attr.indexing.is_empty() {
+        attr.indexing.as_str()
+    } else if attr.flags.iter().any(|flag| flag == "index") {
+        "Index"
+    } else {
+        "DontIndex"
+    };
+    if field_tag == "Dimension" || register_type == "InformationRegister" {
+        lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+    }
+    lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
+    if field_tag == "Dimension" && register_type == "AccumulationRegister" {
+        let use_in_totals = !attr.flags.iter().any(|flag| flag == "nouseintotals");
+        lines.push(format!(
+            "{indent}\t\t<UseInTotals>{use_in_totals}</UseInTotals>"
+        ));
+    }
+    if register_type == "InformationRegister" {
+        lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
+    }
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</{field_tag}>"));
+}
+
+pub(crate) fn emit_meta_boolean_child<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    name: &str,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    lines.push(format!("{indent}<{tag} uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    emit_meta_value_type(lines, &format!("{indent}\t\t"), "Boolean");
+    for line in [
+        "<PasswordMode>false</PasswordMode>",
+        "<Format/>",
+        "<EditFormat/>",
+        "<ToolTip/>",
+        "<MarkNegatives>false</MarkNegatives>",
+        "<Mask/>",
+        "<MultiLine>false</MultiLine>",
+        "<ExtendedEdit>false</ExtendedEdit>",
+        "<MinValue xsi:nil=\"true\"/>",
+        "<MaxValue xsi:nil=\"true\"/>",
+        "<FillChecking>DontCheck</FillChecking>",
+        "<ChoiceParameterLinks/>",
+        "<ChoiceParameters/>",
+        "<QuickChoice>Auto</QuickChoice>",
+        "<ChoiceForm/>",
+        "<LinkByType/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+    ] {
+        lines.push(format!("{indent}\t\t{line}"));
+    }
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</{tag}>"));
+}
+
+pub(crate) fn emit_meta_addressing_attribute<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    value: &Value,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let attr = meta_compile_parse_attr(value);
+    let object = value.as_object();
+    lines.push(format!(
+        "{indent}<AddressingAttribute uuid=\"{}\">",
+        next_uuid()
+    ));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!(
+        "{indent}\t\t<Name>{}</Name>",
+        escape_xml(&attr.name)
+    ));
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    if attr.type_name.is_empty() {
+        emit_meta_value_type(lines, &format!("{indent}\t\t"), "String");
+    } else {
+        emit_meta_value_type(lines, &format!("{indent}\t\t"), &attr.type_name);
+    }
+    emit_meta_optional_text(
+        lines,
+        &format!("{indent}\t\t"),
+        "AddressingDimension",
+        object
+            .and_then(|object| object.get("addressingDimension"))
+            .and_then(Value::as_str),
+    );
+    let indexing = object
+        .and_then(|object| object.get("indexing"))
+        .and_then(Value::as_str)
+        .unwrap_or("Index");
+    lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+    lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
+    lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</AddressingAttribute>"));
+}
+
+pub(crate) fn emit_meta_column<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    value: &Value,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let object = value.as_object();
+    let name = value
+        .as_str()
+        .or_else(|| {
+            object
+                .and_then(|object| object.get("name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default();
+    let synonym = object
+        .and_then(|object| object.get("synonym"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| split_meta_camel_case(name));
+    let indexing = object
+        .and_then(|object| object.get("indexing"))
+        .and_then(Value::as_str)
+        .unwrap_or("DontIndex");
+    let references = object
+        .and_then(|object| object.get("references"))
+        .map(|value| meta_compile_string_list(Some(value)))
+        .unwrap_or_default();
+    lines.push(format!("{indent}<Column uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &synonym);
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+    emit_meta_md_object_refs(lines, &format!("{indent}\t\t"), "References", &references);
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</Column>"));
+}
+
+pub(crate) fn emit_meta_url_template<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    name: &str,
+    value: &Value,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let object = value.as_object();
+    let template = value
+        .as_str()
+        .or_else(|| {
+            object
+                .and_then(|object| object.get("template"))
+                .and_then(Value::as_str)
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("/{}", name.to_lowercase()));
+    lines.push(format!("{indent}<URLTemplate uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push(format!(
+        "{indent}\t\t<Template>{}</Template>",
+        escape_xml(&template)
+    ));
+    lines.push(format!("{indent}\t</Properties>"));
+    let methods = object
+        .and_then(|object| object.get("methods"))
+        .and_then(Value::as_object);
+    if methods.is_none_or(Map::is_empty) {
+        lines.push(format!("{indent}\t<ChildObjects/>"));
+    } else {
+        lines.push(format!("{indent}\t<ChildObjects>"));
+        let mut ordered = methods.unwrap().iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| left.0.cmp(right.0));
+        for (method_name, http_method_value) in ordered {
+            let http_method = http_method_value.as_str().unwrap_or("GET");
+            emit_meta_http_method(
+                lines,
+                &format!("{indent}\t\t"),
+                name,
+                method_name,
+                http_method,
+                next_uuid,
+            );
+        }
+        lines.push(format!("{indent}\t</ChildObjects>"));
+    }
+    lines.push(format!("{indent}</URLTemplate>"));
+}
+
+pub(crate) fn emit_meta_http_method<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    template_name: &str,
+    method_name: &str,
+    http_method: &str,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    lines.push(format!("{indent}<Method uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!(
+        "{indent}\t\t<Name>{}</Name>",
+        escape_xml(method_name)
+    ));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(method_name),
+    );
+    lines.push(format!(
+        "{indent}\t\t<HTTPMethod>{}</HTTPMethod>",
+        escape_xml(http_method)
+    ));
+    lines.push(format!(
+        "{indent}\t\t<Handler>{}{}</Handler>",
+        escape_xml(template_name),
+        escape_xml(method_name)
+    ));
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</Method>"));
+}
+
+pub(crate) fn emit_meta_operation<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    name: &str,
+    value: &Value,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let object = value.as_object();
+    let return_type = value
+        .as_str()
+        .or_else(|| {
+            object
+                .and_then(|object| object.get("returnType"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("xs:string");
+    let nillable = object
+        .and_then(|object| object.get("nillable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let transactioned = object
+        .and_then(|object| object.get("transactioned"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let handler = object
+        .and_then(|object| object.get("handler"))
+        .and_then(Value::as_str)
+        .unwrap_or(name);
+    lines.push(format!("{indent}<Operation uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    lines.push(format!(
+        "{indent}\t\t<XDTOReturningValueType>{}</XDTOReturningValueType>",
+        escape_xml(return_type)
+    ));
+    lines.push(format!("{indent}\t\t<Nillable>{nillable}</Nillable>"));
+    lines.push(format!(
+        "{indent}\t\t<Transactioned>{transactioned}</Transactioned>"
+    ));
+    lines.push(format!(
+        "{indent}\t\t<ProcedureName>{}</ProcedureName>",
+        escape_xml(handler)
+    ));
+    lines.push(format!("{indent}\t</Properties>"));
+    let parameters = object
+        .and_then(|object| object.get("parameters"))
+        .and_then(Value::as_object);
+    if parameters.is_none_or(Map::is_empty) {
+        lines.push(format!("{indent}\t<ChildObjects/>"));
+    } else {
+        lines.push(format!("{indent}\t<ChildObjects>"));
+        let mut ordered = parameters.unwrap().iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| left.0.cmp(right.0));
+        for (param_name, param_value) in ordered {
+            emit_meta_operation_parameter(
+                lines,
+                &format!("{indent}\t\t"),
+                param_name,
+                param_value,
+                next_uuid,
+            );
+        }
+        lines.push(format!("{indent}\t</ChildObjects>"));
+    }
+    lines.push(format!("{indent}</Operation>"));
+}
+
+pub(crate) fn emit_meta_operation_parameter<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    name: &str,
+    value: &Value,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let object = value.as_object();
+    let value_type = value
+        .as_str()
+        .or_else(|| {
+            object
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("xs:string");
+    let nillable = object
+        .and_then(|object| object.get("nillable"))
+        .and_then(Value::as_bool)
+        != Some(false);
+    let direction = object
+        .and_then(|object| object.get("direction"))
+        .and_then(Value::as_str)
+        .unwrap_or("In");
+    lines.push(format!("{indent}<Parameter uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push(format!(
+        "{indent}\t\t<XDTOValueType>{}</XDTOValueType>",
+        escape_xml(value_type)
+    ));
+    lines.push(format!("{indent}\t\t<Nillable>{nillable}</Nillable>"));
+    lines.push(format!(
+        "{indent}\t\t<TransferDirection>{}</TransferDirection>",
+        escape_xml(direction)
+    ));
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</Parameter>"));
+}
+
 pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, default: &str) -> String {
     defn.get(field_name)
         .and_then(Value::as_str)
@@ -5274,17 +7295,43 @@ pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
         "Balances" => "Balance",
         "Остатки" => "Balance",
         "Обороты" => "Turnovers",
+        "None" => "Nonperiodical",
+        "Daily" => "Day",
+        "Monthly" => "Month",
+        "Quarterly" => "Quarter",
+        "Yearly" => "Year",
+        "Непериодический" => "Nonperiodical",
+        "Секунда" => "Second",
+        "День" => "Day",
+        "Месяц" => "Month",
+        "Квартал" => "Quarter",
+        "Год" => "Year",
+        "ПозицияРегистратора" => "RecorderPosition",
         "RecordSubordinate" | "Subordinate" | "ПодчинениеРегистратору" => {
             "RecorderSubordinate"
         }
         "Независимый" => "Independent",
+        "NotDependOnCalculationTypes" | "NoDependence" | "NotUsed" => "DontUse",
+        "Depend" | "ПоПериодуДействия" => "OnActionPeriod",
         "Автоматический" => "Automatic",
         "Управляемый" => "Managed",
+        "Использовать" => "Use",
+        "НеИспользовать" => "DontUse",
+        "Разрешить" => "Allow",
+        "Запретить" => "Deny",
         "ВВидеНаименования" => "AsDescription",
         "ВВидеКода" => "AsCode",
         "ВДиалоге" => "InDialog",
         "ВСписке" => "InList",
         "ОбаСпособа" => "BothWays",
+        "НеПроверять" => "DontCheck",
+        "Ошибка" => "ShowError",
+        "Предупреждение" => "ShowWarning",
+        "НеИндексировать" => "DontIndex",
+        "Индексировать" => "Index",
+        "ИндексироватьСДопУпорядочиванием" => {
+            "IndexWithAdditionalOrder"
+        }
         other => other,
     }
     .to_string()
@@ -5307,7 +7354,85 @@ pub(crate) fn emit_meta_standard_attributes(
             "Description",
             "Code",
         ],
+        "Document" => vec!["Posted", "Ref", "DeletionMark", "Date", "Number"],
         "Enum" => vec!["Order", "Ref"],
+        "InformationRegister" => vec!["Active", "LineNumber", "Recorder", "Period"],
+        "AccumulationRegister" => vec!["Active", "LineNumber", "Recorder", "Period", "RecordType"],
+        "AccountingRegister" => vec!["Active", "Period", "Recorder", "LineNumber", "Account"],
+        "CalculationRegister" => vec![
+            "Active",
+            "Recorder",
+            "LineNumber",
+            "RegistrationPeriod",
+            "CalculationType",
+            "ReversingEntry",
+            "ActionPeriod",
+            "BegOfActionPeriod",
+            "EndOfActionPeriod",
+            "BegOfBasePeriod",
+            "EndOfBasePeriod",
+        ],
+        "ChartOfAccounts" => vec![
+            "PredefinedDataName",
+            "Predefined",
+            "Ref",
+            "DeletionMark",
+            "Description",
+            "Code",
+            "Parent",
+            "Order",
+            "Type",
+            "OffBalance",
+        ],
+        "ChartOfCharacteristicTypes" => vec![
+            "PredefinedDataName",
+            "Predefined",
+            "Ref",
+            "DeletionMark",
+            "Description",
+            "Code",
+            "Parent",
+            "IsFolder",
+            "ValueType",
+        ],
+        "ChartOfCalculationTypes" => vec![
+            "PredefinedDataName",
+            "Predefined",
+            "Ref",
+            "DeletionMark",
+            "Description",
+            "Code",
+            "ActionPeriodIsBasic",
+        ],
+        "BusinessProcess" => vec![
+            "Ref",
+            "DeletionMark",
+            "Date",
+            "Number",
+            "Started",
+            "Completed",
+            "HeadTask",
+        ],
+        "Task" => vec![
+            "Ref",
+            "DeletionMark",
+            "Date",
+            "Number",
+            "Executed",
+            "Description",
+            "RoutePoint",
+            "BusinessProcess",
+        ],
+        "ExchangePlan" => vec![
+            "Ref",
+            "DeletionMark",
+            "Code",
+            "Description",
+            "ThisNode",
+            "SentNo",
+            "ReceivedNo",
+        ],
+        "DocumentJournal" => vec!["Type", "Ref", "Date", "Posted", "DeletionMark", "Number"],
         "TabularSection" => vec!["LineNumber"],
         _ => Vec::new(),
     };
@@ -5702,12 +7827,17 @@ pub(crate) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}\t<ChildObjects>"));
+    let column_context = if matches!(object_type, "DataProcessor" | "Report") {
+        "processor-tabular"
+    } else {
+        "tabular"
+    };
     for column in &section.columns {
         emit_meta_attribute(
             lines,
             &format!("{indent}\t\t"),
             column,
-            "tabular",
+            column_context,
             next_uuid,
         );
     }
@@ -5750,6 +7880,22 @@ pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type
     let resolved = resolve_meta_type(type_name);
     if resolved == "Boolean" {
         lines.push(format!("{indent}<v8:Type>xs:boolean</v8:Type>"));
+    } else if resolved == "Date" {
+        lines.push(format!("{indent}<v8:Type>xs:dateTime</v8:Type>"));
+        lines.push(format!("{indent}<v8:DateQualifiers>"));
+        lines.push(format!(
+            "{indent}\t<v8:DateFractions>Date</v8:DateFractions>"
+        ));
+        lines.push(format!("{indent}</v8:DateQualifiers>"));
+    } else if resolved == "DateTime" {
+        lines.push(format!("{indent}<v8:Type>xs:dateTime</v8:Type>"));
+        lines.push(format!("{indent}<v8:DateQualifiers>"));
+        lines.push(format!(
+            "{indent}\t<v8:DateFractions>DateTime</v8:DateFractions>"
+        ));
+        lines.push(format!("{indent}</v8:DateQualifiers>"));
+    } else if resolved == "ValueStorage" {
+        lines.push(format!("{indent}<v8:Type>xs:base64Binary</v8:Type>"));
     } else if let Some(length) = resolved
         .strip_prefix("String(")
         .and_then(|rest| rest.strip_suffix(')'))
@@ -5806,14 +7952,24 @@ pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type
 pub(crate) fn meta_compile_is_config_type(type_name: &str) -> bool {
     [
         "CatalogRef.",
+        "CatalogObject.",
         "DocumentRef.",
+        "DocumentObject.",
         "EnumRef.",
         "ChartOfAccountsRef.",
+        "ChartOfAccountsObject.",
         "ChartOfCharacteristicTypesRef.",
+        "ChartOfCharacteristicTypesObject.",
         "ChartOfCalculationTypesRef.",
+        "ChartOfCalculationTypesObject.",
         "ExchangePlanRef.",
+        "ExchangePlanObject.",
         "BusinessProcessRef.",
+        "BusinessProcessObject.",
         "TaskRef.",
+        "TaskObject.",
+        "ReportObject.",
+        "DataProcessorObject.",
         "DefinedType.",
     ]
     .iter()
