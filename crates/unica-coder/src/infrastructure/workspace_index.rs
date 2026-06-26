@@ -87,11 +87,13 @@ pub struct IndexBackgroundJob {
     pub info: IndexCommand,
     pub status_path: PathBuf,
     pub lock_path: PathBuf,
+    pub lock_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BslIndexLock {
     schema_version: u32,
+    lock_id: String,
     owner_pid: u32,
     action: String,
     source_root: String,
@@ -315,11 +317,11 @@ impl<'a> WorkspaceIndexService<'a> {
             }
         }
 
+        let index_lock = BslIndexLock::new(action, &source_root);
+        let lock_id = index_lock.lock_id.clone();
         match OpenOptions::new().create_new(true).write(true).open(&lock) {
             Ok(mut file) => {
-                if let Err(error) =
-                    write_lock_file(&mut file, &BslIndexLock::new(action, &source_root))
-                {
+                if let Err(error) = write_lock_file(&mut file, &index_lock) {
                     let _ = fs::remove_file(&lock);
                     let _ = write_status(
                         context,
@@ -356,6 +358,7 @@ impl<'a> WorkspaceIndexService<'a> {
             info,
             status_path,
             lock_path: lock.clone(),
+            lock_id,
         };
         if let Err(error) = self.runner.start_background(job) {
             let _ = fs::remove_file(lock);
@@ -438,6 +441,7 @@ impl BslIndexLock {
         let now = now_secs();
         Self {
             schema_version: LOCK_SCHEMA_VERSION,
+            lock_id: new_lock_id(),
             owner_pid: std::process::id(),
             action: action.to_string(),
             source_root: source_root.display().to_string(),
@@ -487,9 +491,11 @@ impl IndexRunner for SystemIndexRunner {
 fn run_background_job(job: IndexBackgroundJob) {
     let _lock_cleanup = LockCleanup {
         path: job.lock_path.clone(),
+        lock_id: job.lock_id.clone(),
     };
     let started_at = now_secs();
-    let result = run_index_command_with_heartbeat(&job.primary, Some(&job.lock_path));
+    let result =
+        run_index_command_with_heartbeat(&job.primary, Some((&job.lock_path, &job.lock_id)));
     let finished_at = now_secs();
     match result {
         Ok(output) if output.status_success => {
@@ -559,7 +565,7 @@ fn run_index_command(command: &IndexCommand) -> Result<IndexOutput, String> {
 
 fn run_index_command_with_heartbeat(
     command: &IndexCommand,
-    heartbeat_path: Option<&Path>,
+    heartbeat: Option<(&Path, &str)>,
 ) -> Result<IndexOutput, String> {
     let mut child = Command::new(&command.program)
         .args(&command.args)
@@ -572,8 +578,8 @@ fn run_index_command_with_heartbeat(
 
     let started = Instant::now();
     let mut last_heartbeat = Instant::now();
-    if let Some(path) = heartbeat_path {
-        refresh_lock_heartbeat(path, child.id());
+    if let Some((path, lock_id)) = heartbeat {
+        refresh_lock_heartbeat(path, lock_id, child.id());
     }
     loop {
         if child
@@ -594,9 +600,9 @@ fn run_index_command_with_heartbeat(
             });
         }
 
-        if let Some(path) = heartbeat_path {
+        if let Some((path, lock_id)) = heartbeat {
             if last_heartbeat.elapsed() >= LOCK_HEARTBEAT_INTERVAL {
-                refresh_lock_heartbeat(path, child.id());
+                refresh_lock_heartbeat(path, lock_id, child.id());
                 last_heartbeat = Instant::now();
             }
         }
@@ -622,11 +628,12 @@ fn run_index_command_with_heartbeat(
 
 struct LockCleanup {
     path: PathBuf,
+    lock_id: String,
 }
 
 impl Drop for LockCleanup {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        remove_owned_lock(&self.path, &self.lock_id);
     }
 }
 
@@ -719,6 +726,7 @@ fn active_lock(context: &WorkspaceContext, source_root: &Path) -> bool {
                     action = index_lock.action
                 )
                 .as_str(),
+                Some(index_lock.lock_id.as_str()),
             );
             false
         }
@@ -730,6 +738,7 @@ fn active_lock(context: &WorkspaceContext, source_root: &Path) -> bool {
                 context,
                 source_root,
                 format!("RLM index lock is invalid: {error}").as_str(),
+                None,
             );
             false
         }
@@ -749,9 +758,19 @@ fn invalid_lock_may_be_active(context: &WorkspaceContext, lock: &Path) -> bool {
     false
 }
 
-fn recover_stale_lock(context: &WorkspaceContext, source_root: &Path, reason: &str) {
+fn recover_stale_lock(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    reason: &str,
+    lock_id: Option<&str>,
+) {
     let lock = lock_path(context);
-    let _ = fs::remove_file(lock);
+    match lock_id {
+        Some(lock_id) => remove_owned_lock(&lock, lock_id),
+        None => {
+            let _ = fs::remove_file(lock);
+        }
+    }
     if read_bsl_index_status(context)
         .map(|status| status.status == "building")
         .unwrap_or(false)
@@ -771,6 +790,7 @@ fn read_lock_path(path: &Path) -> Result<BslIndexLock, String> {
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn write_lock_path(path: &Path, index_lock: BslIndexLock) -> Result<(), String> {
     let temp_path = lock_temp_path(path);
     {
@@ -807,13 +827,54 @@ fn lock_temp_path(path: &Path) -> PathBuf {
     ))
 }
 
-fn refresh_lock_heartbeat(path: &Path, child_pid: u32) {
+fn write_owned_lock_path(
+    path: &Path,
+    index_lock: BslIndexLock,
+    expected_lock_id: &str,
+) -> Result<bool, String> {
+    let temp_path = lock_temp_path(path);
+    {
+        let mut temp = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("failed to create temporary RLM index lock: {error}"))?;
+        write_lock_file(&mut temp, &index_lock)?;
+    }
+    match read_lock_path(path) {
+        Ok(current) if current.lock_id == expected_lock_id => {
+            fs::rename(&temp_path, path).map_err(|error| {
+                let _ = fs::remove_file(&temp_path);
+                format!("failed to replace RLM index lock atomically: {error}")
+            })?;
+            Ok(true)
+        }
+        _ => {
+            let _ = fs::remove_file(&temp_path);
+            Ok(false)
+        }
+    }
+}
+
+fn refresh_lock_heartbeat(path: &Path, lock_id: &str, child_pid: u32) {
     let Ok(mut index_lock) = read_lock_path(path) else {
         return;
     };
+    if index_lock.lock_id != lock_id {
+        return;
+    }
     index_lock.updated_at = now_secs();
     index_lock.child_pid = Some(child_pid);
-    let _ = write_lock_path(path, index_lock);
+    let _ = write_owned_lock_path(path, index_lock, lock_id);
+}
+
+fn remove_owned_lock(path: &Path, lock_id: &str) {
+    if read_lock_path(path)
+        .map(|index_lock| index_lock.lock_id == lock_id)
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn file_modified_secs(path: &Path) -> Option<u64> {
@@ -917,6 +978,10 @@ fn now_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
+}
+
+fn new_lock_id() -> String {
+    format!("{}-{}", std::process::id(), now_nanos())
 }
 
 #[cfg(test)]
@@ -1201,7 +1266,9 @@ mod tests {
         let status = status_path(&context);
         let lock = lock_path(&context);
         fs::create_dir_all(lock.parent().unwrap()).unwrap();
-        fs::write(&lock, "").unwrap();
+        let index_lock = BslIndexLock::new("build", &context.workspace_root.join("src"));
+        let lock_id = index_lock.lock_id.clone();
+        write_lock_path(&lock, index_lock).unwrap();
 
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
@@ -1219,6 +1286,7 @@ mod tests {
             ),
             status_path: status.clone(),
             lock_path: lock.clone(),
+            lock_id,
         });
 
         let value: serde_json::Value =
@@ -1237,6 +1305,46 @@ mod tests {
         assert_eq!(metrics["methods"], 617);
         assert_eq!(metrics["db_size"], "1.3 MB");
         assert!(!lock.exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cleanup_does_not_remove_lock_replaced_by_new_owner() {
+        let context = test_context("cleanup-owner");
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let mut old_lock = BslIndexLock::new("build", &context.workspace_root.join("src"));
+        old_lock.lock_id = "old-owner".to_string();
+        let mut new_lock = BslIndexLock::new("build", &context.workspace_root.join("src"));
+        new_lock.lock_id = "new-owner".to_string();
+        write_lock_path(&lock, new_lock.clone()).unwrap();
+
+        drop(LockCleanup {
+            path: lock.clone(),
+            lock_id: old_lock.lock_id,
+        });
+
+        let current = read_lock_path(&lock).expect("replacement lock should remain");
+        assert_eq!(current.lock_id, new_lock.lock_id);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn heartbeat_does_not_overwrite_lock_replaced_by_new_owner() {
+        let context = test_context("heartbeat-owner");
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let mut old_lock = BslIndexLock::new("build", &context.workspace_root.join("src"));
+        old_lock.lock_id = "old-owner".to_string();
+        let mut new_lock = BslIndexLock::new("build", &context.workspace_root.join("src"));
+        new_lock.lock_id = "new-owner".to_string();
+        write_lock_path(&lock, new_lock.clone()).unwrap();
+
+        refresh_lock_heartbeat(&lock, &old_lock.lock_id, 42);
+
+        let current = read_lock_path(&lock).expect("replacement lock should remain readable");
+        assert_eq!(current.lock_id, new_lock.lock_id);
+        assert_eq!(current.child_pid, new_lock.child_pid);
         cleanup(&context);
     }
 
@@ -1308,6 +1416,7 @@ mod tests {
         fs::create_dir_all(lock_path(context).parent().unwrap()).unwrap();
         let text = serde_json::json!({
             "schema_version": 1,
+            "lock_id": new_lock_id(),
             "owner_pid": std::process::id(),
             "action": action,
             "source_root": context.workspace_root.join("src").display().to_string(),
@@ -1326,6 +1435,7 @@ mod tests {
         let stale = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
         let text = serde_json::json!({
             "schema_version": 1,
+            "lock_id": new_lock_id(),
             "owner_pid": std::process::id(),
             "action": action,
             "source_root": context.workspace_root.join("src").display().to_string(),
