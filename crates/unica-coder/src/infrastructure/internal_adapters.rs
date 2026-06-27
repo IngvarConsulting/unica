@@ -1646,7 +1646,12 @@ fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     let mut filtered = Map::new();
     for key in ["cwd", "dryRun", "confirm", "sourceDir", "config", "format"] {
         if let Some(value) = args.get(key) {
-            filtered.insert(key.to_string(), value.clone());
+            let value = if key == "format" && value.as_str() == Some("json") {
+                json!("jsonl")
+            } else {
+                value.clone()
+            };
+            filtered.insert(key.to_string(), value);
         }
     }
     filtered
@@ -3020,6 +3025,27 @@ mod tests {
         assert!(command.contains("run-bsl-analyzer.sh"));
         assert!(command.contains("analyze"));
         assert!(command.contains("--source-dir src"));
+    }
+
+    #[test]
+    fn diagnostics_analyze_normalizes_json_format_and_keeps_limit_out_of_cli_args() {
+        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let mut args = Map::new();
+        args.insert("sourceDir".to_string(), json!("src/extensions/Smoke"));
+        args.insert("format".to_string(), json!("json"));
+        args.insert("limit".to_string(), json!(20));
+
+        let outcome = BslAnalyzerMcpAdapter::new()
+            .invoke("unica.code.diagnostics", &args, &context, true)
+            .unwrap();
+
+        let command = outcome.command.unwrap().join(" ");
+        assert!(command.contains("run-bsl-analyzer.sh"));
+        assert!(command.contains("analyze"));
+        assert!(command.contains("--source-dir src/extensions/Smoke"));
+        assert!(command.contains("--format jsonl"));
+        assert!(!command.contains("--limit"));
+        assert!(!command.contains(" 20"));
     }
 
     #[test]
