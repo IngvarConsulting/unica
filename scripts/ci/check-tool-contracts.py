@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
+import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -72,6 +75,10 @@ RLM_REQUIRED_META = {
 
 
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
+    if os.name == "nt" and command and command[0].endswith(".sh"):
+        shell = shutil.which("bash") or shutil.which("sh")
+        if shell:
+            command = [shell, *command]
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -110,7 +117,7 @@ def check_rlm_schema(db_path: Path) -> list[str]:
     errors: list[str] = []
     if not db_path.exists():
         return [f"RLM index DB not found: {db_path}"]
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         existing_tables = {
             row[0]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')")

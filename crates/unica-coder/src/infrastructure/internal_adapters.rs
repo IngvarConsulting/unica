@@ -3441,8 +3441,59 @@ mod tests {
         let plugin_root = root.join("plugins").join("unica");
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("scripts")).unwrap();
+        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::write(plugin_root.join("scripts").join("run-bsl-analyzer.sh"), "").unwrap();
         fs::write(plugin_root.join("scripts").join("run-rlm-bsl-index.sh"), "").unwrap();
+        write_fake_bundled_tool(&plugin_root, "win-x64", "rlm-bsl-index.exe");
+        write_fake_bundled_tool(&plugin_root, "linux-x64", "rlm-bsl-index");
+        write_fake_bundled_tool(&plugin_root, "darwin-arm64", "rlm-bsl-index");
+        let sha = fake_binary_sha();
+        let manifest = json!({
+            "schemaVersion": 2,
+            "tools": [
+                {
+                    "name": "rlm-bsl-index",
+                    "binaries": {
+                        "win-x64": {
+                            "targetTriple": "x86_64-pc-windows-msvc",
+                            "binaryPath": "bin/win-x64/rlm-bsl-index.exe",
+                            "sha256": sha
+                        },
+                        "linux-x64": {
+                            "targetTriple": "x86_64-unknown-linux-gnu",
+                            "binaryPath": "bin/linux-x64/rlm-bsl-index",
+                            "sha256": sha
+                        },
+                        "darwin-arm64": {
+                            "targetTriple": "aarch64-apple-darwin",
+                            "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+                            "sha256": sha
+                        }
+                    }
+                }
+            ]
+        });
+        fs::write(
+            plugin_root.join("third-party").join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_fake_bundled_tool(plugin_root: &Path, target: &str, binary_name: &str) {
+        let path = plugin_root.join("bin").join(target).join(binary_name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"fake-index").unwrap();
+    }
+
+    fn fake_binary_sha() -> String {
+        use sha2::{Digest, Sha256};
+
+        hex_digest(&Sha256::digest(b"fake-index"))
+    }
+
+    fn hex_digest(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     fn create_rlm_search_db(db_path: &PathBuf) {
