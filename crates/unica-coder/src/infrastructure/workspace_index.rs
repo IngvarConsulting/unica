@@ -1,4 +1,5 @@
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::legacy_scripts::find_plugin_root;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -238,39 +239,41 @@ impl<'a> WorkspaceIndexService<'a> {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal RLM index adapter lookup".to_string()
         })?;
-        let launcher = plugin_root.join("scripts").join("run-rlm-bsl-index.sh");
-        if !launcher.exists() {
-            return Err(format!(
-                "internal RLM index launcher not found: {}",
-                launcher.display()
-            ));
-        }
-        let env = vec![(
-            "RLM_INDEX_DIR".to_string(),
-            context
-                .cache_root
-                .join(RLM_INDEX_DIR_NAME)
-                .display()
-                .to_string(),
-        )];
+        let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-index").map_err(|error| {
+            format!("internal RLM index adapter could not resolve bundled rlm-bsl-index: {error}")
+        })?;
+        let env = vec![
+            (
+                "RLM_INDEX_DIR".to_string(),
+                context
+                    .cache_root
+                    .join(RLM_INDEX_DIR_NAME)
+                    .display()
+                    .to_string(),
+            ),
+            (
+                "UNICA_PLUGIN_ROOT".to_string(),
+                plugin_root.display().to_string(),
+            ),
+        ];
         let root = source_root.display().to_string();
         Ok(IndexCommands {
             info: IndexCommand {
-                program: launcher.clone(),
+                program: program.clone(),
                 args: vec!["index".to_string(), "info".to_string(), root.clone()],
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: INDEX_TIMEOUT,
             },
             build: IndexCommand {
-                program: launcher.clone(),
+                program: program.clone(),
                 args: vec!["index".to_string(), "build".to_string(), root.clone()],
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: Duration::from_secs(24 * 60 * 60),
             },
             update: IndexCommand {
-                program: launcher,
+                program,
                 args: vec!["index".to_string(), "update".to_string(), root],
                 cwd: context.cwd.clone(),
                 env,
@@ -763,8 +766,45 @@ mod tests {
         );
         assert!(runner.backgrounds.borrow()[0].primary.env[0]
             .1
+            .replace('\\', "/")
             .contains(".build/unica/rlm-tools-bsl"));
+        assert!(runner.backgrounds.borrow()[0]
+            .primary
+            .env
+            .iter()
+            .any(|(key, value)| key == "UNICA_PLUGIN_ROOT" && value.contains("plugins")));
         assert!(status_path(&context).is_file());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn index_commands_use_manifest_resolved_binary_not_shell_wrapper() {
+        let context = test_context("manifest-command");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index not found: /tmp/bsl_index.db",
+            )]),
+            ..Default::default()
+        };
+        let service = WorkspaceIndexService::with_runner(&runner);
+
+        let report = service.start_for_workspace(&context, &Map::new(), false);
+
+        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
+        let info_program = runner.commands.borrow()[0].program.display().to_string();
+        assert!(info_program.contains("bin"));
+        assert!(info_program.contains("rlm-bsl-index"));
+        assert!(!info_program.ends_with(".sh"));
+        assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
+        assert_eq!(
+            runner.backgrounds.borrow()[0].primary.args[0..2],
+            ["index", "build"]
+        );
+        assert_eq!(
+            runner.backgrounds.borrow()[0].info.args[0..2],
+            ["index", "info"]
+        );
         cleanup(&context);
     }
 
@@ -891,17 +931,8 @@ mod tests {
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
             source_root: context.workspace_root.join("src"),
-            primary: shell_command(
-                &context.workspace_root,
-                "sleep 0.01; printf '%s\n' 'Index built in 1.2s' '  Index:    v14' '  Modules:  24' '  Methods:  617' '  DB size:  1.3 MB'",
-            ),
-            info: shell_command(
-                &context.workspace_root,
-                format!(
-                    "printf '%s\n' 'Index: {}' '  Status:   fresh'",
-                    db_path.display()
-                ),
-            ),
+            primary: successful_build_command(&context.workspace_root),
+            info: fresh_info_command(&context.workspace_root, &db_path),
             status_path: status.clone(),
             lock_path: lock.clone(),
         });
@@ -960,6 +991,22 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    fn shell_command(cwd: &Path, script: impl Into<String>) -> IndexCommand {
+        IndexCommand {
+            program: PathBuf::from("powershell.exe"),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                script.into(),
+            ],
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[cfg(not(windows))]
     fn shell_command(cwd: &Path, script: impl Into<String>) -> IndexCommand {
         IndexCommand {
             program: PathBuf::from("/bin/sh"),
@@ -968,6 +1015,44 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
         }
+    }
+
+    #[cfg(windows)]
+    fn successful_build_command(cwd: &Path) -> IndexCommand {
+        shell_command(
+            cwd,
+            "Start-Sleep -Milliseconds 10; Write-Output 'Index built in 1.2s'; Write-Output '  Index:    v14'; Write-Output '  Modules:  24'; Write-Output '  Methods:  617'; Write-Output '  DB size:  1.3 MB'",
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn successful_build_command(cwd: &Path) -> IndexCommand {
+        shell_command(
+            cwd,
+            "sleep 0.01; printf '%s\n' 'Index built in 1.2s' '  Index:    v14' '  Modules:  24' '  Methods:  617' '  DB size:  1.3 MB'",
+        )
+    }
+
+    #[cfg(windows)]
+    fn fresh_info_command(cwd: &Path, db_path: &Path) -> IndexCommand {
+        shell_command(
+            cwd,
+            format!(
+                "Write-Output 'Index: {}'; Write-Output '  Status:   fresh'",
+                db_path.display()
+            ),
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn fresh_info_command(cwd: &Path, db_path: &Path) -> IndexCommand {
+        shell_command(
+            cwd,
+            format!(
+                "printf '%s\n' 'Index: {}' '  Status:   fresh'",
+                db_path.display()
+            ),
+        )
     }
 
     fn test_context(name: &str) -> WorkspaceContext {
@@ -986,7 +1071,57 @@ mod tests {
         let plugin_root = root.join("plugins").join("unica");
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("scripts")).unwrap();
-        fs::write(plugin_root.join("scripts").join("run-rlm-bsl-index.sh"), "").unwrap();
+        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        write_fake_bundled_tool(&plugin_root, "win-x64", "rlm-bsl-index.exe");
+        write_fake_bundled_tool(&plugin_root, "linux-x64", "rlm-bsl-index");
+        write_fake_bundled_tool(&plugin_root, "darwin-arm64", "rlm-bsl-index");
+        let sha = fake_binary_sha();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "tools": [
+                {
+                    "name": "rlm-bsl-index",
+                    "binaries": {
+                        "win-x64": {
+                            "targetTriple": "x86_64-pc-windows-msvc",
+                            "binaryPath": "bin/win-x64/rlm-bsl-index.exe",
+                            "sha256": sha
+                        },
+                        "linux-x64": {
+                            "targetTriple": "x86_64-unknown-linux-gnu",
+                            "binaryPath": "bin/linux-x64/rlm-bsl-index",
+                            "sha256": sha
+                        },
+                        "darwin-arm64": {
+                            "targetTriple": "aarch64-apple-darwin",
+                            "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+                            "sha256": sha
+                        }
+                    }
+                }
+            ]
+        });
+        fs::write(
+            plugin_root.join("third-party").join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_fake_bundled_tool(plugin_root: &Path, target: &str, binary_name: &str) {
+        let path = plugin_root.join("bin").join(target).join(binary_name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"fake-index").unwrap();
+    }
+
+    fn fake_binary_sha() -> String {
+        use sha2::{Digest, Sha256};
+
+        bsl_index_hex_digest(&Sha256::digest(b"fake-index"))
+    }
+
+    fn bsl_index_hex_digest(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     fn cleanup(context: &WorkspaceContext) {

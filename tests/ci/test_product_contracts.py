@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import importlib.util
 import sqlite3
 import tempfile
@@ -130,7 +131,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute(
@@ -178,7 +179,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute("CREATE TABLE modules (id INTEGER, rel_path TEXT)")
@@ -199,7 +200,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute(
@@ -228,7 +229,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '12')")
                 conn.execute(

@@ -19,4 +19,5 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
+sha2 = "0.10"
 ureq.workspace = true

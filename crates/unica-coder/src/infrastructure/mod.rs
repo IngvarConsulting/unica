@@ -1,3 +1,4 @@
+pub mod bundled_tools;
 pub mod internal_adapters;
 pub mod legacy_scripts;
 pub mod native_operations;

@@ -21,7 +21,8 @@ impl LegacyScriptAdapter {
             "could not locate Unica plugin root; set UNICA_PLUGIN_ROOT or run from a repository/package containing plugins/unica".to_string()
         })?;
         let script = legacy_script_path(&plugin_root, skill, script_name);
-        let mut command = vec!["python3".to_string(), script.display().to_string()];
+        let python = python_launcher();
+        let mut command = vec![python.clone(), script.display().to_string()];
         command.extend(script_args(args));
 
         if dry_run {
@@ -52,7 +53,7 @@ impl LegacyScriptAdapter {
             return Err(format!("fallback script not found: {}", script.display()));
         }
 
-        let output = Command::new("python3")
+        let output = Command::new(&python)
             .arg(&script)
             .args(script_args(args))
             .current_dir(&context.cwd)
@@ -90,6 +91,10 @@ impl LegacyScriptAdapter {
             command: Some(command),
         })
     }
+}
+
+fn python_launcher() -> String {
+    env::var("UNICA_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
 pub fn legacy_script_path(plugin_root: &Path, skill: &str, script_name: &str) -> PathBuf {

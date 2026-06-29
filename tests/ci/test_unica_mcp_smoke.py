@@ -14,11 +14,12 @@ class UnicaMcpSmokeTests(unittest.TestCase):
 
     def call_mcp(self, messages: list[dict], *, cache_dir: Path | None = None) -> list[dict]:
         env = os.environ.copy()
+        env["UNICA_PLUGIN_ROOT"] = str(self.repo_root() / "plugins" / "unica")
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
         payload = "\n".join(json.dumps(message) for message in messages) + "\n"
         result = subprocess.run(
-            [str(self.repo_root() / "plugins" / "unica" / "scripts" / "run-unica.sh")],
+            launcher_command(self.repo_root()),
             input=payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -99,3 +100,17 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertEqual(payload["cache"]["mode"], "dry-run")
         self.assertIn("SourceSetChanged", payload["cache"]["events"])
         self.assertIn("run-v8-runner.sh", " ".join(payload["command"]))
+
+
+def launcher_command(repo_root: Path) -> list[str]:
+    if os.name == "nt":
+        target_root = Path(os.environ.get("CARGO_TARGET_DIR", repo_root / "target"))
+        unica_bin = target_root / "debug" / "unica.exe"
+        if not unica_bin.is_file():
+            subprocess.run(
+                ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"],
+                cwd=repo_root,
+                check=True,
+            )
+        return [str(unica_bin)]
+    return [str(repo_root / "plugins" / "unica" / "scripts" / "run-unica.sh")]

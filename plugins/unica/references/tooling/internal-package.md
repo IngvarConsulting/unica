@@ -35,16 +35,21 @@ workflow generate binaries, SHA-256 entries, and marketplace archives.
 
 ## Launchers
 
-Bundled tools are launched through checksum-verifying wrappers instead of direct
-binary paths. This prevents accidental use of a globally installed tool with a
-different version.
+Bundled tools are launched through checksum-verifying resolution instead of
+global tool names. Manual/package smoke paths use wrappers; Rust internal
+adapters may resolve and execute the packaged binary directly through
+`third-party/manifest.json`. Both paths prevent accidental use of a globally
+installed tool with a different version.
 
 - `scripts/run-tool.sh <tool-name> [args...]` is the macOS/Linux launcher.
 - `scripts/run-tool.ps1 <tool-name> [args...]` is the PowerShell launcher.
-- Per-tool shell wrappers call `run-tool.sh` for internal adapters.
-  The packaged MCP runtime is shell-first on macOS/Linux; Windows can run
-  bundled tools through PowerShell wrappers, but stdio MCP orchestration currently
-  require a shell-compatible launcher.
+- Per-tool shell wrappers call `run-tool.sh` for smoke tests and manual use.
+- Rust internal adapters resolve the target-specific binary from the manifest,
+  verify SHA-256, set `UNICA_PLUGIN_ROOT`, and execute the binary directly. This
+  avoids invoking `.sh` wrappers through `Command::new(...)` on Windows.
+  The packaged MCP runtime is shell-first on macOS/Linux for top-level server
+  startup; Windows sidecar tools should use manifest-resolved binaries or the
+  PowerShell launcher.
 
 Launcher responsibilities:
 

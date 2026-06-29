@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -1374,12 +1376,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
+        env["UNICA_PYTHON"] = python_command()
         result = subprocess.run(
             [str(self.unica_bin)],
             input=json.dumps(message, ensure_ascii=False) + "\n",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             cwd=REPO_ROOT,
             env=env,
             check=False,
@@ -1400,12 +1404,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
+        env["UNICA_PYTHON"] = python_command()
         result = subprocess.run(
             [str(self.unica_bin)],
             input="\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             cwd=REPO_ROOT,
             env=env,
             check=False,
@@ -1427,13 +1433,18 @@ def run_python_script(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
 
 def command_for_script(skill: str, script: str, arguments: dict[str, Any]) -> list[str]:
     script_path = REFERENCE_SKILLS_ROOT / skill / "scripts" / script
-    return ["python3", str(script_path), *script_args(arguments)]
+    return [python_command(), str(script_path), *script_args(arguments)]
+
+
+def python_command() -> str:
+    return sys.executable if os.name == "nt" else "python3"
 
 
 def iter_skill_mcp_examples() -> list[SkillMcpExample]:
@@ -1508,7 +1519,15 @@ def value_to_cli_string(value: Any) -> str:
 
 
 def normalize_command(command: list[str], workspace: Path) -> list[str]:
-    return [normalize_text(part, workspace) for part in command]
+    normalized = [normalize_text(part, workspace) for part in command]
+    if normalized and is_python_command(normalized[0]):
+        normalized[0] = "python3"
+    return normalized
+
+
+def is_python_command(command: str) -> bool:
+    normalized = command.replace("\\", "/").lower()
+    return normalized == "python3" or normalized.endswith("/python.exe")
 
 
 def normalize_text(text: str, workspace: Path) -> str:
@@ -1516,6 +1535,14 @@ def normalize_text(text: str, workspace: Path) -> str:
     normalized = normalized.replace(str(workspace.resolve()), "<WORKSPACE>")
     normalized = normalized.replace(str(workspace), "<WORKSPACE>")
     normalized = normalized.replace(str(REPO_ROOT), "<REPO>")
+    normalized = normalized.replace(str(workspace.resolve()).replace("\\", "/"), "<WORKSPACE>")
+    normalized = normalized.replace(str(workspace).replace("\\", "/"), "<WORKSPACE>")
+    normalized = normalized.replace(str(REPO_ROOT).replace("\\", "/"), "<REPO>")
+    normalized = normalized.replace("\\", "/")
+    normalized = normalized.replace("//?/<WORKSPACE>", "<WORKSPACE>")
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r"\n\n(?=\[(?:OK|WARN|ERR|INFO|NORMAL|ERROR)\])", "\n", normalized)
+    normalized = re.sub(r"\n\n(?=Written to:)", "\n", normalized)
     normalized = re.sub(
         r"<REPO>/tests/fixtures/unica_mcp_script_parity/reference_skills/([^/\s\"']+)/scripts/([^/\s\"']+)",
         r"<REPO>/<SKILL_SCRIPT>/\1/\2",
@@ -1544,8 +1571,32 @@ def snapshot_workspace(workspace: Path) -> dict[str, str]:
         except UnicodeDecodeError:
             snapshot[rel] = "sha256:" + hashlib.sha256(data).hexdigest()
             continue
-        snapshot[rel] = normalize_text(text, workspace)
+        snapshot[rel] = normalize_snapshot_text(rel, text, workspace)
     return snapshot
+
+
+def normalize_snapshot_text(rel: str, text: str, workspace: Path) -> str:
+    normalized = normalize_text(text, workspace)
+    if not rel.endswith(".xml"):
+        return normalized
+
+    xml_text = re.sub(r">\s+<", "><", normalized.replace("&#13;", ""))
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return xml_text
+
+    strip_xml_layout_whitespace(root)
+    return ET.tostring(root, encoding="unicode")
+
+
+def strip_xml_layout_whitespace(element: ET.Element) -> None:
+    if element.text is not None and not element.text.strip():
+        element.text = None
+    if element.tail is not None and not element.tail.strip():
+        element.tail = None
+    for child in element:
+        strip_xml_layout_whitespace(child)
 
 
 if __name__ == "__main__":
