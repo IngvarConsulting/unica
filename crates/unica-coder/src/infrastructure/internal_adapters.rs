@@ -75,7 +75,6 @@ pub struct RuntimeAdapter<'a> {
 }
 
 pub struct CodeSearchAdapter<'a> {
-    analyzer_runner: &'a dyn ProcessRunner,
     index_runner: &'a dyn IndexRunner,
     use_workspace_service: bool,
 }
@@ -340,18 +339,16 @@ impl<'a> Default for RuntimeAdapter<'a> {
 impl<'a> CodeSearchAdapter<'a> {
     pub fn new() -> Self {
         Self {
-            analyzer_runner: &SYSTEM_PROCESS_RUNNER,
             index_runner: &SYSTEM_INDEX_RUNNER,
             use_workspace_service: true,
         }
     }
 
     pub fn with_runners(
-        analyzer_runner: &'a dyn ProcessRunner,
+        _analyzer_runner: &'a dyn ProcessRunner,
         index_runner: &'a dyn IndexRunner,
     ) -> Self {
         Self {
-            analyzer_runner,
             index_runner,
             use_workspace_service: false,
         }
@@ -364,49 +361,78 @@ impl<'a> CodeSearchAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<AdapterOutcome, String> {
-        let mut analyzer = CliAdapter::with_runner(
-            "run-bsl-analyzer.sh",
-            &["search"],
-            "code analysis",
-            self.analyzer_runner,
-        )
-        .invoke(tool_name, args, context, dry_run, false)?;
-
         if dry_run {
-            return Ok(analyzer);
+            return Ok(AdapterOutcome {
+                ok: true,
+                summary: format!("dry run: {tool_name} would search the internal RLM index"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            });
         }
 
-        let analyzer_stdout = analyzer.stdout.take().unwrap_or_default();
-        let analyzer_stderr = analyzer.stderr.take();
-        let mut stdout = format_section("bsl-analyzer", &analyzer_stdout);
+        if args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .is_none()
+        {
+            return Ok(AdapterOutcome {
+                ok: true,
+                summary: format!("{tool_name} skipped RLM search"),
+                changes: Vec::new(),
+                warnings: vec!["rlm search skipped: missing non-empty query".to_string()],
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            });
+        }
 
         match self.rlm_readiness(context, args) {
             IndexReadiness::Ready { db_path } => match search_rlm_index(&db_path, args) {
-                Ok(Some(rlm_stdout)) => {
-                    stdout.push_str("\n\n");
-                    stdout.push_str(&format_section("rlm", &rlm_stdout));
-                }
-                Ok(None) => {}
-                Err(error) => analyzer
-                    .warnings
-                    .push(format!("rlm search failed: {error}")),
+                Ok(Some(rlm_stdout)) => Ok(AdapterOutcome {
+                    ok: true,
+                    summary: format!("{tool_name} completed through internal RLM index"),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: vec![db_path.display().to_string()],
+                    stdout: Some(format_section("rlm", &rlm_stdout)),
+                    stderr: None,
+                    command: None,
+                }),
+                Ok(None) => Ok(AdapterOutcome {
+                    ok: true,
+                    summary: format!("{tool_name} skipped RLM search"),
+                    changes: Vec::new(),
+                    warnings: vec!["rlm search skipped: missing non-empty query".to_string()],
+                    errors: Vec::new(),
+                    artifacts: vec![db_path.display().to_string()],
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                }),
+                Err(error) => Ok(AdapterOutcome {
+                    ok: true,
+                    summary: format!("{tool_name} could not search RLM index"),
+                    changes: Vec::new(),
+                    warnings: vec![format!("rlm search failed: {error}")],
+                    errors: Vec::new(),
+                    artifacts: vec![db_path.display().to_string()],
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                }),
             },
-            IndexReadiness::Building => analyzer.warnings.push("rlm index building".to_string()),
-            IndexReadiness::Missing => analyzer
-                .warnings
-                .push("rlm index unavailable: index is missing".to_string()),
-            IndexReadiness::Stale => analyzer.warnings.push("rlm index building".to_string()),
-            IndexReadiness::Failed(error) => analyzer
-                .warnings
-                .push(format!("rlm index unavailable: {error}")),
-            IndexReadiness::Unavailable(error) => analyzer
-                .warnings
-                .push(format!("rlm index unavailable: {error}")),
+            readiness => Ok(index_unavailable_outcome(tool_name, readiness)),
         }
-
-        analyzer.stdout = Some(stdout);
-        analyzer.stderr = analyzer_stderr;
-        Ok(analyzer)
     }
 
     fn rlm_readiness(
@@ -2637,26 +2663,10 @@ mod tests {
     }
 
     #[test]
-    fn code_adapter_dry_run_builds_bsl_analyzer_command() {
+    fn code_search_adapter_dry_run_does_not_build_process_command() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("ОбщийМодуль"));
-
-        let outcome = CliAdapter::new("run-bsl-analyzer.sh", &["search"], "code analysis")
-            .invoke("unica.code.search", &args, &context, true, false)
-            .unwrap();
-
-        let command = outcome.command.unwrap().join(" ");
-        assert!(command.contains("run-bsl-analyzer.sh"));
-        assert!(command.contains("search"));
-        assert!(command.contains("--query"));
-        assert!(command.contains("ОбщийМодуль"));
-    }
-
-    #[test]
-    fn code_search_adapter_dry_run_builds_bsl_analyzer_search_command() {
-        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
-        let analyzer = FakeProcessRunner {
+        let analyzer = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
@@ -2673,18 +2683,19 @@ mod tests {
             .invoke("unica.code.search", &args, &context, true)
             .unwrap();
 
-        let command = outcome.command.unwrap().join(" ");
-        assert!(command.contains("run-bsl-analyzer.sh"));
-        assert!(command.contains("search"));
-        assert!(command.contains("--query"));
-        assert!(command.contains("ОбработкаПроведения"));
+        assert!(outcome.ok);
+        assert!(outcome.command.is_none());
+        assert!(outcome.stdout.is_none());
+        assert!(analyzer.commands.borrow().is_empty());
+        assert!(index.commands.borrow().is_empty());
     }
 
     #[test]
-    fn code_search_adapter_returns_analyzer_section_when_rlm_index_is_missing() {
+    fn code_search_adapter_warns_when_rlm_index_is_missing() {
         let context = temp_context("search-missing");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let analyzer = FakeProcessRunner {
+        let analyzer = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
@@ -2705,24 +2716,24 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(
-            outcome.stdout.as_deref(),
-            Some("=== bsl-analyzer ===\nanalyzer hit")
-        );
+        assert!(outcome.stdout.is_none());
+        assert!(outcome.command.is_none());
         assert!(outcome
             .warnings
             .iter()
             .any(|warning| warning.contains("rlm index unavailable")));
+        assert!(analyzer.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn code_search_adapter_adds_rlm_section_when_index_is_ready() {
+    fn code_search_adapter_returns_rlm_section_when_index_is_ready() {
         let context = temp_context("search-ready");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
         let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
         create_rlm_search_db(&db_path);
-        let analyzer = FakeProcessRunner {
+        let analyzer = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
@@ -2747,10 +2758,45 @@ mod tests {
             .unwrap();
 
         let stdout = outcome.stdout.unwrap();
-        assert!(stdout.contains("=== bsl-analyzer ===\nanalyzer hit"));
-        assert!(stdout.contains("=== rlm ==="));
+        assert!(stdout.starts_with("=== rlm ==="));
+        assert!(!stdout.contains("bsl-analyzer"));
         assert!(stdout.contains("CommonModules/Проведение.bsl:42"));
         assert!(stdout.contains("Procedure ОбработкаПроведения() export"));
+        assert!(analyzer.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_search_adapter_skips_empty_query_without_external_calls() {
+        let context = temp_context("search-empty-query");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let analyzer = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "analyzer hit".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let index = FakeIndexRunner::default();
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!(" "));
+
+        let outcome = CodeSearchAdapter::with_runners(&analyzer, &index)
+            .invoke("unica.code.search", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome.stdout.is_none());
+        assert!(outcome.command.is_none());
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("missing non-empty query")));
+        assert!(analyzer.commands.borrow().is_empty());
+        assert!(index.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
