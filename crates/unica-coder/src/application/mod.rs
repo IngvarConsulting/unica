@@ -200,7 +200,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search BSL code through the internal code index adapter.",
+            description: "Search BSL code through the internal RLM index.",
             mutating: false,
             cache_access: CacheAccess {
                 reads: &["bsl_index"],
