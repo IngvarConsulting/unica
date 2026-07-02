@@ -1001,9 +1001,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Inspect managed Form.xml.",
             mutating: false,
             cache_access: cache_access_for("form-info", None),
-            handler: ToolHandler::LegacyScript {
-                skill: "form-info",
-                script: "form-info.py",
+            handler: ToolHandler::NativeOperation {
+                operation: "form-info",
                 event: None,
             },
         },
@@ -1148,9 +1147,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Inspect Data Composition Schema Template.xml.",
             mutating: false,
             cache_access: cache_access_for("skd-info", None),
-            handler: ToolHandler::LegacyScript {
-                skill: "skd-info",
-                script: "skd-info.py",
+            handler: ToolHandler::NativeOperation {
+                operation: "skd-info",
                 event: None,
             },
         },
@@ -1456,11 +1454,10 @@ mod tests {
     }
 
     #[test]
-    fn skd_tools_route_through_hidden_legacy_scripts_for_full_donor_contract() {
+    fn skd_transitional_tools_route_through_hidden_legacy_scripts_for_full_donor_contract() {
         let expected = [
             ("unica.skd.compile", "skd-compile", "skd-compile.py"),
             ("unica.skd.edit", "skd-edit", "skd-edit.py"),
-            ("unica.skd.info", "skd-info", "skd-info.py"),
             ("unica.skd.validate", "skd-validate", "skd-validate.py"),
         ];
         for (tool_name, expected_skill, expected_script) in expected {
@@ -1504,12 +1501,11 @@ mod tests {
     }
 
     #[test]
-    fn form_tools_route_through_hidden_legacy_scripts_for_full_donor_contract() {
+    fn form_transitional_tools_route_through_hidden_legacy_scripts_for_full_donor_contract() {
         let expected = [
             ("unica.form.add", "form-add", "form-add.py"),
             ("unica.form.compile", "form-compile", "form-compile.py"),
             ("unica.form.edit", "form-edit", "form-edit.py"),
-            ("unica.form.info", "form-info", "form-info.py"),
             ("unica.form.remove", "form-remove", "remove-form.py"),
             ("unica.form.validate", "form-validate", "form-validate.py"),
         ];
@@ -1546,6 +1542,28 @@ mod tests {
                 other => {
                     panic!("{tool_name} should route through hidden legacy script, got {other:?}")
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn read_only_form_and_skd_info_tools_route_through_native_handlers() {
+        let expected = [
+            ("unica.form.info", "form-info"),
+            ("unica.skd.info", "skd-info"),
+        ];
+        for (tool_name, expected_operation) in expected {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .expect("read-only form/SKD tool exists");
+
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, event } => {
+                    assert_eq!(operation, expected_operation);
+                    assert_eq!(event, None);
+                }
+                other => panic!("{tool_name} should route through native operation, got {other:?}"),
             }
         }
     }
