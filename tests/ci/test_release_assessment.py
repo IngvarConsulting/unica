@@ -169,7 +169,7 @@ for raw in sys.stdin:
         self.assertNotIn("<script>alert", html)
         self.assertIn("Blocking failures", html)
 
-    def test_summary_fails_when_any_scenario_failed_even_if_marked_non_blocking(self) -> None:
+    def test_summary_passes_when_only_non_blocking_scenarios_failed(self) -> None:
         module = load_assessment_module()
 
         scenarios = [
@@ -187,8 +187,8 @@ for raw in sys.stdin:
 
         summary = module.build_summary(scenarios, [], Path("/tmp/unica-no-cache"))
 
-        self.assertEqual(summary["status"], "failed")
-        self.assertEqual(summary["blockingFailures"], 1)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:

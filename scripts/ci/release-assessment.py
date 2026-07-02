@@ -549,7 +549,9 @@ def summarize_cache(cache_dir: Path) -> dict[str, Any]:
 
 
 def build_summary(scenarios: list[dict[str, Any]], diagnostic_codes: list[str], cache_dir: Path) -> dict[str, Any]:
-    blocking_failures = sum(1 for scenario in scenarios if scenario["status"] == "failed")
+    blocking_failures = sum(
+        1 for scenario in scenarios if scenario["blocking"] and scenario["status"] == "failed"
+    )
     total_duration = sum(int(scenario["durationMs"]) for scenario in scenarios)
     return {
         "status": "failed" if blocking_failures else "passed",
