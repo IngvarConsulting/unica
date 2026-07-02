@@ -711,7 +711,7 @@ def main():
 
     # --- Check 12: Type validation ---
     if not stopped:
-        type_nodes = root.xpath('//v8:Type', namespaces={'v8': V8_NS})
+        type_nodes = root.xpath('//*[local-name()="Type"]')
         type_error_count = 0
         type_warn_count = 0
         type_count = len(type_nodes)
@@ -742,8 +742,8 @@ def main():
             elif ":" in tv:
                 pass  # unknown namespace, pass through
             else:
-                report_warn(f'12. Type "{tv}": bare type without namespace prefix')
-                type_warn_count += 1
+                report_error(f'12. Type "{tv}": bare type without namespace prefix')
+                type_error_count += 1
 
         if type_error_count == 0 and type_warn_count == 0:
             if type_count > 0:
