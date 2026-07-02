@@ -1,0 +1,592 @@
+{
+  "schemaVersion": 1,
+  "unicaVersion": "0.5.1",
+  "releaseTag": "v0.5.1",
+  "githubRunId": "28592754614",
+  "candidatePackage": "unica-codex-marketplace-linux-x64.tar.gz",
+  "bsp": {
+    "repo": "https://github.com/1c-syntax/ssl_3_2",
+    "ref": "3.2.1.446",
+    "requestedRef": "3.2.1.446",
+    "commit": "57d7f6f888f8cc3ace6f1f21f4adcbb590d430fd",
+    "descriptionVersion": "3.2.1.446",
+    "descriptionDate": "2026-06-17T00:00:00"
+  },
+  "environment": {
+    "os": "Linux-6.17.0-1018-azure-x86_64-with-glibc2.39",
+    "python": "3.12.13",
+    "machine": "x86_64",
+    "runUnica": "/home/runner/work/unica/unica/.build/release-assessment/marketplace/unica-codex-marketplace-linux-x64/plugins/unica/bin/linux-x64/unica",
+    "generatedAt": "2026-07-02T13:19:49+00:00"
+  },
+  "scenarios": [
+    {
+      "id": "mcp-tools-list",
+      "title": "MCP initialize and public tools list",
+      "tool": "initialize+tools/list",
+      "argumentsDigest": "sha256:d491b7aed524a85d9f21988768ad695e9603d8045f0bf4805233a4d267f7c9d3",
+      "status": "passed",
+      "durationMs": 19,
+      "blocking": true,
+      "metrics": {
+        "toolsCount": 57,
+        "outputBytes": 200191
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "project-status",
+      "title": "Workspace status",
+      "tool": "unica.project.status",
+      "argumentsDigest": "sha256:0de1ba11b9a5a572b90aee645ad1880c79853a0f18165a277d68bc8f0dd40124",
+      "status": "passed",
+      "durationMs": 1,
+      "blocking": true,
+      "metrics": {
+        "outputBytes": 1582,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": []
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2",
+        "/home/runner/work/unica/unica/.build/release-assessment/cache"
+      ]
+    },
+    {
+      "id": "project-map",
+      "title": "Workspace source-set map",
+      "tool": "unica.project.map",
+      "argumentsDigest": "sha256:0de1ba11b9a5a572b90aee645ad1880c79853a0f18165a277d68bc8f0dd40124",
+      "status": "passed",
+      "durationMs": 1,
+      "blocking": true,
+      "metrics": {
+        "outputBytes": 1767,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "sourceSetsCount": 1,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": []
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "cf-info",
+      "title": "BSP Configuration.xml overview",
+      "tool": "unica.cf.info",
+      "argumentsDigest": "sha256:c6f783fbb4b8d04863d3475d542cb15a4c18f93a3007ba5830f3c2429bf587dd",
+      "status": "passed",
+      "durationMs": 8,
+      "blocking": true,
+      "metrics": {
+        "outputBytes": 1689,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": []
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Configuration.xml"
+      ]
+    },
+    {
+      "id": "cf-validate",
+      "title": "BSP Configuration.xml validation",
+      "tool": "unica.cf.validate",
+      "argumentsDigest": "sha256:12a73c7672059edd8895ca6ce2f6003f3d0a9f0edb1b5c8f271be64aeade4a2b",
+      "status": "passed",
+      "durationMs": 4,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 1448,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": []
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Configuration.xml"
+      ]
+    },
+    {
+      "id": "code-grep",
+      "title": "BSL git grep smoke",
+      "tool": "unica.code.grep",
+      "argumentsDigest": "sha256:79993c4ceb8a1510a754cb6e1038497746ed208f03d129ca53f13ef172382cca",
+      "status": "passed",
+      "durationMs": 26,
+      "blocking": true,
+      "metrics": {
+        "outputBytes": 4370,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": []
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "code-diagnostics-workspace",
+      "title": "BSL diagnostics workspace read",
+      "tool": "unica.code.diagnostics",
+      "argumentsDigest": "sha256:cf9a68cc2a43749331103e4991e5e9c1e534aae812217f22760cad528f092b33",
+      "status": "passed",
+      "durationMs": 685,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 2612,
+        "warningsCount": 1,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [
+            "bsl_diagnostics"
+          ],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "code-search",
+      "title": "BSL indexed search smoke",
+      "tool": "unica.code.search",
+      "argumentsDigest": "sha256:79993c4ceb8a1510a754cb6e1038497746ed208f03d129ca53f13ef172382cca",
+      "status": "passed",
+      "durationMs": 1364,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 4943,
+        "warningsCount": 2,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [
+            "bsl_index"
+          ],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "code-outline-sample",
+      "title": "Sample BSL module outline",
+      "tool": "unica.code.outline",
+      "argumentsDigest": "sha256:279d3a07954b95a1fb575fb8b8116d1139176c943fc45586ffff79e2560e08c9",
+      "status": "passed",
+      "durationMs": 70,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 1062,
+        "warningsCount": 1,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [
+            "bsl_index"
+          ],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "form-info-sample",
+      "title": "Sample managed form info",
+      "tool": "unica.form.info",
+      "argumentsDigest": "sha256:d11000c57a73825ac31607d86dda11254b877f84b323eae7b1b413b4fff65992",
+      "status": "passed",
+      "durationMs": 24,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 8372,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/BusinessProcesses/Задание/Forms/ДействиеВыполнить/Ext/Form.xml"
+      ]
+    },
+    {
+      "id": "form-validate-sample",
+      "title": "Sample managed form validation",
+      "tool": "unica.form.validate",
+      "argumentsDigest": "sha256:0eae4dd3659a6ac6ab56a8d1981dd5aa9af327bd07b6323385cc8ba15abbc757",
+      "status": "passed",
+      "durationMs": 107,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 3121,
+        "warningsCount": 1,
+        "errorsCount": 1,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "role-info-sample",
+      "title": "Sample role info",
+      "tool": "unica.role.info",
+      "argumentsDigest": "sha256:2606304e5aad7f182c59b3fc2234669a90720a57da7e427b21c872c3c03e1ef8",
+      "status": "passed",
+      "durationMs": 29,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 19602,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Roles/АдминистраторСистемы/Ext/Rights.xml"
+      ]
+    },
+    {
+      "id": "role-validate-sample",
+      "title": "Sample role validation",
+      "tool": "unica.role.validate",
+      "argumentsDigest": "sha256:769054cfab00f77d054bac38cbc2f1fbef54d40ca2d1cf0045e63db6e8fdbacc",
+      "status": "passed",
+      "durationMs": 16,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 1519,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Roles/АдминистраторСистемы/Ext/Rights.xml"
+      ]
+    },
+    {
+      "id": "skd-info-sample",
+      "title": "Sample SKD info",
+      "tool": "unica.skd.info",
+      "argumentsDigest": "sha256:cbcb6cff5add8f19464a937241ace1bf015113bc0a7265ed94f53c9f68b098da",
+      "status": "passed",
+      "durationMs": 21,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 3155,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Catalogs/ПравилаОбработкиЭлектроннойПочты/Templates/СхемаПравилаОбработкиЭлектроннойПочты/Ext/Template.xml"
+      ]
+    },
+    {
+      "id": "skd-validate-sample",
+      "title": "Sample SKD validation",
+      "tool": "unica.skd.validate",
+      "argumentsDigest": "sha256:73ef51f1b57eee776b97bc7b202ca9beb672b48e162ae1c386e795c509042777",
+      "status": "passed",
+      "durationMs": 79,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 3291,
+        "warningsCount": 1,
+        "errorsCount": 1,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": []
+    },
+    {
+      "id": "mxl-info-sample",
+      "title": "Sample MXL info",
+      "tool": "unica.mxl.info",
+      "argumentsDigest": "sha256:c59853f656b284b6b5c40d73f8f4804a3546799b0b8cc9307b36603305ca3db4",
+      "status": "passed",
+      "durationMs": 14,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 16062,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Доверенность/Ext/Template.xml"
+      ]
+    },
+    {
+      "id": "mxl-validate-sample",
+      "title": "Sample MXL validation",
+      "tool": "unica.mxl.validate",
+      "argumentsDigest": "sha256:d58c288aa0e23709c076af4e45c181b9784c915fd75ae03e7720a9498f8430f9",
+      "status": "passed",
+      "durationMs": 6,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 1647,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "/home/runner/work/unica/unica/.build/release-assessment/bsp/ssl_3_2/src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Доверенность/Ext/Template.xml"
+      ]
+    },
+    {
+      "id": "standards-explain-diagnostics",
+      "title": "Explain top diagnostic codes through standards adapter",
+      "tool": "unica.standards.explain",
+      "argumentsDigest": "sha256:4f95c20498a067bb85c7d85683aa285dae0f1fc58274f71ff7b0d564fb82facc",
+      "status": "passed",
+      "durationMs": 954,
+      "blocking": false,
+      "metrics": {
+        "outputBytes": 5166,
+        "warningsCount": 0,
+        "errorsCount": 0,
+        "cache": {
+          "mode": "read",
+          "root": "/home/runner/work/unica/unica/.build/release-assessment/cache",
+          "workspace_epoch": 7994992629561011176,
+          "events": [],
+          "invalidated": [],
+          "refreshed": [],
+          "lazy_rebuilt": [],
+          "stale": [],
+          "fresh": [
+            "bsl_diagnostics"
+          ]
+        }
+      },
+      "errors": [],
+      "artifacts": [
+        "https://ai.v8std.ru/mcp",
+        "v8std_explain_diagnostics"
+      ]
+    }
+  ],
+  "summary": {
+    "status": "passed",
+    "blockingFailures": 0,
+    "qualityFindings": {
+      "diagnosticCodes": [
+        "AfterWriteAtServer",
+        "Allowed",
+        "Attributes",
+        "AutoCommandBar",
+        "BeforeWriteAtServer",
+        "BtnGroup",
+        "BusinessProcesses",
+        "Button",
+        "COMMAND",
+        "CatalogRef",
+        "CmdBar",
+        "Column",
+        "Columns",
+        "Command",
+        "Commands",
+        "Configuration",
+        "Constant",
+        "Datasets",
+        "DontBlock",
+        "Drawings"
+      ],
+      "nonBlockingFailures": 0
+    },
+    "performance": {
+      "totalDurationMs": 3428,
+      "scenarioCount": 18,
+      "cache": {
+        "exists": true,
+        "files": 8,
+        "bytes": 1205
+      }
+    }
+  }
+}

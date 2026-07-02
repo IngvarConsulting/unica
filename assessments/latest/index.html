@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unica Release Assessment</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:32px;line-height:1.45}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border:1px solid #d0d7de;padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}
+.passed{color:#116329}.failed{color:#cf222e}
+</style>
+</head>
+<body>
+<h1>Unica Release Assessment v0.5.1</h1>
+<p>Status: <strong class="passed">passed</strong></p>
+<p>Blocking failures: 0</p>
+<p>BSP commit: <code>57d7f6f888f8cc3ace6f1f21f4adcbb590d430fd</code></p>
+<p>Diagnostic codes: AfterWriteAtServer, Allowed, Attributes, AutoCommandBar, BeforeWriteAtServer, BtnGroup, BusinessProcesses, Button, COMMAND, CatalogRef, CmdBar, Column, Columns, Command, Commands, Configuration, Constant, Datasets, DontBlock, Drawings</p>
+<h2>Scenarios</h2>
+<table>
+<thead><tr><th>ID</th><th>Title</th><th>Tool</th><th>Status</th><th>Duration ms</th><th>Blocking</th><th>Errors</th></tr></thead>
+<tbody>
+<tr><td>mcp-tools-list</td><td>MCP initialize and public tools list</td><td>initialize+tools/list</td><td>passed</td><td>19</td><td>True</td><td></td></tr>
+<tr><td>project-status</td><td>Workspace status</td><td>unica.project.status</td><td>passed</td><td>1</td><td>True</td><td></td></tr>
+<tr><td>project-map</td><td>Workspace source-set map</td><td>unica.project.map</td><td>passed</td><td>1</td><td>True</td><td></td></tr>
+<tr><td>cf-info</td><td>BSP Configuration.xml overview</td><td>unica.cf.info</td><td>passed</td><td>8</td><td>True</td><td></td></tr>
+<tr><td>cf-validate</td><td>BSP Configuration.xml validation</td><td>unica.cf.validate</td><td>passed</td><td>4</td><td>False</td><td></td></tr>
+<tr><td>code-grep</td><td>BSL git grep smoke</td><td>unica.code.grep</td><td>passed</td><td>26</td><td>True</td><td></td></tr>
+<tr><td>code-diagnostics-workspace</td><td>BSL diagnostics workspace read</td><td>unica.code.diagnostics</td><td>passed</td><td>685</td><td>False</td><td></td></tr>
+<tr><td>code-search</td><td>BSL indexed search smoke</td><td>unica.code.search</td><td>passed</td><td>1364</td><td>False</td><td></td></tr>
+<tr><td>code-outline-sample</td><td>Sample BSL module outline</td><td>unica.code.outline</td><td>passed</td><td>70</td><td>False</td><td></td></tr>
+<tr><td>form-info-sample</td><td>Sample managed form info</td><td>unica.form.info</td><td>passed</td><td>24</td><td>False</td><td></td></tr>
+<tr><td>form-validate-sample</td><td>Sample managed form validation</td><td>unica.form.validate</td><td>passed</td><td>107</td><td>False</td><td></td></tr>
+<tr><td>role-info-sample</td><td>Sample role info</td><td>unica.role.info</td><td>passed</td><td>29</td><td>False</td><td></td></tr>
+<tr><td>role-validate-sample</td><td>Sample role validation</td><td>unica.role.validate</td><td>passed</td><td>16</td><td>False</td><td></td></tr>
+<tr><td>skd-info-sample</td><td>Sample SKD info</td><td>unica.skd.info</td><td>passed</td><td>21</td><td>False</td><td></td></tr>
+<tr><td>skd-validate-sample</td><td>Sample SKD validation</td><td>unica.skd.validate</td><td>passed</td><td>79</td><td>False</td><td></td></tr>
+<tr><td>mxl-info-sample</td><td>Sample MXL info</td><td>unica.mxl.info</td><td>passed</td><td>14</td><td>False</td><td></td></tr>
+<tr><td>mxl-validate-sample</td><td>Sample MXL validation</td><td>unica.mxl.validate</td><td>passed</td><td>6</td><td>False</td><td></td></tr>
+<tr><td>standards-explain-diagnostics</td><td>Explain top diagnostic codes through standards adapter</td><td>unica.standards.explain</td><td>passed</td><td>954</td><td>False</td><td></td></tr>
+</tbody>
+</table>
+<p><a href="assessment.json">assessment.json</a> | <a href="assessment.ndjson">assessment.ndjson</a> | <a href="summary.md">summary.md</a></p>
+</body>
+</html>
