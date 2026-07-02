@@ -413,7 +413,7 @@
         {
           "skill": "form-validate",
           "status": "ported-to-unica",
-          "notes": "Reviewed and ported donor form-validate v1.8 behavior through cbde49efdaeec190432fdf4a53201a87e83c69de: all binding tags are validated, skip rules are preserved, type_error_count is fixed, and parity fixture is refreshed.",
+          "notes": "Reviewed and ported donor form-validate v1.8 behavior through cbde49efdaeec190432fdf4a53201a87e83c69de: all binding tags are validated, skip rules are preserved, type_error_count is fixed, and parity fixture is refreshed. Unica intentionally adapts bare Type values from donor warning to validation error because such forms fail platform XDTO import.",
           "upstreamPaths": [
             ".claude/skills/form-validate/**",
             "docs/form-guide.md",
