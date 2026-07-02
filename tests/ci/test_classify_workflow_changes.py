@@ -30,6 +30,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "plugins/unica/.mcp.json",
             "plugins/unica/third-party/tools.lock.json",
             "plugins/unica/third-party/manifest.json",
+            "scripts/ci/release-assessment.py",
             "scripts/ci/build-unica-tools.py",
             "scripts/ci/package-unica-plugin.py",
             "scripts/install-unica.sh",

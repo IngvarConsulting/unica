@@ -49,7 +49,7 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "${{ github.base_ref }}"
           changed_files="$(git diff --name-only FETCH_HEAD...HEAD)"
           printf '%s\n' "$changed_files"
 
@@ -198,10 +198,116 @@ jobs:
           path: dist/install-unica.sh
           if-no-files-found: error
 
+  release-assessment:
+    name: Assess release candidate on BSP
+    runs-on: ubuntu-latest
+    needs: package
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-codex-marketplace-linux-x64
+          path: dist/linux-x64
+
+      - name: Run release assessment
+        run: >
+          python scripts/ci/release-assessment.py
+          --package-archive dist/linux-x64/unica-codex-marketplace-linux-x64.tar.gz
+          --work-dir .build/release-assessment
+          --out-dir dist/release-assessment
+          --bsp-ref 3.2.1.446
+          --release-tag "${{ github.ref_name }}"
+          --github-run-id "${{ github.run_id }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unica-release-assessment
+          path: dist/release-assessment
+          if-no-files-found: error
+
+  publish-assessment-pages:
+    name: Publish assessment pages
+    runs-on: ubuntu-latest
+    needs: release-assessment
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-release-assessment
+          path: dist/release-assessment
+
+      - name: Prepare gh-pages content
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          repo_url="https://github.com/${GITHUB_REPOSITORY}.git"
+          auth_header="AUTHORIZATION: bearer ${GITHUB_TOKEN}"
+
+          if git -c "http.extraheader=${auth_header}" ls-remote --exit-code --heads "$repo_url" gh-pages >/dev/null 2>&1; then
+            git -c "http.extraheader=${auth_header}" clone --depth 1 --branch gh-pages "$repo_url" pages-site
+          else
+            mkdir -p pages-site
+            git -C pages-site init
+            git -C pages-site checkout --orphan gh-pages
+            git -C pages-site remote add origin "$repo_url"
+          fi
+
+          mkdir -p pages-site/assessments
+          rm -rf "pages-site/assessments/${GITHUB_REF_NAME}" pages-site/assessments/latest
+          cp -R dist/release-assessment "pages-site/assessments/${GITHUB_REF_NAME}"
+          cp -R dist/release-assessment pages-site/assessments/latest
+          cat > pages-site/assessments/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head><meta charset="utf-8"><title>Unica Release Assessments</title></head>
+          <body><h1>Unica Release Assessments</h1><p>Open a versioned assessment folder or <a href="latest/">latest</a>.</p></body>
+          </html>
+          HTML
+
+          git -C pages-site config user.name "github-actions[bot]"
+          git -C pages-site config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C pages-site add assessments
+          if git -C pages-site diff --cached --quiet; then
+            echo "No assessment page changes to publish."
+          else
+            git -C pages-site commit -m "docs: publish assessment ${GITHUB_REF_NAME}"
+            git -C pages-site -c "http.extraheader=${auth_header}" push origin HEAD:gh-pages
+          fi
+          rm -rf pages-site/.git
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
   publish-release-assets:
     name: Publish release assets (${{ matrix.target }})
     runs-on: ubuntu-latest
-    needs: package
+    needs:
+      - package
+      - publish-assessment-pages
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -229,7 +335,9 @@ jobs:
   publish-installer-asset:
     name: Publish installer asset
     runs-on: ubuntu-latest
-    needs: installer
+    needs:
+      - installer
+      - publish-assessment-pages
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

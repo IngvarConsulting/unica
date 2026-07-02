@@ -19,6 +19,7 @@ RELEASE_ARTIFACT_PATHS = {
     "plugins/unica/third-party/tools.lock.json",
     "plugins/unica/third-party/manifest.json",
     "scripts/ci/build-unica-tools.py",
+    "scripts/ci/release-assessment.py",
     "scripts/ci/package-unica-plugin.py",
     "scripts/install-unica.sh",
 }

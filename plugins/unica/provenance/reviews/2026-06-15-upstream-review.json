@@ -218,7 +218,7 @@
           "skill": "form-validate",
           "decision": "ported",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Ported donor v1.8 behavior: all binding path tags are validated with existing skip rules preserved, and the type_error_count bug is fixed in both legacy adapter and parity fixture."
+          "evidence": "Ported donor v1.8 behavior: all binding path tags are validated with existing skip rules preserved, and the type_error_count bug is fixed in both legacy adapter and parity fixture. Unica intentionally adapts bare Type values from donor warning to validation error because such forms fail platform XDTO import."
         },
         {
           "skill": "help-add",
@@ -579,7 +579,7 @@
       ],
       "decision": "ported",
       "baselineCommit": "ae8241237753850307d94b10df93e5293e29dc74",
-      "notes": "Ported Form DSL/reference updates and donor-compatible form add/compile/edit/info/remove/validate scripts behind typed unica.form.* hidden legacy adapters; prompt-visible skills route only through MCP and references use Unica wording."
+      "notes": "Ported Form DSL/reference updates and donor-compatible form add/compile/edit/info/remove/validate scripts behind typed unica.form.* hidden legacy adapters; prompt-visible skills route only through MCP and references use Unica wording. form-validate intentionally escalates bare Type values from donor warning to error to match platform XDTO import behavior."
     },
     {
       "id": "cc-metadata-presentations-and-choice-history",

@@ -4154,4 +4154,140 @@ mod tests {
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
+
+    #[test]
+    fn borrow_cfe_enriches_existing_adopted_parent_from_form_paths() {
+        let context = temp_context("borrow-existing-parent-main-attributes");
+        let src = context.cwd.join("src");
+        let ext = context.cwd.join("ext");
+        write_file(
+            &src.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="55555555-5555-5555-5555-555555555555">
+		<Properties>
+			<Name>ParityConfiguration</Name>
+			<NamePrefix/>
+		</Properties>
+		<ChildObjects>
+			<Catalog>Orders</Catalog>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs").join("Orders.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Catalog uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+		<InternalInfo/>
+		<Properties>
+			<Name>Orders</Name>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+				<Properties>
+					<Name>Customer</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs")
+                .join("Orders")
+                .join("Forms")
+                .join("MainForm.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Form uuid="aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa">
+		<Properties><Name>MainForm</Name></Properties>
+	</Form>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &src.join("Catalogs")
+                .join("Orders")
+                .join("Forms")
+                .join("MainForm")
+                .join("Ext")
+                .join("Form.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ChildItems>
+		<InputField name="CustomerField" id="1000001"><DataPath>Объект.Customer</DataPath></InputField>
+	</ChildItems>
+	<Attributes/>
+</Form>
+"#,
+        );
+        write_file(
+            &ext.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="66666666-6666-6666-6666-666666666666">
+		<Properties>
+			<Name>ParityExtension</Name>
+			<NamePrefix>PE_</NamePrefix>
+		</Properties>
+		<ChildObjects>
+			<Catalog>Orders</Catalog>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &ext.join("Catalogs").join("Orders.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Catalog uuid="77777777-7777-7777-7777-777777777777">
+		<InternalInfo/>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Orders</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="88888888-8888-8888-8888-888888888888">
+				<InternalInfo/>
+				<Properties>
+					<Name>LocalExtensionFlag</Name>
+					<Type><v8:Type>xs:boolean</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        args.insert("ConfigPath".to_string(), json!("src"));
+        args.insert("Object".to_string(), json!("Catalog.Orders.Form.MainForm"));
+        args.insert("BorrowMainAttribute".to_string(), json!("Form"));
+
+        let outcome = borrow_cfe(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let order_xml = fs::read_to_string(ext.join("Catalogs").join("Orders.xml")).unwrap();
+        assert!(
+            order_xml.contains("<Name>LocalExtensionFlag</Name>"),
+            "{order_xml}"
+        );
+        assert!(order_xml.contains("<Name>Customer</Name>"), "{order_xml}");
+        assert!(
+            order_xml.contains("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            "{order_xml}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
 }

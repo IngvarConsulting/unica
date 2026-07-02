@@ -849,10 +849,10 @@ pub(crate) fn form_validate_types(
             }
         } else if value.contains(':') {
         } else {
-            report.warn(format!(
+            report.error(format!(
                 "12. Type \"{value}\": bare type without namespace prefix"
             ));
-            type_warn_count += 1;
+            type_error_count += 1;
         }
         if report.stopped {
             return;
@@ -3455,5 +3455,84 @@ pub(crate) fn invoke_mutation(
         "form-compile" => Some(compile_form(args, context)),
         "form-edit" => Some(edit_form(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::{json, Map};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-form-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn validate_form_rejects_bare_type_values() {
+        let context = temp_context("bare-type");
+        let form_path = context
+            .cwd
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ItemForm")
+            .join("Ext")
+            .join("Form.xml");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>true</Autofill>
+	</AutoCommandBar>
+	<Attributes>
+		<Attribute name="BrokenButtonType" id="1">
+			<Type>CommandBarButton</Type>
+		</Attribute>
+	</Attributes>
+</Form>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+
+        let outcome = validate_form(&args, &context);
+        let stdout = outcome.stdout.as_deref().unwrap_or("");
+
+        assert!(!outcome.ok, "{stdout}");
+        assert!(
+            stdout.contains(
+                "[ERROR] 12. Type \"CommandBarButton\": bare type without namespace prefix"
+            ),
+            "{stdout}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 }

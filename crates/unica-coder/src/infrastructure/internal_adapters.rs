@@ -364,49 +364,82 @@ impl<'a> CodeSearchAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<AdapterOutcome, String> {
-        let mut analyzer = CliAdapter::with_runner(
-            "run-bsl-analyzer.sh",
-            &["search"],
-            "code analysis",
-            self.analyzer_runner,
-        )
-        .invoke(tool_name, args, context, dry_run, false)?;
-
         if dry_run {
-            return Ok(analyzer);
+            return Ok(AdapterOutcome {
+                ok: true,
+                summary: format!("dry run: {tool_name} would use typed code search"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            });
         }
 
-        let analyzer_stdout = analyzer.stdout.take().unwrap_or_default();
-        let analyzer_stderr = analyzer.stderr.take();
-        let mut stdout = format_section("bsl-analyzer", &analyzer_stdout);
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        let mut artifacts = Vec::new();
+        let mut stdout_sections = Vec::new();
+        let mut command = None;
+        let mut stderr = None;
 
         match self.rlm_readiness(context, args) {
             IndexReadiness::Ready { db_path } => match search_rlm_index(&db_path, args) {
                 Ok(Some(rlm_stdout)) => {
-                    stdout.push_str("\n\n");
-                    stdout.push_str(&format_section("rlm", &rlm_stdout));
+                    stdout_sections.push(format_section("rlm", &rlm_stdout));
+                    artifacts.push(db_path.display().to_string());
                 }
                 Ok(None) => {}
-                Err(error) => analyzer
-                    .warnings
-                    .push(format!("rlm search failed: {error}")),
+                Err(error) => warnings.push(format!("rlm search failed: {error}")),
             },
-            IndexReadiness::Building => analyzer.warnings.push("rlm index building".to_string()),
-            IndexReadiness::Missing => analyzer
-                .warnings
-                .push("rlm index unavailable: index is missing".to_string()),
-            IndexReadiness::Stale => analyzer.warnings.push("rlm index building".to_string()),
-            IndexReadiness::Failed(error) => analyzer
-                .warnings
-                .push(format!("rlm index unavailable: {error}")),
-            IndexReadiness::Unavailable(error) => analyzer
-                .warnings
-                .push(format!("rlm index unavailable: {error}")),
+            other => warnings.push(readiness_warning(other)),
         }
 
-        analyzer.stdout = Some(stdout);
-        analyzer.stderr = analyzer_stderr;
-        Ok(analyzer)
+        let grep_adapter = CodeNavigationAdapter {
+            index_runner: self.index_runner,
+            grep_runner: self.analyzer_runner,
+            use_workspace_service: self.use_workspace_service,
+        };
+        match grep_adapter.grep(tool_name, args, context) {
+            Ok(mut grep) => {
+                if let Some(stdout) = grep.stdout.take().filter(|value| !value.trim().is_empty()) {
+                    stdout_sections.push(stdout);
+                }
+                warnings.extend(grep.warnings);
+                if grep.ok {
+                    command = grep.command;
+                    stderr = grep.stderr;
+                } else {
+                    errors.extend(grep.errors);
+                    command = grep.command;
+                    stderr = grep.stderr;
+                }
+            }
+            Err(error) => warnings.push(format!("git grep fallback unavailable: {error}")),
+        }
+
+        let ok = !stdout_sections.is_empty() && errors.is_empty();
+        Ok(AdapterOutcome {
+            ok,
+            summary: if ok {
+                format!("{tool_name} completed through typed code search")
+            } else {
+                format!("{tool_name} failed through typed code search")
+            },
+            changes: Vec::new(),
+            warnings,
+            errors,
+            artifacts,
+            stdout: if stdout_sections.is_empty() {
+                None
+            } else {
+                Some(stdout_sections.join("\n\n"))
+            },
+            stderr,
+            command,
+        })
     }
 
     fn rlm_readiness(
@@ -631,12 +664,15 @@ impl<'a> CodeNavigationAdapter<'a> {
                 "{tool_name} argument `mode` must be one of: lines, files"
             ));
         }
+        let limit = read_limit(args, 200);
 
         let mut git_args = vec!["grep".to_string()];
         if mode == "files" {
             git_args.push("--name-only".to_string());
         } else {
             git_args.push("-n".to_string());
+            git_args.push("-m".to_string());
+            git_args.push(limit.to_string());
         }
         if !args.get("regex").and_then(Value::as_bool).unwrap_or(false) {
             git_args.push("-F".to_string());
@@ -663,16 +699,25 @@ impl<'a> CodeNavigationAdapter<'a> {
             cwd: context.workspace_root.clone(),
             timeout: Some(DEFAULT_PROCESS_TIMEOUT),
         })?;
-        let limit = read_limit(args, 200);
         let body = grep_body(&output.stdout, mode, limit);
-        let no_matches = body.is_empty() && !output.status_success;
-        if !output.status_success && !no_matches {
+        let no_matches = body.is_empty()
+            && !output.status_success
+            && output.stderr.trim().is_empty()
+            && !output.timed_out;
+        let partial_matches = output.timed_out && !body.is_empty();
+        if !output.status_success && !no_matches && !partial_matches {
+            let error = output.stderr.trim();
+            let error = if error.is_empty() {
+                format!("git grep exited with status {}", output.status)
+            } else {
+                error.to_string()
+            };
             return Ok(AdapterOutcome {
                 ok: false,
                 summary: format!("{tool_name} failed through git grep"),
                 changes: Vec::new(),
                 warnings: vec![format!("git grep exited with status {}", output.status)],
-                errors: vec![output.stderr.trim().to_string()],
+                errors: vec![error],
                 artifacts: Vec::new(),
                 stdout: Some(format_section("git-grep", &body)),
                 stderr: Some(output.stderr),
@@ -1646,7 +1691,12 @@ fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     let mut filtered = Map::new();
     for key in ["cwd", "dryRun", "confirm", "sourceDir", "config", "format"] {
         if let Some(value) = args.get(key) {
-            filtered.insert(key.to_string(), value.clone());
+            let value = if key == "format" && value.as_str() == Some("json") {
+                json!("jsonl")
+            } else {
+                value.clone()
+            };
+            filtered.insert(key.to_string(), value);
         }
     }
     filtered
@@ -2654,9 +2704,9 @@ mod tests {
     }
 
     #[test]
-    fn code_search_adapter_dry_run_builds_bsl_analyzer_search_command() {
+    fn code_search_adapter_dry_run_reports_typed_code_search() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
-        let analyzer = FakeProcessRunner {
+        let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
@@ -2669,26 +2719,28 @@ mod tests {
         let mut args = Map::new();
         args.insert("query".to_string(), json!("ОбработкаПроведения"));
 
-        let outcome = CodeSearchAdapter::with_runners(&analyzer, &index)
+        let outcome = CodeSearchAdapter::with_runners(&grep, &index)
             .invoke("unica.code.search", &args, &context, true)
             .unwrap();
 
-        let command = outcome.command.unwrap().join(" ");
-        assert!(command.contains("run-bsl-analyzer.sh"));
-        assert!(command.contains("search"));
-        assert!(command.contains("--query"));
-        assert!(command.contains("ОбработкаПроведения"));
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.summary,
+            "dry run: unica.code.search would use typed code search"
+        );
+        assert!(outcome.command.is_none());
     }
 
     #[test]
-    fn code_search_adapter_returns_analyzer_section_when_rlm_index_is_missing() {
+    fn code_search_adapter_falls_back_to_git_grep_when_rlm_index_is_missing() {
         let context = temp_context("search-missing");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let analyzer = FakeProcessRunner {
+        let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
-                stdout: "analyzer hit".to_string(),
+                stdout: "CommonModules/SmokeModule/Ext/Module.bsl:2:ОбработкаПроведения\n"
+                    .to_string(),
                 stderr: String::new(),
                 timed_out: false,
             },
@@ -2700,19 +2752,57 @@ mod tests {
         let mut args = Map::new();
         args.insert("query".to_string(), json!("ОбработкаПроведения"));
 
-        let outcome = CodeSearchAdapter::with_runners(&analyzer, &index)
+        let outcome = CodeSearchAdapter::with_runners(&grep, &index)
             .invoke("unica.code.search", &args, &context, false)
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(
-            outcome.stdout.as_deref(),
-            Some("=== bsl-analyzer ===\nanalyzer hit")
-        );
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.contains("=== git-grep ===")));
         assert!(outcome
             .warnings
             .iter()
             .any(|warning| warning.contains("rlm index unavailable")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_search_adapter_reports_git_grep_fatal_error_instead_of_no_matches() {
+        let context = temp_context("search-grep-fatal");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 128".to_string(),
+                stdout: String::new(),
+                stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
+                    .to_string(),
+                timed_out: false,
+            },
+        };
+        let index = FakeIndexRunner {
+            outputs: RefCell::new(vec![index_success("Index not found: /tmp/bsl_index.db")]),
+            ..Default::default()
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+
+        let outcome = CodeSearchAdapter::with_runners(&grep, &index)
+            .invoke("unica.code.search", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("fatal: not a git repository")));
+        assert!(!outcome
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No git grep matches."));
         cleanup_context(&context);
     }
 
@@ -2722,11 +2812,11 @@ mod tests {
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
         let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
         create_rlm_search_db(&db_path);
-        let analyzer = FakeProcessRunner {
+        let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
-                stdout: "analyzer hit".to_string(),
+                stdout: "CommonModules/Проведение.bsl:42:ОбработкаПроведения\n".to_string(),
                 stderr: String::new(),
                 timed_out: false,
             },
@@ -2742,13 +2832,13 @@ mod tests {
         args.insert("query".to_string(), json!("ОбработкаПроведения"));
         args.insert("limit".to_string(), json!(5));
 
-        let outcome = CodeSearchAdapter::with_runners(&analyzer, &index)
+        let outcome = CodeSearchAdapter::with_runners(&grep, &index)
             .invoke("unica.code.search", &args, &context, false)
             .unwrap();
 
         let stdout = outcome.stdout.unwrap();
-        assert!(stdout.contains("=== bsl-analyzer ===\nanalyzer hit"));
         assert!(stdout.contains("=== rlm ==="));
+        assert!(stdout.contains("=== git-grep ==="));
         assert!(stdout.contains("CommonModules/Проведение.bsl:42"));
         assert!(stdout.contains("Procedure ОбработкаПроведения() export"));
         cleanup_context(&context);
@@ -2970,6 +3060,8 @@ mod tests {
         assert!(commands[0].args.contains(&"grep".to_string()));
         assert!(commands[0].args.contains(&"-F".to_string()));
         assert!(commands[0].args.contains(&"-i".to_string()));
+        assert!(commands[0].args.contains(&"-m".to_string()));
+        assert!(commands[0].args.contains(&"10".to_string()));
         assert!(commands[0]
             .args
             .contains(&":(glob)CommonModules/**/*.bsl".to_string()));
@@ -3007,6 +3099,41 @@ mod tests {
     }
 
     #[test]
+    fn code_grep_adapter_reports_git_fatal_error_instead_of_no_matches() {
+        let context = temp_context("grep-fatal");
+        let index = FakeIndexRunner::default();
+        let grep = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 128".to_string(),
+                stdout: String::new(),
+                stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
+                    .to_string(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.grep", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("fatal: not a git repository")));
+        assert!(!outcome
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No git grep matches."));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn diagnostics_adapter_still_builds_bsl_analyzer_analyze_command() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
         let mut args = Map::new();
@@ -3020,6 +3147,27 @@ mod tests {
         assert!(command.contains("run-bsl-analyzer.sh"));
         assert!(command.contains("analyze"));
         assert!(command.contains("--source-dir src"));
+    }
+
+    #[test]
+    fn diagnostics_analyze_normalizes_json_format_and_keeps_limit_out_of_cli_args() {
+        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let mut args = Map::new();
+        args.insert("sourceDir".to_string(), json!("src/extensions/Smoke"));
+        args.insert("format".to_string(), json!("json"));
+        args.insert("limit".to_string(), json!(20));
+
+        let outcome = BslAnalyzerMcpAdapter::new()
+            .invoke("unica.code.diagnostics", &args, &context, true)
+            .unwrap();
+
+        let command = outcome.command.unwrap().join(" ");
+        assert!(command.contains("run-bsl-analyzer.sh"));
+        assert!(command.contains("analyze"));
+        assert!(command.contains("--source-dir src/extensions/Smoke"));
+        assert!(command.contains("--format jsonl"));
+        assert!(!command.contains("--limit"));
+        assert!(!command.contains(" 20"));
     }
 
     #[test]

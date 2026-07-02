@@ -76,6 +76,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("classify-changes:", text)
         self.assertIn("release_artifacts: ${{ steps.scope.outputs.release_artifacts }}", text)
         self.assertIn("if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}", text)
+        self.assertIn('git fetch --no-tags origin "${{ github.base_ref }}"', text)
+        self.assertNotIn('git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"', text)
         self.assertIn("python scripts/ci/classify-workflow-changes.py", text)
 
     def test_build_tools_waits_for_source_verification_and_sets_up_rust(self) -> None:
@@ -88,7 +90,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_release_publishing_is_separate_from_packaging(self) -> None:
         text = self.workflow_text()
 
-        package_job = text[text.index("  package:") : text.index("  publish-release-assets:")]
+        package_job = text[text.index("  package:") : text.index("  installer:")]
         self.assertNotIn("softprops/action-gh-release", package_job)
         self.assertNotIn("contents: write", package_job)
 
@@ -96,6 +98,35 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("publish-installer-asset:", text)
         self.assertIn("if: startsWith(github.ref, 'refs/tags/')", text)
         self.assertIn("permissions:\n      contents: write", text)
+
+    def test_release_assessment_uses_linux_marketplace_package(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("release-assessment:", text)
+        self.assertIn("needs: package", text)
+        self.assertIn("name: unica-codex-marketplace-linux-x64", text)
+        self.assertIn("python scripts/ci/release-assessment.py", text)
+        self.assertIn("--package-archive dist/linux-x64/unica-codex-marketplace-linux-x64.tar.gz", text)
+        self.assertIn("--bsp-ref 3.2.1.446", text)
+        self.assertIn("name: unica-release-assessment", text)
+
+    def test_pages_publish_waits_for_release_assessment(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("publish-assessment-pages:", text)
+        self.assertIn("needs: release-assessment", text)
+        self.assertIn("uses: actions/deploy-pages@v4", text)
+        self.assertIn("pages: write", text)
+        self.assertIn("id-token: write", text)
+
+    def test_release_assets_wait_for_published_assessment_pages(self) -> None:
+        text = self.workflow_text()
+
+        publish_assets = text[text.index("  publish-release-assets:") : text.index("  publish-installer-asset:")]
+        self.assertIn("needs:\n      - package\n      - publish-assessment-pages", publish_assets)
+
+        publish_installer = text[text.index("  publish-installer-asset:") :]
+        self.assertIn("needs:\n      - installer\n      - publish-assessment-pages", publish_installer)
 
 
 if __name__ == "__main__":

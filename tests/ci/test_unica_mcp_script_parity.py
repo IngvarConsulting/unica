@@ -913,6 +913,27 @@ SUCCESS_SCENARIOS = [
 ]
 
 
+VALIDATION_FAILURE_SCENARIOS = [
+    ParityScenario(
+        name="form-validate-bare-type-is-error",
+        tool="unica.form.validate",
+        skill="form-validate",
+        script="form-validate.py",
+        arguments={
+            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
+            "Detailed": True,
+        },
+        expect_ok=False,
+        fixtures=(
+            FileFixture(
+                "form-validate/BareType.xml",
+                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
+            ),
+        ),
+    ),
+]
+
+
 MISSING_INPUT_SCENARIOS = [
     ParityScenario(
         "cf-edit-missing-config",
@@ -1179,7 +1200,7 @@ MISSING_INPUT_SCENARIOS = [
     ),
 ]
 
-SCENARIOS = tuple(SUCCESS_SCENARIOS + MISSING_INPUT_SCENARIOS)
+SCENARIOS = tuple(SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INPUT_SCENARIOS)
 
 NATIVE_PARITY_TOOLS = {
     "unica.cf.edit",
