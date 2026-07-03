@@ -133,13 +133,36 @@ function Enable-CodexPlugin {
     [System.IO.File]::WriteAllText($ConfigPath, (($out -join [Environment]::NewLine) + [Environment]::NewLine), [System.Text.Encoding]::UTF8)
 }
 
+function Update-UnicaMcpJson {
+    param(
+        [string]$McpPath,
+        [string]$Command
+    )
+    $mcp = Get-Content -LiteralPath $McpPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $mcp.mcpServers -or -not $mcp.mcpServers.unica) {
+        throw "MCP configuration does not contain mcpServers.unica: $McpPath"
+    }
+    $mcp.mcpServers.unica.command = $Command
+    $mcp.mcpServers.unica.args = @()
+    $json = $mcp | ConvertTo-Json -Depth 20
+    [System.IO.File]::WriteAllText($McpPath, ($json + [Environment]::NewLine), [System.Text.Encoding]::UTF8)
+}
+
 function Get-ToolBinary {
     param(
-        [string]$MarketplaceDir,
+        [string]$MarketplaceDir = "",
+        [string]$PluginDir = "",
         [string]$Target,
         [string]$Tool
     )
-    return (Join-Path $MarketplaceDir (Join-Path "plugins" (Join-Path "unica" (Join-Path "bin" (Join-Path $Target "$Tool.exe")))))
+    if ([string]::IsNullOrWhiteSpace($PluginDir)) {
+        if ([string]::IsNullOrWhiteSpace($MarketplaceDir)) {
+            throw "MarketplaceDir or PluginDir is required to locate $Tool."
+        }
+        $PluginDir = Join-Path $MarketplaceDir (Join-Path "plugins" "unica")
+    }
+    $toolPath = Join-Path $PluginDir (Join-Path "bin" (Join-Path $Target "$Tool.exe"))
+    return [System.IO.Path]::GetFullPath($toolPath)
 }
 
 function Invoke-NativeChecked {
@@ -190,6 +213,8 @@ try {
         New-Item -ItemType Directory -Path $marketplacesRoot | Out-Null
     }
     Copy-Item -LiteralPath $extractedMarketplaceDir -Destination $marketplaceDir -Recurse
+    $marketplaceMcpPath = Join-Path $marketplaceDir (Join-Path "plugins" (Join-Path "unica" ".mcp.json"))
+    Update-UnicaMcpJson -McpPath $marketplaceMcpPath -Command (Get-ToolBinary -MarketplaceDir $marketplaceDir -Target $Target -Tool "unica")
 
     Invoke-NativeChecked -Program (Get-ToolBinary -MarketplaceDir $marketplaceDir -Target $Target -Tool "v8-runner") -Arguments @("config", "init", "--help")
     Invoke-NativeChecked -Program (Get-ToolBinary -MarketplaceDir $marketplaceDir -Target $Target -Tool "unica") -Arguments @("--help")
@@ -211,6 +236,8 @@ try {
 
     New-Item -ItemType Directory -Path $pluginCacheDir -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $marketplaceDir (Join-Path "plugins" "unica")) -Destination $pluginCacheVersionDir -Recurse
+    $pluginCacheMcpPath = Join-Path $pluginCacheVersionDir ".mcp.json"
+    Update-UnicaMcpJson -McpPath $pluginCacheMcpPath -Command (Get-ToolBinary -PluginDir $pluginCacheVersionDir -Target $Target -Tool "unica")
     Enable-CodexPlugin -ConfigPath (Join-Path $CodexHome "config.toml") -MarketplaceName $MarketplaceName
 
     if (-not $SkipVerify) {
