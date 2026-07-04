@@ -100,6 +100,24 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
+          "skill": "support-edit",
+          "status": "ported-to-unica",
+          "notes": "Ported donor support-edit semantics into typed Unica MCP/native Rust: Capability=on/off toggles global editing capability and resets object rules using Ext/ParentConfigurations.bin semantics; Set=editable/off-support/locked changes a resolved object's support rule. This replaces downstream raw support metadata fallback with an explicit audited Unica tool.",
+          "upstreamPaths": [
+            ".claude/skills/support-edit/**"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/support-edit"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/support.rs"
+          ],
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "decision": "ported"
+        },
+        {
           "skill": "cfe-borrow",
           "status": "ported-to-unica",
           "notes": "Reviewed and ported donor cfe-borrow functional drift through cbde49efdaeec190432fdf4a53201a87e83c69de in native Rust: BorrowMainAttribute path enrichment, deep tabular-section paths, DefinedType Type XML, Field path collection, idempotent form metadata, and preserved Module.bsl.",

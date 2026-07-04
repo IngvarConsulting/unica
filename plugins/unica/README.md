@@ -26,7 +26,7 @@ The `skills/` directory contains operation skills and scenario references for 1C
 - `mxl-*`, `role-*`, `skd-*`, `subsystem-*`, `interface-*`, `template-*`, `web-test`, `img-grid`
 - `code-search`, `code-diagnostics`, `code-review`, `query-optimize`, `test-authoring`
 - `api-design`, `platform-help`, `bsp-patterns`, `integration-implement`, `autonomous-server`, `log-analysis`
-- `background-jobs`, `data-exchange`, `db-performance`, `security-auth-crypto`, `data-separation`, `release-support`
+- `background-jobs`, `data-exchange`, `db-performance`, `security-auth-crypto`, `data-separation`, `release-support`, `support-edit`
 
 ## Local Codex Install
 

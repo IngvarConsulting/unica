@@ -15,6 +15,7 @@ pub(crate) mod registry;
 pub(crate) mod role;
 pub(crate) mod skd;
 pub(crate) mod subsystem;
+pub(crate) mod support;
 pub(crate) mod template;
 
 use crate::domain::workspace::WorkspaceContext;
