@@ -8106,21 +8106,15 @@ fn register_compiled_meta_child_text(
 ) -> Option<String> {
     let close = "</ChildObjects>";
     let index = xml_text.find(close)?;
-    let eol = if xml_text.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
     let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
     let closing_indent = &xml_text[line_start..index];
     let insertion = format!("<{child_tag}>{obj_name}</{child_tag}>");
-    let mut result = String::with_capacity(
-        xml_text.len() + 1 + insertion.len() + eol.len() + closing_indent.len(),
-    );
+    let mut result =
+        String::with_capacity(xml_text.len() + 1 + insertion.len() + 1 + closing_indent.len());
     result.push_str(&xml_text[..index]);
     result.push('\t');
     result.push_str(&insertion);
-    result.push_str(eol);
+    result.push('\n');
     result.push_str(closing_indent);
     result.push_str(&xml_text[index..]);
     Some(result)

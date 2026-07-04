@@ -2128,13 +2128,12 @@ mod tests {
             String::from_utf8_lossy(&std::fs::read(&config_path).unwrap()).to_string();
         assert!(config_text.contains(concat!(
             "\r\n\t\t\t<Catalog>Items</Catalog>\r\n",
-            "\t\t\t<Report>MetaCompileFormatReport</Report>\r\n",
+            "\t\t\t<Report>MetaCompileFormatReport</Report>\n",
             "\t\t</ChildObjects>"
         )));
         assert!(!config_text.contains("\t\t\t\t\t<Report>MetaCompileFormatReport</Report>"));
-        assert!(
-            !config_text.contains("<Report>MetaCompileFormatReport</Report>\n\t\t</ChildObjects>")
-        );
+        assert!(!config_text
+            .contains("<Report>MetaCompileFormatReport</Report>\r\n\t\t</ChildObjects>"));
 
         let _ = std::fs::remove_dir_all(root);
     }
