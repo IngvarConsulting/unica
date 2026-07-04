@@ -48,7 +48,8 @@ cache behavior, or packaging metadata.
 - [ ] `third-party/tools.lock.json` names the bundled binary `unica`.
 - [ ] Generated `third-party/manifest.json` matches the lock.
 - [ ] `cargo run --quiet --bin unica -- --help` works from source checkout.
-- [ ] Generated package `.mcp.json` starts `./bin/<target>/unica` directly.
+- [ ] Generated package `.mcp.json` starts `./bin/<target>/unica` directly with
+      `cwd` set to the plugin root.
 - [ ] Fresh Codex visibility is checked from a clean cache when changing plugin
   metadata.
 

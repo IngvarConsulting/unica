@@ -22,14 +22,15 @@ Unica - это плагин для Codex, который помогает раб
 
 ## Установка
 
-Одна команда скачивает installer из последнего GitHub Release, определяет
-платформу, скачивает нужный пакет Unica и устанавливает его в Codex:
+На macOS и Linux одна команда скачивает installer из последнего GitHub Release,
+определяет платформу, скачивает нужный пакет Unica и устанавливает его в Codex:
 
 ```sh
 curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh
 ```
 
-На Windows без Git Bash используйте Windows PowerShell 5.1:
+На Windows используйте Windows PowerShell 5.1. Shell installer
+`install-unica.sh` не поддерживает Git Bash/MSYS/Cygwin:
 
 ```powershell
 iwr https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.ps1 -OutFile install-unica.ps1

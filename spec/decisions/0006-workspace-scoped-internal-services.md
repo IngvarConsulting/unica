@@ -50,8 +50,9 @@ Unica may start hidden internal services scoped by workspace and source root.
    analyzer service.
 2. Different workspaces or source roots get independent services and indexes.
 3. Stale service records must be detected and replaced.
-4. Packaged launchers must export `UNICA_PLUGIN_ROOT` so hidden services can
-   find bundled internal adapter scripts from arbitrary user workspaces.
+4. Packaged `.mcp.json` must set `cwd` to the plugin root, and packaged
+   binaries must still locate the plugin root from their own executable path
+   when `UNICA_PLUGIN_ROOT` is absent.
 5. Tests must continue proving that `.mcp.json` exposes only `unica` and that
    cheap read-only operations such as `unica.code.grep` do not start services.
 

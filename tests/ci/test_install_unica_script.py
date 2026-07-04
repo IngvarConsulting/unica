@@ -59,14 +59,20 @@ class InstallUnicaScriptTests(unittest.TestCase):
         env.pop("HOME", None)
         env.pop("USERPROFILE", None)
 
-        result = run_script("--target", "win-x64", "--print-download-url", env=env)
+        result = run_script("--target", "linux-x64", "--print-download-url", env=env)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.strip(),
             "https://github.com/IngvarConsulting/unica/releases/latest/download/"
-            "unica-codex-marketplace-win-x64.zip",
+            "unica-codex-marketplace-linux-x64.tar.gz",
         )
+
+    def test_shell_installer_rejects_windows_target(self) -> None:
+        result = run_script("--target", "win-x64", "--print-download-url")
+
+        self.assertEqual(result.returncode, 78)
+        self.assertIn("Unsupported Unica release target: win-x64", result.stderr)
 
 
 class InstallUnicaPowerShellScriptTests(unittest.TestCase):
@@ -84,6 +90,40 @@ class InstallUnicaPowerShellScriptTests(unittest.TestCase):
         self.assertNotIn("$IsWindows", text)
         self.assertNotIn("pwsh", text.lower())
         self.assertNotIn("bash", text.lower())
+
+    def test_windows_installer_does_not_rewrite_packaged_mcp_commands(self) -> None:
+        text = PS_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn("function Update-UnicaMcpJson", text)
+        self.assertNotIn("Update-UnicaMcpJson -McpPath", text)
+        self.assertNotIn("$mcp.mcpServers.unica.command", text)
+        self.assertNotIn("$mcp.mcpServers.unica.args", text)
+
+    @unittest.skipIf(os.name != "nt", "PowerShell syntax check runs on Windows")
+    def test_windows_installer_print_download_url_runs_in_powershell(self) -> None:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(PS_SCRIPT),
+                "-PrintDownloadUrl",
+            ],
+            check=False,
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "https://github.com/IngvarConsulting/unica/releases/latest/download/"
+            "unica-codex-marketplace-win-x64.zip",
+        )
 
 
 if __name__ == "__main__":

@@ -26,4 +26,4 @@ This file tracks open implementation work only.
   `cargo test --package unica-coder` pass.
 - `cargo run --quiet --bin unica -- --help` still reports the public server as
   `unica`, and generated package metadata starts `./bin/<target>/unica`
-  directly.
+  directly with `cwd` set to the plugin root.

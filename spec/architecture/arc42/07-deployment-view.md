@@ -14,7 +14,7 @@ The release pipeline builds target-specific bundled binaries, writes
 
 Packaged execution:
 
-1. `.mcp.json` starts `./bin/<target>/unica`.
+1. `.mcp.json` starts `./bin/<target>/unica` with `cwd` set to the plugin root.
 2. The bundled `unica` binary starts as stdio MCP server.
 3. Internal adapters resolve and verify their bundled tools through Rust before
    execution.

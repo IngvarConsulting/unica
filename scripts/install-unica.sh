@@ -10,7 +10,7 @@ install it into Codex, and verify fresh-session visibility.
 
 Options:
   --version VERSION       Release tag to install, for example v0.5.1 (default: latest)
-  --target TARGET         Override detected target: darwin-arm64, linux-x64, win-x64
+  --target TARGET         Override detected target: darwin-arm64 or linux-x64
   --marketplace-name NAME Codex marketplace name (default: unica-local)
   --codex-home DIR        Codex home directory (default: $CODEX_HOME or ~/.codex)
   --skip-verify           Do not run codex debug prompt-input verification
@@ -71,7 +71,6 @@ detect_target() {
   case "${host_os}-${host_arch}" in
     Darwin-arm64|Darwin-aarch64) printf '%s\n' "darwin-arm64" ;;
     Linux-x86_64|Linux-amd64) printf '%s\n' "linux-x64" ;;
-    MINGW64*-x86_64|MSYS_NT*-x86_64|CYGWIN_NT*-x86_64) printf '%s\n' "win-x64" ;;
     *)
       echo "Unsupported Unica release target for host: ${host_os}-${host_arch}" >&2
       exit 78
@@ -82,7 +81,6 @@ detect_target() {
 archive_extension() {
   case "$1" in
     darwin-arm64|linux-x64) printf '%s\n' "tar.gz" ;;
-    win-x64) printf '%s\n' "zip" ;;
     *)
       echo "Unsupported Unica release target: $1" >&2
       exit 78
@@ -92,11 +90,7 @@ archive_extension() {
 
 tool_binary() {
   tool="$1"
-  suffix=""
-  if [ "$TARGET" = "win-x64" ]; then
-    suffix=".exe"
-  fi
-  printf '%s\n' "$MARKETPLACE_DIR/plugins/unica/bin/$TARGET/${tool}${suffix}"
+  printf '%s\n' "$MARKETPLACE_DIR/plugins/unica/bin/$TARGET/${tool}"
 }
 
 default_codex_home() {

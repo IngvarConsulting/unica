@@ -46,7 +46,7 @@ package binary and verifying SHA-256 before execution.
 - Source checkout `.mcp.json` starts the Rust orchestrator with
   `cargo run --manifest-path ../../Cargo.toml --bin unica` from the plugin root.
 - Generated marketplace packages rewrite `.mcp.json` to start
-  `./bin/<target>/unica` directly.
+  `./bin/<target>/unica` directly with `cwd` set to the plugin root.
 
 Runtime resolver responsibilities:
 
@@ -81,8 +81,8 @@ artifacts:
   `unica-codex-marketplace-darwin-arm64.tar.gz`,
   `unica-codex-marketplace-linux-x64.tar.gz`, and
   `unica-codex-marketplace-win-x64.zip`;
-- tag builds upload the same archives plus `install-unica.sh` and
-  `install-unica.ps1` to the GitHub Release.
+- tag builds upload the same archives plus `install-unica.sh` for macOS/Linux
+  and `install-unica.ps1` for Windows to the GitHub Release.
 
 ## MCP Contract
 
@@ -97,7 +97,8 @@ inside one process instead of through LLM-visible coordination. The source
 checkout `.mcp.json` uses
 `cargo run --manifest-path ../../Cargo.toml --bin unica` because binaries are
 not committed; release packaging rewrites `.mcp.json` to launch the
-platform-specific `./bin/<target>/unica` binary directly.
+platform-specific `./bin/<target>/unica` binary directly with `cwd` set to the
+plugin root.
 
 Raw Git/source marketplace installs are development-only. They can expose
 skills and plugin metadata, but they do not provide target-specific binaries or

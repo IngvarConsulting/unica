@@ -124,7 +124,8 @@ For a local host-target package, build the tool bundle and package marketplace
 with the normal CI scripts. A valid generated package must satisfy:
 
 - packaged `.mcp.json` exposes exactly `unica`;
-- packaged `.mcp.json` starts the bundled `bin/<target>/unica` binary directly;
+- packaged `.mcp.json` starts the bundled `bin/<target>/unica` binary directly
+  with `cwd` set to the plugin root;
 - generated `third-party/manifest.json` lists `unica` as a bundled tool and
   lists remote standards data only as an internal adapter.
 

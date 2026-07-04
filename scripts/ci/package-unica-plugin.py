@@ -188,6 +188,7 @@ def write_packaged_mcp_launcher(plugin_dir: Path, grouped_tools: dict[str, dict]
     server = mcp["mcpServers"]["unica"]
     server["command"] = f"./{binary_path}"
     server["args"] = []
+    server["cwd"] = "."
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. Packaged archives launch "
         "the bundled unica binary directly; it owns workspace/cache coordination "

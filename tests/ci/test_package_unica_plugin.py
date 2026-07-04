@@ -130,6 +130,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(forbidden, [])
         self.assertEqual(mcp["mcpServers"]["unica"]["command"], "./bin/linux-x64/unica")
+        self.assertEqual(mcp["mcpServers"]["unica"]["cwd"], ".")
 
     def test_source_tree_does_not_reference_deleted_runtime_shell_wrappers_in_active_docs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -184,6 +185,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         server = mcp["mcpServers"]["unica"]
         self.assertEqual(server["command"], "./bin/win-x64/unica.exe")
         self.assertEqual(server["args"], [])
+        self.assertEqual(server["cwd"], ".")
         self.assertNotIn("bash", server["command"])
         self.assertNotIn("run-unica.sh", json.dumps(server))
 

@@ -112,8 +112,9 @@ Internal MCP runtime launches resolve bundled tools directly from Rust:
 
 Runtime shell and PowerShell wrappers are not shipped. Source checkouts use
 `cargo run --manifest-path ../../Cargo.toml --bin unica` for the orchestrator,
-and generated packages use the native `bin/<target>/unica` entrypoint plus
-Rust-side resolver calls for internal tools. This prevents Codex from
+and generated packages use the native `bin/<target>/unica` entrypoint with
+`cwd` pinned to the plugin root plus Rust-side resolver calls for internal
+tools. This prevents Codex from
 accidentally using a different globally installed version.
 
 ## Release Pipeline
@@ -127,7 +128,8 @@ accidentally using a different globally installed version.
 5. generate a target-specific `third-party/manifest.json` with SHA-256 checksums;
 6. write official marketplace metadata with visible display name `Unica` and plugin id `unica`;
 7. publish platform-specific archives such as `unica-codex-marketplace-darwin-arm64.tar.gz`, `unica-codex-marketplace-linux-x64.tar.gz`, and `unica-codex-marketplace-win-x64.zip` as workflow artifacts and, on tags, GitHub Release assets;
-8. publish `install-unica.sh` and `install-unica.ps1` as release assets for one-command installation.
+8. publish `install-unica.sh` for macOS/Linux and `install-unica.ps1` for
+   Windows as release assets for one-command installation.
 
 The tool build script requires Python 3.10 or newer; CI uses Python 3.12 and
 creates a local venv under `.build/` for Python-packaged tools.
@@ -150,7 +152,7 @@ fallback scripts are private implementation details behind this one MCP
 contract. Source checkout metadata uses
 `cargo run --manifest-path ../../Cargo.toml --bin unica` because generated
 binaries are absent from git; packaged archives rewrite `.mcp.json` to launch
-`./bin/<target>/unica` directly.
+`./bin/<target>/unica` directly with `cwd` set to the plugin root.
 
 ## Verification
 
