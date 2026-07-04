@@ -116,8 +116,7 @@ pub(crate) fn add_template(
             )?;
         }
 
-        let xml_text = fs::read_to_string(&root_xml_path)
-            .map_err(|err| format!("failed to read {}: {err}", root_xml_path.display()))?;
+        let xml_text = read_utf8_sig(&root_xml_path)?;
         let mut xml_text = append_metadata_child_text(&xml_text, "Template", template_name)
             .ok_or_else(|| {
                 format!(
@@ -260,8 +259,7 @@ pub(crate) fn remove_template(
         ));
         changes.push(format!("removed file {}", template_meta_path.display()));
 
-        let xml_text = fs::read_to_string(&root_xml_path)
-            .map_err(|err| format!("failed to read {}: {err}", root_xml_path.display()))?;
+        let xml_text = read_utf8_sig(&root_xml_path)?;
         let xml_text = remove_template_child_text_lxml(&xml_text, template_name);
         let (mut xml_text, main_dcs_cleared) =
             clear_main_data_composition_schema_text(&xml_text, template_name);

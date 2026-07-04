@@ -8085,8 +8085,7 @@ pub(crate) fn register_compiled_meta_in_configuration(
     if !config_xml_path.is_file() {
         return Ok(Some("no-config".to_string()));
     }
-    let mut raw_text = fs::read_to_string(&config_xml_path)
-        .map_err(|err| format!("failed to read {}: {err}", config_xml_path.display()))?;
+    let mut raw_text = read_utf8_sig(&config_xml_path)?;
     if raw_text.contains(&format!("<{child_tag}>{obj_name}</{child_tag}>")) {
         return Ok(Some("already".to_string()));
     }
@@ -8141,8 +8140,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             ));
         }
 
-        let mut xml_text = fs::read_to_string(&object_path)
-            .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
+        let mut xml_text = read_utf8_sig(&object_path)?;
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
         let mut modified = 0usize;
         for pair in value
