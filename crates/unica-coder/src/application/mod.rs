@@ -2088,6 +2088,58 @@ mod tests {
     }
 
     #[test]
+    fn meta_compile_preserves_configuration_child_objects_formatting() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-child-format");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.17\">\r\n",
+                "\t<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">\r\n",
+                "\t\t<Properties>\r\n",
+                "\t\t\t<Name>Demo</Name>\r\n",
+                "\t\t</Properties>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "\t\t\t<Catalog>Items</Catalog>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Configuration>\r\n",
+                "</MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        let json_path = workspace.join("report.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Report",
+  "name": "MetaCompileFormatReport",
+  "synonym": "MetaCompileFormatReport"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.errors);
+        let config_text =
+            String::from_utf8_lossy(&std::fs::read(&config_path).unwrap()).to_string();
+        assert!(config_text.contains(concat!(
+            "\r\n\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t\t<Report>MetaCompileFormatReport</Report>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert!(!config_text.contains("\t\t\t\t\t<Report>MetaCompileFormatReport</Report>"));
+        assert!(
+            !config_text.contains("<Report>MetaCompileFormatReport</Report>\n\t\t</ChildObjects>")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn template_add_preserves_single_object_bom() {
         let root = temp_meta_compile_workspace("unica-template-add-single-bom");
         let workspace = root.join("workspace");
