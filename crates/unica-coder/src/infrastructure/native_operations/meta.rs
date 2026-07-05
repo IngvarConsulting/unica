@@ -254,6 +254,37 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_adds_attribute_to_non_empty_tabular_section() {
+        let context = temp_context("add-non-empty-tabular-section-attribute");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let mut xml = sample_document_xml("<RegisterRecords/>");
+        xml = xml.replace(
+            "\t\t<ChildObjects/>",
+            "\t\t<ChildObjects>\n\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>SampleItems</Name>\n\t\t\t\t\t<Synonym/>\n\t\t\t\t\t<Comment/>\n\t\t\t\t\t<ToolTip/>\n\t\t\t\t\t<FillChecking>DontCheck</FillChecking>\n\t\t\t\t</Properties>\n\t\t\t\t<ChildObjects>\n\t\t\t\t\t<Attribute uuid=\"33333333-3333-4333-8333-333333333333\">\n\t\t\t\t\t\t<Properties>\n\t\t\t\t\t\t\t<Name>ExistingItem</Name>\n\t\t\t\t\t\t\t<Synonym/>\n\t\t\t\t\t\t\t<Comment/>\n\t\t\t\t\t\t\t<Type/>\n\t\t\t\t\t\t</Properties>\n\t\t\t\t\t</Attribute>\n\t\t\t\t</ChildObjects>\n\t\t\t</TabularSection>\n\t\t</ChildObjects>",
+        );
+        write_file(&object_path, &xml);
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "add-ts-attribute",
+                "SampleItems.SampleSourceDocument: DocumentRef.SampleSale",
+            ),
+            &context,
+        );
+        let stdout = outcome.stdout.as_deref().unwrap_or("");
+        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Name>ExistingItem</Name>"));
+        assert!(updated.contains("<Name>SampleSourceDocument</Name>"));
+        assert!(updated.contains("<v8:Type>cfg:DocumentRef.SampleSale</v8:Type>"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_add_tabular_attribute_reports_missing_target() {
         let context = temp_context("missing-tabular-section");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -8768,14 +8799,15 @@ pub(crate) fn meta_edit_insert_tabular_child_object(
     let object = meta_edit_object_node(&doc)?;
     let section = meta_edit_find_tabular_section(object, section_name)
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
-    if let Some(child_objects) = meta_info_child(section, "ChildObjects") {
-        let range = child_objects.range();
-        drop(doc);
-        return meta_edit_insert_lines_into_child_objects(xml_text, range, "\t\t\t\t", lines);
-    }
     let range = section.range();
     drop(doc);
-    meta_edit_insert_child_objects_into_node(xml_text, range, "TabularSection", "\t\t\t\t", lines)
+    meta_edit_insert_lines_into_node_child_objects(
+        xml_text,
+        range,
+        "TabularSection",
+        "\t\t\t\t",
+        lines,
+    )
 }
 
 pub(crate) fn meta_edit_insert_lines_into_child_objects(
@@ -8794,6 +8826,10 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
         return Ok(());
     }
     let Some(relative_pos) = section_text.rfind("</ChildObjects>") else {
+        if section_text.trim_end().ends_with('>') {
+            xml_text.insert_str(range.end, &format!("\n{content}\n{close_indent}"));
+            return Ok(());
+        }
         return Err("No closing </ChildObjects> found".to_string());
     };
     xml_text.insert_str(
@@ -8829,6 +8865,31 @@ pub(crate) fn meta_edit_insert_child_objects_into_node(
         &format!("{close_indent}<ChildObjects>\n{content}\n{close_indent}</ChildObjects>\n"),
     );
     Ok(())
+}
+
+pub(crate) fn meta_edit_insert_lines_into_node_child_objects(
+    xml_text: &mut String,
+    range: std::ops::Range<usize>,
+    tag: &str,
+    close_indent: &str,
+    lines: &[String],
+) -> Result<(), String> {
+    let content = lines.join("\n");
+    let node_text = &xml_text[range.clone()];
+    if let Some(relative_pos) = node_text.find("<ChildObjects/>") {
+        let pos = range.start + relative_pos;
+        xml_text.replace_range(
+            pos..pos + "<ChildObjects/>".len(),
+            &format!("<ChildObjects>\n{content}\n{close_indent}</ChildObjects>"),
+        );
+        return Ok(());
+    }
+    if let Some(relative_pos) = node_text.find("<ChildObjects>") {
+        let pos = range.start + relative_pos + "<ChildObjects>".len();
+        xml_text.insert_str(pos, &format!("\n{content}"));
+        return Ok(());
+    }
+    meta_edit_insert_child_objects_into_node(xml_text, range, tag, close_indent, lines)
 }
 
 pub(crate) fn normalize_meta_edit_property_value(key: &str, value: &str) -> String {
