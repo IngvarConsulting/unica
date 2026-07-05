@@ -1210,6 +1210,7 @@ NATIVE_PARITY_TOOLS = {
     "unica.cfe.diff",
     "unica.cfe.patch_method",
     "unica.cfe.validate",
+    "unica.form.validate",
     "unica.meta.compile",
     "unica.meta.edit",
     "unica.meta.info",

@@ -1022,9 +1022,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Validate managed Form.xml.",
             mutating: false,
             cache_access: cache_access_for("form-validate", None),
-            handler: ToolHandler::LegacyScript {
-                skill: "form-validate",
-                script: "form-validate.py",
+            handler: ToolHandler::NativeOperation {
+                operation: "form-validate",
                 event: None,
             },
         },
@@ -1507,7 +1506,6 @@ mod tests {
             ("unica.form.compile", "form-compile", "form-compile.py"),
             ("unica.form.edit", "form-edit", "form-edit.py"),
             ("unica.form.remove", "form-remove", "remove-form.py"),
-            ("unica.form.validate", "form-validate", "form-validate.py"),
         ];
         for (tool_name, expected_skill, expected_script) in expected {
             let tool = tools()
@@ -1550,6 +1548,7 @@ mod tests {
     fn read_only_form_and_skd_info_tools_route_through_native_handlers() {
         let expected = [
             ("unica.form.info", "form-info"),
+            ("unica.form.validate", "form-validate"),
             ("unica.skd.info", "skd-info"),
         ];
         for (tool_name, expected_operation) in expected {

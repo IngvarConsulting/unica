@@ -450,6 +450,16 @@ pub(crate) fn form_validate_data_paths(
         "ViewStatusAddition",
         "SearchControlAddition",
     ];
+    let binding_tags = [
+        "DataPath",
+        "TitleDataPath",
+        "FooterDataPath",
+        "HeaderDataPath",
+        "MultipleValueDataPath",
+        "MultipleValuePresentDataPath",
+        "RowPictureDataPath",
+        "MultipleValuePictureDataPath",
+    ];
     let mut path_errors = 0usize;
     let mut path_checked = 0usize;
     let mut path_base_skipped = 0usize;
@@ -468,25 +478,65 @@ pub(crate) fn form_validate_data_paths(
             path_base_skipped += 1;
             continue;
         }
-        let Some(data_path) = form_child_text(element.node, "DataPath") else {
-            continue;
-        };
-        let data_path = data_path.trim();
-        if data_path.is_empty() {
-            continue;
-        }
-        path_checked += 1;
-        let clean_path = strip_numeric_indexes(data_path);
-        let root_attr = clean_path.split('.').next().unwrap_or("");
-        if !attr_map.contains_key(root_attr) {
-            report.error(format!(
-                "[{}] '{}': DataPath='{}' — attribute '{}' not found",
-                element.tag, element.name, data_path, root_attr
-            ));
-            path_errors += 1;
-        }
-        if report.stopped {
-            return;
+        for binding_tag in binding_tags {
+            let Some(data_path) = form_child_text(element.node, binding_tag) else {
+                continue;
+            };
+            let data_path = data_path.trim();
+            if data_path.is_empty() || is_opaque_form_binding(data_path) {
+                continue;
+            }
+            path_checked += 1;
+
+            let mut clean_path = strip_form_binding_prefixes(data_path);
+            let mut segments = clean_path.split('.');
+            let mut root_attr = segments.next().unwrap_or("").to_string();
+
+            if root_attr == "Items" {
+                let table_name = segments.next().unwrap_or("");
+                let current_data = segments.next().unwrap_or("");
+                if table_name.is_empty() || current_data != "CurrentData" {
+                    report.warn(format!(
+                        "[{}] '{}': {}='{}' — unknown Items.* shape, expected Items.<Table>.CurrentData.*",
+                        element.tag, element.name, binding_tag, data_path
+                    ));
+                    continue;
+                }
+                let Some(table_element) = elements
+                    .iter()
+                    .find(|candidate| candidate.tag == "Table" && candidate.name == table_name)
+                else {
+                    report.error(format!(
+                        "[{}] '{}': {}='{}' — table element '{}' not found",
+                        element.tag, element.name, binding_tag, data_path, table_name
+                    ));
+                    path_errors += 1;
+                    if report.stopped {
+                        return;
+                    }
+                    continue;
+                };
+                let Some(table_path) = form_child_text(table_element.node, "DataPath") else {
+                    continue;
+                };
+                let table_path = table_path.trim();
+                if table_path.is_empty() {
+                    continue;
+                }
+                clean_path = strip_form_binding_prefixes(table_path);
+                root_attr = clean_path.split('.').next().unwrap_or("").to_string();
+            }
+
+            if !attr_map.contains_key(root_attr.as_str()) {
+                report.error(format!(
+                    "[{}] '{}': {}='{}' — attribute '{}' not found",
+                    element.tag, element.name, binding_tag, data_path, root_attr
+                ));
+                path_errors += 1;
+            }
+            if report.stopped {
+                return;
+            }
         }
     }
     let mut path_msg = String::new();
@@ -502,8 +552,32 @@ pub(crate) fn form_validate_data_paths(
         };
     }
     if path_errors == 0 && !path_msg.is_empty() {
-        report.ok(format!("DataPath references: {path_msg}"));
+        report.ok(format!("Data bindings: {path_msg}"));
     }
+}
+
+pub(crate) fn strip_form_binding_prefixes(value: &str) -> String {
+    strip_numeric_indexes(value)
+        .trim_start_matches('~')
+        .to_string()
+}
+
+pub(crate) fn is_opaque_form_binding(value: &str) -> bool {
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    let Some((prefix, uuid)) = value.split_once(':') else {
+        return false;
+    };
+    let Some((left, right)) = prefix.split_once('/') else {
+        return false;
+    };
+    !left.is_empty()
+        && !right.is_empty()
+        && left.chars().all(|ch| ch.is_ascii_digit())
+        && right.chars().all(|ch| ch.is_ascii_digit())
+        && !uuid.is_empty()
+        && uuid.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
 }
 
 pub(crate) fn strip_numeric_indexes(value: &str) -> String {
