@@ -8152,38 +8152,66 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let operation = operation.expect("checked above");
         let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
-        if operation != "modify-property" {
-            return Err(format!(
-                "native meta-edit currently supports modify-property only, got: {operation}"
-            ));
-        }
-
         let mut xml_text = read_utf8_sig(&object_path)?;
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
-        let mut modified = 0usize;
-        for pair in value
-            .split(";;")
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
-            let Some((key, raw_value)) = pair.split_once('=') else {
-                continue;
-            };
-            let key = key.trim();
-            let raw_value = raw_value.trim();
-            let normalized = normalize_meta_edit_property_value(key, raw_value);
-            if replace_first_xml_element_text(&mut xml_text, key, &normalized) {
-                modified += 1;
-            } else {
-                insert_meta_property_before_child_objects(&mut xml_text, key, &normalized)?;
-                modified += 1;
+        let (added, modified) = match operation {
+            "modify-property" => {
+                let mut modified = 0usize;
+                for pair in value
+                    .split(";;")
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                {
+                    let Some((key, raw_value)) = pair.split_once('=') else {
+                        continue;
+                    };
+                    let key = key.trim();
+                    let raw_value = raw_value.trim();
+                    let normalized = normalize_meta_edit_property_value(key, raw_value);
+                    if replace_first_xml_element_text(&mut xml_text, key, &normalized) {
+                        modified += 1;
+                    } else {
+                        insert_meta_property_before_child_objects(&mut xml_text, key, &normalized)?;
+                        modified += 1;
+                    }
+                }
+                (0, modified)
             }
+            "add-registerRecord" | "add-register-record" => {
+                if object_type != "Document" {
+                    return Err(format!(
+                        "add-registerRecord is supported only for Document objects, got: {object_type}"
+                    ));
+                }
+                let added = add_meta_md_object_ref(&mut xml_text, "RegisterRecords", value)?;
+                (added, 0)
+            }
+            "add-ts" | "add-tabular-section" => {
+                let added =
+                    add_meta_tabular_section(&mut xml_text, &object_type, &object_name, value)?;
+                (added, 0)
+            }
+            "modify-ts" | "modify-tabular-section" => {
+                let modified = modify_meta_tabular_section(&mut xml_text, value)?;
+                (0, modified)
+            }
+            "modify-ts-attribute" => {
+                let modified = modify_meta_tabular_section_attribute(&mut xml_text, value)?;
+                (0, modified)
+            }
+            _ => {
+                return Err(format!(
+                    "native meta-edit currently supports modify-property, add-registerRecord, add-ts, modify-ts and modify-ts-attribute only, got: {operation}"
+                ));
+            }
+        };
+        if added + modified > 0 {
+            write_utf8_bom(&object_path, &xml_text)?;
         }
-        write_utf8_bom(&object_path, &xml_text)?;
         let stdout = format!(
-            "\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    0\n  Removed:  0\n  Modified: {modified}\n"
+            "\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {added}\n  Removed:  0\n  Modified: {modified}\n"
         );
-        Ok((stdout, object_path, modified))
+        Ok((stdout, object_path, added + modified))
     })();
 
     match edit_result {
@@ -8284,6 +8312,463 @@ pub(crate) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, Strin
         .unwrap_or("")
         .to_string();
     Ok((object_type, object_name))
+}
+
+pub(crate) fn add_meta_md_object_ref(
+    xml_text: &mut String,
+    tag: &str,
+    value: &str,
+) -> Result<usize, String> {
+    let normalized = normalize_meta_object_ref(value.trim());
+    if normalized.is_empty() {
+        return Err(format!("{tag} value is empty"));
+    }
+    let escaped = escape_xml(&normalized);
+    let line_ending = if xml_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let open_empty = format!("<{tag}/>");
+    if let Some(index) = xml_text.find(&open_empty) {
+        let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
+        let indent = &xml_text[line_start..index];
+        let replacement = format!(
+            "<{tag}>{line_ending}{indent}\t<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>{line_ending}{indent}</{tag}>"
+        );
+        xml_text.replace_range(index..index + open_empty.len(), &replacement);
+        return Ok(1);
+    }
+
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let Some(open_index) = xml_text.find(&open) else {
+        return Err(format!("No <{tag}> element found"));
+    };
+    let content_start = open_index + open.len();
+    let Some(relative_close_index) = xml_text[content_start..].find(&close) else {
+        return Err(format!("No </{tag}> element found"));
+    };
+    let close_index = content_start + relative_close_index;
+    let content = &xml_text[content_start..close_index];
+    let line_start = xml_text[..open_index].rfind('\n').map_or(0, |pos| pos + 1);
+    let indent = &xml_text[line_start..open_index];
+    let item_indent = format!("{indent}\t");
+    let new_item = format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>");
+    let mut items = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("<xr:Item ") && line.ends_with("</xr:Item>"))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let added = if items.iter().any(|item| item == &new_item) {
+        0
+    } else {
+        items.push(new_item);
+        1
+    };
+
+    let mut replacement = format!("<{tag}>");
+    for item in &items {
+        replacement.push_str(line_ending);
+        replacement.push_str(&item_indent);
+        replacement.push_str(item);
+    }
+    replacement.push_str(line_ending);
+    replacement.push_str(indent);
+    replacement.push_str(&format!("</{tag}>"));
+
+    let end_index = close_index + close.len();
+    let current = &xml_text[open_index..end_index];
+    if current == replacement {
+        return Ok(0);
+    }
+    xml_text.replace_range(open_index..end_index, &replacement);
+    Ok(if added > 0 { added } else { 1 })
+}
+
+pub(crate) fn add_meta_tabular_section(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &str,
+) -> Result<usize, String> {
+    let section = parse_meta_edit_tabular_section(value)?;
+    if find_meta_child_by_name(xml_text, "TabularSection", &section.name).is_some() {
+        return Ok(0);
+    }
+
+    let line_ending = meta_line_ending(xml_text);
+    let mut lines = Vec::new();
+    let mut next_uuid = fresh_meta_compile_uuid;
+
+    if let Some(index) = xml_text.find("<ChildObjects/>") {
+        let line_start = meta_line_start(xml_text, index);
+        let indent = &xml_text[line_start..index];
+        let child_indent = format!("{indent}\t");
+        emit_meta_tabular_section(
+            &mut lines,
+            &child_indent,
+            &section,
+            object_type,
+            object_name,
+            &mut next_uuid,
+        );
+        let replacement = format!(
+            "<ChildObjects>{line_ending}{}{line_ending}{indent}</ChildObjects>",
+            lines.join(line_ending)
+        );
+        xml_text.replace_range(index..index + "<ChildObjects/>".len(), &replacement);
+        return Ok(1);
+    }
+
+    let open = "<ChildObjects>";
+    let Some(open_index) = xml_text.find(open) else {
+        return Err("No <ChildObjects> section found".to_string());
+    };
+    let Some(close_index) = find_meta_matching_section_close(xml_text, open_index, "ChildObjects")
+    else {
+        return Err("No matching </ChildObjects> found".to_string());
+    };
+    let close_line_start = meta_line_start(xml_text, close_index);
+    let close_indent = &xml_text[close_line_start..close_index];
+    let child_indent = format!("{close_indent}\t");
+    emit_meta_tabular_section(
+        &mut lines,
+        &child_indent,
+        &section,
+        object_type,
+        object_name,
+        &mut next_uuid,
+    );
+    xml_text.insert_str(
+        close_line_start,
+        &format!("{}{line_ending}", lines.join(line_ending)),
+    );
+    Ok(1)
+}
+
+pub(crate) fn parse_meta_edit_tabular_section(
+    value: &str,
+) -> Result<MetaCompileTabularSection, String> {
+    let Some((name, columns)) = value.split_once(':') else {
+        return Err("add-ts value must be 'ТЧ: Реквизит: Тип, ...'".to_string());
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("tabular section name is empty".to_string());
+    }
+    let columns = split_meta_edit_top_level(columns, ',')
+        .into_iter()
+        .map(|column| meta_compile_parse_attr(&Value::String(column.trim().to_string())))
+        .filter(|column| !column.name.is_empty())
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        return Err("tabular section must contain at least one attribute".to_string());
+    }
+    Ok(MetaCompileTabularSection {
+        name: name.to_string(),
+        columns,
+    })
+}
+
+pub(crate) fn modify_meta_tabular_section(
+    xml_text: &mut String,
+    value: &str,
+) -> Result<usize, String> {
+    let Some((section_name, changes)) = value.split_once(':') else {
+        return Err("modify-ts value must be 'ТЧ: key=value, ...'".to_string());
+    };
+    let section_name = section_name.trim();
+    let (start, end) = find_meta_child_by_name(xml_text, "TabularSection", section_name)
+        .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
+    modify_meta_fragment_properties(xml_text, start, end, changes)
+}
+
+pub(crate) fn modify_meta_tabular_section_attribute(
+    xml_text: &mut String,
+    value: &str,
+) -> Result<usize, String> {
+    let Some((target, changes)) = value.split_once(':') else {
+        return Err("modify-ts-attribute value must be 'ТЧ.Реквизит: key=value, ...'".to_string());
+    };
+    let Some((section_name, attribute_name)) = target.trim().split_once('.') else {
+        return Err("modify-ts-attribute target must be 'ТЧ.Реквизит'".to_string());
+    };
+    let (section_start, section_end) =
+        find_meta_child_by_name(xml_text, "TabularSection", section_name.trim())
+            .ok_or_else(|| format!("TabularSection '{}' not found", section_name.trim()))?;
+    let (relative_start, relative_end) = find_meta_child_by_name(
+        &xml_text[section_start..section_end],
+        "Attribute",
+        attribute_name.trim(),
+    )
+    .ok_or_else(|| {
+        format!(
+            "Attribute '{}.{}' not found",
+            section_name.trim(),
+            attribute_name.trim()
+        )
+    })?;
+    modify_meta_fragment_properties(
+        xml_text,
+        section_start + relative_start,
+        section_start + relative_end,
+        changes,
+    )
+}
+
+pub(crate) fn modify_meta_fragment_properties(
+    xml_text: &mut String,
+    start: usize,
+    end: usize,
+    changes: &str,
+) -> Result<usize, String> {
+    let mut fragment = xml_text[start..end].to_string();
+    let mut modified = 0usize;
+    for change in split_meta_edit_top_level(changes, ',') {
+        let Some((key, raw_value)) = change.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = raw_value.trim();
+        let changed = if key.eq_ignore_ascii_case("synonym") {
+            replace_meta_mltext_fragment(&mut fragment, "Synonym", value)
+        } else {
+            replace_meta_element_text_fragment(&mut fragment, key, value)
+        };
+        if changed {
+            modified += 1;
+        }
+    }
+    if modified > 0 {
+        xml_text.replace_range(start..end, &fragment);
+    }
+    Ok(modified)
+}
+
+pub(crate) fn split_meta_edit_top_level(value: &str, separator: char) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (index, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if ch == separator && depth == 0 => {
+                result.push(value[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    result.push(value[start..].trim());
+    result.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+pub(crate) fn find_meta_child_by_name(
+    xml_text: &str,
+    tag: &str,
+    name: &str,
+) -> Option<(usize, usize)> {
+    let open = format!("<{tag} ");
+    let close = format!("</{tag}>");
+    let name_probe = format!("<Name>{}</Name>", escape_xml(name));
+    let mut pos = 0usize;
+    while pos < xml_text.len() {
+        let start = xml_text[pos..].find(&open).map(|idx| pos + idx)?;
+        let end = xml_text[start..]
+            .find(&close)
+            .map(|idx| start + idx + close.len())?;
+        if xml_text[start..end].contains(&name_probe) {
+            return Some((start, end));
+        }
+        pos = end;
+    }
+    None
+}
+
+pub(crate) fn replace_meta_mltext_fragment(fragment: &mut String, tag: &str, value: &str) -> bool {
+    let Some((start, end)) = find_meta_element_range(fragment, tag) else {
+        return false;
+    };
+    let indent = meta_line_indent_at(fragment, start);
+    let mut lines = Vec::new();
+    emit_meta_mltext(&mut lines, &indent, tag, value);
+    fragment.replace_range(start..end, &lines.join(meta_line_ending(fragment)));
+    true
+}
+
+pub(crate) fn replace_meta_element_text_fragment(
+    fragment: &mut String,
+    tag: &str,
+    value: &str,
+) -> bool {
+    let Some((start, end)) = find_meta_element_range(fragment, tag) else {
+        return false;
+    };
+    let replacement = format!("<{tag}>{}</{tag}>", escape_xml(value));
+    fragment.replace_range(start..end, &replacement);
+    true
+}
+
+pub(crate) fn find_meta_element_range(xml_text: &str, tag: &str) -> Option<(usize, usize)> {
+    if let Some(start) = xml_text.find(&format!("<{tag}/>")) {
+        return Some((start, start + tag.len() + 3));
+    }
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml_text.find(&open)?;
+    let end = xml_text[start + open.len()..]
+        .find(&close)
+        .map(|idx| start + open.len() + idx + close.len())?;
+    Some((start, end))
+}
+
+pub(crate) fn find_meta_matching_section_close(
+    xml_text: &str,
+    open_start: usize,
+    tag: &str,
+) -> Option<usize> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut depth = 1usize;
+    let mut pos = open_start + open.len();
+    loop {
+        let next_open = xml_text[pos..].find(&open).map(|idx| pos + idx);
+        let next_close = xml_text[pos..].find(&close).map(|idx| pos + idx);
+        match (next_open, next_close) {
+            (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
+                depth += 1;
+                pos = open_pos + open.len();
+            }
+            (_, Some(close_pos)) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(close_pos);
+                }
+                pos = close_pos + close.len();
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub(crate) fn meta_line_ending(xml_text: &str) -> &str {
+    if xml_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+pub(crate) fn meta_line_start(xml_text: &str, pos: usize) -> usize {
+    xml_text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+}
+
+pub(crate) fn meta_line_indent_at(xml_text: &str, pos: usize) -> String {
+    let line_start = meta_line_start(xml_text, pos);
+    xml_text[line_start..pos]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect()
+}
+
+#[cfg(test)]
+mod meta_edit_tests {
+    use super::*;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::{json, Map};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-meta-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn edit_meta_adds_tabular_section_and_modifies_synonyms() {
+        let context = temp_context("edit-add-ts");
+        let object_path = context.cwd.join("Catalogs").join("Items.xml");
+        write_file(
+            &object_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<Catalog uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+		<Properties>
+			<Name>Items</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Items</v8:content>
+				</v8:item>
+			</Synonym>
+		</Properties>
+		<ChildObjects/>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(object_path.display().to_string()),
+        );
+        args.insert("Operation".to_string(), json!("add-ts"));
+        args.insert(
+            "Value".to_string(),
+            json!(
+                "кшСтроки: кшКоличество: Number(15,3) | req, кшРаспоряжение: DefinedType.РаспоряжениеНаОтгрузку"
+            ),
+        );
+        let outcome = edit_meta(&args, &context);
+        assert!(outcome.ok, "{} {:?}", outcome.summary, outcome.errors);
+
+        args.insert("Operation".to_string(), json!("modify-ts"));
+        args.insert("Value".to_string(), json!("кшСтроки: synonym=Строки"));
+        let outcome = edit_meta(&args, &context);
+        assert!(outcome.ok, "{} {:?}", outcome.summary, outcome.errors);
+
+        args.insert("Operation".to_string(), json!("modify-ts-attribute"));
+        args.insert(
+            "Value".to_string(),
+            json!("кшСтроки.кшКоличество: synonym=Количество"),
+        );
+        let outcome = edit_meta(&args, &context);
+        assert!(outcome.ok, "{} {:?}", outcome.summary, outcome.errors);
+
+        let xml_text = fs::read_to_string(&object_path).unwrap();
+        assert!(xml_text.contains("<TabularSection uuid=\""));
+        assert!(xml_text.contains("CatalogTabularSection.Items.кшСтроки"));
+        assert!(xml_text.contains("CatalogTabularSectionRow.Items.кшСтроки"));
+        assert!(xml_text.contains("<Name>кшКоличество</Name>"));
+        assert!(xml_text.contains("<v8:Digits>15</v8:Digits>"));
+        assert!(xml_text.contains("<v8:FractionDigits>3</v8:FractionDigits>"));
+        assert!(xml_text.contains("<FillChecking>ShowError</FillChecking>"));
+        assert!(xml_text.contains("<v8:Type>cfg:DefinedType.РаспоряжениеНаОтгрузку</v8:Type>"));
+        assert!(xml_text.contains("<v8:content>Строки</v8:content>"));
+        assert!(xml_text.contains("<v8:content>Количество</v8:content>"));
+    }
 }
 
 pub(crate) fn normalize_meta_edit_property_value(key: &str, value: &str) -> String {

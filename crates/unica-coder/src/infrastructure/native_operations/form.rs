@@ -814,7 +814,13 @@ pub(crate) fn form_validate_types(
 ) {
     let type_nodes = root
         .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Type")
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Type"
+                && node.parent().is_some_and(|parent| {
+                    matches!(parent.tag_name().name(), "Attribute" | "Column")
+                })
+        })
         .collect::<Vec<_>>();
     let mut type_error_count = 0usize;
     let mut type_warn_count = 0usize;
@@ -929,6 +935,9 @@ pub(crate) fn form_valid_closed_types() -> &'static [&'static str] {
         "v8ui:Picture",
         "v8ui:SizeChangeMode",
         "v8ui:VerticalAlign",
+        "SearchStringRepresentation",
+        "ViewStatusRepresentation",
+        "SearchControl",
         "dcsset:DataCompositionComparisonType",
         "dcsset:DataCompositionFieldPlacement",
         "dcsset:Filter",
@@ -2412,11 +2421,17 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         let mut added_elements = Vec::<String>::new();
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
             if !elements.is_empty() {
+                let insert_plan = form_edit_insert_plan(&xml_text, &defn)?;
                 let start = elem_ids.next;
                 let mut lines = Vec::<String>::new();
                 for element in elements {
                     let name = form_edit_element_display_name(element);
-                    emit_form_element(&mut lines, element, "\t\t", &mut elem_ids)?;
+                    emit_form_element(
+                        &mut lines,
+                        element,
+                        &insert_plan.child_indent,
+                        &mut elem_ids,
+                    )?;
                     if let Some(name) = name {
                         let path = element
                             .get("path")
@@ -2426,7 +2441,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         added_elements.push(format!("  + [Input] {name}{path}"));
                     }
                 }
-                form_edit_insert_section_items(&mut xml_text, "ChildItems", &lines)?;
+                form_edit_insert_element_lines(&mut xml_text, &insert_plan, &lines);
                 let _companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
             }
         }
@@ -2478,6 +2493,8 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
             }
         }
 
+        let line_ending = form_line_ending(&xml_text);
+        let xml_text = form_normalize_line_endings(&xml_text, line_ending);
         write_utf8_bom(&form_path, &xml_text)?;
 
         let mut stdout = format!("=== form-edit: {form_name} ===\n\n");
@@ -2577,11 +2594,209 @@ pub(crate) fn form_edit_next_id(xml_text: &str, tags: &[&str]) -> usize {
 
 pub(crate) fn form_edit_element_display_name(element: &Value) -> Option<String> {
     let object = element.as_object()?;
-    object
-        .get("input")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("name").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
+    for key in ["input", "table", "page", "pages", "group", "name"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+pub(crate) struct FormEditInsertPlan {
+    pub(crate) pos: usize,
+    pub(crate) prefix: String,
+    pub(crate) suffix: String,
+    pub(crate) child_indent: String,
+}
+
+pub(crate) fn form_edit_insert_plan(
+    xml_text: &str,
+    defn: &Value,
+) -> Result<FormEditInsertPlan, String> {
+    let object = defn
+        .as_object()
+        .ok_or_else(|| "form edit JSON root must be an object".to_string())?;
+    let into = object.get("into").and_then(Value::as_str);
+    let after = object.get("after").and_then(Value::as_str);
+
+    let (search_start, search_end) = if let Some(into) = into {
+        let target_start = form_find_named_element_start(xml_text, 0, xml_text.len(), into)
+            .ok_or_else(|| format!("Form element '{into}' not found for into"))?;
+        let target_end = form_find_element_end(xml_text, target_start)
+            .ok_or_else(|| format!("Cannot find end of form element '{into}'"))?;
+        (target_start, target_end)
+    } else {
+        (0, xml_text.len())
+    };
+    let (child_open_end, child_close_start) =
+        form_find_child_items_range(xml_text, search_start, search_end)?;
+
+    if let Some(after) = after {
+        let after_start =
+            form_find_named_element_start(xml_text, child_open_end, child_close_start, after)
+                .ok_or_else(|| format!("Form element '{after}' not found for after"))?;
+        let after_end = form_find_element_end(xml_text, after_start)
+            .ok_or_else(|| format!("Cannot find end of form element '{after}'"))?;
+        return Ok(FormEditInsertPlan {
+            pos: after_end,
+            prefix: "\n".to_string(),
+            suffix: String::new(),
+            child_indent: form_line_indent_at(xml_text, after_start),
+        });
+    }
+
+    let close_line_start = form_line_start(xml_text, child_close_start);
+    let close_indent = &xml_text[close_line_start..child_close_start];
+    Ok(FormEditInsertPlan {
+        pos: close_line_start,
+        prefix: String::new(),
+        suffix: "\n".to_string(),
+        child_indent: format!("{close_indent}\t"),
+    })
+}
+
+pub(crate) fn form_edit_insert_element_lines(
+    xml_text: &mut String,
+    plan: &FormEditInsertPlan,
+    lines: &[String],
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let content = lines.join("\n");
+    xml_text.insert_str(
+        plan.pos,
+        &format!("{}{}{}", plan.prefix, content, plan.suffix),
+    );
+}
+
+pub(crate) fn form_find_child_items_range(
+    xml_text: &str,
+    search_start: usize,
+    search_end: usize,
+) -> Result<(usize, usize), String> {
+    let Some(open_rel) = xml_text[search_start..search_end].find("<ChildItems>") else {
+        return Err("No <ChildItems> section found in form target".to_string());
+    };
+    let open_start = search_start + open_rel;
+    let open_end = open_start + "<ChildItems>".len();
+    let close_start = form_find_matching_section_close(xml_text, open_start, "ChildItems")
+        .filter(|pos| *pos <= search_end)
+        .ok_or_else(|| "Cannot find matching </ChildItems>".to_string())?;
+    Ok((open_end, close_start))
+}
+
+pub(crate) fn form_find_matching_section_close(
+    xml_text: &str,
+    open_start: usize,
+    tag: &str,
+) -> Option<usize> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut depth = 1usize;
+    let mut pos = open_start + open.len();
+    loop {
+        let next_open = xml_text[pos..].find(&open).map(|idx| pos + idx);
+        let next_close = xml_text[pos..].find(&close).map(|idx| pos + idx);
+        match (next_open, next_close) {
+            (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
+                depth += 1;
+                pos = open_pos + open.len();
+            }
+            (_, Some(close_pos)) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(close_pos);
+                }
+                pos = close_pos + close.len();
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub(crate) fn form_find_named_element_start(
+    xml_text: &str,
+    search_start: usize,
+    search_end: usize,
+    name: &str,
+) -> Option<usize> {
+    let pattern = format!(" name=\"{}\"", escape_xml(name));
+    let mut pos = search_start;
+    while pos < search_end {
+        let found = xml_text[pos..search_end]
+            .find(&pattern)
+            .map(|idx| pos + idx)?;
+        let start = xml_text[..found].rfind('<')?;
+        if xml_text[start..].starts_with("</") {
+            pos = found + pattern.len();
+            continue;
+        }
+        return Some(start);
+    }
+    None
+}
+
+pub(crate) fn form_find_element_end(xml_text: &str, start: usize) -> Option<usize> {
+    let tag = form_tag_name_at(xml_text, start)?;
+    let start_close = xml_text[start..].find('>').map(|idx| start + idx + 1)?;
+    if xml_text[start..start_close].trim_end().ends_with("/>") {
+        return Some(start_close);
+    }
+    let close = format!("</{tag}>");
+    let open = format!("<{tag}");
+    let mut depth = 1usize;
+    let mut pos = start_close;
+    loop {
+        let next_open = xml_text[pos..].find(&open).map(|idx| pos + idx);
+        let next_close = xml_text[pos..].find(&close).map(|idx| pos + idx);
+        match (next_open, next_close) {
+            (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
+                let after_tag = xml_text.as_bytes().get(open_pos + open.len()).copied();
+                if matches!(after_tag, Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')) {
+                    depth += 1;
+                }
+                pos = open_pos + open.len();
+            }
+            (_, Some(close_pos)) => {
+                depth = depth.saturating_sub(1);
+                let close_end = close_pos + close.len();
+                if depth == 0 {
+                    return Some(close_end);
+                }
+                pos = close_end;
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub(crate) fn form_tag_name_at(xml_text: &str, start: usize) -> Option<String> {
+    let rest = xml_text.get(start + 1..)?;
+    if rest.starts_with('/') {
+        return None;
+    }
+    let name = rest
+        .chars()
+        .take_while(|ch| !ch.is_whitespace() && *ch != '>' && *ch != '/')
+        .collect::<String>();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+pub(crate) fn form_line_start(xml_text: &str, pos: usize) -> usize {
+    xml_text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+}
+
+pub(crate) fn form_line_indent_at(xml_text: &str, pos: usize) -> String {
+    let line_start = form_line_start(xml_text, pos);
+    xml_text[line_start..pos]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect()
 }
 
 pub(crate) fn form_edit_insert_section_items(
@@ -2608,6 +2823,23 @@ pub(crate) fn form_edit_insert_section_items(
     };
     xml_text.insert_str(pos, &format!("{content}\n\t"));
     Ok(())
+}
+
+pub(crate) fn form_line_ending(xml_text: &str) -> &str {
+    if xml_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+pub(crate) fn form_normalize_line_endings(xml_text: &str, line_ending: &str) -> String {
+    let normalized_lf = xml_text.replace("\r\n", "\n").replace('\r', "\n");
+    if line_ending == "\r\n" {
+        normalized_lf.replace('\n', "\r\n")
+    } else {
+        normalized_lf
+    }
 }
 
 pub(crate) fn emit_form_edit_attribute_item(
@@ -2909,6 +3141,46 @@ pub(crate) fn emit_form_element(
     let Some(object) = element.as_object() else {
         return Ok(());
     };
+    if let Some(name) = object.get("pages").and_then(Value::as_str) {
+        emit_form_container(
+            lines,
+            object,
+            "Pages",
+            name,
+            indent,
+            ids,
+            FormContainerKind::Pages,
+        )?;
+        return Ok(());
+    }
+    if let Some(name) = object.get("page").and_then(Value::as_str) {
+        emit_form_container(
+            lines,
+            object,
+            "Page",
+            name,
+            indent,
+            ids,
+            FormContainerKind::Page,
+        )?;
+        return Ok(());
+    }
+    if let Some(name) = object.get("group").and_then(Value::as_str) {
+        emit_form_container(
+            lines,
+            object,
+            "UsualGroup",
+            name,
+            indent,
+            ids,
+            FormContainerKind::Group,
+        )?;
+        return Ok(());
+    }
+    if let Some(name) = object.get("table").and_then(Value::as_str) {
+        emit_form_table(lines, object, name, indent, ids)?;
+        return Ok(());
+    }
     if let Some(name) = object
         .get("input")
         .and_then(Value::as_str)
@@ -2924,6 +3196,237 @@ pub(crate) fn emit_form_element(
         "Unsupported form element in native compiler: {}",
         serde_json::to_string(element).unwrap_or_else(|_| "<invalid>".to_string())
     ))
+}
+
+pub(crate) enum FormContainerKind {
+    Pages,
+    Page,
+    Group,
+}
+
+pub(crate) fn emit_form_container(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    tag: &str,
+    name: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+    kind: FormContainerKind,
+) -> Result<(), String> {
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<{tag} name=\"{}\" id=\"{id}\">",
+        escape_xml(name)
+    ));
+    let inner = format!("{indent}\t");
+    if let Some(title) = element.get("title").and_then(Value::as_str) {
+        emit_form_mltext(lines, &inner, "Title", title);
+    }
+    if let Some(title_path) = element.get("titleDataPath").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<TitleDataPath>{}</TitleDataPath>",
+            escape_xml(title_path)
+        ));
+    }
+    if matches!(kind, FormContainerKind::Group) {
+        let group = element
+            .get("orientation")
+            .or_else(|| element.get("groupOrientation"))
+            .and_then(Value::as_str)
+            .unwrap_or("Vertical");
+        let group = match group {
+            "horizontal" | "Horizontal" => "Horizontal",
+            "alwaysHorizontal" | "AlwaysHorizontal" => "AlwaysHorizontal",
+            "alwaysVertical" | "AlwaysVertical" => "AlwaysVertical",
+            _ => "Vertical",
+        };
+        lines.push(format!("{inner}<Group>{group}</Group>"));
+        lines.push(format!("{inner}<Behavior>Usual</Behavior>"));
+        if let Some(representation) = element.get("representation").and_then(Value::as_str) {
+            lines.push(format!(
+                "{inner}<Representation>{}</Representation>",
+                escape_xml(representation)
+            ));
+        }
+        if element.get("showTitle").and_then(Value::as_bool) == Some(false) {
+            lines.push(format!("{inner}<ShowTitle>false</ShowTitle>"));
+        }
+    }
+    emit_form_common_flags(lines, element, &inner);
+    emit_form_companion(
+        lines,
+        "ExtendedTooltip",
+        &format!("{name}РасширеннаяПодсказка"),
+        &inner,
+        ids,
+    );
+    if let Some(children) = element.get("children").and_then(Value::as_array) {
+        if !children.is_empty() {
+            lines.push(format!("{inner}<ChildItems>"));
+            let child_indent = format!("{inner}\t");
+            for child in children {
+                emit_form_element(lines, child, &child_indent, ids)?;
+            }
+            lines.push(format!("{inner}</ChildItems>"));
+        }
+    }
+    lines.push(format!("{indent}</{tag}>"));
+    Ok(())
+}
+
+pub(crate) fn emit_form_table(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    name: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) -> Result<(), String> {
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<Table name=\"{}\" id=\"{id}\">",
+        escape_xml(name)
+    ));
+    let inner = format!("{indent}\t");
+    if element.get("changeRowOrder").and_then(Value::as_bool) == Some(false) {
+        lines.push(format!("{inner}<ChangeRowOrder>false</ChangeRowOrder>"));
+    }
+    if element.get("enableStartDrag").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<EnableStartDrag>true</EnableStartDrag>"));
+    }
+    if element.get("enableDrag").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<EnableDrag>true</EnableDrag>"));
+    }
+    if let Some(file_drag_mode) = element.get("fileDragMode").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<FileDragMode>{}</FileDragMode>",
+            escape_xml(file_drag_mode)
+        ));
+    }
+    if let Some(path) = element.get("path").and_then(Value::as_str) {
+        lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
+    }
+    if let Some(title) = element.get("title").and_then(Value::as_str) {
+        emit_form_mltext(lines, &inner, "Title", title);
+    }
+    emit_form_common_flags(lines, element, &inner);
+    emit_form_companion(
+        lines,
+        "ContextMenu",
+        &format!("{name}КонтекстноеМеню"),
+        &inner,
+        ids,
+    );
+    emit_form_companion(
+        lines,
+        "AutoCommandBar",
+        &format!("{name}КоманднаяПанель"),
+        &inner,
+        ids,
+    );
+    emit_form_companion(
+        lines,
+        "ExtendedTooltip",
+        &format!("{name}РасширеннаяПодсказка"),
+        &inner,
+        ids,
+    );
+    emit_form_table_addition(
+        lines,
+        FormTableAdditionSpec {
+            tag: "SearchStringAddition",
+            name: format!("{name}СтрокаПоиска"),
+            source_type: "SearchStringRepresentation",
+            extra: None,
+        },
+        name,
+        &inner,
+        ids,
+    );
+    emit_form_table_addition(
+        lines,
+        FormTableAdditionSpec {
+            tag: "ViewStatusAddition",
+            name: format!("{name}СостояниеПросмотра"),
+            source_type: "ViewStatusRepresentation",
+            extra: Some(("HorizontalLocation", "Left")),
+        },
+        name,
+        &inner,
+        ids,
+    );
+    emit_form_table_addition(
+        lines,
+        FormTableAdditionSpec {
+            tag: "SearchControlAddition",
+            name: format!("{name}УправлениеПоиском"),
+            source_type: "SearchControl",
+            extra: None,
+        },
+        name,
+        &inner,
+        ids,
+    );
+
+    let children = element
+        .get("columns")
+        .or_else(|| element.get("children"))
+        .and_then(Value::as_array);
+    if let Some(children) = children {
+        if !children.is_empty() {
+            lines.push(format!("{inner}<ChildItems>"));
+            let child_indent = format!("{inner}\t");
+            for child in children {
+                emit_form_element(lines, child, &child_indent, ids)?;
+            }
+            lines.push(format!("{inner}</ChildItems>"));
+        }
+    }
+    lines.push(format!("{indent}</Table>"));
+    Ok(())
+}
+
+pub(crate) struct FormTableAdditionSpec<'a> {
+    pub(crate) tag: &'a str,
+    pub(crate) name: String,
+    pub(crate) source_type: &'a str,
+    pub(crate) extra: Option<(&'a str, &'a str)>,
+}
+
+pub(crate) fn emit_form_table_addition(
+    lines: &mut Vec<String>,
+    spec: FormTableAdditionSpec<'_>,
+    table: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) {
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<{tag} name=\"{}\" id=\"{id}\">",
+        escape_xml(&spec.name),
+        tag = spec.tag
+    ));
+    lines.push(format!("{indent}\t<AdditionSource>"));
+    lines.push(format!("{indent}\t\t<Item>{}</Item>", escape_xml(table)));
+    lines.push(format!("{indent}\t\t<Type>{}</Type>", spec.source_type));
+    lines.push(format!("{indent}\t</AdditionSource>"));
+    if let Some((tag, value)) = spec.extra {
+        lines.push(format!("{indent}\t<{tag}>{value}</{tag}>"));
+    }
+    emit_form_companion(
+        lines,
+        "ContextMenu",
+        &format!("{}КонтекстноеМеню", spec.name),
+        &format!("{indent}\t"),
+        ids,
+    );
+    emit_form_companion(
+        lines,
+        "ExtendedTooltip",
+        &format!("{}РасширеннаяПодсказка", spec.name),
+        &format!("{indent}\t"),
+        ids,
+    );
+    lines.push(format!("{indent}</{}>", spec.tag));
 }
 
 pub(crate) fn emit_form_input(
@@ -2944,6 +3447,12 @@ pub(crate) fn emit_form_input(
     }
     if let Some(title) = element.get("title").and_then(Value::as_str) {
         emit_form_mltext(lines, &inner, "Title", title);
+    }
+    if let Some(edit_mode) = element.get("editMode").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<EditMode>{}</EditMode>",
+            escape_xml(edit_mode)
+        ));
     }
     emit_form_common_flags(lines, element, &inner);
     if let Some(value) = element.get("titleLocation").and_then(Value::as_str) {
@@ -3490,6 +3999,122 @@ mod tests {
     }
 
     #[test]
+    fn edit_form_adds_page_with_table_after_existing_page() {
+        let context = temp_context("edit-page-table");
+        let form_path = context.cwd.join("DocumentForm.xml");
+        let json_path = context.cwd.join("patch.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>true</Autofill>
+	</AutoCommandBar>
+	<ChildItems>
+		<Pages name="ГруппаСтраницы" id="1">
+			<ExtendedTooltip name="ГруппаСтраницыРасширеннаяПодсказка" id="2"/>
+			<ChildItems>
+				<Page name="Основное" id="3">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Основное</v8:content>
+						</v8:item>
+					</Title>
+					<ExtendedTooltip name="ОсновноеРасширеннаяПодсказка" id="4"/>
+				</Page>
+				<Page name="ОтгружаемыеТовары" id="5">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Отгружаемые товары</v8:content>
+						</v8:item>
+					</Title>
+					<ExtendedTooltip name="ОтгружаемыеТоварыРасширеннаяПодсказка" id="6"/>
+				</Page>
+			</ChildItems>
+		</Pages>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="7">
+			<Type>
+				<v8:Type>cfg:DocumentObject.РасходныйОрдерНаТовары</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+		</Attribute>
+	</Attributes>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаСтраницы",
+  "after": "Основное",
+  "elements": [{
+    "page": "кшТоварыПоРеализациямСтраница",
+    "title": "Товары по реализациям",
+    "children": [{
+      "table": "кшТоварыПоРеализациям",
+      "path": "Объект.кшТоварыПоРеализациям",
+      "title": "Товары по реализациям",
+      "columns": [
+        {"input": "кшТоварыПоРеализациямНоменклатура", "path": "Объект.кшТоварыПоРеализациям.кшНоменклатура", "title": "Номенклатура"}
+      ]
+    }]
+  }]
+}"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{} {:?}", outcome.summary, outcome.errors);
+
+        let xml_text = fs::read_to_string(&form_path).unwrap();
+        assert!(xml_text.contains("<Page name=\"кшТоварыПоРеализациямСтраница\""));
+        assert!(xml_text.contains("<Table name=\"кшТоварыПоРеализациям\""));
+        assert!(xml_text.contains("<DataPath>Объект.кшТоварыПоРеализациям</DataPath>"));
+        assert!(
+            xml_text.contains("<DataPath>Объект.кшТоварыПоРеализациям.кшНоменклатура</DataPath>")
+        );
+        assert!(
+            xml_text.find("Page name=\"Основное\"").unwrap()
+                < xml_text
+                    .find("Page name=\"кшТоварыПоРеализациямСтраница\"")
+                    .unwrap()
+        );
+        assert!(
+            xml_text
+                .find("Page name=\"кшТоварыПоРеализациямСтраница\"")
+                .unwrap()
+                < xml_text.find("Page name=\"ОтгружаемыеТовары\"").unwrap()
+        );
+
+        let mut validate_args = Map::new();
+        validate_args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        let validate = validate_form(&validate_args, &context);
+        assert!(
+            validate.ok,
+            "{} {:?}\n{}",
+            validate.summary,
+            validate.errors,
+            validate.stdout.unwrap_or_default()
+        );
+    }
+
+    #[test]
     fn validate_form_rejects_bare_type_values() {
         let context = temp_context("bare-type");
         let form_path = context
@@ -3532,6 +4157,62 @@ mod tests {
             ),
             "{stdout}"
         );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_form_ignores_ui_element_type_values() {
+        let doc = Document::parse(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ChildItems>
+		<Item name="ФормаЗаписать" id="1">
+			<Type>CommandBarButton</Type>
+		</Item>
+	</ChildItems>
+</Form>"#,
+        )
+        .unwrap();
+        let mut report = FormValidationReporter::new("Test", 30, false);
+
+        form_validate_types(doc.root_element(), true, &mut report);
+        let (ok, stdout, errors) = report.finalize("Test");
+
+        assert!(ok, "{stdout} {errors:?}");
+    }
+
+    #[test]
+    fn edit_form_preserves_crlf_line_endings() {
+        let context = temp_context("edit-preserve-crlf");
+        let form_path = context
+            .cwd
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ItemForm")
+            .join("Ext")
+            .join("Form.xml");
+        write_file(
+            &form_path,
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<Form xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\r\n\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\">\r\n\t\t<Autofill>true</Autofill>\r\n\t</AutoCommandBar>\r\n\t<ChildItems/>\r\n</Form>\r\n",
+        );
+        let json_path = context.cwd.join("form-edit.json");
+        write_file(&json_path, "{}");
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{} {:?}", outcome.summary, outcome.errors);
+        let text = fs::read_to_string(&form_path).unwrap();
+        assert!(!text.replace("\r\n", "").contains('\n'));
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

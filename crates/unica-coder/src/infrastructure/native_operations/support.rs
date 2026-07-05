@@ -150,6 +150,35 @@ fn edit_support_result(
     match action {
         SupportEditAction::Capability(capability) => {
             if state.global_editing_enabled() == capability.enabled() {
+                let marker_count = repair_parent_configuration_markers(&bin_path, &text)?;
+                if marker_count > 0 {
+                    let word = if capability.enabled() {
+                        "включена"
+                    } else {
+                        "выключена"
+                    };
+                    return Ok(AdapterOutcome {
+                        ok: true,
+                        summary: format!(
+                            "Возможность изменения конфигурации уже {word}; исправлены маркеры родительской конфигурации."
+                        ),
+                        changes: vec![
+                            format!("updated {}", bin_path.display()),
+                            format!("normalize parent configuration markers: {marker_count}"),
+                        ],
+                        warnings: Vec::new(),
+                        errors: Vec::new(),
+                        artifacts: vec![
+                            bin_path.display().to_string(),
+                            resolved_path.display().to_string(),
+                        ],
+                        stdout: Some(format!(
+                            "Возможность изменения конфигурации уже {word}; исправлены маркеры родительской конфигурации: {marker_count}.\n"
+                        )),
+                        stderr: None,
+                        command: None,
+                    });
+                }
                 let word = if capability.enabled() {
                     "включена"
                 } else {
@@ -229,7 +258,7 @@ fn apply_capability(
 ) -> Result<AdapterOutcome, String> {
     let target = capability.target_flag();
     let mut updated = replace_global_flag(text, target)?;
-    updated = replace_vendor_rule_flags(&updated, target);
+    let parent_marker_count = normalize_parent_configuration_markers(&mut updated);
     let object_count = replace_all_object_rule_flags(&mut updated, target);
     write_parent_configurations(bin_path, &updated)?;
 
@@ -252,6 +281,7 @@ fn apply_capability(
         changes: vec![
             format!("updated {}", bin_path.display()),
             format!("set global editing flag to {target}"),
+            format!("normalize parent configuration markers: {parent_marker_count}"),
             format!("reset object support rules: {object_count}"),
         ],
         warnings: if capability.enabled() {
@@ -353,13 +383,26 @@ fn replace_global_flag(text: &str, target: u8) -> Result<String, String> {
     Ok(format!("{prefix}{target}{}", &rest[comma..]))
 }
 
-fn replace_vendor_rule_flags(text: &str, target: u8) -> String {
+fn repair_parent_configuration_markers(bin_path: &Path, text: &str) -> Result<usize, String> {
+    let mut updated = text.to_string();
+    let marker_count = normalize_parent_configuration_markers(&mut updated);
+    if marker_count > 0 {
+        write_parent_configurations(bin_path, &updated)?;
+    }
+    Ok(marker_count)
+}
+
+fn normalize_parent_configuration_markers(text: &mut String) -> usize {
     let mut result = String::with_capacity(text.len());
     let mut i = 0usize;
+    let mut count = 0usize;
     while i < text.len() {
         if let Some((flag_start, flag_end)) = vendor_flag_span(text, i) {
             result.push_str(&text[i..flag_start]);
-            result.push(char::from(b'0' + target));
+            if &text[flag_start..flag_end] != "1" {
+                count += 1;
+            }
+            result.push('1');
             i = flag_end;
             continue;
         }
@@ -367,7 +410,10 @@ fn replace_vendor_rule_flags(text: &str, target: u8) -> String {
         result.push(ch);
         i += ch.len_utf8();
     }
-    result
+    if count > 0 {
+        *text = result;
+    }
+    count
 }
 
 fn vendor_flag_span(text: &str, start: usize) -> Option<(usize, usize)> {

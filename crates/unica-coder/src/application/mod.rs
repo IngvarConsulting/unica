@@ -1000,9 +1000,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Edit managed Form.xml elements, attributes, and commands.",
             mutating: true,
             cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
-            handler: ToolHandler::LegacyScript {
-                skill: "form-edit",
-                script: "form-edit.py",
+            handler: ToolHandler::NativeOperation {
+                operation: "form-edit",
                 event: Some(DomainEventKind::FormChanged),
             },
         },
@@ -1032,9 +1031,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Validate managed Form.xml.",
             mutating: false,
             cache_access: cache_access_for("form-validate", None),
-            handler: ToolHandler::LegacyScript {
-                skill: "form-validate",
-                script: "form-validate.py",
+            handler: ToolHandler::NativeOperation {
+                operation: "form-validate",
                 event: None,
             },
         },
@@ -1326,11 +1324,7 @@ mod tests {
             .unwrap();
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
-        let command = result
-            .command
-            .as_ref()
-            .expect("legacy dry run previews command");
-        assert!(command.join(" ").contains("form-edit.py"));
+        assert!(result.command.is_none());
         assert_eq!(result.cache.mode, "dry-run");
         assert!(result.cache.events.contains(&"FormChanged".to_string()));
         assert!(result
@@ -1518,9 +1512,7 @@ mod tests {
         let expected = [
             ("unica.form.add", "form-add", "form-add.py"),
             ("unica.form.compile", "form-compile", "form-compile.py"),
-            ("unica.form.edit", "form-edit", "form-edit.py"),
             ("unica.form.remove", "form-remove", "remove-form.py"),
-            ("unica.form.validate", "form-validate", "form-validate.py"),
         ];
         for (tool_name, expected_skill, expected_script) in expected {
             let tool = tools()
@@ -1560,12 +1552,18 @@ mod tests {
     }
 
     #[test]
-    fn read_only_form_and_skd_info_tools_route_through_native_handlers() {
+    fn form_and_skd_tools_route_through_native_handlers() {
         let expected = [
-            ("unica.form.info", "form-info"),
-            ("unica.skd.info", "skd-info"),
+            (
+                "unica.form.edit",
+                "form-edit",
+                Some(DomainEventKind::FormChanged),
+            ),
+            ("unica.form.info", "form-info", None),
+            ("unica.form.validate", "form-validate", None),
+            ("unica.skd.info", "skd-info", None),
         ];
-        for (tool_name, expected_operation) in expected {
+        for (tool_name, expected_operation, expected_event) in expected {
             let tool = tools()
                 .into_iter()
                 .find(|tool| tool.name == tool_name)
@@ -1574,7 +1572,7 @@ mod tests {
             match tool.handler {
                 ToolHandler::NativeOperation { operation, event } => {
                     assert_eq!(operation, expected_operation);
-                    assert_eq!(event, None);
+                    assert_eq!(event, expected_event);
                 }
                 other => panic!("{tool_name} should route through native operation, got {other:?}"),
             }
@@ -1868,6 +1866,89 @@ mod tests {
             .stdout
             .unwrap()
             .contains("Возможность изменения: включена"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_capability_on_preserves_vendor_parent_marker() {
+        let vendor_uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let supplier_uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let bin = support_test_parent_configurations_bin(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        )
+        .replace("{6,0,", "{6,1,")
+        .replace(
+            &format!("{vendor_uuid},0,{supplier_uuid}"),
+            &format!("{vendor_uuid},1,{supplier_uuid}"),
+        );
+        let (root, workspace, bin_path) =
+            support_test_workspace("unica-support-edit-parent-marker", bin);
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("Path".to_string(), Value::String("src".to_string()));
+        args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.support.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let updated = std::fs::read_to_string(&bin_path).unwrap();
+        assert!(
+            updated.contains(&format!("{vendor_uuid},1,{supplier_uuid}")),
+            "Capability=on must preserve the vendor parent marker; got {updated}"
+        );
+        assert!(
+            !updated.contains(&format!("{vendor_uuid},0,{supplier_uuid}")),
+            "Capability=on must not switch the vendor parent marker to external-cf mode"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_capability_on_repairs_existing_external_parent_marker() {
+        let vendor_uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let supplier_uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let (root, workspace, bin_path) = support_test_workspace(
+            "unica-support-edit-parent-marker-repair",
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        );
+        let before = std::fs::read_to_string(&bin_path).unwrap();
+        assert!(before.contains(&format!("{vendor_uuid},0,{supplier_uuid}")));
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("Path".to_string(), Value::String("src".to_string()));
+        args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.support.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        assert!(
+            !result.changes.is_empty(),
+            "Capability=on must repair incompatible parent markers, not return noop"
+        );
+        let updated = std::fs::read_to_string(&bin_path).unwrap();
+        assert!(updated.contains(&format!("{vendor_uuid},1,{supplier_uuid}")));
+        assert!(!updated.contains(&format!("{vendor_uuid},0,{supplier_uuid}")));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2199,6 +2280,72 @@ mod tests {
     }
 
     #[test]
+    fn template_add_repairs_repeated_object_bom() {
+        let root = temp_meta_compile_workspace("unica-template-add-repeated-bom");
+        let workspace = root.join("workspace");
+        let json_path = workspace.join("report.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Report",
+  "name": "TemplateRepeatedBomReport",
+  "synonym": "TemplateRepeatedBomReport"
+}"#,
+        )
+        .unwrap();
+        let result = call_meta_compile(&workspace, &json_path);
+        assert!(result.ok, "{:?}", result.errors);
+
+        let report_path = workspace
+            .join("src")
+            .join("Reports")
+            .join("TemplateRepeatedBomReport.xml");
+        let report_bytes = std::fs::read(&report_path).unwrap();
+        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
+
+        let mut damaged = b"\xef\xbb\xbf".to_vec();
+        damaged.extend_from_slice(&report_bytes);
+        std::fs::write(&report_path, damaged).unwrap();
+        let report_bytes = std::fs::read(&report_path).unwrap();
+        assert_eq!(leading_utf8_bom_count(&report_bytes), 2);
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectName".to_string(),
+            Value::String("TemplateRepeatedBomReport".to_string()),
+        );
+        args.insert(
+            "TemplateName".to_string(),
+            Value::String("ОсновнаяСхемаКомпоновкиДанных".to_string()),
+        );
+        args.insert(
+            "TemplateType".to_string(),
+            Value::String("DataCompositionSchema".to_string()),
+        );
+        args.insert(
+            "SrcDir".to_string(),
+            Value::String("src/Reports".to_string()),
+        );
+
+        let template_result = UnicaApplication::new()
+            .call_tool("unica.template.add", &args)
+            .unwrap();
+
+        assert!(template_result.ok, "{:?}", template_result.errors);
+        let report_bytes = std::fs::read(&report_path).unwrap();
+        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
+        assert!(String::from_utf8_lossy(&report_bytes)
+            .contains("<Template>ОсновнаяСхемаКомпоновкиДанных</Template>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn meta_validate_supports_pipe_separated_batch_paths() {
         let root = std::env::temp_dir().join(format!("unica-meta-batch-{}", std::process::id()));
         let workspace = root.join("workspace");
@@ -2261,6 +2408,115 @@ mod tests {
         assert!(stdout.contains("src/Catalogs/Items.xml"));
         assert!(stdout.contains("src/Catalogs/Other.xml"));
         assert_eq!(result.artifacts.len(), 2);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn role_compile_generates_non_placeholder_role_uuid() {
+        let root = temp_meta_compile_workspace("unica-role-compile-uuid");
+        let workspace = root.join("workspace");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("role.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "name": "DemoReadRole",
+  "synonym": "Demo read role",
+  "comment": "Synthetic repro",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        let result = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let metadata_path = workspace.join("src/Roles/DemoReadRole.xml");
+        let metadata_xml = std::fs::read_to_string(&metadata_path).unwrap();
+        assert_valid_root_uuid(&metadata_xml, "Role");
+        let uuid = metadata_root_uuid(&metadata_xml, "Role");
+        assert!(
+            !uuid.starts_with("00000000-0000-0000-"),
+            "role.compile must not generate placeholder UUID: {uuid}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_edit_add_register_record_adds_document_register_record() {
+        let root = temp_meta_compile_workspace("unica-meta-edit-register-record");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("document.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Document",
+  "name": "DemoShipment",
+  "synonym": "Demo shipment",
+  "comment": "Synthetic repro",
+  "numberType": "String",
+  "numberLength": 11,
+  "posting": "Allow"
+}"#,
+        )
+        .unwrap();
+        let compile_result = call_meta_compile(&workspace, &json_path);
+        assert!(compile_result.ok, "{:?}", compile_result.errors);
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Documents/DemoShipment.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("add-registerRecord".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("AccumulationRegister.DemoBalance".to_string()),
+        );
+        let edit_result = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(edit_result.ok, "{:?}", edit_result.errors);
+        let edit_again_result = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+        assert!(edit_again_result.ok, "{:?}", edit_again_result.errors);
+        let xml = std::fs::read_to_string(src.join("Documents/DemoShipment.xml")).unwrap();
+        let register_record =
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">AccumulationRegister.DemoBalance</xr:Item>";
+        assert!(xml.contains(register_record));
+        assert_eq!(xml.matches(register_record).count(), 1);
+        assert!(xml.contains(&format!(
+            "<RegisterRecords>\n\t\t\t\t{register_record}\n\t\t\t</RegisterRecords>"
+        )));
 
         let _ = std::fs::remove_dir_all(root);
     }

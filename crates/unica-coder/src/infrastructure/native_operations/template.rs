@@ -451,41 +451,48 @@ pub(crate) fn append_metadata_child_text(
     local_name: &str,
     item_name: &str,
 ) -> Option<String> {
-    for close in ["</ChildObjects>", "</md:ChildObjects>"] {
-        if let Some(index) = xml_text.find(close) {
-            let prefix = if close.starts_with("</md:") {
-                "md:"
-            } else {
-                ""
-            };
-            let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
-            let closing_indent = &xml_text[line_start..index];
-            let line = format!(
-                "\t<{prefix}{local_name}>{item_name}</{prefix}{local_name}>\n{closing_indent}"
-            );
-            let mut result = String::with_capacity(xml_text.len() + line.len());
-            result.push_str(&xml_text[..index]);
-            result.push_str(&line);
-            result.push_str(&xml_text[index..]);
-            return Some(result);
-        }
+    let doc = Document::parse(xml_text).ok()?;
+    let object_node = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())?;
+    let child_objects_node = object_node
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")?;
+    let range = child_objects_node.range();
+    let element_text = &xml_text[range.clone()];
+    let prefix = if element_text.trim_start().starts_with("<md:") {
+        "md:"
+    } else {
+        ""
+    };
+
+    let empty_tag = format!("<{prefix}ChildObjects/>");
+    if element_text.trim() == empty_tag {
+        let line_start = xml_text[..range.start].rfind('\n').map_or(0, |pos| pos + 1);
+        let indent = &xml_text[line_start..range.start];
+        let replacement = format!(
+            "<{prefix}ChildObjects>\n{indent}\t<{prefix}{local_name}>{item_name}</{prefix}{local_name}>\n{indent}</{prefix}ChildObjects>"
+        );
+        let mut result = String::with_capacity(xml_text.len() + replacement.len());
+        result.push_str(&xml_text[..range.start]);
+        result.push_str(&replacement);
+        result.push_str(&xml_text[range.end..]);
+        return Some(result);
     }
 
-    for empty in ["<ChildObjects/>", "<md:ChildObjects/>"] {
-        if let Some(index) = xml_text.find(empty) {
-            let prefix = if empty.starts_with("<md:") { "md:" } else { "" };
-            let replacement = format!(
-                "<{prefix}ChildObjects>\n\t\t\t<{prefix}{local_name}>{item_name}</{prefix}{local_name}>\n\t\t</{prefix}ChildObjects>"
-            );
-            let mut result = String::with_capacity(xml_text.len() + replacement.len());
-            result.push_str(&xml_text[..index]);
-            result.push_str(&replacement);
-            result.push_str(&xml_text[index + empty.len()..]);
-            return Some(result);
-        }
-    }
-
-    None
+    let close = format!("</{prefix}ChildObjects>");
+    let close_rel = element_text.rfind(&close)?;
+    let index = range.start + close_rel;
+    let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
+    let closing_indent = &xml_text[line_start..index];
+    let line =
+        format!("\t<{prefix}{local_name}>{item_name}</{prefix}{local_name}>\n{closing_indent}");
+    let mut result = String::with_capacity(xml_text.len() + line.len());
+    result.push_str(&xml_text[..index]);
+    result.push_str(&line);
+    result.push_str(&xml_text[index..]);
+    Some(result)
 }
 
 pub(crate) fn update_main_data_composition_schema_text(
@@ -597,6 +604,43 @@ pub(crate) fn invoke_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_metadata_child_text_uses_root_child_objects() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+	<Document uuid="00000000-0000-0000-0000-000000000001">
+		<Properties>
+			<Name>NestedChildObjectsDoc</Name>
+		</Properties>
+		<ChildObjects>
+			<TabularSection uuid="00000000-0000-0000-0000-000000000002">
+				<Properties>
+					<Name>Goods</Name>
+				</Properties>
+				<ChildObjects>
+					<Attribute uuid="00000000-0000-0000-0000-000000000003">
+						<Properties>
+							<Name>Item</Name>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+		</ChildObjects>
+	</Document>
+</MetaDataObject>
+"#;
+
+        let updated = append_metadata_child_text(xml, "Template", "ПФ_MXL_КШ").unwrap();
+
+        assert_eq!(updated.matches("<Template>ПФ_MXL_КШ</Template>").count(), 1);
+        assert!(updated.contains(
+            "\t\t\t</TabularSection>\n\t\t\t<Template>ПФ_MXL_КШ</Template>\n\t\t</ChildObjects>"
+        ));
+        assert!(
+            !updated.contains("\t\t\t\t<Template>ПФ_MXL_КШ</Template>\n\t\t\t\t</ChildObjects>")
+        );
+    }
 
     #[test]
     fn fresh_uuid_generates_uuid_v4() {

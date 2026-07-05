@@ -1180,7 +1180,7 @@ pub(crate) fn compile_role(
             }
         }
 
-        let uid = stable_uuid(80);
+        let uid = fresh_meta_compile_uuid();
         let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
 
         let sfno = defn

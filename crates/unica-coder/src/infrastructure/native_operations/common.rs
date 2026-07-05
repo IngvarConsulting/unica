@@ -160,7 +160,7 @@ pub(crate) fn register_form_in_object_text(text: &str, form_name: &str) -> Strin
 pub(crate) fn read_utf8_sig(path: &Path) -> Result<String, String> {
     let mut text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    if text.starts_with('\u{feff}') {
+    while text.starts_with('\u{feff}') {
         text.remove(0);
     }
     Ok(text)
