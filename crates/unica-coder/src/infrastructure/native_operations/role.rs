@@ -1180,9 +1180,6 @@ pub(crate) fn compile_role(
             }
         }
 
-        let uid = stable_uuid(80);
-        let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
-
         let sfno = defn
             .get("setForNewObjects")
             .map(json_value_to_python_lower)
@@ -1272,6 +1269,9 @@ pub(crate) fn compile_role(
 
         let metadata_path = roles_dir.join(format!("{role_name}.xml"));
         let rights_path = roles_dir.join(&role_name).join("Ext").join("Rights.xml");
+        let uid =
+            reusable_existing_role_uuid(&metadata_path).unwrap_or_else(fresh_meta_compile_uuid);
+        let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
         fs::create_dir_all(&roles_dir)
             .map_err(|err| format!("failed to create {}: {err}", roles_dir.display()))?;
         if let Some(ext_dir) = rights_path.parent() {
@@ -1359,6 +1359,20 @@ pub(crate) fn compile_role(
             command: None,
         },
     }
+}
+
+fn reusable_existing_role_uuid(metadata_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(metadata_path).ok()?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let role_node = doc
+        .descendants()
+        .find(|node| role_info_element(*node, "Role", None))?;
+    let uuid = role_node.attribute("uuid")?.to_string();
+    (is_valid_uuid(&uuid) && !is_placeholder_uuid(&uuid)).then_some(uuid)
+}
+
+fn is_placeholder_uuid(value: &str) -> bool {
+    value.starts_with("00000000-0000-0000-")
 }
 
 pub(crate) fn role_metadata_xml(

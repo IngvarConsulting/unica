@@ -2184,6 +2184,144 @@ mod tests {
     }
 
     #[test]
+    fn role_compile_generates_distinct_non_placeholder_uuid_v4() {
+        let root = temp_meta_compile_workspace("unica-role-compile-uuid-v4");
+        let workspace = root.join("workspace");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+
+        let reader_json = fixtures.join("sample-reader.json");
+        std::fs::write(
+            &reader_json,
+            r#"{
+  "name": "SampleReader",
+  "synonym": "Sample reader",
+  "comment": "Synthetic repro",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+        let editor_json = fixtures.join("sample-editor.json");
+        std::fs::write(
+            &editor_json,
+            r#"{
+  "name": "SampleEditor",
+  "synonym": "Sample editor",
+  "comment": "Synthetic repro",
+  "objects": ["Catalog.Items: @view @edit"]
+}"#,
+        )
+        .unwrap();
+
+        for json_path in [&reader_json, &editor_json] {
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert(
+                "JsonPath".to_string(),
+                Value::String(json_path.display().to_string()),
+            );
+            args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+            let result = UnicaApplication::new()
+                .call_tool("unica.role.compile", &args)
+                .unwrap();
+
+            assert!(result.ok, "{:?}", result.errors);
+        }
+
+        let reader_xml =
+            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
+        let editor_xml =
+            std::fs::read_to_string(workspace.join("src/Roles/SampleEditor.xml")).unwrap();
+        assert_valid_root_uuid(&reader_xml, "Role");
+        assert_valid_root_uuid(&editor_xml, "Role");
+        let reader_uuid = metadata_root_uuid(&reader_xml, "Role");
+        let editor_uuid = metadata_root_uuid(&editor_xml, "Role");
+        assert_ne!(reader_uuid, editor_uuid);
+        for uuid in [&reader_uuid, &editor_uuid] {
+            assert!(
+                !uuid.starts_with("00000000-0000-0000-"),
+                "role.compile must not generate placeholder UUID: {uuid}"
+            );
+            assert_eq!(
+                uuid.as_bytes().get(14),
+                Some(&b'4'),
+                "UUID must be v4: {uuid}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn role_compile_preserves_existing_uuid_when_regenerating_role() {
+        let root = temp_meta_compile_workspace("unica-role-compile-idempotent-uuid");
+        let workspace = root.join("workspace");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+
+        let role_json = fixtures.join("sample-reader.json");
+        std::fs::write(
+            &role_json,
+            r#"{
+  "name": "SampleReader",
+  "synonym": "Sample reader",
+  "comment": "Synthetic repro",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(role_json.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        let result = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+
+        let first_xml =
+            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
+        let first_uuid = metadata_root_uuid(&first_xml, "Role");
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(role_json.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        let result = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+
+        let regenerated_xml =
+            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
+        let regenerated_uuid = metadata_root_uuid(&regenerated_xml, "Role");
+        assert_eq!(first_uuid, regenerated_uuid);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn meta_compile_creates_constant_with_boolean_type() {
         let root = temp_meta_compile_workspace("unica-meta-compile-constant-bool");
         let workspace = root.join("workspace");
