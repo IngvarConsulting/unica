@@ -1031,6 +1031,29 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="bsp-form-compile-document-list-from-object",
+        tool="unica.form.compile",
+        skill="form-compile",
+        script="form-compile.py",
+        arguments={
+            "FromObject": True,
+            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            "Purpose": "List",
+            "OutputPath": (
+                "src/Documents/АктОбУничтоженииПерсональныхДанных/"
+                "Forms/ФормаСписка/Ext/Form.xml"
+            ),
+        },
+        fixtures=(
+            FileFixture(
+                BSP_META_DOCUMENT_FIXTURE,
+                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="form-edit-additions",
         tool="unica.form.edit",
         skill="form-edit",

@@ -2384,12 +2384,18 @@ pub(crate) fn form_compile_definition_from_object(
         ("Catalog", "List") => form_compile_catalog_list_definition(&meta),
         ("Catalog", other) => {
             return Err(format!(
-                "native form compiler from-object currently supports Catalog List only; got Catalog {other}"
+                "native form compiler from-object currently supports Catalog List and Document List only; got Catalog {other}"
+            ));
+        }
+        ("Document", "List") => form_compile_document_list_definition(&meta),
+        ("Document", other) => {
+            return Err(format!(
+                "native form compiler from-object currently supports Document List only; got Document {other}"
             ));
         }
         (other, _) => {
             return Err(format!(
-                "Object type '{other}' not supported. Supported: Catalog."
+                "Object type '{other}' not supported. Supported: Catalog, Document."
             ));
         }
     };
@@ -2540,6 +2546,48 @@ pub(crate) fn form_compile_catalog_list_definition(meta: &FormCompileObjectMeta)
             "main": true,
             "settings": {
                 "mainTable": format!("Catalog.{}", meta.name),
+                "dynamicDataRead": true,
+            },
+        }],
+    })
+}
+
+pub(crate) fn form_compile_document_list_definition(meta: &FormCompileObjectMeta) -> Value {
+    let mut columns = Vec::new();
+    columns.push(json!({"labelField": "Номер", "path": "Список.Number"}));
+    columns.push(json!({"labelField": "Дата", "path": "Список.Date"}));
+    for attr in &meta.attributes {
+        if form_compile_displayable_type(&attr.type_name) {
+            columns.push(json!({
+                "labelField": attr.name,
+                "path": format!("Список.{}", attr.name),
+            }));
+        }
+    }
+    columns.push(json!({
+        "labelField": "Ссылка",
+        "path": "Список.Ref",
+        "userVisible": false,
+    }));
+
+    json!({
+        "title": meta.synonym,
+        "properties": {},
+        "elements": [{
+            "table": "Список",
+            "path": "Список",
+            "rowPictureDataPath": "Список.DefaultPicture",
+            "commandBarLocation": "None",
+            "tableAutofill": false,
+            "_dynList": true,
+            "columns": columns,
+        }],
+        "attributes": [{
+            "name": "Список",
+            "type": "DynamicList",
+            "main": true,
+            "settings": {
+                "mainTable": format!("Document.{}", meta.name),
                 "dynamicDataRead": true,
             },
         }],
