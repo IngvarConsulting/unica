@@ -1,0 +1,49 @@
+{
+  "add": {
+    "attributes": [
+      {
+        "name": "ParityCode",
+        "type": "String(12)",
+        "synonym": "Parity code",
+        "fillChecking": "ShowWarning",
+        "indexing": "Index",
+        "after": "НаименованиеПолное"
+      }
+    ],
+    "forms": ["ParityObjectForm"],
+    "templates": ["ParityTemplate"]
+  },
+  "modify": {
+    "properties": {
+      "DescriptionLength": "24",
+      "DefaultPresentation": "AsCode"
+    },
+    "attributes": {
+      "НаименованиеПолное": {
+        "synonym": "Full currency name",
+        "type": "String(64)",
+        "Indexing": "IndexWithAdditionalOrder"
+      }
+    },
+    "tabularSections": {
+      "Представления": {
+        "add": [
+          {
+            "name": "ParityLanguage",
+            "type": "String(5)",
+            "synonym": "Parity language",
+            "fillChecking": "ShowError",
+            "before": "ПараметрыПрописи"
+          }
+        ],
+        "modify": {
+          "КодЯзыка": {
+            "synonym": "Language code",
+            "type": "String(8)"
+          }
+        },
+        "remove": ["ПараметрыПрописи"]
+      }
+    }
+  }
+}

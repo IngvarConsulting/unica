@@ -544,6 +544,26 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="bsp-meta-edit-catalog-ops",
+        tool="unica.meta.edit",
+        skill="meta-edit",
+        script="meta-edit.py",
+        arguments={
+            "ObjectPath": "src/Catalogs/Валюты.xml",
+            "DefinitionFile": "fixtures/meta-edit-bsp-catalog-ops.json",
+            "NoValidate": True,
+        },
+        fixtures=(
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+            FileFixture(
+                "meta-edit/bsp-catalog-ops.json",
+                "fixtures/meta-edit-bsp-catalog-ops.json",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="meta-remove-catalog",
         tool="unica.meta.remove",
         skill="meta-remove",

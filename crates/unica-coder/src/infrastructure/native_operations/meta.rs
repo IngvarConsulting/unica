@@ -9356,6 +9356,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
 
         let mut counts = MetaEditCounts::default();
+        let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
         if let Some(definition_file) = definition_file {
             let definition_path = absolutize(definition_file.clone(), &context.cwd);
             if !definition_path.exists() {
@@ -9376,6 +9377,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                 &definition,
                 &mut counts,
             )?;
+            info_lines.extend(meta_edit_definition_info_lines(&definition));
         } else {
             meta_edit_apply_inline_operation(
                 &mut xml_text,
@@ -9389,9 +9391,12 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
-        write_utf8_bom(&object_path, &xml_text)?;
+        let serialized_text = meta_edit_lxml_serialized_text(&xml_text);
+        write_utf8_bom(&object_path, &serialized_text)?;
+        info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         let stdout = format!(
-            "\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
+            "{}\n\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
+            info_lines.join("\n"),
             counts.added, counts.removed, counts.modified
         );
         Ok((stdout, object_path, counts.modified))
@@ -9421,6 +9426,25 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             command: None,
         },
     }
+}
+
+pub(crate) fn meta_edit_lxml_serialized_text(text: &str) -> String {
+    let mut output = text
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    if output.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>") {
+        output = output.replacen(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+            1,
+        );
+    }
+    output = output.replace(" />", "/>");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
 }
 
 pub(crate) fn resolve_meta_edit_object_path(raw: &Path, cwd: &Path) -> Result<PathBuf, String> {
@@ -9749,6 +9773,240 @@ pub(crate) fn meta_edit_apply_definition_modify(
     Ok(())
 }
 
+pub(crate) fn meta_edit_definition_info_lines(definition: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = definition.as_object() else {
+        return lines;
+    };
+
+    for (raw_key, value) in object {
+        if raw_key == "_complex" {
+            continue;
+        }
+        match meta_edit_operation_key(raw_key).as_deref() {
+            Some("add") => lines.extend(meta_edit_definition_add_info_lines(value)),
+            Some("remove") => lines.extend(meta_edit_definition_remove_info_lines(value)),
+            Some("modify") => lines.extend(meta_edit_definition_modify_info_lines(value)),
+            _ => {}
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn meta_edit_definition_add_info_lines(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = value.as_object() else {
+        return lines;
+    };
+
+    for (raw_child_type, items) in object {
+        let Some(child_type) = meta_edit_child_type_key(raw_child_type) else {
+            continue;
+        };
+        for item in meta_edit_definition_items(items) {
+            if let Some(name) = meta_edit_log_child_name(child_type, &item) {
+                lines.push(format!(
+                    "[INFO] Added {}: {name}",
+                    meta_edit_added_child_log_label(child_type)
+                ));
+            }
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn meta_edit_definition_remove_info_lines(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = value.as_object() else {
+        return lines;
+    };
+
+    for (raw_child_type, items) in object {
+        let Some(child_type) = meta_edit_child_type_key(raw_child_type) else {
+            continue;
+        };
+        let label = meta_edit_child_xml_tag(child_type)
+            .map(|tag| tag.to_ascii_lowercase())
+            .unwrap_or_else(|| child_type.to_string());
+        for item in meta_edit_definition_items(items) {
+            if let Some(name) = meta_edit_value_name(&item) {
+                lines.push(format!("[INFO] Removed {label}: {name}"));
+            }
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn meta_edit_definition_modify_info_lines(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = value.as_object() else {
+        return lines;
+    };
+
+    for (raw_child_type, items) in object {
+        let Some(child_type) = meta_edit_child_type_key(raw_child_type) else {
+            continue;
+        };
+        if child_type == "properties" {
+            if let Some(properties) = items.as_object() {
+                for (key, value) in properties {
+                    if meta_edit_complex_property_kind(key).is_none() {
+                        lines.push(format!(
+                            "[INFO] Modified property: {key} = {}",
+                            json_value_to_python_string(value)
+                        ));
+                    }
+                }
+            }
+        } else if child_type == "tabularSections" {
+            lines.extend(meta_edit_tabular_section_definition_info_lines(items));
+        } else if let Some(item_object) = items.as_object() {
+            if let Some(tag) = meta_edit_child_xml_tag(child_type) {
+                for (name, changes) in item_object {
+                    lines.extend(meta_edit_modify_child_info_lines(tag, name, changes));
+                }
+            }
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn meta_edit_tabular_section_definition_info_lines(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(object) = value.as_object() else {
+        return lines;
+    };
+
+    for (section_name, changes) in object {
+        let Some(changes) = changes.as_object() else {
+            continue;
+        };
+        for (raw_key, change_value) in changes {
+            match meta_edit_operation_key(raw_key).as_deref() {
+                Some("add") => {
+                    for item in meta_edit_definition_items(change_value) {
+                        let attr = meta_compile_parse_attr(&item);
+                        if !attr.name.is_empty() {
+                            lines.push(format!(
+                                "[INFO] Added attribute to TS '{section_name}': {}",
+                                attr.name
+                            ));
+                        }
+                    }
+                }
+                Some("remove") => {
+                    for item in meta_edit_definition_items(change_value) {
+                        if let Some(attr_name) = meta_edit_value_name(&item) {
+                            lines.push(format!(
+                                "[INFO] Removed attribute from TS '{section_name}': {attr_name}"
+                            ));
+                        }
+                    }
+                }
+                Some("modify") => {
+                    if let Some(attrs) = change_value.as_object() {
+                        for (attr_name, attr_changes) in attrs {
+                            lines.extend(meta_edit_modify_child_info_lines(
+                                "Attribute",
+                                attr_name,
+                                attr_changes,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    let mut scalar_change = Map::new();
+                    scalar_change.insert(raw_key.to_string(), change_value.clone());
+                    lines.extend(meta_edit_modify_child_info_lines(
+                        "TabularSection",
+                        section_name,
+                        &Value::Object(scalar_change),
+                    ));
+                }
+            }
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn meta_edit_modify_child_info_lines(
+    xml_tag: &str,
+    child_name: &str,
+    changes: &Value,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (key, value) in meta_edit_log_change_items(changes) {
+        match key.as_str() {
+            "name" => lines.push(format!("[INFO] Renamed {xml_tag}: {child_name} -> {value}")),
+            "type" => lines.push(format!(
+                "[INFO] Changed type of {xml_tag} '{child_name}': {value}"
+            )),
+            "synonym" => lines.push(format!(
+                "[INFO] Changed synonym of {xml_tag} '{child_name}': {value}"
+            )),
+            _ => lines.push(format!(
+                "[INFO] Modified {xml_tag} '{child_name}'.{key} = {value}"
+            )),
+        }
+    }
+    lines
+}
+
+pub(crate) fn meta_edit_log_change_items(value: &Value) -> Vec<(String, String)> {
+    if let Some(text) = value.as_str() {
+        return split_meta_edit_commas_outside_parens(text)
+            .into_iter()
+            .filter_map(|change| {
+                let (key, value) = change.split_once('=')?;
+                Some((key.trim().to_string(), value.trim().to_string()))
+            })
+            .collect();
+    }
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    object
+        .iter()
+        .map(|(key, value)| (key.to_string(), json_value_to_python_string(value)))
+        .collect()
+}
+
+pub(crate) fn meta_edit_added_child_log_label(child_type: &str) -> &'static str {
+    match child_type {
+        "attributes" => "attribute",
+        "tabularSections" => "tabular section",
+        "dimensions" => "dimension",
+        "resources" => "resource",
+        "enumValues" => "enum value",
+        "columns" => "column",
+        "forms" => "form",
+        "templates" => "template",
+        "commands" => "command",
+        _ => "item",
+    }
+}
+
+pub(crate) fn meta_edit_log_child_name(child_type: &str, value: &Value) -> Option<String> {
+    let name = match child_type {
+        "attributes" | "dimensions" | "resources" => meta_compile_parse_attr(value).name,
+        "tabularSections" => meta_edit_tabular_section_from_value(value).ok()?.name,
+        "enumValues" => meta_edit_enum_value_from_value(value).ok()?.name,
+        "columns" => meta_edit_value_name(&meta_edit_column_value(value))?,
+        "forms" | "templates" | "commands" => meta_edit_value_name(value)?,
+        _ => return None,
+    };
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 pub(crate) fn meta_edit_modify_object_properties_from_pairs(
     xml_text: &mut String,
     value: &str,
@@ -9999,13 +10257,13 @@ pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
                     })?;
                     for (attr_name, attr_changes) in attrs {
                         let raw_changes = meta_edit_changes_to_inline(attr_changes)?;
-                        meta_edit_modify_tabular_attribute_properties(
+                        let modified = meta_edit_modify_tabular_attribute_properties(
                             xml_text,
                             section_name,
                             attr_name,
                             &raw_changes,
                         )?;
-                        counts.modified += 1;
+                        counts.modified += modified;
                     }
                 }
                 _ => {
@@ -11621,16 +11879,31 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
     let line_start = xml_text[..close_pos]
         .rfind('\n')
         .map_or(close_pos, |index| index + 1);
-    let insert_pos = if xml_text[line_start..close_pos]
+    let insert_at_closing_indent = xml_text[line_start..close_pos]
         .chars()
-        .all(|ch| ch == '\t' || ch == ' ')
-    {
-        line_start
+        .all(|ch| ch == '\t' || ch == ' ');
+    if insert_at_closing_indent {
+        let insert_pos = meta_edit_mark_lxml_append_tail(xml_text, line_start);
+        xml_text.insert_str(insert_pos, &format!("{content}\n"));
     } else {
-        close_pos
-    };
-    xml_text.insert_str(insert_pos, &format!("{content}\n{close_indent}"));
+        xml_text.insert_str(close_pos, &format!("{content}\n{close_indent}"));
+    }
     Ok(())
+}
+
+pub(crate) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
+    if insert_pos == 0 || xml_text[..insert_pos].ends_with("&#13;\n") {
+        return insert_pos;
+    }
+    if insert_pos >= 2 && &xml_text[insert_pos - 2..insert_pos] == "\r\n" {
+        xml_text.replace_range(insert_pos - 2..insert_pos, "&#13;\n");
+        return insert_pos + 4;
+    }
+    if insert_pos >= 1 && &xml_text[insert_pos - 1..insert_pos] == "\n" {
+        xml_text.replace_range(insert_pos - 1..insert_pos, "&#13;\n");
+        return insert_pos + 5;
+    }
+    insert_pos
 }
 
 pub(crate) fn meta_edit_insert_lines_near_node(
@@ -11643,7 +11916,7 @@ pub(crate) fn meta_edit_insert_lines_near_node(
     if after {
         if let Some(relative_newline) = xml_text[range.end..].find('\n') {
             let insert_pos = range.end + relative_newline + 1;
-            xml_text.insert_str(insert_pos, &format!("{content}\n"));
+            xml_text.insert_str(insert_pos, &format!("{content}&#13;\n"));
         } else {
             xml_text.insert_str(range.end, &format!("\n{content}"));
         }
