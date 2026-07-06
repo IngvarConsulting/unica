@@ -2349,6 +2349,8 @@ pub(crate) struct FormCompileObjectMeta {
     pub(crate) tabular_sections: Vec<FormCompileObjectTabularSection>,
     pub(crate) code_length: i64,
     pub(crate) hierarchical: bool,
+    pub(crate) hierarchy_type: String,
+    pub(crate) owners: Vec<String>,
 }
 
 pub(crate) fn form_compile_normalize_from_object_output_label(
@@ -2388,9 +2390,10 @@ pub(crate) fn form_compile_definition_from_object(
 
     let defn = match (meta.object_type.as_str(), purpose) {
         ("Catalog", "List") => form_compile_catalog_list_definition(&meta),
+        ("Catalog", "Item") => form_compile_catalog_item_definition(&meta),
         ("Catalog", other) => {
             return Err(format!(
-                "native form compiler from-object currently supports Catalog List and Document List only; got Catalog {other}"
+                "native form compiler from-object currently supports Catalog List, Catalog Item, Document List, and Document Item only; got Catalog {other}"
             ));
         }
         ("Document", "List") => form_compile_document_list_definition(&meta),
@@ -2442,6 +2445,10 @@ pub(crate) fn form_compile_parse_object_meta(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
     let hierarchical = meta_info_child_text(props, "Hierarchical").as_deref() == Some("true");
+    let hierarchy_type = meta_info_child_text(props, "HierarchyType").unwrap_or_default();
+    let owners = meta_info_child(props, "Owners")
+        .map(form_compile_meta_collection_values)
+        .unwrap_or_default();
 
     Ok(FormCompileObjectMeta {
         object_type,
@@ -2451,6 +2458,8 @@ pub(crate) fn form_compile_parse_object_meta(
         tabular_sections,
         code_length,
         hierarchical,
+        hierarchy_type,
+        owners,
     })
 }
 
@@ -2506,6 +2515,16 @@ pub(crate) fn form_compile_object_tabular_sections(
                 columns,
             })
         })
+        .collect()
+}
+
+pub(crate) fn form_compile_meta_collection_values(node: roxmltree::Node<'_, '_>) -> Vec<String> {
+    node.descendants()
+        .filter(|child| child.is_element() && child != &node)
+        .filter_map(|child| child.text())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
         .collect()
 }
 
@@ -2580,6 +2599,101 @@ pub(crate) fn form_compile_catalog_list_definition(meta: &FormCompileObjectMeta)
     })
 }
 
+pub(crate) fn form_compile_catalog_item_definition(meta: &FormCompileObjectMeta) -> Value {
+    let mut header_children = Vec::new();
+    if !meta.owners.is_empty() {
+        header_children.push(json!({
+            "input": "Владелец",
+            "path": "Объект.Owner",
+            "readOnly": true,
+        }));
+    }
+
+    if meta.code_length > 0 {
+        header_children.push(json!({
+            "group": "horizontal",
+            "name": "ГруппаКодНаименование",
+            "showTitle": false,
+            "representation": "none",
+            "children": [
+                {"input": "Наименование", "path": "Объект.Description"},
+                {"input": "Код", "path": "Объект.Code"},
+            ],
+        }));
+    } else {
+        header_children.push(json!({"input": "Наименование", "path": "Объект.Description"}));
+    }
+
+    if meta.hierarchical {
+        header_children.push(json!({
+            "input": "Родитель",
+            "path": "Объект.Parent",
+            "title": "Входит в группу",
+        }));
+    }
+
+    for attr in &meta.attributes {
+        if form_compile_displayable_type(&attr.type_name) {
+            header_children.push(form_compile_object_field_element(
+                &attr.name,
+                &format!("Объект.{}", attr.name),
+                &attr.type_name,
+            ));
+        }
+    }
+
+    let mut root_elements = vec![json!({
+        "group": "vertical",
+        "name": "ГруппаШапка",
+        "showTitle": false,
+        "representation": "none",
+        "children": header_children,
+    })];
+
+    for tabular_section in meta.tabular_sections.iter().filter(|section| {
+        section.name != "ДополнительныеРеквизиты" && section.name != "Представления"
+    }) {
+        let mut columns = vec![json!({
+            "labelField": format!("{}НомерСтроки", tabular_section.name),
+            "path": format!("Объект.{}.LineNumber", tabular_section.name),
+        })];
+        for column in &tabular_section.columns {
+            columns.push(form_compile_object_field_element(
+                &format!("{}{}", tabular_section.name, column.name),
+                &format!("Объект.{}.{}", tabular_section.name, column.name),
+                &column.type_name,
+            ));
+        }
+        root_elements.push(json!({
+            "table": tabular_section.name,
+            "path": format!("Объект.{}", tabular_section.name),
+            "columns": columns,
+        }));
+    }
+
+    root_elements.push(json!({
+        "group": "vertical",
+        "name": "ГруппаДополнительныеРеквизиты",
+    }));
+
+    let mut defn = json!({
+        "title": meta.synonym,
+        "properties": {},
+        "elements": root_elements,
+        "attributes": [{
+            "name": "Объект",
+            "type": format!("CatalogObject.{}", meta.name),
+            "main": true,
+        }],
+    });
+    if meta.hierarchical && meta.hierarchy_type == "HierarchyFoldersAndItems" {
+        if let Some(properties) = defn.get_mut("properties").and_then(Value::as_object_mut) {
+            properties.insert("useForFoldersAndItems".to_string(), json!("Items"));
+        }
+    }
+    defn
+}
+
 pub(crate) fn form_compile_document_list_definition(meta: &FormCompileObjectMeta) -> Value {
     let mut columns = Vec::new();
     columns.push(json!({"labelField": "Номер", "path": "Список.Number"}));
@@ -2651,7 +2765,7 @@ pub(crate) fn form_compile_document_item_definition(meta: &FormCompileObjectMeta
 
     let mut left_children = vec![number_date_group];
     for attr in left_attrs {
-        left_children.push(form_compile_document_item_field(
+        left_children.push(form_compile_object_field_element(
             &attr.name,
             &format!("Объект.{}", attr.name),
             &attr.type_name,
@@ -2660,7 +2774,7 @@ pub(crate) fn form_compile_document_item_definition(meta: &FormCompileObjectMeta
 
     let mut right_children = Vec::new();
     for attr in right_attrs {
-        right_children.push(form_compile_document_item_field(
+        right_children.push(form_compile_object_field_element(
             &attr.name,
             &format!("Объект.{}", attr.name),
             &attr.type_name,
@@ -2702,7 +2816,7 @@ pub(crate) fn form_compile_document_item_definition(meta: &FormCompileObjectMeta
     let mut main_page_children = vec![header_group];
     for field in footer_fields {
         if let Some(attr) = meta.attributes.iter().find(|attr| attr.name == field) {
-            main_page_children.push(form_compile_document_item_field(
+            main_page_children.push(form_compile_object_field_element(
                 &attr.name,
                 &format!("Объект.{}", attr.name),
                 &attr.type_name,
@@ -2726,7 +2840,7 @@ pub(crate) fn form_compile_document_item_definition(meta: &FormCompileObjectMeta
             "path": format!("Объект.{}.LineNumber", tabular_section.name),
         })];
         for column in &tabular_section.columns {
-            columns.push(form_compile_document_item_field(
+            columns.push(form_compile_object_field_element(
                 &format!("{}{}", tabular_section.name, column.name),
                 &format!("Объект.{}.{}", tabular_section.name, column.name),
                 &column.type_name,
@@ -2777,7 +2891,7 @@ pub(crate) fn form_compile_document_item_definition(meta: &FormCompileObjectMeta
     })
 }
 
-pub(crate) fn form_compile_document_item_field(name: &str, path: &str, type_name: &str) -> Value {
+pub(crate) fn form_compile_object_field_element(name: &str, path: &str, type_name: &str) -> Value {
     if type_name.trim() == "xs:boolean" || type_name == "boolean" || type_name.contains("Boolean") {
         json!({"check": name, "path": path})
     } else {
