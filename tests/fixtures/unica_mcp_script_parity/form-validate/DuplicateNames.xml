@@ -8,15 +8,34 @@
 		<UsualGroup name="Повтор" id="1000002">
 			<ExtendedTooltip name="ПовторПодсказка2" id="-1"/>
 		</UsualGroup>
+		<UsualGroup name="Повтор" id="1000003">
+			<ExtendedTooltip name="ПовторПодсказка3" id="-1"/>
+		</UsualGroup>
+		<UsualGroup name="ПовторId1" id="1000010">
+			<ExtendedTooltip name="ПовторIdПодсказка1" id="-1"/>
+		</UsualGroup>
+		<UsualGroup name="ПовторId2" id="1000010">
+			<ExtendedTooltip name="ПовторIdПодсказка2" id="-1"/>
+		</UsualGroup>
+		<UsualGroup name="ПовторId3" id="1000010">
+			<ExtendedTooltip name="ПовторIdПодсказка3" id="-1"/>
+		</UsualGroup>
 	</ChildItems>
 	<Attributes>
 		<Attribute name="ПовторРеквизит" id="1">
 			<Columns>
 				<Column name="Колонка" id="11"/>
 				<Column name="Колонка" id="12"/>
+				<Column name="Колонка" id="13"/>
+				<Column name="КолонкаId1" id="21"/>
+				<Column name="КолонкаId2" id="21"/>
+				<Column name="КолонкаId3" id="21"/>
 			</Columns>
 		</Attribute>
 		<Attribute name="ПовторРеквизит" id="2"/>
+		<Attribute name="ПовторIdРеквизит1" id="30"/>
+		<Attribute name="ПовторIdРеквизит2" id="30"/>
+		<Attribute name="ПовторIdРеквизит3" id="30"/>
 	</Attributes>
 	<Commands>
 		<Command name="Команда" id="1">
@@ -24,6 +43,15 @@
 		</Command>
 		<Command name="Команда" id="2">
 			<Action>Команда</Action>
+		</Command>
+		<Command name="КомандаId1" id="10">
+			<Action>КомандаId1</Action>
+		</Command>
+		<Command name="КомандаId2" id="10">
+			<Action>КомандаId2</Action>
+		</Command>
+		<Command name="КомандаId3" id="10">
+			<Action>КомандаId3</Action>
 		</Command>
 	</Commands>
 	<Parameters>

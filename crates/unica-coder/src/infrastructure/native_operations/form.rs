@@ -221,11 +221,12 @@ pub(crate) fn validate_form(
                 attr_map.insert(attr_name.to_string(), *attr);
             }
             if !attr_id.is_empty() {
-                if let Some(existing) = attr_ids.insert(attr_id.to_string(), attr_name.to_string())
-                {
+                if let Some(existing) = attr_ids.get(attr_id) {
                     report.error(format!(
                         "Duplicate attribute id={attr_id}: '{attr_name}' and '{existing}'"
                     ));
+                } else {
+                    attr_ids.insert(attr_id.to_string(), attr_name.to_string());
                 }
             }
 
@@ -236,21 +237,21 @@ pub(crate) fn validate_form(
                     let col_id = column.attribute("id").unwrap_or("");
                     let col_name = column.attribute("name").unwrap_or("");
                     if !col_id.is_empty() {
-                        if let Some(existing) =
-                            col_ids.insert(col_id.to_string(), col_name.to_string())
-                        {
+                        if let Some(existing) = col_ids.get(col_id) {
                             report.error(format!(
                                 "Duplicate column id={col_id} in '{attr_name}': '{col_name}' and '{existing}'"
                             ));
+                        } else {
+                            col_ids.insert(col_id.to_string(), col_name.to_string());
                         }
                     }
                     if !col_name.is_empty() {
-                        if let Some(existing) =
-                            col_names.insert(col_name.to_string(), col_id.to_string())
-                        {
+                        if let Some(existing) = col_names.get(col_name) {
                             report.error(format!(
                                 "Duplicate column name '{col_name}' in '{attr_name}': id={col_id} and id={existing}"
                             ));
+                        } else {
+                            col_names.insert(col_name.to_string(), col_id.to_string());
                         }
                     }
                 }
@@ -278,10 +279,12 @@ pub(crate) fn validate_form(
                 cmd_map.insert(cmd_name.to_string(), *cmd);
             }
             if !cmd_id.is_empty() {
-                if let Some(existing) = cmd_ids.insert(cmd_id.to_string(), cmd_name.to_string()) {
+                if let Some(existing) = cmd_ids.get(cmd_id) {
                     report.error(format!(
                         "Duplicate command id={cmd_id}: '{cmd_name}' and '{existing}'"
                     ));
+                } else {
+                    cmd_ids.insert(cmd_id.to_string(), cmd_name.to_string());
                 }
             }
         }
@@ -434,15 +437,19 @@ pub(crate) fn form_collect_elements<'a>(
                 node: child,
             });
             if id != "-1" {
-                if let Some(existing) = element_ids.insert(id.to_string(), name.to_string()) {
+                if let Some(existing) = element_ids.get(id) {
                     report.error(format!(
                         "Duplicate element id={id}: '{name}' and '{existing}'"
                     ));
+                } else {
+                    element_ids.insert(id.to_string(), name.to_string());
                 }
-                if let Some(existing) = element_names.insert(name.to_string(), id.to_string()) {
+                if let Some(existing) = element_names.get(name) {
                     report.error(format!(
                         "Duplicate element name '{name}': id={id} and id={existing}"
                     ));
+                } else {
+                    element_names.insert(name.to_string(), id.to_string());
                 }
             }
         }
