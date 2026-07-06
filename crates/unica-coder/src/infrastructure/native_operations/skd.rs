@@ -2967,7 +2967,11 @@ pub(crate) fn skd_compile_xml(
         }
     }
 
-    skd_compile_emit_default_settings_variant(&mut lines);
+    skd_compile_emit_data_set_links(&mut lines, defn);
+    skd_compile_emit_calculated_fields(&mut lines, defn);
+    skd_compile_emit_total_fields(&mut lines, defn);
+    skd_compile_emit_parameters(&mut lines, defn);
+    skd_compile_emit_settings_variants(&mut lines, defn);
     lines.push("</DataCompositionSchema>".to_string());
     Ok(format!("{}\n", lines.join("\n")))
 }
@@ -3065,26 +3069,36 @@ pub(crate) fn skd_compile_emit_data_set(
 }
 
 pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, indent: &str) {
-    let (data_path, field_name, title, field_type) = if let Some(text) = field.as_str() {
-        let parsed = skd_compile_parse_field_shorthand(text);
-        (
-            parsed.0.clone(),
-            parsed.1,
-            String::new(),
-            skd_compile_resolve_type(&parsed.2),
-        )
-    } else {
-        let data_path = json_string_field(field, "dataPath")
-            .or_else(|| json_string_field(field, "field"))
-            .unwrap_or_default();
-        let field_name = json_string_field(field, "field").unwrap_or_else(|| data_path.clone());
-        let title = json_string_field(field, "title").unwrap_or_default();
-        let field_type = field
-            .get("type")
-            .map(skd_compile_type_value)
-            .unwrap_or_default();
-        (data_path, field_name, title, field_type)
-    };
+    let (data_path, field_name, title, field_type, presentation_expression) =
+        if let Some(text) = field.as_str() {
+            let parsed = skd_compile_parse_field_shorthand(text);
+            (
+                parsed.0.clone(),
+                parsed.1,
+                String::new(),
+                skd_compile_resolve_type(&parsed.2),
+                String::new(),
+            )
+        } else {
+            let data_path = json_string_field(field, "dataPath")
+                .or_else(|| json_string_field(field, "field"))
+                .unwrap_or_default();
+            let field_name = json_string_field(field, "field").unwrap_or_else(|| data_path.clone());
+            let title = json_string_field(field, "title").unwrap_or_default();
+            let field_type = field
+                .get("type")
+                .map(skd_compile_type_value)
+                .unwrap_or_default();
+            let presentation_expression =
+                json_string_field(field, "presentationExpression").unwrap_or_default();
+            (
+                data_path,
+                field_name,
+                title,
+                field_type,
+                presentation_expression,
+            )
+        };
 
     lines.push(format!("{indent}<field xsi:type=\"DataSetFieldField\">"));
     lines.push(format!(
@@ -3098,10 +3112,30 @@ pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
     if !title.is_empty() {
         skd_compile_emit_mltext(lines, &format!("{indent}\t"), "title", &title);
     }
+    skd_compile_emit_restriction(
+        lines,
+        field,
+        "restrict",
+        "useRestriction",
+        &format!("{indent}\t"),
+    );
+    skd_compile_emit_restriction(
+        lines,
+        field,
+        "attrRestrict",
+        "attributeUseRestriction",
+        &format!("{indent}\t"),
+    );
     if !field_type.is_empty() {
         lines.push(format!("{indent}\t<valueType>"));
         skd_compile_emit_value_type(lines, &field_type, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
+    }
+    if !presentation_expression.is_empty() {
+        lines.push(format!(
+            "{indent}\t<presentationExpression>{}</presentationExpression>",
+            escape_xml(&presentation_expression)
+        ));
     }
     lines.push(format!("{indent}</field>"));
 }
@@ -3123,6 +3157,66 @@ pub(crate) fn skd_compile_parse_field_shorthand(text: &str) -> (String, String, 
     } else {
         (value.to_string(), value.to_string(), String::new())
     }
+}
+
+pub(crate) fn skd_compile_emit_restriction(
+    lines: &mut Vec<String>,
+    value: &Value,
+    source_key: &str,
+    tag_name: &str,
+    indent: &str,
+) {
+    let Some(items) = skd_compile_string_items(value.get(source_key)) else {
+        return;
+    };
+    if items.is_empty() {
+        return;
+    }
+    let mut body = Vec::new();
+    for item in items {
+        let xml_name = match item.as_str() {
+            "noField" => Some("field"),
+            "noFilter" | "noCondition" => Some("condition"),
+            "noGroup" => Some("group"),
+            "noOrder" => Some("order"),
+            other if matches!(other, "field" | "condition" | "group" | "order") => Some(other),
+            _ => None,
+        };
+        if let Some(xml_name) = xml_name {
+            body.push(format!("{indent}\t<{xml_name}>true</{xml_name}>"));
+        }
+    }
+    if body.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<{tag_name}>"));
+    lines.extend(body);
+    lines.push(format!("{indent}</{tag_name}>"));
+}
+
+pub(crate) fn skd_compile_string_items(value: Option<&Value>) -> Option<Vec<String>> {
+    let value = value?;
+    if let Some(items) = value.as_array() {
+        return Some(items.iter().map(json_value_to_python_string).collect());
+    }
+    if let Some(text) = value.as_str() {
+        return Some(
+            text.split_whitespace()
+                .map(|item| item.trim_start_matches('#').to_string())
+                .filter(|item| !item.is_empty())
+                .collect(),
+        );
+    }
+    if let Some(object) = value.as_object() {
+        return Some(
+            object
+                .iter()
+                .filter(|(_, value)| value.as_bool().unwrap_or(false))
+                .map(|(key, _)| key.to_string())
+                .collect(),
+        );
+    }
+    Some(vec![json_value_to_python_string(value)])
 }
 
 pub(crate) fn skd_compile_type_value(value: &Value) -> String {
@@ -3297,11 +3391,29 @@ pub(crate) fn skd_compile_emit_mltext(
     tag: &str,
     text: &str,
 ) {
+    skd_compile_emit_mltext_ex(lines, indent, tag, text, false);
+}
+
+pub(crate) fn skd_compile_emit_mltext_ex(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    text: &str,
+    no_xsi_type: bool,
+) {
     if text.is_empty() {
-        lines.push(format!("{indent}<{tag}/>"));
+        if no_xsi_type {
+            lines.push(format!("{indent}<{tag}/>"));
+        } else {
+            lines.push(format!("{indent}<{tag} xsi:type=\"v8:LocalStringType\"/>"));
+        }
         return;
     }
-    lines.push(format!("{indent}<{tag} xsi:type=\"v8:LocalStringType\">"));
+    if no_xsi_type {
+        lines.push(format!("{indent}<{tag}>"));
+    } else {
+        lines.push(format!("{indent}<{tag} xsi:type=\"v8:LocalStringType\">"));
+    }
     lines.push(format!("{indent}\t<v8:item>"));
     lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
     lines.push(format!(
@@ -3330,6 +3442,877 @@ pub(crate) fn skd_compile_emit_default_settings_variant(lines: &mut Vec<String>)
     lines.push("\t\t\t</dcsset:item>".to_string());
     lines.push("\t\t</dcsset:settings>".to_string());
     lines.push("\t</settingsVariant>".to_string());
+}
+
+pub(crate) fn skd_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Value) {
+    let Some(links) = defn.get("dataSetLinks").and_then(Value::as_array) else {
+        return;
+    };
+    for link in links {
+        let source = json_string_field(link, "source")
+            .or_else(|| json_string_field(link, "sourceDataSet"))
+            .unwrap_or_default();
+        let destination = json_string_field(link, "dest")
+            .or_else(|| json_string_field(link, "destinationDataSet"))
+            .unwrap_or_default();
+        let source_expression = json_string_field(link, "sourceExpr")
+            .or_else(|| json_string_field(link, "sourceExpression"))
+            .unwrap_or_default();
+        let destination_expression = json_string_field(link, "destExpr")
+            .or_else(|| json_string_field(link, "destinationExpression"))
+            .unwrap_or_default();
+        lines.push("\t<dataSetLink>".to_string());
+        lines.push(format!(
+            "\t\t<sourceDataSet>{}</sourceDataSet>",
+            escape_xml(&source)
+        ));
+        lines.push(format!(
+            "\t\t<destinationDataSet>{}</destinationDataSet>",
+            escape_xml(&destination)
+        ));
+        lines.push(format!(
+            "\t\t<sourceExpression>{}</sourceExpression>",
+            escape_xml(&source_expression)
+        ));
+        lines.push(format!(
+            "\t\t<destinationExpression>{}</destinationExpression>",
+            escape_xml(&destination_expression)
+        ));
+        if let Some(parameter) =
+            json_string_field(link, "parameter").filter(|value| !value.is_empty())
+        {
+            lines.push(format!(
+                "\t\t<parameter>{}</parameter>",
+                escape_xml(&parameter)
+            ));
+        }
+        if link
+            .get("parameterListAllowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            lines.push("\t\t<parameterListAllowed>true</parameterListAllowed>".to_string());
+        }
+        if let Some(value) = json_string_field(link, "startExpression") {
+            lines.push(format!(
+                "\t\t<startExpression>{}</startExpression>",
+                escape_xml(&value)
+            ));
+        }
+        if let Some(value) = json_string_field(link, "linkConditionExpression") {
+            lines.push(format!(
+                "\t\t<linkConditionExpression>{}</linkConditionExpression>",
+                escape_xml(&value)
+            ));
+        }
+        lines.push("\t</dataSetLink>".to_string());
+    }
+}
+
+pub(crate) fn skd_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: &Value) {
+    let Some(fields) = defn.get("calculatedFields").and_then(Value::as_array) else {
+        return;
+    };
+    for field in fields {
+        let (data_path, expression, title, field_type) = if let Some(text) = field.as_str() {
+            let parsed = skd_edit_parse_calc_field(text);
+            (
+                parsed.data_path,
+                parsed.expression,
+                parsed.title,
+                parsed.field_type,
+            )
+        } else {
+            (
+                json_string_field(field, "dataPath")
+                    .or_else(|| json_string_field(field, "field"))
+                    .or_else(|| json_string_field(field, "name"))
+                    .unwrap_or_default(),
+                json_string_field(field, "expression").unwrap_or_default(),
+                json_string_field(field, "title").unwrap_or_default(),
+                field
+                    .get("type")
+                    .map(skd_compile_type_value)
+                    .unwrap_or_default(),
+            )
+        };
+        lines.push("\t<calculatedField>".to_string());
+        lines.push(format!(
+            "\t\t<dataPath>{}</dataPath>",
+            escape_xml(&data_path)
+        ));
+        lines.push(format!(
+            "\t\t<expression>{}</expression>",
+            escape_xml(&expression)
+        ));
+        if !title.is_empty() {
+            skd_compile_emit_mltext(lines, "\t\t", "title", &title);
+        }
+        if !field_type.is_empty() {
+            lines.push("\t\t<valueType>".to_string());
+            skd_compile_emit_value_type(lines, &field_type, "\t\t\t");
+            lines.push("\t\t</valueType>".to_string());
+        }
+        skd_compile_emit_restriction(lines, field, "restrict", "useRestriction", "\t\t");
+        if let Some(value) = field.get("useRestriction") {
+            skd_compile_emit_restriction(
+                lines,
+                &json!({ "useRestriction": value }),
+                "useRestriction",
+                "useRestriction",
+                "\t\t",
+            );
+        }
+        lines.push("\t</calculatedField>".to_string());
+    }
+}
+
+pub(crate) fn skd_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Value) {
+    let Some(fields) = defn.get("totalFields").and_then(Value::as_array) else {
+        return;
+    };
+    for field in fields {
+        let (data_path, expression, groups) = if let Some(text) = field.as_str() {
+            let (data_path, expression) = text
+                .split_once(':')
+                .map(|(left, right)| (left.trim().to_string(), right.trim().to_string()))
+                .unwrap_or((text.trim().to_string(), String::new()));
+            let expression = skd_edit_total_expression(&data_path, &expression);
+            (data_path, expression, Vec::new())
+        } else {
+            let data_path = json_string_field(field, "dataPath").unwrap_or_default();
+            let expression = json_string_field(field, "expression").unwrap_or_default();
+            let groups = skd_compile_string_items(field.get("group")).unwrap_or_default();
+            (data_path, expression, groups)
+        };
+        lines.push("\t<totalField>".to_string());
+        lines.push(format!(
+            "\t\t<dataPath>{}</dataPath>",
+            escape_xml(&data_path)
+        ));
+        lines.push(format!(
+            "\t\t<expression>{}</expression>",
+            escape_xml(&expression)
+        ));
+        for group in groups {
+            lines.push(format!("\t\t<group>{}</group>", escape_xml(&group)));
+        }
+        lines.push("\t</totalField>".to_string());
+    }
+}
+
+pub(crate) fn skd_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value) {
+    let Some(parameters) = defn.get("parameters").and_then(Value::as_array) else {
+        return;
+    };
+    for parameter in parameters {
+        let parsed = if let Some(text) = parameter.as_str() {
+            skd_edit_parse_parameter(text)
+        } else {
+            SkdEditParameter {
+                name: json_string_field(parameter, "name").unwrap_or_default(),
+                title: json_string_field(parameter, "title")
+                    .or_else(|| json_string_field(parameter, "presentation"))
+                    .unwrap_or_default(),
+                type_name: parameter
+                    .get("type")
+                    .map(skd_compile_type_value)
+                    .unwrap_or_default(),
+                values: parameter
+                    .get("value")
+                    .map(|value| vec![skd_compile_setting_value_text(value)])
+                    .unwrap_or_default(),
+                hidden: parameter
+                    .get("hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                always: parameter
+                    .get("use")
+                    .map(json_value_to_python_string)
+                    .is_some_and(|value| value == "Always"),
+                value_list_allowed: parameter
+                    .get("valueListAllowed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                available_values: Vec::new(),
+                auto_dates: parameter
+                    .get("autoDates")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                expression: json_string_field(parameter, "expression"),
+            }
+        };
+        lines.push("\t<parameter>".to_string());
+        lines.push(format!("\t\t<name>{}</name>", escape_xml(&parsed.name)));
+        if !parsed.title.is_empty() {
+            skd_compile_emit_mltext(lines, "\t\t", "title", &parsed.title);
+        }
+        if !parsed.type_name.is_empty() {
+            lines.push("\t\t<valueType>".to_string());
+            skd_compile_emit_value_type(lines, &parsed.type_name, "\t\t\t");
+            lines.push("\t\t</valueType>".to_string());
+        }
+        if parsed.values.is_empty() {
+            if !parsed.value_list_allowed {
+                skd_compile_emit_empty_value(lines, &parsed.type_name, "\t\t", "value");
+            }
+        } else {
+            for value in &parsed.values {
+                skd_compile_emit_parameter_value(lines, &parsed.type_name, value, "\t\t", "value");
+            }
+        }
+        let use_restriction = parsed.hidden
+            || parameter
+                .get("useRestriction")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        lines.push(format!(
+            "\t\t<useRestriction>{}</useRestriction>",
+            if use_restriction { "true" } else { "false" }
+        ));
+        if let Some(expression) = parsed.expression.as_ref().filter(|value| !value.is_empty()) {
+            lines.push(format!(
+                "\t\t<expression>{}</expression>",
+                escape_xml(expression)
+            ));
+        }
+        if parsed.hidden
+            || parameter
+                .get("availableAsField")
+                .and_then(Value::as_bool)
+                .is_some_and(|value| !value)
+        {
+            lines.push("\t\t<availableAsField>false</availableAsField>".to_string());
+        }
+        if parsed.value_list_allowed {
+            lines.push("\t\t<valueListAllowed>true</valueListAllowed>".to_string());
+        }
+        if parameter
+            .get("denyIncompleteValues")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            lines.push("\t\t<denyIncompleteValues>true</denyIncompleteValues>".to_string());
+        }
+        if parsed.always {
+            lines.push("\t\t<use>Always</use>".to_string());
+        }
+        lines.push("\t</parameter>".to_string());
+    }
+}
+
+pub(crate) fn skd_compile_emit_empty_value(
+    lines: &mut Vec<String>,
+    type_name: &str,
+    indent: &str,
+    tag_name: &str,
+) {
+    let type_name = skd_edit_normalize_declared_type(type_name);
+    if type_name.is_empty() {
+        lines.push(format!("{indent}<{tag_name} xsi:nil=\"true\"/>"));
+    } else if type_name == "StandardPeriod" {
+        lines.push(format!(
+            "{indent}<{tag_name} xsi:type=\"v8:StandardPeriod\">"
+        ));
+        lines.push(format!(
+            "{indent}\t<v8:variant xsi:type=\"v8:StandardPeriodVariant\">Custom</v8:variant>"
+        ));
+        lines.push(format!(
+            "{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+        ));
+        lines.push(format!(
+            "{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+        ));
+        lines.push(format!("{indent}</{tag_name}>"));
+    } else if type_name.starts_with("string") {
+        lines.push(format!("{indent}<{tag_name} xsi:type=\"xs:string\"/>"));
+    } else if type_name.starts_with("date") {
+        lines.push(format!(
+            "{indent}<{tag_name} xsi:type=\"xs:dateTime\">0001-01-01T00:00:00</{tag_name}>"
+        ));
+    } else if type_name.starts_with("decimal") {
+        lines.push(format!(
+            "{indent}<{tag_name} xsi:type=\"xs:decimal\">0</{tag_name}>"
+        ));
+    } else if type_name == "boolean" {
+        lines.push(format!(
+            "{indent}<{tag_name} xsi:type=\"xs:boolean\">false</{tag_name}>"
+        ));
+    } else {
+        lines.push(format!("{indent}<{tag_name} xsi:nil=\"true\"/>"));
+    }
+}
+
+pub(crate) fn skd_compile_emit_parameter_value(
+    lines: &mut Vec<String>,
+    type_name: &str,
+    value: &str,
+    indent: &str,
+    tag_name: &str,
+) {
+    if skd_edit_is_empty_value(value) {
+        skd_compile_emit_empty_value(lines, type_name, indent, tag_name);
+        return;
+    }
+    let normalized_type = skd_edit_normalize_declared_type(type_name);
+    if normalized_type == "StandardPeriod" {
+        lines.push(format!(
+            "{indent}<{tag_name} xsi:type=\"v8:StandardPeriod\">"
+        ));
+        lines.push(format!(
+            "{indent}\t<v8:variant xsi:type=\"v8:StandardPeriodVariant\">{}</v8:variant>",
+            escape_xml(value)
+        ));
+        if value == "Custom" {
+            lines.push(format!(
+                "{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+            ));
+            lines.push(format!(
+                "{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+            ));
+        }
+        lines.push(format!("{indent}</{tag_name}>"));
+        return;
+    }
+    let xsi_type = skd_compile_setting_xsi_type(Some(&normalized_type), value);
+    let value_text = if xsi_type == "xs:boolean" {
+        value.to_lowercase()
+    } else {
+        value.to_string()
+    };
+    lines.push(format!(
+        "{indent}<{tag_name} xsi:type=\"{xsi_type}\">{}</{tag_name}>",
+        escape_xml(&value_text)
+    ));
+}
+
+pub(crate) fn skd_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
+    let Some(variants) = defn.get("settingsVariants").and_then(Value::as_array) else {
+        skd_compile_emit_default_settings_variant(lines);
+        return;
+    };
+    if variants.is_empty() {
+        skd_compile_emit_default_settings_variant(lines);
+        return;
+    }
+    for variant in variants {
+        lines.push("\t<settingsVariant>".to_string());
+        let name = json_string_field(variant, "name").unwrap_or_default();
+        lines.push(format!(
+            "\t\t<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+        let presentation = json_string_field(variant, "presentation")
+            .or_else(|| json_string_field(variant, "title"))
+            .unwrap_or_else(|| name.clone());
+        skd_compile_emit_mltext(lines, "\t\t", "dcsset:presentation", &presentation);
+        lines.push("\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">".to_string());
+        let settings = variant.get("settings").unwrap_or(&Value::Null);
+        if let Some(selection) = settings.get("selection").and_then(Value::as_array) {
+            skd_compile_emit_selection(lines, selection, "\t\t\t");
+        }
+        if let Some(filter) = settings.get("filter").and_then(Value::as_array) {
+            skd_compile_emit_filter(lines, filter, "\t\t\t");
+        }
+        if let Some(order) = settings.get("order").and_then(Value::as_array) {
+            skd_compile_emit_order(lines, order, "\t\t\t");
+        }
+        if let Some(output_parameters) = settings.get("outputParameters").and_then(Value::as_object)
+        {
+            skd_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
+        }
+        if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
+            skd_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
+        }
+        if let Some(structure) = settings.get("structure") {
+            skd_compile_emit_structure(lines, structure, "\t\t\t");
+        }
+        lines.push("\t\t</dcsset:settings>".to_string());
+        lines.push("\t</settingsVariant>".to_string());
+    }
+}
+
+pub(crate) fn skd_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:selection>"));
+    for item in items {
+        skd_compile_emit_selection_item(lines, item, &format!("{indent}\t"));
+    }
+    lines.push(format!("{indent}</dcsset:selection>"));
+}
+
+pub(crate) fn skd_compile_emit_selection_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+    if let Some(text) = item.as_str() {
+        if text == "Auto" {
+            lines.push(format!(
+                "{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>"
+            ));
+            return;
+        }
+        lines.push(format!(
+            "{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemField\">"
+        ));
+        lines.push(format!(
+            "{indent}\t<dcsset:field>{}</dcsset:field>",
+            escape_xml(text)
+        ));
+        lines.push(format!("{indent}</dcsset:item>"));
+        return;
+    }
+    if item.get("auto").and_then(Value::as_bool).unwrap_or(false) {
+        lines.push(format!(
+            "{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\">"
+        ));
+        if item
+            .get("use")
+            .and_then(Value::as_bool)
+            .is_some_and(|value| !value)
+        {
+            lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+        }
+        lines.push(format!("{indent}</dcsset:item>"));
+        return;
+    }
+    let field = json_string_field(item, "field").unwrap_or_default();
+    lines.push(format!(
+        "{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemField\">"
+    ));
+    if item
+        .get("use")
+        .and_then(Value::as_bool)
+        .is_some_and(|value| !value)
+    {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    lines.push(format!(
+        "{indent}\t<dcsset:field>{}</dcsset:field>",
+        escape_xml(&field)
+    ));
+    if let Some(title) = json_string_field(item, "title").filter(|value| !value.is_empty()) {
+        skd_compile_emit_mltext_ex(
+            lines,
+            &format!("{indent}\t"),
+            "dcsset:lwsTitle",
+            &title,
+            true,
+        );
+    }
+    if let Some(view_mode) = json_string_field(item, "viewMode").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}\t<dcsset:viewMode>{}</dcsset:viewMode>",
+            escape_xml(&view_mode)
+        ));
+    }
+    lines.push(format!("{indent}</dcsset:item>"));
+}
+
+pub(crate) fn skd_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:filter>"));
+    for item in items {
+        skd_compile_emit_filter_item(lines, item, &format!("{indent}\t"));
+    }
+    lines.push(format!("{indent}</dcsset:filter>"));
+}
+
+pub(crate) fn skd_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+    let parsed_from_string;
+    let item = if let Some(text) = item.as_str() {
+        let parsed = skd_edit_parse_filter(text);
+        parsed_from_string = json!({
+            "field": parsed.field,
+            "op": parsed.operator,
+            "value": parsed.value,
+            "valueType": parsed.value_type,
+            "use": parsed.use_flag.unwrap_or(true),
+            "viewMode": parsed.view_mode,
+            "userSettingID": parsed.user_setting_id,
+        });
+        &parsed_from_string
+    } else {
+        item
+    };
+    lines.push(format!(
+        "{indent}<dcsset:item xsi:type=\"dcsset:FilterItemComparison\">"
+    ));
+    if item
+        .get("use")
+        .and_then(Value::as_bool)
+        .is_some_and(|value| !value)
+    {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    let field = json_string_field(item, "field").unwrap_or_default();
+    lines.push(format!(
+        "{indent}\t<dcsset:left xsi:type=\"dcscor:Field\">{}</dcsset:left>",
+        escape_xml(&field)
+    ));
+    let operator = json_string_field(item, "op").unwrap_or_else(|| "Equal".to_string());
+    lines.push(format!(
+        "{indent}\t<dcsset:comparisonType>{}</dcsset:comparisonType>",
+        escape_xml(skd_compile_comparison_type(&operator))
+    ));
+    if let Some(value) = item.get("value").filter(|value| !value.is_null()) {
+        let value_text = skd_compile_setting_value_text(value);
+        if !value_text.is_empty() {
+            let explicit_type = json_string_field(item, "valueType");
+            let xsi_type = skd_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
+            lines.push(format!(
+                "{indent}\t<dcsset:right xsi:type=\"{xsi_type}\">{}</dcsset:right>",
+                escape_xml(&value_text)
+            ));
+        }
+    }
+    if let Some(view_mode) = json_string_field(item, "viewMode").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}\t<dcsset:viewMode>{}</dcsset:viewMode>",
+            escape_xml(&view_mode)
+        ));
+    }
+    if let Some(user_setting_id) = json_string_field(item, "userSettingID")
+        .filter(|value| !value.is_empty() && value != "None")
+    {
+        lines.push(format!(
+            "{indent}\t<dcsset:userSettingID>{}</dcsset:userSettingID>",
+            escape_xml(&user_setting_id)
+        ));
+    }
+    lines.push(format!("{indent}</dcsset:item>"));
+}
+
+pub(crate) fn skd_compile_emit_order(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:order>"));
+    for item in items {
+        let fragment = if let Some(text) = item.as_str() {
+            skd_edit_order_fragment(text, &format!("{indent}\t"))
+        } else {
+            let field = json_string_field(item, "field").unwrap_or_default();
+            let direction =
+                json_string_field(item, "direction").unwrap_or_else(|| "Asc".to_string());
+            skd_edit_order_fragment(&format!("{field} {direction}"), &format!("{indent}\t"))
+        };
+        lines.extend(fragment.lines().map(ToOwned::to_owned));
+    }
+    lines.push(format!("{indent}</dcsset:order>"));
+}
+
+pub(crate) fn skd_compile_emit_output_parameters(
+    lines: &mut Vec<String>,
+    params: &Map<String, Value>,
+    indent: &str,
+) {
+    if params.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:outputParameters>"));
+    for (key, raw_value) in params {
+        let (value, explicit_type, use_false) = if let Some(object) = raw_value.as_object() {
+            if let Some(value) = object.get("value") {
+                (
+                    value,
+                    json_string_field(raw_value, "valueType"),
+                    object
+                        .get("use")
+                        .and_then(Value::as_bool)
+                        .is_some_and(|value| !value),
+                )
+            } else {
+                (raw_value, None, false)
+            }
+        } else {
+            (raw_value, None, false)
+        };
+        let value_text = skd_compile_setting_value_text(value);
+        let xsi_type = explicit_type
+            .as_deref()
+            .unwrap_or_else(|| skd_compile_output_parameter_type(key, value));
+        lines.push(format!(
+            "{indent}\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
+        ));
+        if use_false {
+            lines.push(format!("{indent}\t\t<dcscor:use>false</dcscor:use>"));
+        }
+        lines.push(format!(
+            "{indent}\t\t<dcscor:parameter>{}</dcscor:parameter>",
+            escape_xml(key)
+        ));
+        if xsi_type == "mltext" {
+            skd_compile_emit_mltext(lines, &format!("{indent}\t\t"), "dcscor:value", &value_text);
+        } else {
+            lines.push(format!(
+                "{indent}\t\t<dcscor:value xsi:type=\"{xsi_type}\">{}</dcscor:value>",
+                escape_xml(&value_text)
+            ));
+        }
+        lines.push(format!("{indent}\t</dcscor:item>"));
+    }
+    lines.push(format!("{indent}</dcsset:outputParameters>"));
+}
+
+pub(crate) fn skd_compile_emit_data_parameters(
+    lines: &mut Vec<String>,
+    items: &[Value],
+    indent: &str,
+) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:dataParameters>"));
+    for item in items {
+        lines.push(format!(
+            "{indent}\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
+        ));
+        if item
+            .get("use")
+            .and_then(Value::as_bool)
+            .is_some_and(|value| !value)
+        {
+            lines.push(format!("{indent}\t\t<dcscor:use>false</dcscor:use>"));
+        }
+        let parameter = json_string_field(item, "parameter").unwrap_or_default();
+        lines.push(format!(
+            "{indent}\t\t<dcscor:parameter>{}</dcscor:parameter>",
+            escape_xml(&parameter)
+        ));
+        if item
+            .get("nilValue")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            lines.push(format!("{indent}\t\t<dcscor:value xsi:nil=\"true\"/>"));
+        } else if let Some(value) = item.get("value").filter(|value| !value.is_null()) {
+            let value_text = skd_compile_setting_value_text(value);
+            let explicit_type = json_string_field(item, "valueType");
+            let xsi_type = skd_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
+            lines.push(format!(
+                "{indent}\t\t<dcscor:value xsi:type=\"{xsi_type}\">{}</dcscor:value>",
+                escape_xml(&value_text)
+            ));
+        }
+        if let Some(view_mode) =
+            json_string_field(item, "viewMode").filter(|value| !value.is_empty())
+        {
+            lines.push(format!(
+                "{indent}\t\t<dcsset:viewMode>{}</dcsset:viewMode>",
+                escape_xml(&view_mode)
+            ));
+        }
+        if let Some(user_setting_id) =
+            json_string_field(item, "userSettingID").filter(|value| !value.is_empty())
+        {
+            lines.push(format!(
+                "{indent}\t\t<dcsset:userSettingID>{}</dcsset:userSettingID>",
+                escape_xml(&user_setting_id)
+            ));
+        }
+        if let Some(presentation) =
+            json_string_field(item, "userSettingPresentation").filter(|value| !value.is_empty())
+        {
+            skd_compile_emit_mltext(
+                lines,
+                &format!("{indent}\t\t"),
+                "dcsset:userSettingPresentation",
+                &presentation,
+            );
+        }
+        lines.push(format!("{indent}\t</dcscor:item>"));
+    }
+    lines.push(format!("{indent}</dcsset:dataParameters>"));
+}
+
+pub(crate) fn skd_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
+    if let Some(text) = structure.as_str() {
+        for item in skd_edit_parse_structure(text) {
+            let fragment = skd_edit_structure_item_fragment(&item, indent);
+            lines.extend(fragment.lines().map(ToOwned::to_owned));
+        }
+        return;
+    }
+    if let Some(item) = structure.as_object() {
+        skd_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
+        return;
+    }
+    if let Some(items) = structure.as_array() {
+        for item in items {
+            skd_compile_emit_structure_item(lines, item, indent);
+        }
+    }
+}
+
+pub(crate) fn skd_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+    let item_type = json_string_field(item, "type").unwrap_or_else(|| "group".to_string());
+    if item_type != "group" {
+        return;
+    }
+    lines.push(format!(
+        "{indent}<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">"
+    ));
+    if item
+        .get("use")
+        .and_then(Value::as_bool)
+        .is_some_and(|value| !value)
+    {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    if let Some(name) = json_string_field(item, "name").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}\t<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+    }
+    let group_by = item.get("groupBy").or_else(|| item.get("groupFields"));
+    skd_compile_emit_group_items(lines, group_by, &format!("{indent}\t"));
+    if let Some(order) = item.get("order").and_then(Value::as_array) {
+        skd_compile_emit_order(lines, order, &format!("{indent}\t"));
+    }
+    if let Some(selection) = item.get("selection").and_then(Value::as_array) {
+        skd_compile_emit_selection(lines, selection, &format!("{indent}\t"));
+    }
+    if let Some(filter) = item.get("filter").and_then(Value::as_array) {
+        skd_compile_emit_filter(lines, filter, &format!("{indent}\t"));
+    }
+    if let Some(children) = item.get("children").and_then(Value::as_array) {
+        for child in children {
+            skd_compile_emit_structure_item(lines, child, &format!("{indent}\t"));
+        }
+    }
+    lines.push(format!("{indent}</dcsset:item>"));
+}
+
+pub(crate) fn skd_compile_emit_group_items(
+    lines: &mut Vec<String>,
+    value: Option<&Value>,
+    indent: &str,
+) {
+    let Some(items) = skd_compile_string_items(value) else {
+        return;
+    };
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:groupItems>"));
+    for field in items {
+        if field == "Auto" {
+            lines.push(format!(
+                "{indent}\t<dcsset:item xsi:type=\"dcsset:GroupItemAuto\"/>"
+            ));
+            continue;
+        }
+        lines.push(format!(
+            "{indent}\t<dcsset:item xsi:type=\"dcsset:GroupItemField\">"
+        ));
+        lines.push(format!(
+            "{indent}\t\t<dcsset:field>{}</dcsset:field>",
+            escape_xml(&field)
+        ));
+        lines.push(format!(
+            "{indent}\t\t<dcsset:groupType>Items</dcsset:groupType>"
+        ));
+        lines.push(format!(
+            "{indent}\t\t<dcsset:periodAdditionType>None</dcsset:periodAdditionType>"
+        ));
+        lines.push(format!("{indent}\t\t<dcsset:periodAdditionBegin xsi:type=\"xs:dateTime\">0001-01-01T00:00:00</dcsset:periodAdditionBegin>"));
+        lines.push(format!("{indent}\t\t<dcsset:periodAdditionEnd xsi:type=\"xs:dateTime\">0001-01-01T00:00:00</dcsset:periodAdditionEnd>"));
+        lines.push(format!("{indent}\t</dcsset:item>"));
+    }
+    lines.push(format!("{indent}</dcsset:groupItems>"));
+}
+
+pub(crate) fn skd_compile_comparison_type(operator: &str) -> &str {
+    match operator {
+        "=" => "Equal",
+        "<>" => "NotEqual",
+        ">" => "Greater",
+        ">=" => "GreaterOrEqual",
+        "<" => "Less",
+        "<=" => "LessOrEqual",
+        "in" => "InList",
+        "notIn" => "NotInList",
+        "contains" => "Contains",
+        "notContains" => "NotContains",
+        "beginsWith" => "BeginsWith",
+        "notBeginsWith" => "NotBeginsWith",
+        "filled" => "Filled",
+        "notFilled" => "NotFilled",
+        other => other,
+    }
+}
+
+pub(crate) fn skd_compile_setting_value_text(value: &Value) -> String {
+    match value {
+        Value::Bool(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Null => String::new(),
+        other => json_value_to_python_string(other),
+    }
+}
+
+pub(crate) fn skd_compile_setting_xsi_type(explicit_type: Option<&str>, value: &str) -> String {
+    if let Some(explicit_type) = explicit_type {
+        if explicit_type.contains(':') {
+            return explicit_type.to_string();
+        }
+        if explicit_type == "boolean" {
+            return "xs:boolean".to_string();
+        }
+        if explicit_type.starts_with("decimal") {
+            return "xs:decimal".to_string();
+        }
+        if explicit_type.starts_with("date") {
+            return "xs:dateTime".to_string();
+        }
+        if explicit_type.starts_with("string") {
+            return "xs:string".to_string();
+        }
+    }
+    if matches!(value, "true" | "false") {
+        "xs:boolean".to_string()
+    } else if is_date_time_literal(value) {
+        "xs:dateTime".to_string()
+    } else if value.parse::<f64>().is_ok() {
+        "xs:decimal".to_string()
+    } else if skd_edit_is_design_time_value(value) {
+        "dcscor:DesignTimeValue".to_string()
+    } else {
+        "xs:string".to_string()
+    }
+}
+
+pub(crate) fn skd_compile_output_parameter_type(key: &str, value: &Value) -> &'static str {
+    if value.is_object() && !value.get("@type").is_some_and(|value| value == "Font") {
+        return "mltext";
+    }
+    match key {
+        "Заголовок" => "mltext",
+        "ВыводитьЗаголовок" | "ВыводитьПараметрыДанных" | "ВыводитьОтбор" => {
+            "dcsset:DataCompositionTextOutputType"
+        }
+        "МакетОформления" => "xs:string",
+        "РасположениеПолейГруппировки" => {
+            "dcsset:DataCompositionGroupFieldsPlacement"
+        }
+        "РасположениеРеквизитов" => {
+            "dcsset:DataCompositionAttributesPlacement"
+        }
+        "ГоризонтальноеРасположениеОбщихИтогов"
+        | "ВертикальноеРасположениеОбщихИтогов"
+        | "РасположениеОбщихИтогов"
+        | "РасположениеИтогов" => "dcscor:DataCompositionTotalPlacement",
+        "РасположениеГруппировки" => {
+            "dcsset:DataCompositionFieldGroupPlacement"
+        }
+        "РасположениеРесурсов" => "dcsset:DataCompositionResourcesPlacement",
+        "ТипМакета" => "dcsset:DataCompositionGroupTemplateType",
+        _ => "xs:string",
+    }
 }
 
 pub(crate) fn skd_compile_resolve_query_value(

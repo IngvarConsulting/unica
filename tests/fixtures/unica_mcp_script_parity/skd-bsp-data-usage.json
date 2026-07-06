@@ -1,0 +1,136 @@
+{
+  "dataSources": [
+    {
+      "name": "ИсточникДанных",
+      "type": "Local"
+    }
+  ],
+  "dataSets": [
+    {
+      "name": "МестаИспользования",
+      "objectName": "МестаИспользования",
+      "fields": [
+        {
+          "dataPath": "Ссылка",
+          "field": "Ссылка",
+          "title": "Ссылка"
+        },
+        {
+          "dataPath": "Данные",
+          "field": "Данные",
+          "title": "Данные",
+          "presentationExpression": "ПредставлениеДанных"
+        },
+        {
+          "dataPath": "ПредставлениеДанных",
+          "field": "ПредставлениеДанных",
+          "title": "Представление данных",
+          "type": "string"
+        },
+        {
+          "dataPath": "ТипСсылки",
+          "field": "ТипСсылки",
+          "title": "Тип ссылки",
+          "restrict": ["noField", "noFilter", "noGroup", "noOrder"],
+          "attrRestrict": ["noField", "noFilter", "noGroup", "noOrder"]
+        },
+        {
+          "dataPath": "ВедущееИзмерение",
+          "field": "ВедущееИзмерение",
+          "title": "Ведущее измерение",
+          "type": "boolean",
+          "restrict": ["noField", "noGroup", "noOrder"],
+          "attrRestrict": ["noField", "noFilter", "noGroup", "noOrder"]
+        }
+      ]
+    }
+  ],
+  "calculatedFields": [
+    {
+      "dataPath": "КоличествоДанных",
+      "expression": "Данные",
+      "title": "Вхождений",
+      "restrict": ["noFilter", "noGroup", "noOrder"]
+    }
+  ],
+  "totalFields": [
+    {
+      "dataPath": "КоличествоДанных",
+      "expression": "Количество(КоличествоДанных)",
+      "group": ["Данные", "Ссылка", "ОбщийИтог"]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "СписокСсылок",
+      "title": "Список элементов",
+      "valueListAllowed": true,
+      "denyIncompleteValues": true
+    }
+  ],
+  "settingsVariants": [
+    {
+      "name": "Основной",
+      "presentation": "Основной",
+      "settings": {
+        "filter": [
+          {
+            "field": "ВедущееИзмерение",
+            "op": "=",
+            "value": false
+          }
+        ],
+        "dataParameters": [
+          {
+            "parameter": "СписокСсылок",
+            "nilValue": true,
+            "userSettingID": "5bef22e4-9ca8-45bc-aaa6-29de7d91e343",
+            "userSettingPresentation": "Список элементов"
+          }
+        ],
+        "outputParameters": {
+          "ВыводитьЗаголовок": "Output",
+          "Заголовок": "",
+          "ВыводитьПараметрыДанных": "DontOutput",
+          "ВыводитьОтбор": "DontOutput"
+        },
+        "structure": [
+          {
+            "type": "group",
+            "groupBy": ["Ссылка"],
+            "filter": [
+              {
+                "field": "ТипСсылки",
+                "op": "=",
+                "use": false
+              }
+            ],
+            "order": ["Auto"],
+            "selection": [
+              {
+                "field": "Ссылка",
+                "title": "Наименование"
+              },
+              {
+                "field": "Ссылка.Код",
+                "title": "Код"
+              },
+              {
+                "field": "КоличествоДанных",
+                "title": "Вхождений"
+              }
+            ],
+            "children": [
+              {
+                "type": "group",
+                "groupBy": ["Данные"],
+                "order": ["Auto"],
+                "selection": ["Данные", "ПредставлениеДанных"]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

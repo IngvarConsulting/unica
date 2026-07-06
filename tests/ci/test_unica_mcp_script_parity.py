@@ -1522,6 +1522,19 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="skd-compile-bsp-data-usage",
+        tool="unica.skd.compile",
+        skill="skd-compile",
+        script="skd-compile.py",
+        arguments={
+            "DefinitionFile": "fixtures/skd-bsp-data-usage.json",
+            "OutputPath": "templates/SKD.xml",
+        },
+        fixtures=(FileFixture("skd-bsp-data-usage.json", "fixtures/skd-bsp-data-usage.json"),),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="skd-info-overview-outfile",
         tool="unica.skd.info",
         skill="skd-info",
