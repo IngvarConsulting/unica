@@ -824,16 +824,79 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("getStorage, setStorage, removeStorage, clearStorage", browser_facade)
         self.assertIn("case 'test'", run_script)
         self.assertIn("visibleSample", grid_script)
-        self.assertIn("firstTextCell", grid_script)
-        self.assertIn("typeof searchSpec === 'object'", grid_script)
-        self.assertIn("columnSearch", select_value)
+        self.assertIn("rowClickPoint(sel, body)", grid_script)
+        self.assertIn("const isObj = search && typeof search === 'object'", grid_script)
+        self.assertIn("HEADERLESS_GRID_FN", grid_script)
+        self.assertIn("ROW_CLICK_POINT_FN", grid_script)
+        self.assertIn("const isObj = !!search && typeof search === 'object'", select_value)
         self.assertIn("visibleSample", select_value)
+        self.assertIn("selectValuesMulti", select_value)
+        self.assertIn("dispatchMultiSurface", select_value)
+        self.assertIn("Array.isArray(searchText)", select_value)
+        self.assertIn("readCloudDDScript", select_value)
         self.assertIn("[...pending.values()].every(p => p.filled)", row_fill)
+        self.assertIn("findCheckboxAtPointScript(cellCoords.x, cellCoords.y)", row_fill)
+        self.assertIn("rowClickPoint(line, body)", (
+            skill_dir / "scripts" / "dom" / "forms.mjs"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("readCloudDDScript", (
+            skill_dir / "scripts" / "dom.mjs"
+        ).read_text(encoding="utf-8"))
 
         for text in [skill_doc, regress_doc]:
             self.assertNotIn("CLAUDE_SKILL_DIR", text)
             self.assertNotIn("/web-publish", text)
             self.assertIn("autonomous-server", text)
+
+        self.assertIn("Multi-select", skill_doc)
+        self.assertIn("selectValue('Наименование компании', ['Альфа ООО', 'Бета АО'])", skill_doc)
+        self.assertIn("array → multi-select", (
+            skill_dir / "scripts" / "engine" / "forms" / "fill.mjs"
+        ).read_text(encoding="utf-8"))
+
+    def test_legacy_script_fixtures_track_upstream_runtime_portability_fixes(self) -> None:
+        skd_scripts = [
+            self.repo_root()
+            / "plugins"
+            / "unica"
+            / "scripts"
+            / "legacy"
+            / "skd-edit"
+            / "skd-edit.py",
+            self.parity_reference_root()
+            / "skd-edit"
+            / "scripts"
+            / "skd-edit.py",
+        ]
+        for path in skd_scripts:
+            with self.subTest(path=path.relative_to(self.repo_root())):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("skd-edit v1.28", text)
+                self.assertIn("expr_start = esc_xml", text)
+                self.assertIn("expr_end = esc_xml", text)
+                self.assertNotRegex(text, r"<expression>\{esc_xml\('&' \+ param_name")
+
+        subsystem_compile = (
+            self.parity_reference_root()
+            / "subsystem-compile"
+            / "scripts"
+            / "subsystem-compile.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("subsystem-compile v1.8", subsystem_compile)
+        self.assertIn("import subprocess", subsystem_compile)
+        self.assertIn("subsystem-validate.py", subsystem_compile)
+        self.assertIn("subprocess.run([sys.executable, validate_script, \"-SubsystemPath\", target_xml])", subsystem_compile)
+        self.assertNotIn("powershell.exe", subsystem_compile)
+        self.assertNotIn("subsystem-validate.ps1", subsystem_compile)
+
+    def test_img_grid_rejects_non_positive_grid_dimensions_before_rendering(self) -> None:
+        script = (self.skill_root() / "img-grid" / "scripts" / "overlay-grid.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("--cols must be greater than 0", script)
+        self.assertIn("--rows must be greater than or equal to 0", script)
+        self.assertIn("rows = max(1, round(sh / step_x))", script)
 
     def test_skd_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
         skd_compile = (self.skill_root() / "skd-compile" / "SKILL.md").read_text(

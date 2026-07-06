@@ -319,6 +319,7 @@ Fill form fields by label (fuzzy match). Auto-detects field type.
 | `'5000'` | Plain text | Clipboard paste |
 | `'true'` / `'да'` | Checkbox | Toggle |
 | `'Оплата поставщику'` | Radio | Fuzzy label match |
+| `['Альфа ООО', 'Бета АО']` | Value-list multi-select | Replace selected set |
 | `''` / `null` | Any (except checkbox/radio) | Clear via Shift+F4 |
 
 **DCS report filters**: use human-readable label names. Checkbox is auto-enabled:
@@ -351,6 +352,12 @@ await selectValue('Документ', '0000-000601', { type: 'Реализаци
 ```
 
 Also supports DCS labels — auto-enables the paired checkbox.
+
+**Multi-select**: pass an array to select several values at once. The field is set to exactly that set; missing values are returned under `selected.notSelected` instead of throwing.
+```js
+await selectValue('Наименование компании', ['Альфа ООО', 'Бета АО']);
+// selected: { field: 'Наименование компании', values: ['Альфа ООО', 'Бета АО'] }
+```
 
 #### `fillTableRow(fields, opts)` → form state with `filled` (+ optional `notFilled`)
 Fill table row cells via Tab navigation. Value is a plain string, `{ value, type }` for composite-type cells, or `''`/`null` to clear (Shift+F4).

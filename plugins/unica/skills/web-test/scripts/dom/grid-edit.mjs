@@ -1,4 +1,6 @@
-// web-test dom/grid-edit v1.0 — DOM scripts for row-fill (grid edit-time operations)
+// web-test dom/grid-edit v1.2 — DOM scripts for row-fill (grid edit-time operations)
+//
+import { HEADERLESS_GRID_FN } from './_shared.mjs';
 //
 // All helpers below accept an optional `gridSelector`. When passed, they target
 // that exact grid; when null/undefined they pick the LAST visible `.grid` on
@@ -23,18 +25,23 @@ function gridResolver(gridSelector) {
  */
 export function sortFieldKeysByColindexScript(gridSelector, fieldKeys) {
   return `(() => {
+    ${HEADERLESS_GRID_FN}
     const grid = ${gridResolver(gridSelector)};
     if (!grid) return null;
     const head = grid.querySelector('.gridHead');
-    if (!head) return null;
-    const headLine = head.querySelector('.gridLine') || head;
     const cols = [];
-    [...headLine.children].forEach(box => {
-      if (box.offsetWidth === 0) return;
-      const t = ((box.querySelector('.gridBoxText') || box).innerText?.trim() || '').toLowerCase();
-      const ci = parseInt(box.getAttribute('colindex') || '-1');
-      if (t) cols.push({ text: t, colindex: ci });
-    });
+    if (head) {
+      const headLine = head.querySelector('.gridLine') || head;
+      [...headLine.children].forEach(box => {
+        if (box.offsetWidth === 0) return;
+        const t = ((box.querySelector('.gridBoxText') || box).innerText?.trim() || '').toLowerCase();
+        const ci = parseInt(box.getAttribute('colindex') || '-1');
+        if (t) cols.push({ text: t, colindex: ci });
+      });
+    } else {
+      // Headerless: synthesized columns (КолонкаN/(checkbox)) ordered by colindex
+      synthHeaderlessColumns(grid).forEach(c => cols.push({ text: c.name.toLowerCase(), colindex: parseInt(c.colindex) }));
+    }
     const keys = ${JSON.stringify(fieldKeys)};
     const mapped = keys.map(k => {
       const exact = cols.find(c => c.text === k);
@@ -59,29 +66,34 @@ export function sortFieldKeysByColindexScript(gridSelector, fieldKeys) {
  */
 export function findCellCoordsByFieldsScript(gridSelector, row, fieldKeys) {
   return `(() => {
+    ${HEADERLESS_GRID_FN}
     const grid = ${gridResolver(gridSelector)};
     if (!grid) return { error: 'no_grid' };
     const head = grid.querySelector('.gridHead');
     const body = grid.querySelector('.gridBody');
-    if (!head || !body) return { error: 'no_grid_body' };
+    if (!body) return { error: 'no_grid_body' };
 
-    // Read column headers to find target colindex
-    const headLine = head.querySelector('.gridLine') || head;
+    // Read columns to find target colindex (+ subTarget for headerless split mark-boxes)
     const cols = [];
-    [...headLine.children].forEach(box => {
-      if (box.offsetWidth === 0) return;
-      const t = box.querySelector('.gridBoxText');
-      const ci = box.getAttribute('colindex');
-      cols.push({ colindex: ci, text: ((t || box).innerText?.trim() || '').toLowerCase() });
-    });
+    if (head) {
+      const headLine = head.querySelector('.gridLine') || head;
+      [...headLine.children].forEach(box => {
+        if (box.offsetWidth === 0) return;
+        const t = box.querySelector('.gridBoxText');
+        const ci = box.getAttribute('colindex');
+        cols.push({ colindex: ci, text: ((t || box).innerText?.trim() || '').toLowerCase(), subTarget: null });
+      });
+    } else {
+      synthHeaderlessColumns(grid).forEach(c => cols.push({ colindex: c.colindex, text: c.name.toLowerCase(), subTarget: c.subTarget }));
+    }
 
     const keys = ${JSON.stringify(fieldKeys)};
-    let targetColindex = null;
+    let targetColindex = null, targetSub = null;
     for (const key of keys) {
       const exact = cols.find(c => c.text === key);
-      if (exact) { targetColindex = exact.colindex; break; }
+      if (exact) { targetColindex = exact.colindex; targetSub = exact.subTarget; break; }
       const inc = cols.find(c => c.text.includes(key) || key.includes(c.text));
-      if (inc) { targetColindex = inc.colindex; break; }
+      if (inc) { targetColindex = inc.colindex; targetSub = inc.subTarget; break; }
     }
 
     const rows = [...body.querySelectorAll('.gridLine')];
@@ -100,7 +112,12 @@ export function findCellCoordsByFieldsScript(gridSelector, row, fieldKeys) {
     }
     if (!box) return { error: 'no_cell' };
     box.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    const cell = box.querySelector('.gridBoxText') || box;
+    // subTarget-aware cell node: 'checkbox' → box itself (row-fill then uses findCheckboxAtPoint),
+    // 'title' → .gridBoxTitle, else (headed default / 'text') → .gridBoxText || box.
+    let cell;
+    if (targetSub === 'checkbox') cell = box;
+    else if (targetSub === 'title') cell = box.querySelector('.gridBoxTitle') || box;
+    else cell = box.querySelector('.gridBoxText') || box;
     const r = cell.getBoundingClientRect();
     const currentText = (cell.innerText?.trim() || '').replace(/\\u00a0/g, ' ');
     return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), currentText };
@@ -116,28 +133,33 @@ export function findCellCoordsByFieldsScript(gridSelector, row, fieldKeys) {
  */
 export function findNextCellCoordsByKeyScript(gridSelector, row, key) {
   return `(() => {
+    ${HEADERLESS_GRID_FN}
     const grid = ${gridResolver(gridSelector)};
     if (!grid) return null;
     const head = grid.querySelector('.gridHead');
     const body = grid.querySelector('.gridBody');
-    if (!head || !body) return null;
-    const headLine = head.querySelector('.gridLine') || head;
+    if (!body) return null;
     const cols = [];
-    [...headLine.children].forEach(box => {
-      if (box.offsetWidth === 0) return;
-      const t = box.querySelector('.gridBoxText');
-      const ci = box.getAttribute('colindex');
-      cols.push({ colindex: ci, text: ((t || box).innerText?.trim() || '').toLowerCase() });
-    });
+    if (head) {
+      const headLine = head.querySelector('.gridLine') || head;
+      [...headLine.children].forEach(box => {
+        if (box.offsetWidth === 0) return;
+        const t = box.querySelector('.gridBoxText');
+        const ci = box.getAttribute('colindex');
+        cols.push({ colindex: ci, text: ((t || box).innerText?.trim() || '').toLowerCase(), subTarget: null });
+      });
+    } else {
+      synthHeaderlessColumns(grid).forEach(c => cols.push({ colindex: c.colindex, text: c.name.toLowerCase(), subTarget: c.subTarget }));
+    }
     const kl = ${JSON.stringify(key.toLowerCase())};
     const klNoSpace = kl.replace(/[\\s\\-]+/g, '');
-    let targetColindex = null;
+    let targetColindex = null, targetSub = null;
     const exact = cols.find(c => c.text === kl);
-    if (exact) targetColindex = exact.colindex;
+    if (exact) { targetColindex = exact.colindex; targetSub = exact.subTarget; }
     else {
       const inc = cols.find(c => c.text.includes(kl) || kl.includes(c.text)
         || c.text.includes(klNoSpace) || klNoSpace.includes(c.text));
-      if (inc) targetColindex = inc.colindex;
+      if (inc) { targetColindex = inc.colindex; targetSub = inc.subTarget; }
     }
     if (targetColindex == null) return null;
     const rows = [...body.querySelectorAll('.gridLine')];
@@ -146,7 +168,10 @@ export function findNextCellCoordsByKeyScript(gridSelector, row, key) {
     const box = [...line.children].find(b => b.offsetWidth > 0 && b.getAttribute('colindex') === targetColindex);
     if (!box) return null;
     box.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    const cell = box.querySelector('.gridBoxText') || box;
+    let cell;
+    if (targetSub === 'checkbox') cell = box;
+    else if (targetSub === 'title') cell = box.querySelector('.gridBoxTitle') || box;
+    else cell = box.querySelector('.gridBoxText') || box;
     const r = cell.getBoundingClientRect();
     const currentText = (cell.innerText?.trim() || '').replace(/\\u00a0/g, ' ');
     return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), currentText };
@@ -233,6 +258,7 @@ export function getGridEditCheckScript() {
  */
 export function readActiveGridCellScript() {
   return `(() => {
+    ${HEADERLESS_GRID_FN}
     const f = document.activeElement;
     if (!f) return { tag: 'none' };
     if (f.tagName === 'INPUT' || f.tagName === 'TEXTAREA') {
@@ -251,6 +277,22 @@ export function readActiveGridCellScript() {
               const t = h.querySelector('.gridBoxText');
               headerText = (t || h).innerText?.trim() || '';
               break;
+            }
+          }
+          if (!head) {
+            // Headerless: the editing INPUT is rendered in an overlay (.inputs) OUTSIDE
+            // the .gridBox, so walking ancestors for colindex fails. Resolve colindex by
+            // matching the input's x against the body cells (same idea as the headed branch).
+            const bl = grid.querySelector('.gridBody .gridLine');
+            let ci = null;
+            if (bl) for (const b of bl.children) {
+              if (b.offsetWidth === 0) continue;
+              const br = b.getBoundingClientRect();
+              if (fr.x >= br.x && fr.x < br.x + br.width) { ci = b.getAttribute('colindex'); break; }
+            }
+            if (ci != null) {
+              const sc = synthHeaderlessColumns(grid).find(c => c.kind === 'data' && c.colindex === ci);
+              if (sc) headerText = sc.name;
             }
           }
         }

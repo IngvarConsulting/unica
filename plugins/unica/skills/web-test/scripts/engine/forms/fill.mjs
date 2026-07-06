@@ -1,4 +1,4 @@
-// web-test forms/fill v1.19 — Fill form fields by name (text/checkbox/date/number/dropdown/reference). Delegates references to selectValue / fillReferenceField.
+// web-test forms/fill v1.20 — Fill form fields by name (text/checkbox/date/number/dropdown/reference; array → multi-select via selectValue). Delegates references to selectValue / fillReferenceField.
 
 import {
   page, ensureConnected, ACTION_WAIT, highlightMode, normYo,
@@ -30,6 +30,20 @@ export async function fillFields(fields) {
   for (const r of resolved) {
     if (r.error) {
       results.push(r);
+      continue;
+    }
+    // Array value → multi-select. Delegate to selectValue's array branch (auto-detects
+    // the surface) so fillFields({field:[...]}) works the same as selectValue(field,[...]).
+    if (Array.isArray(fields[r.field])) {
+      const sv = await selectValue(r.field, fields[r.field]);
+      const sel = sv.selected || {};
+      if (sel.error) {
+        results.push({ field: r.field, error: sel.error });
+      } else {
+        const res = { field: r.field, ok: true, values: sel.values || [], method: 'multi-select' };
+        if (sel.notSelected?.length) res.notSelected = sel.notSelected;
+        results.push(res);
+      }
       continue;
     }
     // Auto-highlight the field input before filling

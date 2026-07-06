@@ -1,11 +1,11 @@
-// web-test forms/select-value v1.24 — Reference & composite-type value selection: selectValue, fillReferenceField, selection/type-dialog pickers.
+// web-test forms/select-value v1.33 — Reference & composite-type value selection: selectValue (+ array multi-select), fillReferenceField, selection/type-dialog pickers.
 
 import {
   page, ensureConnected, normYo, highlightMode, ACTION_WAIT,
 } from '../core/state.mjs';
 import {
   detectFormScript, findFieldButtonScript, resolveFieldsScript,
-  readSubmenuScript, checkErrorsScript,
+  readSubmenuScript, checkErrorsScript, readCloudDDScript,
   findSearchInputScript, findNamedButtonScript, findCompareTypeRadioScript, isFormVisibleScript,
   findPatternInputIdScript, isTypeDialogScript, isNotInListCloudVisibleScript,
   findChildFormByButtonScript, readTypeDialogVisibleRowsScript,
@@ -21,15 +21,20 @@ import {
 } from '../core/helpers.mjs';
 import { pasteText } from '../core/clipboard.mjs';
 import { getFormState } from './state.mjs';
-import { filterList } from '../table/filter.mjs';
+import { filterList, unfilterList } from '../table/filter.mjs';
+import { clickElement } from '../core/click.mjs';
+import { fillTableRow } from '../table/row-fill.mjs';
+import { closeForm } from './close.mjs';
+import { readTable } from '../table/grid.mjs';
 
 /**
- * Scan visible grid rows for a text or structured column match.
- * Returns center coords of the matched row, or null if not found.
- * When searchSpec is empty, returns coords of the first row (fallback).
+ * Scan a selection-form grid for the row matching `search` (string, or a
+ * { column: value } object for per-column matching) and return a click point
+ * inside the matched row's first visible text cell. See scanGridRowsScript for
+ * matching rules and the return shape (`{ x, y, isGroup, visibleSample, ... }`).
  */
-async function scanGridRows(formNum, searchSpec) {
-  return page.evaluate(scanGridRowsScript(formNum, searchSpec));
+async function scanGridRows(formNum, search) {
+  return page.evaluate(scanGridRowsScript(formNum, search));
 }
 
 /**
@@ -139,36 +144,44 @@ async function advancedSearchInline(formNum, text) {
  * @returns {{ field, ok, method }} or {{ field, error, message }}
  */
 export async function pickFromSelectionForm(selFormNum, fieldName, search, origFormNum) {
+  const isObj = !!search && typeof search === 'object';
+  // searchText (joined for objects) is only for the paste-based search steps
+  // (advancedSearchInline / simple search). Row matching uses the structured
+  // `search` via scanGridRows — no lossy join there.
   const searchText = typeof search === 'string'
-    ? search : (search ? Object.values(search).join(' ') : '');
+    ? search : (isObj ? Object.values(search).join(' ') : '');
   const searchLower = normYo((searchText || '').toLowerCase());
-  const columnSearch = typeof search === 'object' && search ? search : null;
+  const hasSearch = isObj ? Object.keys(search).length > 0 : !!searchLower;
 
-  // Helper: try to select a row; returns result if ok, null if item wasn't selectable (group).
+  // Helper: try to select a row; returns result if ok, null if it couldn't be
+  // selected (real group row, or the click missed). Remembers why for the
+  // final error message.
   let hadUnselectableMatch = false;
-  let visibleSample = null;
-  const rememberSample = (row) => {
-    if (row?.visibleSample) visibleSample = row.visibleSample;
-    return row;
-  };
+  let lastIsGroup = false;
+  let lastSample = null;
   async function trySelect(row) {
     const r = await dblclickAndVerify(row, selFormNum, fieldName);
     if (r.ok) return r;
-    hadUnselectableMatch = true; // found match but couldn't select (possibly group row or overlay)
+    hadUnselectableMatch = true; // matched but form stayed open (group row or missed click)
+    lastIsGroup = !!row.isGroup;
     return null; // form still open, try next step
+  }
+  // Run scanGridRows, remember the visible-row sample for actionable errors.
+  async function scanAndTry(searchArg) {
+    const row = await scanGridRows(selFormNum, searchArg);
+    if (row?.visibleSample) lastSample = row.visibleSample;
+    if (row?.x) return trySelect(row);
+    return null;
   }
 
   // Step 1: Scan visible rows (no filtering)
-  if (searchLower) {
-    const row = rememberSample(await scanGridRows(selFormNum, columnSearch || searchLower));
-    if (row?.x) {
-      const r = await trySelect(row);
-      if (r) return r;
-    }
+  if (hasSearch) {
+    const r = await scanAndTry(search);
+    if (r) return r;
   }
 
   // Step 2: Advanced search (Alt+F — fast, no overlay issues)
-  if (typeof search === 'object' && search) {
+  if (isObj) {
     // Per-field advanced search via filterList(val, {field})
     for (const [fld, val] of Object.entries(search)) {
       try {
@@ -185,12 +198,9 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
     // Inline advanced search (Alt+F, "по части строки")
     await advancedSearchInline(selFormNum, searchText);
   }
-  if (searchLower) {
-    const row = rememberSample(await scanGridRows(selFormNum, columnSearch || searchLower));
-    if (row?.x) {
-      const r = await trySelect(row);
-      if (r) return r;
-    }
+  if (hasSearch) {
+    const r = await scanAndTry(search);
+    if (r) return r;
   }
 
   // Step 3: Fallback — simple search via search input (for forms without Alt+F support)
@@ -206,33 +216,33 @@ export async function pickFromSelectionForm(selFormNum, fieldName, search, origF
         await page.keyboard.press('Enter');
         await waitForStable(selFormNum);
       } catch { /* proceed */ }
-      const row = rememberSample(await scanGridRows(selFormNum, searchLower));
-      if (row?.x) {
-        const r = await trySelect(row);
-        if (r) return r;
-      }
+      const r = await scanAndTry(search);
+      if (r) return r;
     }
   }
 
   // Step 4: Empty search → pick first row; otherwise not found
-  if (!searchLower) {
-    const row = rememberSample(await scanGridRows(selFormNum, ''));
-    if (row?.x) {
-      const r = await trySelect(row);
-      if (r) return r;
-    }
+  if (!hasSearch) {
+    const r = await scanAndTry('');
+    if (r) return r;
   }
 
   await page.keyboard.press('Escape');
   await waitForStable();
   const searchDesc = typeof search === 'string' ? '"' + search + '"' : JSON.stringify(search);
-  const sample = visibleSample ? '; visibleSample=' + JSON.stringify(visibleSample) : '';
+  const candidates = lastSample && lastSample.length ? ' Visible rows: ' + lastSample.join(', ') + '.' : '';
   if (hadUnselectableMatch) {
+    if (lastIsGroup) {
+      return { field: fieldName, error: 'not_selectable',
+        message: 'Found ' + searchDesc + ' in selection form but it is a non-selectable group/folder row' };
+    }
+    // Matched a row but the selection click didn't take — the value isn't in the
+    // visible result. Tell the caller to refine rather than blame a "group".
     return { field: fieldName, error: 'not_selectable',
-      message: 'Found ' + searchDesc + ' in selection form but it is not selectable (group/folder row)' + sample };
+      message: 'Matched ' + searchDesc + ' but the row could not be selected (not in the visible result — refine the search).' + candidates };
   }
   return { field: fieldName, error: 'not_found',
-    message: 'No matches in selection form for ' + searchDesc + sample };
+    message: 'No matches in selection form for ' + searchDesc + '.' + candidates };
 }
 
 /**
@@ -442,6 +452,16 @@ export async function fillReferenceField(selector, fieldName, value, formNum) {
     if (dlbVisible) {
       await page.click(dlbSelector);
       await page.waitForTimeout(1000);
+      // Value-list field: DLB opened a FORM (a normal reference's DLB opens an inline dropdown,
+      // not a form) → delegate to the multi handler on the already-open form (single value =
+      // 1-element set). This avoids hanging on the safeClick below over the modal .surface.
+      const openedForm = await detectNewForm();
+      if (openedForm !== null) {
+        const res = await dispatchMultiSurface(fieldName, [text], { formNum: openedForm, baseForm: formNum });
+        const sel = res.selected || {};
+        return { field: fieldName, ok: !sel.error, value: text, method: 'multi-select',
+          ...(sel.notSelected ? { notSelected: sel.notSelected } : {}) };
+      }
       const eddState = await readEdd();
       if (eddState.visible && eddState.items?.length > 0) {
         const target = normYo(text.toLowerCase());
@@ -613,7 +633,298 @@ export async function fillReferenceField(selector, fieldName, value, formNum) {
  *   B) DLB opens dropdown with history — click "Показать все" or F4 to open selection form
  *   C) DLB opens a separate selection form directly — search + dblclick in grid
  */
+// Button labels for the value-list multi-select surfaces. Single source for BOTH
+// surface detection and clicking (clickElement matches a button by its technical
+// name OR tooltip), so detect and click never drift apart.
+const MULTI_BTN = {
+  uncheckAll: 'СнятьФлажки',   // substring of the real name "<List>СнятьФлажки" (list-name-agnostic);
+                               //   clickElement/hasButton both match by includes. tooltip "Снять пометки со всех строк"
+  confirm:    'ОК',
+  podbor:     'Подбор',
+  choose:     'Выбрать',
+  yes:        'Да',
+};
+// Recognized selection surfaces a value-list field can open.
+const MULTI_SURFACE = {
+  checkboxForm:    'checkbox-form',     // modal form: all candidates as checkboxes (+ ОК)
+  poolPodbor:      'pool-podbor',       // intermediate "pool" form + Подбор
+  cloudDropdown:   'cloud-dropdown',    // inline .cloudDD quick-choice checkbox dropdown
+  catalogMultiRow: 'catalog-multirow',  // catalog selection form, Ctrl multi-row + Выбрать
+};
+
+/**
+ * Multi-select for "value-list" fields: `selectValue(field, [v1, v2, ...])`.
+ * Always REPLACE semantics (select exactly the given set). Dispatches across the
+ * 4 selection surfaces (see upload/webtest-multiselect-design.md §7a.1) — a checkbox
+ * form, an intermediate pool + Подбор catalog, an inline cloud dropdown, and a
+ * Ctrl-multi-row catalog form. Composes existing API
+ * (clickElement/fillTableRow/closeForm/filterList/readTable/getFormState).
+ * Returns flat form state + `selected: { field, values:[…selected…], notSelected?:[{value,reason}] }`.
+ * The detected surface is an internal detail — it is NOT exposed in the result.
+ */
+async function selectValuesMulti(fieldName, values, { type } = {}) {
+  ensureConnected();
+  await dismissPendingErrors();
+  const baseForm = await page.evaluate(detectFormScript());
+  if (baseForm === null) throw new Error('selectValue(multi): no form found');
+
+  // Resolve field button (DLB→CB) + DCS-checkbox auto-enable (mirror selectValue).
+  let btn = await page.evaluate(findFieldButtonScript(baseForm, fieldName, 'DLB'));
+  if (btn?.error === 'button_not_found') btn = await page.evaluate(findFieldButtonScript(baseForm, fieldName, 'CB'));
+  if (btn?.error) {
+    return returnFormState({ selected: { field: fieldName, values: [],
+      error: 'field_not_found', notSelected: values.map(v => ({ value: String(v), reason: 'field_not_found' })) } });
+  }
+  if (btn.dcsCheckbox) {
+    const cbSel = `[id="${btn.dcsCheckbox.inputId}"]`;
+    const isChecked = await page.$eval(cbSel, el =>
+      el.classList.contains('checked') || el.classList.contains('checkboxOn') || el.classList.contains('select')).catch(() => false);
+    if (!isChecked) { await page.click(cbSel).catch(() => {}); await waitForStable(); }
+  }
+
+  // ── Open (F4-first) ──
+  // clickElement already stabilizes the page internally (and leaves the field focused) — so we
+  // detect a new form right away, and on the F4 branch press F4 directly with NO re-focus click.
+  // (A page.click on the field input here can intermittently hang ~30s on Playwright's
+  // actionability timeout when DLB/CB buttons or a .surface overlay cover the input.)
+  await clickElement(fieldName).catch(() => {});
+  let formNum = await helperDetectNewForm(baseForm);
+  if (formNum === null) {
+    await page.keyboard.press('F4');
+    await page.waitForTimeout(ACTION_WAIT);
+    await waitForStable(baseForm);
+    formNum = await helperDetectNewForm(baseForm);
+  }
+  const isCloudDD = (formNum === null) && await cloudDDVisible();
+  if (formNum === null && !isCloudDD) {
+    return returnFormState({ selected: { field: fieldName, values: [],
+      error: 'surface_unrecognized', notSelected: values.map(v => ({ value: String(v), reason: 'open_failed' })) } });
+  }
+  return dispatchMultiSurface(fieldName, values, { formNum, isCloudDD, baseForm });
+}
+
+const cloudDDVisible = () => page.evaluate(`!![...document.querySelectorAll('.cloudDD')].find(p => p.offsetWidth > 0 && p.offsetHeight > 0)`);
+
+/** Classify an already-open form as a value-list multi-surface (or null). For our own dispatch —
+ *  here the field is already known to be a value-list, so the broad Выбрать/ОК signals are safe. */
+async function detectMultiSurface(formNum) {
+  if (formNum === null) return null;
+  const fs = await getFormState();
+  const buttons = fs.buttons || [];
+  const hasButton = (label) => buttons.some(b => (b.name || '').includes(label) || (b.tooltip || '').includes(label));
+  if (hasButton(MULTI_BTN.podbor)) return MULTI_SURFACE.poolPodbor;
+  if (hasButton(MULTI_BTN.choose) && !hasButton(MULTI_BTN.confirm)) return MULTI_SURFACE.catalogMultiRow;
+  if (hasButton(MULTI_BTN.uncheckAll) || hasButton(MULTI_BTN.confirm)) return MULTI_SURFACE.checkboxForm;
+  return null;
+}
+
+/** CONSERVATIVE check used by the single-value selectValue delegation: only the UNAMBIGUOUS
+ *  value-list signals (Подбор / СнятьФлажки) — a normal single-reference selection form has
+ *  "Выбрать" (no ОК/Подбор/СнятьФлажки), so it is NOT misclassified as a value-list surface. */
+async function isValueListSurface(formNum) {
+  if (formNum === null) return false;
+  const fs = await getFormState();
+  const buttons = fs.buttons || [];
+  const hasButton = (label) => buttons.some(b => (b.name || '').includes(label) || (b.tooltip || '').includes(label));
+  return hasButton(MULTI_BTN.podbor) || hasButton(MULTI_BTN.uncheckAll);
+}
+
+/**
+ * Run the multi-select for a value-list field whose selection surface is ALREADY OPEN
+ * (`formNum` form, or `isCloudDD` inline dropdown). Detects which of the 4 surfaces it is
+ * and applies `values` (always replace). Shared by selectValuesMulti (after it opens) and by
+ * the single-value delegation in selectValue / fillReferenceField (reuses the open form — no
+ * reopen, no flicker). Returns flat state + `selected:{field,values,notSelected?}`.
+ */
+async function dispatchMultiSurface(fieldName, values, { formNum, isCloudDD, baseForm }) {
+  const valStr = (el) => typeof el === 'string' ? el : String(Object.values(el)[0]);
+  const targets = values.map(v => ({ raw: v, str: valStr(v) }));
+  const selected = [], notSelected = [];
+  const eqYo = (a, b) => normYo(String(a).toLowerCase()) === normYo(String(b).toLowerCase());
+  const incYo = (hay, needle) => normYo(String(hay).toLowerCase()).includes(normYo(String(needle).toLowerCase()));
+
+  const surface = isCloudDD ? MULTI_SURFACE.cloudDropdown : await detectMultiSurface(formNum);
+  if (!surface) {
+    return returnFormState({ selected: { field: fieldName, values: [],
+      error: 'surface_unrecognized', notSelected: targets.map(t => ({ value: t.str, reason: 'open_failed' })) } });
+  }
+
+  // ── Per-surface handlers ──
+  const ok = (v) => selected.push(v);
+  const fail = (v, reason) => notSelected.push({ value: v, reason });
+
+  // Toggle a candidate's (checkbox) in a headerless checkbox grid by its Колонка1 text.
+  async function toggleByText(text, want) {
+    let done = false;
+    try {
+      const r = await fillTableRow({ '(checkbox)': want ? 'true' : 'false' }, { row: { 'Колонка1': text } });
+      done = !!r.filled?.[0]?.ok;
+    } catch { done = false; }
+    if (!done) {
+      // off-window — narrow via search then retry
+      try { await filterList(text); } catch {}
+      try {
+        const r = await fillTableRow({ '(checkbox)': want ? 'true' : 'false' }, { row: { 'Колонка1': text } });
+        done = !!r.filled?.[0]?.ok;
+      } catch { done = false; }
+      try { await unfilterList(); } catch {}
+    }
+    return done;
+  }
+
+  // Surface: modal checkbox form listing ALL candidates. Replace = diff (touch only
+  // what changes) when the whole list is visible; bulk-uncheck + check for long lists.
+  async function selectInCheckboxForm() {
+    const t = await readTable({ maxRows: 200 });
+    const listFullyVisible = !(t.hasMore && t.hasMore.below);
+    if (listFullyVisible) {
+      const checkedNow = new Set((t.rows || []).filter(r => r['(checkbox)'] === 'true').map(r => r['Колонка1']));
+      const targetSet = new Set(targets.map(x => x.str));
+      for (const v of checkedNow) if (!targetSet.has(v)) await toggleByText(v, false);
+      for (const tg of targets) {
+        if (checkedNow.has(tg.str)) { ok(tg.str); continue; }
+        (await toggleByText(tg.str, true)) ? ok(tg.str) : fail(tg.str, 'not_in_list');
+      }
+    } else {
+      // Virtualized list — can't read full current state to diff; bulk-uncheck then check targets.
+      await clickElement(MULTI_BTN.uncheckAll).catch(() => {});
+      for (const tg of targets) (await toggleByText(tg.str, true)) ? ok(tg.str) : fail(tg.str, 'not_in_list');
+    }
+    await clickElement(MULTI_BTN.confirm);
+  }
+
+  // Surface: intermediate "pool" form (already-picked rows) + Подбор to add from a catalog.
+  // Pool rows persist, so replace = delete all rows (not uncheck). Pool may carry
+  // checkboxes (custom) or be plain rows (platform — membership itself = selected).
+  async function selectViaPool() {
+    await clearPool();
+    const poolHasCheckbox = (t) => (t.columns || []).includes('(checkbox)');
+    const isSelectedInPool = (t, v) => {
+      const row = (t.rows || []).find(r => eqYo(r['Колонка1'], v));
+      return !!row && (!poolHasCheckbox(t) || row['(checkbox)'] !== 'false');
+    };
+    let pool = await readTable({ maxRows: 200 });
+    const needPodbor = [];
+    for (const tg of targets) {
+      const existing = (pool.rows || []).find(r => eqYo(r['Колонка1'], tg.str));
+      if (existing) {
+        if (poolHasCheckbox(pool) && existing['(checkbox)'] !== 'true') {
+          (await toggleByText(tg.str, true)) ? ok(tg.str) : fail(tg.str, 'pool_mark_failed');
+        } else ok(tg.str);   // platform pool: row present = selected; or already checked
+      } else needPodbor.push(tg);
+    }
+    // Add the rest via a SINGLE Подбор session (catalog stays open in Подбор mode).
+    if (needPodbor.length) {
+      await clickElement(MULTI_BTN.podbor);
+      await waitForStable(formNum);
+      if (await helperDetectNewForm(formNum) !== null) {
+        for (const tg of needPodbor) {
+          try { await filterList(tg.str); } catch {}
+          try { await clickElement(tg.str, { dblclick: true }); } catch {}
+        }
+        await closeForm({ save: false });
+        pool = await readTable({ maxRows: 200 });
+        for (const tg of needPodbor) isSelectedInPool(pool, tg.str) ? ok(tg.str) : fail(tg.str, 'not_found_in_catalog');
+      } else {
+        needPodbor.forEach(tg => fail(tg.str, 'podbor_not_opened'));
+      }
+    }
+    await clickElement(MULTI_BTN.confirm);
+  }
+
+  // Empty the pool by selecting every row (Ctrl+A covers off-screen rows) and deleting.
+  async function clearPool() {
+    let t = await readTable({ maxRows: 200 });
+    if (!(t.rows || []).length) return;
+    // Custom pool: rows are checkboxes (membership = checked) → just uncheck all (rows persist).
+    if ((t.columns || []).includes('(checkbox)')) {
+      await clickElement(MULTI_BTN.uncheckAll).catch(() => {});
+      return;
+    }
+    // Platform pool (plain rows, membership = presence) → delete every row. Ctrl+A does NOT
+    // select all here (only the focused row), so: one select-all+Delete, then delete the first
+    // row repeatedly until the pool is empty (guard against an unexpected non-shrinking grid).
+    const colKey = t.columns?.[0] || 'Колонка1';
+    try { await clickElement({ row: 0, column: colKey }); } catch {}
+    await page.keyboard.press('Control+a');
+    await page.waitForTimeout(150);
+    await page.keyboard.press('Delete');
+    await waitForStable(formNum);
+    for (let guard = 0; guard < 100; guard++) {
+      t = await readTable({ maxRows: 200 });
+      if (!(t.rows || []).length) return;
+      try { await clickElement({ row: 0, column: colKey }); } catch {}
+      await page.keyboard.press('Delete');
+      await waitForStable(formNum);
+    }
+  }
+
+  // Surface: inline .cloudDD quick-choice dropdown. Coordinate clicks (a .surface
+  // backdrop swallows selector clicks); confirm by clicking OUTSIDE (never Escape/Enter/ОК).
+  async function selectInCloudDropdown() {
+    const readItems = () => page.evaluate(readCloudDDScript());
+    let items = await readItems();
+    if (!Array.isArray(items)) { targets.forEach(t => fail(t.str, 'dropdown_unreadable')); return; }
+    for (const it of items.filter(i => i.checked)) { await page.mouse.click(it.x, it.y); await page.waitForTimeout(150); }
+    for (const tg of targets) {
+      items = await readItems();
+      const it = items.find(i => eqYo(i.text, tg.str)) || items.find(i => incYo(i.text, tg.str));
+      if (!it) { fail(tg.str, 'not_in_list'); continue; }
+      if (!it.checked) { await page.mouse.click(it.x, it.y); await page.waitForTimeout(200); }
+      const after = (await readItems()).find(i => eqYo(i.text, tg.str));
+      after?.checked ? ok(tg.str) : fail(tg.str, 'not_toggled');
+    }
+    await clickOutsideCloudDropdown();
+  }
+
+  async function clickOutsideCloudDropdown() {
+    const rect = await page.evaluate(`(() => { const p = [...document.querySelectorAll('.cloudDD')].find(e => e.offsetWidth > 0); if (!p) return null; const r = p.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), vw: window.innerWidth }; })()`);
+    if (!rect) return;
+    const outX = (rect.x + rect.w + 80 <= rect.vw) ? rect.x + rect.w + 80 : Math.max(10, rect.x - 40);
+    await page.mouse.click(outX, rect.y + Math.round(rect.h / 2));
+    await page.waitForTimeout(300);
+  }
+
+  // Surface: catalog selection form with multi-row selection (Ctrl-click rows, then Выбрать).
+  async function selectInCatalogMultiRow() {
+    for (let i = 0; i < targets.length; i++) {
+      const tg = targets[i];
+      try {
+        await clickElement(tg.str, i === 0 ? {} : { modifier: 'ctrl' });
+        ok(tg.str);
+      } catch { fail(tg.str, 'row_not_found'); }
+    }
+    await clickElement(MULTI_BTN.choose);
+    await waitForStable(baseForm);
+    const fs = await getFormState();
+    if (fs.confirmation) await clickElement(MULTI_BTN.yes).catch(() => {});   // deletion-marked element confirm
+  }
+
+  try {
+    if (surface === MULTI_SURFACE.checkboxForm) await selectInCheckboxForm();
+    else if (surface === MULTI_SURFACE.poolPodbor) await selectViaPool();
+    else if (surface === MULTI_SURFACE.cloudDropdown) await selectInCloudDropdown();
+    else if (surface === MULTI_SURFACE.catalogMultiRow) await selectInCatalogMultiRow();
+  } catch (e) {
+    // Hard failure mid-flow — surface what we have; real 1C errors propagate via wrapper.
+    const st = await getFormState();
+    st.selected = { field: fieldName, values: selected, error: e.message,
+      notSelected: [...notSelected, ...targets.filter(t => !selected.includes(t.str) && !notSelected.some(n => n.value === t.str)).map(t => ({ value: t.str, reason: 'aborted: ' + e.message }))] };
+    const err = await checkForErrors();
+    if (err) st.errors = err;
+    return st;
+  }
+
+  await waitForStable(baseForm);
+  const selres = { field: fieldName, values: selected };
+  if (notSelected.length) selres.notSelected = notSelected;
+  return returnFormState({ selected: selres });
+}
+
 export async function selectValue(fieldName, searchText, { type } = {}) {
+  // Multi-select: an array of values → dispatch to the value-list multi handler
+  // (5 surfaces). Single-value path below is unchanged.
+  if (Array.isArray(searchText)) return selectValuesMulti(fieldName, searchText, arguments[2] || {});
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
@@ -727,6 +1038,10 @@ export async function selectValue(fieldName, searchText, { type } = {}) {
     await waitForStable(formNum);
     const selFormNum = await detectSelectionForm();
     if (selFormNum !== null) {
+      // Value-list field — delegate to the multi handler on the already-open form.
+      if (await isValueListSurface(selFormNum)) {
+        return dispatchMultiSurface(btn.fieldName, [searchText], { formNum: selFormNum, baseForm: formNum });
+      }
       const pickResult = await pickFromSelectionForm(selFormNum, btn.fieldName, searchText || '', formNum);
       const selected = { field: btn.fieldName, search: searchText || null, method: 'form' };
       if (pickResult.error) selected.error = pickResult.error;
@@ -821,6 +1136,12 @@ export async function selectValue(fieldName, searchText, { type } = {}) {
   // 3B. Check if a new selection form opened directly (use broad detection to also catch type dialogs)
   const selFormNum = await detectNewForm();
   if (selFormNum !== null) {
+    // Value-list field (Подбор/СнятьФлажки surface) — delegate to the multi handler on the
+    // already-open form (a single value = a 1-element set). MUST precede isTypeDialog: the platform
+    // "Список значений" form has a ValueList grid + ОК and would be misclassified as a type dialog.
+    if (await isValueListSurface(selFormNum)) {
+      return dispatchMultiSurface(btn.fieldName, [searchText], { formNum: selFormNum, baseForm: formNum });
+    }
     // Auto-detect type selection dialog when `type` was not specified
     if (await isTypeDialog(selFormNum)) {
       await page.keyboard.press('Escape');

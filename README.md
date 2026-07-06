@@ -22,26 +22,29 @@ Unica - это плагин для Codex, который помогает раб
 
 ## Установка
 
-На macOS и Linux одна команда скачивает installer из последнего GitHub Release,
-определяет платформу, скачивает нужный пакет Unica и устанавливает его в Codex:
+На macOS и Linux одна команда скачивает POSIX installer из последнего GitHub
+Release, определяет платформу, скачивает нужный пакет Unica и устанавливает его
+в Codex:
 
 ```sh
 curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh
 ```
 
-На Windows используйте Windows PowerShell 5.1. Shell installer
-`install-unica.sh` не поддерживает Git Bash/MSYS/Cygwin:
+На Windows используйте Windows PowerShell 5.1. `install-unica.sh` не
+поддерживает Windows, включая Git Bash, MSYS и Cygwin:
 
 ```powershell
 iwr https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.ps1 -OutFile install-unica.ps1
 powershell -ExecutionPolicy Bypass -File .\install-unica.ps1
 ```
 
-Для установки конкретного релиза:
+Для установки конкретного релиза на macOS или Linux:
 
 ```sh
 curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.5.1
 ```
+
+Для установки конкретного релиза на Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-unica.ps1 -Version v0.5.1
@@ -53,8 +56,8 @@ Release assets собираются отдельно под платформы:
 - `unica-codex-marketplace-linux-x64.tar.gz`
 - `unica-codex-marketplace-win-x64.zip`
 
-Installer выбирает нужный архив, регистрирует marketplace `unica-local`,
-обновляет cache Codex и включает `unica@unica-local`.
+Installer выбирает нужный архив для своей платформы, регистрирует marketplace
+`unica-local`, обновляет cache Codex и включает `unica@unica-local`.
 
 Проверка:
 

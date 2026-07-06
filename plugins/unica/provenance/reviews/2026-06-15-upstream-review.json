@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "id": "2026-06-15-upstream-review",
-  "generatedAt": "2026-06-26",
+  "generatedAt": "2026-07-04",
   "purpose": "Manual review of donor changes since the last local Unica skill adaptation. This is not a checksum attestation.",
   "summary": [
-    "cc-1c-skills reviewed through cbde49efdaeec190432fdf4a53201a87e83c69de; the raw 138 watched path count was EOL/raw-wrapper/docs-heavy and is now closed by per-entry baselines.",
-    "Functional donor drift was ported for web-test, cfe-borrow, cfe-init, and form-validate through Unica boundaries.",
-    "EOL normalization, donor-only db/epf-build/web-publish capabilities, generated port branches, and raw PowerShell wrapper churn were reviewed as outside the current packaged Unica surface.",
-    "ai-rules-1c guidance drift reviewed through a421cf44eb1f5859cf2a2b74884f8fbcaefc4826: 16 skills adapted through public unica.* guidance, and api-design marked Unica-owned with ai-rules as secondary-only guidance.",
+    "cc-1c-skills reviewed through 78b5b73fa7f835462dc4073ae7a9fc841e7c62fb; the 17 watched path changes for form-remove, img-grid, skd-edit, subsystem-compile, and web-test are adapted and closed by per-entry baselines.",
+    "Functional donor drift was ported for form-remove, img-grid, skd-edit, subsystem-compile, web-test, cfe-borrow, cfe-init, and form-validate through Unica boundaries.",
+    "Donor web-test SKILL.md guidance was not copied verbatim because it reintroduces CLAUDE_SKILL_DIR/web-publish assumptions; only the multi-select user-facing contract was adapted into the Unica skill.",
+    "ai-rules-1c guidance remains clean through a421cf44eb1f5859cf2a2b74884f8fbcaefc4826.",
     "v8-runner-rust remains clean at the locked v0.5.1 baseline."
   ],
   "decisionPolicy": {
@@ -58,11 +58,11 @@
       "id": "cc-1c-skills",
       "baseline": "f3466e19fdc37954c030e48daabcc192f0098fe7",
       "baselineReason": "Donor head at or before local adaptation commit 795505f2243cf3c93a95918467f99135af758e1b (2026-05-04T07:38:11+07:00).",
-      "targetCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-      "commitsSinceBaseline": 589,
+      "targetCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+      "commitsSinceBaseline": 607,
       "changedWatchedPathCount": 0,
       "reviewStatus": "reviewed",
-      "finding": "Functional cbde49 donor drift was ported for web-test, cfe-borrow, cfe-init, and form-validate; remaining changed watched paths were reviewed as EOL/raw-wrapper/docs-only or donor-only scope and ignored with reasons.",
+      "finding": "Functional 78b5b73 donor drift was ported for form-remove, img-grid, skd-edit, subsystem-compile, and web-test; earlier cbde49 decisions remain closed by existing entry baselines.",
       "affectedEntries": [],
       "reviewedEntries": [
         "cf-edit",
@@ -210,9 +210,9 @@
         },
         {
           "skill": "form-remove",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "evidence": "Ported donor v1.3 cleanup semantics into native Rust: form references are removed by suffix and all Default*Form/Auxiliary*Form slots pointing at the removed form are cleared; parity fixture and skill docs were refreshed."
         },
         {
           "skill": "form-validate",
@@ -228,9 +228,9 @@
         },
         {
           "skill": "img-grid",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "evidence": "Ported donor validation before rendering: --cols must be greater than 0, --rows must be greater than or equal to 0, and auto rows are clamped with max(1, round(sh / step_x))."
         },
         {
           "skill": "interface-edit",
@@ -324,9 +324,9 @@
         },
         {
           "skill": "skd-edit",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "evidence": "Ported donor v1.28 Python 3.9 portability fix: autoDates expr_start/expr_end are computed before f-strings so unicode escapes are not evaluated inside f-string braces."
         },
         {
           "skill": "skd-info",
@@ -342,9 +342,9 @@
         },
         {
           "skill": "subsystem-compile",
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "evidence": "Ported donor v1.8 Python validation path: subsystem-compile now uses import subprocess and subprocess.run([sys.executable, subsystem-validate.py, \"-SubsystemPath\", target_xml]) instead of powershell.exe/subsystem-validate.ps1 in the parity fixture."
         },
         {
           "skill": "subsystem-edit",
@@ -379,8 +379,8 @@
         {
           "skill": "web-test",
           "decision": "ported",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "evidence": "Ported functional cbde49 drift: wide-grid selection clicks the first visible text cell, structured {column:value} matching prefers exact hits, not-found/not-selectable errors carry visibleSample, and fillTableRow exits before tabbing past a completed row."
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "evidence": "Ported donor multi-select/headerless-grid runtime fixes: selectValuesMulti, dispatchMultiSurface, readCloudDDScript, ROW_CLICK_POINT_FN, HEADERLESS_GRID_FN, rowClickPoint visibleSample diagnostics, checkbox-before-click row fill, and fillFields array delegation; Unica docs preserve autonomous-server/no web-publish guidance."
         }
       ]
     },
@@ -681,5 +681,5 @@
       "notes": "Ported functional drift for web-test, cfe-borrow, cfe-init, and form-validate; reviewed EOL-only/raw-wrapper/docs-only and donor-only changes as ignored for the current Unica packaged surface."
     }
   ],
-  "lastRefreshedAt": "2026-06-26"
+  "lastRefreshedAt": "2026-07-04"
 }

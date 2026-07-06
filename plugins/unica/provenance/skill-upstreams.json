@@ -384,7 +384,7 @@
         {
           "skill": "form-remove",
           "status": "ported-to-unica",
-          "notes": "Reviewed and ported donor form-remove updates through typed unica.form.remove with hidden legacy adapter routing. Unica now also applies the shared support guard policy to form removal because it mutates the owning metadata object, even though the current donor drift for form-remove is already closed. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "2026-07-04 78b5b73 refresh: ported donor v1.3 form cleanup semantics into native Unica form.remove. The native implementation now removes matching <Form> child references by suffix and clears all default/auxiliary *Form slots that point at the removed form, not only DefaultForm.",
           "upstreamPaths": [
             ".claude/skills/form-remove/**",
             "docs/form-guide.md",
@@ -406,9 +406,9 @@
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/legacy_scripts.rs"
           ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "decisionReason": "Ported 78b5b73 form-remove cleanup semantics into native Rust and refreshed the parity fixture; prompt-visible skill documents the broader Default*Form/Auxiliary*Form cleanup."
         },
         {
           "skill": "form-validate",
@@ -465,7 +465,7 @@
         {
           "skill": "img-grid",
           "status": "still-local-script",
-          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "2026-07-04 78b5b73 refresh: ported img-grid validation for non-positive dimensions; --cols must be > 0, --rows must be >= 0, and automatic rows are clamped to at least one before rendering.",
           "upstreamPaths": [
             ".claude/skills/img-grid/**",
             "docs/mxl-guide.md",
@@ -478,9 +478,9 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py"
           ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "decision": "ported",
+          "decisionReason": "Ported 78b5b73 img-grid input validation into the packaged script and covered it with a static contract test."
         },
         {
           "skill": "interface-edit",
@@ -831,7 +831,7 @@
         {
           "skill": "skd-edit",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "2026-07-04 78b5b73 refresh: refreshed the shipped legacy/parity skd-edit Python port to v1.28, including Python 3.9-safe autoDates expression construction outside f-string braces.",
           "upstreamPaths": [
             ".claude/skills/skd-edit/**",
             "docs/skd-guide.md",
@@ -852,9 +852,9 @@
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/legacy_scripts.rs"
           ],
-          "decision": "ignored-with-reason",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decision": "ported",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "decisionReason": "Ported 78b5b73 skd-edit runtime portability fix into legacy and parity scripts; expression strings are precomputed before the f-string to avoid Python <3.12 SyntaxError."
         },
         {
           "skill": "skd-info",
@@ -917,7 +917,7 @@
         {
           "skill": "subsystem-compile",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "2026-07-04 78b5b73 refresh: refreshed subsystem-compile parity script to v1.8 and switched auto-validation from PowerShell subsystem-validate.ps1 to Python subsystem-validate.py via subprocess.run.",
           "upstreamPaths": [
             ".claude/skills/subsystem-compile/**",
             "docs/subsystem-guide.md",
@@ -931,9 +931,9 @@
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py"
           ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "decision": "ported",
+          "decisionReason": "Ported 78b5b73 subsystem-compile Python auto-validation path into the parity fixture; packaged parity no longer depends on powershell.exe for this validation step."
         },
         {
           "skill": "subsystem-edit",
@@ -1047,8 +1047,8 @@
           "skill": "web-test",
           "status": "still-local-script",
           "decision": "ported",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "notes": "Reviewed and ported donor web-test functional drift through cbde49efdaeec190432fdf4a53201a87e83c69de: structured selection matching, visibleSample diagnostics, first visible text-cell row click, and fillTableRow early exit. EOL-only and donor-only changes remain intentionally out of the Unica surface.",
+          "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
+          "notes": "2026-07-04 78b5b73 refresh: ported donor web-test multi-select and headerless-grid fixes while preserving Unica URL/autonomous-server guidance. Scripts now share ROW_CLICK_POINT_FN/HEADERLESS_GRID_FN, expose readCloudDDScript, support selectValue(field, array), fillFields array delegation, checkbox-before-click row fill, and robust headerless read/write mapping.",
           "upstreamPaths": [
             ".claude/skills/web-test/**",
             "docs/web-test-guide.md",
@@ -1062,7 +1062,8 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py"
-          ]
+          ],
+          "decisionReason": "Ported 78b5b73 web-test runtime fixes into packaged scripts and adapted the prompt-visible docs without reintroducing CLAUDE_SKILL_DIR or web-publish guidance."
         }
       ],
       "lastAdaptedLocalCommit": "795505f2243cf3c93a95918467f99135af758e1b",

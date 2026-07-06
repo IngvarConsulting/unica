@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# remove-form v1.1 — Remove form from 1C object
+# remove-form v1.3 — Remove form from 1C object
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 
 import argparse
@@ -85,11 +85,15 @@ def main():
             parent.remove(node)
             break
 
-    # Clear DefaultForm if it pointed to removed form
-    default_form = root.find(".//md:DefaultForm", NSMAP)
-    if default_form is not None and default_form.text:
-        if re.search(rf"Form\.{re.escape(form_name)}$", default_form.text):
-            default_form.text = ""
+    # Clear any Default*/Auxiliary* form slot that pointed to the removed form
+    # (form-add writes the purpose-specific property: DefaultObjectForm / DefaultListForm /
+    #  DefaultChoiceForm / DefaultRecordForm / DefaultForm — not just generic DefaultForm).
+    ref_re = re.compile(rf"Form\.{re.escape(form_name)}$")
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        if etree.QName(el).localname.endswith("Form") and el.text and ref_re.search(el.text):
+            el.text = ""
 
     # Save with BOM
     save_xml_with_bom(tree, root_xml_full)

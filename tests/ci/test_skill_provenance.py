@@ -143,7 +143,7 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.5.1")
         self.assertEqual(locked_tools["v8-runner"]["sourceCommit"], "ad72f64222ab0a7e6dfd391adb437a956c0a2428")
 
-    def test_rlm_tools_are_locked_to_reviewed_1_25_0_pair(self) -> None:
+    def test_rlm_tools_are_locked_to_reviewed_1_26_0_pair(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
@@ -152,14 +152,14 @@ class SkillProvenanceTests(unittest.TestCase):
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
 
         for name in ("rlm-tools-bsl", "rlm-bsl-index"):
-            self.assertEqual(locked_tools[name]["version"], "1.25.0")
-            self.assertEqual(locked_tools[name]["sourceTag"], "v1.25.0")
+            self.assertEqual(locked_tools[name]["version"], "1.26.0")
+            self.assertEqual(locked_tools[name]["sourceTag"], "v1.26.0")
             self.assertEqual(
                 locked_tools[name]["sourceCommit"],
-                "3da3ca8ea27e1b893283e5053a7158765f3a01c6",
+                "dcfff95ce678f49971b14d8acd82b042a6855470",
             )
 
-    def test_bsl_analyzer_is_locked_to_reviewed_0_2_48(self) -> None:
+    def test_bsl_analyzer_is_locked_to_reviewed_0_2_55(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
@@ -167,11 +167,11 @@ class SkillProvenanceTests(unittest.TestCase):
         )
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
 
-        self.assertEqual(locked_tools["bsl-analyzer"]["version"], "0.2.48")
-        self.assertEqual(locked_tools["bsl-analyzer"]["sourceTag"], "v0.2.48")
+        self.assertEqual(locked_tools["bsl-analyzer"]["version"], "0.2.55")
+        self.assertEqual(locked_tools["bsl-analyzer"]["sourceTag"], "v0.2.55")
         self.assertEqual(
             locked_tools["bsl-analyzer"]["sourceCommit"],
-            "12cce48b47999ff46c9afc01aec3b7cc438b63fc",
+            "5a02bb44dedaf29e0e29af1f740279d279199854",
         )
 
     def test_all_local_and_contract_paths_exist(self) -> None:
@@ -209,16 +209,24 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertNotIn("sha256", payload)
         self.assertNotIn("Digest", payload)
-        self.assertEqual(review["lastRefreshedAt"], "2026-06-26")
+        self.assertEqual(review["lastRefreshedAt"], "2026-07-04")
         self.assertEqual(
             upstreams["cc-1c-skills"]["targetCommit"],
-            "cbde49efdaeec190432fdf4a53201a87e83c69de",
+            "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
         )
-        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 589)
+        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 607)
         self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 0)
         self.assertEqual(upstreams["cc-1c-skills"]["affectedEntries"], [])
-        target = "cbde49efdaeec190432fdf4a53201a87e83c69de"
-        functional_skills = {"web-test", "cfe-borrow", "cfe-init", "form-validate"}
+        previous_target = "cbde49efdaeec190432fdf4a53201a87e83c69de"
+        target = "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb"
+        functional_skills = {
+            "form-remove",
+            "img-grid",
+            "skd-edit",
+            "subsystem-compile",
+            "web-test",
+        }
+        previous_functional_skills = {"cfe-borrow", "cfe-init", "form-validate"}
         decisions = {
             item["skill"]: item
             for item in upstreams["cc-1c-skills"]["entryDecisions"]
@@ -230,12 +238,22 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertEqual(decisions[skill]["decision"], "ported")
             self.assertEqual(decisions[skill]["baselineCommit"], target)
 
-        self.assertIn("visibleSample", decisions["web-test"]["evidence"])
+        for skill in previous_functional_skills:
+            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
+            self.assertEqual(decisions[skill]["decision"], "ported")
+            self.assertEqual(decisions[skill]["baselineCommit"], previous_target)
+
+        self.assertIn("HEADERLESS_GRID_FN", decisions["web-test"]["evidence"])
+        self.assertIn("selectValuesMulti", decisions["web-test"]["evidence"])
+        self.assertIn("Default*Form", decisions["form-remove"]["evidence"])
+        self.assertIn("--cols", decisions["img-grid"]["evidence"])
+        self.assertIn("expr_start", decisions["skd-edit"]["evidence"])
+        self.assertIn("subprocess.run", decisions["subsystem-compile"]["evidence"])
         self.assertIn("BorrowMainAttribute", decisions["cfe-borrow"]["evidence"])
         self.assertIn("MDClasses format version", decisions["cfe-init"]["evidence"])
         self.assertIn("type_error_count", decisions["form-validate"]["evidence"])
 
-        ignored_skills = set(decisions) - functional_skills
+        ignored_skills = set(decisions) - functional_skills - previous_functional_skills
         self.assertIn("cf-edit", ignored_skills)
         self.assertIn("epf-bsp-init", ignored_skills)
         self.assertIn("help-add", ignored_skills)
@@ -243,7 +261,7 @@ class SkillProvenanceTests(unittest.TestCase):
             decision = decisions[skill]
             self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
             self.assertEqual(decision["decision"], "ignored-with-reason")
-            self.assertEqual(decision["baselineCommit"], target)
+            self.assertEqual(decision["baselineCommit"], previous_target)
             self.assertIn("EOL", decision["evidence"])
             self.assertIn("donor-only", decision["evidence"])
         self.assertEqual(upstreams["ai-rules-1c"]["commitsSinceBaseline"], 23)
@@ -271,15 +289,15 @@ class SkillProvenanceTests(unittest.TestCase):
         backlog = self.load_product_backlog()
         products = {item["id"]: item for item in backlog["products"]}
 
-        self.assertEqual(backlog["generatedAt"], "2026-06-26")
-        self.assertEqual(products["bsl-analyzer"]["locked"], "v0.2.48")
-        self.assertEqual(products["bsl-analyzer"]["latest"], "v0.2.48")
+        self.assertEqual(backlog["generatedAt"], "2026-07-04")
+        self.assertEqual(products["bsl-analyzer"]["locked"], "v0.2.55")
+        self.assertEqual(products["bsl-analyzer"]["latest"], "v0.2.55")
         self.assertEqual(products["bsl-analyzer"]["status"], "applied")
-        self.assertEqual(products["rlm-tools-bsl"]["locked"], "v1.25.0")
-        self.assertEqual(products["rlm-tools-bsl"]["latest"], "v1.25.0")
+        self.assertEqual(products["rlm-tools-bsl"]["locked"], "v1.26.0")
+        self.assertEqual(products["rlm-tools-bsl"]["latest"], "v1.26.0")
         self.assertEqual(products["rlm-tools-bsl"]["status"], "applied")
-        self.assertEqual(products["rlm-bsl-index"]["locked"], "v1.25.0")
-        self.assertEqual(products["rlm-bsl-index"]["latest"], "v1.25.0")
+        self.assertEqual(products["rlm-bsl-index"]["locked"], "v1.26.0")
+        self.assertEqual(products["rlm-bsl-index"]["latest"], "v1.26.0")
         self.assertEqual(products["rlm-bsl-index"]["status"], "applied")
         self.assertEqual(products["v8-runner"]["locked"], "v0.5.1")
         self.assertEqual(products["v8-runner"]["latest"], "v0.5.1")

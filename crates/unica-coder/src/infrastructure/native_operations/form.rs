@@ -1936,14 +1936,19 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
 
         let xml_text = fs::read_to_string(&root_xml_path)
             .map_err(|err| format!("failed to read {}: {err}", root_xml_path.display()))?;
-        let xml_text = remove_metadata_child_text_lxml(&xml_text, "Form", form_name);
-        let (mut xml_text, default_form_cleared) =
-            clear_metadata_reference_text(&xml_text, "DefaultForm", &format!("Form.{form_name}"));
+        let form_ref_suffix = format!("Form.{form_name}");
+        let (xml_text, removed_form_refs) =
+            remove_form_reference_elements(&xml_text, &form_ref_suffix);
+        let (mut xml_text, cleared_form_slots) =
+            clear_form_slot_references(&xml_text, &form_ref_suffix);
         if !xml_text.ends_with('\n') {
             xml_text.push('\n');
         }
-        if default_form_cleared {
-            changes.push("cleared DefaultForm".to_string());
+        if removed_form_refs > 0 {
+            changes.push(format!("removed {removed_form_refs} Form reference(s)"));
+        }
+        for tag in cleared_form_slots {
+            changes.push(format!("cleared {tag}"));
         }
         write_utf8_bom(&root_xml_path, &xml_text)?;
         changes.push(format!("updated {}", root_xml_path.display()));
@@ -1979,6 +1984,109 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             command: None,
         },
     }
+}
+
+pub(crate) fn remove_form_reference_elements(xml_text: &str, suffix: &str) -> (String, usize) {
+    rewrite_simple_form_references(xml_text, suffix, true)
+}
+
+pub(crate) fn clear_form_slot_references(xml_text: &str, suffix: &str) -> (String, Vec<String>) {
+    let (text, _cleared_count) = rewrite_simple_form_references(xml_text, suffix, false);
+    let mut cleared = Vec::new();
+    let mut cursor = 0;
+    while let Some(open_rel) = xml_text[cursor..].find('<') {
+        let open_start = cursor + open_rel;
+        let Some(open_end_rel) = xml_text[open_start..].find('>') else {
+            break;
+        };
+        let open_end = open_start + open_end_rel;
+        let tag = xml_text[open_start + 1..open_end]
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        let local_name = tag.rsplit_once(':').map(|(_, name)| name).unwrap_or(tag);
+        if local_name != "Form" && local_name.ends_with("Form") {
+            let close = format!("</{tag}>");
+            let content_start = open_end + 1;
+            if let Some(close_rel) = xml_text[content_start..].find(&close) {
+                let close_start = content_start + close_rel;
+                let content = &xml_text[content_start..close_start];
+                if !content.contains('<') && content.trim().ends_with(suffix) {
+                    let tag_name = local_name.to_string();
+                    if !cleared.contains(&tag_name) {
+                        cleared.push(tag_name);
+                    }
+                }
+                cursor = close_start + close.len();
+                continue;
+            }
+        }
+        cursor = open_end + 1;
+    }
+    (text, cleared)
+}
+
+fn rewrite_simple_form_references(
+    xml_text: &str,
+    suffix: &str,
+    remove_form_elements: bool,
+) -> (String, usize) {
+    let mut result = String::with_capacity(xml_text.len());
+    let mut cursor = 0;
+    let mut changed = 0;
+    while let Some(open_rel) = xml_text[cursor..].find('<') {
+        let open_start = cursor + open_rel;
+        let Some(open_end_rel) = xml_text[open_start..].find('>') else {
+            break;
+        };
+        let open_end = open_start + open_end_rel;
+        let raw_tag = &xml_text[open_start + 1..open_end];
+        if raw_tag.starts_with('/')
+            || raw_tag.starts_with('?')
+            || raw_tag.starts_with('!')
+            || raw_tag.ends_with('/')
+        {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        }
+        let tag = raw_tag.split_whitespace().next().unwrap_or("");
+        let local_name = tag.rsplit_once(':').map(|(_, name)| name).unwrap_or(tag);
+        let should_consider = if remove_form_elements {
+            local_name == "Form"
+        } else {
+            local_name != "Form" && local_name.ends_with("Form")
+        };
+        if !should_consider {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        }
+        let close = format!("</{tag}>");
+        let content_start = open_end + 1;
+        let Some(close_rel) = xml_text[content_start..].find(&close) else {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        };
+        let close_start = content_start + close_rel;
+        let close_end = close_start + close.len();
+        let content = &xml_text[content_start..close_start];
+        if content.contains('<') || !content.trim().ends_with(suffix) {
+            result.push_str(&xml_text[cursor..content_start]);
+            cursor = content_start;
+            continue;
+        }
+        result.push_str(&xml_text[cursor..open_start]);
+        if !remove_form_elements {
+            result.push_str(&xml_text[open_start..content_start]);
+            result.push_str(&xml_text[close_start..close_end]);
+        }
+        cursor = close_end;
+        changed += 1;
+    }
+    result.push_str(&xml_text[cursor..]);
+    (result, changed)
 }
 
 pub(crate) fn form_add_supported_object_types() -> &'static [&'static str] {
@@ -3532,6 +3640,75 @@ mod tests {
             ),
             "{stdout}"
         );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn remove_form_clears_all_default_form_slots_referencing_removed_form() {
+        let context = temp_context("remove-default-slots");
+        let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
+        let form_meta = context
+            .cwd
+            .join("src")
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ListForm.xml");
+        let form_content = context
+            .cwd
+            .join("src")
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ListForm")
+            .join("Ext")
+            .join("Form.xml");
+        write_file(
+            &root_xml,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+	<Catalog name="Goods">
+		<Forms>
+			<Form>Catalog.Goods.Form.ListForm</Form>
+			<Form>Catalog.Goods.Form.OtherForm</Form>
+		</Forms>
+		<DefaultObjectForm>Catalog.Goods.Form.ListForm</DefaultObjectForm>
+		<DefaultListForm>Catalog.Goods.Form.ListForm</DefaultListForm>
+		<DefaultChoiceForm>Catalog.Goods.Form.ListForm</DefaultChoiceForm>
+		<DefaultRecordForm>Catalog.Goods.Form.ListForm</DefaultRecordForm>
+		<DefaultForm>Catalog.Goods.Form.OtherForm</DefaultForm>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(&form_meta, "<MetaDataObject/>\n");
+        write_file(&form_content, "<Form/>\n");
+
+        let mut args = Map::new();
+        args.insert("ObjectName".to_string(), json!("Goods"));
+        args.insert("FormName".to_string(), json!("ListForm"));
+        args.insert("SrcDir".to_string(), json!("src/Catalogs"));
+
+        let outcome = remove_form(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&root_xml).unwrap();
+        assert!(!updated.contains("<Form>Catalog.Goods.Form.ListForm</Form>"), "{updated}");
+        for tag in [
+            "DefaultObjectForm",
+            "DefaultListForm",
+            "DefaultChoiceForm",
+            "DefaultRecordForm",
+        ] {
+            assert!(updated.contains(&format!("<{tag}></{tag}>")), "{tag}: {updated}");
+        }
+        assert!(
+            updated.contains("<DefaultForm>Catalog.Goods.Form.OtherForm</DefaultForm>"),
+            "{updated}"
+        );
+        assert!(!form_meta.exists());
+        assert!(!form_content.exists());
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

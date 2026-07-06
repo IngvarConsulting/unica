@@ -1,41 +1,41 @@
 {
   "schemaVersion": 1,
   "id": "2026-06-18-product-update-backlog",
-  "generatedAt": "2026-06-26",
+  "generatedAt": "2026-07-04",
   "purpose": "Product and dependency update backlog for Unica bundled tools, plugin package dependencies, and release-package inputs.",
   "products": [
     {
       "id": "bsl-analyzer",
       "kind": "bundled-tool",
-      "locked": "v0.2.48",
-      "latest": "v0.2.48",
+      "locked": "v0.2.55",
+      "latest": "v0.2.55",
       "risk": "high",
       "batch": "bsl-analyzer-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "v0.2.48 applied after reviewing current release assets. v0.2.39..v0.2.48 add extension method weaving/checks, bare global common-module call resolution, diagnostics fixes, Windows MCP broker hardening, and IDE completion/template work; Unica continues to consume analyzer behavior only through typed unica.code.* graph/diagnostics gates."
+      "notes": "Updated to v0.2.55 after reviewing v0.2.50, v0.2.53, v0.2.54, and v0.2.55 release assets. The refresh adds MCP startup/search responsiveness, typed metadata substrate and drift refresh work, deterministic diagnostics output, Salsa observability, and hot-path diagnostics/search improvements; Unica still consumes analyzer behavior only through typed unica.code.* graph/diagnostics gates."
     },
     {
       "id": "rlm-tools-bsl",
       "kind": "bundled-tool",
-      "locked": "v1.25.0",
-      "latest": "v1.25.0",
+      "locked": "v1.26.0",
+      "latest": "v1.26.0",
       "risk": "medium",
       "batch": "rlm-index-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "Updated together with rlm-bsl-index to v1.25.0. v1.25.0 keeps index BUILDER_VERSION=14, fixes Cyrillic case folding and session reader cleanup, changes find_path ambiguous-name behavior, and tightens sandbox injection guards; raw RLM helper guidance remains hidden from skills."
+      "notes": "Updated together with rlm-bsl-index to v1.26.0. v1.26.0 keeps index BUILDER_VERSION=14, fixes Windows full rebuild under an open reader, adds regex-DoS guards, removes false callers from multiline literals, adds find_files FS fallback on index zero-hit, and normalizes parse_metadata_xml to dict|None; raw RLM helper guidance remains hidden from skills."
     },
     {
       "id": "rlm-bsl-index",
       "kind": "bundled-tool",
-      "locked": "v1.25.0",
-      "latest": "v1.25.0",
+      "locked": "v1.26.0",
+      "latest": "v1.26.0",
       "risk": "medium",
       "batch": "rlm-index-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "v1.25.0 release states index schema and BUILDER_VERSION remain 14, so production index rebuild is not required. Contract gates verify build/info/update, schema tables used by Unica SQL, and generated package launchers."
+      "notes": "v1.26.0 release states index schema and BUILDER_VERSION remain 14, so production index rebuild is not required. Contract gates verify build/info/update, schema tables used by Unica SQL, and generated package launchers."
     },
     {
       "id": "v8-runner",

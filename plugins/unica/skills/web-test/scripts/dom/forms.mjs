@@ -1,5 +1,5 @@
-// web-test dom/forms v1.6 — form detection, content read, click-target/field-button resolution
-import { DETECT_FORM_FN, READ_FORM_FN } from './_shared.mjs';
+// web-test dom/forms v1.7 — form detection, content read, click-target/field-button resolution
+import { DETECT_FORM_FN, READ_FORM_FN, ROW_CLICK_POINT_FN } from './_shared.mjs';
 
 /**
  * Detect the active form number.
@@ -33,6 +33,7 @@ export function readFormScript(formNum) {
 export function findClickTargetScript(formNum, text, { tableName, gridSelector } = {}) {
   const p = `form${formNum}_`;
   return `(() => {
+    ${ROW_CLICK_POINT_FN}
     const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
     const target = ${JSON.stringify(text.toLowerCase().replace(/ё/g, 'е'))};
     const p = ${JSON.stringify(p)};
@@ -195,9 +196,14 @@ export function findClickTargetScript(formNum, text, { tableName, gridSelector }
           else if (isParent) kind = 'gridParent';
           else if (isTreeNode && hasChildren) kind = 'gridTreeNode';
           else kind = 'gridRow';
+          // Click point: first visible text cell of the row, NOT the row-line centre.
+          // A wide multi-column row's centre lands beyond the form's viewport (e.g. on
+          // narrow modal selection forms) so mouse.click misses the row. See ROW_CLICK_POINT_FN.
+          const pt = rowClickPoint(line, body);
           const r = line.getBoundingClientRect();
           return { id: '', kind, name: rowTexts[0] || '', gridId: grid.id,
-            x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+            x: pt ? pt.x : Math.round(r.x + r.width / 2),
+            y: pt ? pt.y : Math.round(r.y + r.height / 2) };
         }
       }
     }

@@ -1,4 +1,4 @@
-// web-test table/row-fill v1.23 — fillTableRow — заполнение строки табличной части/списка через Tab-навигацию и попутный выбор значений.
+// web-test table/row-fill v1.25 — fillTableRow — заполнение строки табличной части/списка через Tab-навигацию и попутный выбор значений.
 
 import {
   page, ensureConnected, normYo, highlightMode, ACTION_WAIT,
@@ -235,6 +235,32 @@ export async function fillTableRow(fields, { tab, add, row, table, scroll } = {}
       }
     }
 
+    // Checkbox cell? Detect BEFORE any click. Clicking the cell center toggles the
+    // checkbox, so an unconditional click here would flip an already-correct value
+    // (visible flicker + redundant write — снимаем→ставим). findCheckboxAtPoint reads
+    // the state straight from the DOM (no edit mode needed), so we branch first and
+    // click the icon only when the current state differs from the desired one.
+    if (firstVal0 !== '') {
+      const checkboxInfo = await page.evaluate(findCheckboxAtPointScript(cellCoords.x, cellCoords.y));
+      if (checkboxInfo !== null) {
+        const desired = ['true', 'да', '1', 'yes'].includes(String(firstVal0).toLowerCase().trim());
+        if (checkboxInfo.checked !== desired) {
+          await page.mouse.click(checkboxInfo.x, checkboxInfo.y);
+          await page.waitForTimeout(300);
+        }
+        const results = [{ field: firstKey0, ok: true, method: 'toggle', value: desired }];
+        await waitForStable(formNum);
+        // If more fields remain, process them on the same row
+        const remaining = { ...fields };
+        delete remaining[firstKey0];
+        if (Object.keys(remaining).length > 0) {
+          const more = await fillTableRow(remaining, { row, table });
+          results.push(...more.filled);
+        }
+        return returnFormState({ filled: results });
+      }
+    }
+
     // Click first (tree grids enter edit on single click; dblclick toggles expand/collapse).
     // Then escalate: dblclick → F4 if needed.
     await page.mouse.click(cellCoords.x, cellCoords.y);
@@ -260,27 +286,6 @@ export async function fillTableRow(fields, { tab, add, row, table, scroll } = {}
       await page.keyboard.press('Shift+F4');
       await page.waitForTimeout(300);
       const results = [{ field: firstKey0, ok: true, method: 'clear', value: '' }];
-      // If more fields remain, process them on the same row
-      const remaining = { ...fields };
-      delete remaining[firstKey0];
-      if (Object.keys(remaining).length > 0) {
-        const more = await fillTableRow(remaining, { row, table });
-        results.push(...more.filled);
-      }
-      return returnFormState({ filled: results });
-    }
-
-    // Check if clicked cell is a checkbox (toggle-on-click, no edit mode)
-    const checkboxInfo = await page.evaluate(findCheckboxAtPointScript(cellCoords.x, cellCoords.y));
-    if (checkboxInfo !== null) {
-      // Checkbox cell found — click directly on the checkbox icon (not cell center)
-      const desired = ['true', 'да', '1', 'yes'].includes(String(firstVal0).toLowerCase().trim());
-      if (checkboxInfo.checked !== desired) {
-        await page.mouse.click(checkboxInfo.x, checkboxInfo.y);
-        await page.waitForTimeout(300);
-      }
-      const results = [{ field: firstKey0, ok: true, method: 'toggle', value: desired }];
-      await waitForStable(formNum);
       // If more fields remain, process them on the same row
       const remaining = { ...fields };
       delete remaining[firstKey0];
@@ -514,6 +519,11 @@ export async function fillTableRow(fields, { tab, add, row, table, scroll } = {}
   let firstCellId = null;
 
   for (let iter = 0; iter < MAX_ITER; iter++) {
+    // All requested fields filled → stop. Без этого цикл табает дальше до wrap-around
+    // (обходит остаток строки впустую): ветки заполнения по составному типу/примитиву
+    // не выходили сами, что особенно заметно на широких строках (субконто/проводки).
+    // Значение последнего поля к этому моменту уже зафиксировано (commit-Tab примитива,
+    // выбор из формы, либо end-of-row commit для choice-ячейки).
     if ([...pending.values()].every(p => p.filled)) break;
     // Read focused element (INPUT or TEXTAREA inside grid = editable cell)
     const cell = await page.evaluate(readActiveGridCellScript());
