@@ -1,0 +1,357 @@
+{
+  "name": "Форма с design-time диаграммой (d4p1:Chart Settings)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "DataProcessor",
+        "name": "Диаграмма"
+      },
+      "args": {
+        "-JsonPath": "{inputFile}",
+        "-OutputDir": "{workDir}"
+      }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": {
+        "-ObjectPath": "{workDir}/DataProcessors/Диаграмма.xml",
+        "-FormName": "Форма"
+      }
+    }
+  ],
+  "params": {
+    "outputPath": "DataProcessors/Диаграмма/Forms/Форма/Ext/Form.xml"
+  },
+  "validatePath": "DataProcessors/Диаграмма/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Диаграмма",
+    "elements": [
+      {
+        "chart": "Диаграмма",
+        "path": "Диаграмма",
+        "titleLocation": "none"
+      }
+    ],
+    "attributes": [
+      {
+        "name": "Объект",
+        "type": "DataProcessorObject.Диаграмма",
+        "main": true
+      },
+      {
+        "name": "Диаграмма",
+        "type": "d5p1:Chart",
+        "chart": {
+          "seriesCurId": "7",
+          "pointsCurId": "0",
+          "isSeriesDesign": true,
+          "realSeriesCount": "4",
+          "realSeriesData": [
+            {
+              "id": "2",
+              "color": "auto",
+              "line": {
+                "width": 2,
+                "gap": false,
+                "style": "Solid"
+              },
+              "marker": "Auto",
+              "text": "Серия 1",
+              "strIsChanged": false,
+              "isExpand": false,
+              "isIndicator": false,
+              "colorPriority": false
+            },
+            {
+              "id": "3",
+              "color": "auto",
+              "line": {
+                "width": 2,
+                "gap": false,
+                "style": "Solid"
+              },
+              "marker": "Auto",
+              "text": "Серия 2",
+              "strIsChanged": false,
+              "isExpand": false,
+              "isIndicator": false,
+              "colorPriority": false
+            },
+            {
+              "id": "4",
+              "color": "auto",
+              "line": {
+                "width": 2,
+                "gap": false,
+                "style": "Solid"
+              },
+              "marker": "Auto",
+              "text": "Серия 3",
+              "strIsChanged": false,
+              "isExpand": false,
+              "isIndicator": false,
+              "colorPriority": false
+            },
+            {
+              "id": "6",
+              "color": "auto",
+              "line": {
+                "width": 2,
+                "gap": false,
+                "style": "Solid"
+              },
+              "marker": "Auto",
+              "text": "Серия 4",
+              "strIsChanged": false,
+              "isExpand": false,
+              "isIndicator": false,
+              "colorPriority": false
+            }
+          ],
+          "realExSeriesData": [
+            {
+              "id": "1",
+              "color": "auto",
+              "line": {
+                "width": 2,
+                "gap": false,
+                "style": "Solid"
+              },
+              "marker": "Auto",
+              "text": "Сводная",
+              "strIsChanged": false,
+              "isExpand": false,
+              "isIndicator": false,
+              "colorPriority": false
+            }
+          ],
+          "isPointsDesign": true,
+          "realPointCount": "0",
+          "curSeries": "-1",
+          "curPoint": "0",
+          "chartType": "Line",
+          "circleLabelType": "None",
+          "labelsDelimiter": ", ",
+          "labelsLocation": "Edge",
+          "lbFormat": "",
+          "lbpFormat": "",
+          "labelsColor": "style:FormTextColor",
+          "labelsFont": {
+            "kind": "AutoFont"
+          },
+          "transparentLabelsBkg": true,
+          "labelsBkgColor": "auto",
+          "labelsBorder": {
+            "width": 1,
+            "style": "WithoutBorder"
+          },
+          "labelsBorderColor": "auto",
+          "circleExpandMode": "None",
+          "chart3Dcrd": "SouthWest",
+          "title": "",
+          "isShowTitle": false,
+          "isShowLegend": true,
+          "ttlBorder": {
+            "width": 0,
+            "style": "WithoutBorder"
+          },
+          "ttlBorderColor": "style:BorderColor",
+          "lgBorder": {
+            "width": 0,
+            "style": "WithoutBorder"
+          },
+          "lgBorderColor": "style:BorderColor",
+          "chBorder": {
+            "width": 0,
+            "style": "WithoutBorder"
+          },
+          "chBorderColor": "style:BorderColor",
+          "transparent": false,
+          "bkgColor": "style:FieldBackColor",
+          "isTrnspTtl": false,
+          "ttlColor": "style:FieldBackColor",
+          "isTrnspLeg": false,
+          "legColor": "style:FieldBackColor",
+          "isTrnspCh": false,
+          "chColor": "style:FieldBackColor",
+          "ttlTxtColor": "style:FormTextColor",
+          "legTxtColor": "style:FormTextColor",
+          "chTxtColor": "style:FormTextColor",
+          "ttlFont": {
+            "kind": "AutoFont"
+          },
+          "legFont": {
+            "kind": "AutoFont"
+          },
+          "chFont": {
+            "kind": "AutoFont"
+          },
+          "isShowScale": true,
+          "isShowScaleVL": true,
+          "isShowSeriesScale": true,
+          "isShowPointsScale": true,
+          "isShowValuesScale": true,
+          "vsFormat": "ЧС=6; ЧГ=3,0",
+          "xLabelsOrientation": "Auto",
+          "scaleLine": {
+            "width": 1,
+            "gap": false,
+            "style": "Dotted"
+          },
+          "scaleColor": "auto",
+          "isAutoSeriesName": true,
+          "isAutoPointName": true,
+          "maxMode": "NotDefined",
+          "maxSeries": "4",
+          "maxSeriesPrc": "30",
+          "spaceMode": "Half",
+          "baseVal": "0",
+          "isOutline": false,
+          "realPiePoint": "0",
+          "realStockSeries": "0",
+          "isLight": true,
+          "isGradient": false,
+          "isTransposition": false,
+          "hideBaseVal": false,
+          "dataTable": false,
+          "dtVerLines": true,
+          "dtHorLines": true,
+          "dtHAlign": "Right",
+          "dtFormat": "",
+          "dtKeys": true,
+          "paletteKind": "Auto",
+          "animation": "Auto",
+          "rebuildTime": "2099248",
+          "isTransposed": false,
+          "autoTransposition": false,
+          "legendScrollEnable": false,
+          "surfaceColor": "#A90000",
+          "radarScaleType": "Circle",
+          "gaugeValuesPresentation": "Needle",
+          "gaugeQualityBands": {
+            "useTextStr": false,
+            "useTooltipStr": false
+          },
+          "beginGaugeAngle": "0",
+          "endGaugeAngle": "180",
+          "gaugeThickness": "5",
+          "gaugeLabelsLocation": "InsideScale",
+          "gaugeLabelsArcDirection": false,
+          "gaugeBushThickness": "4",
+          "gaugeBushColor": "#A9A9A9",
+          "autoMaxValue": true,
+          "userMaxValue": "0",
+          "autoMinValue": true,
+          "userMinValue": "0",
+          "elementsIsInit": false,
+          "titleIsInit": true,
+          "legendIsInit": true,
+          "chartIsInit": true,
+          "elementsChart": {
+            "left": "0",
+            "right": "0.17",
+            "top": "0",
+            "bottom": "0"
+          },
+          "elementsLegend": {
+            "left": "0.14968152866242038",
+            "right": "0.06210191082802548",
+            "top": "0.9615384615384616",
+            "bottom": "0"
+          },
+          "elementsTitle": {
+            "left": "0.83",
+            "right": "0",
+            "top": "0",
+            "bottom": "0.92"
+          },
+          "borderColor": "style:BorderColor",
+          "border": {
+            "width": 1,
+            "style": "WithoutBorder"
+          },
+          "dataSourceDescription": "",
+          "isDataSourceMode": false,
+          "isRandomizedNewValues": true,
+          "splineMode": "SmoothCurve",
+          "splineStrain": "95",
+          "translucencePercent": "0",
+          "funnelNeckHeightPercent": "10",
+          "funnelNeckWidthPercent": "10",
+          "funnelGapSumPercent": "3",
+          "multiStageLinkLine": {
+            "width": 1,
+            "gap": false,
+            "style": "Solid"
+          },
+          "multiStageLinkColor": "#000000",
+          "valuesAxis": "",
+          "pointsAxis": "",
+          "pointsScale": {
+            "titleArea": {
+              "font": {
+                "kind": "AutoFont"
+              },
+              "textColor": "auto",
+              "backColor": "auto",
+              "border": {
+                "width": 1,
+                "style": "WithoutBorder"
+              },
+              "borderColor": "auto"
+            },
+            "gridLinesShowMode": "Show",
+            "gridLine": {
+              "width": 1,
+              "gap": false,
+              "style": "Dotted"
+            },
+            "labelColor": "#B4B4B4"
+          },
+          "valuesScale": {
+            "showTitle": "DontShow",
+            "titleArea": {
+              "font": {
+                "kind": "AutoFont"
+              },
+              "textColor": "auto",
+              "backColor": "auto",
+              "border": {
+                "width": 1,
+                "style": "WithoutBorder"
+              },
+              "borderColor": "auto"
+            },
+            "labelFormat": "ЧС=6; ЧГ=3,0"
+          },
+          "seriesScale": {
+            "titleArea": {
+              "font": {
+                "kind": "AutoFont"
+              },
+              "textColor": "auto",
+              "backColor": "auto",
+              "border": {
+                "width": 1,
+                "style": "WithoutBorder"
+              },
+              "borderColor": "auto"
+            },
+            "gridLine": {
+              "width": 1,
+              "gap": false,
+              "style": "Dotted"
+            },
+            "showInChart": "DontShow"
+          },
+          "legendPlacement": "Bottom",
+          "titleAreaPlacement": "None",
+          "valuesToolTipShowMode": "ShowOnHover",
+          "pointsDropLinesShowMode": "DontShow",
+          "valuesDropLinesShowMode": "DontShow"
+        }
+      }
+    ]
+  }
+}

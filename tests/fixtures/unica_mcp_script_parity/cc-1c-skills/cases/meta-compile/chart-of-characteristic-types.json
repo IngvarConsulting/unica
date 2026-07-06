@@ -1,0 +1,14 @@
+{
+  "name": "План видов характеристик с типами значений",
+  "input": {
+    "type": "ChartOfCharacteristicTypes",
+    "name": "ДополнительныеРеквизитыИСведения",
+    "descriptionLength": 100,
+    "valueTypes": ["String(200)", "Number(15,2)", "Boolean", "Date"],
+    "attributes": ["НаборСвойств: String(100)"]
+  },
+  "validatePath": "ChartsOfCharacteristicTypes/ДополнительныеРеквизитыИСведения",
+  "expect": {
+    "files": ["ChartsOfCharacteristicTypes/ДополнительныеРеквизитыИСведения.xml", "ChartsOfCharacteristicTypes/ДополнительныеРеквизитыИСведения/Ext/ObjectModule.bsl"]
+  }
+}

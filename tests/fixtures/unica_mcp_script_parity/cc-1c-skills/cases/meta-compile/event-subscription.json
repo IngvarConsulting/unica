@@ -1,0 +1,15 @@
+{
+  "name": "Подписка на событие записи документа",
+  "input": {
+    "type": "EventSubscription",
+    "name": "ПриЗаписиДокумента",
+    "source": ["DocumentObject.ПриходнаяНакладная"],
+    "event": "BeforeWrite",
+    "handler": "CommonModule.ОбработкаСобытий.ПриЗаписиДокумента"
+  },
+  "validatePath": "EventSubscriptions/ПриЗаписиДокумента",
+  "skipValidation": true,
+  "expect": {
+    "files": ["EventSubscriptions/ПриЗаписиДокумента.xml"]
+  }
+}

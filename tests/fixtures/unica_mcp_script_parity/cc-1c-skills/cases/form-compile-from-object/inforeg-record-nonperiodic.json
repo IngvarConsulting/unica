@@ -1,0 +1,30 @@
+{
+  "name": "InformationRegister Record — непериодический, Independent, 1 измерение + 1 ресурс + 1 реквизит",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "InformationRegister",
+        "name": "АдресаМагазинов",
+        "periodicity": "Nonperiodical",
+        "writeMode": "Independent",
+        "dimensions": [
+          { "name": "Магазин", "type": "String", "length": 50 }
+        ],
+        "resources": [
+          { "name": "Адрес", "type": "String", "length": 200 }
+        ],
+        "attributes": [
+          { "name": "Комментарий", "type": "String", "length": 500 }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/InformationRegisters/АдресаМагазинов.xml", "-FormName": "ФормаЗаписи" }
+    }
+  ],
+  "params": { "outputPath": "InformationRegisters/АдресаМагазинов/Forms/ФормаЗаписи/Ext/Form.xml" },
+  "validatePath": "InformationRegisters/АдресаМагазинов/Forms/ФормаЗаписи/Ext/Form.xml"
+}

@@ -1,0 +1,48 @@
+{
+  "name": "RadioButtonField Tumbler + строковые значения с автогенерацией презентации",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестТумблер", "attributes": [
+        { "name": "ОтборСтрок", "type": "string(50)" }
+      ]},
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестТумблер.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ТестТумблер/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ТестТумблер/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Радио — Tumbler",
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ТестТумблер", "main": true },
+      { "name": "ОтборСтрок", "type": "string(50)" }
+    ],
+    "elements": [
+      {
+        "radio": "ОтборСтрок",
+        "path": "ОтборСтрок",
+        "radioButtonType": "Tumbler",
+        "editMode": "EnterOnInput",
+        "warningOnEdit": "Смена отбора перезагрузит список",
+        "choiceList": [
+          { "value": "Рекомендуемые" },
+          { "value": "Все" }
+        ]
+      },
+      {
+        "radio": "ВидСчета",
+        "equalColumnsWidth": true,
+        "columnsCount": 1,
+        "choiceList": [
+          { "value": "Active", "valueType": "ent:AccountType", "presentation": "Активный" },
+          { "value": "Passive", "valueType": "ent:AccountType", "presentation": "Пассивный" },
+          { "value": "ActivePassive", "valueType": "ent:AccountType", "presentation": "Активный/Пассивный" }
+        ]
+      }
+    ]
+  }
+}

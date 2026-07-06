@@ -1,0 +1,25 @@
+{
+  "name": "ExchangePlan Item — простой план обмена с 2 реквизитами",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "ExchangePlan",
+        "name": "ОбменДанными",
+        "codeLength": 9,
+        "descriptionLength": 100,
+        "attributes": [
+          { "name": "АдресОбмена", "type": "String", "length": 200 },
+          { "name": "ДатаПоследнегоОбмена", "type": "Date" }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/ExchangePlans/ОбменДанными.xml", "-FormName": "ФормаЭлемента" }
+    }
+  ],
+  "params": { "outputPath": "ExchangePlans/ОбменДанными/Forms/ФормаЭлемента/Ext/Form.xml" },
+  "validatePath": "ExchangePlans/ОбменДанными/Forms/ФормаЭлемента/Ext/Form.xml"
+}

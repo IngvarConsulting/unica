@@ -1,0 +1,26 @@
+{
+  "name": "Имя реквизита == имя элемента — легально (раздельные неймспейсы)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестНеймспейс" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестНеймспейс.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ТестНеймспейс/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ТестНеймспейс/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Неймспейсы",
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ТестНеймспейс", "main": true },
+      { "name": "Сумма", "type": "number(15,2)" }
+    ],
+    "elements": [
+      { "input": "Сумма", "name": "Сумма", "path": "Сумма" }
+    ]
+  }
+}

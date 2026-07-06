@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# cfe-borrow v1.3 — Borrow objects from configuration into extension (CFE)
+# cfe-borrow v1.8 — Borrow objects from configuration into extension (CFE)
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 
 import argparse
@@ -7,19 +7,42 @@ import os
 import re
 import sys
 import uuid
-try:
-    from lxml import etree
-except ModuleNotFoundError:
-    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
-        etree = None
-    else:
-        print("Missing Python dependency: lxml. Install with: python3 -m pip install lxml", file=sys.stderr)
-        sys.exit(69)
+from lxml import etree
 
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 XR_NS = "http://v8.1c.ru/8.3/xcf/readable"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 V8_NS = "http://v8.1c.ru/8.1/data/core"
+
+# Form data-binding tags (value = attribute path). A binding survives only if its root
+# attribute is borrowed into the form's <Attributes>; otherwise it must be stripped or the
+# platform rejects the form with "Неверный путь к данным" on load.
+FORM_BINDING_DATA_TAGS = ["DataPath", "TitleDataPath", "FooterDataPath", "HeaderDataPath", "MultipleValueDataPath", "MultipleValuePresentDataPath"]
+# Picture-path binding tags (value = picture index path, never a data attribute) — always stripped in the skeleton.
+FORM_BINDING_PICTURE_TAGS = ["RowPictureDataPath", "MultipleValuePictureDataPath"]
+
+
+def strip_form_bindings(xml, keep_objekt):
+    """Strip data-binding tags whose root attribute isn't borrowed.
+    keep_objekt=True (BorrowMainAttribute): keep Объект.* data bindings, strip the rest.
+    keep_objekt=False (default skeleton): strip all bindings. Picture-path tags are always stripped."""
+    for tag in FORM_BINDING_DATA_TAGS:
+        if keep_objekt:
+            xml = re.sub(rf'\s*<{tag}>(?!Объект\.)[^<]*</{tag}>', '', xml)
+        else:
+            xml = re.sub(rf'\s*<{tag}>[^<]*</{tag}>', '', xml)
+    for tag in FORM_BINDING_PICTURE_TAGS:
+        xml = re.sub(rf'\s*<{tag}>[^<]*</{tag}>', '', xml)
+    return xml
+
+
+def decode_numeric_entities(s):
+    """lxml emits numeric character refs (&#xNNNN;) for non-ASCII in some self-closed
+    elements where the PowerShell port writes literal characters. Normalize numeric refs
+    back to literal so PS↔PY output matches. Named entities (&amp; &lt; ...) are left intact."""
+    s = re.sub(r'&#x([0-9A-Fa-f]+);', lambda m: chr(int(m.group(1), 16)), s)
+    s = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), s)
+    return s
 
 
 def localname(el):
@@ -469,6 +492,13 @@ def main():
                 prop_node = props_node.find(f"{{{MD_NS}}}{prop_name}")
                 if prop_node is not None:
                     src_props[prop_name] = (prop_node.text or "").strip()
+            # DefinedType: carry the <Type> definition. A type alias is meaningless as a bare shell —
+            # the platform needs its underlying type (e.g. to know a column is a summable Number for totals).
+            if type_name == "DefinedType":
+                type_node = props_node.find(f"{{{MD_NS}}}Type")
+                if type_node is not None:
+                    type_xml = etree.tostring(type_node, encoding="unicode")
+                    src_props["__TypeXml"] = re.sub(r'\s+xmlns(?::\w+)?="[^"]*"', '', type_xml)
 
         return {"Uuid": src_uuid, "Properties": src_props, "Element": src_el}
 
@@ -539,6 +569,10 @@ def main():
             for prop_name in COMMON_MODULE_PROPS:
                 prop_val = source_props.get(prop_name, "false")
                 lines.append(f"\t\t\t<{prop_name}>{prop_val}</{prop_name}>")
+
+        # DefinedType: emit the carried <Type> definition (needed for the alias to resolve, e.g. totals)
+        if type_name == "DefinedType" and "__TypeXml" in source_props:
+            lines.append(f"\t\t\t{source_props['__TypeXml']}")
 
         lines.append("\t\t</Properties>")
 
@@ -651,7 +685,26 @@ def main():
         first_level = {}
         deep_paths = []
 
-        for m in re.finditer(r'<DataPath>[^<]*\b\u041e\u0431\u044a\u0435\u043a\u0442\.(\w+(?:\.\w+)*)</DataPath>', content):
+        # Scan every data-binding tag (DataPath/TitleDataPath/FooterDataPath/HeaderDataPath/MultipleValue*)
+        # for Объект.* references — picture-path tags carry picture indices, not data attributes.
+        for tag in FORM_BINDING_DATA_TAGS:
+            for m in re.finditer(r'<' + tag + r'>[^<]*\bОбъект\.(\w+(?:\.\w+)*)</' + tag + r'>', content):
+                path = m.group(1)
+                segments = path.split(".")
+                seg0 = segments[0]
+                if seg0 in STANDARD_FIELDS:
+                    continue
+                first_level[seg0] = True
+                if len(segments) >= 2:
+                    seg1 = segments[1]
+                    if seg1 in STANDARD_FIELDS:
+                        continue
+                    seg2 = segments[2] if len(segments) >= 3 else None
+                    deep_paths.append({"ObjectAttr": seg0, "SubAttr": seg1, "SubSubAttr": seg2})
+
+        # Also scan <Field>Объект.X</Field> — object attributes referenced by filter/conditional-appearance
+        # fields (and dynamic lists), not via a *DataPath binding (e.g. УдалитьЮрФизЛицо). Designer borrows these too.
+        for m in re.finditer(r'<Field>[^<]*\bОбъект\.(\w+(?:\.\w+)*)</Field>', content):
             path = m.group(1)
             segments = path.split(".")
             seg0 = segments[0]
@@ -662,22 +715,14 @@ def main():
                 seg1 = segments[1]
                 if seg1 in STANDARD_FIELDS:
                     continue
-                deep_paths.append({"ObjectAttr": seg0, "SubAttr": seg1})
-
-        # Also collect from TitleDataPath
-        for m in re.finditer(r'<TitleDataPath>[^<]*\b\u041e\u0431\u044a\u0435\u043a\u0442\.(\w+(?:\.\w+)*)</TitleDataPath>', content):
-            path = m.group(1)
-            segments = path.split(".")
-            seg0 = segments[0]
-            if seg0 in STANDARD_FIELDS:
-                continue
-            first_level[seg0] = True
+                seg2 = segments[2] if len(segments) >= 3 else None
+                deep_paths.append({"ObjectAttr": seg0, "SubAttr": seg1, "SubSubAttr": seg2})
 
         # Deduplicate deep paths
         seen = set()
         unique_deep = []
         for dp in deep_paths:
-            key = f"{dp['ObjectAttr']}.{dp['SubAttr']}"
+            key = f"{dp['ObjectAttr']}.{dp['SubAttr']}.{dp.get('SubSubAttr')}"
             if key not in seen:
                 seen.add(key)
                 unique_deep.append(dp)
@@ -948,26 +993,40 @@ def main():
         # Step 3: Build the adopted content and insert into main object XML
         obj_file = os.path.join(ext_dir, dir_name, f"{obj_name}.xml")
 
-        # Generate full object XML with attributes and TS
-        content_parts = []
-        for attr in src_attrs:
-            attr_xml = build_adopted_attribute_xml(attr["Name"], attr["Uuid"], attr["TypeXml"], "\t\t\t")
-            content_parts.append(attr_xml)
-        for ts in src_ts:
-            ts_xml = build_adopted_tabular_section_xml(ts["Name"], ts["Uuid"], ts["GeneratedTypes"], ts["Attributes"], "\t\t\t")
-            content_parts.append(ts_xml)
-        adopted_content = "\n".join(content_parts).rstrip()
-
-        # Read existing object XML and inject
+        # Read existing object XML (needed for dedup + enrichment)
         with open(obj_file, "r", encoding="utf-8-sig") as fh:
             obj_content = fh.read()
 
-        # Inject extra properties after ExtendedConfigurationObject
+        # Dedup: skip attributes/TS already present in object's ChildObjects (idempotent re-borrow)
+        existing_child_names = set()
+        m_co = re.search(r'(?s)<ChildObjects>(.*?)</ChildObjects>', obj_content)
+        if m_co:
+            for nm in re.findall(r'<Name>(\w+)</Name>', m_co.group(1)):
+                existing_child_names.add(nm)
+        insert_attrs = [a for a in src_attrs if a["Name"] not in existing_child_names]
+        insert_ts = [t for t in src_ts if t["Name"] not in existing_child_names]
+
+        # Generate full object XML with attributes and TS
+        content_parts = []
+        for attr in insert_attrs:
+            content_parts.append(build_adopted_attribute_xml(attr["Name"], attr["Uuid"], attr["TypeXml"], "\t\t\t"))
+        for ts in insert_ts:
+            content_parts.append(build_adopted_tabular_section_xml(ts["Name"], ts["Uuid"], ts["GeneratedTypes"], ts["Attributes"], "\t\t\t"))
+        adopted_content = "\n".join(content_parts).rstrip()
+
+        # Inject extra properties into the object's OWN Properties only — idempotent and anchored to the
+        # first ExtendedConfigurationObject (the object's). On re-borrow, adopted attributes each have their
+        # own ExtendedConfigurationObject; a global replace would push object props inside every <Attribute>.
         if extra_props:
+            m_props = re.search(r'(?s)<Properties>(.*?)</Properties>', obj_content)
+            obj_props_block = m_props.group(1) if m_props else ""
             props_xml = ""
             for p_name, p_val in extra_props.items():
+                if f"<{p_name}>" in obj_props_block:
+                    continue
                 props_xml += f"\r\n\t\t\t<{p_name}>{p_val}</{p_name}>"
-            obj_content = obj_content.replace("</ExtendedConfigurationObject>", f"</ExtendedConfigurationObject>{props_xml}")
+            if props_xml:
+                obj_content = obj_content.replace("</ExtendedConfigurationObject>", f"</ExtendedConfigurationObject>{props_xml}", 1)
 
         # Replace empty ChildObjects with adopted content
         if adopted_content:
@@ -1019,78 +1078,92 @@ def main():
 
         # Step 5: Handle deep paths (Form mode only)
         if mode == "Form" and deep_paths:
-            # Filter out deep paths where ObjectAttr is a TabularSection
-            real_deep = [dp for dp in deep_paths if dp["ObjectAttr"] not in ts_names]
-
-            if real_deep:
-                info(f"  Processing {len(real_deep)} deep path(s)...")
-
-                # Group by ObjectAttr -> target catalog
-                deep_by_attr = {}
-                for dp in real_deep:
-                    if dp["ObjectAttr"] not in deep_by_attr:
-                        deep_by_attr[dp["ObjectAttr"]] = []
+            # Top-level ref deep paths: Объект.<Ref>.<Sub> — borrow the ref attribute's catalog with the sub-attribute
+            deep_by_attr = {}
+            for dp in deep_paths:
+                if dp["ObjectAttr"] in ts_names:
+                    continue
+                deep_by_attr.setdefault(dp["ObjectAttr"], [])
+                if dp["SubAttr"] not in deep_by_attr[dp["ObjectAttr"]]:
                     deep_by_attr[dp["ObjectAttr"]].append(dp["SubAttr"])
-
+            if deep_by_attr:
+                info(f"  Processing {len(deep_by_attr)} deep path attribute(s)...")
                 for attr_name, sub_attr_names in deep_by_attr.items():
-                    # Find the attribute's type to determine target catalog
-                    attr_info = None
-                    for a in src_attrs:
-                        if a["Name"] == attr_name:
-                            attr_info = a
-                            break
+                    attr_info = next((a for a in src_attrs if a["Name"] == attr_name), None)
                     if not attr_info:
                         continue
-
-                    # Extract catalog name from type: cfg:CatalogRef.XXX
                     cat_match = re.search(r'cfg:(\w+)Ref\.(\w+)', attr_info["TypeXml"])
                     if not cat_match:
                         continue
+                    borrow_deep_target_attrs(cat_match.group(1), cat_match.group(2), sub_attr_names)
 
-                    target_type_name = cat_match.group(1)
-                    target_obj_name = cat_match.group(2)
-
-                    # Ensure target is borrowed
-                    if not test_object_borrowed(target_type_name, target_obj_name):
-                        t_src = read_source_object(target_type_name, target_obj_name)
-                        t_borrowed_xml = build_borrowed_object_xml(target_type_name, target_obj_name, t_src["Uuid"], t_src["Properties"])
-                        t_target_dir = os.path.join(ext_dir, CHILD_TYPE_DIR_MAP[target_type_name])
-                        os.makedirs(t_target_dir, exist_ok=True)
-                        t_target_file = os.path.join(t_target_dir, f"{target_obj_name}.xml")
-                        save_text_bom(t_target_file, t_borrowed_xml)
-                        add_to_child_objects(target_type_name, target_obj_name)
-                        borrowed_files.append(t_target_file)
-                        info(f"  Auto-borrowed for deep path: {target_type_name}.{target_obj_name}")
-
-                    # Resolve sub-attributes in target catalog
-                    sub_names = {sn: True for sn in sub_attr_names}
-                    sub_resolved = resolve_source_attributes(target_type_name, target_obj_name, sub_names)
-
-                    if sub_resolved["Attributes"]:
-                        merge_attributes_into_object(target_type_name, target_obj_name, sub_resolved["Attributes"])
-
-                        # Collect and borrow ref types from deep attributes
-                        sub_type_xmls = [sa["TypeXml"] for sa in sub_resolved["Attributes"]]
-                        sub_ref_types = collect_reference_types(sub_type_xmls)
-                        for srt in sub_ref_types:
-                            if srt["TypeName"] not in CHILD_TYPE_DIR_MAP:
-                                continue
-                            if test_object_borrowed(srt["TypeName"], srt["ObjName"]):
-                                continue
-                            s_src_file = os.path.join(cfg_dir, CHILD_TYPE_DIR_MAP[srt["TypeName"]], f"{srt['ObjName']}.xml")
-                            if not os.path.isfile(s_src_file):
-                                continue
-                            s_src = read_source_object(srt["TypeName"], srt["ObjName"])
-                            s_borrowed_xml = build_borrowed_object_xml(srt["TypeName"], srt["ObjName"], s_src["Uuid"], s_src["Properties"])
-                            s_target_dir = os.path.join(ext_dir, CHILD_TYPE_DIR_MAP[srt["TypeName"]])
-                            os.makedirs(s_target_dir, exist_ok=True)
-                            s_target_file = os.path.join(s_target_dir, f"{srt['ObjName']}.xml")
-                            save_text_bom(s_target_file, s_borrowed_xml)
-                            add_to_child_objects(srt["TypeName"], srt["ObjName"])
-                            borrowed_files.append(s_target_file)
-                            info(f"  Auto-borrowed (deep): {srt['TypeName']}.{srt['ObjName']}")
+            # Tabular-section deep paths: Объект.<ТЧ>.<Колонка>.<Sub> — borrow the column's catalog with the sub-attribute
+            ts_deep_by_col = {}
+            for dp in deep_paths:
+                if dp["ObjectAttr"] not in ts_names:
+                    continue
+                if not dp.get("SubSubAttr"):
+                    continue
+                if dp["SubSubAttr"] in STANDARD_FIELDS:
+                    continue
+                k = (dp["ObjectAttr"], dp["SubAttr"])
+                ts_deep_by_col.setdefault(k, [])
+                if dp["SubSubAttr"] not in ts_deep_by_col[k]:
+                    ts_deep_by_col[k].append(dp["SubSubAttr"])
+            if ts_deep_by_col:
+                info(f"  Processing {len(ts_deep_by_col)} tabular-section deep path(s)...")
+                for (ts_name, col_name), sub_attr_names in ts_deep_by_col.items():
+                    ts_info = next((t for t in src_ts if t["Name"] == ts_name), None)
+                    if not ts_info:
+                        continue
+                    col_info = next((c for c in ts_info["Attributes"] if c["Name"] == col_name), None)
+                    if not col_info:
+                        continue
+                    cat_match = re.search(r'cfg:(\w+)Ref\.(\w+)', col_info["TypeXml"])
+                    if not cat_match:
+                        continue
+                    borrow_deep_target_attrs(cat_match.group(1), cat_match.group(2), sub_attr_names)
 
         info("  Main attribute borrowing complete")
+
+    def borrow_deep_target_attrs(target_type_name, target_obj_name, sub_attr_names):
+        # Borrow a deep-path target catalog together with the referenced sub-attributes, for both
+        # Объект.<Ref>.<Sub> and Объект.<ТЧ>.<Колонка>.<Sub>. Mirrors Designer: the referenced catalog
+        # is adopted WITH the sub-attributes the form shows, else the platform rejects the deep DataPath.
+        if not test_object_borrowed(target_type_name, target_obj_name):
+            t_src = read_source_object(target_type_name, target_obj_name)
+            t_borrowed_xml = build_borrowed_object_xml(target_type_name, target_obj_name, t_src["Uuid"], t_src["Properties"])
+            t_target_dir = os.path.join(ext_dir, CHILD_TYPE_DIR_MAP[target_type_name])
+            os.makedirs(t_target_dir, exist_ok=True)
+            t_target_file = os.path.join(t_target_dir, f"{target_obj_name}.xml")
+            save_text_bom(t_target_file, t_borrowed_xml)
+            add_to_child_objects(target_type_name, target_obj_name)
+            borrowed_files.append(t_target_file)
+            info(f"  Auto-borrowed for deep path: {target_type_name}.{target_obj_name}")
+
+        sub_names = {sn: True for sn in sub_attr_names}
+        sub_resolved = resolve_source_attributes(target_type_name, target_obj_name, sub_names)
+        if sub_resolved["Attributes"]:
+            merge_attributes_into_object(target_type_name, target_obj_name, sub_resolved["Attributes"])
+            sub_type_xmls = [sa["TypeXml"] for sa in sub_resolved["Attributes"]]
+            sub_ref_types = collect_reference_types(sub_type_xmls)
+            for srt in sub_ref_types:
+                if srt["TypeName"] not in CHILD_TYPE_DIR_MAP:
+                    continue
+                if test_object_borrowed(srt["TypeName"], srt["ObjName"]):
+                    continue
+                s_src_file = os.path.join(cfg_dir, CHILD_TYPE_DIR_MAP[srt["TypeName"]], f"{srt['ObjName']}.xml")
+                if not os.path.isfile(s_src_file):
+                    continue
+                s_src = read_source_object(srt["TypeName"], srt["ObjName"])
+                s_borrowed_xml = build_borrowed_object_xml(srt["TypeName"], srt["ObjName"], s_src["Uuid"], s_src["Properties"])
+                s_target_dir = os.path.join(ext_dir, CHILD_TYPE_DIR_MAP[srt["TypeName"]])
+                os.makedirs(s_target_dir, exist_ok=True)
+                s_target_file = os.path.join(s_target_dir, f"{srt['ObjName']}.xml")
+                save_text_bom(s_target_file, s_borrowed_xml)
+                add_to_child_objects(srt["TypeName"], srt["ObjName"])
+                borrowed_files.append(s_target_file)
+                info(f"  Auto-borrowed (deep): {srt['TypeName']}.{srt['ObjName']}")
 
     def borrow_form(type_name, obj_name, form_name, borrow_main_attr=False):
         dir_name = CHILD_TYPE_DIR_MAP[type_name]
@@ -1107,8 +1180,22 @@ def main():
         with open(src_form_xml_path, "r", encoding="utf-8-sig") as fh:
             src_form_content = fh.read()
 
-        # 3. Generate form metadata XML
-        new_form_uuid = new_guid()
+        # 3. Generate form metadata XML.
+        # If the wrapper was already borrowed, reuse its uuid so re-borrow is idempotent
+        # (regenerating it would churn the form's identity on every rerun).
+        existing_wrapper = os.path.join(ext_dir, dir_name, obj_name, "Forms", f"{form_name}.xml")
+        new_form_uuid = ""
+        if os.path.isfile(existing_wrapper):
+            try:
+                existing_root = etree.parse(existing_wrapper).getroot()
+                for c in existing_root:
+                    if isinstance(c.tag, str) and localname(c) == "Form":
+                        new_form_uuid = c.get("uuid", "") or ""
+                        break
+            except Exception:
+                new_form_uuid = ""
+        if not new_form_uuid:
+            new_form_uuid = new_guid()
         form_meta_lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             f'<MetaDataObject {XMLNS_DECL} version="{format_version}">',
@@ -1138,7 +1225,10 @@ def main():
         src_form_tree = etree.parse(src_form_xml_path, src_form_parser)
         src_form_el = src_form_tree.getroot()
 
-        form_version = src_form_el.get("version", format_version)
+        # Borrowed form uses the extension's format version (not the source form's) — keeps the
+        # extension uniform; otherwise the platform rejects the import on a version mismatch
+        # (e.g. a 2.13 form inside a 2.17 extension). The platform upgrades the form to the root version.
+        form_version = format_version
 
         src_auto_cmd = None
         form_props = []
@@ -1156,25 +1246,21 @@ def main():
                 continue
             if not reached_visual:
                 # Form-level properties before AutoCommandBar (WindowOpeningMode, AutoFillCheck, etc.)
-                form_props.append(etree.tostring(fc, encoding="unicode"))
+                form_props.append(decode_numeric_entities(etree.tostring(fc, encoding="unicode")))
 
         ns_strip_pattern = re.compile(r'\s+xmlns(?::\w+)?="[^"]*"')
 
         # AutoCommandBar: keep ChildItems (buttons with CommandName->0), Autofill->false
         auto_cmd_xml = ""
         if src_auto_cmd is not None:
-            auto_cmd_xml = etree.tostring(src_auto_cmd, encoding="unicode")
+            auto_cmd_xml = decode_numeric_entities(etree.tostring(src_auto_cmd, encoding="unicode"))
             auto_cmd_xml = ns_strip_pattern.sub("", auto_cmd_xml)
             auto_cmd_xml = re.sub(r'<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>', auto_cmd_xml)
             auto_cmd_xml = auto_cmd_xml.replace('<Autofill>true</Autofill>', '<Autofill>false</Autofill>')
             # Strip ExcludedCommand (references to standard commands invalid in extension)
             auto_cmd_xml = re.sub(r'\s*<ExcludedCommand>[^<]*</ExcludedCommand>', '', auto_cmd_xml)
-            # Strip DataPath in AutoCommandBar buttons
-            if borrow_main_attr:
-                # Keep only Объект.* DataPaths
-                auto_cmd_xml = re.sub(r'\s*<DataPath>(?!\u041e\u0431\u044a\u0435\u043a\u0442\.)[^<]*</DataPath>', '', auto_cmd_xml)
-            else:
-                auto_cmd_xml = re.sub(r'\s*<DataPath>[^<]*</DataPath>', '', auto_cmd_xml)
+            # Strip data-binding tags whose root attribute isn't borrowed
+            auto_cmd_xml = strip_form_bindings(auto_cmd_xml, borrow_main_attr)
 
         # ChildItems: copy full tree, clean up base-config references
         child_items_xml = ""
@@ -1185,20 +1271,12 @@ def main():
                 break
 
         if src_child_items is not None:
-            child_items_xml = etree.tostring(src_child_items, encoding="unicode")
+            child_items_xml = decode_numeric_entities(etree.tostring(src_child_items, encoding="unicode"))
             child_items_xml = ns_strip_pattern.sub("", child_items_xml)
             # Replace all CommandName values with 0
             child_items_xml = re.sub(r'<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>', child_items_xml)
-            # Strip DataPath / TitleDataPath / RowPictureDataPath
-            if borrow_main_attr:
-                # Keep only Объект.* DataPaths — strip form-attribute DataPaths (not borrowed)
-                child_items_xml = re.sub(r'\s*<DataPath>(?!\u041e\u0431\u044a\u0435\u043a\u0442\.)[^<]*</DataPath>', '', child_items_xml)
-                child_items_xml = re.sub(r'\s*<TitleDataPath>(?!\u041e\u0431\u044a\u0435\u043a\u0442\.)[^<]*</TitleDataPath>', '', child_items_xml)
-                child_items_xml = re.sub(r'\s*<RowPictureDataPath>[^<]*</RowPictureDataPath>', '', child_items_xml)
-            else:
-                child_items_xml = re.sub(r'\s*<DataPath>[^<]*</DataPath>', '', child_items_xml)
-                child_items_xml = re.sub(r'\s*<TitleDataPath>[^<]*</TitleDataPath>', '', child_items_xml)
-                child_items_xml = re.sub(r'\s*<RowPictureDataPath>[^<]*</RowPictureDataPath>', '', child_items_xml)
+            # Strip data-binding tags whose root attribute isn't borrowed
+            child_items_xml = strip_form_bindings(child_items_xml, borrow_main_attr)
             # Strip ExcludedCommand in nested AutoCommandBars (references to standard commands invalid in extension)
             child_items_xml = re.sub(r'\s*<ExcludedCommand>[^<]*</ExcludedCommand>', '', child_items_xml)
             # Strip TypeLink blocks with human-readable DataPath (Items.XXX)
@@ -1435,12 +1513,16 @@ def main():
         save_text_bom(form_xml_file, "".join(parts))
         info(f"  Created: {form_xml_file}")
 
-        # 6. Create empty Module.bsl
+        # 6. Create empty Module.bsl — but NEVER overwrite an existing one (re-borrow must
+        # not clobber user code added to the form module).
         module_dir = os.path.join(form_xml_dir, "Form")
         os.makedirs(module_dir, exist_ok=True)
         module_bsl_file = os.path.join(module_dir, "Module.bsl")
-        save_text_bom(module_bsl_file, "")
-        info(f"  Created: {module_bsl_file}")
+        if os.path.isfile(module_bsl_file):
+            info("  Preserved existing Module.bsl")
+        else:
+            save_text_bom(module_bsl_file, "")
+            info(f"  Created: {module_bsl_file}")
 
         # 7. Register form in parent object ChildObjects
         register_form_in_object(type_name, obj_name, form_name)

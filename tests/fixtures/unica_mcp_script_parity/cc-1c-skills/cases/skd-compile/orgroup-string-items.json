@@ -1,0 +1,31 @@
+{
+  "name": "OrGroup в conditionalAppearance со строками-shorthand в items",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Поле1, Т.Поле2, Т.Сумма ИЗ Регистр КАК Т",
+      "fields": ["Поле1: decimal", "Поле2: decimal", "Сумма: decimal(15,2)"]
+    }],
+    "settingsVariants": [{
+      "name": "Основной",
+      "settings": {
+        "selection": ["Поле1", "Поле2", "Сумма"],
+        "conditionalAppearance": [
+          {
+            "filter": [{"group": "Or", "items": [
+              "Поле1 = 1",
+              "Поле2 = 2"
+            ]}],
+            "appearance": { "Формат": "ЧЦ=15; ЧДЦ=0" }
+          }
+        ],
+        "structure": "details"
+      }
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

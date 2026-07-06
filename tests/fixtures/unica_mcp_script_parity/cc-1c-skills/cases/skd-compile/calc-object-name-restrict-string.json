@@ -1,0 +1,23 @@
+{
+  "name": "calculatedFields объектная форма с name и строковым useRestriction",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Номенклатура, Т.Сумма ИЗ Регистр КАК Т",
+      "fields": ["Номенклатура", "Сумма: decimal(15,2)"]
+    }],
+    "calculatedFields": [
+      {
+        "name": "ИмяРесурса",
+        "title": "Имя ресурса",
+        "expression": "\"\"",
+        "useRestriction": "#noField #noFilter #noGroup #noOrder"
+      }
+    ]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

@@ -1,7 +1,7 @@
 ---
 name: form-compile
-description: Компиляция управляемой формы 1С из JSON-определения. Используй когда нужно создать форму с нуля по описанию элементов
-argument-hint: <JsonPath> <OutputPath>
+description: Компиляция управляемой формы 1С из JSON-определения или из метаданных объекта. Используй когда нужно создать форму с нуля по описанию элементов или по стандартному пресету объекта
+argument-hint: <JsonPath> <OutputPath> | FromObject <OutputPath>
 allowed-tools:
   - Bash
   - Read
@@ -19,8 +19,9 @@ allowed-tools:
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 - Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
 
-Режим:
+Режимы:
 1. **JSON DSL** — из JSON-определения формы
+2. **From object** — автоматически из метаданных объекта 1С по стандартному пресету; `OutputPath` должен указывать на `.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml`
 
 > **При проектировании формы с нуля (5+ элементов или нечёткие требования)** — используй справочник `form-patterns`. Для простых форм (1-3 поля) — не нужно.
 
@@ -28,7 +29,10 @@ allowed-tools:
 
 | Параметр   | Обязательный | Описание                        |
 |------------|:------------:|---------------------------------|
-| JsonPath   | да           | Путь к JSON-определению формы   |
+| JsonPath   | режим JSON   | Путь к JSON-определению формы   |
+| FromObject | режим object | Флаг генерации по метаданным объекта |
+| ObjectPath | нет          | Путь к XML объекта; если не указан, `unica` выводит его из `OutputPath` |
+| Purpose    | нет          | Назначение формы; если не указано, `unica` выводит его из имени формы |
 | OutputPath | да           | Путь к выходному Form.xml       |
 
 ## MCP вызов
@@ -63,6 +67,24 @@ allowed-tools:
       "cwd": "<workspace>",
       "JsonPath": "<json>",
       "OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>",
+      "dryRun": false
+    }
+  }
+}
+```
+
+### From object
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.form.compile",
+    "arguments": {
+      "cwd": "<workspace>",
+      "FromObject": true,
+      "OutputPath": "<.../Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml>",
       "dryRun": false
     }
   }

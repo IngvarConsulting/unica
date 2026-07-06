@@ -1,0 +1,21 @@
+{
+  "name": "ChartOfCharacteristicTypes Item — простой ПВХ (код + наименование)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "ChartOfCharacteristicTypes",
+        "name": "ВидыНоменклатуры",
+        "codeLength": 9,
+        "descriptionLength": 100
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/ChartsOfCharacteristicTypes/ВидыНоменклатуры.xml", "-FormName": "ФормаЭлемента" }
+    }
+  ],
+  "params": { "outputPath": "ChartsOfCharacteristicTypes/ВидыНоменклатуры/Forms/ФормаЭлемента/Ext/Form.xml" },
+  "validatePath": "ChartsOfCharacteristicTypes/ВидыНоменклатуры/Forms/ФормаЭлемента/Ext/Form.xml"
+}

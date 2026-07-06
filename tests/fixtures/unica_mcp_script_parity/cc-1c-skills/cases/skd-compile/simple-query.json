@@ -1,0 +1,17 @@
+{
+  "name": "Простой запрос",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [
+      {
+        "name": "Основной",
+        "type": "Query",
+        "query": "SELECT 1 AS Поле"
+      }
+    ]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

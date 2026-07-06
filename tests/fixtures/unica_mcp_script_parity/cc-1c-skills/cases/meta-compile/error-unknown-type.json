@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: неизвестный тип объекта",
+  "input": { "type": "UnknownType", "name": "Тест" },
+  "expectError": true
+}

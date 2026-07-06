@@ -1,0 +1,47 @@
+{
+  "name": "Форма с полями диаграмм + design-time Settings планировщика",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "Диаграммы" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/Диаграммы.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/Диаграммы/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/Диаграммы/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Диаграммы",
+    "elements": [
+      { "chart": "Диаграмма", "path": "Диаграмма", "titleLocation": "none" },
+      { "graphicalSchema": "Схема", "path": "Схема", "titleLocation": "none", "edit": false },
+      { "periodField": "Период", "path": "Период", "titleLocation": "none" },
+      { "ganttChart": "Ганта", "path": "Ганта", "titleLocation": "none",
+        "ganttTable": { "table": "ТаблицаГанта", "path": "Ганта", "height": 3 } },
+      { "dendrogram": "Дендро", "path": "Дендро", "titleLocation": "none" },
+      { "planner": "Планировщик", "path": "Планировщик", "titleLocation": "none" }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.Диаграммы", "main": true },
+      { "name": "Диаграмма", "type": "d5p1:Chart" },
+      { "name": "Схема", "type": "d5p1:FlowchartContextType" },
+      { "name": "Период", "type": "v8:StandardPeriod" },
+      { "name": "Ганта", "type": "d5p1:GanttChart" },
+      { "name": "Дендро", "type": "d5p1:Dendrogram" },
+      { "name": "Планировщик", "type": "pl:Planner", "planner": {
+        "items": [
+          { "text": "Встреча", "begin": "2026-06-09T01:00:00", "end": "2026-06-09T04:00:00" }
+        ],
+        "dimensions": [
+          { "text": "Измерение", "elements": [
+            { "value": "А", "text": "Элемент А", "showOnlySubordinatesAreas": true }
+          ] }
+        ],
+        "period": { "begin": "2026-06-09T00:00:00", "end": "2026-06-09T23:59:59" }
+      } }
+    ]
+  }
+}

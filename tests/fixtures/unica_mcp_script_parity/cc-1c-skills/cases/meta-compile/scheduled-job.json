@@ -1,0 +1,13 @@
+{
+  "name": "Регламентное задание",
+  "input": {
+    "type": "ScheduledJob",
+    "name": "ОбменДанными",
+    "methodName": "ОбменДаннымиСервер.Выполнить"
+  },
+  "validatePath": "ScheduledJobs/ОбменДанными",
+  "skipValidation": true,
+  "expect": {
+    "files": ["ScheduledJobs/ОбменДанными.xml"]
+  }
+}

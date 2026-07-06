@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: пустое имя объекта",
+  "input": { "type": "Catalog", "name": "" },
+  "expectError": true
+}

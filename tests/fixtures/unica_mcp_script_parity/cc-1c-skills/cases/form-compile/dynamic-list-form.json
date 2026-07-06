@@ -1,0 +1,55 @@
+{
+  "name": "Форма списка с DynamicList — main выводится, главная АКП без Autofill, таблица с Autofill=false",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары", "attributes": [{ "name": "Артикул", "type": "String", "length": 25 }] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары.xml", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    }
+  ],
+  "params": { "outputPath": "Catalogs/Товары/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "Catalogs/Товары/Forms/ФормаСписка/Ext/Form.xml",
+  "input": {
+    "title": "Товары",
+    "properties": { "saveWindowSettings": false, "collapseItemsByImportanceVariant": "DontUse", "groupList": "2:02023637-7868-4a5f-8576-835a76e0c9ba" },
+    "attributes": [
+      { "name": "Список", "type": "DynamicList", "useAlways": ["~Артикул", "Список.Code", "Description"], "settings": {
+        "mainTable": "Catalog.Товары", "dynamicDataRead": true, "autoSaveUserSettings": false,
+        "parameters": [ { "name": "ВыборТовара", "type": "CatalogRef.Товары", "valueListAllowed": true, "value": null } ],
+        "fields": [
+          { "field": "Code", "title": "Код", "presentationExpression": "\"№\" + Code",
+            "useRestriction": { "condition": true, "group": true },
+            "attributeUseRestriction": { "field": true },
+            "appearance": { "Формат": "ДЛ=9", "ЦветТекста": "web:Gray" } }
+        ],
+        "grouping": "Description > Code",
+        "calculatedFields": [
+          "Метка [Метка строки]: string = Code + \" \" + Description #noFilter #noGroup",
+          { "dataPath": "Сорт", "expression": "Code", "title": "Сорт", "valueType": "string(10)",
+            "presentationExpression": "Code", "orderExpression": [ { "expression": "Code" } ] }
+        ],
+        "order": [ "Description", "Code desc" ],
+        "filter": [ "Артикул = _ @off @user", "Артикул like %тест%", "Description подобно %abc%",
+          { "field": "Code", "op": "=", "userSettingID": "auto", "userSettingPresentation": "Код товара", "presentation": { "ru": "Код равно" } },
+          { "field": "Description", "op": "=", "userSettingID": "auto", "userSettingPresentation": { "ru": "Наименование", "en": "Name" }, "presentation": "Имя равно" } ],
+        "dataParameters": [ "ВыборТовара @off" ],
+        "conditionalAppearance": [ { "filter": ["Артикул = _"], "appearance": { "ЦветТекста": "web:Red" }, "presentation": { "ru": "Выделение пустых" } } ]
+      } }
+    ],
+    "elements": [
+      { "table": "Список", "path": "Список", "refreshRequest": "PullFromTop",
+        "additions": { "viewStatus": { "horizontalLocation": "left" } },
+        "commandBar": [
+          { "searchString": "ПоискСписка", "source": "Список", "width": 15, "horizontalStretch": true }
+        ],
+        "columns": [
+          { "input": "Код", "path": "Список.Code" },
+          { "input": "Наименование", "path": "Список.Description" }
+        ]}
+    ]
+  }
+}

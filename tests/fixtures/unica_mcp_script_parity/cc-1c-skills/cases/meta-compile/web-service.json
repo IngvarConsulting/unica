@@ -1,0 +1,24 @@
+{
+  "name": "Веб-сервис с операциями",
+  "input": {
+    "type": "WebService",
+    "name": "СервисОбмена",
+    "namespace": "http://example.com/exchange",
+    "reuseSessions": "AutoUse",
+    "operations": {
+      "ПолучитьДанные": {
+        "returnType": "xs:string",
+        "nillable": true,
+        "transactioned": false,
+        "parameters": {
+          "ИдентификаторЗапроса": "xs:string",
+          "ДатаНачала": "xs:dateTime"
+        }
+      }
+    }
+  },
+  "validatePath": "WebServices/СервисОбмена",
+  "expect": {
+    "files": ["WebServices/СервисОбмена.xml", "WebServices/СервисОбмена/Ext/Module.bsl"]
+  }
+}

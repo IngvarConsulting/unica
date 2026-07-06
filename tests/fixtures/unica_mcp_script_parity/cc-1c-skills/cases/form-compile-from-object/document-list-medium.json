@@ -1,0 +1,59 @@
+{
+  "name": "Document List — средний (АктВВР-like)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Document",
+        "name": "АктВыполненныхВнутреннихРабот",
+        "synonym": "Акт выполненных внутренних работ",
+        "numberLength": 11,
+        "attributes": [
+          { "name": "Организация", "type": "CatalogRef.Организации" },
+          { "name": "ОрганизацияПолучатель", "type": "CatalogRef.Организации" },
+          { "name": "Подразделение", "type": "CatalogRef.СтруктураПредприятия" },
+          { "name": "ХозяйственнаяОперация", "type": "EnumRef.ХозяйственныеОперации" },
+          { "name": "ПеремещениеПодДеятельность", "type": "EnumRef.ТипыНалогообложенияНДС" },
+          { "name": "НаправлениеДеятельности", "type": "CatalogRef.НаправленияДеятельности" },
+          { "name": "Ответственный", "type": "CatalogRef.Пользователи" },
+          { "name": "СторнируемыйДокумент", "type": "DocumentRef.АктВыполненныхВнутреннихРабот" },
+          { "name": "ИсправляемыйДокумент", "type": "DocumentRef.АктВыполненныхВнутреннихРабот" },
+          { "name": "Комментарий", "type": "String" },
+          { "name": "Исправление", "type": "Boolean" }
+        ],
+        "tabularSections": [
+          {
+            "name": "Товары",
+            "attributes": [
+              { "name": "Номенклатура", "type": "CatalogRef.Номенклатура" },
+              { "name": "Характеристика", "type": "CatalogRef.ХарактеристикиНоменклатуры" },
+              { "name": "Назначение", "type": "CatalogRef.Назначения" },
+              { "name": "Упаковка", "type": "CatalogRef.УпаковкиЕдиницыИзмерения" },
+              { "name": "КоличествоУпаковок", "type": "Number", "length": 15, "precision": 3 },
+              { "name": "Количество", "type": "Number", "length": 15, "precision": 3 },
+              { "name": "Подразделение", "type": "CatalogRef.СтруктураПредприятия" },
+              { "name": "ГруппаПродукции", "type": "CatalogRef.ГруппыПродукции" },
+              { "name": "АналитикаУчетаНоменклатуры", "type": "CatalogRef.КлючиАналитикиУчетаНоменклатуры" },
+              { "name": "ИдентификаторСтроки", "type": "Number", "length": 10, "precision": 0 }
+            ]
+          },
+          {
+            "name": "ДополнительныеРеквизиты",
+            "attributes": [
+              { "name": "Свойство", "type": "ChartOfCharacteristicTypesRef.ДополнительныеРеквизитыИСведения" },
+              { "name": "Значение", "type": "String" },
+              { "name": "ТекстоваяСтрока", "type": "String" }
+            ]
+          }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Documents/АктВыполненныхВнутреннихРабот.xml", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    }
+  ],
+  "params": { "outputPath": "Documents/АктВыполненныхВнутреннихРабот/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "Documents/АктВыполненныхВнутреннихРабот/Forms/ФормаСписка/Ext/Form.xml"
+}

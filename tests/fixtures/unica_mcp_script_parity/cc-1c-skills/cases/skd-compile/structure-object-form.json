@@ -1,0 +1,33 @@
+{
+  "name": "Объектная форма structure с name, groupFields, children, selection",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Организация, Т.Номенклатура, Т.Количество, Т.Сумма ИЗ Регистр КАК Т",
+      "fields": ["Организация", "Номенклатура", "Количество: decimal(15,3)", "Сумма: decimal(15,2)"]
+    }],
+    "settingsVariants": [{
+      "name": "Основной",
+      "settings": {
+        "structure": [
+          {
+            "name": "ПоОрганизациям",
+            "groupFields": ["Организация"],
+            "selection": ["Организация", "Сумма"],
+            "children": [
+              {
+                "groupFields": ["Номенклатура"],
+                "selection": ["Номенклатура", "Количество", "Сумма"]
+              }
+            ]
+          }
+        ]
+      }
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

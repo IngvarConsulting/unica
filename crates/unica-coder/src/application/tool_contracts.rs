@@ -72,11 +72,13 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "DataPath",
     "DefinitionFile",
     "Detailed",
+    "EmitDsl",
     "ExtensionPath",
     "Expand",
     "Field",
     "Fields",
     "Force",
+    "FromObject",
     "FormName",
     "FormPath",
     "Format",
@@ -109,6 +111,7 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "OutputPath",
     "Parent",
     "Path",
+    "Preset",
     "ProcessorName",
     "Purpose",
     "RightsPath",
@@ -151,11 +154,13 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "dataPath",
     "definitionFile",
     "detailed",
+    "emitDsl",
     "extensionPath",
     "expand",
     "field",
     "fields",
     "force",
+    "fromObject",
     "formName",
     "formPath",
     "format",
@@ -188,6 +193,7 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "outputPath",
     "parent",
     "path",
+    "preset",
     "processorName",
     "purpose",
     "rightsPath",
@@ -939,6 +945,8 @@ fn property_schema(name: &str) -> Value {
             | "detailed"
             | "Force"
             | "force"
+            | "FromObject"
+            | "fromObject"
             | "NoValidate"
             | "noValidate"
             | "NoRole"
@@ -1076,6 +1084,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "detailed"
             | "Force"
             | "force"
+            | "FromObject"
+            | "fromObject"
             | "NoValidate"
             | "noValidate"
             | "NoRole"

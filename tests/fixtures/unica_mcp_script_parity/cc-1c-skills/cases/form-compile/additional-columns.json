@@ -1,0 +1,40 @@
+{
+  "name": "Доп. колонки табличной части объекта (AdditionalColumns)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "DataProcessor",
+        "name": "ДопКолонки",
+        "tabularSections": [
+          { "name": "Прочее", "attributes": [ { "name": "Значение", "type": "String", "length": 50 } ] },
+          { "name": "ЕщёТаблица", "attributes": [ { "name": "Поле", "type": "String", "length": 10 } ] }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ДопКолонки.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ДопКолонки/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ДопКолонки/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Доп. колонки",
+    "elements": [
+      { "label": "Подпись", "title": "Форма с доп. колонками табличной части" }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ДопКолонки", "main": true,
+        "additionalColumns": [
+          { "table": "Объект.Прочее", "columns": [
+            { "name": "Доступность", "type": "boolean" },
+            { "name": "Служебная", "type": "string" }
+          ]},
+          { "table": "Объект.ЕщёТаблица", "columns": [] }
+        ]
+      }
+    ]
+  }
+}

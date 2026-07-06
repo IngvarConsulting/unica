@@ -1,0 +1,47 @@
+{
+  "name": "Оформление элементов — цвета/шрифты/граница на decoration/input/button/group/picture (профили порядка)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары", "attributes": [{ "name": "Цена", "type": "Number", "length": 10, "precision": 2 }] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары.xml", "-FormName": "ФормаЭлемента", "-Purpose": "Object" }
+    }
+  ],
+  "params": { "outputPath": "Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form.xml" },
+  "validatePath": "Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form.xml",
+  "input": {
+    "title": "Товары",
+    "attributes": [
+      { "name": "Объект", "type": "CatalogObject.Товары", "main": true }
+    ],
+    "elements": [
+      { "label": "Внимание!",
+        "textColor": "web:FireBrick",
+        "font": { "faceName": "Arial", "height": 12, "bold": true, "italic": false, "underline": false, "strikeout": false, "kind": "Absolute", "scale": 100 },
+        "border": { "width": 1, "style": "Single" } },
+      { "input": "Цена", "path": "Объект.Цена",
+        "textColor": "#FF0000",
+        "borderColor": "style:BorderColor" },
+      { "label": "Из стиля",
+        "textColor": "web:DimGray",
+        "font": "style:NormalTextFont",
+        "border": "style:ControlBorder" },
+      { "button": "ОК", "title": "ОК",
+        "shape": "Oval", "pictureLocation": "Right",
+        "backColor": "web:Honeydew",
+        "borderColor": "style:BorderColor",
+        "font": "style:NormalTextFont" },
+      { "group": "ГруппаОформление", "backColor": "web:Honeydew", "children": [
+        { "input": "Цена2", "path": "Объект.Цена", "textColor": "web:DimGray" }
+      ]},
+      { "picture": "Логотип", "src": "StdPicture.Print",
+        "imageScale": 150, "zoomable": true, "nonselectedPictureText": "Нет изображения",
+        "textColor": "web:FireBrick", "font": "style:NormalTextFont",
+        "border": { "width": 1, "style": "Single" } }
+    ]
+  }
+}

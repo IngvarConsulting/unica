@@ -207,7 +207,7 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
                 if !cfe_borrow_target_object(&ext_dir, &spec.type_name, &spec.object_name).exists()
                 {
                     stdout.push_str(&format!(
-                        "[INFO]   Parent object {}.{} not yet borrowed - borrowing first...\n",
+                        "[INFO]   Parent object {}.{} not yet borrowed — borrowing first...\n",
                         spec.type_name, spec.object_name
                     ));
                     let object_artifact = cfe_borrow_object_shell(
@@ -229,6 +229,14 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
                     borrow_main_attribute.is_some(),
                     &mut stdout,
                 )?;
+                cfe_borrow_register_form(
+                    &ext_dir,
+                    &spec.type_name,
+                    &spec.object_name,
+                    spec.form_name.as_deref().unwrap_or_default(),
+                    &mut stdout,
+                )?;
+                artifacts.extend(form_artifacts);
                 artifacts.extend(cfe_borrow_main_attribute_artifacts(
                     &cfg_dir,
                     &ext_dir,
@@ -238,14 +246,6 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
                     &mut ext_text,
                     &mut stdout,
                 )?);
-                cfe_borrow_register_form(
-                    &ext_dir,
-                    &spec.type_name,
-                    &spec.object_name,
-                    spec.form_name.as_deref().unwrap_or_default(),
-                    &mut stdout,
-                )?;
-                artifacts.extend(form_artifacts);
                 borrowed_count += 1;
             } else {
                 stdout.push_str(&format!(
@@ -629,6 +629,13 @@ pub(crate) fn cfe_borrow_generated_types(
             ("DocumentList", "List"),
             ("DocumentManager", "Manager"),
         ]),
+        "BusinessProcess" => Some(&[
+            ("BusinessProcessObject", "Object"),
+            ("BusinessProcessRef", "Ref"),
+            ("BusinessProcessSelection", "Selection"),
+            ("BusinessProcessList", "List"),
+            ("BusinessProcessManager", "Manager"),
+        ]),
         "Enum" => Some(&[
             ("EnumRef", "Ref"),
             ("EnumManager", "Manager"),
@@ -756,7 +763,11 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
 
     let object_file = cfe_borrow_target_object(ext_dir, type_name, object_name);
     cfe_borrow_merge_resolved_into_object(&object_file, &resolved)?;
-    let mut artifacts = vec![object_file];
+    stdout.push_str(&format!(
+        "[INFO]   Enriched object: {}\n",
+        object_file.display()
+    ));
+    let mut artifacts = Vec::new();
 
     let mut type_xmls = Vec::<String>::new();
     for attr in &resolved.attributes {
@@ -767,6 +778,11 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
             type_xmls.push(attr.type_xml.clone());
         }
     }
+    let ref_types = cfe_borrow_collect_reference_types(&type_xmls);
+    stdout.push_str(&format!(
+        "[INFO]   Reference types to borrow: {}\n",
+        ref_types.len()
+    ));
     artifacts.extend(cfe_borrow_ensure_reference_shells(
         cfg_dir,
         ext_dir,
@@ -1324,7 +1340,10 @@ pub(crate) fn cfe_borrow_normalize_lxml_config_serialization(ext_text: &mut Stri
         );
     }
     *ext_text = ext_text.replace("<DefaultRoles></DefaultRoles>", "<DefaultRoles/>");
-    *ext_text = ext_text.replace("</Language>\r\n", "</Language>&#13;\n");
+    if let Some((start, end, _)) = cf_edit_element_range(ext_text, "ChildObjects") {
+        let child_objects = ext_text[start..end].replace("\r\n", "&#13;\n");
+        ext_text.replace_range(start..end, &child_objects);
+    }
     if !ext_text.ends_with('\n') {
         ext_text.push('\n');
     }
@@ -1413,9 +1432,12 @@ pub(crate) fn cfe_borrow_form_shell(
         .map_err(|err| format!("failed to read {}: {err}", source_form_xml.display()))?;
     let borrowed_form_xml = cfe_borrow_form_xml(
         &source_form_content,
+        cfg_dir,
         type_name,
         object_name,
         borrow_main_attr,
+        format_version,
+        stdout,
     );
     write_utf8_bom(&form_xml_target, &borrowed_form_xml)?;
     stdout.push_str(&format!(
@@ -1453,7 +1475,7 @@ pub(crate) fn cfe_borrow_form_metadata_xml(
     format_version: &str,
 ) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo/>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo/>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
         cfe_borrow_xmlns_decl(),
         escape_xml(format_version),
         escape_xml(wrapper_uuid),
@@ -1462,13 +1484,209 @@ pub(crate) fn cfe_borrow_form_metadata_xml(
     )
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowFormBlock {
+    local_name: String,
+    xml: String,
+}
+
 pub(crate) fn cfe_borrow_form_xml(
     source_form_content: &str,
+    cfg_dir: &Path,
+    type_name: &str,
+    object_name: &str,
+    borrow_main_attr: bool,
+    format_version: &str,
+    stdout: &mut String,
+) -> String {
+    let source = source_form_content.trim_start_matches('\u{feff}');
+    let version = Document::parse(source)
+        .ok()
+        .and_then(|doc| {
+            doc.root_element()
+                .attribute("version")
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format_version.to_string());
+    let blocks = cfe_borrow_form_top_level_blocks(source);
+    if blocks.is_empty() {
+        return cfe_borrow_form_xml_fallback(source, type_name, object_name, borrow_main_attr);
+    }
+
+    let xml_decl = cfe_borrow_xml_declaration(source)
+        .unwrap_or("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+        .to_string();
+    let form_tag = cfe_borrow_form_open_tag(source)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("<Form version=\"{}\">", escape_xml(&version)));
+
+    let mut form_props = Vec::<String>::new();
+    let mut auto_cmd_xml = None::<String>;
+    let mut child_items_xml = None::<String>;
+    let mut reached_visual = false;
+    for block in &blocks {
+        match block.local_name.as_str() {
+            "AutoCommandBar" if auto_cmd_xml.is_none() => {
+                reached_visual = true;
+                auto_cmd_xml = Some(cfe_borrow_clean_form_fragment(&block.xml));
+            }
+            "ChildItems" => {
+                reached_visual = true;
+                if child_items_xml.is_none() {
+                    child_items_xml = Some(cfe_borrow_clean_form_fragment(&block.xml));
+                }
+            }
+            "Events" | "Attributes" | "Commands" | "Parameters" | "CommandSet" => {
+                reached_visual = true;
+            }
+            _ if !reached_visual => {
+                form_props.push(cfe_borrow_clean_form_fragment(&block.xml));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(xml) = &mut auto_cmd_xml {
+        *xml = cfe_borrow_replace_simple_element_text(xml, "CommandName", "0");
+        *xml = xml.replace("<Autofill>true</Autofill>", "<Autofill>false</Autofill>");
+        *xml = cfe_borrow_remove_simple_element(xml, "ExcludedCommand");
+        if borrow_main_attr {
+            *xml = cfe_borrow_remove_simple_element_unless_text_starts_with(
+                xml,
+                "DataPath",
+                "Объект.",
+            );
+        } else {
+            *xml = cfe_borrow_remove_simple_element(xml, "DataPath");
+        }
+    }
+
+    if let Some(xml) = &mut child_items_xml {
+        *xml = cfe_borrow_replace_simple_element_text(xml, "CommandName", "0");
+        if borrow_main_attr {
+            *xml = cfe_borrow_remove_simple_element_unless_text_starts_with(
+                xml,
+                "DataPath",
+                "Объект.",
+            );
+            *xml = cfe_borrow_remove_simple_element_unless_text_starts_with(
+                xml,
+                "TitleDataPath",
+                "Объект.",
+            );
+            *xml = cfe_borrow_remove_simple_element(xml, "RowPictureDataPath");
+        } else {
+            *xml = cfe_borrow_remove_simple_element(xml, "DataPath");
+            *xml = cfe_borrow_remove_simple_element(xml, "TitleDataPath");
+            *xml = cfe_borrow_remove_simple_element(xml, "RowPictureDataPath");
+        }
+        *xml = cfe_borrow_remove_simple_element(xml, "ExcludedCommand");
+        *xml = cfe_borrow_remove_element_blocks(xml, "TypeLink", |block| {
+            block.contains("<xr:DataPath>Items.")
+        });
+        *xml = cfe_borrow_remove_element_blocks(xml, "Events", |_| true);
+
+        let mut referenced_pictures = cfe_borrow_collect_common_picture_refs(xml);
+        if let Some(auto_xml) = &auto_cmd_xml {
+            referenced_pictures.extend(cfe_borrow_collect_common_picture_refs(auto_xml));
+        }
+        referenced_pictures.sort();
+        referenced_pictures.dedup();
+        let mut borrowed_pictures = HashSet::<String>::new();
+        for picture_name in &referenced_pictures {
+            if cfg_dir
+                .join("CommonPictures")
+                .join(format!("{picture_name}.xml"))
+                .is_file()
+            {
+                borrowed_pictures.insert(picture_name.clone());
+            } else {
+                stdout.push_str(&format!(
+                    "[WARN]   CommonPicture.{picture_name} not found in source config — will strip from form\n"
+                ));
+            }
+        }
+        *xml = cfe_borrow_strip_picture_blocks(xml, &borrowed_pictures);
+        if let Some(auto_xml) = &mut auto_cmd_xml {
+            *auto_xml = cfe_borrow_strip_picture_blocks(auto_xml, &borrowed_pictures);
+        }
+
+        let mut referenced_styles = cfe_borrow_collect_style_item_refs(xml);
+        referenced_styles.sort();
+        referenced_styles.dedup();
+        for style_name in referenced_styles {
+            if !cfg_dir
+                .join("StyleItems")
+                .join(format!("{style_name}.xml"))
+                .is_file()
+            {
+                stdout.push_str(&format!(
+                    "[WARN]   StyleItem.{style_name} not found in source config\n"
+                ));
+            }
+        }
+    }
+
+    let main_attr_type = if borrow_main_attr {
+        let object_type_prefix = cfe_borrow_generated_types(type_name)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|(_, category)| *category == "Object")
+                    .map(|(prefix, _)| *prefix)
+            })
+            .unwrap_or("");
+        Some(format!(
+            "cfg:{}.{}",
+            escape_xml(object_type_prefix),
+            escape_xml(object_name)
+        ))
+    } else {
+        None
+    };
+
+    let mut parts = vec![xml_decl, "\r\n".to_string(), form_tag, "\r\n".to_string()];
+    for prop_xml in &form_props {
+        parts.push(format!("\t{prop_xml}\r\n"));
+    }
+    if let Some(xml) = &auto_cmd_xml {
+        parts.push(format!("\t{xml}\r\n"));
+    }
+    if let Some(xml) = &child_items_xml {
+        parts.push(format!("\t{xml}\r\n"));
+    }
+    parts.push(cfe_borrow_main_form_attributes_xml(
+        "\t",
+        main_attr_type.as_deref(),
+    ));
+    parts.push("\r\n".to_string());
+    parts.push(format!(
+        "\t<BaseForm version=\"{}\">\r\n",
+        escape_xml(format_version)
+    ));
+    for prop_xml in &form_props {
+        parts.push(format!("\t\t{prop_xml}\r\n"));
+    }
+    if let Some(xml) = &auto_cmd_xml {
+        parts.push(cfe_borrow_indent_form_fragment_for_base(xml));
+    }
+    if let Some(xml) = &child_items_xml {
+        parts.push(cfe_borrow_indent_form_fragment_for_base(xml));
+    }
+    parts.push(cfe_borrow_main_form_attributes_xml(
+        "\t\t",
+        main_attr_type.as_deref(),
+    ));
+    parts.push("\r\n\t</BaseForm>\r\n</Form>".to_string());
+    parts.concat()
+}
+
+pub(crate) fn cfe_borrow_form_xml_fallback(
+    source: &str,
     type_name: &str,
     object_name: &str,
     borrow_main_attr: bool,
 ) -> String {
-    let source = source_form_content.trim_start_matches('\u{feff}');
     let version = Document::parse(source)
         .ok()
         .and_then(|doc| {
@@ -1521,19 +1739,464 @@ pub(crate) fn cfe_borrow_strip_simple_data_paths(value: &str) -> String {
     cfe_borrow_remove_simple_element(&text, "RowPictureDataPath")
 }
 
-pub(crate) fn cfe_borrow_remove_simple_element(value: &str, tag: &str) -> String {
+pub(crate) fn cfe_borrow_xml_declaration(source: &str) -> Option<&str> {
+    if source.starts_with("<?xml") {
+        let end = source.find("?>")? + 2;
+        Some(&source[..end])
+    } else {
+        None
+    }
+}
+
+pub(crate) fn cfe_borrow_form_open_tag(source: &str) -> Option<&str> {
+    let start = cfe_borrow_find_start_tag(source, "Form", 0)?;
+    let end = source[start..].find('>')? + start + 1;
+    Some(&source[start..end])
+}
+
+pub(crate) fn cfe_borrow_form_top_level_blocks(source: &str) -> Vec<CfeBorrowFormBlock> {
+    let Some(root_start) = cfe_borrow_find_start_tag(source, "Form", 0) else {
+        return Vec::new();
+    };
+    let Some(root_open_end) = source[root_start..]
+        .find('>')
+        .map(|pos| root_start + pos + 1)
+    else {
+        return Vec::new();
+    };
+    let Some(root_close_rel) = source[root_open_end..].rfind("</Form>") else {
+        return Vec::new();
+    };
+    let body = &source[root_open_end..root_open_end + root_close_rel];
+    let mut blocks = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel_open) = body[cursor..].find('<') {
+        let open = cursor + rel_open;
+        if body[open..].starts_with("</")
+            || body[open..].starts_with("<?")
+            || body[open..].starts_with("<!")
+        {
+            cursor = open + 1;
+            continue;
+        }
+        let Some(tag) = cfe_borrow_start_tag_at(body, open) else {
+            cursor = open + 1;
+            continue;
+        };
+        let Some(end) = cfe_borrow_element_end(body, open) else {
+            cursor = tag.end;
+            continue;
+        };
+        let tail_end = body[end..]
+            .find('<')
+            .map(|pos| end + pos)
+            .unwrap_or(body.len());
+        blocks.push(CfeBorrowFormBlock {
+            local_name: tag.local_name,
+            xml: body[open..tail_end].to_string(),
+        });
+        cursor = tail_end;
+    }
+    blocks
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CfeBorrowTag {
+    local_name: String,
+    end: usize,
+    self_closing: bool,
+}
+
+pub(crate) fn cfe_borrow_start_tag_at(text: &str, open: usize) -> Option<CfeBorrowTag> {
+    let rest = text.get(open..)?;
+    if !rest.starts_with('<')
+        || rest.starts_with("</")
+        || rest.starts_with("<?")
+        || rest.starts_with("<!")
+    {
+        return None;
+    }
+    let after = open + 1;
+    let mut name_end = after;
+    for (idx, ch) in text[after..].char_indices() {
+        if ch.is_whitespace() || ch == '>' || ch == '/' {
+            break;
+        }
+        name_end = after + idx + ch.len_utf8();
+    }
+    if name_end == after {
+        return None;
+    }
+    let raw_name = &text[after..name_end];
+    let gt = text[open..].find('>')? + open;
+    let open_tag = &text[open..=gt];
+    Some(CfeBorrowTag {
+        local_name: cfe_borrow_tag_local_name(raw_name).to_string(),
+        end: gt + 1,
+        self_closing: open_tag.trim_end().ends_with("/>"),
+    })
+}
+
+pub(crate) fn cfe_borrow_closing_tag_at(text: &str, open: usize) -> Option<(String, usize)> {
+    let rest = text.get(open..)?;
+    if !rest.starts_with("</") {
+        return None;
+    }
+    let after = open + 2;
+    let mut name_end = after;
+    for (idx, ch) in text[after..].char_indices() {
+        if ch.is_whitespace() || ch == '>' {
+            break;
+        }
+        name_end = after + idx + ch.len_utf8();
+    }
+    if name_end == after {
+        return None;
+    }
+    let raw_name = &text[after..name_end];
+    let gt = text[open..].find('>')? + open;
+    Some((cfe_borrow_tag_local_name(raw_name).to_string(), gt + 1))
+}
+
+pub(crate) fn cfe_borrow_element_end(text: &str, open: usize) -> Option<usize> {
+    let start_tag = cfe_borrow_start_tag_at(text, open)?;
+    if start_tag.self_closing {
+        return Some(start_tag.end);
+    }
+    let mut depth = 1usize;
+    let mut cursor = start_tag.end;
+    while let Some(rel_next) = text[cursor..].find('<') {
+        let next = cursor + rel_next;
+        if let Some((local_name, end)) = cfe_borrow_closing_tag_at(text, next) {
+            if local_name == start_tag.local_name {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(end);
+                }
+            }
+            cursor = end;
+            continue;
+        }
+        if let Some(tag) = cfe_borrow_start_tag_at(text, next) {
+            if tag.local_name == start_tag.local_name && !tag.self_closing {
+                depth += 1;
+            }
+            cursor = tag.end;
+            continue;
+        }
+        cursor = next + 1;
+    }
+    None
+}
+
+pub(crate) fn cfe_borrow_tag_local_name(raw_name: &str) -> &str {
+    raw_name
+        .rsplit_once(':')
+        .map(|(_, name)| name)
+        .unwrap_or(raw_name)
+}
+
+pub(crate) fn cfe_borrow_find_start_tag(
+    text: &str,
+    local_name: &str,
+    offset: usize,
+) -> Option<usize> {
+    let mut cursor = offset;
+    while let Some(rel_open) = text[cursor..].find('<') {
+        let open = cursor + rel_open;
+        if let Some(tag) = cfe_borrow_start_tag_at(text, open) {
+            if tag.local_name == local_name {
+                return Some(open);
+            }
+            cursor = tag.end;
+        } else {
+            cursor = open + 1;
+        }
+    }
+    None
+}
+
+pub(crate) fn cfe_borrow_clean_form_fragment(value: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    cfe_borrow_strip_xmlns_declarations(&normalized)
+}
+
+pub(crate) fn cfe_borrow_strip_xmlns_declarations(value: &str) -> String {
+    let mut result = value.to_string();
+    let mut cursor = 0usize;
+    while let Some(rel_pos) = result[cursor..].find("xmlns") {
+        let pos = cursor + rel_pos;
+        let after_xmlns = pos + "xmlns".len();
+        let next = result[after_xmlns..].chars().next();
+        if !matches!(next, Some('=') | Some(':')) {
+            cursor = after_xmlns;
+            continue;
+        }
+        let Some(prev) = result[..pos].chars().next_back() else {
+            cursor = after_xmlns;
+            continue;
+        };
+        if !prev.is_whitespace() {
+            cursor = after_xmlns;
+            continue;
+        }
+        let mut remove_start = pos;
+        while remove_start > 0 {
+            let Some(ch) = result[..remove_start].chars().next_back() else {
+                break;
+            };
+            if ch.is_whitespace() {
+                remove_start -= ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let Some(first_quote_rel) = result[pos..].find('"') else {
+            cursor = after_xmlns;
+            continue;
+        };
+        let first_quote = pos + first_quote_rel;
+        let Some(second_quote_rel) = result[first_quote + 1..].find('"') else {
+            cursor = after_xmlns;
+            continue;
+        };
+        let remove_end = first_quote + 1 + second_quote_rel + 1;
+        result.replace_range(remove_start..remove_end, "");
+        cursor = remove_start;
+    }
+    result
+}
+
+pub(crate) fn cfe_borrow_replace_simple_element_text(
+    value: &str,
+    tag: &str,
+    replacement: &str,
+) -> String {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let mut result = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(start) = rest.find(&open) {
-        let Some(end_rel) = rest[start + open.len()..].find(&close) else {
+    let mut cursor = 0usize;
+    while let Some(rel_start) = value[cursor..].find(&open) {
+        let start = cursor + rel_start;
+        let value_start = start + open.len();
+        let Some(rel_end) = value[value_start..].find(&close) else {
             break;
         };
-        result.push_str(&rest[..start]);
-        rest = &rest[start + open.len() + end_rel + close.len()..];
+        let end = value_start + rel_end;
+        result.push_str(&value[cursor..value_start]);
+        result.push_str(replacement);
+        result.push_str(&value[end..end + close.len()]);
+        cursor = end + close.len();
     }
-    result.push_str(rest);
+    result.push_str(&value[cursor..]);
+    result
+}
+
+pub(crate) fn cfe_borrow_remove_simple_element(value: &str, tag: &str) -> String {
+    cfe_borrow_remove_simple_element_if(value, tag, |_| true)
+}
+
+pub(crate) fn cfe_borrow_remove_simple_element_unless_text_starts_with(
+    value: &str,
+    tag: &str,
+    prefix: &str,
+) -> String {
+    cfe_borrow_remove_simple_element_if(value, tag, |text| !text.trim().starts_with(prefix))
+}
+
+pub(crate) fn cfe_borrow_remove_simple_element_if<F>(
+    value: &str,
+    tag: &str,
+    should_remove: F,
+) -> String
+where
+    F: Fn(&str) -> bool,
+{
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut result = String::with_capacity(value.len());
+    let mut copied_until = 0usize;
+    let mut cursor = 0usize;
+    while let Some(rel_start) = value[cursor..].find(&open) {
+        let start = cursor + rel_start;
+        let value_start = start + open.len();
+        let Some(rel_end) = value[value_start..].find(&close) else {
+            break;
+        };
+        let end = value_start + rel_end + close.len();
+        if should_remove(&value[value_start..value_start + rel_end]) {
+            let remove_start =
+                cfe_borrow_preceding_whitespace_start(value, start).max(copied_until);
+            result.push_str(&value[copied_until..remove_start]);
+            copied_until = end;
+        }
+        cursor = end;
+    }
+    result.push_str(&value[copied_until..]);
+    result
+}
+
+pub(crate) fn cfe_borrow_remove_element_blocks<F>(
+    value: &str,
+    tag: &str,
+    should_remove: F,
+) -> String
+where
+    F: Fn(&str) -> bool,
+{
+    let mut result = String::with_capacity(value.len());
+    let mut copied_until = 0usize;
+    let mut cursor = 0usize;
+    while let Some(rel_open) = value[cursor..].find('<') {
+        let open = cursor + rel_open;
+        let Some(start_tag) = cfe_borrow_start_tag_at(value, open) else {
+            cursor = open + 1;
+            continue;
+        };
+        if start_tag.local_name != tag {
+            cursor = start_tag.end;
+            continue;
+        }
+        let Some(end) = cfe_borrow_element_end(value, open) else {
+            cursor = start_tag.end;
+            continue;
+        };
+        if should_remove(&value[open..end]) {
+            let remove_start = cfe_borrow_preceding_whitespace_start(value, open).max(copied_until);
+            result.push_str(&value[copied_until..remove_start]);
+            copied_until = end;
+        }
+        cursor = end;
+    }
+    result.push_str(&value[copied_until..]);
+    result
+}
+
+pub(crate) fn cfe_borrow_preceding_whitespace_start(value: &str, start: usize) -> usize {
+    let mut remove_start = start;
+    while remove_start > 0 {
+        let Some(ch) = value[..remove_start].chars().next_back() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            remove_start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    remove_start
+}
+
+pub(crate) fn cfe_borrow_collect_common_picture_refs(value: &str) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+    let mut cursor = 0usize;
+    let needle = "<xr:Ref>CommonPicture.";
+    while let Some(rel_pos) = value[cursor..].find(needle) {
+        let start = cursor + rel_pos + needle.len();
+        let name = value[start..]
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect::<String>();
+        if !name.is_empty() {
+            result.push(name);
+        }
+        cursor = start;
+    }
+    result
+}
+
+pub(crate) fn cfe_borrow_strip_picture_blocks(
+    value: &str,
+    borrowed_common_pictures: &HashSet<String>,
+) -> String {
+    cfe_borrow_remove_element_blocks(value, "Picture", |block| {
+        if let Some(name) = cfe_borrow_common_picture_name(block) {
+            return !borrowed_common_pictures.contains(&name);
+        }
+        if let Some(name) = cfe_borrow_std_picture_name(block) {
+            return name != "Print";
+        }
+        false
+    })
+}
+
+pub(crate) fn cfe_borrow_common_picture_name(value: &str) -> Option<String> {
+    let needle = "<xr:Ref>CommonPicture.";
+    let start = value.find(needle)? + needle.len();
+    let name = value[start..]
+        .chars()
+        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+        .collect::<String>();
+    (!name.is_empty()).then_some(name)
+}
+
+pub(crate) fn cfe_borrow_std_picture_name(value: &str) -> Option<String> {
+    let needle = "<xr:Ref>StdPicture.";
+    let start = value.find(needle)? + needle.len();
+    let name = value[start..]
+        .chars()
+        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+        .collect::<String>();
+    (!name.is_empty()).then_some(name)
+}
+
+pub(crate) fn cfe_borrow_collect_style_item_refs(value: &str) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+    let mut cursor = 0usize;
+    let attr_needle = "ref=\"style:";
+    while let Some(rel_pos) = value[cursor..].find(attr_needle) {
+        let start = cursor + rel_pos + attr_needle.len();
+        let name = cfe_borrow_read_identifier(&value[start..]);
+        if !name.is_empty() {
+            result.push(name);
+        }
+        cursor = start;
+    }
+    cursor = 0;
+    let text_needle = ">style:";
+    while let Some(rel_pos) = value[cursor..].find(text_needle) {
+        let start = cursor + rel_pos + text_needle.len();
+        let name = cfe_borrow_read_identifier(&value[start..]);
+        if !name.is_empty() {
+            result.push(name);
+        }
+        cursor = start;
+    }
+    result
+}
+
+pub(crate) fn cfe_borrow_read_identifier(value: &str) -> String {
+    value
+        .chars()
+        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+        .collect()
+}
+
+pub(crate) fn cfe_borrow_main_form_attributes_xml(
+    indent: &str,
+    main_attr_type: Option<&str>,
+) -> String {
+    if let Some(main_attr_type) = main_attr_type {
+        format!(
+            "{indent}<Attributes>\r\n{indent}\t<Attribute name=\"Объект\" id=\"1000001\">\r\n{indent}\t\t<Type><v8:Type>{main_attr_type}</v8:Type></Type>\r\n{indent}\t\t<MainAttribute>true</MainAttribute>\r\n{indent}\t\t<SavedData>true</SavedData>\r\n{indent}\t</Attribute>\r\n{indent}</Attributes>"
+        )
+    } else {
+        format!("{indent}<Attributes/>")
+    }
+}
+
+pub(crate) fn cfe_borrow_indent_form_fragment_for_base(value: &str) -> String {
+    let mut result = String::new();
+    for (idx, line) in value.split('\n').enumerate() {
+        if idx == 0 {
+            result.push_str("\t\t");
+            result.push_str(line);
+        } else {
+            result.push('\t');
+            result.push_str(line);
+        }
+        result.push_str("\r\n");
+    }
     result
 }
 
@@ -1567,22 +2230,25 @@ pub(crate) fn cfe_borrow_register_form(
     if text.contains("<ChildObjects/>") {
         text = text.replacen(
             "<ChildObjects/>",
-            &format!("<ChildObjects>\n\t\t\t{tag}\n\t\t</ChildObjects>"),
+            &format!("<ChildObjects>\r\n\t\t\t{tag}\r\n\t\t</ChildObjects>"),
             1,
         );
     } else if text.contains("</ChildObjects>") {
         text = text.replacen(
             "</ChildObjects>",
-            &format!("\t\t\t{tag}\n\t\t</ChildObjects>"),
+            &format!("\t\t\t{tag}\r\n\t\t</ChildObjects>"),
             1,
         );
     } else {
         text = text.replacen(
             &format!("</{type_name}>"),
-            &format!("\t\t<ChildObjects>\n\t\t\t{tag}\n\t\t</ChildObjects>\n\t</{type_name}>"),
+            &format!(
+                "\t\t<ChildObjects>\r\n\t\t\t{tag}\r\n\t\t</ChildObjects>\r\n\t</{type_name}>"
+            ),
             1,
         );
     }
+    cfe_borrow_normalize_lxml_config_serialization(&mut text);
     write_utf8_bom(&object_file, &text)?;
     stdout.push_str(&format!(
         "[INFO]   Registered form in: {}\n",

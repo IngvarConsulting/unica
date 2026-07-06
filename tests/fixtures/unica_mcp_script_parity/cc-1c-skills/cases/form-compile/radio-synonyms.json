@@ -1,0 +1,44 @@
+{
+  "name": "RadioButtonField — синонимы (русские ключи, Перечисление., title вместо presentation)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Enum", "name": "СпособыКурса", "values": [
+        { "name": "Авто" }, { "name": "Ручной" }
+      ]},
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестСинонимы", "attributes": [
+        { "name": "СпособКурса", "type": "EnumRef.СпособыКурса" }
+      ]},
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестСинонимы.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ТестСинонимы/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ТестСинонимы/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Радио — синонимы",
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ТестСинонимы", "main": true },
+      { "name": "СпособКурса", "type": "EnumRef.СпособыКурса" }
+    ],
+    "elements": [
+      {
+        "ПолеПереключателя": "СпособКурса",
+        "path": "СпособКурса",
+        "title": "Способ курса",
+        "radioButtonType": "Переключатель",
+        "choiceList": [
+          { "value": "Перечисление.СпособыКурса.Авто",   "title": "Автоматически" },
+          { "value": "Перечисление.СпособыКурса.Ручной", "title": "Вручную" }
+        ]
+      }
+    ]
+  }
+}

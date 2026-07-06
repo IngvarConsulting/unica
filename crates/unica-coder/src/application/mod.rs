@@ -645,38 +645,45 @@ fn support_guard_blocked_outcome(
     violation: &SupportGuardViolation,
     requirement: SupportGuardRequirement,
 ) -> AdapterOutcome {
-    let state = match violation.code {
-        "capability-off" => format!(
-            "Состояние: у всей конфигурации выключена возможность изменения; объект `{}` редактировать нельзя.",
-            violation.target_path.display()
+    let target = violation.target_path.display();
+    let head = "[support-guard] Редактирование отклонено: это объект типовой конфигурации на поддержке поставщика, прямое редактирование молча сломает будущие обновления.";
+    let cfe = "Рекомендуемый путь: внести доработку в расширение (навыки cfe-borrow / cfe-patch-method) — состояние поддержки менять не нужно, обновления вендора сохраняются.";
+    let off_note =
+        "Снять проверку для этой базы: editingAllowedCheck = warn|off в .v8-project.json.";
+    let (state, fix) = match violation.code {
+        "capability-off" => (
+            format!(
+                "Состояние: у всей конфигурации выключена возможность изменения (режим read-only «из коробки») — поэтому объект «{target}» редактировать нельзя."
+            ),
+            format!(
+                "Либо снять защиту явно (навык support-edit, два шага):\n  support-edit -Path \"{}\" -Capability on — включить возможность изменения (объекты пока остаются на замке);\n  support-edit -Path \"{target}\" -Set editable — открыть этот объект для редактирования.\n  Изменение применяется в базу полной загрузкой выгрузки и обходит механизм обновлений вендора.",
+                violation.config_dir.display()
+            ),
         ),
-        "not-removed" => format!(
-            "Состояние: объект `{}` остается на поддержке; удаление разорвет обновления поставщика.",
-            violation.target_path.display()
+        "not-removed" if requirement == SupportGuardRequirement::Removed => (
+            format!(
+                "Состояние: объект «{target}» на поддержке (не снят с поддержки) — его удаление разорвёт обновления вендора."
+            ),
+            format!(
+                "Либо сначала снять объект с поддержки, затем удалять:\n  support-edit -Path \"{target}\" -Set off-support — объект уходит из-под обновлений, после этого удаление безопасно."
+            ),
         ),
-        _ => format!(
-            "Состояние: объект `{}` на замке; прямая правка сломает обновления поставщика.",
-            violation.target_path.display()
+        _ => (
+            format!(
+                "Состояние: объект «{target}» на замке (возможность изменения конфигурации включена, но сам объект не редактируется)."
+            ),
+            format!(
+                "Либо разрешить редактирование этого объекта (навык support-edit, выбрать одно):\n  support-edit -Path \"{target}\" -Set editable — редактировать и дальше получать обновления вендора (возможны конфликты слияния);\n  support-edit -Path \"{target}\" -Set off-support — снять с поддержки: обновления по объекту больше не приходят."
+            ),
         ),
     };
-    let destructive_note = if requirement == SupportGuardRequirement::Removed {
-        "Удаление допустимо только после явного снятия объекта с поддержки."
-    } else {
-        "Для доработки типовой конфигурации используй CFE flow через `unica.cfe.borrow` / `unica.cfe.patch_method`; прямое изменение поддержки должно быть отдельным support-edit flow, не скрытым побочным эффектом."
-    };
-    let message = format!(
-        "[support guard] Редактирование отклонено: {}.\n{}\n{}\nСнять проверку для этой базы можно только явно: `editingAllowedCheck` = `warn` или `off` в `.v8-project.json`.",
-        violation.reason, state, destructive_note
-    );
+    let message = format!("{head}\n{state}\n{cfe}\n{fix}\n{off_note}");
     AdapterOutcome {
         ok: false,
         summary: format!("{} blocked by support guard", spec.name),
         changes: Vec::new(),
         warnings: Vec::new(),
-        errors: vec![format!(
-            "[support guard] {}: {}",
-            violation.code, violation.reason
-        )],
+        errors: vec![message.clone()],
         artifacts: vec![violation.target_path.display().to_string()],
         stdout: None,
         stderr: Some(format!("{message}\n")),

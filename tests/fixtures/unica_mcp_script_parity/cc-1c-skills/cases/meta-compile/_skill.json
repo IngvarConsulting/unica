@@ -1,0 +1,17 @@
+{
+  "script": "meta-compile/scripts/meta-compile",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-JsonPath", "from": "inputFile" },
+    { "flag": "-OutputDir", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": {
+    "script": "meta-validate/scripts/meta-validate",
+    "flag": "-ObjectPath",
+    "pathFrom": "validatePath"
+  }
+}

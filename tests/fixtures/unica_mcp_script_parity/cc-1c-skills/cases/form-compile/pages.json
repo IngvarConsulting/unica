@@ -1,0 +1,43 @@
+{
+  "name": "Форма со страницами (мастер)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "Мастер" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/Мастер.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/Мастер/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/Мастер/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Мастер настройки",
+    "properties": { "autoTitle": false },
+    "elements": [
+      { "pages": "СтраницыМастера", "pagesRepresentation": "None", "tooltip": "Страницы мастера настройки", "children": [
+        { "page": "Шаг1", "title": "", "showTitle": false, "picture": "StdPicture.ExecuteTask", "children": [
+          { "input": "Параметр1", "path": "Параметр1" }
+        ]},
+        { "page": "Шаг2", "title": "Результат", "titleDataPath": "Итог", "tooltip": "Шаг \"Результат\"", "group": "horizontalIfPossible", "picture": { "src": "StdPicture.FilterCriterion", "loadTransparent": true, "transparentPixel": { "x": 2, "y": 4 } }, "backColor": "style:FormBackColor", "titleTextColor": "style:FormTextColor", "titleFont": "style:TextFont", "children": [
+          { "input": "Итог", "path": "Итог", "readOnly": true }
+        ]}
+      ]},
+      { "group": "horizontalIfPossible", "name": "Навигация", "children": [
+        { "button": "Назад", "command": "Назад", "title": "< Назад" },
+        { "button": "Далее", "command": "Далее", "title": "Далее >" }
+      ]}
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.Мастер", "main": true },
+      { "name": "Параметр1", "type": "string" },
+      { "name": "Итог", "type": "string" }
+    ],
+    "commands": [
+      { "name": "Назад", "action": "НазадОбработка" },
+      { "name": "Далее", "action": "ДалееОбработка" }
+    ]
+  }
+}

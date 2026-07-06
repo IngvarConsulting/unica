@@ -1,0 +1,28 @@
+{
+  "name": "Форма с полем календаря",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "Календарь" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/Календарь.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/Календарь/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/Календарь/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Календарь",
+    "elements": [
+      { "calendar": "Календарь", "path": "Дата", "titleLocation": "none", "selectionMode": "Interval", "showCurrentDate": false, "widthInMonths": 2, "events": { "OnActivateDate": "КалендарьПриАктивизацииДаты" } },
+      { "calendar": "КалендарьМесяцы", "path": "ДатаМесяцы", "showMonthsPanel": true, "heightInMonths": 0 }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.Календарь", "main": true },
+      { "name": "Дата", "type": "date" },
+      { "name": "ДатаМесяцы", "type": "date" }
+    ]
+  }
+}

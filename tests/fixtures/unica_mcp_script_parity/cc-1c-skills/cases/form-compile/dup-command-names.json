@@ -1,0 +1,26 @@
+{
+  "name": "Дубликат имени команды → [ERROR] exit 1",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестДубльКом" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестДубльКом.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ТестДубльКом/Forms/Форма/Ext/Form.xml" },
+  "expectError": "Duplicate command name",
+  "input": {
+    "title": "Дубль команды",
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ТестДубльКом", "main": true }
+    ],
+    "commands": [
+      { "name": "Выполнить", "action": "Выполнить" },
+      { "name": "Выполнить", "action": "ВыполнитьЕщё" }
+    ]
+  }
+}

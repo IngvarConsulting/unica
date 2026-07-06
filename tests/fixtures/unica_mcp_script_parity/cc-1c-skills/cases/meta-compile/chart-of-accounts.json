@@ -1,0 +1,15 @@
+{
+  "name": "План счетов с признаками учёта",
+  "input": {
+    "type": "ChartOfAccounts",
+    "name": "Хозрасчетный",
+    "codeLength": 4,
+    "descriptionLength": 120,
+    "maxExtDimensionCount": 0,
+    "accountingFlags": ["Валютный", "Количественный"]
+  },
+  "validatePath": "ChartsOfAccounts/Хозрасчетный",
+  "expect": {
+    "files": ["ChartsOfAccounts/Хозрасчетный.xml", "ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl"]
+  }
+}

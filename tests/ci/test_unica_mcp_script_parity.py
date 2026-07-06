@@ -18,6 +18,7 @@ PLUGIN_ROOT = REPO_ROOT / "plugins" / "unica"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "unica_mcp_script_parity"
 REFERENCE_SKILLS_ROOT = FIXTURES_ROOT / "reference_skills"
+CC_1C_CASES_ROOT = FIXTURES_ROOT / "cc-1c-skills" / "cases"
 BSP_SKD_QUERY_FIXTURE = (
     "bsp/skd/Catalogs__ПравилаОбработкиЭлектроннойПочты__"
     "СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
@@ -47,6 +48,9 @@ BSP_META_ENUM_FIXTURE = "bsp/meta/Enums/ВажностьПроблемыУчет
 BSP_META_INFORMATION_REGISTER_FIXTURE = "bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml"
 BSP_SUBSYSTEM_FIXTURE = "bsp/subsystems/Администрирование.xml"
 BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE = "bsp/subsystems/Администрирование/Ext/CommandInterface.xml"
+BSP_FORM_BUSINESS_PROCESS_FIXTURE = (
+    "bsp/forms/BusinessProcesses__Задание__ФормаБизнесПроцесса/Form.xml"
+)
 BSP_ROLE_ADMIN_RIGHTS_FIXTURE = "bsp/roles/АдминистраторСистемы/Rights.xml"
 BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE = "bsp/roles/Администрирование/Rights.xml"
 BSP_MXL_RECEIPT_FIXTURE = (
@@ -91,6 +95,15 @@ class SkillMcpExample:
     skill: str
     line: int
     payload: dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True)
+class CcSkillCase:
+    case_id: str
+    skill_dir: str
+    case_path: Path
+    skill_config: dict[str, Any]
+    case_data: dict[str, Any]
 
 
 SUCCESS_SCENARIOS = [
@@ -326,6 +339,45 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="bsp-cfe-borrow-russian-types-batch",
+        tool="unica.cfe.borrow",
+        skill="cfe-borrow",
+        script="cfe-borrow.py",
+        arguments={
+            "ExtensionPath": "src-cfe",
+            "ConfigPath": "src",
+            "Object": "Справочник.Валюты;;Документ.АктОбУничтоженииПерсональныхДанных",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="cfe-init",
+                script="cfe-init.py",
+                tool="unica.cfe.init",
+                arguments={
+                    "Name": "ParityExtension",
+                    "Synonym": "Parity extension",
+                    "NamePrefix": "PE_",
+                    "OutputDir": "src-cfe",
+                    "Purpose": "Customization",
+                    "Version": "1.0.0.1",
+                    "Vendor": "Unica",
+                    "CompatibilityMode": "Version8_3_24",
+                    "NoRole": True,
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+            FileFixture(
+                BSP_META_DOCUMENT_FIXTURE,
+                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="bsp-cfe-borrow-real-document-object",
         tool="unica.cfe.borrow",
         skill="cfe-borrow",
@@ -361,6 +413,53 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="bsp-cfe-borrow-business-process-form-main-attribute",
+        tool="unica.cfe.borrow",
+        skill="cfe-borrow",
+        script="cfe-borrow.py",
+        arguments={
+            "ExtensionPath": "src-cfe",
+            "ConfigPath": "src",
+            "Object": "BusinessProcess.Задание.Form.ФормаБизнесПроцесса",
+            "BorrowMainAttribute": "Form",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="cfe-init",
+                script="cfe-init.py",
+                tool="unica.cfe.init",
+                arguments={
+                    "Name": "ParityExtension",
+                    "Synonym": "Parity extension",
+                    "NamePrefix": "PE_",
+                    "OutputDir": "src-cfe",
+                    "Purpose": "Customization",
+                    "Version": "1.0.0.1",
+                    "Vendor": "Unica",
+                    "CompatibilityMode": "Version8_3_24",
+                    "NoRole": True,
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                "cfe-borrow-bsp-form/BusinessProcesses/Задание.xml",
+                "src/BusinessProcesses/Задание.xml",
+            ),
+            FileFixture(
+                "cfe-borrow-bsp-form/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
+                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
+            ),
+            FileFixture(
+                BSP_FORM_BUSINESS_PROCESS_FIXTURE,
+                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса/Ext/Form.xml",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="cfe-diff-empty-extension-mode-a",
         tool="unica.cfe.diff",
         skill="cfe-diff",
@@ -388,6 +487,81 @@ SUCCESS_SCENARIOS = [
                     "Name": "ParityConfiguration",
                     "OutputDir": "src",
                 },
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        name="bsp-cfe-diff-borrowed-catalog-mode-a",
+        tool="unica.cfe.diff",
+        skill="cfe-diff",
+        script="cfe-diff.py",
+        arguments={
+            "ExtensionPath": "src-cfe",
+            "ConfigPath": "src",
+            "Mode": "A",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="cfe-init",
+                script="cfe-init.py",
+                tool="unica.cfe.init",
+                arguments={
+                    "Name": "ParityExtension",
+                    "Synonym": "Parity extension",
+                    "NamePrefix": "PE_",
+                    "OutputDir": "src-cfe",
+                    "Purpose": "Customization",
+                    "Version": "1.0.0.1",
+                    "Vendor": "Unica",
+                    "CompatibilityMode": "Version8_3_24",
+                    "NoRole": True,
+                },
+            ),
+            SetupStep(
+                skill="cfe-borrow",
+                script="cfe-borrow.py",
+                tool="unica.cfe.borrow",
+                arguments={
+                    "ExtensionPath": "src-cfe",
+                    "ConfigPath": "src",
+                    "Object": "Catalog.Валюты",
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        name="bsp-cfe-diff-transfer-check-mode-b",
+        tool="unica.cfe.diff",
+        skill="cfe-diff",
+        script="cfe-diff.py",
+        arguments={
+            "ExtensionPath": "src-cfe",
+            "ConfigPath": "src",
+            "Mode": "B",
+        },
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                "cfe-diff/mode-b/src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+                "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+            ),
+            FileFixture(
+                "cfe-diff/mode-b/src-cfe/Configuration.xml",
+                "src-cfe/Configuration.xml",
+            ),
+            FileFixture(
+                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты.xml",
+                "src-cfe/Catalogs/Валюты.xml",
+            ),
+            FileFixture(
+                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
+                "src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
             ),
         ),
         expect_ok=True,
@@ -540,6 +714,26 @@ SUCCESS_SCENARIOS = [
         script="meta-compile.py",
         arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
         fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="bsp-meta-edit-catalog-ops",
+        tool="unica.meta.edit",
+        skill="meta-edit",
+        script="meta-edit.py",
+        arguments={
+            "ObjectPath": "src/Catalogs/Валюты.xml",
+            "DefinitionFile": "fixtures/meta-edit-bsp-catalog-ops.json",
+            "NoValidate": True,
+        },
+        fixtures=(
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+            FileFixture(
+                "meta-edit/bsp-catalog-ops.json",
+                "fixtures/meta-edit-bsp-catalog-ops.json",
+            ),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -826,6 +1020,89 @@ SUCCESS_SCENARIOS = [
             "OutputPath": "forms/Form.xml",
         },
         fixtures=(FileFixture("form-simple.json", "fixtures/form-simple.json"),),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="bsp-form-compile-catalog-list-from-object",
+        tool="unica.form.compile",
+        skill="form-compile",
+        script="form-compile.py",
+        arguments={
+            "FromObject": True,
+            "ObjectPath": "src/Catalogs/Валюты.xml",
+            "Purpose": "List",
+            "OutputPath": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+        },
+        fixtures=(
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="bsp-form-compile-catalog-item-from-object",
+        tool="unica.form.compile",
+        skill="form-compile",
+        script="form-compile.py",
+        arguments={
+            "FromObject": True,
+            "ObjectPath": "src/Catalogs/Валюты.xml",
+            "Purpose": "Item",
+            "OutputPath": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+        },
+        fixtures=(
+            FileFixture(
+                BSP_META_CATALOG_FIXTURE,
+                "src/Catalogs/Валюты.xml",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="bsp-form-compile-document-list-from-object",
+        tool="unica.form.compile",
+        skill="form-compile",
+        script="form-compile.py",
+        arguments={
+            "FromObject": True,
+            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            "Purpose": "List",
+            "OutputPath": (
+                "src/Documents/АктОбУничтоженииПерсональныхДанных/"
+                "Forms/ФормаСписка/Ext/Form.xml"
+            ),
+        },
+        fixtures=(
+            FileFixture(
+                BSP_META_DOCUMENT_FIXTURE,
+                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="bsp-form-compile-document-item-from-object",
+        tool="unica.form.compile",
+        skill="form-compile",
+        script="form-compile.py",
+        arguments={
+            "FromObject": True,
+            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            "Purpose": "Item",
+            "OutputPath": (
+                "src/Documents/АктОбУничтоженииПерсональныхДанных/"
+                "Forms/ФормаДокумента/Ext/Form.xml"
+            ),
+        },
+        fixtures=(
+            FileFixture(
+                BSP_META_DOCUMENT_FIXTURE,
+                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+            ),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -1367,6 +1644,19 @@ SUCCESS_SCENARIOS = [
             "OutputPath": "templates/SKD.xml",
         },
         fixtures=(FileFixture("skd-simple.json", "fixtures/skd-simple.json"),),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="skd-compile-bsp-data-usage",
+        tool="unica.skd.compile",
+        skill="skd-compile",
+        script="skd-compile.py",
+        arguments={
+            "DefinitionFile": "fixtures/skd-bsp-data-usage.json",
+            "OutputPath": "templates/SKD.xml",
+        },
+        fixtures=(FileFixture("skd-bsp-data-usage.json", "fixtures/skd-bsp-data-usage.json"),),
         expect_ok=True,
         compare_files=True,
     ),
@@ -3757,6 +4047,11 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             with self.subTest(scenario=scenario.name, tool=scenario.tool):
                 self.assert_parity(scenario)
 
+    def test_cc_1c_skill_cases_match_reference_python_scripts(self) -> None:
+        for case in iter_cc_1c_skill_cases():
+            with self.subTest(case=case.case_id, tool=cc_case_tool(case)):
+                self.assert_cc_1c_case_parity(case)
+
     def assert_parity(self, scenario: ParityScenario) -> None:
         with tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp:
             temp_root = Path(temp)
@@ -3801,6 +4096,37 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if scenario.compare_files:
                 self.assertEqual(snapshot_workspace(direct_ws), snapshot_workspace(mcp_ws))
 
+    def assert_cc_1c_case_parity(self, case: CcSkillCase) -> None:
+        with tempfile.TemporaryDirectory(prefix=f"unica-cc-parity-{case.skill_dir}-{case.case_path.stem}-") as temp:
+            temp_root = Path(temp)
+            direct_ws = temp_root / "direct"
+            mcp_ws = temp_root / "mcp"
+            direct_ws.mkdir()
+            mcp_ws.mkdir()
+            mcp_cache = temp_root / "mcp-cache"
+
+            self.prepare_cc_1c_workspace(direct_ws, case)
+            self.prepare_cc_1c_workspace(mcp_ws, case)
+
+            direct_args, direct_input = cc_case_main_arguments(case, direct_ws)
+            mcp_args, mcp_input = cc_case_main_arguments(case, mcp_ws)
+            try:
+                direct = run_cc_python_script(cc_case_skill(case), cc_case_script(case), direct_args, direct_ws)
+                mcp = self.call_mcp_tool(cc_case_tool(case), mcp_args, mcp_ws, mcp_cache)
+            finally:
+                if direct_input is not None:
+                    direct_input.unlink(missing_ok=True)
+                if mcp_input is not None:
+                    mcp_input.unlink(missing_ok=True)
+
+            expect_error = bool(case.case_data.get("expectError"))
+            gap, message = cc_case_parity_gap(case, direct, mcp, direct_ws, mcp_ws, expect_error)
+            expected_gap = CC_1C_EXPECTED_GAPS.get(case.case_id)
+            if expected_gap is None:
+                self.assertIsNone(gap, message)
+                return
+            self.assertEqual(gap, expected_gap, f"{case.case_id}: expected gap {expected_gap}, got {gap}\n{message}")
+
     def prepare_workspace(
         self,
         workspace: Path,
@@ -3827,6 +4153,47 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     raise AssertionError(
                         f"setup step {step.skill}/{step.script} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
+
+    def prepare_cc_1c_workspace(self, workspace: Path, case: CcSkillCase) -> None:
+        setup_name = case.case_data.get("setup") or case.skill_config.get("setup") or "none"
+        if setup_name == "empty-config":
+            result = run_cc_python_script("cf-init", "cf-init.py", {"Name": "TestConfig", "OutputDir": "."}, workspace)
+            if result.returncode != 0:
+                raise AssertionError(f"cc setup empty-config failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        elif isinstance(setup_name, str) and setup_name.startswith("fixture:"):
+            fixture = case.case_path.parent / "fixtures" / setup_name.removeprefix("fixture:")
+            if not fixture.exists():
+                raise AssertionError(f"cc fixture not found: {fixture}")
+            copy_tree_contents(fixture, workspace)
+        elif setup_name not in ("none", None):
+            raise AssertionError(f"unsupported cc setup: {setup_name}")
+
+        for index, step in enumerate(case.case_data.get("preRun") or []):
+            if "writeFile" in step:
+                write_file = step["writeFile"]
+                target = workspace / write_file["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                content = write_file.get("content", "")
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False, indent=2)
+                target.write_text(content, encoding="utf-8")
+                continue
+
+            script_rel = step["script"]
+            pre_input = None
+            if "input" in step:
+                pre_input = workspace / f"__cc_pre_input_{index}.json"
+                pre_input.write_text(json.dumps(step["input"], ensure_ascii=False, indent=2), encoding="utf-8")
+            args = cc_step_raw_args(step.get("args") or {}, workspace, pre_input)
+            try:
+                result = run_reference_skill_raw(script_rel, args, workspace)
+            finally:
+                if pre_input is not None:
+                    pre_input.unlink(missing_ok=True)
+            if result.returncode != 0:
+                raise AssertionError(
+                    f"cc preRun step {script_rel} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
 
     def call_mcp(self, scenario: ParityScenario, workspace: Path, cache_dir: Path) -> dict[str, Any]:
         return self.call_mcp_tool(scenario.tool, scenario.arguments, workspace, cache_dir)
@@ -3896,9 +4263,11 @@ def run_python_script(
     script: str,
     arguments: dict[str, Any],
     workspace: Path,
+    *,
+    skills_root: Path = REFERENCE_SKILLS_ROOT,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        command_for_script(skill, script, arguments),
+        command_for_script(skill, script, arguments, skills_root=skills_root),
         cwd=workspace,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -3907,8 +4276,366 @@ def run_python_script(
     )
 
 
-def command_for_script(skill: str, script: str, arguments: dict[str, Any]) -> list[str]:
+def run_cc_python_script(
+    skill: str,
+    script: str,
+    arguments: dict[str, Any],
+    workspace: Path,
+) -> subprocess.CompletedProcess[str]:
+    return run_python_script(skill, script, arguments, workspace)
+
+
+CC_CASE_TOOLS = {
+    "meta-compile": "unica.meta.compile",
+    "skd-compile": "unica.skd.compile",
+    "form-compile": "unica.form.compile",
+    "form-compile-from-object": "unica.form.compile",
+    "cfe-borrow": "unica.cfe.borrow",
+}
+
+
+CC_1C_EXPECTED_GAPS = {
+    "meta-compile/batch": "snapshot_diff",
+    "form-compile/dup-command-names": "ok_mismatch",
+    "form-compile/dup-element-names": "ok_mismatch",
+    "cfe-borrow/catalog": "snapshot_diff",
+    "cfe-borrow/common-module": "snapshot_diff",
+    "cfe-borrow/document": "snapshot_diff",
+    "cfe-borrow/enum": "snapshot_diff",
+    "cfe-borrow/multiple-objects": "snapshot_diff",
+    "form-compile/dynamic-list-parameters": "snapshot_diff",
+    "form-compile/minimal": "snapshot_diff",
+    "form-compile/namespace-collision-ok": "snapshot_diff",
+    "form-compile/pages": "snapshot_diff",
+    "form-compile/text-edit-flag": "snapshot_diff",
+    "meta-compile/accounting-register": "snapshot_diff",
+    "meta-compile/accumulation-register": "snapshot_diff",
+    "meta-compile/business-process": "snapshot_diff",
+    "meta-compile/calculation-register": "snapshot_diff",
+    "meta-compile/catalog-basic": "snapshot_diff",
+    "meta-compile/catalog-hierarchical": "snapshot_diff",
+    "meta-compile/catalog-minimal": "snapshot_diff",
+    "meta-compile/catalog-mixed-types": "snapshot_diff",
+    "meta-compile/catalog-tabparts": "snapshot_diff",
+    "meta-compile/chart-of-accounts": "snapshot_diff",
+    "meta-compile/chart-of-calculation-types": "snapshot_diff",
+    "meta-compile/chart-of-characteristic-types": "snapshot_diff",
+    "meta-compile/common-module-client": "snapshot_diff",
+    "meta-compile/common-module": "snapshot_diff",
+    "meta-compile/constant": "snapshot_diff",
+    "meta-compile/data-processor": "snapshot_diff",
+    "meta-compile/defined-type": "snapshot_diff",
+    "meta-compile/document-basic": "snapshot_diff",
+    "meta-compile/document-journal": "snapshot_diff",
+    "meta-compile/document-multiple-tabparts": "snapshot_diff",
+    "meta-compile/event-subscription": "snapshot_diff",
+    "meta-compile/exchange-plan": "snapshot_diff",
+    "meta-compile/http-service": "snapshot_diff",
+    "meta-compile/information-register": "snapshot_diff",
+    "meta-compile/report": "snapshot_diff",
+    "meta-compile/scheduled-job": "snapshot_diff",
+    "meta-compile/task": "snapshot_diff",
+    "meta-compile/web-service": "snapshot_diff",
+    "form-compile/commands": "stdout_mismatch_snapshot_diff",
+    "form-compile/dynamic-list-form": "stdout_mismatch_snapshot_diff",
+    "form-compile/groups": "stdout_mismatch_snapshot_diff",
+    "form-compile/input-fields": "stderr_mismatch",
+    "form-compile/table": "stdout_mismatch_snapshot_diff",
+    "meta-compile/error-unknown-type": "stderr_mismatch",
+    "cfe-borrow/form-bindings": "stdout_mismatch_snapshot_diff",
+    "form-compile/attributes-types": "stdout_mismatch_snapshot_diff",
+    "form-compile/auto-cmd-bar": "stdout_mismatch_snapshot_diff",
+    "form-compile/column-group": "stdout_mismatch_snapshot_diff",
+    "form-compile/file-dialog": "stdout_mismatch_snapshot_diff",
+    "form-compile/synonyms": "stdout_mismatch_snapshot_diff",
+    "meta-compile/enum": "snapshot_diff",
+    "skd-compile/auto-data-parameters": "stdout_mismatch_snapshot_diff",
+    "skd-compile/available-values-and-folders": "stdout_mismatch_snapshot_diff",
+    "skd-compile/calc-object-name-restrict-string": "stdout_mismatch_snapshot_diff",
+    "skd-compile/calc-shorthand-extended": "stdout_mismatch_snapshot_diff",
+    "skd-compile/decimal-qualifier-defaults": "stdout_mismatch_snapshot_diff",
+    "skd-compile/empty-param-values": "stdout_mismatch_snapshot_diff",
+    "skd-compile/field-appearance-and-presentation": "stdout_mismatch_snapshot_diff",
+    "skd-compile/field-restrictions": "stdout_mismatch_snapshot_diff",
+    "skd-compile/full-example": "stdout_mismatch_snapshot_diff",
+    "skd-compile/grouping-and-totals": "stdout_mismatch_snapshot_diff",
+    "skd-compile/horizontal-merge": "stdout_mismatch_snapshot_diff",
+    "skd-compile/multi-lang-title": "stdout_mismatch_snapshot_diff",
+    "skd-compile/orgroup-string-items": "stdout_mismatch_snapshot_diff",
+    "skd-compile/parameter-title-presentation-synonyms": "stdout_mismatch_snapshot_diff",
+    "skd-compile/userestriction-object-form": "stdout_mismatch_snapshot_diff",
+    "skd-compile/with-filters": "stdout_mismatch_snapshot_diff",
+    "skd-compile/with-parameters": "stdout_mismatch_snapshot_diff",
+    "form-compile/additional-columns": "unsupported_form_element",
+    "form-compile/button-group": "unsupported_form_element",
+    "form-compile/calendar": "unsupported_form_element",
+    "form-compile/chart-fields": "unsupported_form_element",
+    "form-compile/chart-gantt-settings": "unsupported_form_element",
+    "form-compile/chart-settings": "unsupported_form_element",
+    "form-compile/element-appearance": "unsupported_form_element",
+    "form-compile/events": "unsupported_form_element",
+    "form-compile/picture-field": "unsupported_form_element",
+    "form-compile/radio-auto-enum": "unsupported_form_element",
+    "form-compile/radio-synonyms": "unsupported_form_element",
+    "form-compile/radio-tumbler-strings": "unsupported_form_element",
+    "form-compile/special-fields": "unsupported_form_element",
+    "form-compile-from-object/accumreg-list-simple": "unsupported_from_object_type",
+    "form-compile-from-object/ccoct-item-simple": "unsupported_from_object_type",
+    "form-compile-from-object/chartofaccounts-item-simple": "unsupported_from_object_type",
+    "form-compile-from-object/chartofaccounts-list-simple": "unsupported_from_object_type",
+    "form-compile-from-object/exchangeplan-item-simple": "unsupported_from_object_type",
+    "form-compile-from-object/inforeg-list-periodic": "unsupported_from_object_type",
+    "form-compile-from-object/inforeg-record-nonperiodic": "unsupported_from_object_type",
+    "form-compile-from-object/inforeg-record-periodic": "unsupported_from_object_type",
+}
+
+
+def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
+    if not CC_1C_CASES_ROOT.exists():
+        return []
+    cases: list[CcSkillCase] = []
+    for skill_dir in sorted(CC_CASE_TOOLS):
+        skill_root = CC_1C_CASES_ROOT / skill_dir
+        skill_config_path = skill_root / "_skill.json"
+        if not skill_config_path.exists():
+            continue
+        skill_config = json.loads(skill_config_path.read_text(encoding="utf-8"))
+        for case_path in sorted(skill_root.glob("*.json")):
+            if case_path.name.startswith("_"):
+                continue
+            case_data = json.loads(case_path.read_text(encoding="utf-8"))
+            cases.append(
+                CcSkillCase(
+                    case_id=f"{skill_dir}/{case_path.stem}",
+                    skill_dir=skill_dir,
+                    case_path=case_path,
+                    skill_config=skill_config,
+                    case_data=case_data,
+                )
+            )
+    return cases
+
+
+def cc_case_tool(case: CcSkillCase) -> str:
+    return CC_CASE_TOOLS[case.skill_dir]
+
+
+def cc_case_skill(case: CcSkillCase) -> str:
+    return cc_script_skill_and_script(case.skill_config["script"])[0]
+
+
+def cc_case_script(case: CcSkillCase) -> str:
+    return cc_script_skill_and_script(case.skill_config["script"])[1]
+
+
+def cc_script_skill_and_script(script_rel: str) -> tuple[str, str]:
+    parts = script_rel.split("/")
+    if len(parts) != 3 or parts[1] != "scripts":
+        raise AssertionError(f"unsupported cc script path: {script_rel}")
+    return parts[0], f"{parts[2]}.py"
+
+
+def cc_case_main_arguments(case: CcSkillCase, workspace: Path) -> tuple[dict[str, Any], Path | None]:
+    input_file = None
+    if "input" in case.case_data:
+        input_file = workspace / "__cc_input.json"
+        input_file.write_text(json.dumps(case.case_data["input"], ensure_ascii=False, indent=2), encoding="utf-8")
+
+    arguments: dict[str, Any] = {}
+    for mapping in case.skill_config["args"]:
+        key = mapping["flag"].lstrip("-")
+        value = cc_mapping_value(mapping, case.case_data, workspace, input_file)
+        if value is CC_OMIT:
+            continue
+        arguments[key] = value
+
+    for key, value in cc_args_extra(case.case_data.get("args_extra") or [], workspace).items():
+        arguments[key] = value
+    return arguments, input_file
+
+
+CC_OMIT = object()
+
+
+def cc_mapping_value(
+    mapping: dict[str, Any],
+    case_data: dict[str, Any],
+    workspace: Path,
+    input_file: Path | None,
+) -> Any:
+    source = mapping["from"]
+    if source == "inputFile":
+        if input_file is None:
+            return CC_OMIT
+        return input_file.as_posix()
+    if source == "workDir":
+        return "."
+    if source == "outputPath":
+        return cc_workspace_path(workspace, case_data.get("outputPath") or "")
+    if source == "workPath":
+        field = mapping.get("field") or "objectPath"
+        raw = case_data.get("params", {}).get(field, case_data.get(field))
+        if raw in (None, ""):
+            return CC_OMIT if mapping.get("optional") else "."
+        return cc_workspace_path(workspace, raw)
+    if source == "switch":
+        return case_data.get(mapping["flag"].lstrip("-"), True) is not False
+    if source == "literal":
+        return mapping.get("value") or ""
+    if source.startswith("case."):
+        field = source.removeprefix("case.")
+        return case_data.get("params", {}).get(field, case_data.get(field, ""))
+    raise AssertionError(f"unsupported cc arg source: {source}")
+
+
+def cc_workspace_path(workspace: Path, raw: str) -> str:
+    return (workspace / raw).as_posix()
+
+
+def cc_args_extra(args_extra: list[Any], workspace: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    index = 0
+    while index < len(args_extra):
+        raw_flag = args_extra[index]
+        if not isinstance(raw_flag, str) or not raw_flag.startswith("-"):
+            raise AssertionError(f"unsupported cc args_extra item: {raw_flag!r}")
+        key = raw_flag.lstrip("-")
+        next_index = index + 1
+        if next_index >= len(args_extra) or (
+            isinstance(args_extra[next_index], str) and args_extra[next_index].startswith("-")
+        ):
+            result[key] = True
+            index += 1
+            continue
+        value = args_extra[next_index]
+        if isinstance(value, str):
+            value = value.replace("{workDir}", workspace.as_posix())
+        result[key] = value
+        index += 2
+    return result
+
+
+def cc_step_raw_args(args_map: dict[str, Any], workspace: Path, input_file: Path | None) -> list[str]:
+    args: list[str] = []
+    for flag, raw_value in args_map.items():
+        args.append(flag)
+        if raw_value is True or raw_value == "":
+            continue
+        value = str(raw_value).replace("{workDir}", workspace.as_posix())
+        if input_file is not None:
+            value = value.replace("{inputFile}", input_file.as_posix())
+        args.append(value)
+    return args
+
+
+def run_reference_skill_raw(
+    script_rel: str,
+    args: list[str],
+    workspace: Path,
+) -> subprocess.CompletedProcess[str]:
+    skill, script = cc_script_skill_and_script(script_rel)
     script_path = REFERENCE_SKILLS_ROOT / skill / "scripts" / script
+    return subprocess.run(
+        ["python3", str(script_path), *args],
+        cwd=workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def cc_case_parity_gap(
+    case: CcSkillCase,
+    direct: subprocess.CompletedProcess[str],
+    mcp: dict[str, Any],
+    direct_ws: Path,
+    mcp_ws: Path,
+    expect_error: bool,
+) -> tuple[str | None, str]:
+    direct_ok = direct.returncode == 0
+    if direct_ok != (not expect_error):
+        return "donor_expect_mismatch", direct.stderr or direct.stdout
+
+    if mcp.get("ok") != direct_ok:
+        errors = mcp.get("errors") or []
+        first_error = str(errors[0]) if errors else ""
+        if "Unsupported form element" in first_error:
+            category = "unsupported_form_element"
+        elif "Object type" in first_error and "not supported" in first_error:
+            category = "unsupported_from_object_type"
+        elif "native meta compiler currently supports one metadata object per call" in first_error:
+            category = "meta_batch_unsupported"
+        else:
+            category = "ok_mismatch"
+        return category, json.dumps(mcp, ensure_ascii=False, indent=2)
+
+    if mcp.get("command") is not None:
+        return "script_fallback", f"{cc_case_tool(case)} must not use script fallback"
+
+    direct_stdout = normalize_text(direct.stdout, direct_ws)
+    mcp_stdout = normalize_text(mcp.get("stdout") or "", mcp_ws)
+    if direct_stdout != mcp_stdout:
+        snapshot_equal = direct_ok and snapshot_workspace(direct_ws) == snapshot_workspace(mcp_ws)
+        category = "stdout_mismatch_snapshot_equal" if snapshot_equal else "stdout_mismatch_snapshot_diff"
+        return category, unified_text_message("stdout", direct_stdout, mcp_stdout)
+
+    direct_stderr = normalize_text(direct.stderr, direct_ws)
+    mcp_stderr = normalize_text(mcp.get("stderr") or "", mcp_ws)
+    if direct_stderr != mcp_stderr:
+        return "stderr_mismatch", unified_text_message("stderr", direct_stderr, mcp_stderr)
+
+    if not direct_ok:
+        expected_error = direct_stderr.strip()
+        if expected_error:
+            actual_errors = [normalize_text(error, mcp_ws) for error in mcp.get("errors", [])]
+            if expected_error not in actual_errors:
+                return "error_payload_mismatch", json.dumps(mcp, ensure_ascii=False, indent=2)
+        return None, ""
+
+    for rel_path in cc_case_expected_files(case):
+        if not (direct_ws / rel_path).exists():
+            return "missing_direct_expected_file", rel_path
+        if not (mcp_ws / rel_path).exists():
+            return "missing_mcp_expected_file", rel_path
+
+    direct_snapshot = snapshot_workspace(direct_ws)
+    mcp_snapshot = snapshot_workspace(mcp_ws)
+    if direct_snapshot != mcp_snapshot:
+        return "snapshot_diff", f"direct files: {len(direct_snapshot)}, mcp files: {len(mcp_snapshot)}"
+
+    return None, ""
+
+
+def unified_text_message(label: str, direct: str, mcp: str) -> str:
+    return f"{label} differs\n--- direct\n{direct}\n--- mcp\n{mcp}"
+
+
+def cc_case_expected_files(case: CcSkillCase) -> list[str]:
+    files = case.case_data.get("expect", {}).get("files") or []
+    return [str(path) for path in files]
+
+
+def copy_tree_contents(source: Path, target: Path) -> None:
+    for child in source.iterdir():
+        destination = target / child.name
+        if child.is_dir():
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(child, destination)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(child, destination)
+
+
+def command_for_script(
+    skill: str,
+    script: str,
+    arguments: dict[str, Any],
+    *,
+    skills_root: Path = REFERENCE_SKILLS_ROOT,
+) -> list[str]:
+    script_path = skills_root / skill / "scripts" / script
     return ["python3", str(script_path), *script_args(arguments)]
 
 
@@ -3995,6 +4722,11 @@ def normalize_text(text: str, workspace: Path) -> str:
     normalized = re.sub(
         r"<REPO>/tests/fixtures/unica_mcp_script_parity/reference_skills/([^/\s\"']+)/scripts/([^/\s\"']+)",
         r"<REPO>/<SKILL_SCRIPT>/\1/\2",
+        normalized,
+    )
+    normalized = re.sub(
+        r"<REPO>/tests/fixtures/unica_mcp_script_parity/cc-1c-skills/skills/([^/\s\"']+)/scripts/([^/\s\"']+)",
+        r"<REPO>/<CC_1C_SKILL_SCRIPT>/\1/\2",
         normalized,
     )
     normalized = UUID_RE.sub("<UUID>", normalized)

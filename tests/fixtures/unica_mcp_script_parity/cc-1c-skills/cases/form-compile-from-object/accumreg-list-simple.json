@@ -1,0 +1,29 @@
+{
+  "name": "AccumulationRegister List — Balances, 2 измерения + 3 ресурса",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "AccumulationRegister",
+        "name": "ДенежныеСредства",
+        "registerType": "Balances",
+        "dimensions": [
+          { "name": "Организация", "type": "String", "length": 50 },
+          { "name": "БанковскийСчет", "type": "String", "length": 34 }
+        ],
+        "resources": [
+          { "name": "Сумма", "type": "Number", "length": 15, "precision": 2 },
+          { "name": "СуммаВалютная", "type": "Number", "length": 15, "precision": 2 },
+          { "name": "СуммаУпр", "type": "Number", "length": 15, "precision": 2 }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/AccumulationRegisters/ДенежныеСредства.xml", "-FormName": "ФормаСписка" }
+    }
+  ],
+  "params": { "outputPath": "AccumulationRegisters/ДенежныеСредства/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "AccumulationRegisters/ДенежныеСредства/Forms/ФормаСписка/Ext/Form.xml"
+}

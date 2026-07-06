@@ -1,0 +1,48 @@
+{
+  "name": "Заимствование формы: вырезание привязок (Multiple*/Footer) + идемпотентность (модуль и uuid не затираются при повторе)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары", "attributes": [ { "name": "Артикул", "type": "String", "length": 25 } ] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары.xml", "-FormName": "ФормаЭлемента" }
+    },
+    {
+      "script": "form-compile/scripts/form-compile",
+      "input": {
+        "title": "Тест",
+        "elements": [
+          { "input": "Артикул", "path": "Объект.Артикул" },
+          { "input": "Метки", "path": "Метки", "multipleValueDataPath": "Метки", "multipleValuePresentDataPath": "Метки" },
+          { "input": "Подвал", "path": "ПолеПодвала", "footerDataPath": "ПолеПодвала", "footerText": "Итого" }
+        ],
+        "attributes": [
+          { "name": "Объект", "type": "CatalogObject.Товары", "main": true },
+          { "name": "Метки", "type": "string(50)" },
+          { "name": "ПолеПодвала", "type": "string(50)" }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputPath": "{workDir}/Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form.xml" }
+    },
+    {
+      "script": "cfe-init/scripts/cfe-init",
+      "args": { "-Name": "Тест", "-OutputDir": "{workDir}/ext", "-ConfigPath": "{workDir}" }
+    },
+    {
+      "script": "cfe-borrow/scripts/cfe-borrow",
+      "args": { "-ExtensionPath": "{workDir}/ext", "-ConfigPath": "{workDir}", "-Object": "Catalog.Товары.Form.ФормаЭлемента", "-BorrowMainAttribute": "Form" }
+    },
+    {
+      "writeFile": {
+        "path": "ext/Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+        "content": "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n\t// пользовательский код — не должен затираться повторным заимствованием\nКонецПроцедуры"
+      }
+    }
+  ],
+  "params": { "extensionPath": "ext", "object": "Catalog.Товары.Form.ФормаЭлемента" },
+  "args_extra": ["-BorrowMainAttribute", "Form"],
+  "idempotent": true
+}

@@ -1,0 +1,39 @@
+{
+  "name": "Catalog List — простой справочник (Валюты-like)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Catalog",
+        "name": "Валюты",
+        "codeLength": 3,
+        "descriptionLength": 10,
+        "attributes": [
+          { "name": "ЗагружаетсяИзИнтернета", "type": "Boolean" },
+          { "name": "НаименованиеПолное", "type": "String", "length": 50 },
+          { "name": "Наценка", "type": "Number", "length": 10, "precision": 2 },
+          { "name": "ОсновнаяВалюта", "type": "CatalogRef.Валюты" },
+          { "name": "ПараметрыПрописи", "type": "String", "length": 200 },
+          { "name": "ФормулаРасчетаКурса", "type": "String", "length": 100 },
+          { "name": "СпособУстановкиКурса", "type": "EnumRef.СпособыУстановкиКурсаВалюты" }
+        ],
+        "tabularSections": [
+          {
+            "name": "Представления",
+            "attributes": [
+              { "name": "КодЯзыка", "type": "String", "length": 10 },
+              { "name": "ПараметрыПрописи", "type": "String", "length": 200 }
+            ]
+          }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Валюты.xml", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    }
+  ],
+  "params": { "outputPath": "Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"
+}

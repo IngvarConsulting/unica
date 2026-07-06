@@ -1,0 +1,48 @@
+{
+  "name": "DynamicList — schema-параметры (DataCompositionSchemaParameter): shorthand + объект + полная грамматика",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары", "attributes": [{ "name": "Артикул", "type": "String", "length": 25 }] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары.xml", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    }
+  ],
+  "params": { "outputPath": "Catalogs/Товары/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "Catalogs/Товары/Forms/ФормаСписка/Ext/Form.xml",
+  "input": {
+    "title": "Товары",
+    "attributes": [
+      { "name": "Список", "type": "DynamicList", "main": true, "settings": {
+        "mainTable": "Catalog.Товары",
+        "query": "ВЫБРАТЬ\n\tТовары.Ссылка КАК Ссылка,\n\tТовары.Код КАК Код,\n\tТовары.Наименование КАК Наименование,\n\tТовары.Артикул КАК Артикул\nИЗ\n\tСправочник.Товары КАК Товары\nГДЕ\n\tТовары.Артикул = &Артикул\n\tИ Товары.Наименование ПОДОБНО &Маска",
+        "parameters": [
+          "Артикул",
+          "Маска: string = %",
+          "Получатель: DocumentRef | CatalogRef",
+          { "name": "ВидЦен", "valueListAllowed": true },
+          { "name": "Период", "type": "dateTime", "useRestriction": false },
+          {
+            "name": "Порог", "type": "decimal(10,2)", "value": 0,
+            "title": "Порог округления",
+            "availableValues": [
+              { "value": null, "presentation": "Нет" },
+              { "value": 1, "presentation": "Один" }
+            ],
+            "denyIncompleteValues": true,
+            "use": "Always"
+          }
+        ]
+      } }
+    ],
+    "elements": [
+      { "table": "Список", "path": "Список", "backColor": "web:Honeydew", "borderColor": "style:BorderColor", "columns": [
+        { "input": "Код", "path": "Список.Код" },
+        { "input": "Наименование", "path": "Список.Наименование", "titleTextColor": "web:FireBrick", "border": { "width": 1, "style": "Single" } }
+      ]}
+    ]
+  }
+}

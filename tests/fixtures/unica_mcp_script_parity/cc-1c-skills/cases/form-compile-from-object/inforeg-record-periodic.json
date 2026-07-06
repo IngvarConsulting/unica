@@ -1,0 +1,29 @@
+{
+  "name": "InformationRegister Record — периодический (Day), Independent, 2 измерения + 2 ресурса",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "InformationRegister",
+        "name": "КурсыВалют",
+        "periodicity": "Day",
+        "writeMode": "Independent",
+        "dimensions": [
+          { "name": "Валюта", "type": "String", "length": 10 },
+          { "name": "Организация", "type": "String", "length": 50 }
+        ],
+        "resources": [
+          { "name": "Курс", "type": "Number", "length": 15, "precision": 4 },
+          { "name": "Кратность", "type": "Number", "length": 10 }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/InformationRegisters/КурсыВалют.xml", "-FormName": "ФормаЗаписи" }
+    }
+  ],
+  "params": { "outputPath": "InformationRegisters/КурсыВалют/Forms/ФормаЗаписи/Ext/Form.xml" },
+  "validatePath": "InformationRegisters/КурсыВалют/Forms/ФормаЗаписи/Ext/Form.xml"
+}

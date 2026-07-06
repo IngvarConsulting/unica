@@ -1,0 +1,17 @@
+{
+  "name": "Задача исполнителя с адресацией",
+  "input": {
+    "type": "Task",
+    "name": "ЗадачаИсполнителя",
+    "descriptionLength": 200,
+    "attributes": ["Важность: String(20)"],
+    "addressingAttributes": [
+      "Исполнитель: CatalogRef.Пользователи",
+      "РольИсполнителя: CatalogRef.РолиИсполнителей"
+    ]
+  },
+  "validatePath": "Tasks/ЗадачаИсполнителя",
+  "expect": {
+    "files": ["Tasks/ЗадачаИсполнителя.xml", "Tasks/ЗадачаИсполнителя/Ext/ObjectModule.bsl"]
+  }
+}

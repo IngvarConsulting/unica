@@ -1,0 +1,43 @@
+{
+  "name": "Форма с реквизитами разных типов",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "Типы" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/Типы.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/Типы/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/Типы/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Разные типы",
+    "elements": [
+      { "input": "Строка", "path": "Строка" },
+      { "input": "Число", "path": "Число", "userVisible": false },
+      { "input": "Дата", "path": "Дата" },
+      { "input": "Булево", "path": "Булево" }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.Типы", "main": true },
+      { "name": "Строка", "type": "string(200)", "view": false, "save": true, "fillCheck": true },
+      { "name": "Число", "type": "decimal(10,0,nonneg)", "edit": { "common": false, "roles": { "a1b2c3d4-1111-2222-3333-444455556666": true } } },
+      { "name": "Дата", "type": "dateTime", "title": "" },
+      { "name": "Булево", "type": "boolean" },
+      { "name": "Период", "type": "СтандартныйПериод", "save": ["Период", "EndDate", "StartDate", "Variant"] },
+      { "name": "СписокЗначений", "type": "ValueList", "valueType": "string(50) | decimal(10,2)" },
+      { "name": "СписокЛюбой", "type": "ValueList", "valueType": "" },
+      { "name": "Идентификатор", "type": "v8:UUID" },
+      { "name": "НаборКонстант", "type": "ConstantsSet" },
+      { "name": "ОбъектОтчета", "type": "ReportObject" },
+      { "name": "Таблица", "type": "ValueTable", "title": "Таблица", "columns": [
+        { "name": "ИНН", "type": "string(12,fixed)" },
+        { "name": "Код", "type": "string(9,fixed)" },
+        { "name": "Имя", "type": "string(100)" }
+      ]}
+    ]
+  }
+}

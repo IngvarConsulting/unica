@@ -1,0 +1,48 @@
+{
+  "name": "availableValues, denyIncompleteValues, Folder в selection",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Счет, Т.Остаток, Т.Поступление1, Т.Поступление2, Т.Выбытие1, Т.Выбытие2 ИЗ Регистр КАК Т",
+      "fields": ["Счет: string", "Остаток: decimal(15,2)", "Поступление1: decimal(15,2)", "Поступление2: decimal(15,2)", "Выбытие1: decimal(15,2)", "Выбытие2: decimal(15,2)"]
+    }],
+    "parameters": [{
+      "name": "ПорядокОкругления",
+      "type": "EnumRef.Округления",
+      "value": "Перечисление.Округления.Окр1_00",
+      "use": "Always",
+      "denyIncompleteValues": true,
+      "availableValues": [
+        {"value": "Перечисление.Округления.Окр1_00", "presentation": "руб. коп"},
+        {"value": "Перечисление.Округления.Окр1", "presentation": "руб."},
+        {"value": "Перечисление.Округления.Окр1000", "presentation": "тыс. руб"}
+      ]
+    }],
+    "settingsVariants": [{
+      "name": "Основной",
+      "settings": {
+        "selection": [
+          "Auto",
+          "Счет",
+          "Остаток",
+          {"folder": "Поступление", "items": ["Поступление1", "Поступление2"]},
+          {"folder": "Выбытие", "items": ["Выбытие1", "Выбытие2"]}
+        ],
+        "structure": {
+          "type": "group",
+          "name": "ДанныеОтчета",
+          "groupBy": ["Счет"],
+          "selection": [
+            "Auto",
+            {"folder": "Поступление", "items": ["Поступление1", "Поступление2"]}
+          ]
+        }
+      }
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

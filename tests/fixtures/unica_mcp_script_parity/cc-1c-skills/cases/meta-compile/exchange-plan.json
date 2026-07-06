@@ -1,0 +1,27 @@
+{
+  "name": "План обмена с реквизитами",
+  "input": {
+    "type": "ExchangePlan",
+    "name": "ОбменСФилиалами",
+    "codeLength": 9,
+    "descriptionLength": 100,
+    "distributedInfoBase": true,
+    "attributes": ["ПутьКФайлу: String(500)"],
+    "tabularSections": [
+      {
+        "name": "НастройкиОтбора",
+        "attributes": [
+          "Организация: CatalogRef.Организации"
+        ]
+      }
+    ]
+  },
+  "validatePath": "ExchangePlans/ОбменСФилиалами",
+  "expect": {
+    "files": [
+      "ExchangePlans/ОбменСФилиалами.xml",
+      "ExchangePlans/ОбменСФилиалами/Ext/ObjectModule.bsl",
+      "ExchangePlans/ОбменСФилиалами/Ext/Content.xml"
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "Составной тип поля (multi-type valueType)",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "ЖурналОшибок",
+      "objectName": "ЖурналОшибок",
+      "fields": [
+        { "field": "ТекстСообщения", "title": "Текст сообщения", "type": "string(150)" },
+        {
+          "field": "Расшифровка",
+          "title": "Расшифровка",
+          "type": [
+            "CatalogRef.СтруктураПредприятия",
+            "CatalogRef.ЭтапыПроизводства",
+            "CatalogRef.ВидыРабочихЦентров"
+          ]
+        }
+      ]
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

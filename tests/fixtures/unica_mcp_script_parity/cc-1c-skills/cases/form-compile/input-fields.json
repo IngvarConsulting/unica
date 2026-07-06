@@ -1,0 +1,87 @@
+{
+  "name": "Форма с разными полями ввода",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ПоляВвода" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ПоляВвода.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ПоляВвода/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ПоляВвода/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Поля ввода",
+    "elements": [
+      { "input": "ОбычноеПоле", "path": "ОбычноеПоле", "title": "Обычное поле", "tooltip": "Введите значение поля", "tooltipRepresentation": "ShowBottom", "editMode": "EnterOnInput", "multiLine": false, "shortcut": "Ctrl+Shift+O", "horizontalStretch": false, "verticalStretch": false, "format": "ЧДЦ=2", "editFormat": "ЧДЦ=2; ЧН=", "extendedTooltip": { "width": 30, "autoMaxWidth": false, "hyperlink": true, "text": "Расширенная подсказка поля", "tooltip": { "ru": "Подсказка самой расширенной подсказки", "en": "Tooltip of the extended tooltip" }, "events": { "URLProcessing": "ОбычноеПолеРасширеннаяПодсказкаОбработкаНавигационнойСсылки" } } },
+      { "labelField": "Ссылка", "path": "ОбычноеПоле", "titleLocation": "left", "hyperlink": true, "format": { "ru": "ДЛФ=D", "en": "DLF=D" }, "warningOnEdit": "Поле только для чтения" },
+      { "input": "МногострочноеПоле", "path": "МногострочноеПоле", "multiLine": true, "height": 5, "title": "Комментарий", "wrap": false, "showInHeader": false, "showInFooter": false, "autoCellHeight": true, "footerHorizontalAlign": "Right", "openButton": false, "chooseType": false },
+      { "input": "ПолеПароля", "path": "ПолеПароля", "passwordMode": true, "title": "Пароль" },
+      { "input": "ЧисловоеПоле", "path": "ЧисловоеПоле", "title": "Число", "minValue": 1, "maxValue": 100, "displayImportance": "VeryHigh" },
+      { "input": "ПолеСКнопками", "path": "ПолеСКнопками", "choiceButton": true, "clearButton": true, "dropListButton": false, "spinButton": true, "choiceListButton": true, "quickChoice": false, "autoChoiceIncomplete": true, "incompleteChoiceMode": "OnActivate", "choiceHistoryOnInput": "DontUse", "choiceForm": "DataProcessor.ПоляВвода.Form.Форма", "title": "Выбор" },
+      { "input": "ПолеСписокВыбора", "path": "ПолеСписокВыбора", "title": "Список выбора", "choiceList": [
+        { "value": "", "presentation": "Все" },
+        { "value": "Первый" },
+        { "value": "Второй", "presentation": "Второй вариант" }
+      ]},
+      { "input": "ПолеПодсказка", "path": "ПолеПодсказка", "inputHint": "Введите значение...", "warningOnEdit": "Изменение запрещено", "footerText": "итого", "extendedEdit": true, "editTextUpdate": "OnValueChange", "markIncomplete": false, "title": "Подсказка" },
+      { "input": "ПолеСвязи", "path": "ПолеСвязи", "title": "Поле со связями",
+        "choiceParameters": [
+          { "name": "Отбор.Активный", "value": true },
+          { "name": "Отбор.Вид", "value": "Основной" },
+          { "name": "Отбор.Дата", "value": "2020-01-01T00:00:00" },
+          { "name": "Отбор.Список", "value": ["Один", "Два"] },
+          { "name": "Отбор.Одно", "value": ["Единственный"] },
+          { "name": "Отбор.БезЗначения" }
+        ],
+        "choiceParameterLinks": [
+          { "name": "Отбор.Организация", "dataPath": "ОбычноеПоле" },
+          { "name": "Отбор.Тип", "dataPath": "ПолеСписокВыбора", "valueChange": "DontChange" }
+        ],
+        "typeLink": { "dataPath": "ПолеПодсказка", "linkItem": 0 }
+      },
+      { "input": "ПолеСвязиКратко", "path": "ПолеСвязиКратко", "title": "Связи (короткая форма)",
+        "choiceParameters": [ "Отбор.Активный=true", "Отбор.Вид=Основной", "Отбор.Дата=2020-01-01T00:00:00", "Отбор.Список=Один, Два" ],
+        "choiceParameterLinks": [ "Отбор.Организация=ОбычноеПоле", "Отбор.Тип=ПолеСписокВыбора:DontChange" ],
+        "typeLink": "ПолеПодсказка"
+      },
+      { "check": "Флаг", "path": "Флаг", "title": "Включено", "warningOnEdit": { "ru": "Изменение флага требует подтверждения", "en": "Confirm flag change" }, "extendedTooltip": { "width": 45 } },
+      { "check": "ФлагПлатформенный", "path": "ФлагПлатформенный", "title": "Слева", "titleLocation": "" },
+      { "check": "ФлагЯвный", "path": "ФлагЯвный", "title": "Сверху", "titleLocation": "top" },
+      { "check": "ФлагТумблер", "path": "ФлагТумблер", "title": "Тумблер", "checkBoxType": "switcher", "format": "БЛ=Нет; БИ=Да" },
+      { "input": "ПолеСоставное", "path": "ПолеСоставное", "title": "Ограничение типов", "typeDomainEnabled": false, "availableTypes": "string | boolean" }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ПоляВвода", "main": true },
+      { "name": "ОбычноеПоле", "type": "string(100)" },
+      { "name": "МногострочноеПоле", "type": "string" },
+      { "name": "ПолеПароля", "type": "string(50)" },
+      { "name": "ПолеСКнопками", "type": "string" },
+      { "name": "ПолеСписокВыбора", "type": "string" },
+      { "name": "ПолеПодсказка", "type": "string" },
+      { "name": "ПолеСвязи", "type": "string" },
+      { "name": "ПолеСвязиКратко", "type": "string" },
+      { "name": "Флаг", "type": "boolean" },
+      { "name": "ФлагПлатформенный", "type": "boolean" },
+      { "name": "ФлагЯвный", "type": "boolean" },
+      { "name": "ФлагТумблер", "type": "boolean" },
+      { "name": "ЧисловоеПоле", "type": "number(10,2)" },
+      { "name": "ДатаПоля", "type": "dateTime" },
+      { "name": "ПолеСоставное", "type": "string | boolean" }
+    ],
+    "conditionalAppearance": [
+      { "selection": ["ОбычноеПоле"], "filter": ["ЧисловоеПоле > 100"], "appearance": { "ЦветФона": "style:FormBackColor", "Текст": "Плоский текст" },
+        "presentation": { "ru": "Подсветка", "en": "Highlight" } },
+      { "filter": ["ЧисловоеПоле = 0"], "appearance": { "Текст": { "ru": "Локализованный", "en": "Localized" } } },
+      { "filter": ["ЧисловоеПоле < 0"], "appearance": { "Текст": "" } },
+      { "filter": ["ЧисловоеПоле = 1"], "appearance": { "Текст": { "field": "ОбычноеПоле" } } },
+      { "filter": [{ "field": "ДатаПоля", "op": "=", "value": "3999-12-31T23:59:59" }], "appearance": { "ЦветТекста": "web:Gray" } },
+      { "filter": ["ДатаПоля > 2020-01-01T00:00:00"], "appearance": { "ЦветТекста": "web:Olive" } },
+      { "filter": [{ "field": "ДатаПоля", "op": ">=", "value": "BeginningOfThisDay", "valueType": "v8:StandardBeginningDate" }], "appearance": { "ЦветТекста": "web:Silver" } },
+      { "filter": [{ "field": "ОбычноеПоле", "op": "=", "value": "_", "valueType": "dcscor:Field" }], "appearance": { "ЦветТекста": "web:Maroon" } }
+    ]
+  }
+}

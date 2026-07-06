@@ -1,0 +1,30 @@
+{
+  "name": "ChartOfAccounts List — план счетов, форма списка",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "ChartOfAccounts",
+        "name": "Хозрасчетный",
+        "codeLength": 9,
+        "descriptionLength": 100,
+        "maxExtDimensionCount": 3,
+        "accountingFlags": [
+          { "name": "Валютный" },
+          { "name": "Количественный" }
+        ],
+        "extDimensionAccountingFlags": [
+          { "name": "Валютный" },
+          { "name": "Количественный" }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/ChartsOfAccounts/Хозрасчетный.xml", "-FormName": "ФормаСписка" }
+    }
+  ],
+  "params": { "outputPath": "ChartsOfAccounts/Хозрасчетный/Forms/ФормаСписка/Ext/Form.xml" },
+  "validatePath": "ChartsOfAccounts/Хозрасчетный/Forms/ФормаСписка/Ext/Form.xml"
+}

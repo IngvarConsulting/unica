@@ -1,0 +1,27 @@
+{
+  "name": "Parameter.presentation и availableValue.title — синонимы",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+      "fields": ["Сумма: decimal(15,2)"]
+    }],
+    "parameters": [
+      {
+        "name": "ПорядокОкругления",
+        "presentation": "Округление",
+        "type": "EnumRef.Округления",
+        "value": "Перечисление.Округления.Окр1_00",
+        "availableValues": [
+          { "value": "Перечисление.Округления.Окр1_00", "title": "руб. коп" },
+          { "value": "Перечисление.Округления.Окр1", "presentation": "руб." }
+        ]
+      }
+    ]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

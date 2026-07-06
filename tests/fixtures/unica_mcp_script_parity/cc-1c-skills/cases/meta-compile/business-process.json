@@ -1,0 +1,27 @@
+{
+  "name": "Бизнес-процесс согласования",
+  "input": {
+    "type": "BusinessProcess",
+    "name": "СогласованиеДокумента",
+    "task": "Task.ЗадачаИсполнителя",
+    "numberLength": 11,
+    "attributes": ["Автор: CatalogRef.Пользователи", "Комментарий: String(500)"],
+    "tabularSections": [
+      {
+        "name": "Согласующие",
+        "attributes": [
+          "Согласующий: CatalogRef.Пользователи",
+          "Результат: String(50)"
+        ]
+      }
+    ]
+  },
+  "validatePath": "BusinessProcesses/СогласованиеДокумента",
+  "expect": {
+    "files": [
+      "BusinessProcesses/СогласованиеДокумента.xml",
+      "BusinessProcesses/СогласованиеДокумента/Ext/ObjectModule.bsl",
+      "BusinessProcesses/СогласованиеДокумента/Ext/Flowchart.xml"
+    ]
+  }
+}

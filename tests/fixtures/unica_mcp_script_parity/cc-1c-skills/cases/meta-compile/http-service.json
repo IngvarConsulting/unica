@@ -1,0 +1,23 @@
+{
+  "name": "HTTP-сервис с шаблонами URL",
+  "input": {
+    "type": "HTTPService",
+    "name": "ТоварныйAPI",
+    "rootURL": "api/v1",
+    "reuseSessions": "AutoUse",
+    "sessionMaxAge": 30,
+    "urlTemplates": {
+      "Товары": {
+        "template": "/products/{id}",
+        "methods": {
+          "Получить": "GET",
+          "Обновить": "PUT"
+        }
+      }
+    }
+  },
+  "validatePath": "HTTPServices/ТоварныйAPI",
+  "expect": {
+    "files": ["HTTPServices/ТоварныйAPI.xml", "HTTPServices/ТоварныйAPI/Ext/Module.bsl"]
+  }
+}

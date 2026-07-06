@@ -1,0 +1,29 @@
+{
+  "name": "Журнал документов с графами",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Document", "name": "ПриходнаяНакладная", "attributes": ["Склад: String(50)", "Контрагент: String(100)"] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Document", "name": "РасходнаяНакладная", "attributes": ["Контрагент: String(100)"] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "input": {
+    "type": "DocumentJournal",
+    "name": "ЖурналСкладскихДокументов",
+    "registeredDocuments": ["Document.ПриходнаяНакладная", "Document.РасходнаяНакладная"],
+    "columns": [
+      { "name": "Склад", "references": ["Document.ПриходнаяНакладная.Attribute.Склад"] },
+      { "name": "Контрагент", "references": ["Document.ПриходнаяНакладная.Attribute.Контрагент", "Document.РасходнаяНакладная.Attribute.Контрагент"] }
+    ]
+  },
+  "validatePath": "DocumentJournals/ЖурналСкладскихДокументов",
+  "skipValidation": true,
+  "expect": {
+    "files": ["DocumentJournals/ЖурналСкладскихДокументов.xml"]
+  }
+}

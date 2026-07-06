@@ -1,0 +1,12 @@
+{
+  "name": "Guard: компиляция формы для объекта на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": {
+    "outputPath": "Catalogs/Locked/Forms/НовФорма/Ext/Form.xml"
+  },
+  "input": {
+    "title": "Тест",
+    "elements": []
+  },
+  "expectError": "support-guard"
+}

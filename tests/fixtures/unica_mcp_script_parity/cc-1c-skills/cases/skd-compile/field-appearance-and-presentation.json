@@ -1,0 +1,34 @@
+{
+  "name": "appearance и presentationExpression на поле DataSet",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "ЖурналОшибок",
+      "objectName": "ЖурналОшибок",
+      "fields": [
+        {
+          "field": "ТекстСообщения",
+          "title": "Текст сообщения",
+          "type": "string(150)",
+          "appearance": {
+            "МинимальнаяШирина": "100",
+            "РастягиватьПоГоризонтали": "true"
+          }
+        },
+        {
+          "field": "Расшифровка",
+          "title": "Описание",
+          "type": "CatalogRef.Организации",
+          "presentationExpression": "ТекстСообщения",
+          "appearance": {
+            "ГоризонтальноеПоложение": "Right"
+          }
+        }
+      ]
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

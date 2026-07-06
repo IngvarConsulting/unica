@@ -1,0 +1,33 @@
+{
+  "name": "Многоязычные title и presentation (ru + en)",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+      "fields": [
+        { "field": "Сумма", "title": { "ru": "Сумма продажи", "en": "Sale amount" }, "type": "decimal(15,2)" }
+      ]
+    }],
+    "calculatedFields": [
+      { "name": "Маржа", "title": { "ru": "Маржа", "en": "Margin" }, "expression": "Сумма * 0.2" }
+    ],
+    "totalFields": [
+      { "dataPath": "Сумма", "title": { "ru": "Итого, руб.", "en": "Total, RUB" }, "expression": "Сумма(Сумма)" }
+    ],
+    "parameters": [
+      { "name": "Период", "title": { "ru": "Период", "en": "Period" }, "type": "StandardPeriod" }
+    ],
+    "settingsVariants": [{
+      "name": "Основной",
+      "title": { "ru": "Продажи", "en": "Sales" },
+      "settings": {
+        "selection": ["Сумма", "Маржа", "Auto"]
+      }
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

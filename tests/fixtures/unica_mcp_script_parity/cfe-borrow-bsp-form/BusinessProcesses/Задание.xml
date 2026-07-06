@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.21">
+	<BusinessProcess uuid="aaaaaaaa-1000-4000-8000-000000000001">
+		<InternalInfo/>
+		<Properties>
+			<Name>Задание</Name>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000101">
+				<Properties>
+					<Name>Наименование</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000102">
+				<Properties>
+					<Name>Number</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000103">
+				<Properties>
+					<Name>Содержание</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000104">
+				<Properties>
+					<Name>Исполнитель</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000105">
+				<Properties>
+					<Name>СрокИсполнения</Name>
+					<Type><v8:Type>xs:dateTime</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000106">
+				<Properties>
+					<Name>Важность</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000107">
+				<Properties>
+					<Name>НаПроверке</Name>
+					<Type><v8:Type>xs:boolean</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000108">
+				<Properties>
+					<Name>Проверяющий</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000109">
+				<Properties>
+					<Name>СрокПроверки</Name>
+					<Type><v8:Type>xs:dateTime</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000110">
+				<Properties>
+					<Name>Автор</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="aaaaaaaa-1000-4000-8000-000000000111">
+				<Properties>
+					<Name>Date</Name>
+					<Type><v8:Type>xs:dateTime</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</BusinessProcess>
+</MetaDataObject>

@@ -1,0 +1,36 @@
+{
+  "name": "Форма со спец-полями (документ/датчик)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "СпецПоля" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/СпецПоля.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/СпецПоля/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/СпецПоля/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Спец-поля",
+    "elements": [
+      { "spreadsheet": "ТаблицаОтчета", "path": "ТаблицаОтчета", "titleLocation": "none", "readOnly": true, "verticalScrollBar": "true", "horizontalScrollBar": "true", "viewScalingMode": "Normal", "output": "Disable", "protection": true, "showGrid": false, "showHeaders": false, "enableDrag": false, "enableStartDrag": false },
+      { "formattedDoc": "Описание", "path": "Описание", "titleLocation": "none", "readOnly": true, "editMode": "EnterOnInput" },
+      { "html": "Содержимое", "path": "Содержимое", "titleLocation": "none", "width": 37, "horizontalStretch": false, "output": "Enable", "warningOnEditRepresentation": "DontShow" },
+      { "textDoc": "ТекстXML", "path": "ТекстXML", "titleLocation": "none", "readOnly": true, "width": 56 },
+      { "progressBar": "Прогресс", "path": "ПроцентВыполнения", "titleLocation": "none", "showPercent": true, "maxValue": 10000, "width": 30 },
+      { "trackBar": "Масштаб", "path": "Масштаб", "titleLocation": "none", "minValue": 20, "maxValue": 400, "largeStep": 5, "markingStep": 20, "markingAppearance": "TopLeft", "width": 50 }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.СпецПоля", "main": true },
+      { "name": "ТаблицаОтчета", "type": "mxl:SpreadsheetDocument" },
+      { "name": "Описание", "type": "fd:FormattedDocument" },
+      { "name": "Содержимое", "type": "string" },
+      { "name": "ТекстXML", "type": "d5p1:TextDocument" },
+      { "name": "ПроцентВыполнения", "type": "decimal(5,2,nonneg)" },
+      { "name": "Масштаб", "type": "decimal(10,0)" }
+    ]
+  }
+}

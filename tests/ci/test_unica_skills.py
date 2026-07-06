@@ -1146,16 +1146,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(skill=skill):
                 self.assertFalse((self.skill_root() / skill / "scripts").exists())
 
-    def test_parity_reference_scripts_are_test_only_python(self) -> None:
+    def test_parity_reference_skills_are_test_only_donor_fixtures(self) -> None:
         reference_root = self.parity_reference_root()
         referenced_skills = {
             path.parent.parent.name for path in reference_root.glob("*/scripts/*.py")
         }
         self.assertEqual(referenced_skills, set(IN_SCOPE_TOOLS))
+        allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in reference_root.rglob("*"):
             if path.is_file():
                 with self.subTest(path=path.relative_to(reference_root)):
-                    self.assertEqual(path.suffix, ".py")
+                    self.assertNotIn("__pycache__", path.parts)
+                    self.assertIn(path.suffix, allowed_suffixes)
 
     def test_migrated_skill_verification_sections_use_mcp_examples(self) -> None:
         slash_command = re.compile(r"(?m)^/[a-z][a-z-]+\b")

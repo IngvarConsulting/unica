@@ -1,0 +1,14 @@
+{
+  "name": "Иерархический справочник",
+  "input": {
+    "type": "Catalog",
+    "name": "Подразделения",
+    "hierarchical": true,
+    "hierarchyType": "HierarchyFoldersAndItems",
+    "descriptionLength": 100
+  },
+  "validatePath": "Catalogs/Подразделения",
+  "expect": {
+    "files": ["Catalogs/Подразделения.xml"]
+  }
+}

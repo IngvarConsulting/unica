@@ -1,0 +1,36 @@
+{
+  "name": "Таблица с колонкой-картинкой (PictureField + ValuesPicture + Selection)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "КартинкаВСтроке" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/КартинкаВСтроке.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/КартинкаВСтроке/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/КартинкаВСтроке/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Картинка в строке",
+    "elements": [
+      { "table": "ТаблицаДанных", "path": "ТаблицаДанных",
+        "on": ["Selection"], "handlers": { "Selection": "ТаблицаДанныхВыбор" },
+        "columns": [
+          { "input": "ТаблицаДанныхНоменклатура", "path": "ТаблицаДанных.Номенклатура" },
+          { "picField": "ТаблицаДанныхКартинка", "path": "ТаблицаДанных.Картинка", "titleLocation": "none", "editMode": "EnterOnInput", "hyperlink": true, "shortcut": "Ctrl+S", "headerPicture": "StdPicture.ExecuteTask", "valuesPicture": { "src": "StdPicture.FilterCriterion", "loadTransparent": true, "transparentPixel": { "x": 7, "y": 3 } } },
+          { "check": "ТаблицаДанныхКартинкаФлаг", "path": "ТаблицаДанных.Картинка", "title": "Флаг", "headerPicture": { "src": "StdPicture.ClearFilter", "loadTransparent": true } },
+          { "labelField": "ТаблицаДанныхИтог", "path": "ТаблицаДанных.Номенклатура", "editMode": "EnterOnInput", "footerDataPath": "ТаблицаДанных.Номенклатура", "footerText": "Итого" }
+        ]}
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.КартинкаВСтроке", "main": true },
+      { "name": "ТаблицаДанных", "type": "ValueTable", "title": "Таблица данных", "columns": [
+        { "name": "Номенклатура", "type": "string(10)" },
+        { "name": "Картинка", "type": "boolean" }
+      ]}
+    ]
+  }
+}

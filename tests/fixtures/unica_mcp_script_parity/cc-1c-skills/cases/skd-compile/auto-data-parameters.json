@@ -1,0 +1,31 @@
+{
+  "name": "dataParameters: auto — наследование значений по всем типам",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "query": "ВЫБРАТЬ 1 КАК Поле",
+      "fields": ["Поле: число"]
+    }],
+    "parameters": [
+      "Период: СтандартныйПериод = LastMonth @autoDates",
+      "ПериодБезДефолта: СтандартныйПериод",
+      "Флаг: boolean = true",
+      "Сумма: decimal(15,2) = 0",
+      "Ставка: decimal(5,2) = 13.5",
+      "Метка: string(50) = ТестовоеЗначение",
+      "ПустаяСтрока: string(50)",
+      "Валюта: СправочникСсылка.Валюты = Справочник.Валюты.EmptyRef"
+    ],
+    "settingsVariants": [{
+      "name": "Основной",
+      "settings": {
+        "structure": "details",
+        "dataParameters": "auto"
+      }
+    }]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

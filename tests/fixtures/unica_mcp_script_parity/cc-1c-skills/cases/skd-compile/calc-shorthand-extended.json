@@ -1,0 +1,19 @@
+{
+  "name": "calculatedFields shorthand с [Title], :type, =expr, #restrict",
+  "params": { "outputPath": "Template.xml" },
+  "input": {
+    "dataSets": [{
+      "name": "Основной",
+      "query": "ВЫБРАТЬ Т.Цена, Т.Закупка ИЗ Регистр КАК Т",
+      "fields": ["Цена: decimal(15,2)", "Закупка: decimal(15,2)"]
+    }],
+    "calculatedFields": [
+      "ИмяРесурса [Имя ресурса]: string = \"\" #noField #noFilter #noGroup #noOrder",
+      "Маржа [Маржа]: decimal(15,2) = Цена - Закупка"
+    ]
+  },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

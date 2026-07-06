@@ -1,0 +1,14 @@
+{
+  "script": "cfe-borrow/scripts/cfe-borrow",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-ExtensionPath", "from": "workPath", "field": "extensionPath" },
+    { "flag": "-ConfigPath", "from": "workDir" },
+    { "flag": "-Object", "from": "case.object" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": { "script": "cfe-validate/scripts/cfe-validate", "flag": "-ExtensionPath", "pathFrom": "extensionPath" }
+}

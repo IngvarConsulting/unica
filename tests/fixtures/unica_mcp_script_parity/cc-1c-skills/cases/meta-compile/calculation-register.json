@@ -1,0 +1,16 @@
+{
+  "name": "Регистр расчёта с периодичностью",
+  "input": {
+    "type": "CalculationRegister",
+    "name": "Начисления",
+    "chartOfCalculationTypes": "ChartOfCalculationTypes.ВидыНачислений",
+    "periodicity": "Month",
+    "dimensions": ["Сотрудник: CatalogRef.Сотрудники"],
+    "resources": ["Результат: Number(15,2)", "ОтработаноДней: Number(5,0)"],
+    "attributes": ["Комментарий: String(200)"]
+  },
+  "validatePath": "CalculationRegisters/Начисления",
+  "expect": {
+    "files": ["CalculationRegisters/Начисления.xml", "CalculationRegisters/Начисления/Ext/RecordSetModule.bsl"]
+  }
+}

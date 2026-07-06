@@ -1,0 +1,28 @@
+{
+  "name": "Поле ввода с textEdit:false (запрет ручного ввода)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ЗапретРучногоВвода" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ЗапретРучногоВвода.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ЗапретРучногоВвода/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ЗапретРучногоВвода/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Запрет ручного ввода",
+    "elements": [
+      { "input": "ОбычноеПоле", "path": "ОбычноеПоле", "title": "Обычное поле" },
+      { "input": "ПолеБезРучногоВвода", "path": "ПолеБезРучногоВвода", "textEdit": false, "title": "Только через выбор" }
+    ],
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ЗапретРучногоВвода", "main": true },
+      { "name": "ОбычноеПоле", "type": "string(100)" },
+      { "name": "ПолеБезРучногоВвода", "type": "string(100)" }
+    ]
+  }
+}

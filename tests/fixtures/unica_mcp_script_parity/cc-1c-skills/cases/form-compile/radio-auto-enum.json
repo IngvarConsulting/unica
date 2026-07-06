@@ -1,0 +1,48 @@
+{
+  "name": "RadioButtonField Auto + ссылки на перечисление с мультиязычной презентацией",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Enum", "name": "СпособыКурса", "values": [
+        { "name": "Авто" }, { "name": "Ручной" }
+      ]},
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестРадио", "attributes": [
+        { "name": "СпособКурса", "type": "EnumRef.СпособыКурса" }
+      ]},
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестРадио.xml", "-FormName": "Форма" }
+    }
+  ],
+  "params": { "outputPath": "DataProcessors/ТестРадио/Forms/Форма/Ext/Form.xml" },
+  "validatePath": "DataProcessors/ТестРадио/Forms/Форма/Ext/Form.xml",
+  "input": {
+    "title": "Радио — Auto + Enum",
+    "attributes": [
+      { "name": "Объект", "type": "DataProcessorObject.ТестРадио", "main": true },
+      { "name": "СпособКурса", "type": "EnumRef.СпособыКурса" }
+    ],
+    "elements": [
+      {
+        "radio": "СпособКурса",
+        "path": "СпособКурса",
+        "title": "Способ курса",
+        "radioButtonType": "Auto",
+        "columnsCount": 1,
+        "itemTitleHeight": 1,
+        "equalItemsWidth": false,
+        "choiceList": [
+          { "value": "Enum.СпособыКурса.EnumValue.Авто",   "presentation": { "ru": "Автоматически", "en": "Automatic" } },
+          { "value": "Enum.СпособыКурса.EnumValue.Ручной", "presentation": "вручную" },
+          { "value": "Enum.СпособыКурса.EmptyRef",         "presentation": "(не задан)" }
+        ]
+      }
+    ]
+  }
+}
