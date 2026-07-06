@@ -34,8 +34,8 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "ObjectPath": "<path>",
-      "Operation": "<op>",
-      "Value": "<val>",
+      "Operation": "modify-property",
+      "Value": "DescriptionLength=150",
       "dryRun": false
     }
   }

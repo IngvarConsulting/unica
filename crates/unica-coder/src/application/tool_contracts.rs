@@ -8,6 +8,49 @@ use std::path::{Component, Path, PathBuf};
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 
+const META_EDIT_OPERATIONS: &[&str] = &[
+    "modify-property",
+    "add-attribute",
+    "add-ts",
+    "add-dimension",
+    "add-resource",
+    "add-enumValue",
+    "add-column",
+    "add-form",
+    "add-template",
+    "add-command",
+    "add-owner",
+    "add-registerRecord",
+    "add-basedOn",
+    "add-inputByString",
+    "remove-attribute",
+    "remove-ts",
+    "remove-dimension",
+    "remove-resource",
+    "remove-enumValue",
+    "remove-column",
+    "remove-form",
+    "remove-template",
+    "remove-command",
+    "remove-owner",
+    "remove-registerRecord",
+    "remove-basedOn",
+    "remove-inputByString",
+    "add-ts-attribute",
+    "modify-attribute",
+    "modify-dimension",
+    "modify-resource",
+    "modify-enumValue",
+    "modify-column",
+    "modify-ts",
+    "modify-ts-attribute",
+    "remove-ts-attribute",
+    "set-owners",
+    "set-registerRecords",
+    "set-basedOn",
+    "set-inputByString",
+];
+
 const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "BaseForm",
     "Batch",
@@ -370,6 +413,7 @@ pub fn validate_tool_arguments(
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_meta_edit_arguments(tool, args)?;
     validate_support_arguments(tool, args, dry_run)?;
 
     if !dry_run {
@@ -377,6 +421,42 @@ pub fn validate_tool_arguments(
             if !args.contains_key(required) {
                 return Err(format!("{} requires `{required}` argument", tool.name));
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_meta_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.meta.edit" {
+        return Ok(());
+    }
+
+    validate_unique_alias_group(tool.name, args, &["Operation", "operation"])?;
+    validate_unique_alias_group(tool.name, args, &["DefinitionFile", "definitionFile"])?;
+
+    if contains_any(args, &["Operation", "operation"])
+        && contains_any(args, &["DefinitionFile", "definitionFile"])
+    {
+        return Err(format!(
+            "{} accepts either Operation or DefinitionFile, not both",
+            tool.name
+        ));
+    }
+
+    for name in ["Operation", "operation"] {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        let Some(operation) = value.as_str() else {
+            return Err(format!("{} argument `{name}` must be string", tool.name));
+        };
+        if !META_EDIT_OPERATIONS.contains(&operation) {
+            return Err(format!(
+                "{} unsupported Operation `{operation}`; supported: {}",
+                tool.name,
+                META_EDIT_OPERATIONS.join(", ")
+            ));
         }
     }
 
@@ -919,6 +999,9 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
+        return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
+    }
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         match name {
             "operation" => return json!({ "type": "string", "enum": RUNTIME_OPERATIONS }),
@@ -1136,6 +1219,44 @@ mod tests {
         assert!(error.contains("conflicting aliases"));
         assert!(error.contains("Path"));
         assert!(error.contains("TargetPath"));
+    }
+
+    #[test]
+    fn meta_edit_contract_accepts_definition_file_and_extended_operations() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&tool);
+        assert!(schema["properties"]["Operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("add-dimension")));
+        assert!(schema["properties"]["Operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("set-owners")));
+
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!("src/Catalogs/Items/Items.xml"),
+        );
+        args.insert("DefinitionFile".to_string(), json!("edit.json"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        args.insert("Operation".to_string(), json!("add-attribute"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("either Operation or DefinitionFile"));
+
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!("src/Catalogs/Items/Items.xml"),
+        );
+        args.insert("Operation".to_string(), json!("add-unknown"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("unsupported Operation"));
     }
 
     #[test]

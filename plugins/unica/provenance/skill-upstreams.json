@@ -24,7 +24,9 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
