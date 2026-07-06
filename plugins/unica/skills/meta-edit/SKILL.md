@@ -1,7 +1,7 @@
 ---
 name: meta-edit
-description: Точечное редактирование объекта метаданных 1С. Используй когда нужно добавить или изменить реквизиты, табличные части, реквизиты табличных частей, регистры движений документа или свойства существующего объекта конфигурации
-argument-hint: <ObjectPath> -Operation <op> -Value "<val>"
+description: Точечное редактирование объекта метаданных 1С. Используй когда нужно добавить, удалить или изменить реквизиты, табличные части, измерения, ресурсы или свойства существующего объекта конфигурации
+argument-hint: <ObjectPath> -Operation <op> -Value "<val>" | -DefinitionFile <json> [-NoValidate]
 allowed-tools:
   - Bash
   - Read
@@ -13,7 +13,7 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.meta.edit`; `unica` owns XML mutations and refreshes related workspace caches after mutations.
+- Preferred path: use MCP `unica` tool `unica.meta.edit`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Execution path: call MCP `unica` tool `unica.meta.edit`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
@@ -42,9 +42,27 @@ allowed-tools:
 }
 ```
 
+### JSON mode: файл операций
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.edit",
+    "arguments": {
+      "cwd": "<workspace>",
+      "ObjectPath": "<path>",
+      "DefinitionFile": "<json>",
+      "dryRun": false
+    }
+  }
+}
+```
+
 ## Операции — сводная таблица
 
-Native `unica.meta.edit` поддерживает только inline `Operation` + `Value`; `DefinitionFile`/JSON DSL не входит в текущую MCP-поверхность. Batch через `;;` поддержан для операций ниже, кроме `modify-property`, где `;;` разделяет пары свойств.
+Batch через `;;` во всех операциях. Подробный синтаксис — в файлах по ссылкам.
 
 ### Дочерние элементы — [child-operations.md](child-operations.md)
 
@@ -52,18 +70,35 @@ Native `unica.meta.edit` поддерживает только inline `Operation
 |----------|-------------|--------|
 | `add-attribute` | `Имя: Тип \| флаги` | `"Сумма: Число(15,2) \| req, index"` |
 | `add-ts` | `ТЧ: Рекв1: Тип1, Рекв2: Тип2` | `"Товары: Ном: CatalogRef.Ном, Кол: Число(15,3)"` |
+| `add-dimension` | `Имя: Тип \| флаги` | `"Организация: CatalogRef.Организации \| master"` |
+| `add-resource` | `Имя: Тип` | `"Сумма: Число(15,2)"` |
+| `add-enumValue` | `Имя` | `"Значение1 ;; Значение2"` |
+| `add-column` | `Имя: Тип` | `"Тип: EnumRef.ТипыДокументов"` |
+| `add-form` / `add-template` / `add-command` | `Имя` | `"ФормаЭлемента"` |
 | `add-ts-attribute` | `ТЧ.Имя: Тип` | `"Товары.Скидка: Число(15,2)"` |
+| `remove-*` | `Имя` | `"СтарыйРеквизит ;; ЕщёОдин"` |
 | `remove-ts-attribute` | `ТЧ.Имя` | `"Товары.УстаревшийРекв"` |
 | `modify-attribute` | `Имя: ключ=значение` | `"СтароеИмя: name=НовоеИмя, type=Строка(500)"` |
 | `modify-ts-attribute` | `ТЧ.Имя: ключ=значение` | `"Товары.Рекв: name=НовоеИмя"` |
 | `modify-ts` | `ТЧ: ключ=значение` | `"Товары: synonym=Товарный состав"` |
+
+Позиционная вставка: `"Склад: CatalogRef.Склады >> after Организация"`.
 
 ### Свойства объекта — [properties-reference.md](properties-reference.md)
 
 | Операция | Формат Value | Пример |
 |----------|-------------|--------|
 | `modify-property` | `Ключ=Значение` | `"CodeLength=11 ;; DescriptionLength=150"` |
+| `add-owner` | `MetaType.Name` | `"Catalog.Контрагенты ;; Catalog.Организации"` |
 | `add-registerRecord` | `MetaType.Name` | `"AccumulationRegister.ОстаткиТоваров"` |
+| `add-basedOn` | `MetaType.Name` | `"Document.ЗаказКлиента"` |
+| `add-inputByString` | `Путь поля` | `"StandardAttribute.Description"` |
+| `set-owners` / `set-registerRecords` / `set-basedOn` / `set-inputByString` | Замена всего списка | `"Catalog.Орг ;; Catalog.Контр"` |
+| `remove-owner` / `remove-registerRecord` / ... | Удаление из списка | `"Catalog.Контрагенты"` |
+
+### JSON DSL — [json-dsl.md](json-dsl.md)
+
+Для комбинированных операций (add + remove + modify в одном файле), синонимы ключей/типов, таблица поддерживаемых объектов.
 
 ## Быстрые примеры
 
@@ -124,7 +159,7 @@ Native `unica.meta.edit` поддерживает только inline `Operation
 }
 ```
 
-### Удалить реквизит табличной части
+### Удалить реквизит
 
 ```json
 {
@@ -134,9 +169,9 @@ Native `unica.meta.edit` поддерживает только inline `Operation
     "name": "unica.meta.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "src/Documents/ЗаказПокупателя/ЗаказПокупателя.xml",
-      "Operation": "remove-ts-attribute",
-      "Value": "Товары.УстаревшийРеквизит",
+      "ObjectPath": "src/Catalogs/Контрагенты/Контрагенты.xml",
+      "Operation": "remove-attribute",
+      "Value": "УстаревшийРеквизит",
       "dryRun": false
     }
   }
@@ -181,7 +216,7 @@ Native `unica.meta.edit` поддерживает только inline `Operation
 }
 ```
 
-### Добавить регистр движений документа
+### Владельцы справочника
 
 ```json
 {
@@ -191,28 +226,9 @@ Native `unica.meta.edit` поддерживает только inline `Operation
     "name": "unica.meta.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "src/Documents/ЗаказПокупателя/ЗаказПокупателя.xml",
-      "Operation": "add-registerRecord",
-      "Value": "AccumulationRegister.ОстаткиТоваров",
-      "dryRun": false
-    }
-  }
-}
-```
-
-### Изменить свойства табличной части
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ObjectPath": "src/Documents/ЗаказПокупателя/ЗаказПокупателя.xml",
-      "Operation": "modify-ts",
-      "Value": "Товары: synonym=Товарный состав, fillChecking=ShowError",
+      "ObjectPath": "src/Catalogs/ДоговорыКонтрагентов/ДоговорыКонтрагентов.xml",
+      "Operation": "set-owners",
+      "Value": "Catalog.Контрагенты ;; Catalog.Организации",
       "dryRun": false
     }
   }

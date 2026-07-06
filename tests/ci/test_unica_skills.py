@@ -411,12 +411,11 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Value": "Значение: Строка + Число(15,2) + Дата + CatalogRef.Контрагенты"',
         '"Operation": "add-ts"',
         '"Value": "Товары: Ном: CatalogRef.Ном | req, Кол: Число(15,3), Цена: Число(15,2)"',
-        '"Operation": "remove-ts-attribute"',
+        '"Operation": "remove-attribute"',
         '"Operation": "modify-attribute"',
         '"Operation": "modify-property"',
-        '"Operation": "add-registerRecord"',
-        '"Operation": "modify-ts"',
-        '"Value": "Товары: synonym=Товарный состав, fillChecking=ShowError"',
+        '"Operation": "set-owners"',
+        '"Value": "Catalog.Контрагенты ;; Catalog.Организации"',
         '"name": "unica.meta.validate"',
         '"name": "unica.meta.info"',
     ],
@@ -552,35 +551,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertNotIn("unica-bsl-workspace", text)
                 self.assertNotIn("unica-rlm-tools-bsl", text)
                 self.assertNotIn("unica-v8std", text)
-
-    def test_meta_edit_skill_documents_native_operation_surface_only(self) -> None:
-        skill_dir = self.skill_root() / "meta-edit"
-        self.assertFalse((skill_dir / "json-dsl.md").exists())
-
-        joined = "\n".join(
-            path.read_text(encoding="utf-8") for path in skill_dir.glob("*.md")
-        )
-        for operation in [
-            "add-dimension",
-            "add-resource",
-            "add-enumValue",
-            "add-column",
-            "add-form",
-            "add-template",
-            "add-command",
-            "remove-attribute",
-            "remove-ts",
-            "remove-enumValue",
-            "set-owners",
-            "set-registerRecords",
-            "add-owner",
-            "add-basedOn",
-            "add-inputByString",
-        ]:
-            with self.subTest(operation=operation):
-                self.assertIsNone(
-                    re.search(rf"(?<![\w-]){re.escape(operation)}(?![\w-])", joined)
-                )
 
     def test_scenario_skills_cover_requested_unica_workflows(self) -> None:
         for skill, tool_names in SCENARIO_SKILLS.items():

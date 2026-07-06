@@ -88,6 +88,55 @@ mod edit_tests {
         )
     }
 
+    fn sample_meta_object_xml(
+        object_type: &str,
+        object_name: &str,
+        extra_properties: &str,
+        child_objects: &str,
+    ) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<{object_type} uuid="11111111-1111-4111-8111-111111111111">
+		<Properties>
+			<Name>{object_name}</Name>
+			<Synonym/>
+			<Comment/>
+{extra_properties}
+		</Properties>
+{child_objects}
+	</{object_type}>
+</MetaDataObject>
+"#
+        )
+    }
+
+    fn sample_register_xml(object_type: &str) -> String {
+        sample_meta_object_xml(object_type, "SampleStock", "", "\t\t<ChildObjects/>")
+    }
+
+    fn sample_enum_xml() -> String {
+        sample_meta_object_xml("Enum", "SampleStatuses", "", "\t\t<ChildObjects/>")
+    }
+
+    fn sample_catalog_xml() -> String {
+        sample_meta_object_xml(
+            "Catalog",
+            "SampleContracts",
+            "\t\t\t<Owners/>\n\t\t\t<InputByString/>\n\t\t\t<BasedOn/>",
+            "\t\t<ChildObjects/>",
+        )
+    }
+
+    fn sample_document_journal_xml() -> String {
+        sample_meta_object_xml(
+            "DocumentJournal",
+            "SampleJournal",
+            "",
+            "\t\t<ChildObjects/>",
+        )
+    }
+
     fn sample_document_with_child_objects(child_objects: &str) -> String {
         sample_document_xml("<RegisterRecords/>").replace(
             "\t\t<ChildObjects/>",
@@ -144,6 +193,19 @@ mod edit_tests {
         );
         args.insert("Operation".to_string(), json!(operation));
         args.insert("Value".to_string(), json!(value));
+        args
+    }
+
+    fn meta_edit_definition_args(object_path: &Path, definition_path: &Path) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(object_path.display().to_string()),
+        );
+        args.insert(
+            "DefinitionFile".to_string(),
+            json!(definition_path.display().to_string()),
+        );
         args
     }
 
@@ -570,6 +632,194 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_adds_register_dimensions_and_resources() {
+        let context = temp_context("add-register-fields");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        write_file(&object_path, &sample_register_xml("InformationRegister"));
+
+        let dimension = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "add-dimension",
+                "SampleWarehouse: CatalogRef.Warehouses | master, mainFilter",
+            ),
+            &context,
+        );
+        assert!(dimension.ok, "{:?}", dimension.errors);
+
+        let resource = edit_meta(
+            &meta_edit_args(&object_path, "add-resource", "SampleQty: Number(15,3)"),
+            &context,
+        );
+        assert!(resource.ok, "{:?}", resource.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Dimension uuid="));
+        assert!(updated.contains("<Name>SampleWarehouse</Name>"));
+        assert!(updated.contains("<Master>true</Master>"));
+        assert!(updated.contains("<MainFilter>true</MainFilter>"));
+        assert!(updated.contains("<Resource uuid="));
+        assert!(updated.contains("<Name>SampleQty</Name>"));
+        assert!(updated.contains("<v8:FractionDigits>3</v8:FractionDigits>"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_adds_and_removes_enum_values_and_simple_children() {
+        let context = temp_context("enum-and-simple-children");
+        let object_path = context.cwd.join("Enums").join("SampleStatuses.xml");
+        write_file(&object_path, &sample_enum_xml());
+
+        for (operation, value) in [
+            ("add-enumValue", "Pending ;; Obsolete"),
+            ("add-form", "FormItem"),
+            ("add-template", "PrintTemplate"),
+            ("add-command", "OpenCommand"),
+            ("modify-enumValue", "Pending: synonym=Ожидает"),
+            ("remove-enumValue", "Obsolete"),
+        ] {
+            let outcome = edit_meta(&meta_edit_args(&object_path, operation, value), &context);
+            assert!(outcome.ok, "{operation}: {:?}", outcome.errors);
+        }
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<EnumValue uuid="));
+        assert!(updated.contains("<Name>Pending</Name>"));
+        assert!(updated.contains("<v8:content>Ожидает</v8:content>"));
+        assert!(!updated.contains("<Name>Obsolete</Name>"));
+        assert!(updated.contains("<Form uuid="));
+        assert!(updated.contains("<FormType>Ordinary</FormType>"));
+        assert!(updated.contains("<Template uuid="));
+        assert!(updated.contains("<TemplateType>SpreadsheetDocument</TemplateType>"));
+        assert!(updated.contains("<Command uuid="));
+        assert!(updated.contains("<Representation>Auto</Representation>"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_adds_document_journal_columns() {
+        let context = temp_context("add-document-journal-column");
+        let object_path = context
+            .cwd
+            .join("DocumentJournals")
+            .join("SampleJournal.xml");
+        write_file(&object_path, &sample_document_journal_xml());
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "add-column",
+                "SampleKind: EnumRef.SampleKinds",
+            ),
+            &context,
+        );
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Column uuid="));
+        assert!(updated.contains("<Name>SampleKind</Name>"));
+        assert!(updated.contains("<References>"));
+        assert!(updated.contains(">EnumRef.SampleKinds</xr:Item>"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_sets_adds_and_removes_complex_properties() {
+        let context = temp_context("complex-properties");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        write_file(&object_path, &sample_catalog_xml());
+
+        for (operation, value) in [
+            (
+                "set-owners",
+                "Catalog.SampleCounterparties ;; Catalog.SampleOrganizations",
+            ),
+            ("remove-owner", "Catalog.SampleOrganizations"),
+            ("add-inputByString", "StandardAttribute.Description"),
+            ("add-basedOn", "Document.SampleOrder"),
+        ] {
+            let outcome = edit_meta(&meta_edit_args(&object_path, operation, value), &context);
+            assert!(outcome.ok, "{operation}: {:?}", outcome.errors);
+        }
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Owners>"));
+        assert!(updated.contains(">Catalog.SampleCounterparties</xr:Item>"));
+        assert!(!updated.contains(">Catalog.SampleOrganizations</xr:Item>"));
+        assert!(updated.contains("<InputByString>"));
+        assert!(updated.contains(
+            "<xr:Field>Catalog.SampleContracts.StandardAttribute.Description</xr:Field>"
+        ));
+        assert!(updated.contains(">Document.SampleOrder</xr:Item>"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_definition_file_processes_json_dsl() {
+        let context = temp_context("definition-file-json-dsl");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        write_file(&object_path, &sample_catalog_xml());
+        write_file(
+            &definition_path,
+            r#"{
+  "add": {
+    "attributes": [
+      { "name": "SampleNote", "type": ["String", "Number(10,2)"], "indexing": "Index" }
+    ],
+    "tabularSections": [
+      { "name": "Items", "attrs": ["Item: CatalogRef.Items", "Qty: Number(15,3)"] }
+    ],
+    "forms": ["FormItem"]
+  },
+  "modify": {
+    "properties": {
+      "Owners": ["Catalog.SampleCounterparties"],
+      "InputByString": ["StandardAttribute.Description"]
+    },
+    "tabularSections": {
+      "Items": {
+        "add": ["Discount: Number(5,2)"]
+      }
+    }
+  }
+}"#,
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Name>SampleNote</Name>"));
+        assert!(updated.contains("<v8:Type>xs:string</v8:Type>"));
+        assert!(updated.contains("<v8:Type>xs:decimal</v8:Type>"));
+        assert!(updated.contains("<Name>Items</Name>"));
+        assert!(updated.contains("<Name>Discount</Name>"));
+        assert!(updated.contains("<Name>FormItem</Name>"));
+        assert!(updated.contains(">Catalog.SampleCounterparties</xr:Item>"));
+        assert!(updated.contains(
+            "<xr:Field>Catalog.SampleContracts.StandardAttribute.Description</xr:Field>"
+        ));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_rejects_tabular_section_type_change() {
         let context = temp_context("modify-tabular-section-type");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -626,6 +876,118 @@ mod edit_tests {
         assert!(updated.contains("<Name>SampleWeight</Name>"));
         assert!(updated.contains("<v8:Digits>10</v8:Digits>"));
         assert!(!updated.contains(";; SampleWeight"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_add_attribute_supports_inline_position() {
+        let context = temp_context("add-attribute-position");
+        let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
+        let child_objects = format!(
+            "{}\n{}",
+            sample_attribute(
+                "Organization",
+                "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>cfg:CatalogRef.Organizations</v8:Type>\n\t\t\t\t\t</Type>",
+                "\t\t\t\t\t<FillValue xsi:nil=\"true\"/>",
+            ),
+            sample_attribute(
+                "Comment",
+                "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t\t\t</Type>",
+                "\t\t\t\t\t<FillValue xsi:type=\"xs:string\"/>",
+            )
+        );
+        write_file(
+            &object_path,
+            &sample_document_with_child_objects(&child_objects),
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "add-attribute",
+                "Warehouse: CatalogRef.Warehouses >> after Organization",
+            ),
+            &context,
+        );
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        let organization = updated.find("<Name>Organization</Name>").unwrap();
+        let warehouse = updated.find("<Name>Warehouse</Name>").unwrap();
+        let comment = updated.find("<Name>Comment</Name>").unwrap();
+        assert!(organization < warehouse && warehouse < comment, "{updated}");
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_add_tabular_attribute_supports_json_position() {
+        let context = temp_context("add-ts-attribute-json-position");
+        let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        let xml = sample_document_with_child_objects(
+            "\t\t\t<TabularSection uuid=\"33333333-3333-4333-8333-333333333333\">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>Items</Name>
+\t\t\t\t\t<Synonym/>
+\t\t\t\t\t<Comment/>
+\t\t\t\t\t<ToolTip/>
+\t\t\t\t\t<FillChecking>DontCheck</FillChecking>
+\t\t\t\t</Properties>
+\t\t\t\t<ChildObjects>
+\t\t\t\t\t<Attribute uuid=\"44444444-4444-4444-8444-444444444444\">
+\t\t\t\t\t\t<Properties>
+\t\t\t\t\t\t\t<Name>Price</Name>
+\t\t\t\t\t\t\t<Synonym/>
+\t\t\t\t\t\t\t<Comment/>
+\t\t\t\t\t\t\t<Type>
+\t\t\t\t\t\t\t\t<v8:Type>xs:decimal</v8:Type>
+\t\t\t\t\t\t\t</Type>
+\t\t\t\t\t\t</Properties>
+\t\t\t\t\t</Attribute>
+\t\t\t\t\t<Attribute uuid=\"55555555-5555-4555-8555-555555555555\">
+\t\t\t\t\t\t<Properties>
+\t\t\t\t\t\t\t<Name>Amount</Name>
+\t\t\t\t\t\t\t<Synonym/>
+\t\t\t\t\t\t\t<Comment/>
+\t\t\t\t\t\t\t<Type>
+\t\t\t\t\t\t\t\t<v8:Type>xs:decimal</v8:Type>
+\t\t\t\t\t\t\t</Type>
+\t\t\t\t\t\t</Properties>
+\t\t\t\t\t</Attribute>
+\t\t\t\t</ChildObjects>
+\t\t\t</TabularSection>",
+        );
+        write_file(&object_path, &xml);
+        write_file(
+            &definition_path,
+            r#"{
+  "modify": {
+    "tabularSections": {
+      "Items": {
+        "add": [
+          { "name": "Discount", "type": "Number(5,2)", "before": "Amount" }
+        ]
+      }
+    }
+  }
+}"#,
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let updated = fs::read_to_string(&object_path).unwrap();
+        let price = updated.find("<Name>Price</Name>").unwrap();
+        let discount = updated.find("<Name>Discount</Name>").unwrap();
+        let amount = updated.find("<Name>Amount</Name>").unwrap();
+        assert!(price < discount && discount < amount, "{updated}");
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -828,7 +1190,7 @@ mod edit_tests {
     }
 
     #[test]
-    fn edit_meta_dry_run_rejects_definition_file_mode() {
+    fn edit_meta_dry_run_accepts_definition_file_mode() {
         let context = temp_context("dry-run-definition-file");
         let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
         let definition_path = context.cwd.join("edit.json");
@@ -845,11 +1207,11 @@ mod edit_tests {
         );
         args.insert("dryRun".to_string(), json!(true));
 
-        let error = UnicaApplication::new()
+        let result = UnicaApplication::new()
             .call_tool("unica.meta.edit", &args)
-            .unwrap_err();
+            .unwrap();
 
-        assert!(error.contains("DefinitionFile"));
+        assert!(result.ok);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -8961,6 +9323,13 @@ fn register_compiled_meta_child_text(
     Some(result)
 }
 
+#[derive(Default)]
+pub(crate) struct MetaEditCounts {
+    pub(crate) added: usize,
+    pub(crate) modified: usize,
+    pub(crate) removed: usize,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, usize), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -8971,26 +9340,12 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         if definition_file.is_none() && operation.is_none() {
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
-        if let Some(definition_file) = definition_file {
-            let definition_path = absolutize(definition_file.clone(), &context.cwd);
-            if !definition_path.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
-            }
-            return Err(
-                "native meta-edit currently supports inline -Operation mode only".to_string(),
-            );
-        }
-
         let object_path_raw = required_path(
             args,
             &["objectPath", "ObjectPath", "path", "Path"],
             "ObjectPath",
         )?;
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
-        let operation = operation.expect("checked above");
         let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
         let mut xml_text = fs::read_to_string(&object_path)
@@ -9000,80 +9355,46 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         }
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
 
-        let mut added = 0usize;
-        let mut modified = 0usize;
-        let mut removed = 0usize;
-        match operation {
-            "modify-property" => {
-                for pair in value
-                    .split(";;")
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                {
-                    let Some((key, raw_value)) = pair.split_once('=') else {
-                        continue;
-                    };
-                    let key = key.trim();
-                    let raw_value = raw_value.trim();
-                    let normalized = normalize_meta_edit_property_value(key, raw_value);
-                    if replace_first_xml_element_text(&mut xml_text, key, &normalized) {
-                        modified += 1;
-                    } else {
-                        insert_meta_property_before_child_objects(&mut xml_text, key, &normalized)?;
-                        modified += 1;
-                    }
-                }
-            }
-            "add-registerRecord" => {
-                for item in split_meta_edit_batch_items(value, "add-registerRecord")? {
-                    meta_edit_add_register_record(&mut xml_text, &object_type, item)?;
-                    added += 1;
-                }
-            }
-            "add-attribute" => {
-                for item in split_meta_edit_batch_items(value, "add-attribute")? {
-                    meta_edit_add_attribute(&mut xml_text, &object_type, item)?;
-                    added += 1;
-                }
-            }
-            "add-ts" => {
-                for item in split_meta_edit_batch_items(value, "add-ts")? {
-                    meta_edit_add_tabular_section(&mut xml_text, &object_type, &object_name, item)?;
-                    added += 1;
-                }
-            }
-            "add-ts-attribute" => {
-                for item in split_meta_edit_batch_items(value, "add-ts-attribute")? {
-                    meta_edit_add_tabular_section_attribute(&mut xml_text, item)?;
-                    added += 1;
-                }
-            }
-            "modify-attribute" => {
-                modified += meta_edit_modify_attribute(&mut xml_text, value)?;
-            }
-            "modify-ts" => {
-                modified += meta_edit_modify_tabular_section(&mut xml_text, value)?;
-            }
-            "modify-ts-attribute" => {
-                modified += meta_edit_modify_tabular_section_attribute(&mut xml_text, value)?;
-            }
-            "remove-ts-attribute" => {
-                removed += meta_edit_remove_tabular_section_attribute(&mut xml_text, value)?;
-            }
-            other => {
+        let mut counts = MetaEditCounts::default();
+        if let Some(definition_file) = definition_file {
+            let definition_path = absolutize(definition_file.clone(), &context.cwd);
+            if !definition_path.exists() {
                 return Err(format!(
-                    "native meta-edit currently supports modify-property, add-registerRecord, add-attribute, add-ts, add-ts-attribute, modify-attribute, modify-ts, modify-ts-attribute and remove-ts-attribute only, got: {other}"
+                    "Definition file not found: {}",
+                    definition_file.display()
                 ));
             }
+            let definition_text = fs::read_to_string(&definition_path)
+                .map_err(|err| format!("failed to read {}: {err}", definition_path.display()))?;
+            let definition: Value =
+                serde_json::from_str(definition_text.trim_start_matches('\u{feff}'))
+                    .map_err(|err| format!("DefinitionFile JSON parse error: {err}"))?;
+            meta_edit_apply_definition(
+                &mut xml_text,
+                &object_type,
+                &object_name,
+                &definition,
+                &mut counts,
+            )?;
+        } else {
+            meta_edit_apply_inline_operation(
+                &mut xml_text,
+                &object_type,
+                &object_name,
+                operation.expect("checked above"),
+                value,
+                &mut counts,
+            )?;
         }
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
         write_utf8_bom(&object_path, &xml_text)?;
         let stdout = format!(
-            "\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {added}\n  Removed:  {removed}\n  Modified: {modified}\n"
+            "\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
+            counts.added, counts.removed, counts.modified
         );
-        Ok((stdout, object_path, modified))
+        Ok((stdout, object_path, counts.modified))
     })();
 
     match edit_result {
@@ -9189,6 +9510,1028 @@ pub(crate) fn split_meta_edit_batch_items<'a>(
         return Err(format!("{operation} requires non-empty Value"));
     }
     Ok(items)
+}
+
+pub(crate) fn meta_edit_apply_inline_operation(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    operation: &str,
+    value: &str,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let (action, target) = operation
+        .split_once('-')
+        .ok_or_else(|| format!("Invalid meta-edit Operation: {operation}"))?;
+
+    if let Some(property) = meta_edit_complex_property_from_inline_target(target) {
+        meta_edit_apply_complex_property_action(
+            xml_text,
+            object_type,
+            object_name,
+            action,
+            property,
+            meta_edit_split_values(value),
+            counts,
+        )?;
+        return Ok(());
+    }
+
+    if target == "ts-attribute" {
+        match action {
+            "add" => {
+                for item in split_meta_edit_batch_items(value, operation)? {
+                    meta_edit_add_tabular_section_attribute(xml_text, item)?;
+                    counts.added += 1;
+                }
+            }
+            "remove" => {
+                counts.removed += meta_edit_remove_tabular_section_attribute(xml_text, value)?
+            }
+            "modify" => {
+                counts.modified += meta_edit_modify_tabular_section_attribute(xml_text, value)?
+            }
+            _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
+        }
+        return Ok(());
+    }
+
+    if target == "property" {
+        if action != "modify" {
+            return Err(format!("Unsupported meta-edit Operation: {operation}"));
+        }
+        counts.modified += meta_edit_modify_object_properties_from_pairs(xml_text, value)?;
+        return Ok(());
+    }
+
+    let Some(child_type) = meta_edit_child_type_from_inline_target(target) else {
+        return Err(format!("Unsupported meta-edit Operation: {operation}"));
+    };
+
+    match action {
+        "add" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                let item_value = Value::String(item.to_string());
+                meta_edit_add_child_value(
+                    xml_text,
+                    object_type,
+                    object_name,
+                    child_type,
+                    &item_value,
+                )?;
+                counts.added += 1;
+            }
+        }
+        "remove" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                meta_edit_remove_child_value(
+                    xml_text,
+                    child_type,
+                    &Value::String(item.to_string()),
+                )?;
+                counts.removed += 1;
+            }
+        }
+        "modify" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                let (name, raw_changes) = item
+                    .split_once(':')
+                    .ok_or_else(|| format!("{operation} requires Value like Name: key=value"))?;
+                counts.modified += meta_edit_modify_top_child(
+                    xml_text,
+                    child_type,
+                    name.trim(),
+                    raw_changes.trim(),
+                )?;
+            }
+        }
+        _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
+    }
+
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    definition: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let definition = definition
+        .as_object()
+        .ok_or_else(|| "DefinitionFile root must be a JSON object".to_string())?;
+
+    if let Some(Value::Array(items)) = definition.get("_complex") {
+        for item in items {
+            let object = item
+                .as_object()
+                .ok_or_else(|| "_complex item must be an object".to_string())?;
+            let action = object
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "_complex item is missing action".to_string())?;
+            let property = object
+                .get("property")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "_complex item is missing property".to_string())?;
+            let values = meta_edit_values_from_json(object.get("values"));
+            meta_edit_apply_complex_property_action(
+                xml_text,
+                object_type,
+                object_name,
+                action,
+                property,
+                values,
+                counts,
+            )?;
+        }
+    }
+
+    for (raw_key, value) in definition {
+        if raw_key == "_complex" {
+            continue;
+        }
+        match meta_edit_operation_key(raw_key).as_deref() {
+            Some("add") => {
+                meta_edit_apply_definition_add(xml_text, object_type, object_name, value, counts)?
+            }
+            Some("remove") => meta_edit_apply_definition_remove(xml_text, value, counts)?,
+            Some("modify") => meta_edit_apply_definition_modify(
+                xml_text,
+                object_type,
+                object_name,
+                value,
+                counts,
+            )?,
+            Some(other) => return Err(format!("Unsupported definition operation: {other}")),
+            None => return Err(format!("Unknown definition operation: {raw_key}")),
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_add(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition add must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown add child type: {raw_child_type}"))?;
+        for item in meta_edit_definition_items(items) {
+            meta_edit_add_child_value(xml_text, object_type, object_name, child_type, &item)?;
+            counts.added += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_remove(
+    xml_text: &mut String,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition remove must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown remove child type: {raw_child_type}"))?;
+        for item in meta_edit_definition_items(items) {
+            meta_edit_remove_child_value(xml_text, child_type, &item)?;
+            counts.removed += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_modify(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition modify must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown modify child type: {raw_child_type}"))?;
+        if child_type == "properties" {
+            meta_edit_modify_object_properties_from_map(
+                xml_text,
+                object_type,
+                object_name,
+                items,
+                counts,
+            )?;
+        } else if child_type == "tabularSections" {
+            meta_edit_modify_tabular_sections_from_definition(xml_text, items, counts)?;
+        } else {
+            let item_object = items
+                .as_object()
+                .ok_or_else(|| format!("modify {child_type} must be an object"))?;
+            for (name, changes) in item_object {
+                let raw_changes = meta_edit_changes_to_inline(changes)?;
+                counts.modified +=
+                    meta_edit_modify_top_child(xml_text, child_type, name, &raw_changes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_modify_object_properties_from_pairs(
+    xml_text: &mut String,
+    value: &str,
+) -> Result<usize, String> {
+    let mut modified = 0usize;
+    for pair in value
+        .split(";;")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let Some((key, raw_value)) = pair.split_once('=') else {
+            return Err(format!("modify-property requires Key=Value, got: {pair}"));
+        };
+        meta_edit_set_scalar_property(xml_text, key.trim(), raw_value.trim())?;
+        modified += 1;
+    }
+    if modified == 0 {
+        return Err("modify-property requires non-empty Value".to_string());
+    }
+    Ok(modified)
+}
+
+pub(crate) fn meta_edit_modify_object_properties_from_map(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "modify.properties must be an object".to_string())?;
+    for (key, value) in object {
+        if meta_edit_complex_property_kind(key).is_some() {
+            meta_edit_apply_complex_property_action(
+                xml_text,
+                object_type,
+                object_name,
+                "set",
+                key,
+                meta_edit_values_from_json(Some(value)),
+                counts,
+            )?;
+        } else {
+            meta_edit_set_scalar_property(xml_text, key, &json_value_to_python_string(value))?;
+            counts.modified += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_set_scalar_property(
+    xml_text: &mut String,
+    key: &str,
+    raw_value: &str,
+) -> Result<(), String> {
+    let normalized = normalize_meta_edit_property_value(key, raw_value);
+    if replace_first_xml_element_text(xml_text, key, &normalized) {
+        Ok(())
+    } else {
+        insert_meta_property_before_child_objects(xml_text, key, &normalized)
+    }
+}
+
+pub(crate) fn meta_edit_add_child_value(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    child_type: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let (value, position) = meta_edit_extract_insert_position(value)?;
+    match child_type {
+        "attributes" => {
+            let attr = meta_compile_parse_attr(&value);
+            if attr.name.is_empty() {
+                return Err("add-attribute requires Value like Name: Type".to_string());
+            }
+            meta_edit_ensure_top_child_name_free(xml_text, "Attribute", &attr.name)?;
+            let context = meta_edit_attribute_context(object_type);
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_attribute(&mut lines, "\t\t\t", &attr, context, &mut next_uuid);
+            meta_edit_insert_top_child_object_with_position(
+                xml_text,
+                "Attribute",
+                &position,
+                &lines,
+            )
+        }
+        "tabularSections" => {
+            let section = meta_edit_tabular_section_from_value(&value)?;
+            meta_edit_ensure_top_child_name_free(xml_text, "TabularSection", &section.name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_tabular_section(
+                &mut lines,
+                "\t\t\t",
+                &section,
+                object_type,
+                object_name,
+                &mut next_uuid,
+            );
+            meta_edit_insert_top_child_object_with_position(
+                xml_text,
+                "TabularSection",
+                &position,
+                &lines,
+            )
+        }
+        "dimensions" | "resources" => {
+            let attr = meta_compile_parse_attr(&value);
+            if attr.name.is_empty() {
+                return Err(format!("add-{child_type} requires Value like Name: Type"));
+            }
+            let tag = if child_type == "dimensions" {
+                "Dimension"
+            } else {
+                "Resource"
+            };
+            meta_edit_ensure_top_child_name_free(xml_text, tag, &attr.name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_register_field(
+                &mut lines,
+                "\t\t\t",
+                tag,
+                &attr,
+                object_type,
+                &mut next_uuid,
+            );
+            meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
+        }
+        "enumValues" => {
+            let enum_value = meta_edit_enum_value_from_value(&value)?;
+            meta_edit_ensure_top_child_name_free(xml_text, "EnumValue", &enum_value.name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_enum_value(&mut lines, "\t\t\t", &enum_value, &mut next_uuid);
+            meta_edit_insert_top_child_object_with_position(
+                xml_text,
+                "EnumValue",
+                &position,
+                &lines,
+            )
+        }
+        "columns" => {
+            let column_value = meta_edit_column_value(&value);
+            let column_name = meta_edit_value_name(&column_value)
+                .ok_or_else(|| "add-column requires non-empty name".to_string())?;
+            meta_edit_ensure_top_child_name_free(xml_text, "Column", &column_name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_column(&mut lines, "\t\t\t", &column_value, &mut next_uuid);
+            meta_edit_insert_top_child_object_with_position(xml_text, "Column", &position, &lines)
+        }
+        "forms" | "templates" | "commands" => {
+            let tag = match child_type {
+                "forms" => "Form",
+                "templates" => "Template",
+                _ => "Command",
+            };
+            let name = meta_edit_value_name(&value)
+                .ok_or_else(|| format!("add-{child_type} requires non-empty name"))?;
+            meta_edit_ensure_top_child_name_free(xml_text, tag, &name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_simple_child(&mut lines, "\t\t\t", tag, &name, &mut next_uuid);
+            meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
+        }
+        other => Err(format!("Unsupported add child type: {other}")),
+    }
+}
+
+pub(crate) fn meta_edit_remove_child_value(
+    xml_text: &mut String,
+    child_type: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let tag = meta_edit_child_xml_tag(child_type)
+        .ok_or_else(|| format!("Unsupported remove child type: {child_type}"))?;
+    let name = meta_edit_value_name(value)
+        .ok_or_else(|| format!("remove {child_type} requires non-empty name"))?;
+    meta_edit_remove_top_child_by_name(xml_text, tag, &name)
+}
+
+pub(crate) fn meta_edit_modify_top_child(
+    xml_text: &mut String,
+    child_type: &str,
+    name: &str,
+    raw_changes: &str,
+) -> Result<usize, String> {
+    let tag = meta_edit_child_xml_tag(child_type)
+        .ok_or_else(|| format!("Unsupported modify child type: {child_type}"))?;
+    let target = match child_type {
+        "attributes" => MetaEditModifyTarget::Attribute,
+        "dimensions" | "resources" => MetaEditModifyTarget::RegisterField,
+        "enumValues" => MetaEditModifyTarget::EnumValue,
+        "columns" => MetaEditModifyTarget::Column,
+        "tabularSections" => MetaEditModifyTarget::TabularSection,
+        _ => return Err(format!("Unsupported modify child type: {child_type}")),
+    };
+    meta_edit_modify_top_child_properties(xml_text, tag, name, raw_changes, target)
+}
+
+pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
+    xml_text: &mut String,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "modify.tabularSections must be an object".to_string())?;
+    for (section_name, changes) in object {
+        let changes = changes
+            .as_object()
+            .ok_or_else(|| "tabular section modify entry must be an object".to_string())?;
+        let mut section_property_changes = Map::new();
+        for (raw_key, change_value) in changes {
+            match meta_edit_operation_key(raw_key).as_deref() {
+                Some("add") => {
+                    for item in meta_edit_definition_items(change_value) {
+                        meta_edit_add_tabular_section_attribute_value(
+                            xml_text,
+                            section_name,
+                            &item,
+                        )?;
+                        counts.added += 1;
+                    }
+                }
+                Some("remove") => {
+                    for item in meta_edit_definition_items(change_value) {
+                        let attr_name = meta_edit_value_name(&item).ok_or_else(|| {
+                            format!("remove attribute from TS '{section_name}' requires name")
+                        })?;
+                        meta_edit_remove_tabular_child_by_name(
+                            xml_text,
+                            section_name,
+                            "Attribute",
+                            &attr_name,
+                        )?;
+                        counts.removed += 1;
+                    }
+                }
+                Some("modify") => {
+                    let attrs = change_value.as_object().ok_or_else(|| {
+                        format!("modify attributes in TS '{section_name}' must be an object")
+                    })?;
+                    for (attr_name, attr_changes) in attrs {
+                        let raw_changes = meta_edit_changes_to_inline(attr_changes)?;
+                        meta_edit_modify_tabular_attribute_properties(
+                            xml_text,
+                            section_name,
+                            attr_name,
+                            &raw_changes,
+                        )?;
+                        counts.modified += 1;
+                    }
+                }
+                _ => {
+                    section_property_changes.insert(raw_key.to_string(), change_value.clone());
+                }
+            }
+        }
+        if !section_property_changes.is_empty() {
+            let raw_changes =
+                meta_edit_changes_to_inline(&Value::Object(section_property_changes))?;
+            meta_edit_modify_tabular_section_properties(xml_text, section_name, &raw_changes)?;
+            counts.modified += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_complex_property_action(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    action: &str,
+    property: &str,
+    raw_values: Vec<String>,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let property = meta_edit_complex_property_kind(property)
+        .ok_or_else(|| format!("Unsupported complex property: {property}"))?;
+    if property == "RegisterRecords" && object_type != "Document" {
+        return Err(format!(
+            "RegisterRecords is supported for Document only, got: {object_type}"
+        ));
+    }
+    let values = raw_values
+        .into_iter()
+        .map(|value| {
+            meta_edit_normalize_complex_property_value(property, object_type, object_name, &value)
+        })
+        .collect::<Vec<_>>();
+    if property == "RegisterRecords" {
+        for value in &values {
+            if !matches!(
+                value.split('.').next().unwrap_or_default(),
+                "AccumulationRegister"
+                    | "InformationRegister"
+                    | "AccountingRegister"
+                    | "CalculationRegister"
+            ) {
+                return Err(format!(
+                    "RegisterRecords value must be a register reference, got: {value}"
+                ));
+            }
+        }
+    }
+    let existing = meta_edit_complex_property_values(xml_text, property)?;
+    match action {
+        "add" => {
+            let mut next = existing;
+            for value in values {
+                if next.iter().any(|existing| existing == &value) {
+                    return Err(format!("{property} item '{value}' already exists"));
+                }
+                next.push(value);
+                counts.added += 1;
+            }
+            meta_edit_replace_complex_property(xml_text, property, &next)
+        }
+        "remove" => {
+            let mut next = existing;
+            for value in values {
+                let Some(index) = next.iter().position(|existing| existing == &value) else {
+                    return Err(format!("{property} item '{value}' not found"));
+                };
+                next.remove(index);
+                counts.removed += 1;
+            }
+            meta_edit_replace_complex_property(xml_text, property, &next)
+        }
+        "set" => {
+            meta_edit_replace_complex_property(xml_text, property, &values)?;
+            counts.modified += 1;
+            Ok(())
+        }
+        other => Err(format!("Unsupported complex property action: {other}")),
+    }
+}
+
+pub(crate) fn meta_edit_complex_property_values(
+    xml_text: &str,
+    property: &str,
+) -> Result<Vec<String>, String> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let Some(properties) = meta_info_child(object, "Properties") else {
+        return Ok(Vec::new());
+    };
+    let Some(property_node) = meta_info_child(properties, property) else {
+        return Ok(Vec::new());
+    };
+    Ok(property_node
+        .children()
+        .filter(|node| node.is_element())
+        .filter_map(|node| node.text().map(str::trim).map(ToOwned::to_owned))
+        .filter(|value| !value.is_empty())
+        .collect())
+}
+
+pub(crate) fn meta_edit_replace_complex_property(
+    xml_text: &mut String,
+    property: &str,
+    values: &[String],
+) -> Result<(), String> {
+    let replacement = meta_edit_complex_property_xml(xml_text, property, values)?;
+    if let Some(range) = meta_edit_xml_element_range(xml_text, property)? {
+        xml_text.replace_range(range, &replacement);
+        return Ok(());
+    }
+    let Some(close_pos) = xml_text.find("</Properties>") else {
+        return Err("No closing </Properties> found".to_string());
+    };
+    xml_text.insert_str(close_pos, &format!("{replacement}\n\t\t\t"));
+    Ok(())
+}
+
+pub(crate) fn meta_edit_complex_property_xml(
+    xml_text: &str,
+    property: &str,
+    values: &[String],
+) -> Result<String, String> {
+    let indent = if let Some(range) = meta_edit_xml_element_range(xml_text, property)? {
+        meta_edit_line_indent(xml_text, range.start)
+    } else {
+        "\t\t\t".to_string()
+    };
+    if values.is_empty() {
+        return Ok(format!("{indent}<{property}/>"));
+    }
+    let child_indent = format!("{indent}\t");
+    let mut lines = vec![format!("{indent}<{property}>")];
+    for value in values {
+        if property == "InputByString" {
+            lines.push(format!(
+                "{child_indent}<xr:Field>{}</xr:Field>",
+                escape_xml(value)
+            ));
+        } else {
+            lines.push(format!(
+                "{child_indent}<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
+                escape_xml(value)
+            ));
+        }
+    }
+    lines.push(format!("{indent}</{property}>"));
+    Ok(lines.join("\n"))
+}
+
+pub(crate) fn meta_edit_line_indent(text: &str, pos: usize) -> String {
+    let line_start = text[..pos].rfind('\n').map_or(0, |index| index + 1);
+    text[line_start..pos]
+        .chars()
+        .take_while(|ch| *ch == '\t' || *ch == ' ')
+        .collect()
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MetaEditInsertPosition {
+    pub(crate) before: Option<String>,
+    pub(crate) after: Option<String>,
+}
+
+impl MetaEditInsertPosition {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.before.is_none() && self.after.is_none()
+    }
+
+    pub(crate) fn target(&self) -> Option<(&str, bool)> {
+        if let Some(after) = self.after.as_deref() {
+            Some((after, true))
+        } else {
+            self.before.as_deref().map(|before| (before, false))
+        }
+    }
+}
+
+pub(crate) fn meta_edit_extract_insert_position(
+    value: &Value,
+) -> Result<(Value, MetaEditInsertPosition), String> {
+    if let Some(text) = value.as_str() {
+        let (cleaned, position) = meta_edit_extract_insert_position_from_text(text)?;
+        return Ok((Value::String(cleaned), position));
+    }
+    if let Some(object) = value.as_object() {
+        let mut object = object.clone();
+        let before = object
+            .remove("before")
+            .and_then(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
+            .filter(|value| !value.is_empty());
+        let after = object
+            .remove("after")
+            .and_then(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
+            .filter(|value| !value.is_empty());
+        if before.is_some() && after.is_some() {
+            return Err("Use either before or after, not both".to_string());
+        }
+        return Ok((
+            Value::Object(object),
+            MetaEditInsertPosition { before, after },
+        ));
+    }
+    Ok((value.clone(), MetaEditInsertPosition::default()))
+}
+
+pub(crate) fn meta_edit_extract_insert_position_from_text(
+    text: &str,
+) -> Result<(String, MetaEditInsertPosition), String> {
+    let after_marker = ">> after ";
+    let before_marker = "<< before ";
+    let after_pos = text.rfind(after_marker);
+    let before_pos = text.rfind(before_marker);
+    let Some((marker_pos, marker, is_after)) = (match (after_pos, before_pos) {
+        (Some(_), Some(_)) => {
+            return Err("Use either >> after or << before, not both".to_string());
+        }
+        (Some(pos), None) => Some((pos, after_marker, true)),
+        (None, Some(pos)) => Some((pos, before_marker, false)),
+        (None, None) => None,
+    }) else {
+        return Ok((text.trim().to_string(), MetaEditInsertPosition::default()));
+    };
+
+    let cleaned = text[..marker_pos].trim().to_string();
+    let target = text[marker_pos + marker.len()..].trim();
+    if target.is_empty() {
+        return Err("Position target must be non-empty".to_string());
+    }
+    let position = if is_after {
+        MetaEditInsertPosition {
+            before: None,
+            after: Some(target.to_string()),
+        }
+    } else {
+        MetaEditInsertPosition {
+            before: Some(target.to_string()),
+            after: None,
+        }
+    };
+    Ok((cleaned, position))
+}
+
+pub(crate) fn meta_edit_normalize_complex_property_value(
+    property: &str,
+    object_type: &str,
+    object_name: &str,
+    value: &str,
+) -> String {
+    let value = value.trim();
+    if property != "InputByString" {
+        return normalize_meta_object_ref(value);
+    }
+    let first = value.split('.').next().unwrap_or_default();
+    let is_prefixed = matches!(
+        first,
+        "Catalog"
+            | "Document"
+            | "InformationRegister"
+            | "AccumulationRegister"
+            | "AccountingRegister"
+            | "CalculationRegister"
+            | "ChartOfCharacteristicTypes"
+            | "ChartOfCalculationTypes"
+            | "ChartOfAccounts"
+            | "ExchangePlan"
+            | "BusinessProcess"
+            | "Task"
+            | "Enum"
+            | "Report"
+            | "DataProcessor"
+    );
+    if is_prefixed {
+        value.to_string()
+    } else {
+        format!("{object_type}.{object_name}.{value}")
+    }
+}
+
+pub(crate) fn meta_edit_complex_property_from_inline_target(target: &str) -> Option<&'static str> {
+    match target {
+        "owner" | "owners" => Some("Owners"),
+        "registerRecord" | "registerRecords" => Some("RegisterRecords"),
+        "basedOn" => Some("BasedOn"),
+        "inputByString" => Some("InputByString"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_complex_property_kind(property: &str) -> Option<&'static str> {
+    match property {
+        "Owners" | "owners" => Some("Owners"),
+        "RegisterRecords" | "registerRecords" => Some("RegisterRecords"),
+        "BasedOn" | "basedOn" => Some("BasedOn"),
+        "InputByString" | "inputByString" => Some("InputByString"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_operation_key(key: &str) -> Option<String> {
+    match key.to_lowercase().as_str() {
+        "add" | "добавить" => Some("add".to_string()),
+        "remove" | "удалить" => Some("remove".to_string()),
+        "modify" | "изменить" => Some("modify".to_string()),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_child_type_from_inline_target(target: &str) -> Option<&'static str> {
+    match target {
+        "attribute" => Some("attributes"),
+        "ts" => Some("tabularSections"),
+        "dimension" => Some("dimensions"),
+        "resource" => Some("resources"),
+        "enumValue" => Some("enumValues"),
+        "column" => Some("columns"),
+        "form" => Some("forms"),
+        "template" => Some("templates"),
+        "command" => Some("commands"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_child_type_key(key: &str) -> Option<&'static str> {
+    match key.to_lowercase().as_str() {
+        "attributes" | "реквизиты" | "attrs" => Some("attributes"),
+        "tabularsections" | "табличныечасти" | "тч" | "ts" => {
+            Some("tabularSections")
+        }
+        "dimensions" | "измерения" | "dims" => Some("dimensions"),
+        "resources" | "ресурсы" | "res" => Some("resources"),
+        "enumvalues" | "значения" | "values" => Some("enumValues"),
+        "columns" | "графы" | "колонки" => Some("columns"),
+        "forms" | "формы" => Some("forms"),
+        "templates" | "макеты" => Some("templates"),
+        "commands" | "команды" => Some("commands"),
+        "properties" | "свойства" => Some("properties"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_child_xml_tag(child_type: &str) -> Option<&'static str> {
+    match child_type {
+        "attributes" => Some("Attribute"),
+        "tabularSections" => Some("TabularSection"),
+        "dimensions" => Some("Dimension"),
+        "resources" => Some("Resource"),
+        "enumValues" => Some("EnumValue"),
+        "columns" => Some("Column"),
+        "forms" => Some("Form"),
+        "templates" => Some("Template"),
+        "commands" => Some("Command"),
+        _ => None,
+    }
+}
+
+pub(crate) fn meta_edit_split_values(value: &str) -> Vec<String> {
+    value
+        .split(";;")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+pub(crate) fn meta_edit_values_from_json(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(json_value_to_python_string)
+            .filter(|value| !value.trim().is_empty())
+            .collect(),
+        Some(Value::String(text)) => meta_edit_split_values(text),
+        Some(value) => vec![json_value_to_python_string(value)],
+        None => Vec::new(),
+    }
+}
+
+pub(crate) fn meta_edit_definition_items(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Array(items) => items.clone(),
+        Value::String(_) => vec![value.clone()],
+        Value::Object(object) if object.contains_key("name") => vec![value.clone()],
+        Value::Object(object) => object
+            .iter()
+            .map(|(name, item)| {
+                if let Some(mut item_object) = item.as_object().cloned() {
+                    item_object
+                        .entry("name".to_string())
+                        .or_insert_with(|| Value::String(name.clone()));
+                    Value::Object(item_object)
+                } else if let Some(type_text) = item.as_str() {
+                    Value::String(format!("{name}: {type_text}"))
+                } else {
+                    Value::String(name.clone())
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn meta_edit_value_name(value: &Value) -> Option<String> {
+    value.as_str().map(ToOwned::to_owned).or_else(|| {
+        value
+            .as_object()
+            .and_then(|object| object.get("name"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
+pub(crate) fn meta_edit_changes_to_inline(value: &Value) -> Result<String, String> {
+    if let Some(text) = value.as_str() {
+        return Ok(text.to_string());
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| "modify changes must be an object or string".to_string())?;
+    Ok(object
+        .iter()
+        .map(|(key, value)| format!("{key}={}", json_value_to_python_string(value)))
+        .collect::<Vec<_>>()
+        .join(", "))
+}
+
+pub(crate) fn meta_edit_tabular_section_from_value(
+    value: &Value,
+) -> Result<MetaCompileTabularSection, String> {
+    if let Some(text) = value.as_str() {
+        return meta_edit_parse_tabular_section(text);
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| "tabular section must be a string or object".to_string())?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "tabular section is missing name".to_string())?;
+    let columns_value = object
+        .get("attrs")
+        .or_else(|| object.get("attributes"))
+        .or_else(|| object.get("реквизиты"));
+    Ok(MetaCompileTabularSection {
+        name: name.to_string(),
+        columns: meta_compile_attributes(columns_value),
+    })
+}
+
+pub(crate) fn meta_edit_enum_value_from_value(
+    value: &Value,
+) -> Result<MetaCompileEnumValue, String> {
+    let mut values = meta_compile_enum_values(Some(&Value::Array(vec![value.clone()])))?;
+    values
+        .pop()
+        .ok_or_else(|| "enum value is missing name".to_string())
+}
+
+pub(crate) fn meta_edit_column_value(value: &Value) -> Value {
+    if let Some(text) = value.as_str() {
+        if let Some((name, reference)) = text.split_once(':') {
+            let mut object = Map::new();
+            object.insert("name".to_string(), Value::String(name.trim().to_string()));
+            object.insert(
+                "references".to_string(),
+                Value::Array(vec![Value::String(reference.trim().to_string())]),
+            );
+            return Value::Object(object);
+        }
+    }
+    value.clone()
+}
+
+pub(crate) fn emit_meta_simple_child<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    name: &str,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    lines.push(format!("{indent}<{tag} uuid=\"{}\">", next_uuid()));
+    lines.push(format!("{indent}\t<Properties>"));
+    lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push(format!("{indent}\t\t<Comment/>"));
+    match tag {
+        "Form" => {
+            lines.push(format!("{indent}\t\t<FormType>Ordinary</FormType>"));
+            lines.push(format!(
+                "{indent}\t\t<IncludeHelpInContents>false</IncludeHelpInContents>"
+            ));
+            lines.push(format!("{indent}\t\t<UsePurposes/>"));
+        }
+        "Template" => {
+            lines.push(format!(
+                "{indent}\t\t<TemplateType>SpreadsheetDocument</TemplateType>"
+            ));
+        }
+        "Command" => {
+            lines.push(format!(
+                "{indent}\t\t<Group>FormNavigationPanelGoTo</Group>"
+            ));
+            lines.push(format!("{indent}\t\t<Representation>Auto</Representation>"));
+            lines.push(format!("{indent}\t\t<ToolTip/>"));
+            lines.push(format!("{indent}\t\t<Picture/>"));
+            lines.push(format!("{indent}\t\t<Shortcut/>"));
+        }
+        _ => {}
+    }
+    lines.push(format!("{indent}\t</Properties>"));
+    lines.push(format!("{indent}</{tag}>"));
 }
 
 pub(crate) fn meta_edit_add_register_record(
@@ -9411,7 +10754,20 @@ pub(crate) fn meta_edit_add_tabular_section_attribute(
         "add-ts-attribute requires Value like Section.Attribute: Type".to_string()
     })?;
     let section_name = section_name.trim();
-    let attr = meta_compile_parse_attr(&Value::String(attr_text.trim().to_string()));
+    meta_edit_add_tabular_section_attribute_value(
+        xml_text,
+        section_name,
+        &Value::String(attr_text.trim().to_string()),
+    )
+}
+
+pub(crate) fn meta_edit_add_tabular_section_attribute_value(
+    xml_text: &mut String,
+    section_name: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let (value, position) = meta_edit_extract_insert_position(value)?;
+    let attr = meta_compile_parse_attr(&value);
     if section_name.is_empty() || attr.name.is_empty() {
         return Err("add-ts-attribute requires Value like Section.Attribute: Type".to_string());
     }
@@ -9419,7 +10775,13 @@ pub(crate) fn meta_edit_add_tabular_section_attribute(
     let mut lines = Vec::new();
     let mut next_uuid = fresh_meta_compile_uuid;
     emit_meta_attribute(&mut lines, "\t\t\t\t\t", &attr, "tabular", &mut next_uuid);
-    meta_edit_insert_tabular_child_object(xml_text, section_name, &lines)
+    meta_edit_insert_tabular_child_object_with_position(
+        xml_text,
+        section_name,
+        "Attribute",
+        &position,
+        &lines,
+    )
 }
 
 pub(crate) fn meta_edit_remove_tabular_section_attribute(
@@ -9573,6 +10935,32 @@ pub(crate) fn meta_edit_modify_top_attribute_properties(
     )
 }
 
+pub(crate) fn meta_edit_modify_top_child_properties(
+    xml_text: &mut String,
+    tag: &str,
+    child_name: &str,
+    raw_changes: &str,
+    target_kind: MetaEditModifyTarget,
+) -> Result<usize, String> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let child_objects = meta_info_child(object, "ChildObjects")
+        .ok_or_else(|| format!("{tag} '{child_name}' not found"))?;
+    let target = meta_info_children(child_objects, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(child_name))
+        .ok_or_else(|| format!("{tag} '{child_name}' not found"))?;
+    if let Some(new_name) = meta_edit_requested_name(raw_changes, target_kind)? {
+        meta_edit_ensure_sibling_name_free(child_objects, tag, target.range(), &new_name, None)?;
+    }
+    let props = meta_info_child(target, "Properties")
+        .ok_or_else(|| format!("{tag} '{child_name}' has no Properties"))?;
+    let range = props.range();
+    drop(doc);
+    meta_edit_modify_properties_range(xml_text, range, raw_changes, target_kind)
+}
+
 pub(crate) fn meta_edit_modify_tabular_section_properties(
     xml_text: &mut String,
     section_name: &str,
@@ -9652,6 +11040,9 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
 #[derive(Clone, Copy)]
 pub(crate) enum MetaEditModifyTarget {
     Attribute,
+    RegisterField,
+    EnumValue,
+    Column,
     TabularSection,
 }
 
@@ -9767,16 +11158,49 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         "name" | "имя" => Ok("Name".to_string()),
         "synonym" | "синоним" => Ok("Synonym".to_string()),
         "comment" | "комментарий" => Ok("Comment".to_string()),
-        "fillchecking" | "fill_checking" | "fill-checking" => Ok("FillChecking".to_string()),
-        "use" | "использование" => Ok("Use".to_string()),
-        "type" | "тип" if matches!(target, MetaEditModifyTarget::Attribute) => {
+        "fillchecking" | "fill_checking" | "fill-checking"
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute
+                    | MetaEditModifyTarget::RegisterField
+                    | MetaEditModifyTarget::TabularSection
+            ) =>
+        {
+            Ok("FillChecking".to_string())
+        }
+        "use" | "использование"
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute
+                    | MetaEditModifyTarget::RegisterField
+                    | MetaEditModifyTarget::TabularSection
+            ) =>
+        {
+            Ok("Use".to_string())
+        }
+        "type" | "тип"
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute | MetaEditModifyTarget::RegisterField
+            ) =>
+        {
             Ok("Type".to_string())
         }
-        "indexing" | "индексирование" if matches!(target, MetaEditModifyTarget::Attribute) => {
+        "indexing" | "индексирование"
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute
+                    | MetaEditModifyTarget::RegisterField
+                    | MetaEditModifyTarget::Column
+            ) =>
+        {
             Ok("Indexing".to_string())
         }
         "allowedsign" | "allowed_sign" | "allowed-sign" | "v8:allowedsign"
-            if matches!(target, MetaEditModifyTarget::Attribute) =>
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute | MetaEditModifyTarget::RegisterField
+            ) =>
         {
             Ok("v8:AllowedSign".to_string())
         }
@@ -9973,6 +11397,26 @@ pub(crate) fn meta_edit_remove_tabular_child_by_name(
     Ok(())
 }
 
+pub(crate) fn meta_edit_remove_top_child_by_name(
+    xml_text: &mut String,
+    tag: &str,
+    name: &str,
+) -> Result<(), String> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let child_objects = meta_info_child(object, "ChildObjects")
+        .ok_or_else(|| format!("{tag} '{name}' not found"))?;
+    let target = meta_info_children(child_objects, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(name))
+        .ok_or_else(|| format!("{tag} '{name}' not found"))?;
+    let range = target.range();
+    drop(doc);
+    meta_edit_remove_xml_node_range(xml_text, range);
+    Ok(())
+}
+
 pub(crate) fn meta_edit_attribute_context(object_type: &str) -> &str {
     match object_type {
         "Catalog" => "catalog",
@@ -10071,6 +11515,33 @@ pub(crate) fn meta_edit_insert_top_child_object(
     meta_edit_insert_child_objects_into_node(xml_text, range, &tag, "\t\t", lines)
 }
 
+pub(crate) fn meta_edit_insert_top_child_object_with_position(
+    xml_text: &mut String,
+    tag: &str,
+    position: &MetaEditInsertPosition,
+    lines: &[String],
+) -> Result<(), String> {
+    if position.is_empty() {
+        return meta_edit_insert_top_child_object(xml_text, lines);
+    }
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let child_objects = meta_info_child(object, "ChildObjects")
+        .ok_or_else(|| "ChildObjects not found for positional insert".to_string())?;
+    let (target_name, after) = position
+        .target()
+        .ok_or_else(|| "Position target must be non-empty".to_string())?;
+    let target = meta_info_children(child_objects, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(target_name))
+        .ok_or_else(|| format!("{tag} '{target_name}' not found for positional insert"))?;
+    let range = target.range();
+    drop(doc);
+    meta_edit_insert_lines_near_node(xml_text, range, after, lines);
+    Ok(())
+}
+
 pub(crate) fn meta_edit_insert_tabular_child_object(
     xml_text: &mut String,
     section_name: &str,
@@ -10090,6 +11561,38 @@ pub(crate) fn meta_edit_insert_tabular_child_object(
         "\t\t\t\t",
         lines,
     )
+}
+
+pub(crate) fn meta_edit_insert_tabular_child_object_with_position(
+    xml_text: &mut String,
+    section_name: &str,
+    tag: &str,
+    position: &MetaEditInsertPosition,
+    lines: &[String],
+) -> Result<(), String> {
+    if position.is_empty() {
+        return meta_edit_insert_tabular_child_object(xml_text, section_name, lines);
+    }
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let section = meta_edit_find_tabular_section(object, section_name)
+        .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
+    let child_objects = meta_info_child(section, "ChildObjects")
+        .ok_or_else(|| format!("TabularSection '{section_name}' has no ChildObjects"))?;
+    let (target_name, after) = position
+        .target()
+        .ok_or_else(|| "Position target must be non-empty".to_string())?;
+    let target = meta_info_children(child_objects, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(target_name))
+        .ok_or_else(|| {
+            format!("{tag} '{section_name}.{target_name}' not found for positional insert")
+        })?;
+    let range = target.range();
+    drop(doc);
+    meta_edit_insert_lines_near_node(xml_text, range, after, lines);
+    Ok(())
 }
 
 pub(crate) fn meta_edit_insert_lines_into_child_objects(
@@ -10114,11 +11617,51 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
         }
         return Err("No closing </ChildObjects> found".to_string());
     };
-    xml_text.insert_str(
-        range.start + relative_pos,
-        &format!("{content}\n{close_indent}"),
-    );
+    let close_pos = range.start + relative_pos;
+    let line_start = xml_text[..close_pos]
+        .rfind('\n')
+        .map_or(close_pos, |index| index + 1);
+    let insert_pos = if xml_text[line_start..close_pos]
+        .chars()
+        .all(|ch| ch == '\t' || ch == ' ')
+    {
+        line_start
+    } else {
+        close_pos
+    };
+    xml_text.insert_str(insert_pos, &format!("{content}\n{close_indent}"));
     Ok(())
+}
+
+pub(crate) fn meta_edit_insert_lines_near_node(
+    xml_text: &mut String,
+    range: std::ops::Range<usize>,
+    after: bool,
+    lines: &[String],
+) {
+    let content = lines.join("\n");
+    if after {
+        if let Some(relative_newline) = xml_text[range.end..].find('\n') {
+            let insert_pos = range.end + relative_newline + 1;
+            xml_text.insert_str(insert_pos, &format!("{content}\n"));
+        } else {
+            xml_text.insert_str(range.end, &format!("\n{content}"));
+        }
+        return;
+    }
+
+    let line_start = xml_text[..range.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let insert_pos = if xml_text[line_start..range.start]
+        .chars()
+        .all(|ch| ch == '\t' || ch == ' ')
+    {
+        line_start
+    } else {
+        range.start
+    };
+    xml_text.insert_str(insert_pos, &format!("{content}\n"));
 }
 
 pub(crate) fn meta_edit_insert_child_objects_into_node(
