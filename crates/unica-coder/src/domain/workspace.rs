@@ -37,7 +37,7 @@ impl WorkspaceContext {
 
 fn find_workspace_root(cwd: &Path) -> Option<PathBuf> {
     for base in cwd.ancestors() {
-        if base.join("v8project.yaml").is_file() || base.join(".git").exists() {
+        if base.join("v8project.yaml").is_file() {
             return Some(base.to_path_buf());
         }
     }
@@ -78,11 +78,41 @@ fn hash_path(hasher: &mut DefaultHasher, root: &Path, rel: &str) {
 #[cfg(test)]
 mod tests {
     use super::WorkspaceContext;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn discovers_workspace_root_and_default_cache_under_build_unica() {
-        let root =
-            std::env::temp_dir().join(format!("unica-workspace-discovery-{}", std::process::id()));
+    fn ignores_parent_git_without_v8project_yaml() {
+        let root = temp_root("unica-workspace-parent-git");
+        let workspace = root.join("workspace");
+        let nested = workspace.join("src/catalogs");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let context = WorkspaceContext::discover(nested.clone()).unwrap();
+
+        assert_eq!(context.workspace_root, nested);
+        assert_ne!(context.workspace_root, root);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn falls_back_to_cwd_without_workspace_marker() {
+        let root = temp_root("unica-workspace-no-marker");
+        let cwd = root.join("workspace").join("src");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let context = WorkspaceContext::discover(cwd.clone()).unwrap();
+
+        assert_eq!(context.workspace_root, cwd);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn v8project_yaml_in_ancestor_defines_workspace_root() {
+        let root = temp_root("unica-workspace-discovery");
         let workspace = root.join("workspace");
         let nested = workspace.join("src/catalogs");
         std::fs::create_dir_all(&nested).unwrap();
@@ -97,5 +127,13 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

@@ -517,8 +517,9 @@ impl IndexLockLease {
         if self.released {
             return;
         }
+        let still_owned = self.current_file_still_owned();
         unregister_active_lock(&self.path, self.lock_id());
-        if self.current_file_still_owned() {
+        if still_owned {
             self.lock.mark_released();
             let _ = write_lock_file_to_open(&mut self.file, &self.lock);
         }
@@ -527,9 +528,15 @@ impl IndexLockLease {
     }
 
     fn current_file_still_owned(&self) -> bool {
-        read_lock_path(&self.path)
-            .map(|index_lock| index_lock.lock_id == self.lock.lock_id)
-            .unwrap_or(false)
+        match read_lock_path(&self.path) {
+            Ok(index_lock) => index_lock.lock_id == self.lock.lock_id,
+            Err(_) => active_index_locks()
+                .lock()
+                .ok()
+                .and_then(|locks| locks.get(&self.path).cloned())
+                .map(|lock_id| lock_id == self.lock.lock_id)
+                .unwrap_or(false),
+        }
     }
 }
 
@@ -1174,17 +1181,13 @@ mod tests {
 
         assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
         assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
+        let backgrounds = runner.backgrounds.borrow();
+        assert_eq!(backgrounds[0].primary.args[0..2], ["index", "build"]);
+        assert_eq!(backgrounds[0].primary.env[0].0, "RLM_INDEX_DIR");
         assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "build"]
+            PathBuf::from(&backgrounds[0].primary.env[0].1),
+            context.cache_root.join(RLM_INDEX_DIR_NAME)
         );
-        assert_eq!(
-            runner.backgrounds.borrow()[0].primary.env[0].0,
-            "RLM_INDEX_DIR"
-        );
-        assert!(runner.backgrounds.borrow()[0].primary.env[0]
-            .1
-            .contains(".build/unica/rlm-tools-bsl"));
         assert!(status_path(&context).is_file());
         cleanup(&context);
     }
@@ -1427,16 +1430,24 @@ mod tests {
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
             source_root: context.workspace_root.join("src"),
-            primary: shell_command(
+            primary: print_lines_command(
                 &context.workspace_root,
-                "sleep 0.01; printf '%s\n' 'Index built in 1.2s' '  Index:    v14' '  Modules:  24' '  Methods:  617' '  DB size:  1.3 MB'",
+                true,
+                &[
+                    "Index built in 1.2s".to_string(),
+                    "  Index:    v14".to_string(),
+                    "  Modules:  24".to_string(),
+                    "  Methods:  617".to_string(),
+                    "  DB size:  1.3 MB".to_string(),
+                ],
             ),
-            info: shell_command(
+            info: print_lines_command(
                 &context.workspace_root,
-                format!(
-                    "printf '%s\n' 'Index: {}' '  Status:   fresh'",
-                    db_path.display()
-                ),
+                false,
+                &[
+                    format!("Index: {}", db_path.display()),
+                    "  Status:   fresh".to_string(),
+                ],
             ),
             status_path: status.clone(),
             lock_path: lock.clone(),
@@ -1641,14 +1652,69 @@ mod tests {
         }
     }
 
-    fn shell_command(cwd: &Path, script: impl Into<String>) -> IndexCommand {
-        IndexCommand {
-            program: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_string(), script.into()],
-            cwd: cwd.to_path_buf(),
-            env: Vec::new(),
-            timeout: Duration::from_secs(5),
+    fn print_lines_command(cwd: &Path, sleep_first: bool, lines: &[String]) -> IndexCommand {
+        #[cfg(windows)]
+        {
+            let mut script = String::new();
+            if sleep_first {
+                script.push_str("Start-Sleep -Milliseconds 20; ");
+            }
+            for line in lines {
+                script.push_str("[Console]::Out.WriteLine('");
+                script.push_str(&line.replace('\'', "''"));
+                script.push_str("'); ");
+            }
+            return IndexCommand {
+                program: PathBuf::from("powershell"),
+                args: vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+                cwd: cwd.to_path_buf(),
+                env: Vec::new(),
+                timeout: Duration::from_secs(5),
+            };
         }
+
+        #[cfg(not(windows))]
+        {
+            let mut script = String::new();
+            if sleep_first {
+                script.push_str("sleep 0.01; ");
+            }
+            script.push_str("printf '%s\\n'");
+            for line in lines {
+                script.push_str(" '");
+                script.push_str(&line.replace('\'', "'\\''"));
+                script.push('\'');
+            }
+            IndexCommand {
+                program: PathBuf::from("/bin/sh"),
+                args: vec!["-c".to_string(), script],
+                cwd: cwd.to_path_buf(),
+                env: Vec::new(),
+                timeout: Duration::from_secs(5),
+            }
+        }
+    }
+
+    fn make_lock_file_old(context: &WorkspaceContext) {
+        #[cfg(windows)]
+        let status = {
+            let path = lock_path(context).display().to_string().replace('\'', "''");
+            let script = format!(
+                "(Get-Item -LiteralPath '{path}').LastWriteTimeUtc = [datetime]'2000-01-01T00:00:00Z'"
+            );
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command"])
+                .arg(script)
+                .status()
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let status = std::process::Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(lock_path(context))
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     fn test_context(name: &str) -> WorkspaceContext {
@@ -1700,50 +1766,27 @@ mod tests {
         .unwrap();
     }
 
-    fn write_fresh_lock(context: &WorkspaceContext, action: &str) {
-        fs::create_dir_all(lock_path(context).parent().unwrap()).unwrap();
-        let text = serde_json::json!({
-            "schema_version": 1,
-            "lock_id": new_lock_id(),
-            "owner_pid": std::process::id(),
-            "action": action,
-            "source_root": context.workspace_root.join("src").display().to_string(),
-            "started_at": now_secs(),
-            "updated_at": now_secs()
-        });
-        fs::write(
-            lock_path(context),
-            serde_json::to_string_pretty(&text).unwrap() + "\n",
-        )
-        .unwrap();
-    }
-
     fn write_stale_lock(context: &WorkspaceContext, action: &str) {
         fs::create_dir_all(lock_path(context).parent().unwrap()).unwrap();
-        let stale = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
-        let text = serde_json::json!({
-            "schema_version": 1,
-            "lock_id": new_lock_id(),
-            "owner_pid": std::process::id(),
-            "action": action,
-            "source_root": context.workspace_root.join("src").display().to_string(),
-            "started_at": stale,
-            "updated_at": stale
-        });
-        fs::write(
-            lock_path(context),
-            serde_json::to_string_pretty(&text).unwrap() + "\n",
-        )
-        .unwrap();
+        let mut lock = BslIndexLock::new(action, &context.workspace_root.join("src"));
+        lock.started_at = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
+        lock.updated_at = lock.started_at;
+        write_lock_path(&lock_path(context), lock).unwrap();
+    }
+
+    fn write_fresh_lock(context: &WorkspaceContext, action: &str) {
+        fs::create_dir_all(lock_path(context).parent().unwrap()).unwrap();
+        let lock = BslIndexLock::new(action, &context.workspace_root.join("src"));
+        write_lock_path(&lock_path(context), lock).unwrap();
     }
 
     fn write_released_lock(context: &WorkspaceContext, action: &str) {
         fs::create_dir_all(lock_path(context).parent().unwrap()).unwrap();
         let now = now_secs();
         let text = serde_json::json!({
-            "schema_version": 1,
-            "lock_id": new_lock_id(),
-            "owner_pid": std::process::id(),
+            "schema_version": LOCK_SCHEMA_VERSION,
+            "lock_id": "released",
+            "owner_pid": 999999,
             "action": action,
             "source_root": context.workspace_root.join("src").display().to_string(),
             "started_at": now,
@@ -1763,15 +1806,6 @@ mod tests {
             BslIndexStatus::building(action, Some(&context.workspace_root.join("src")));
         status.updated_at = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
         write_status(context, status).unwrap();
-    }
-
-    fn make_lock_file_old(context: &WorkspaceContext) {
-        let status = std::process::Command::new("touch")
-            .args(["-t", "200001010000"])
-            .arg(lock_path(context))
-            .status()
-            .unwrap();
-        assert!(status.success());
     }
 
     fn cleanup(context: &WorkspaceContext) {

@@ -277,10 +277,19 @@ fn push_existing(evidence: &mut Vec<String>, workspace_root: &Path, path: &Path)
 }
 
 fn path_relative_to(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    let path = path
+        .strip_prefix(root)
         .unwrap_or(path)
         .display()
-        .to_string()
+        .to_string();
+    #[cfg(windows)]
+    {
+        path.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
 }
 
 fn source_set_kind_from_config(raw: &str) -> Result<SourceSetKind, String> {

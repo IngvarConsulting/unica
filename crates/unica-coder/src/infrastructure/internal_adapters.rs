@@ -4437,10 +4437,25 @@ mod tests {
 
     #[test]
     fn system_process_runner_does_not_timeout_when_timeout_is_none() {
+        #[cfg(windows)]
+        let (program, args) = (
+            PathBuf::from("powershell"),
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "[Console]::Write('ok')".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            PathBuf::from("sh"),
+            vec!["-c".to_string(), "printf ok".to_string()],
+        );
+
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
-                program: PathBuf::from("sh"),
-                args: vec!["-c".to_string(), "printf ok".to_string()],
+                program,
+                args,
                 cwd: std::env::current_dir().unwrap(),
                 timeout: None,
             })
