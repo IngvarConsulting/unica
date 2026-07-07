@@ -2033,6 +2033,59 @@ mod tests {
     }
 
     #[test]
+    fn cf_edit_child_object_roundtrip_preserves_trailing_blank_lines() {
+        fn trailer_after_root(text: &str) -> &str {
+            let marker = "</MetaDataObject>";
+            let root_end = text.rfind(marker).unwrap() + marker.len();
+            &text[root_end..]
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("unica-cf-issue55-trailer-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let catalogs = src.join("Catalogs");
+        std::fs::create_dir_all(&catalogs).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        let before = format!("{}\r\n\r\n", cf_edit_issue55_config_xml("\t\t\t\t\t"));
+        assert_eq!(trailer_after_root(&before), "\r\n\r\n\r\n");
+        std::fs::write(&config_path, before.as_bytes()).unwrap();
+        std::fs::write(
+            catalogs.join("Валюты.xml"),
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+
+        let remove = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "remove-childObject", "Catalog.Валюты"),
+            )
+            .unwrap();
+        assert!(remove.ok, "{remove:?}");
+        let after_remove = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(trailer_after_root(&after_remove), "\r\n\r\n\r\n");
+
+        let add = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
+            )
+            .unwrap();
+        assert!(add.ok, "{add:?}");
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after, before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cf_edit_duplicate_add_child_object_does_not_rewrite_configuration() {
         let root =
             std::env::temp_dir().join(format!("unica-cf-issue55-noop-{}", std::process::id()));
