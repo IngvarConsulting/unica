@@ -1898,7 +1898,7 @@ pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {
 }
 
 pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, Vec<PathBuf>), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, Vec<PathBuf>, bool), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -1926,6 +1926,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let mut modify_count = 0usize;
         let mut stdout = format!("[INFO] Configuration: {obj_name}\n");
         let mut artifacts = vec![config_path.clone()];
+        let mut config_changed = false;
 
         for (op_name, op_value) in operations {
             match op_name.as_str() {
@@ -1949,12 +1950,12 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                             cf_edit_scalar_property_xml(prop_name, prop_value)
                         };
                         text = cf_edit_replace_property(&text, prop_name, &replacement)?;
+                        config_changed = true;
                         modify_count += 1;
                         stdout.push_str(&format!("[INFO] Set {prop_name} = \"{prop_value}\"\n"));
                     }
                 }
                 "remove-childObject" => {
-                    let mut children = cf_edit_child_objects(&text)?;
                     for item in cf_edit_batch_value(&op_value) {
                         let Some(dot_idx) = item.find('.') else {
                             return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
@@ -1964,11 +1965,9 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         }
                         let type_name = item[..dot_idx].to_string();
                         let obj_name_val = item[dot_idx + 1..].to_string();
-                        if let Some(index) = children.iter().position(|(child_type, child_name)| {
-                            child_type == &type_name && child_name == &obj_name_val
-                        }) {
-                            children.remove(index);
+                        if cf_edit_remove_child_object_text(&mut text, &type_name, &obj_name_val)? {
                             remove_count += 1;
+                            config_changed = true;
                             stdout
                                 .push_str(&format!("[INFO] Removed: {type_name}.{obj_name_val}\n"));
                         } else {
@@ -1977,11 +1976,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                             ));
                         }
                     }
-                    children.sort_by(cf_edit_child_object_cmp);
-                    text = cf_edit_replace_child_objects(&text, &children)?;
                 }
                 "add-childObject" => {
-                    let mut children = cf_edit_child_objects(&text)?;
                     for item in cf_edit_batch_value(&op_value) {
                         let Some(dot_idx) = item.find('.') else {
                             return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
@@ -2012,20 +2008,16 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                                    /{hint_skill} with {{\"type\":\"{type_name}\",\"name\":\"{obj_name_val}\"}}"
                             ));
                         }
-                        if children.iter().any(|(child_type, child_name)| {
-                            child_type == &type_name && child_name == &obj_name_val
-                        }) {
+                        if cf_edit_add_child_object_text(&mut text, &type_name, &obj_name_val)? {
+                            add_count += 1;
+                            config_changed = true;
+                            stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
+                        } else {
                             stdout.push_str(&format!(
                                 "[WARN] Already exists: {type_name}.{obj_name_val}\n"
                             ));
-                        } else {
-                            children.push((type_name.clone(), obj_name_val.clone()));
-                            add_count += 1;
-                            stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
                         }
                     }
-                    children.sort_by(cf_edit_child_object_cmp);
-                    text = cf_edit_replace_child_objects(&text, &children)?;
                 }
                 "set-defaultRoles" => {
                     let roles = cf_edit_batch_value(&op_value)
@@ -2033,6 +2025,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         .map(|role| cf_edit_role_ref(&role))
                         .collect::<Vec<_>>();
                     text = cf_edit_replace_default_roles(&text, &roles)?;
+                    config_changed = true;
                     modify_count += 1;
                     if roles.is_empty() {
                         stdout.push_str("[INFO] Cleared DefaultRoles\n");
@@ -2056,6 +2049,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
+                    config_changed = true;
                 }
                 "remove-defaultRole" => {
                     let mut roles = cf_edit_default_roles(&text)?;
@@ -2073,6 +2067,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
+                    config_changed = true;
                 }
                 "set-panels" => {
                     let path = cf_edit_set_panels(&op_value, &config_dir)?;
@@ -2093,11 +2088,12 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
             }
         }
 
-        write_utf8_bom(
-            &config_path,
-            &lxml_tree_serialized_text_like_source(&text, &source_text),
-        )?;
-        stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
+        if config_changed {
+            write_utf8_bom(&config_path, &cf_edit_serialized_text(&text, &source_text))?;
+            stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
+        } else {
+            stdout.push_str("[INFO] No Configuration.xml changes\n");
+        }
 
         if !bool_arg(args, &["noValidate", "NoValidate"]) {
             stdout.push('\n');
@@ -2118,24 +2114,35 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         stdout.push_str(&format!("  Added:         {add_count}\n"));
         stdout.push_str(&format!("  Removed:       {remove_count}\n"));
         stdout.push_str(&format!("  Modified:      {modify_count}\n"));
-        Ok((stdout, config_path, artifacts))
+        Ok((stdout, config_path, artifacts, config_changed))
     })();
 
     match edit_result {
-        Ok((stdout, config_path, artifacts)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
-            changes: vec![format!("updated {}", config_path.display())],
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: artifacts
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
-        },
+        Ok((stdout, config_path, artifacts, config_changed)) => {
+            let mut changes = Vec::new();
+            if config_changed {
+                changes.push(format!("updated {}", config_path.display()));
+            }
+            for artifact in &artifacts {
+                if artifact != &config_path {
+                    changes.push(format!("updated {}", artifact.display()));
+                }
+            }
+            AdapterOutcome {
+                ok: true,
+                summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
+                changes,
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: artifacts
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                stdout: Some(stdout),
+                stderr: None,
+                command: None,
+            }
+        }
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
@@ -2334,6 +2341,19 @@ pub(crate) fn cf_edit_role_ref(role: &str) -> String {
     }
 }
 
+pub(crate) fn cf_edit_serialized_text(text: &str, source_text: &str) -> String {
+    let mut output = lxml_tree_serialized_text_like_source(text, source_text);
+    let source_has_trailing_newline = source_text.ends_with('\n') || source_text.ends_with('\r');
+    if !source_has_trailing_newline {
+        if output.ends_with("\r\n") {
+            output.truncate(output.len() - 2);
+        } else if output.ends_with('\n') {
+            output.pop();
+        }
+    }
+    output
+}
+
 pub(crate) fn cf_edit_child_objects(text: &str) -> Result<Vec<(String, String)>, String> {
     let Some((_, _, body_range)) = cf_edit_element_range(text, "ChildObjects") else {
         return Err("No <ChildObjects> element found".to_string());
@@ -2372,6 +2392,171 @@ pub(crate) fn cf_edit_child_objects(text: &str) -> Result<Vec<(String, String)>,
         offset = value_end + close.len();
     }
     Ok(result)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CfEditChildObjectEntry {
+    pub(crate) type_name: String,
+    pub(crate) object_name: String,
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) line_range: std::ops::Range<usize>,
+}
+
+pub(crate) fn cf_edit_child_object_entries(
+    text: &str,
+) -> Result<Vec<CfEditChildObjectEntry>, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let child_objects = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+        .ok_or_else(|| "No <ChildObjects> element found".to_string())?;
+    let mut entries = Vec::new();
+    for child in child_objects.children().filter(|node| node.is_element()) {
+        let range = child.range();
+        let line_start = text[..range.start].rfind('\n').map_or(0, |pos| pos + 1);
+        let prefix_is_indent = text[line_start..range.start]
+            .chars()
+            .all(|ch| ch == '\t' || ch == ' ');
+        let start = if prefix_is_indent {
+            line_start
+        } else {
+            range.start
+        };
+        let end = if text[range.end..].starts_with('\n') {
+            range.end + 1
+        } else {
+            range.end
+        };
+        entries.push(CfEditChildObjectEntry {
+            type_name: child.tag_name().name().to_string(),
+            object_name: unescape_xml(child.text().unwrap_or("").trim()),
+            range,
+            line_range: start..end,
+        });
+    }
+    Ok(entries)
+}
+
+pub(crate) fn cf_edit_line_indent(text: &str, index: usize) -> Option<String> {
+    let line_start = text[..index].rfind('\n').map_or(0, |pos| pos + 1);
+    let indent = &text[line_start..index];
+    if indent.chars().all(|ch| ch == '\t' || ch == ' ') {
+        Some(indent.to_string())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn cf_edit_child_name_key(value: &str) -> String {
+    value.chars().flat_map(char::to_lowercase).collect()
+}
+
+pub(crate) fn cf_edit_child_name_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    cf_edit_child_name_key(left)
+        .cmp(&cf_edit_child_name_key(right))
+        .then_with(|| left.cmp(right))
+}
+
+pub(crate) fn cf_edit_child_object_line(
+    type_name: &str,
+    object_name: &str,
+    indent: &str,
+) -> String {
+    format!(
+        "{indent}<{type_name}>{}</{type_name}>\n",
+        escape_xml(object_name)
+    )
+}
+
+pub(crate) fn cf_edit_remove_child_object_text(
+    text: &mut String,
+    type_name: &str,
+    object_name: &str,
+) -> Result<bool, String> {
+    let entries = cf_edit_child_object_entries(text)?;
+    let Some(entry) = entries
+        .into_iter()
+        .find(|entry| entry.type_name == type_name && entry.object_name == object_name)
+    else {
+        return Ok(false);
+    };
+    text.replace_range(entry.line_range, "");
+    Ok(true)
+}
+
+pub(crate) fn cf_edit_add_child_object_text(
+    text: &mut String,
+    type_name: &str,
+    object_name: &str,
+) -> Result<bool, String> {
+    let Some((child_start, child_end, body_range)) = cf_edit_element_range(text, "ChildObjects")
+    else {
+        return Err("No <ChildObjects> element found".to_string());
+    };
+    let entries = cf_edit_child_object_entries(text)?;
+    if entries
+        .iter()
+        .any(|entry| entry.type_name == type_name && entry.object_name == object_name)
+    {
+        return Ok(false);
+    }
+
+    let new_type_index = cf_validate_child_object_type_index(type_name).unwrap_or(usize::MAX);
+    let target = entries.iter().find(|entry| {
+        let entry_type_index =
+            cf_validate_child_object_type_index(&entry.type_name).unwrap_or(usize::MAX);
+        entry_type_index > new_type_index
+            || (entry_type_index == new_type_index
+                && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())
+    });
+
+    if let Some(target) = target {
+        let indent =
+            cf_edit_line_indent(text, target.range.start).unwrap_or_else(|| "\t\t\t".to_string());
+        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        text.insert_str(target.line_range.start, &line);
+        return Ok(true);
+    }
+
+    if let Some(last) = entries.last() {
+        let indent =
+            cf_edit_line_indent(text, last.range.start).unwrap_or_else(|| "\t\t\t".to_string());
+        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        text.insert_str(last.line_range.end, &line);
+        return Ok(true);
+    }
+
+    let Some((body_start, body_end)) = body_range else {
+        let open_indent = cf_edit_line_indent(text, child_start).unwrap_or_default();
+        let child_indent = format!("{open_indent}\t");
+        let close_indent = open_indent;
+        let replacement = format!(
+            "<ChildObjects>\n{}{}</ChildObjects>",
+            cf_edit_child_object_line(type_name, object_name, &child_indent),
+            close_indent
+        );
+        text.replace_range(child_start..child_end, &replacement);
+        return Ok(true);
+    };
+
+    let close_line_start = text[..body_end].rfind('\n').map_or(body_end, |pos| pos + 1);
+    let close_indent = if text[close_line_start..body_end]
+        .chars()
+        .all(|ch| ch == '\t' || ch == ' ')
+    {
+        text[close_line_start..body_end].to_string()
+    } else {
+        cf_edit_line_indent(text, child_start).unwrap_or_default()
+    };
+    let child_indent = format!("{close_indent}\t");
+    let line = cf_edit_child_object_line(type_name, object_name, &child_indent);
+    if body_start == body_end {
+        text.insert_str(body_start, &format!("\n{line}{close_indent}"));
+    } else {
+        text.insert_str(close_line_start, &line);
+    }
+    Ok(true)
 }
 
 pub(crate) fn cf_edit_replace_child_objects(

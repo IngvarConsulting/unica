@@ -371,7 +371,7 @@ fn call_tool(
 }
 
 fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
-    spec.mutating && (dry_run || outcome.ok)
+    spec.mutating && (dry_run || (outcome.ok && !outcome.changes.is_empty()))
 }
 
 fn runtime_result_diagnostics(
@@ -1367,6 +1367,34 @@ mod tests {
     }
 
     #[test]
+    fn mutating_native_noop_does_not_emit_cache_events() {
+        let mut outcome = AdapterOutcome::ok("no changes");
+        outcome.changes = Vec::new();
+        let spec = ToolSpec {
+            name: "unica.cf.edit",
+            description: "test",
+            mutating: true,
+            cache_access: cache_access_for("cf-edit", Some(DomainEventKind::ConfigXmlChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "cf-edit",
+                event: Some(DomainEventKind::ConfigXmlChanged),
+            },
+        };
+
+        assert!(!should_emit_events(spec, false, &outcome));
+
+        outcome
+            .changes
+            .push("updated Configuration.xml".to_string());
+        assert!(should_emit_events(spec, false, &outcome));
+        assert!(should_emit_events(
+            spec,
+            true,
+            &AdapterOutcome::ok("dry run")
+        ));
+    }
+
+    #[test]
     fn runtime_failure_result_includes_structured_exit_diagnostics() {
         let root = test_workspace_root("runtime-exit-diagnostics");
         let result = call_runtime_with_outcome(
@@ -1852,6 +1880,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn cf_edit_args(
+        workspace: &std::path::Path,
+        operation: &str,
+        value: &str,
+    ) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String(operation.to_string()),
+        );
+        args.insert("Value".to_string(), Value::String(value.to_string()));
+        args.insert("NoValidate".to_string(), Value::Bool(true));
+        args
+    }
+
+    fn cf_edit_issue55_config_xml(child_indent: &str) -> String {
+        format!(
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.17\">\r\n",
+                "\t<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">\r\n",
+                "\t\t<Properties>\r\n",
+                "\t\t\t<Name>Issue55</Name>\r\n",
+                "\t\t</Properties>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "{0}<StyleItem>НепринятаяВерсия</StyleItem>\r\n",
+                "{0}<StyleItem>НеПринятыеКИсполнениюЗадачи</StyleItem>\r\n",
+                "{0}<StyleItem>НерабочийПериодПроизводственногоКалендаряФон</StyleItem>\r\n",
+                "{0}<CommonPicture>Минимум</CommonPicture>\r\n",
+                "{0}<CommonPicture>МЧДАктивна</CommonPicture>\r\n",
+                "{0}<Catalog>Валюты</Catalog>\r\n",
+                "{0}<Catalog>ВариантыОтветовАнкет</Catalog>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Configuration>\r\n",
+                "</MetaDataObject>\r\n"
+            ),
+            child_indent
+        )
+    }
+
     #[test]
     fn cf_edit_add_child_object_does_not_escape_structural_crlf() {
         let root = std::env::temp_dir().join(format!("unica-cf-child-crlf-{}", std::process::id()));
@@ -1910,6 +1984,93 @@ mod tests {
                 .all(|(index, _)| index > 0 && after_bytes[index - 1] == b'\r'),
             "{after}"
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cf_edit_remove_add_child_object_preserves_neighboring_childobjects() {
+        let root =
+            std::env::temp_dir().join(format!("unica-cf-issue55-roundtrip-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let catalogs = src.join("Catalogs");
+        std::fs::create_dir_all(&catalogs).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        let before = cf_edit_issue55_config_xml("\t\t\t\t\t");
+        std::fs::write(&config_path, before.as_bytes()).unwrap();
+        std::fs::write(
+            catalogs.join("Валюты.xml"),
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+
+        let remove = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "remove-childObject", "Catalog.Валюты"),
+            )
+            .unwrap();
+        assert!(remove.ok, "{remove:?}");
+
+        let add = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
+            )
+            .unwrap();
+        assert!(add.ok, "{add:?}");
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after, before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cf_edit_duplicate_add_child_object_does_not_rewrite_configuration() {
+        let root =
+            std::env::temp_dir().join(format!("unica-cf-issue55-noop-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let catalogs = src.join("Catalogs");
+        std::fs::create_dir_all(&catalogs).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        let before = cf_edit_issue55_config_xml("\t\t\t\t\t");
+        std::fs::write(&config_path, before.as_bytes()).unwrap();
+        std::fs::write(
+            catalogs.join("Валюты.xml"),
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
+            )
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.changes.is_empty(), "{result:?}");
+        assert!(result.cache.events.is_empty(), "{result:?}");
+        let stdout = result.stdout.unwrap_or_default();
+        assert!(
+            stdout.contains("[WARN] Already exists: Catalog.Валюты"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
     }

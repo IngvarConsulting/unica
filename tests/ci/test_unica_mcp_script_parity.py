@@ -705,7 +705,9 @@ SUCCESS_SCENARIOS = [
             FileFixture("cf-edit/ops.json", "fixtures/cf-edit-ops.json"),
         ),
         expect_ok=True,
-        compare_files=True,
+        # Native cf.edit preserves Configuration.xml text for child-object edits;
+        # the donor script still rewrites the XML and is no longer a byte oracle.
+        compare_files=False,
     ),
     ParityScenario(
         name="meta-compile-catalog",
@@ -4005,6 +4007,59 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertGreater(len(scenarios), 0)
                 if tool in BSP_MUTATING_REQUIRED_TOOLS:
                     self.assertTrue(any(scenario.compare_files for scenario in scenarios))
+
+    def test_cf_edit_child_object_round_trip_preserves_bsp_configuration_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="unica-issue55-bsp-") as temp:
+            temp_root = Path(temp)
+            workspace = temp_root / "workspace"
+            cache = temp_root / "cache"
+            (workspace / "src" / "Catalogs").mkdir(parents=True)
+            config_path = workspace / "src" / "Configuration.xml"
+            shutil.copyfile(FIXTURES_ROOT / BSP_CF_CONFIGURATION_FIXTURE, config_path)
+            shutil.copyfile(
+                FIXTURES_ROOT / BSP_META_CATALOG_FIXTURE,
+                workspace / "src" / "Catalogs" / "Валюты.xml",
+            )
+            before = config_path.read_bytes()
+
+            remove = self.call_mcp_tool(
+                "unica.cf.edit",
+                {
+                    "ConfigPath": "src/Configuration.xml",
+                    "Operation": "remove-childObject",
+                    "Value": "Catalog.Валюты",
+                    "NoValidate": True,
+                },
+                workspace,
+                cache,
+            )
+            self.assertTrue(remove["ok"], json.dumps(remove, ensure_ascii=False, indent=2))
+
+            add = self.call_mcp_tool(
+                "unica.cf.edit",
+                {
+                    "ConfigPath": "src/Configuration.xml",
+                    "Operation": "add-childObject",
+                    "Value": "Catalog.Валюты",
+                    "NoValidate": True,
+                },
+                workspace,
+                cache,
+            )
+            self.assertTrue(add["ok"], json.dumps(add, ensure_ascii=False, indent=2))
+
+            validate = self.call_mcp_tool(
+                "unica.cf.validate",
+                {
+                    "ConfigPath": "src/Configuration.xml",
+                    "Detailed": True,
+                    "MaxErrors": 20,
+                },
+                workspace,
+                cache,
+            )
+            self.assertTrue(validate["ok"], json.dumps(validate, ensure_ascii=False, indent=2))
+            self.assertEqual(config_path.read_bytes(), before)
 
     def test_bsp_skd_edit_parity_covers_documented_operations(self) -> None:
         covered = set()
