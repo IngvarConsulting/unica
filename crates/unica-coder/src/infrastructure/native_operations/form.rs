@@ -7,6 +7,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1944,7 +1945,7 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
         let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
         let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(form_name);
         let purpose_raw = string_arg(args, &["purpose", "Purpose"]).unwrap_or("Object");
-        let set_default = bool_arg(args, &["setDefault", "SetDefault"]);
+        let set_default = optional_bool_arg(args, &["setDefault", "SetDefault"]);
 
         let object_xml_full =
             resolve_form_add_object_path(absolutize(object_path_raw, &context.cwd))?;
@@ -2017,18 +2018,35 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
         object_text = register_form_in_object_text(&object_text, form_name);
         let default_prop_name = form_default_property(&object_type, &purpose);
         let default_value = format!("{object_type}.{object_name}.Form.{form_name}");
-        let default_updated =
-            if set_default || object_text.contains(&format!("<{default_prop_name}/>")) {
-                let (updated_text, updated) =
-                    replace_form_default_property(&object_text, default_prop_name, &default_value);
+        let default_updated = match set_default {
+            Some(false) => false,
+            Some(true) => {
+                let (updated_text, updated) = replace_form_default_property(
+                    &object_text,
+                    default_prop_name,
+                    &default_value,
+                    true,
+                );
                 object_text = updated_text;
                 updated
-            } else {
-                false
-            };
+            }
+            None => {
+                let (updated_text, updated) = replace_form_default_property(
+                    &object_text,
+                    default_prop_name,
+                    &default_value,
+                    false,
+                );
+                object_text = updated_text;
+                updated
+            }
+        };
         write_utf8_bom(
             &object_xml_full,
-            &lxml_tree_serialized_text_like_source(&object_text, &object_source_text),
+            &lxml_tree_serialized_text_like_source_preserving_final_newline(
+                &object_text,
+                &object_source_text,
+            ),
         )?;
 
         let obj_dir_name = object_xml_full
@@ -2154,16 +2172,21 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
         ));
         changes.push(format!("removed file {}", form_meta_path.display()));
 
-        let xml_text = fs::read_to_string(&root_xml_path)
+        let source_xml_text = fs::read_to_string(&root_xml_path)
             .map_err(|err| format!("failed to read {}: {err}", root_xml_path.display()))?;
         let form_ref_suffix = format!("Form.{form_name}");
         let (xml_text, removed_form_refs) =
-            remove_form_reference_elements(&xml_text, &form_ref_suffix);
+            remove_form_reference_elements(&source_xml_text, &form_ref_suffix);
         let (mut xml_text, cleared_form_slots) =
             clear_form_slot_references(&xml_text, &form_ref_suffix);
-        if !xml_text.ends_with('\n') {
-            xml_text.push('\n');
+        if !cleared_form_slots.is_empty() {
+            let tags = cleared_form_slots
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            xml_text = collapse_empty_xml_elements(&xml_text, &tags);
         }
+        xml_text = preserve_source_final_newline(xml_text, &source_xml_text);
         if removed_form_refs > 0 {
             changes.push(format!("removed {removed_form_refs} Form reference(s)"));
         }
@@ -2207,7 +2230,8 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
 }
 
 pub(crate) fn remove_form_reference_elements(xml_text: &str, suffix: &str) -> (String, usize) {
-    rewrite_simple_form_references(xml_text, suffix, true)
+    remove_form_reference_elements_with_parent_context(xml_text, suffix)
+        .unwrap_or_else(|| rewrite_simple_form_references(xml_text, suffix, true))
 }
 
 pub(crate) fn clear_form_slot_references(xml_text: &str, suffix: &str) -> (String, Vec<String>) {
@@ -2324,6 +2348,147 @@ fn rewrite_simple_form_references(
     }
     result.push_str(&xml_text[cursor..]);
     (result, changed)
+}
+
+#[derive(Debug)]
+struct XmlTextReplacement {
+    range: Range<usize>,
+    replacement: String,
+}
+
+fn remove_form_reference_elements_with_parent_context(
+    xml_text: &str,
+    suffix: &str,
+) -> Option<(String, usize)> {
+    let parse_text = xml_text.trim_start_matches('\u{feff}');
+    let offset = xml_text.len() - parse_text.len();
+    let doc = Document::parse(parse_text).ok()?;
+    let short_name = suffix
+        .rsplit_once('.')
+        .map(|(_, name)| name)
+        .unwrap_or(suffix);
+    let mut replacements = Vec::new();
+
+    for node in doc.descendants().filter(|node| node.is_element()) {
+        if node.tag_name().name() != "Form" {
+            continue;
+        }
+        let trimmed = node.text().unwrap_or("").trim();
+        if trimmed != short_name && !trimmed.ends_with(suffix) {
+            continue;
+        }
+        let range = offset_xml_range(node.range(), offset);
+        let parent = node.parent()?;
+        if parent.is_element()
+            && parent.tag_name().name() == "ChildObjects"
+            && parent.children().all(|child| {
+                child == node || (child.is_text() && child.text().unwrap_or("").trim().is_empty())
+            })
+        {
+            let parent_range = offset_xml_range(parent.range(), offset);
+            replacements.push(XmlTextReplacement {
+                replacement: self_closing_xml_element(xml_text, &parent_range)?,
+                range: parent_range,
+            });
+        } else {
+            replacements.push(XmlTextReplacement {
+                range: xml_element_line_range(xml_text, range),
+                replacement: String::new(),
+            });
+        }
+    }
+
+    if replacements.is_empty() {
+        return Some((xml_text.to_string(), 0));
+    }
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.range.start));
+    let mut updated = xml_text.to_string();
+    for replacement in &replacements {
+        updated.replace_range(replacement.range.clone(), &replacement.replacement);
+    }
+    Some((updated, replacements.len()))
+}
+
+fn offset_xml_range(range: Range<usize>, offset: usize) -> Range<usize> {
+    range.start + offset..range.end + offset
+}
+
+fn xml_element_line_range(xml_text: &str, range: Range<usize>) -> Range<usize> {
+    let line_start = xml_text[..range.start].rfind('\n').map_or(0, |pos| pos + 1);
+    let prefix_is_indent = xml_text[line_start..range.start]
+        .chars()
+        .all(|ch| ch == '\t' || ch == ' ');
+    let start = if prefix_is_indent {
+        line_start
+    } else {
+        range.start
+    };
+    let rest = &xml_text[range.end..];
+    let end = if rest.starts_with("\r\n") {
+        range.end + 2
+    } else if rest.starts_with('\n') || rest.starts_with('\r') {
+        range.end + 1
+    } else {
+        range.end
+    };
+    start..end
+}
+
+fn self_closing_xml_element(xml_text: &str, range: &Range<usize>) -> Option<String> {
+    let open_end = range.start + xml_text[range.start..].find('>')?;
+    let raw_tag = &xml_text[range.start + 1..open_end];
+    Some(format!("<{}/>", raw_tag.trim_end()))
+}
+
+fn collapse_empty_xml_elements(xml_text: &str, local_names: &[&str]) -> String {
+    let mut result = String::with_capacity(xml_text.len());
+    let mut cursor = 0;
+    while let Some(open_rel) = xml_text[cursor..].find('<') {
+        let open_start = cursor + open_rel;
+        let Some(open_end_rel) = xml_text[open_start..].find('>') else {
+            break;
+        };
+        let open_end = open_start + open_end_rel;
+        let raw_tag = &xml_text[open_start + 1..open_end];
+        if raw_tag.starts_with('/')
+            || raw_tag.starts_with('?')
+            || raw_tag.starts_with('!')
+            || raw_tag.trim_end().ends_with('/')
+        {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        }
+        let tag = raw_tag.split_whitespace().next().unwrap_or("");
+        let local_name = tag.rsplit_once(':').map(|(_, name)| name).unwrap_or(tag);
+        if !local_names.contains(&local_name) {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        }
+        let close = format!("</{tag}>");
+        let content_start = open_end + 1;
+        let Some(close_rel) = xml_text[content_start..].find(&close) else {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        };
+        let close_start = content_start + close_rel;
+        let close_end = close_start + close.len();
+        let content = &xml_text[content_start..close_start];
+        if !content.trim().is_empty() {
+            result.push_str(&xml_text[cursor..=open_end]);
+            cursor = open_end + 1;
+            continue;
+        }
+        result.push_str(&xml_text[cursor..open_start]);
+        result.push('<');
+        result.push_str(raw_tag.trim_end());
+        result.push_str("/>");
+        cursor = close_end;
+    }
+    result.push_str(&xml_text[cursor..]);
+    result
 }
 
 fn skip_xml_whitespace(xml_text: &str, mut cursor: usize) -> usize {
@@ -3228,6 +3393,7 @@ pub(crate) fn replace_form_default_property(
     text: &str,
     prop_name: &str,
     default_value: &str,
+    overwrite: bool,
 ) -> (String, bool) {
     let empty = format!("<{prop_name}/>");
     if text.contains(&empty) {
@@ -3250,7 +3416,7 @@ pub(crate) fn replace_form_default_property(
         return (text.to_string(), false);
     };
     let value_end = value_start + relative_end;
-    if !text[value_start..value_end].trim().is_empty() {
+    if !overwrite && !text[value_start..value_end].trim().is_empty() {
         return (text.to_string(), false);
     }
     (
@@ -5951,6 +6117,212 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    fn empty_catalog_xml(line_ending: &str, trailing_newline: bool) -> String {
+        let mut text = [
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">"#,
+            r#"	<Catalog uuid="00000000-0000-0000-0000-000000000001">"#,
+            r#"		<Properties>"#,
+            r#"			<Name>Goods</Name>"#,
+            r#"			<Synonym>Goods</Synonym>"#,
+            r#"			<DefaultListForm/>"#,
+            r#"		</Properties>"#,
+            r#"		<ChildObjects/>"#,
+            r#"	</Catalog>"#,
+            r#"</MetaDataObject>"#,
+        ]
+        .join(line_ending);
+        if trailing_newline {
+            text.push_str(line_ending);
+        }
+        text
+    }
+
+    fn add_list_form_args(object_path: &Path, form_name: &str) -> Map<String, serde_json::Value> {
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(object_path.display().to_string()),
+        );
+        args.insert("FormName".to_string(), json!(form_name));
+        args.insert("Purpose".to_string(), json!("List"));
+        args.insert("Synonym".to_string(), json!("List form"));
+        args
+    }
+
+    #[test]
+    fn add_form_set_default_false_leaves_empty_default_slot() {
+        let context = temp_context("add-set-default-false");
+        let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
+        write_file(&root_xml, &empty_catalog_xml("\n", true));
+
+        let mut args = add_list_form_args(&root_xml, "ListForm");
+        args.insert("SetDefault".to_string(), json!(false));
+
+        let outcome = add_form(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&root_xml).unwrap();
+        assert!(updated.contains("<DefaultListForm/>"), "{updated}");
+        assert!(
+            !updated.contains("<DefaultListForm>Catalog.Goods.Form.ListForm</DefaultListForm>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<Form>ListForm</Form>"), "{updated}");
+        assert!(
+            !outcome
+                .stdout
+                .as_deref()
+                .unwrap_or("")
+                .contains("DefaultListForm: Catalog.Goods.Form.ListForm"),
+            "{:?}",
+            outcome.stdout
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn add_form_sets_default_when_explicit_true_or_omitted_for_empty_slot() {
+        for (case, set_default_arg) in [("explicit-true", Some(true)), ("omitted", None)] {
+            let context = temp_context(case);
+            let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
+            write_file(&root_xml, &empty_catalog_xml("\n", true));
+
+            let mut args = add_list_form_args(&root_xml, "ListForm");
+            if let Some(value) = set_default_arg {
+                args.insert("SetDefault".to_string(), json!(value));
+            }
+
+            let outcome = add_form(&args, &context);
+
+            assert!(outcome.ok, "{case}: {:?}", outcome.errors);
+            let updated = fs::read_to_string(&root_xml).unwrap();
+            assert!(
+                updated.contains("<DefaultListForm>Catalog.Goods.Form.ListForm</DefaultListForm>"),
+                "{case}: {updated}"
+            );
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn add_form_set_default_true_overwrites_existing_default_slot() {
+        let context = temp_context("add-set-default-overwrite");
+        let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
+        let source = empty_catalog_xml("\n", true).replace(
+            "<DefaultListForm/>",
+            "<DefaultListForm>Catalog.Goods.Form.OldListForm</DefaultListForm>",
+        );
+        write_file(&root_xml, &source);
+
+        let mut args = add_list_form_args(&root_xml, "ListForm");
+        args.insert("SetDefault".to_string(), json!(true));
+
+        let outcome = add_form(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&root_xml).unwrap();
+        assert!(
+            updated.contains("<DefaultListForm>Catalog.Goods.Form.ListForm</DefaultListForm>"),
+            "{updated}"
+        );
+        assert!(
+            !updated.contains("Catalog.Goods.Form.OldListForm"),
+            "{updated}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn add_then_remove_form_round_trips_empty_catalog_parent_xml() {
+        let context = temp_context("add-remove-roundtrip");
+        let root_xml = context.cwd.join("Catalogs").join("Goods.xml");
+        let original = empty_catalog_xml("\r\n", false);
+        write_file(&root_xml, &original);
+
+        let mut add_args = add_list_form_args(&root_xml, "ListForm");
+        add_args.insert("SetDefault".to_string(), json!(false));
+        let add_outcome = add_form(&add_args, &context);
+        assert!(add_outcome.ok, "{:?}", add_outcome.errors);
+
+        let mut remove_args = Map::new();
+        remove_args.insert("ObjectName".to_string(), json!("Goods"));
+        remove_args.insert("FormName".to_string(), json!("ListForm"));
+        remove_args.insert("SrcDir".to_string(), json!("Catalogs"));
+        let remove_outcome = remove_form(&remove_args, &context);
+        assert!(remove_outcome.ok, "{:?}", remove_outcome.errors);
+
+        let updated = fs::read_to_string(&root_xml)
+            .unwrap()
+            .trim_start_matches('\u{feff}')
+            .to_string();
+        assert_eq!(updated, original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn remove_form_does_not_collapse_unrelated_empty_child_objects() {
+        let context = temp_context("remove-preserve-unrelated-childobjects");
+        let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
+        let form_meta = context
+            .cwd
+            .join("src")
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ListForm.xml");
+        let form_content = context
+            .cwd
+            .join("src")
+            .join("Catalogs")
+            .join("Goods")
+            .join("Forms")
+            .join("ListForm")
+            .join("Ext")
+            .join("Form.xml");
+        write_file(
+            &root_xml,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+	<Catalog uuid="00000000-0000-0000-0000-000000000001">
+		<Properties>
+			<Name>Goods</Name>
+		</Properties>
+		<ChildObjects>
+			<Attribute>
+				<ChildObjects></ChildObjects>
+			</Attribute>
+			<Form>ListForm</Form>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
+"#,
+        );
+        write_file(&form_meta, "<MetaDataObject/>\n");
+        write_file(&form_content, "<Form/>\n");
+
+        let mut args = Map::new();
+        args.insert("ObjectName".to_string(), json!("Goods"));
+        args.insert("FormName".to_string(), json!("ListForm"));
+        args.insert("SrcDir".to_string(), json!("src/Catalogs"));
+
+        let outcome = remove_form(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&root_xml).unwrap();
+        assert!(
+            updated.contains("<ChildObjects></ChildObjects>"),
+            "{updated}"
+        );
+        assert!(!updated.contains("<Form>ListForm</Form>"), "{updated}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
     #[test]
     fn validate_form_rejects_bare_type_values() {
         let context = temp_context("bare-type");
@@ -6106,10 +6478,7 @@ mod tests {
             "DefaultChoiceForm",
             "DefaultRecordForm",
         ] {
-            assert!(
-                updated.contains(&format!("<{tag}></{tag}>")),
-                "{tag}: {updated}"
-            );
+            assert!(updated.contains(&format!("<{tag}/>")), "{tag}: {updated}");
         }
         assert!(
             updated.contains("<DefaultForm>Catalog.Goods.Form.OtherForm</DefaultForm>"),

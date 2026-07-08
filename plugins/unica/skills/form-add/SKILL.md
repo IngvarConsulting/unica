@@ -1,7 +1,7 @@
 ---
 name: form-add
 description: Добавить пустую управляемую форму к объекту 1С. Используй когда нужно создать у объекта новую форму
-argument-hint: <ObjectPath> <FormName> [Purpose] [--set-default]
+argument-hint: <ObjectPath> <FormName> [Purpose] [SetDefault]
 allowed-tools:
   - Bash
   - Read
@@ -33,7 +33,7 @@ allowed-tools:
 | FormName    | да           | —            | Имя формы (ФормаДокумента)                    |
 | Purpose     | нет          | Object       | Назначение: Object, List, Choice, Record      |
 | Synonym     | нет          | = FormName   | Синоним формы                                 |
-| --set-default | нет        | авто         | Установить как форму по умолчанию             |
+| SetDefault  | нет          | авто         | Boolean: `true` — назначить форму по умолчанию, `false` — не менять default-slot, отсутствие параметра — автоназначение только для пустого слота |
 
 ## MCP вызов
 

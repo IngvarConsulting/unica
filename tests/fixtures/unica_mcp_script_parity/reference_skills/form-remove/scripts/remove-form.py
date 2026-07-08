@@ -13,6 +13,20 @@ from lxml import etree
 NSMAP = {"md": "http://v8.1c.ru/8.3/MDClasses"}
 
 
+def local_name(node):
+    return etree.QName(node).localname if isinstance(node.tag, str) else ""
+
+
+def collapse_empty_touched_elements(root):
+    """Unica parity patch: keep touched empty form slots and ChildObjects self-closing."""
+    for el in root.iter():
+        name = local_name(el)
+        if name != "ChildObjects" and not name.endswith("Form"):
+            continue
+        if len(el) == 0 and (el.text is None or el.text.strip() == ""):
+            el.text = None
+
+
 def save_xml_with_bom(tree, path):
     """Save XML tree to file with UTF-8 BOM."""
     xml_bytes = etree.tostring(tree, xml_declaration=True, encoding="UTF-8")
@@ -75,13 +89,13 @@ def main():
             parent = node.getparent()
             prev = node.getprevious()
             if prev is not None:
-                # Whitespace is in prev.tail
+                # Preserve whitespace that separated the removed node from the next sibling/close tag.
                 if prev.tail and prev.tail.strip() == "":
-                    prev.tail = ""
+                    prev.tail = node.tail if node.tail and node.tail.strip() == "" else prev.tail
             else:
-                # First child — whitespace is in parent.text
+                # First child — parent.text separates ChildObjects from the next sibling/close tag.
                 if parent.text and parent.text.strip() == "":
-                    parent.text = ""
+                    parent.text = node.tail if node.tail and node.tail.strip() == "" else parent.text
             parent.remove(node)
             break
 
@@ -93,7 +107,9 @@ def main():
         if not isinstance(el.tag, str):
             continue
         if etree.QName(el).localname.endswith("Form") and el.text and ref_re.search(el.text):
-            el.text = ""
+            el.text = None
+
+    collapse_empty_touched_elements(root)
 
     # Save with BOM
     save_xml_with_bom(tree, root_xml_full)

@@ -585,6 +585,8 @@ pub fn validate_tool_arguments(
     }
     validate_code_arguments(tool, args, dry_run)?;
     validate_meta_edit_arguments(tool, args)?;
+    validate_form_add_arguments(tool, args)?;
+    validate_template_add_arguments(tool, args)?;
     validate_support_arguments(tool, args, dry_run)?;
 
     if !dry_run {
@@ -596,6 +598,23 @@ pub fn validate_tool_arguments(
     }
 
     Ok(())
+}
+
+fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.form.add" {
+        return Ok(());
+    }
+    validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
+}
+
+fn validate_template_add_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if tool.name != "unica.template.add" {
+        return Ok(());
+    }
+    validate_unique_alias_group(tool.name, args, &["SetMainSKD", "setMainSKD"])
 }
 
 fn validate_meta_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -1253,6 +1272,10 @@ fn property_schema(name: &str) -> Value {
             | "noValidate"
             | "NoRole"
             | "noRole"
+            | "SetDefault"
+            | "setDefault"
+            | "SetMainSKD"
+            | "setMainSKD"
             | "Raw"
             | "raw"
             | "WithText"
@@ -1425,6 +1448,10 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "noValidate"
             | "NoRole"
             | "noRole"
+            | "SetDefault"
+            | "setDefault"
+            | "SetMainSKD"
+            | "setMainSKD"
             | "Raw"
             | "raw"
             | "WithText"
@@ -1650,6 +1677,50 @@ mod tests {
 
         assert!(error.contains("dryRun"));
         assert!(error.contains("boolean"));
+    }
+
+    #[test]
+    fn form_and_template_boolean_flags_are_boolean_in_mcp_contract() {
+        let form_add = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.form.add")
+            .unwrap();
+        let schema = input_schema_for_tool(&form_add);
+        assert_eq!(schema["properties"]["SetDefault"]["type"], "boolean");
+        assert_eq!(schema["properties"]["setDefault"]["type"], "boolean");
+
+        let mut args = Map::new();
+        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
+        args.insert("FormName".to_string(), json!("ListForm"));
+        args.insert("SetDefault".to_string(), json!("false"));
+        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
+        assert!(error.contains("SetDefault"));
+        assert!(error.contains("boolean"));
+
+        let mut args = Map::new();
+        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
+        args.insert("FormName".to_string(), json!("ListForm"));
+        args.insert("SetDefault".to_string(), json!(false));
+        args.insert("setDefault".to_string(), json!(true));
+        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
+        assert!(error.contains("conflicting aliases"));
+
+        let template_add = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.template.add")
+            .unwrap();
+        let schema = input_schema_for_tool(&template_add);
+        assert_eq!(schema["properties"]["SetMainSKD"]["type"], "boolean");
+        assert_eq!(schema["properties"]["setMainSKD"]["type"], "boolean");
+
+        let mut args = Map::new();
+        args.insert("ObjectName".to_string(), json!("Report"));
+        args.insert("TemplateName".to_string(), json!("MainSchema"));
+        args.insert("TemplateType".to_string(), json!("DataCompositionSchema"));
+        args.insert("SetMainSKD".to_string(), json!(false));
+        args.insert("setMainSKD".to_string(), json!(true));
+        let error = validate_tool_arguments(template_add, &args, false).unwrap_err();
+        assert!(error.contains("conflicting aliases"));
     }
 
     #[test]

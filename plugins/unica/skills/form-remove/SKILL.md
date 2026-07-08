@@ -64,3 +64,4 @@ allowed-tools:
 
 - `<SrcDir>/<ObjectName>.xml` — убирается `<Form>` из `ChildObjects`
 - Если удаляемая форма была указана в `Default*Form`/`Auxiliary*Form` слоте объекта — значение этого слота очищается
+- Опустевшие затронутые XML-элементы сохраняются в самозакрывающемся виде (`<ChildObjects/>`, `<Default*Form/>`)

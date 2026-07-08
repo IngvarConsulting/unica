@@ -36,7 +36,7 @@ allowed-tools:
 | TemplateType  | да           | —               | Тип: HTML, Text, SpreadsheetDocument, BinaryData, DataCompositionSchema |
 | Synonym       | нет          | = TemplateName  | Синоним макета                                   |
 | SrcDir        | нет          | `src`           | Путь к папке типа объектов (`Reports`, `DataProcessors`, `Catalogs`, `Documents`...), внутри которой лежит `<ObjectName>.xml`. Дефолт `src` подходит для каталогов с внешними обработками/отчётами, лежащими рядом |
-| -SetMainSKD   | нет          | —               | Принудительно установить MainDataCompositionSchema |
+| SetMainSKD    | нет          | —               | Boolean: принудительно установить `MainDataCompositionSchema` |
 
 ## MCP вызов
 
@@ -109,7 +109,7 @@ allowed-tools:
 
 При добавлении макета типа `DataCompositionSchema` к `ExternalReport` или `Report`:
 - Если `MainDataCompositionSchema` пуст — автоматически заполняется ссылкой на макет
-- Используй `--SetMainSKD` чтобы перезаписать существующее значение
+- Используй `"SetMainSKD": true`, чтобы перезаписать существующее значение
 
 ## Что создаётся
 

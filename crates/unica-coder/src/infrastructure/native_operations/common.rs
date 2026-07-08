@@ -1194,6 +1194,42 @@ pub(crate) fn lxml_tree_serialized_text_like_source(text: &str, source_text: &st
     }
 }
 
+pub(crate) fn lxml_tree_serialized_text_like_source_preserving_final_newline(
+    text: &str,
+    source_text: &str,
+) -> String {
+    preserve_source_final_newline(
+        lxml_tree_serialized_text_like_source(text, source_text),
+        source_text,
+    )
+}
+
+pub(crate) fn preserve_source_final_newline(mut output: String, source_text: &str) -> String {
+    let source_final_newline = if source_text.ends_with("\r\n") {
+        Some("\r\n")
+    } else if source_text.ends_with('\n') {
+        Some("\n")
+    } else if source_text.ends_with('\r') {
+        Some("\r")
+    } else {
+        None
+    };
+
+    match source_final_newline {
+        Some(line_ending) if !output.ends_with('\n') && !output.ends_with('\r') => {
+            output.push_str(line_ending);
+        }
+        None if output.ends_with("\r\n") => {
+            output.truncate(output.len() - 2);
+        }
+        None if output.ends_with('\n') || output.ends_with('\r') => {
+            output.pop();
+        }
+        _ => {}
+    }
+    output
+}
+
 pub(crate) fn lxml_parser_normalized_text(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
@@ -1440,6 +1476,12 @@ pub(crate) fn bool_arg(args: &Map<String, Value>, names: &[&str]) -> bool {
     names
         .iter()
         .any(|name| args.get(*name).and_then(Value::as_bool).unwrap_or(false))
+}
+
+pub(crate) fn optional_bool_arg(args: &Map<String, Value>, names: &[&str]) -> Option<bool> {
+    names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_bool))
 }
 
 pub(crate) fn int_arg(args: &Map<String, Value>, names: &[&str]) -> Option<i64> {
