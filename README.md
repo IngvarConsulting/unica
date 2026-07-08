@@ -41,13 +41,13 @@ powershell -ExecutionPolicy Bypass -File .\install-unica.ps1
 Для установки конкретного релиза на macOS или Linux:
 
 ```sh
-curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.5.1
+curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.6.1
 ```
 
 Для установки конкретного релиза на Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-unica.ps1 -Version v0.5.1
+powershell -ExecutionPolicy Bypass -File .\install-unica.ps1 -Version v0.6.1
 ```
 
 Release assets собираются отдельно под платформы:
