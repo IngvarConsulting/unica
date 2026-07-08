@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
@@ -19,6 +19,14 @@ pub(crate) const INTERFACE_XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
 pub(crate) const INTERFACE_XS_NS: &str = "http://www.w3.org/2001/XMLSchema";
 
 pub(crate) const INTERFACE_XSI_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+pub(crate) const INTERFACE_SECTION_ORDER: &[&str] = &[
+    "CommandsVisibility",
+    "CommandsPlacement",
+    "CommandsOrder",
+    "SubsystemsOrder",
+    "GroupsOrder",
+];
 
 #[derive(Default)]
 pub(crate) struct InterfaceEditCounters {
@@ -47,30 +55,28 @@ pub(crate) fn edit_interface(
             detect_format_version(ci_path.parent().unwrap_or(context.cwd.as_path()));
 
         let mut stdout = String::new();
-        if !ci_path.is_file() {
+        let source_exists = ci_path.is_file();
+        let created_new = if !source_exists {
             if bool_arg(args, &["createIfMissing", "CreateIfMissing"]) {
-                if let Some(parent) = ci_path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-                }
-                write_utf8_bom(
-                    &ci_path,
-                    &emit_empty_command_interface_document(&format_version),
-                )?;
                 stdout.push_str(&format!(
                     "[INFO] Created new CommandInterface.xml: {}\n",
                     ci_path.display()
                 ));
+                true
             } else {
                 return Err(format!(
                     "File not found: {} (use -CreateIfMissing to create)",
                     ci_path.display()
                 ));
             }
+        } else {
+            false
+        };
+        if source_exists {
+            ci_path = interface_normalize_lexical_path(&ci_path);
         }
-        ci_path = ci_path.canonicalize().unwrap_or_else(|_| ci_path.clone());
 
-        let source_text = if ci_path.is_file() {
+        let source_text = if source_exists {
             read_utf8_sig(&ci_path)?
         } else {
             String::new()
@@ -109,10 +115,19 @@ pub(crate) fn edit_interface(
             }
         }
 
+        if created_new {
+            if let Some(parent) = ci_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+            }
+        }
         write_utf8_bom(
             &ci_path,
             &lxml_tree_serialized_text_like_source(&text, &source_text),
         )?;
+        if created_new {
+            ci_path = interface_normalize_lexical_path(&ci_path);
+        }
         stdout.push_str(&format!("[INFO] Saved: {}\n", ci_path.display()));
 
         if !bool_arg(args, &["noValidate", "NoValidate"]) {
@@ -546,10 +561,15 @@ pub(crate) fn interface_text_append_to_section(
     section: &str,
     fragment: &str,
 ) -> Result<(), String> {
+    if find_element_bounds(text, section, 0).is_none() {
+        interface_text_insert_section(text, section, &[])?;
+    }
     let (_, content_start, close_start, _, _, _) = find_element_bounds(text, section, 0)
         .ok_or_else(|| format!("No <{section}> element found"))?;
     let body = &text[content_start..close_start];
-    let child_indent = interface_text_detect_indent(body).unwrap_or_else(|| "\t\t".to_string());
+    let child_indent = interface_text_detect_indent(body)
+        .or_else(|| interface_text_detect_empty_indent(body))
+        .unwrap_or_else(|| "\t\t".to_string());
     let replacement = if body.trim().is_empty() {
         let parent_indent = interface_parent_indent(&child_indent);
         format!("\r\n{child_indent}{fragment}\r\n{parent_indent}")
@@ -574,7 +594,9 @@ pub(crate) fn interface_text_replace_section_items(
 ) -> Result<(), String> {
     if let Some((_, content_start, close_start, _, _, _)) = find_element_bounds(text, section, 0) {
         let body = &text[content_start..close_start];
-        let child_indent = interface_text_detect_indent(body).unwrap_or_else(|| "\t\t".to_string());
+        let child_indent = interface_text_detect_indent(body)
+            .or_else(|| interface_text_detect_empty_indent(body))
+            .unwrap_or_else(|| "\t\t".to_string());
         let parent_indent = interface_parent_indent(&child_indent);
         let replacement = interface_text_section_body(&child_indent, &parent_indent, fragments);
         text.replace_range(content_start..close_start, &replacement);
@@ -593,11 +615,55 @@ pub(crate) fn interface_text_insert_section(
         .ok_or_else(|| "No <CommandInterface> root element found".to_string())?;
     let root_body = &text[content_start..close_start];
     let root_indent = interface_text_detect_indent(root_body).unwrap_or_else(|| "\t".to_string());
-    let body = interface_text_section_body(&root_indent, "", fragments);
-    let section_xml = format!("\r\n{root_indent}<{section}>{body}</{section}>\r\n");
-    let tail_start = interface_trailing_ws_start(text, content_start, close_start);
-    text.replace_range(tail_start..close_start, &section_xml);
+    let body = if fragments.is_empty() {
+        format!("\r\n{root_indent}")
+    } else {
+        interface_text_section_body(&root_indent, "", fragments)
+    };
+
+    if let Some(next_section_start) =
+        interface_text_next_ordered_section_start(text, section, content_start, close_start)
+    {
+        let insert_start = interface_trailing_ws_start(text, content_start, next_section_start);
+        let section_xml =
+            format!("\r\n{root_indent}<{section}>{body}</{section}>\r\n{root_indent}");
+        text.replace_range(insert_start..next_section_start, &section_xml);
+    } else {
+        let section_xml = format!("\r\n{root_indent}<{section}>{body}</{section}>\r\n");
+        let tail_start = interface_trailing_ws_start(text, content_start, close_start);
+        text.replace_range(tail_start..close_start, &section_xml);
+    }
     Ok(())
+}
+
+pub(crate) fn interface_text_next_ordered_section_start(
+    text: &str,
+    section: &str,
+    content_start: usize,
+    close_start: usize,
+) -> Option<usize> {
+    let section_index = interface_section_order_index(section)?;
+    INTERFACE_SECTION_ORDER
+        .iter()
+        .skip(section_index + 1)
+        .filter_map(|candidate| {
+            find_element_bounds(text, candidate, content_start).and_then(
+                |(open_start, _, _, _, _, _)| {
+                    if open_start < close_start {
+                        Some(open_start)
+                    } else {
+                        None
+                    }
+                },
+            )
+        })
+        .min()
+}
+
+pub(crate) fn interface_section_order_index(section: &str) -> Option<usize> {
+    INTERFACE_SECTION_ORDER
+        .iter()
+        .position(|candidate| *candidate == section)
 }
 
 pub(crate) fn interface_text_section_body(
@@ -675,6 +741,23 @@ pub(crate) fn interface_text_detect_indent(body: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn interface_text_detect_empty_indent(body: &str) -> Option<String> {
+    if !body.trim().is_empty() {
+        return None;
+    }
+    let after_newline = body.rsplit('\n').next().unwrap_or(body);
+    let after_newline = after_newline.trim_end_matches('\r');
+    let indent = after_newline
+        .chars()
+        .take_while(|ch| *ch == '\t' || *ch == ' ')
+        .collect::<String>();
+    if !indent.is_empty() && after_newline[indent.len()..].trim().is_empty() {
+        Some(indent)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn interface_parent_indent(child_indent: &str) -> String {
     child_indent
         .strip_suffix('\t')
@@ -693,6 +776,20 @@ pub(crate) fn interface_trailing_ws_start(text: &str, min: usize, end: usize) ->
         }
     }
     start
+}
+
+pub(crate) fn interface_normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 pub(crate) fn interface_json_object(value: &Value) -> Result<Value, String> {
@@ -785,13 +882,6 @@ pub(crate) fn validate_interface(
 ) -> AdapterOutcome {
     const NS_CI: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
     const NS_XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
-    const VALID_SECTIONS: &[&str] = &[
-        "CommandsVisibility",
-        "CommandsPlacement",
-        "CommandsOrder",
-        "SubsystemsOrder",
-        "GroupsOrder",
-    ];
 
     let result = (|| -> Result<(bool, String, String, Option<PathBuf>, PathBuf), String> {
         let raw_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?;
@@ -871,7 +961,7 @@ pub(crate) fn validate_interface(
             let mut invalid_elements = Vec::<String>::new();
             for child in root.children().filter(|child| child.is_element()) {
                 let local_name = child.tag_name().name();
-                if VALID_SECTIONS.contains(&local_name) {
+                if INTERFACE_SECTION_ORDER.contains(&local_name) {
                     found_sections.push(local_name.to_string());
                 } else {
                     invalid_elements.push(local_name.to_string());
@@ -894,7 +984,7 @@ pub(crate) fn validate_interface(
             let mut order_ok = true;
             let mut last_idx = -1isize;
             for section in &found_sections {
-                let idx = VALID_SECTIONS
+                let idx = INTERFACE_SECTION_ORDER
                     .iter()
                     .position(|candidate| candidate == section)
                     .map(|idx| idx as isize)
@@ -1289,5 +1379,115 @@ pub(crate) fn invoke_mutation(
     match operation {
         "interface-edit" => Some(edit_interface(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::{Map, Value};
+    use std::fs;
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-interface-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn append_to_missing_commands_visibility_inserts_section_before_later_sections() {
+        let mut text = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<CommandInterface xmlns=\"{INTERFACE_CI_NS}\" xmlns:xr=\"{INTERFACE_XR_NS}\" version=\"2.17\">\n\
+\t<CommandsPlacement>\n\
+\t</CommandsPlacement>\n\
+</CommandInterface>"
+        );
+
+        interface_text_append_to_section(
+            &mut text,
+            "CommandsVisibility",
+            "<Command name=\"Catalog.Products.StandardCommand.OpenList\"><Visibility><xr:Common>false</xr:Common></Visibility></Command>",
+        )
+        .unwrap();
+
+        let visibility_index = text.find("<CommandsVisibility>").unwrap();
+        let placement_index = text.find("<CommandsPlacement>").unwrap();
+        assert!(visibility_index < placement_index, "{text}");
+        assert!(text.contains("<xr:Common>false</xr:Common>"));
+    }
+
+    #[test]
+    fn create_if_missing_does_not_leave_file_after_failed_operation() {
+        let context = temp_context("create-if-missing-error");
+        let ci_rel = "src/Subsystems/NewSales/Ext/CommandInterface.xml";
+        let ci_path = context.cwd.join(ci_rel);
+        let mut args = Map::new();
+        args.insert("CIPath".to_string(), Value::String(ci_rel.to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String("subsystem-order".to_string()),
+        );
+        args.insert("Value".to_string(), Value::String("[]".to_string()));
+        args.insert("CreateIfMissing".to_string(), Value::Bool(true));
+        args.insert("NoValidate".to_string(), Value::Bool(true));
+
+        let outcome = edit_interface(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            !ci_path.exists(),
+            "partial file left at {}",
+            ci_path.display()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn create_if_missing_hide_show_create_valid_command_interface() {
+        for (operation, expected_common) in [("hide", "false"), ("show", "true")] {
+            let context = temp_context(&format!("create-if-missing-{operation}"));
+            let ci_rel = format!("src/Subsystems/New{operation}/Ext/CommandInterface.xml");
+            let ci_path = context.cwd.join(&ci_rel);
+            let mut args = Map::new();
+            args.insert("CIPath".to_string(), Value::String(ci_rel));
+            args.insert(
+                "Operation".to_string(),
+                Value::String(operation.to_string()),
+            );
+            args.insert(
+                "Value".to_string(),
+                Value::String("Catalog.Products.StandardCommand.OpenList".to_string()),
+            );
+            args.insert("CreateIfMissing".to_string(), Value::Bool(true));
+
+            let outcome = edit_interface(&args, &context);
+
+            assert!(outcome.ok, "{operation}: {outcome:?}");
+            assert!(
+                outcome
+                    .stdout
+                    .as_deref()
+                    .is_some_and(|stdout| stdout.contains("Validation OK")),
+                "{operation}: validation did not run successfully: {outcome:?}"
+            );
+            let text = fs::read_to_string(&ci_path).unwrap();
+            assert!(text.contains("<CommandsVisibility>"), "{operation}: {text}");
+            assert!(
+                text.contains(&format!("<xr:Common>{expected_common}</xr:Common>")),
+                "{operation}: {text}"
+            );
+            let _ = fs::remove_dir_all(&context.workspace_root);
+        }
     }
 }
