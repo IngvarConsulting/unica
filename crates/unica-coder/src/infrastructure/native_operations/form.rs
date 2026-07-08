@@ -3608,6 +3608,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
             if !attrs.is_empty() {
                 form_edit_validate_named_objects(&xml_text, attrs, "Attribute", "attribute")?;
+                form_edit_validate_attribute_columns(attrs)?;
                 let mut lines = Vec::<String>::new();
                 for attr in attrs {
                     let Some(object) = attr.as_object() else {
@@ -3834,6 +3835,36 @@ pub(crate) fn form_edit_validate_named_objects(
             return Err(format!(
                 "[ERROR] {tag} '{name}' already exists in form -- {label} names must be unique"
             ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_validate_attribute_columns(attrs: &[Value]) -> Result<(), String> {
+    for attr in attrs {
+        let Some(object) = attr.as_object() else {
+            continue;
+        };
+        let Some(attr_name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(columns) = object.get("columns").and_then(Value::as_array) else {
+            continue;
+        };
+        let mut names = HashSet::new();
+        for column in columns {
+            let Some(name) = column
+                .as_object()
+                .and_then(|object| object.get("name"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if !names.insert(name.to_string()) {
+                return Err(format!(
+                    "[ERROR] Duplicate column name '{name}' in attribute '{attr_name}' edit definition -- column names must be unique"
+                ));
+            }
         }
     }
     Ok(())
@@ -4336,6 +4367,7 @@ pub(crate) fn emit_form_edit_attribute_item(
             escape_xml(fill_checking)
         ));
     }
+    emit_form_attribute_columns(lines, attr.get("columns"), &inner);
     lines.push(format!("{indent}</Attribute>"));
 }
 
@@ -5648,10 +5680,51 @@ pub(crate) fn emit_form_attributes(
                 escape_xml(fill_checking)
             ));
         }
+        emit_form_attribute_columns(lines, object.get("columns"), &inner);
         lines.push(format!("{indent}\t</Attribute>"));
     }
     lines.push(format!("{indent}</Attributes>"));
     Ok(())
+}
+
+pub(crate) fn emit_form_attribute_columns(
+    lines: &mut Vec<String>,
+    columns: Option<&Value>,
+    indent: &str,
+) {
+    let Some(columns) = columns.and_then(Value::as_array) else {
+        return;
+    };
+    if columns.is_empty() {
+        return;
+    }
+
+    lines.push(format!("{indent}<Columns>"));
+    for (idx, column) in columns.iter().enumerate() {
+        let Some(object) = column.as_object() else {
+            continue;
+        };
+        let Some(name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let column_indent = format!("{indent}\t");
+        lines.push(format!(
+            "{column_indent}<Column name=\"{}\" id=\"{}\">",
+            escape_xml(name),
+            idx + 1
+        ));
+        let inner = format!("{column_indent}\t");
+        if let Some(title) = object.get("title").and_then(Value::as_str) {
+            emit_form_mltext(lines, &inner, "Title", title);
+        }
+        if let Some(type_name) = object.get("type").and_then(Value::as_str) {
+            emit_form_type(lines, type_name, &inner);
+        } else {
+            lines.push(format!("{inner}<Type/>"));
+        }
+        lines.push(format!("{column_indent}</Column>"));
+    }
+    lines.push(format!("{indent}</Columns>"));
 }
 
 pub(crate) fn emit_form_dynamic_list_attribute_settings(
@@ -6569,6 +6642,176 @@ mod tests {
         assert!(updated.contains("id=\"1000001\""), "{updated}");
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_emits_valuetable_attribute_columns() {
+        let context = temp_context("edit-valuetable-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>true</Autofill>
+	</AutoCommandBar>
+	<ChildItems>
+		<UsualGroup name="ГруппаДанных" id="1">
+			<ChildItems/>
+			<ExtendedTooltip name="ГруппаДанныхРасширеннаяПодсказка" id="2"/>
+		</UsualGroup>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаДанных",
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "НомерСтроки", "type": "decimal(5,0)"},
+        {"name": "Значение", "type": "string(200)"}
+      ]
+    }
+  ],
+  "elements": [
+    {
+      "table": "ТаблицаДанных",
+      "path": "ТаблицаДанных",
+      "columns": [
+        {"input": "НомерСтроки", "path": "ТаблицаДанных.НомерСтроки"},
+        {"input": "Значение", "path": "ТаблицаДанных.Значение"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(updated.contains("<Columns>"), "{updated}");
+        assert!(
+            updated.contains("<Column name=\"НомерСтроки\" id=\"1\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<Column name=\"Значение\" id=\"2\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<v8:Type>xs:decimal</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:NumberQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<v8:Type>xs:string</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:StringQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.НомерСтроки</DataPath>"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.Значение</DataPath>"),
+            "{updated}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_duplicate_attribute_column_names() {
+        let context = temp_context("edit-duplicate-attribute-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(&form_path, editable_form_xml(false));
+        write_file(
+            &json_path,
+            r#"{
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "Значение", "type": "string"},
+        {"name": "Значение", "type": "string"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(!outcome.ok, "{outcome:?}");
+        let stderr = outcome.stderr.unwrap_or_default();
+        assert!(
+            stderr.contains(
+                "Duplicate column name 'Значение' in attribute 'ТаблицаДанных' edit definition"
+            ),
+            "{stderr}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_compile_xml_emits_attribute_columns() {
+        let defn = json!({
+            "attributes": [
+                {
+                    "name": "ТаблицаДанных",
+                    "type": "ValueTree",
+                    "columns": [
+                        {"name": "НомерСтроки", "type": "decimal(5,0)"},
+                        {"name": "Значение", "type": "string(200)"}
+                    ]
+                }
+            ]
+        });
+
+        let (xml, _stats) = form_compile_xml(&defn, "2.20").unwrap();
+
+        assert!(xml.contains("<Columns>"), "{xml}");
+        assert!(
+            xml.contains("<Column name=\"НомерСтроки\" id=\"1\">"),
+            "{xml}"
+        );
+        assert!(xml.contains("<Column name=\"Значение\" id=\"2\">"), "{xml}");
+        assert!(xml.contains("<v8:Type>xs:decimal</v8:Type>"), "{xml}");
+        assert!(xml.contains("<v8:NumberQualifiers>"), "{xml}");
+        assert!(xml.contains("<v8:Type>xs:string</v8:Type>"), "{xml}");
+        assert!(xml.contains("<v8:StringQualifiers>"), "{xml}");
     }
 
     #[test]
