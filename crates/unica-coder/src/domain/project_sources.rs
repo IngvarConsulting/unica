@@ -1,6 +1,5 @@
 use serde::Serialize;
 use serde_yaml::Value as YamlValue;
-use std::env;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,18 +71,6 @@ pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourc
 }
 
 fn find_project_config(workspace_root: &Path) -> Option<PathBuf> {
-    if let Ok(config) = env::var("V8TR_CONFIG") {
-        let path = PathBuf::from(config);
-        let resolved = if path.is_absolute() {
-            path
-        } else {
-            workspace_root.join(path)
-        };
-        if resolved.is_file() {
-            return Some(resolved);
-        }
-    }
-
     let default = workspace_root.join("v8project.yaml");
     default.is_file().then_some(default)
 }
@@ -326,6 +313,7 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -401,6 +389,52 @@ source-set:
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             &["src/Configuration.xml", "src/ConfigDumpInfo.xml"],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_legacy_v8tr_config_environment_override() {
+        let root = temp_workspace("unica-source-map-ignore-v8tr-config");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+"#,
+        );
+        write(
+            &root.join("custom.yaml"),
+            r#"
+format: DESIGNER
+source-set:
+  - name: env
+    type: CONFIGURATION
+    path: env-src
+"#,
+        );
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+        write(&root.join("env-src/Configuration.xml"), "<MetaDataObject/>");
+        let _guard = EnvVarGuard::set("V8TR_CONFIG", root.join("custom.yaml"));
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "main",
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            &["src/Configuration.xml"],
+        );
+        assert!(
+            map.source_sets
+                .iter()
+                .all(|source_set| source_set.name != "env"),
+            "legacy V8TR_CONFIG source set must be ignored: {map:?}"
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -512,5 +546,28 @@ source-set:
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, text).unwrap();
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 }

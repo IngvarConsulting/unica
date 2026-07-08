@@ -26,7 +26,7 @@ allowed-tools:
 ### Авто-определение ConfigPath
 
 Если пользователь не указал `-ConfigPath` — попробуй определить автоматически:
-1. Используй `V8TR_CONFIG`, если задан, иначе `./v8project.yaml`.
+1. Используй `./v8project.yaml`.
 2. Найди `source-set` с `type: CONFIGURATION`.
 3. Используй его `path` как `-ConfigPath`.
 4. Если source-set не найден — спроси путь у пользователя.

@@ -94,7 +94,7 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 ## Skill Rules
 
 - Do not create or read any legacy JSON project registry.
-- Resolve the active config as `V8TR_CONFIG` first, then `./v8project.yaml`.
+- Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
 - If the config is missing, use `operation=config-init` or ask for the connection string.
 - Prefer `source-set` names over ad hoc source directories.
 - Use `execution_timeout` in `v8project.yaml` for long runtime operations; Unica does not expose `timeoutMs` for `unica.runtime.execute`.

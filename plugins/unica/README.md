@@ -11,7 +11,7 @@ The public skills model developer operations, not infrastructure tools:
 - search, review, diagnose, test, and analyze BSL code inside those workflows.
 - bootstrap a new 1C repository workspace with `v8project.yaml`.
 
-Bundled tooling, MCP server names, checksums, and third-party notices are internal package infrastructure. Project configuration is `v8project.yaml` / `V8TR_CONFIG`; database and build workflows should use the `v8-runner` skill, which calls MCP `unica.runtime.execute`. See `references/tooling/internal-package.md` when maintaining the plugin itself.
+Bundled tooling, MCP server names, checksums, and third-party notices are internal package infrastructure. Project configuration is `v8project.yaml`; database and build workflows should use the `v8-runner` skill, which calls MCP `unica.runtime.execute`. See `references/tooling/internal-package.md` when maintaining the plugin itself.
 
 ## Skills
 

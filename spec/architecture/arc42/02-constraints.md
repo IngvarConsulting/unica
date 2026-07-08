@@ -5,8 +5,7 @@
 - Unica поставляется как Codex plugin under `plugins/unica`.
 - Public AI entrypoint объявляется через `plugins/unica/.mcp.json`.
 - Skills должны описывать developer operations, а не набор внутренних tools.
-- `v8project.yaml` или `V8TR_CONFIG` остаются project/workspace boundary для
-  1C-проектов.
+- `v8project.yaml` остается project/workspace boundary для 1C-проектов.
 
 ## Technical Constraints
 

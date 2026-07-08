@@ -42,7 +42,7 @@ Requires Node.js 18+. `npm install` downloads Playwright and Chromium.
 
 ## URL resolution
 
-Prefer an explicit URL. If the user only names a project/database, read `v8project.yaml` or `V8TR_CONFIG`, derive the expected local URL from the connection/source-set context, and try `http://localhost:8081/<name>`. Use `autonomous-server` first if no URL or debug contour exists.
+Prefer an explicit URL. If the user only names a project/database, read `v8project.yaml`, derive the expected local URL from the connection/source-set context, and try `http://localhost:8081/<name>`. Use `autonomous-server` first if no URL or debug contour exists.
 
 ## Execution modes
 
