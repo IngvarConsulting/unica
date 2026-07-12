@@ -1458,19 +1458,18 @@ fn split_profile_name(raw: &str) -> (Option<String>, String) {
     let Some((prefix, name)) = trimmed.split_once('.') else {
         return (None, trimmed.to_string());
     };
-    let category = match prefix {
-        "Document" | "Документ" => "Document",
-        "Catalog" | "Справочник" => "Catalog",
-        "CommonModule" | "CommonModules" | "ОбщийМодуль" | "ОбщиеМодули" => {
-            "CommonModule"
-        }
-        "InformationRegister" | "РегистрСведений" => "InformationRegister",
-        "AccumulationRegister" | "РегистрНакопления" => "AccumulationRegister",
-        "Enum" | "Перечисление" => "Enum",
-        other => metadata_kind(other)
-            .or_else(|| metadata_kind_by_directory(other))
-            .map_or(other, |kind| kind.tag),
-    };
+    let category = metadata_kind(prefix)
+        .or_else(|| metadata_kind_by_directory(prefix))
+        .map(|kind| kind.tag)
+        .unwrap_or_else(|| match prefix {
+            "Документ" => "Document",
+            "Справочник" => "Catalog",
+            "ОбщийМодуль" | "ОбщиеМодули" => "CommonModule",
+            "РегистрСведений" => "InformationRegister",
+            "РегистрНакопления" => "AccumulationRegister",
+            "Перечисление" => "Enum",
+            other => other,
+        });
     (Some(category.to_string()), name.trim().to_string())
 }
 
@@ -2978,6 +2977,7 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::metadata_kinds::METADATA_KINDS;
     use crate::infrastructure::workspace_index::{IndexBackgroundJob, IndexCommand, IndexOutput};
     use rusqlite::Connection;
     use serde_json::json;
@@ -2988,27 +2988,71 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn metadata_profile_selector_normalizes_bot_tag_and_directory_alias() {
-        assert_eq!(
-            split_profile_name("Bot.Assistant"),
-            (Some("Bot".to_string()), "Assistant".to_string())
-        );
-        assert_eq!(
-            split_profile_name("Bots.Assistant"),
-            (Some("Bot".to_string()), "Assistant".to_string())
-        );
-        assert_eq!(
-            split_profile_name("CommonModules.Core"),
-            (Some("CommonModule".to_string()), "Core".to_string())
-        );
-        assert_eq!(
-            split_profile_name("ОбщийМодуль.Core"),
-            (Some("CommonModule".to_string()), "Core".to_string())
-        );
+    fn metadata_profile_selector_normalizes_every_registry_tag_and_directory() {
+        for kind in METADATA_KINDS {
+            let tag_selector = format!("{}.ObjectName", kind.tag);
+            assert_eq!(
+                split_profile_name(&tag_selector),
+                (Some(kind.tag.to_string()), "ObjectName".to_string()),
+                "canonical tag selector must use the registry: {tag_selector}"
+            );
+
+            let directory_selector = format!("{}.ObjectName", kind.directory);
+            assert_eq!(
+                split_profile_name(&directory_selector),
+                (Some(kind.tag.to_string()), "ObjectName".to_string()),
+                "plural directory selector must use the registry: {directory_selector}"
+            );
+        }
+
+        for (alias, expected) in [
+            ("Документ", "Document"),
+            ("Справочник", "Catalog"),
+            ("ОбщийМодуль", "CommonModule"),
+            ("ОбщиеМодули", "CommonModule"),
+            ("РегистрСведений", "InformationRegister"),
+            ("РегистрНакопления", "AccumulationRegister"),
+            ("Перечисление", "Enum"),
+        ] {
+            let selector = format!("{alias}.ObjectName");
+            assert_eq!(
+                split_profile_name(&selector),
+                (Some(expected.to_string()), "ObjectName".to_string()),
+                "Russian alias must remain supported: {selector}"
+            );
+        }
         assert_eq!(
             split_profile_name("SyntheticMetadata.Unknown"),
             (Some("SyntheticMetadata".to_string()), "Unknown".to_string())
         );
+    }
+
+    #[test]
+    fn metadata_profile_selector_has_no_local_english_kind_table() {
+        let source = include_str!("internal_adapters.rs");
+        let selector_body = source
+            .split_once("fn split_profile_name")
+            .and_then(|(_, tail)| tail.split_once("fn format_profile_section"))
+            .map(|(body, _)| body)
+            .expect("split_profile_name source must be present");
+        let local_match_patterns = selector_body
+            .lines()
+            .filter_map(|line| line.split_once("=>").map(|(pattern, _)| pattern))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for kind in METADATA_KINDS {
+            assert!(
+                !local_match_patterns.contains(&format!("\"{}\"", kind.tag)),
+                "{} must be resolved through the shared registry",
+                kind.tag
+            );
+            assert!(
+                !local_match_patterns.contains(&format!("\"{}\"", kind.directory)),
+                "{} must be resolved through the shared registry",
+                kind.directory
+            );
+        }
     }
 
     #[test]
