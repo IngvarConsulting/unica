@@ -149,5 +149,5 @@ Python plugin guardrails, disposable 1C Designer workspace for acceptance.
 - [x] In a new disposable file IB, create/build a CommonModule stub, patch it
       only through the branch tool, rebuild, run Designer module syntax and
       verify dump/bytes. Never touch the user database.
-- [ ] Commit, push, open a separate ready PR that closes #73, monitor CI, then
+- [x] Commit, push, open a separate ready PR that closes #73, monitor CI, then
       claim #76 with `Depends on #73`.
