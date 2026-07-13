@@ -1780,6 +1780,76 @@ mod metadata_kind_consumer_tests {
         );
         assert_eq!(xml, before_unknown);
     }
+
+    #[test]
+    fn child_object_insertion_preserves_crlf_for_existing_and_self_closing_lists() {
+        let mut populated = concat!(
+            "<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut populated, "Report", "Sales").unwrap());
+        assert!(populated.contains(concat!(
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t\t<Report>Sales</Report>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert!(!populated.replace("\r\n", "").contains('\n'));
+
+        let mut empty = concat!(
+            "<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<ChildObjects/>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+        assert!(cf_edit_add_child_object_text(&mut empty, "Role", "User").unwrap());
+        assert!(empty.contains(concat!(
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Role>User</Role>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert!(!empty.replace("\r\n", "").contains('\n'));
+    }
+
+    #[test]
+    fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
+        let mut xml = concat!(
+            "\u{feff}<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<Properties>\r\n",
+            "\t\t\t<!-- <ChildObjects><Role>CommentTrap</Role></ChildObjects> -->\r\n",
+            "\t\t\t<Nested><ChildObjects><Role>NestedTrap</Role></ChildObjects></Nested>\r\n",
+            "\t\t</Properties>\r\n",
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut xml, "Role", "Reader").unwrap());
+
+        assert!(
+            xml.contains("<Nested><ChildObjects><Role>NestedTrap</Role></ChildObjects></Nested>")
+        );
+        assert!(xml.contains(concat!(
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Role>Reader</Role>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert_eq!(xml.matches("<Role>Reader</Role>").count(), 1);
+        assert!(!xml.replace("\r\n", "").contains('\n'));
+    }
 }
 
 pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
@@ -2297,15 +2367,55 @@ pub(crate) struct CfEditChildObjectEntry {
 pub(crate) fn cf_edit_child_object_entries(
     text: &str,
 ) -> Result<Vec<CfEditChildObjectEntry>, String> {
-    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error: {err}"))?;
-    let child_objects = doc
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
-        .ok_or_else(|| "No <ChildObjects> element found".to_string())?;
+    cf_edit_root_child_objects(text).map(|(_, entries)| entries)
+}
+
+fn cf_edit_root_child_objects(
+    text: &str,
+) -> Result<(CfEditElementRange, Vec<CfEditChildObjectEntry>), String> {
+    let source = text.trim_start_matches('\u{feff}');
+    let source_offset = text.len() - source.len();
+    let doc = Document::parse(source).map_err(|err| format!("XML parse error: {err}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err("Root element must be <MetaDataObject>".to_string());
+    }
+
+    let mut direct_lists = root
+        .children()
+        .filter(|node| node.is_element())
+        .filter_map(|owner| {
+            owner
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+        });
+    let child_objects = direct_lists.next().ok_or_else(|| {
+        "No <ChildObjects> element found directly under the root metadata object".to_string()
+    })?;
+    if direct_lists.next().is_some() {
+        return Err("Multiple root metadata <ChildObjects> elements found".to_string());
+    }
+
+    let node_range = child_objects.range();
+    let child_start = source_offset + node_range.start;
+    let child_end = source_offset + node_range.end;
+    let child_text = &text[child_start..child_end];
+    let open_end = child_text
+        .find('>')
+        .ok_or_else(|| "Malformed root metadata <ChildObjects> element".to_string())?;
+    let body_range = if child_text[..=open_end].trim_end().ends_with("/>") {
+        None
+    } else {
+        let close_start = child_text
+            .rfind("</ChildObjects>")
+            .ok_or_else(|| "Malformed root metadata </ChildObjects> element".to_string())?;
+        Some((child_start + open_end + 1, child_start + close_start))
+    };
+
     let mut entries = Vec::new();
     for child in child_objects.children().filter(|node| node.is_element()) {
-        let range = child.range();
+        let raw_range = child.range();
+        let range = (source_offset + raw_range.start)..(source_offset + raw_range.end);
         let line_start = text[..range.start].rfind('\n').map_or(0, |pos| pos + 1);
         let prefix_is_indent = text[line_start..range.start]
             .chars()
@@ -2329,7 +2439,7 @@ pub(crate) fn cf_edit_child_object_entries(
             line_range: start..end,
         });
     }
-    Ok(entries)
+    Ok(((child_start, child_end, body_range), entries))
 }
 
 pub(crate) fn cf_edit_line_indent(text: &str, index: usize) -> Option<String> {
@@ -2352,14 +2462,29 @@ pub(crate) fn cf_edit_child_name_cmp(left: &str, right: &str) -> std::cmp::Order
         .then_with(|| left.cmp(right))
 }
 
+pub(crate) fn cf_edit_line_ending(text: &str) -> &'static str {
+    let bytes = text.as_bytes();
+    let Some(index) = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) else {
+        return "\n";
+    };
+    if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+        "\r\n"
+    } else if bytes[index] == b'\r' {
+        "\r"
+    } else {
+        "\n"
+    }
+}
+
 pub(crate) fn cf_edit_child_object_line(
     type_name: &str,
     object_name: &str,
     indent: &str,
+    line_ending: &str,
 ) -> String {
     format!(
-        "{indent}<{type_name}>{}</{type_name}>\n",
-        escape_xml(object_name)
+        "{indent}<{type_name}>{}</{type_name}>{line_ending}",
+        escape_xml(object_name),
     )
 }
 
@@ -2389,11 +2514,8 @@ pub(crate) fn cf_edit_add_child_object_text(
 ) -> Result<bool, String> {
     let new_type_index =
         metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
-    let Some((child_start, child_end, body_range)) = cf_edit_element_range(text, "ChildObjects")
-    else {
-        return Err("No <ChildObjects> element found".to_string());
-    };
-    let entries = cf_edit_child_object_entries(text)?;
+    let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
+    let line_ending = cf_edit_line_ending(text);
     if entries
         .iter()
         .any(|entry| entry.type_name == type_name && entry.object_name == object_name)
@@ -2412,7 +2534,7 @@ pub(crate) fn cf_edit_add_child_object_text(
     if let Some(target) = target {
         let indent =
             cf_edit_line_indent(text, target.range.start).unwrap_or_else(|| "\t\t\t".to_string());
-        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        let line = cf_edit_child_object_line(type_name, object_name, &indent, line_ending);
         text.insert_str(target.line_range.start, &line);
         return Ok(true);
     }
@@ -2420,7 +2542,7 @@ pub(crate) fn cf_edit_add_child_object_text(
     if let Some(last) = entries.last() {
         let indent =
             cf_edit_line_indent(text, last.range.start).unwrap_or_else(|| "\t\t\t".to_string());
-        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        let line = cf_edit_child_object_line(type_name, object_name, &indent, line_ending);
         text.insert_str(last.line_range.end, &line);
         return Ok(true);
     }
@@ -2430,8 +2552,8 @@ pub(crate) fn cf_edit_add_child_object_text(
         let child_indent = format!("{open_indent}\t");
         let close_indent = open_indent;
         let replacement = format!(
-            "<ChildObjects>\n{}{}</ChildObjects>",
-            cf_edit_child_object_line(type_name, object_name, &child_indent),
+            "<ChildObjects>{line_ending}{}{}</ChildObjects>",
+            cf_edit_child_object_line(type_name, object_name, &child_indent, line_ending),
             close_indent
         );
         text.replace_range(child_start..child_end, &replacement);
@@ -2448,9 +2570,9 @@ pub(crate) fn cf_edit_add_child_object_text(
         cf_edit_line_indent(text, child_start).unwrap_or_default()
     };
     let child_indent = format!("{close_indent}\t");
-    let line = cf_edit_child_object_line(type_name, object_name, &child_indent);
+    let line = cf_edit_child_object_line(type_name, object_name, &child_indent, line_ending);
     if body_start == body_end {
-        text.insert_str(body_start, &format!("\n{line}{close_indent}"));
+        text.insert_str(body_start, &format!("{line_ending}{line}{close_indent}"));
     } else {
         text.insert_str(close_line_start, &line);
     }
