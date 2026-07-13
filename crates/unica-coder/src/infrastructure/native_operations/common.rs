@@ -1578,6 +1578,21 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     let Some(state) = read_support_state(&bin_path) else {
         return "не на поддержке".to_string();
     };
+    support_status_for_path_with_state(target_path, &state)
+}
+
+pub(crate) fn support_status_for_path_with_state(
+    target_path: &Path,
+    state: &SupportState,
+) -> String {
+    let object_uuid = support_object_uuid_for_path(target_path);
+    support_status_for_uuid_with_state(object_uuid.as_deref(), state)
+}
+
+pub(crate) fn support_status_for_uuid_with_state(
+    object_uuid: Option<&str>,
+    state: &SupportState,
+) -> String {
     if state.removed {
         return "снято с поддержки (правки свободны)".to_string();
     }
@@ -1585,10 +1600,10 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         return "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
             .to_string();
     }
-    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
+    let Some(object_uuid) = object_uuid else {
         return "не на поддержке".to_string();
     };
-    match state.object_rule(&object_uuid) {
+    match state.object_rule(object_uuid) {
         Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
         Some(1) => "редактируется с сохранением поддержки".to_string(),
         Some(2) => "снято с поддержки (правки свободны)".to_string(),
@@ -1697,7 +1712,12 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
-    if data.len() <= 32 {
+    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
+    parse_support_state_text(&text, data.len())
+}
+
+pub(crate) fn parse_support_state_text(text: &str, byte_len: usize) -> Option<SupportState> {
+    if byte_len <= 32 {
         return Some(SupportState {
             global_editing_enabled: true,
             vendor_count: 0,
@@ -1707,8 +1727,7 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
-    let (global_flag, vendor_count) = parse_support_header(&text)?;
+    let (global_flag, vendor_count) = parse_support_header(text)?;
     if vendor_count == 0 {
         return Some(SupportState {
             global_editing_enabled: true,
@@ -1719,14 +1738,14 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
             vendors: Vec::new(),
         });
     }
-    let (counts, object_rules) = parse_support_object_rules(&text);
+    let (counts, object_rules) = parse_support_object_rules(text);
     Some(SupportState {
         global_editing_enabled: global_flag == 0,
         vendor_count,
         removed: false,
         counts,
         object_rules,
-        vendors: parse_support_vendors(&text),
+        vendors: parse_support_vendors(text),
     })
 }
 
@@ -1755,19 +1774,22 @@ pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<Str
         if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
             let uuid_start = i + 4;
             let uuid_end = uuid_start + 36;
-            if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
-                    let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
-                    let entry = object_rules
-                        .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
+            if let Some(uuid_bytes) = bytes.get(uuid_start..uuid_end) {
+                if uuid_bytes.is_ascii() {
+                    if let Ok(uuid) = std::str::from_utf8(uuid_bytes) {
+                        if is_uuid_text(uuid) {
+                            let flag_value = flag - b'0';
+                            counts[flag_value as usize] += 1;
+                            let entry = object_rules
+                                .entry(uuid.to_ascii_lowercase())
+                                .or_insert(flag_value);
+                            if flag_value < *entry {
+                                *entry = flag_value;
+                            }
+                            i = uuid_end;
+                            continue;
+                        }
                     }
-                    i = uuid_end;
-                    continue;
                 }
             }
         }
@@ -2034,4 +2056,19 @@ pub(crate) fn escape_xml(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_support_object_rules;
+
+    #[test]
+    fn support_rules_ignore_uuid_window_ending_inside_multibyte_character() {
+        let malformed = format!("0,0,{}é", "a".repeat(35));
+
+        let (counts, object_rules) = parse_support_object_rules(&malformed);
+
+        assert_eq!(counts, [0, 0, 0]);
+        assert!(object_rules.is_empty());
+    }
 }

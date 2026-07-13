@@ -1,4 +1,5 @@
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::bounded_file::read_bounded_bytes;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use fs2::FileExt;
@@ -20,6 +21,7 @@ const LOCK_SCHEMA_VERSION: u32 = 1;
 const RLM_INDEX_DIR_NAME: &str = "rlm-tools-bsl";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
+const MAX_STATUS_FILE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexReadiness {
@@ -789,8 +791,15 @@ fn duration_ms(duration: Duration) -> u64 {
 }
 
 pub fn read_bsl_index_status(context: &WorkspaceContext) -> Option<BslIndexStatus> {
-    let text = fs::read_to_string(status_path(context)).ok()?;
-    serde_json::from_str(&text).ok()
+    let cache_root = fs::canonicalize(&context.cache_root).ok()?;
+    let contents = read_bounded_bytes(
+        &status_path(context),
+        MAX_STATUS_FILE_BYTES,
+        Some(&cache_root),
+    )
+    .ok()?;
+    let text = std::str::from_utf8(&contents.bytes).ok()?;
+    serde_json::from_str(text).ok()
 }
 
 pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
@@ -1389,6 +1398,34 @@ mod tests {
         assert_eq!(metrics.action, "build");
         assert_eq!(metrics.duration_ms, 1234);
         assert_eq!(metrics.index_version.as_deref(), Some("v14"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn index_status_reader_rejects_oversized_files() {
+        let context = test_context("oversized-status");
+        let status = status_path(&context);
+        fs::create_dir_all(status.parent().unwrap()).unwrap();
+        fs::write(&status, vec![b' '; (MAX_STATUS_FILE_BYTES + 1) as usize]).unwrap();
+
+        assert!(read_bsl_index_status(&context).is_none());
+        cleanup(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_status_reader_rejects_symlinks_outside_cache_root() {
+        use std::os::unix::fs::symlink;
+
+        let context = test_context("symlinked-status");
+        let outside = context.workspace_root.join("outside-status.json");
+        let status = status_path(&context);
+        fs::create_dir_all(status.parent().unwrap()).unwrap();
+        let value = BslIndexStatus::building("build", Some(&context.workspace_root.join("src")));
+        fs::write(&outside, serde_json::to_vec(&value).unwrap()).unwrap();
+        symlink(&outside, &status).unwrap();
+
+        assert!(read_bsl_index_status(&context).is_none());
         cleanup(&context);
     }
 

@@ -77,6 +77,7 @@ responses = [json.loads(line) for line in result.stdout.splitlines()]
 assert responses[0]["result"]["serverInfo"]["name"] == "unica"
 tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
 assert "unica.project.status" in tools
+assert "unica.project.discover" in tools
 assert "unica.form.edit" in tools
 assert "unica.build.load" in tools
 assert "unica.runtime.execute" in tools

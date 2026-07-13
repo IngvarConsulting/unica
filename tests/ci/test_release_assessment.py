@@ -41,6 +41,7 @@ import sys
 TOOLS = [
     "unica.project.status",
     "unica.project.map",
+    "unica.project.discover",
     "unica.cf.info",
     "unica.cf.validate",
     "unica.code.diagnostics",

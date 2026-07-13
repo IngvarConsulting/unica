@@ -7,10 +7,11 @@ use crate::infrastructure::workspace_index::{
 };
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::AdapterOutcome;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -702,8 +703,8 @@ fn secret_value_delimiter(ch: char) -> bool {
     matches!(ch, ';' | '&' | ',' | '\n' | '\r' | '}')
 }
 
-fn search_rlm_index(
-    db_path: &PathBuf,
+pub(crate) fn search_rlm_index(
+    db_path: &Path,
     args: &Map<String, Value>,
 ) -> Result<Option<String>, String> {
     let Some(query) = args.get("query").and_then(Value::as_str) else {
@@ -718,7 +719,7 @@ fn search_rlm_index(
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(20);
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let conn = open_read_only_index(db_path)?;
     let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
     let mut stmt = conn
         .prepare(
@@ -729,7 +730,7 @@ fn search_rlm_index(
              JOIN methods m ON m.id = methods_fts.rowid \
              JOIN modules mod ON mod.id = m.module_id \
              WHERE methods_fts MATCH ? \
-             ORDER BY methods_fts.rank \
+             ORDER BY methods_fts.rank, mod.rel_path, m.line, m.name, m.id \
              LIMIT ?",
         )
         .map_err(|error| error.to_string())?;
@@ -1130,10 +1131,13 @@ impl ProfileIdentity {
     }
 }
 
-fn find_definitions(db_path: &PathBuf, args: &Map<String, Value>) -> Result<String, String> {
+pub(crate) fn find_definitions(
+    db_path: &Path,
+    args: &Map<String, Value>,
+) -> Result<String, String> {
     let name = required_string(args, "name")?;
     let limit = read_limit(args, 50);
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let conn = open_read_only_index(db_path)?;
     let mut lines = Vec::new();
     if let Some(module_hint) = args.get("moduleHint").and_then(Value::as_str) {
         let hint = format!("%{}%", module_hint.trim());
@@ -1182,6 +1186,23 @@ fn find_definitions(db_path: &PathBuf, args: &Map<String, Value>) -> Result<Stri
     } else {
         Ok(lines.join("\n"))
     }
+}
+
+fn open_read_only_index(db_path: &Path) -> Result<Connection, String> {
+    let file_type = fs::symlink_metadata(db_path)
+        .map_err(|error| error.to_string())?
+        .file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err("index database must be a regular, non-symlink file".to_string());
+    }
+    let db_path = fs::canonicalize(db_path).map_err(|error| error.to_string())?;
+    Connection::open_with_flags(
+        &db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn definition_line(row: &Row<'_>) -> rusqlite::Result<String> {

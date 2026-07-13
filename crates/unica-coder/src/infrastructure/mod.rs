@@ -1,4 +1,6 @@
+pub(crate) mod bounded_file;
 pub(crate) mod bundled_tools;
+pub(crate) mod extension_point_discovery;
 pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
 pub mod native_operations;

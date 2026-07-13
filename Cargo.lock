@@ -713,6 +713,7 @@ dependencies = [
  "sha2",
  "ureq",
  "uuid",
+ "windows-sys",
 ]
 
 [[package]]

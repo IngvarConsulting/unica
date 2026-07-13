@@ -102,10 +102,31 @@ pub(crate) fn validate_form(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    validate_form_with_snapshot(args, context, None)
+}
+
+pub(crate) fn validate_form_snapshot(
+    form_path: &Path,
+    text: &str,
+    context: &WorkspaceContext,
+) -> AdapterOutcome {
+    let mut args = Map::new();
+    args.insert(
+        "FormPath".to_string(),
+        json!(form_path.display().to_string()),
+    );
+    validate_form_with_snapshot(&args, context, Some(text))
+}
+
+fn validate_form_with_snapshot(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    snapshot: Option<&str>,
+) -> AdapterOutcome {
     let result = (|| -> Result<(bool, String, PathBuf, Vec<String>), String> {
         let raw_path = required_path(args, &["formPath", "FormPath", "path", "Path"], "FormPath")?;
         let form_path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
-        if !form_path.is_file() {
+        if snapshot.is_none() && !form_path.is_file() {
             return Err(format!("File not found: {}", form_path.display()));
         }
 
@@ -116,7 +137,10 @@ pub(crate) fn validate_form(
             .unwrap_or(30);
         let form_name = form_validation_name(&form_path);
 
-        let text = read_utf8_sig(&form_path)?;
+        let text = match snapshot {
+            Some(text) => text.to_string(),
+            None => read_utf8_sig(&form_path)?,
+        };
         let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
             Ok(doc) => doc,
             Err(err) => {

@@ -28,6 +28,7 @@ SOURCE_DIR = "src/cf"
 EXPECTED_PUBLIC_TOOLS = {
     "unica.project.status",
     "unica.project.map",
+    "unica.project.discover",
     "unica.cf.info",
     "unica.cf.validate",
     "unica.code.diagnostics",
@@ -474,6 +475,19 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
+        (
+            "project-discover",
+            "Evidence-backed extension point preflight",
+            "unica.project.discover",
+            {
+                "sourceDir": SOURCE_DIR,
+                "task": "Проверить типовой механизм работы со справочником валют",
+                "objects": ["Catalog.Валюты"],
+                "limit": 10,
+            },
+            True,
+            True,
+        ),
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR, "Mode": "brief", "Limit": 80}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
         (

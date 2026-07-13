@@ -18,3 +18,4 @@ roxmltree = "0.20"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

@@ -1107,6 +1107,30 @@
           "decisionReason": "Unica-owned skill; ai-rules-1c changes are secondary guidance only and do not replace the Infostart-based API model."
         },
         {
+          "skill": "extension-point-discovery",
+          "status": "adapted",
+          "notes": "Unica-owned mandatory preflight skill for evidence-backed discovery of extension points in supported 1C configurations; ai-rules-1c is tracked only as secondary architecture guidance.",
+          "upstreamPaths": [
+            "content/agents/architect.md",
+            "content/agents/arch-reviewer.md",
+            "content/rules/extension-patterns.md",
+            "content/rules/dev-standards-architecture.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/extension-point-discovery"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/extension_point_discovery.rs",
+            "tests/ci/test_unica_skills.py",
+            "tests/ci/test_unica_mcp_smoke.py"
+          ],
+          "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
+          "primarySource": "unica",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Unica-owned skill and typed MCP contract; ai-rules-1c changes are secondary guidance only and do not define the discovery result schema or evidence policy."
+        },
+        {
           "skill": "background-jobs",
           "status": "adapted",
           "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",

@@ -2,6 +2,7 @@ use super::{project_map, project_status, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::extension_point_discovery::ExtensionPointDiscoveryAdapter;
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter,
     StandardsAdapter,
@@ -60,6 +61,9 @@ impl ApplicationPorts for DefaultApplicationPorts {
             ),
             ToolHandler::ProjectStatus => Ok(project_status(context)),
             ToolHandler::ProjectMap => Ok(project_map(context)),
+            ToolHandler::ProjectDiscovery => {
+                ExtensionPointDiscoveryAdapter::new().invoke(spec.name, args, context, dry_run)
+            }
             ToolHandler::BuildRuntime { command, .. } => CliAdapter::new(
                 "v8-runner",
                 command,

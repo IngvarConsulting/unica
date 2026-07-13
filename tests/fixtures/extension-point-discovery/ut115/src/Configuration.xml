@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
+	<Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa">
+		<Properties>
+			<Name>UT115DiscoveryFixture</Name>
+		</Properties>
+		<ChildObjects>
+			<Document>ПриобретениеТоваровУслуг</Document>
+			<DataProcessor>ПодборСерийВДокументы</DataProcessor>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>

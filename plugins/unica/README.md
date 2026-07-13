@@ -9,6 +9,7 @@ The public skills model developer operations, not infrastructure tools:
 - run v8-runner database/build/runtime workflows through MCP `unica`;
 - work with forms, roles, SKD, MXL, subsystems, command interfaces, help, templates, and autonomous web-client debug;
 - search, review, diagnose, test, and analyze BSL code inside those workflows.
+- discover evidence-backed extension points before changing a typical supported configuration.
 - bootstrap a new 1C repository workspace with `v8project.yaml`.
 
 Bundled tooling, MCP server names, checksums, and third-party notices are internal package infrastructure. Project configuration is `v8project.yaml`; database and build workflows should use the `v8-runner` skill, which calls MCP `unica.runtime.execute`. See `references/tooling/internal-package.md` when maintaining the plugin itself.
@@ -24,7 +25,7 @@ The `skills/` directory contains operation skills and scenario references for 1C
 - `form-add`, `form-edit`, `form-info`, `form-compile`, `form-validate`, `form-remove`
 - `meta-compile`, `meta-edit`, `meta-info`, `meta-remove`, `meta-validate`
 - `mxl-*`, `role-*`, `skd-*`, `subsystem-*`, `interface-*`, `template-*`, `web-test`, `img-grid`
-- `code-search`, `code-diagnostics`, `code-review`, `query-optimize`, `test-authoring`
+- `extension-point-discovery`, `code-search`, `code-diagnostics`, `code-review`, `query-optimize`, `test-authoring`
 - `api-design`, `platform-help`, `bsp-patterns`, `integration-implement`, `autonomous-server`, `log-analysis`
 - `background-jobs`, `data-exchange`, `db-performance`, `security-auth-crypto`, `data-separation`, `release-support`, `support-edit`
 

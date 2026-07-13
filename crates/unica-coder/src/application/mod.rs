@@ -37,6 +37,7 @@ pub enum ToolHandler {
     },
     ProjectStatus,
     ProjectMap,
+    ProjectDiscovery,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
@@ -67,6 +68,8 @@ pub struct OperationResult {
     pub command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 pub struct UnicaApplication {
@@ -128,6 +131,17 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::ProjectMap,
+        },
+        ToolSpec {
+            name: "unica.project.discover",
+            description:
+                "Discover evidence-backed extension point candidates before changing a 1C project.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph", "bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::ProjectDiscovery,
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -331,6 +345,7 @@ fn call_tool(
                     stderr: outcome.stderr,
                     command: outcome.command,
                     diagnostics: None,
+                    data: None,
                 });
             }
         }
@@ -354,6 +369,7 @@ fn call_tool(
         ports.notify_invalidation(&context, &events);
     }
     let diagnostics = runtime_result_diagnostics(spec, args, &context, &outcome);
+    let data = take_structured_data(spec, &mut outcome)?;
 
     Ok(OperationResult {
         ok: outcome.ok,
@@ -367,7 +383,23 @@ fn call_tool(
         stderr: outcome.stderr,
         command: outcome.command,
         diagnostics,
+        data,
     })
+}
+
+fn take_structured_data(
+    spec: ToolSpec,
+    outcome: &mut AdapterOutcome,
+) -> Result<Option<Value>, String> {
+    if !matches!(spec.handler, ToolHandler::ProjectDiscovery) {
+        return Ok(None);
+    }
+    let Some(stdout) = outcome.stdout.take() else {
+        return Ok(None);
+    };
+    serde_json::from_str(&stdout)
+        .map(Some)
+        .map_err(|error| format!("{} returned invalid structured data: {error}", spec.name))
 }
 
 fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
@@ -1300,6 +1332,7 @@ mod tests {
         let names = tools().iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert!(names.contains(&"unica.project.status"));
         assert!(names.contains(&"unica.project.map"));
+        assert!(names.contains(&"unica.project.discover"));
         assert!(names.contains(&"unica.form.validate"));
         assert!(names.contains(&"unica.skd.edit"));
         assert!(names.contains(&"unica.mxl.compile"));

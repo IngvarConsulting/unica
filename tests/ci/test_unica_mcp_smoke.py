@@ -41,6 +41,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("unica.project.status", tools)
         self.assertIn("unica.project.map", tools)
+        self.assertIn("unica.project.discover", tools)
         self.assertIn("unica.form.edit", tools)
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
@@ -102,3 +103,58 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("bin/", command)
         self.assertIn("v8-runner", command)
         self.assertNotIn("run-v8-runner.sh", command)
+
+    def test_project_discover_returns_task_only_fixture_flow_as_structured_data(self) -> None:
+        fixture = self.repo_root() / "tests/fixtures/extension-point-discovery/ut115"
+        with tempfile.TemporaryDirectory() as tmp:
+            responses = self.call_mcp(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.project.discover",
+                            "arguments": {
+                                "cwd": str(fixture),
+                                "task": "При поступлении проверять остаточный срок годности серий",
+                            },
+                        },
+                    }
+                ],
+                cache_dir=Path(tmp) / "cache",
+            )
+
+        payload = json.loads(responses[0]["result"]["content"][0]["text"])
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("stdout", payload)
+        self.assertNotIn("bsl_diagnostics", payload["cache"]["lazy_rebuilt"])
+        self.assertNotIn("bsl_diagnostics", payload["cache"]["fresh"])
+        data = payload["data"]
+        self.assertEqual(data["schemaVersion"], 1)
+        self.assertEqual(data["status"], "partial")
+        self.assertNotIn("task", data)
+        objects = {candidate["object"] for candidate in data["candidateExtensionPoints"]}
+        self.assertIn(
+            "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
+            objects,
+        )
+        self.assertIn("DataProcessor.ПодборСерийВДокументы", objects)
+        self.assertIn(
+            "DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров",
+            objects,
+        )
+        lexical = [
+            evidence
+            for evidence in data["evidence"]
+            if evidence["source"] == "bsl_lexical_scan"
+        ]
+        self.assertTrue(lexical)
+        self.assertTrue(all(evidence.get("line", 0) > 0 for evidence in lexical))
+        self.assertTrue(
+            all(
+                not Path(evidence["path"]).is_absolute()
+                for evidence in data["evidence"]
+                if "path" in evidence
+            )
+        )

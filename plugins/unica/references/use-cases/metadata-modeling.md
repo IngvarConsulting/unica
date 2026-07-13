@@ -19,6 +19,12 @@ source-set is EDT (`sourceFormat=edt`), do not apply platform XML edits directly
 use runtime conversion/build workflows or ask for an explicit platform XML
 target.
 
+For an existing typical or vendor-supported configuration, run
+`unica.project.discover` with the task and known objects before selecting a
+mutation tool. Resolve architecture-relevant warnings and missing checks, then
+record the evidence-backed extension point; use the
+`extension-point-discovery` skill for the complete selection gate.
+
 The workspace itself does not have a single source format. A project can contain
 an EDT configuration source-set and a platform XML external processor/report
 source-set. The format decision belongs to the selected source-set.

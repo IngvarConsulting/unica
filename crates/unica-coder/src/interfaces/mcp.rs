@@ -154,6 +154,9 @@ mod tests {
             .any(|tool| tool["name"] == "unica.project.map"));
         assert!(listed
             .iter()
+            .any(|tool| tool["name"] == "unica.project.discover"));
+        assert!(listed
+            .iter()
             .any(|tool| tool["name"] == "unica.standards.explain"));
     }
 

@@ -567,6 +567,50 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
 
+    def test_extension_point_discovery_enforces_preflight_policy(self) -> None:
+        skill_dir = self.skill_root() / "extension-point-discovery"
+        skill_doc = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        agent_doc = (skill_dir / "agents" / "openai.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("TODO", skill_doc)
+        self.assertNotIn("TODO", agent_doc)
+        for token in [
+            "unica.project.discover",
+            '"task"',
+            '"objects"',
+            "proposedExtensionPoints",
+            '"schemaVersion": 1',
+            '"data"',
+            '"status": "partial"',
+            '"source"',
+            "candidateExtensionPoints",
+            "missingChecks",
+            "MCP-first",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, skill_doc)
+
+        self.assertRegex(
+            skill_doc,
+            r"(?is)не\s+начина(?:й|ть).*изменени.*(?:выбор|выбра).*точк",
+        )
+        self.assertIn("$extension-point-discovery", agent_doc)
+
+        calls = [
+            json.loads(block)
+            for block in re.findall(r"```json\n(.*?)\n```", skill_doc, flags=re.S)
+            if '"method": "tools/call"' in block
+        ]
+        self.assertGreaterEqual(len(calls), 1)
+        discover = calls[0]
+        self.assertEqual(discover["params"]["name"], "unica.project.discover")
+        arguments = discover["params"]["arguments"]
+        self.assertIn("task", arguments)
+        self.assertNotIn("objects", arguments)
+        self.assertNotIn("proposedExtensionPoints", arguments)
+
     def test_ai_rules_guidance_refresh_is_adapted_to_unica_surface(self) -> None:
         docs = {
             "code-search": self.skill_root() / "code-search" / "SKILL.md",

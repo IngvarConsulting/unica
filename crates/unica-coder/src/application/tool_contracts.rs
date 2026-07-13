@@ -468,6 +468,13 @@ const CODE_ARGS: &[&str] = &[
     "query",
     "sourceDir",
 ];
+const PROJECT_DISCOVERY_ARGS: &[&str] = &[
+    "limit",
+    "objects",
+    "proposedExtensionPoints",
+    "sourceDir",
+    "task",
+];
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
@@ -584,6 +591,7 @@ pub fn validate_tool_arguments(
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_project_discovery_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
     validate_template_add_arguments(tool, args)?;
@@ -598,6 +606,115 @@ pub fn validate_tool_arguments(
     }
 
     Ok(())
+}
+
+fn validate_project_discovery_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if !matches!(tool.handler, ToolHandler::ProjectDiscovery) {
+        return Ok(());
+    }
+
+    let task = args
+        .get("task")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{} requires `task` argument", tool.name))?;
+    let task_len = task.chars().count();
+    if task.trim().is_empty() || task_len > 4096 || task.chars().any(char::is_control) {
+        return Err(format!(
+            "{} argument `task` must contain 1..=4096 printable characters",
+            tool.name
+        ));
+    }
+
+    if let Some(cwd) = args.get("cwd") {
+        let cwd = cwd
+            .as_str()
+            .ok_or_else(|| format!("{} argument `cwd` must be string", tool.name))?;
+        if cwd.trim().is_empty() || cwd.chars().count() > 4096 || cwd.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "{} argument `cwd` must contain 1..=4096 printable characters",
+                tool.name
+            ));
+        }
+    }
+
+    if let Some(source_dir) = args.get("sourceDir") {
+        let source_dir = source_dir
+            .as_str()
+            .ok_or_else(|| format!("{} argument `sourceDir` must be string", tool.name))?;
+        if source_dir.trim().is_empty()
+            || source_dir.chars().count() > 4096
+            || source_dir.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "{} argument `sourceDir` must contain 1..=4096 printable characters",
+                tool.name
+            ));
+        }
+    }
+
+    for key in ["objects", "proposedExtensionPoints"] {
+        let Some(value) = args.get(key) else {
+            continue;
+        };
+        let items = value
+            .as_array()
+            .ok_or_else(|| format!("{} argument `{key}` must be array", tool.name))?;
+        if items.is_empty() || items.len() > 32 {
+            return Err(format!(
+                "{} argument `{key}` must contain 1..=32 strings",
+                tool.name
+            ));
+        }
+        for item in items {
+            let item = item
+                .as_str()
+                .ok_or_else(|| format!("{} argument `{key}` must contain strings", tool.name))?;
+            if item.trim().is_empty() || item.chars().count() > 512 {
+                return Err(format!(
+                    "{} argument `{key}` items must contain 1..=512 characters",
+                    tool.name
+                ));
+            }
+            if item.chars().any(char::is_control)
+                || item.contains('/')
+                || item.contains('\\')
+                || !is_metadata_reference(item)
+            {
+                return Err(format!(
+                    "{} argument `{key}` items must be canonical dotted metadata references, not paths",
+                    tool.name
+                ));
+            }
+        }
+    }
+
+    if let Some(limit) = args.get("limit") {
+        let limit = limit
+            .as_i64()
+            .ok_or_else(|| format!("{} argument `limit` must be integer", tool.name))?;
+        if !(1..=50).contains(&limit) {
+            return Err(format!(
+                "{} argument `limit` must be between 1 and 50",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_metadata_reference(value: &str) -> bool {
+    let segments = value.split('.').collect::<Vec<_>>();
+    segments.len() >= 2
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|character| character.is_alphanumeric() || character == '_')
+        })
 }
 
 fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -1207,6 +1324,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
+        ToolHandler::ProjectDiscovery => names.extend(PROJECT_DISCOVERY_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
     names.sort_unstable();
@@ -1228,6 +1346,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             ..
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
+        ToolHandler::ProjectDiscovery => vec!["task"],
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.definition" => vec!["name"],
             "unica.code.outline" => vec!["path"],
@@ -1364,6 +1483,19 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if matches!(tool.handler, ToolHandler::ProjectDiscovery) {
+        return match name {
+            "task" => json!({ "type": "string", "minLength": 1, "maxLength": 4096 }),
+            "objects" | "proposedExtensionPoints" => json!({
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }),
+            "limit" => json!({ "type": "integer", "minimum": 1, "maximum": 50 }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
@@ -1537,6 +1669,67 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::application::tools;
+
+    #[test]
+    fn project_discovery_contract_is_typed_and_rejects_ambiguous_input() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.project.discover")
+            .expect("project discovery tool exists");
+
+        let schema = input_schema_for_tool(&tool);
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["task"]));
+        assert_eq!(schema["properties"]["task"]["type"], "string");
+        assert_eq!(schema["properties"]["objects"]["type"], "array");
+        assert_eq!(schema["properties"]["objects"]["items"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["proposedExtensionPoints"]["items"]["type"],
+            "string"
+        );
+        assert!(schema["properties"].get("args").is_none());
+
+        for invalid in [
+            json!({}),
+            json!({"task": "   "}),
+            json!({"task": "Контроль серий", "objects": [1]}),
+            json!({"task": "Контроль серий", "objects": [""]}),
+            json!({"task": "Контроль серий", "objects": ["Catalog"]}),
+            json!({"task": "Контроль серий", "objects": ["Catalog.Secret!"]}),
+            json!({"task": "Контроль серий", "objects": ["../Catalog.Secret"]}),
+            json!({"task": "Контроль серий", "sourceDir": 1}),
+            json!({"task": "Контроль серий", "sourceDir": " "}),
+            json!({"task": "Контроль серий", "cwd": 1}),
+            json!({"task": "Контроль серий", "cwd": " "}),
+            json!({"task": "Контроль серий", "proposedExtensionPoints": [" "]}),
+            json!({"task": "Контроль серий", "limit": 0}),
+            json!({"task": "Контроль серий", "limit": 51}),
+            json!({"task": "Контроль серий", "limit": "20"}),
+        ] {
+            let invalid = invalid.as_object().unwrap().clone();
+            assert!(validate_tool_arguments(tool, &invalid, false).is_err());
+        }
+
+        let valid = json!({
+            "task": "Контроль остаточного срока годности при поступлении",
+            "objects": ["Document.ПриобретениеТоваровУслуг"],
+            "proposedExtensionPoints": ["Document.ПриобретениеТоваровУслуг.TabularSection.Товары.Серия"],
+            "limit": 20
+        });
+        validate_tool_arguments(tool, valid.as_object().unwrap(), false).unwrap();
+
+        let empty = Map::new();
+        assert!(
+            validate_tool_arguments(tool, &empty, true).is_err(),
+            "dryRun must not bypass discovery input validation"
+        );
+
+        let too_many = json!({
+            "task": "Контроль серий",
+            "objects": (0..33).map(|index| format!("Catalog.Item{index}")).collect::<Vec<_>>()
+        });
+        assert!(validate_tool_arguments(tool, too_many.as_object().unwrap(), false).is_err());
+    }
 
     #[test]
     fn native_contracts_reject_unknown_args() {
