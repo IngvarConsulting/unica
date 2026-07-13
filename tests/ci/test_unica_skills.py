@@ -55,6 +55,14 @@ OUT_OF_SCOPE = [
 ]
 
 SCENARIO_SKILLS = {
+    "code-patch": [
+        "unica.code.patch",
+        "unica.project.map",
+        "unica.code.outline",
+        "unica.code.definition",
+        "unica.code.grep",
+        "unica.code.diagnostics",
+    ],
     "api-design": [
         "unica.code.search",
         "unica.code.definition",
@@ -217,6 +225,7 @@ SCENARIO_SKILLS = {
 }
 
 SCENARIO_REQUIRED_TOKENS = {
+    "code-patch": ["dryRun", "expectedCount", "ModuleChanged", "moduleId", "matchCount"],
     "api-design": [
         "483",
         "543",

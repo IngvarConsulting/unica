@@ -1,0 +1,4 @@
+interface:
+  display_name: "BSL Code Patch"
+  short_description: "Safely patch BSL modules with guarded selectors"
+  default_prompt: "Use $code-patch to preview and safely apply a guarded BSL module change."

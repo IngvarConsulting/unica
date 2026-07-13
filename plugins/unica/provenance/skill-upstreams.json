@@ -1107,6 +1107,28 @@
           "decisionReason": "Unica-owned skill; ai-rules-1c changes are secondary guidance only and do not replace the Infostart-based API model."
         },
         {
+          "skill": "code-patch",
+          "status": "adapted",
+          "notes": "Unica-owned operational skill for the typed unica.code.patch contract; ai-rules-1c is tracked only as secondary guidance for safe development and verification workflows.",
+          "upstreamPaths": [
+            "content/rules/dev-standards-core.md",
+            "content/rules/verification-checklist.md",
+            "content/rules/tooling-playbooks.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/code-patch"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/code.rs",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
+          "primarySource": "unica",
+          "decision": "ignored-with-reason",
+          "decisionReason": "Unica-owned typed MCP workflow; ai-rules-1c remains secondary guidance and does not define the public patch contract."
+        },
+        {
           "skill": "background-jobs",
           "status": "adapted",
           "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",

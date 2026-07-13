@@ -5,6 +5,7 @@
 
 pub(crate) mod cf;
 pub(crate) mod cfe;
+pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod form;
 pub(crate) mod help;
@@ -19,8 +20,9 @@ pub(crate) mod support;
 pub(crate) mod template;
 
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::internal_adapters::RuntimeAdapter;
 use crate::infrastructure::AdapterOutcome;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::fs;
 
 pub struct NativeOperationAdapter;
@@ -34,6 +36,12 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
+        if dry_run && operation == "code-patch" {
+            let mut outcome = code::patch_code(args, context, true);
+            code::record_platform_syntax_result(&mut outcome, args, None, true);
+            return Ok(outcome);
+        }
+
         if dry_run {
             return Ok(AdapterOutcome {
                 ok: true,
@@ -53,11 +61,29 @@ impl NativeOperationAdapter {
         }
 
         if mutating {
-            return registry::invoke_mutation(operation, tool_name, args, context).ok_or_else(|| {
+            let mut outcome = registry::invoke_mutation(operation, tool_name, args, context)
+                .ok_or_else(|| {
                 format!(
                     "native mutation handler is not registered for {tool_name} operation `{operation}`"
                 )
-            });
+            })?;
+            if operation == "code-patch" && outcome.ok {
+                let syntax_outcome = if args
+                    .get("platformSyntax")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "configuredInfobase")
+                    && code_patch_was_applied(&outcome)
+                {
+                    let mut syntax_args = Map::new();
+                    syntax_args.insert("mode".to_string(), json!("designer-modules"));
+                    syntax_args.insert("server".to_string(), json!(true));
+                    Some(RuntimeAdapter::new().invoke_syntax_json(tool_name, &syntax_args, context))
+                } else {
+                    None
+                };
+                code::record_platform_syntax_result(&mut outcome, args, syntax_outcome, false);
+            }
+            return Ok(outcome);
         }
 
         if let Some(outcome) = registry::invoke_read(operation, tool_name, args, context) {
@@ -69,6 +95,15 @@ impl NativeOperationAdapter {
             .map_err(|err| format!("failed to read {}: {err}", target.display()))?;
         Ok(common::analyze_xml(operation, tool_name, &target, &text))
     }
+}
+
+fn code_patch_was_applied(outcome: &AdapterOutcome) -> bool {
+    outcome
+        .stdout
+        .as_deref()
+        .and_then(|stdout| serde_json::from_str::<Value>(stdout).ok())
+        .and_then(|details| details.get("applied").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

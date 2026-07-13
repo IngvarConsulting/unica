@@ -74,6 +74,16 @@ pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
 }
 
+struct RuntimeInvocation<'a> {
+    tool_name: &'a str,
+    context: &'a WorkspaceContext,
+    plugin_root: &'a Path,
+    report_args: Vec<String>,
+    execution_args: Vec<String>,
+    dry_run: bool,
+    mutating: bool,
+}
+
 pub struct CodeSearchAdapter<'a> {
     bsl_runner: &'a dyn ProcessRunner,
     grep_runner: &'a dyn ProcessRunner,
@@ -245,7 +255,50 @@ impl<'a> RuntimeAdapter<'a> {
         })?;
         let report_args = runtime_args(args, true)?;
         let execution_args = runtime_args(args, false)?;
-        let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
+        self.invoke_runtime(RuntimeInvocation {
+            tool_name,
+            context,
+            plugin_root: &plugin_root,
+            report_args,
+            execution_args,
+            dry_run,
+            mutating,
+        })
+    }
+
+    pub fn invoke_syntax_json(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<AdapterOutcome, String> {
+        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for internal adapter lookup".to_string()
+        })?;
+        let report_args = runtime_syntax_json_args(args, true)?;
+        let execution_args = runtime_syntax_json_args(args, false)?;
+        self.invoke_runtime(RuntimeInvocation {
+            tool_name,
+            context,
+            plugin_root: &plugin_root,
+            report_args,
+            execution_args,
+            dry_run: false,
+            mutating: false,
+        })
+    }
+
+    fn invoke_runtime(&self, invocation: RuntimeInvocation<'_>) -> Result<AdapterOutcome, String> {
+        let RuntimeInvocation {
+            tool_name,
+            context,
+            plugin_root,
+            report_args,
+            execution_args,
+            dry_run,
+            mutating,
+        } = invocation;
+        let bundled_tool = resolve_bundled_tool(plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(report_args);
 
@@ -2639,6 +2692,24 @@ fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, 
     Ok(result)
 }
 
+fn runtime_syntax_json_args(
+    args: &Map<String, Value>,
+    redact: bool,
+) -> Result<Vec<String>, String> {
+    if args.contains_key("operation") {
+        return Err(
+            "internal syntax invocation fixes `operation` to `syntax`; omit `operation`"
+                .to_string(),
+        );
+    }
+
+    let mut syntax_args = args.clone();
+    syntax_args.insert("operation".to_string(), json!("syntax"));
+    let mut result = runtime_args(&syntax_args, redact)?;
+    result.insert(0, "--json-message".to_string());
+    Ok(result)
+}
+
 fn append_runtime_global_args(
     result: &mut Vec<String>,
     operation: &str,
@@ -3063,6 +3134,75 @@ mod tests {
             .to_string_lossy()
             .contains("run-v8-runner.sh"));
         drop(commands);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_syntax_json_uses_only_typed_syntax_argv() {
+        let context = temp_context("runtime-syntax-json-argv");
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "{\"status\":\"success\"}".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("designer-modules"));
+        args.insert("server".to_string(), json!(true));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke_syntax_json("unica.code.patch", &args, &context)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(
+            commands[0].args,
+            vec!["--json-message", "syntax", "designer-modules", "--server"]
+        );
+        assert!(commands[0]
+            .args
+            .iter()
+            .all(|arg| !matches!(arg.as_str(), "build" | "load" | "update")));
+        assert!(commands[0].timeout.is_none());
+        drop(commands);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_syntax_json_rejects_raw_or_overridden_operation() {
+        let context = temp_context("runtime-syntax-json-rejects-raw");
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+            },
+        };
+        let mut raw_args = Map::new();
+        raw_args.insert("args".to_string(), json!(["build", "load", "update"]));
+
+        let raw_error = RuntimeAdapter::with_runner(&runner)
+            .invoke_syntax_json("unica.code.patch", &raw_args, &context)
+            .unwrap_err();
+
+        assert!(raw_error.contains("raw args are not accepted"));
+        let mut overridden_args = Map::new();
+        overridden_args.insert("operation".to_string(), json!("load"));
+
+        let override_error = RuntimeAdapter::with_runner(&runner)
+            .invoke_syntax_json("unica.code.patch", &overridden_args, &context)
+            .unwrap_err();
+
+        assert!(override_error.contains("fixes `operation` to `syntax`"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 

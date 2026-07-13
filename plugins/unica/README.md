@@ -24,7 +24,7 @@ The `skills/` directory contains operation skills and scenario references for 1C
 - `form-add`, `form-edit`, `form-info`, `form-compile`, `form-validate`, `form-remove`
 - `meta-compile`, `meta-edit`, `meta-info`, `meta-remove`, `meta-validate`
 - `mxl-*`, `role-*`, `skd-*`, `subsystem-*`, `interface-*`, `template-*`, `web-test`, `img-grid`
-- `code-search`, `code-diagnostics`, `code-review`, `query-optimize`, `test-authoring`
+- `code-search`, `code-patch`, `code-diagnostics`, `code-review`, `query-optimize`, `test-authoring`
 - `api-design`, `platform-help`, `bsp-patterns`, `integration-implement`, `autonomous-server`, `log-analysis`
 - `background-jobs`, `data-exchange`, `db-performance`, `security-auth-crypto`, `data-separation`, `release-support`, `support-edit`
 

@@ -6,7 +6,7 @@ use crate::infrastructure::native_operations::common::{
     absolutize, path_arg, required_string, support_guard_violation, SupportGuardRequirement,
     SupportGuardViolation,
 };
-use crate::infrastructure::native_operations::{meta, template};
+use crate::infrastructure::native_operations::{code, meta, template};
 use crate::infrastructure::AdapterOutcome;
 use operation_descriptors::SupportGuardPolicy;
 use ports::{ApplicationPorts, DefaultApplicationPorts};
@@ -67,6 +67,8 @@ pub struct OperationResult {
     pub command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 pub struct UnicaApplication {
@@ -202,6 +204,20 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::RuntimeAdapter,
         },
         ToolSpec {
+            name: "unica.code.patch",
+            description:
+                "Patch a BSL module through guarded BSL-aware selectors and atomic writes.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["bsl_index", "bsl_diagnostics"],
+            },
+            handler: ToolHandler::NativeOperation {
+                operation: "code-patch",
+                event: Some(DomainEventKind::ModuleChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.code.search",
             description: "Search BSL code through the internal RLM index.",
             mutating: false,
@@ -312,7 +328,7 @@ fn call_tool(
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
     tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let index_report = crate::infrastructure::workspace_index::IndexStartReport::default();
-    let support_guard_warning = if spec.mutating && !dry_run {
+    let support_guard_warning = if spec.mutating && (!dry_run || is_code_patch(spec)) {
         match support_guard_check(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
             SupportGuardCheck::Warn(warning) => Some(warning),
@@ -331,6 +347,7 @@ fn call_tool(
                     stderr: outcome.stderr,
                     command: outcome.command,
                     diagnostics: None,
+                    details: None,
                 });
             }
         }
@@ -345,7 +362,7 @@ fn call_tool(
     outcome.warnings.extend(index_report.warnings);
 
     let events = if should_emit_events(spec, dry_run, &outcome) {
-        domain_events(spec, args)
+        domain_events(spec, args, &outcome)
     } else {
         Vec::new()
     };
@@ -354,6 +371,7 @@ fn call_tool(
         ports.notify_invalidation(&context, &events);
     }
     let diagnostics = runtime_result_diagnostics(spec, args, &context, &outcome);
+    let details = operation_result_details(spec, &outcome);
 
     Ok(OperationResult {
         ok: outcome.ok,
@@ -367,11 +385,35 @@ fn call_tool(
         stderr: outcome.stderr,
         command: outcome.command,
         diagnostics,
+        details,
     })
 }
 
 fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
+    if dry_run && is_code_patch(spec) {
+        return false;
+    }
     spec.mutating && (dry_run || (outcome.ok && !outcome.changes.is_empty()))
+}
+
+fn is_code_patch(spec: ToolSpec) -> bool {
+    matches!(
+        spec.handler,
+        ToolHandler::NativeOperation {
+            operation: "code-patch",
+            ..
+        }
+    )
+}
+
+fn operation_result_details(spec: ToolSpec, outcome: &AdapterOutcome) -> Option<Value> {
+    if !is_code_patch(spec) {
+        return None;
+    }
+    outcome
+        .stdout
+        .as_deref()
+        .and_then(|stdout| serde_json::from_str(stdout).ok())
 }
 
 fn runtime_result_diagnostics(
@@ -482,7 +524,7 @@ fn support_guard_check(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<SupportGuardCheck, String> {
-    let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
+    let Some((target_path, requirement)) = support_guard_target(spec, args, context)? else {
         return Ok(SupportGuardCheck::Allow);
     };
     let Some(violation) = support_guard_violation(&target_path, requirement) else {
@@ -506,12 +548,16 @@ fn support_guard_target(
     spec: ToolSpec,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
+) -> Result<Option<(PathBuf, SupportGuardRequirement)>, String> {
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
-        return None;
+        return Ok(None);
     };
-    let policy = operation_descriptors::native_operation_descriptor(operation)?.support_guard?;
-    match policy {
+    let Some(policy) = operation_descriptors::native_operation_descriptor(operation)
+        .and_then(|descriptor| descriptor.support_guard)
+    else {
+        return Ok(None);
+    };
+    let target = match policy {
         SupportGuardPolicy::PathArgs { names, requirement } => {
             support_guard_path_arg(args, context, names, requirement)
         }
@@ -521,7 +567,12 @@ fn support_guard_target(
         SupportGuardPolicy::ObjectName { requirement } => {
             support_guard_object_name_target(args, context).map(|path| (path, requirement))
         }
-    }
+        SupportGuardPolicy::CodePatch { requirement } => {
+            return code::resolve_module_target(args, context)
+                .map(|path| Some((path, requirement)));
+        }
+    };
+    Ok(target)
 }
 
 fn support_guard_path_arg(
@@ -709,11 +760,26 @@ fn support_guard_blocked_outcome(
     }
 }
 
-fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> {
+fn domain_events(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    outcome: &AdapterOutcome,
+) -> Vec<DomainEvent> {
     match spec.handler {
         ToolHandler::NativeOperation {
             event: Some(event), ..
-        } => vec![DomainEvent::new(event, spec.name)],
+        } => vec![DomainEvent::new(
+            event,
+            if is_code_patch(spec) {
+                outcome
+                    .artifacts
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or(spec.name)
+            } else {
+                spec.name
+            },
+        )],
         ToolHandler::BuildRuntime {
             event: Some(event), ..
         } => vec![DomainEvent::new(event, spec.name)],
@@ -1307,6 +1373,7 @@ mod tests {
         assert!(names.contains(&"unica.support.edit"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
+        assert!(names.contains(&"unica.code.patch"));
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
         assert!(names.contains(&"unica.code.grep"));
@@ -1392,6 +1459,195 @@ mod tests {
             true,
             &AdapterOutcome::ok("dry run")
         ));
+    }
+
+    #[test]
+    fn code_patch_emits_only_applied_module_event_with_affected_target() {
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .expect("code.patch is registered");
+        let mut outcome = AdapterOutcome::ok("patch preview");
+        outcome
+            .artifacts
+            .push("src/CommonModules/Sample/Ext/Module.bsl".to_string());
+        outcome.changes.push("would update module".to_string());
+
+        assert!(!should_emit_events(spec, true, &outcome));
+        assert!(should_emit_events(spec, false, &outcome));
+        let events = domain_events(spec, &Map::new(), &outcome);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DomainEventKind::ModuleChanged);
+        assert_eq!(
+            events[0].artifact,
+            "src/CommonModules/Sample/Ext/Module.bsl"
+        );
+
+        outcome.changes.clear();
+        assert!(!should_emit_events(spec, false, &outcome));
+    }
+
+    #[test]
+    fn code_patch_exposes_structured_stdout_as_details() {
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .expect("code.patch is registered");
+        let mut outcome = AdapterOutcome::ok("patched");
+        outcome.stdout = Some(r#"{"preHash":"sha256:before","noOp":false}"#.to_string());
+
+        let details = operation_result_details(spec, &outcome).unwrap();
+        assert_eq!(details["preHash"], "sha256:before");
+        assert_eq!(details["noOp"], false);
+    }
+
+    #[test]
+    fn code_patch_dry_run_returns_real_plan_without_file_event_or_cache_mutation() {
+        let (root, workspace, module_path) =
+            code_patch_test_workspace("unica-code-patch-application-preview", None);
+        let before = std::fs::read(&module_path).unwrap();
+        let cache_root = workspace.join(".build/unica");
+        let ports = std::rc::Rc::new(RecordingCodePatchPorts::default());
+        let app = UnicaApplication::with_ports(Box::new(ports.clone()));
+
+        let result = app
+            .call_tool("unica.code.patch", &code_patch_test_args(&workspace))
+            .unwrap();
+
+        assert!(result.ok, "{}: {:?}", result.summary, result.errors);
+        assert_eq!(std::fs::read(&module_path).unwrap(), before);
+        assert!(!cache_root.exists());
+        assert!(result.cache.events.is_empty());
+        assert!(result.cache.invalidated.is_empty());
+        assert!(result.cache.refreshed.is_empty());
+        assert_eq!(result.cache.mode, "read");
+        assert!(ports.cache_events.borrow().is_empty());
+        assert!(ports.notifications.borrow().is_empty());
+
+        let details = result.details.expect("code.patch exposes preview details");
+        assert_eq!(
+            details["target"],
+            "src/CommonModules/SampleService/Ext/Module.bsl"
+        );
+        assert_eq!(details["sourceSet"], "main");
+        assert_eq!(
+            details["moduleId"],
+            "module:main:CommonModules/SampleService/Ext/Module.bsl"
+        );
+        assert_eq!(details["selector"]["kind"], "anchor");
+        assert_eq!(details["matchCount"], 1);
+        assert_eq!(details["dryRun"], true);
+        assert_eq!(details["applied"], false);
+        assert_eq!(details["noOp"], false);
+        assert_ne!(details["preHash"], details["postHash"]);
+        assert_eq!(details["changedRanges"].as_array().unwrap().len(), 1);
+        assert!(details["diff"]
+            .as_str()
+            .unwrap()
+            .contains("+    ПодготовитьДанные();"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_patch_apply_emits_normalized_module_event_invalidates_caches_and_repeats_as_noop() {
+        let (root, workspace, module_path) =
+            code_patch_test_workspace("unica-code-patch-application-apply", None);
+        let ports = std::rc::Rc::new(RecordingCodePatchPorts::default());
+        let app = UnicaApplication::with_ports(Box::new(ports.clone()));
+        let mut args = code_patch_test_args(&workspace);
+        args.insert("dryRun".to_string(), Value::Bool(false));
+
+        let applied = app.call_tool("unica.code.patch", &args).unwrap();
+
+        assert!(applied.ok, "{}: {:?}", applied.summary, applied.errors);
+        assert!(std::fs::read_to_string(&module_path)
+            .unwrap()
+            .contains("    ПодготовитьДанные();\n    МенеджерЗаписи.Записать();"));
+        let details = applied.details.expect("code.patch exposes apply details");
+        assert_eq!(details["applied"], true);
+        assert_eq!(details["noOp"], false);
+        assert_eq!(details["matchCount"], 1);
+        assert_eq!(applied.cache.mode, "applied");
+        assert_eq!(applied.cache.events, ["ModuleChanged"]);
+        assert_eq!(applied.cache.invalidated, ["bsl_diagnostics", "bsl_index"]);
+        assert!(applied.cache.stale.contains(&"bsl_index".to_string()));
+        assert!(applied.cache.stale.contains(&"bsl_diagnostics".to_string()));
+
+        let cache_events = ports.cache_events.borrow();
+        assert_eq!(cache_events.len(), 1);
+        assert_eq!(cache_events[0].kind, DomainEventKind::ModuleChanged);
+        assert_eq!(
+            cache_events[0].artifact,
+            "src/CommonModules/SampleService/Ext/Module.bsl"
+        );
+        drop(cache_events);
+        let notifications = ports.notifications.borrow();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].kind, DomainEventKind::ModuleChanged);
+        assert_eq!(
+            notifications[0].artifact,
+            "src/CommonModules/SampleService/Ext/Module.bsl"
+        );
+        drop(notifications);
+
+        ports.cache_events.borrow_mut().clear();
+        ports.notifications.borrow_mut().clear();
+        let bytes_after_apply = std::fs::read(&module_path).unwrap();
+        let repeated = app.call_tool("unica.code.patch", &args).unwrap();
+
+        assert!(repeated.ok, "{}: {:?}", repeated.summary, repeated.errors);
+        assert!(repeated.changes.is_empty());
+        assert_eq!(std::fs::read(&module_path).unwrap(), bytes_after_apply);
+        let repeated_details = repeated.details.unwrap();
+        assert_eq!(repeated_details["noOp"], true);
+        assert_eq!(
+            repeated_details["moduleId"],
+            "module:main:CommonModules/SampleService/Ext/Module.bsl"
+        );
+        assert_eq!(repeated_details["matchCount"], 1);
+        assert_eq!(repeated.cache.mode, "read");
+        assert!(repeated.cache.events.is_empty());
+        assert!(repeated.cache.invalidated.is_empty());
+        assert!(ports.cache_events.borrow().is_empty());
+        assert!(ports.notifications.borrow().is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_patch_support_guard_blocks_dry_run_and_apply_without_changing_bytes() {
+        let locked_uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let support = support_test_parent_configurations_bin(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            locked_uuid,
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        );
+        let (root, workspace, module_path) =
+            code_patch_test_workspace("unica-code-patch-application-support-guard", Some(&support));
+        let before = std::fs::read(&module_path).unwrap();
+        let cache_root = workspace.join(".build/unica");
+        let app = UnicaApplication::new();
+        let preview_args = code_patch_test_args(&workspace);
+
+        for args in [preview_args.clone(), {
+            let mut apply_args = preview_args.clone();
+            apply_args.insert("dryRun".to_string(), Value::Bool(false));
+            apply_args
+        }] {
+            let result = app.call_tool("unica.code.patch", &args).unwrap();
+
+            assert!(!result.ok);
+            assert!(result.summary.contains("support guard"));
+            assert!(result.errors.join("\n").contains("на замке"));
+            assert!(result.changes.is_empty());
+            assert!(result.cache.events.is_empty());
+            assert!(result.cache.invalidated.is_empty());
+            assert_eq!(std::fs::read(&module_path).unwrap(), before);
+            assert!(!cache_root.exists());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2245,7 +2501,11 @@ mod tests {
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
-                !descriptor.write_path_args.is_empty(),
+                !descriptor.write_path_args.is_empty()
+                    || matches!(
+                        descriptor.support_guard,
+                        Some(SupportGuardPolicy::CodePatch { .. })
+                    ),
                 "{operation} mutates workspace but has no descriptor write_path_args"
             );
         }
@@ -4000,6 +4260,125 @@ mod tests {
         let root = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[derive(Default)]
+    struct RecordingCodePatchPorts {
+        cache_events: std::cell::RefCell<Vec<DomainEvent>>,
+        notifications: std::cell::RefCell<Vec<DomainEvent>>,
+    }
+
+    impl ports::ApplicationPorts for std::rc::Rc<RecordingCodePatchPorts> {
+        fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
+            <ports::DefaultApplicationPorts as ports::ApplicationPorts>::discover_workspace(
+                &ports::DefaultApplicationPorts,
+                cwd,
+            )
+        }
+
+        fn invoke_handler(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, Value>,
+            context: &WorkspaceContext,
+            dry_run: bool,
+        ) -> Result<AdapterOutcome, String> {
+            <ports::DefaultApplicationPorts as ports::ApplicationPorts>::invoke_handler(
+                &ports::DefaultApplicationPorts,
+                spec,
+                args,
+                context,
+                dry_run,
+            )
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            events: &[DomainEvent],
+            dry_run: bool,
+            cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            self.cache_events.borrow_mut().extend_from_slice(events);
+            <ports::DefaultApplicationPorts as ports::ApplicationPorts>::cache_report(
+                &ports::DefaultApplicationPorts,
+                context,
+                events,
+                dry_run,
+                cache_access,
+            )
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, events: &[DomainEvent]) {
+            self.notifications.borrow_mut().extend_from_slice(events);
+        }
+    }
+
+    fn code_patch_test_workspace(
+        prefix: &str,
+        parent_configurations_bin: Option<&str>,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let root = test_workspace_root(prefix);
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let support_ext = src.join("Ext");
+        let common_modules = src.join("CommonModules");
+        let module_dir = common_modules.join("SampleService/Ext");
+        std::fs::create_dir_all(&support_ext).unwrap();
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        std::fs::write(
+            common_modules.join("SampleService.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
+  <CommonModule uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+    <Properties><Name>SampleService</Name></Properties>
+  </CommonModule>
+</MetaDataObject>"#,
+        )
+        .unwrap();
+        let module_path = module_dir.join("Module.bsl");
+        std::fs::write(
+            &module_path,
+            "Процедура ЗаписатьДанные()\n    МенеджерЗаписи.Записать();\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        if let Some(parent_configurations_bin) = parent_configurations_bin {
+            std::fs::write(
+                support_ext.join("ParentConfigurations.bin"),
+                parent_configurations_bin,
+            )
+            .unwrap();
+        }
+        (root, workspace, module_path)
+    }
+
+    fn code_patch_test_args(workspace: &std::path::Path) -> Map<String, Value> {
+        json!({
+            "cwd": workspace.display().to_string(),
+            "sourceSet": "main",
+            "modulePath": "CommonModules/SampleService/Ext/Module.bsl",
+            "selector": "anchor",
+            "methodName": "ЗаписатьДанные",
+            "anchor": "МенеджерЗаписи.Записать();",
+            "operation": "insertBefore",
+            "content": "ПодготовитьДанные();\n    ",
+            "expectedCount": 1,
+            "platformSyntax": "none",
+            "dryRun": true
+        })
+        .as_object()
+        .expect("code.patch test arguments are an object")
+        .clone()
     }
 
     fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {

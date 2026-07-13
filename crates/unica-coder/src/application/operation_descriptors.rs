@@ -21,6 +21,9 @@ pub(super) enum SupportGuardPolicy {
     ObjectName {
         requirement: SupportGuardRequirement,
     },
+    CodePatch {
+        requirement: SupportGuardRequirement,
+    },
 }
 
 const EMPTY: &[&str] = &[];
@@ -64,6 +67,13 @@ const FORM_EDIT_REQUIRED: &[&str] = &["FormPath", "JsonPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
+const CODE_PATCH_REQUIRED: &[&str] = &[
+    "modulePath",
+    "selector",
+    "operation",
+    "content",
+    "expectedCount",
+];
 
 pub(super) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
     NATIVE_OPERATION_DESCRIPTORS
@@ -72,6 +82,13 @@ pub(super) fn native_operation_descriptor(operation: &str) -> Option<&'static Op
 }
 
 pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
+    descriptor(
+        "code-patch",
+        CODE_PATCH_REQUIRED,
+        EMPTY,
+        EMPTY,
+        Some(code_patch_guard(SupportGuardRequirement::Editable)),
+    ),
     descriptor(
         "cf-edit",
         EMPTY,
@@ -353,4 +370,8 @@ const fn meta_remove_guard() -> SupportGuardPolicy {
 
 const fn object_name_guard(requirement: SupportGuardRequirement) -> SupportGuardPolicy {
     SupportGuardPolicy::ObjectName { requirement }
+}
+
+const fn code_patch_guard(requirement: SupportGuardRequirement) -> SupportGuardPolicy {
+    SupportGuardPolicy::CodePatch { requirement }
 }

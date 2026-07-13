@@ -524,6 +524,28 @@ const CODE_DIAGNOSTICS_ARGS: &[&str] = &[
 const CODE_DIAGNOSTIC_MODES: &[&str] = &["analyze", "status", "catalog", "file", "workspace"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
 const CODE_DIAGNOSTIC_DETAIL: &[&str] = &["concise", "detailed"];
+const CODE_PATCH_ARGS: &[&str] = &[
+    "anchor",
+    "content",
+    "expectedCount",
+    "methodName",
+    "modulePath",
+    "operation",
+    "platformSyntax",
+    "selector",
+    "sourceDir",
+    "sourceSet",
+];
+const CODE_PATCH_REQUIRED_ARGS: &[&str] = &[
+    "modulePath",
+    "selector",
+    "operation",
+    "content",
+    "expectedCount",
+];
+const CODE_PATCH_SELECTORS: &[&str] = &["module", "method", "anchor"];
+const CODE_PATCH_OPERATIONS: &[&str] = &["insertBefore", "insertAfter", "replace"];
+const CODE_PATCH_PLATFORM_SYNTAX: &[&str] = &["none", "configuredInfobase"];
 const META_PROFILE_ARGS: &[&str] = &["limit", "name", "sections", "sourceDir"];
 const META_PROFILE_SECTIONS: &[&str] = &[
     "structure",
@@ -555,12 +577,25 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         properties.insert(name.to_string(), property_schema_for_tool(tool, name));
     }
 
-    json!({
+    let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
         "required": required_args(tool),
-    })
+    });
+    if tool.name == "unica.code.patch" {
+        schema["oneOf"] = json!([
+            {
+                "required": ["sourceSet"],
+                "not": {"required": ["sourceDir"]}
+            },
+            {
+                "required": ["sourceDir"],
+                "not": {"required": ["sourceSet"]}
+            }
+        ]);
+    }
+    schema
 }
 
 pub fn validate_tool_arguments(
@@ -752,6 +787,7 @@ fn validate_code_arguments(
     dry_run: bool,
 ) -> Result<(), String> {
     match tool.name {
+        "unica.code.patch" => validate_code_patch_arguments(tool.name, args)?,
         "unica.code.graph" => {
             validate_enum_argument(tool.name, args, "mode", CODE_GRAPH_MODES)?;
             validate_enum_argument(tool.name, args, "dir", CODE_GRAPH_DIRECTIONS)?;
@@ -778,6 +814,148 @@ fn validate_code_arguments(
             validate_array_enum_argument(tool.name, args, "sections", META_PROFILE_SECTIONS)?;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_code_patch_arguments(tool_name: &str, args: &Map<String, Value>) -> Result<(), String> {
+    let has_source_set = args.contains_key("sourceSet");
+    let has_source_dir = args.contains_key("sourceDir");
+    if has_source_set == has_source_dir {
+        return Err(format!(
+            "{tool_name} requires exactly one of `sourceSet` or `sourceDir`"
+        ));
+    }
+    if has_source_set {
+        code_patch_required_nonblank_string(tool_name, args, "sourceSet")?;
+    }
+    if has_source_dir {
+        code_patch_required_nonblank_string(tool_name, args, "sourceDir")?;
+    }
+
+    let module_path = code_patch_required_nonblank_string(tool_name, args, "modulePath")?;
+    validate_code_patch_module_path(tool_name, module_path)?;
+    let selector = code_patch_required_nonblank_string(tool_name, args, "selector")?;
+    if !CODE_PATCH_SELECTORS.contains(&selector) {
+        return Err(format!(
+            "{tool_name} argument `selector` must be one of: {}",
+            CODE_PATCH_SELECTORS.join(", ")
+        ));
+    }
+    let operation = code_patch_required_nonblank_string(tool_name, args, "operation")?;
+    if !CODE_PATCH_OPERATIONS.contains(&operation) {
+        return Err(format!(
+            "{tool_name} argument `operation` must be one of: {}",
+            CODE_PATCH_OPERATIONS.join(", ")
+        ));
+    }
+    let content = code_patch_required_string(tool_name, args, "content")?;
+    if content.is_empty() {
+        return Err(format!("{tool_name} argument `content` must be non-empty"));
+    }
+    let expected_count = args
+        .get("expectedCount")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{tool_name} argument `expectedCount` must be integer"))?;
+    if expected_count <= 0 {
+        return Err(format!(
+            "{tool_name} argument `expectedCount` must be positive"
+        ));
+    }
+
+    match selector {
+        "module" => {
+            code_patch_reject_present(tool_name, args, "methodName", "module")?;
+            code_patch_reject_present(tool_name, args, "anchor", "module")?;
+        }
+        "method" => {
+            code_patch_required_nonblank_string(tool_name, args, "methodName")?;
+            code_patch_reject_present(tool_name, args, "anchor", "method")?;
+        }
+        "anchor" => {
+            code_patch_required_nonblank_string(tool_name, args, "anchor")?;
+            if args.contains_key("methodName") {
+                code_patch_required_nonblank_string(tool_name, args, "methodName")?;
+            }
+        }
+        _ => unreachable!("selector enum was validated above"),
+    }
+
+    if let Some(value) = args.get("platformSyntax") {
+        let Some(value) = value.as_str() else {
+            return Err(format!(
+                "{tool_name} argument `platformSyntax` must be string"
+            ));
+        };
+        if !CODE_PATCH_PLATFORM_SYNTAX.contains(&value) {
+            return Err(format!(
+                "{tool_name} argument `platformSyntax` must be one of: {}",
+                CODE_PATCH_PLATFORM_SYNTAX.join(", ")
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn code_patch_required_string<'a>(
+    tool_name: &str,
+    args: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool_name} requires string `{key}` argument"))
+}
+
+fn code_patch_required_nonblank_string<'a>(
+    tool_name: &str,
+    args: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, String> {
+    let value = code_patch_required_string(tool_name, args, key)?;
+    if value.trim().is_empty() {
+        return Err(format!("{tool_name} argument `{key}` must be non-empty"));
+    }
+    Ok(value)
+}
+
+fn code_patch_reject_present(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+    selector: &str,
+) -> Result<(), String> {
+    if args.contains_key(key) {
+        return Err(format!(
+            "{tool_name} selector `{selector}` does not accept `{key}`"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_code_patch_module_path(tool_name: &str, raw: &str) -> Result<(), String> {
+    let path = Path::new(raw);
+    let bytes = raw.as_bytes();
+    let has_windows_drive_prefix =
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if path.is_absolute()
+        || raw.starts_with('\\')
+        || has_windows_drive_prefix
+        || raw.split(['/', '\\']).any(|component| component == "..")
+    {
+        return Err(format!(
+            "{tool_name} argument `modulePath` must be relative and stay inside the selected source root"
+        ));
+    }
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
+    {
+        return Err(format!(
+            "{tool_name} argument `modulePath` must point to a .bsl file"
+        ));
     }
     Ok(())
 }
@@ -1214,12 +1392,19 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     names
 }
 
-fn native_args_for(_operation: &str) -> &'static [&'static str] {
-    NATIVE_XML_DSL_ARGS
+fn native_args_for(operation: &str) -> &'static [&'static str] {
+    match operation {
+        "code-patch" => CODE_PATCH_ARGS,
+        _ => NATIVE_XML_DSL_ARGS,
+    }
 }
 
 fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
     match tool.handler {
+        ToolHandler::NativeOperation {
+            operation: "code-patch",
+            ..
+        } => CODE_PATCH_REQUIRED_ARGS.to_vec(),
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.required_args.to_vec())
             .unwrap_or_default(),
@@ -1328,6 +1513,7 @@ fn property_schema(name: &str) -> Value {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "expectedCount"
     ) {
         "integer"
     } else if matches!(
@@ -1383,6 +1569,14 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         }
     }
     match tool.name {
+        "unica.code.patch" => match name {
+            "selector" => return json!({ "type": "string", "enum": CODE_PATCH_SELECTORS }),
+            "operation" => return json!({ "type": "string", "enum": CODE_PATCH_OPERATIONS }),
+            "platformSyntax" => {
+                return json!({ "type": "string", "enum": CODE_PATCH_PLATFORM_SYNTAX });
+            }
+            _ => {}
+        },
         "unica.support.edit" => match name {
             "Capability" | "capability" => {
                 return json!({ "type": "string", "enum": ["on", "off"] });
@@ -1504,6 +1698,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "expectedCount"
     ) {
         Some("integer")
     } else if matches!(
@@ -1537,6 +1732,36 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::application::tools;
+
+    fn code_patch_tool() -> ToolSpec {
+        ToolSpec {
+            name: "unica.code.patch",
+            description: "Patch BSL modules with guarded selectors.",
+            mutating: true,
+            cache_access: crate::domain::cache::CacheAccess::default(),
+            handler: ToolHandler::NativeOperation {
+                operation: "code-patch",
+                event: None,
+            },
+        }
+    }
+
+    fn valid_code_patch_args() -> Map<String, Value> {
+        json!({
+            "sourceDir": "src",
+            "modulePath": "CommonModules/Sample/Ext/Module.bsl",
+            "selector": "anchor",
+            "methodName": "WriteRecord",
+            "anchor": "ManagerRecord.Write();",
+            "operation": "insertBefore",
+            "content": "PrepareRecord();\n",
+            "expectedCount": 1,
+            "platformSyntax": "none"
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
 
     #[test]
     fn native_contracts_reject_unknown_args() {
@@ -2048,5 +2273,183 @@ mod tests {
 
         let args = Map::new();
         validate_tool_arguments(diagnostics, &args, false).unwrap();
+    }
+
+    #[test]
+    fn code_patch_schema_is_narrow_and_typed() {
+        let schema = input_schema_for_tool(&code_patch_tool());
+        let properties = schema["properties"].as_object().unwrap();
+        let actual = properties
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            "anchor",
+            "confirm",
+            "content",
+            "cwd",
+            "dryRun",
+            "expectedCount",
+            "methodName",
+            "modulePath",
+            "operation",
+            "platformSyntax",
+            "selector",
+            "sourceDir",
+            "sourceSet",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(actual, expected);
+        assert_eq!(
+            schema["required"],
+            json!([
+                "modulePath",
+                "selector",
+                "operation",
+                "content",
+                "expectedCount"
+            ])
+        );
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 2);
+        assert_eq!(properties["expectedCount"]["type"], "integer");
+        assert_eq!(
+            properties["selector"]["enum"],
+            json!(["module", "method", "anchor"])
+        );
+        assert_eq!(
+            properties["operation"]["enum"],
+            json!(["insertBefore", "insertAfter", "replace"])
+        );
+        assert_eq!(
+            properties["platformSyntax"]["enum"],
+            json!(["none", "configuredInfobase"])
+        );
+        assert!(properties.get("args").is_none());
+        assert!(properties.get("Path").is_none());
+    }
+
+    #[test]
+    fn code_patch_requires_full_payload_even_for_dry_run() {
+        let tool = code_patch_tool();
+        validate_tool_arguments(tool, &valid_code_patch_args(), true).unwrap();
+
+        for required in CODE_PATCH_REQUIRED_ARGS {
+            let mut args = valid_code_patch_args();
+            args.remove(*required);
+            let error = validate_tool_arguments(tool, &args, true).unwrap_err();
+            assert!(
+                error.contains(required),
+                "missing {required} should be reported, got {error}"
+            );
+        }
+
+        let mut args = valid_code_patch_args();
+        args.remove("sourceDir");
+        let error = validate_tool_arguments(tool, &args, true).unwrap_err();
+        assert!(error.contains("exactly one of `sourceSet` or `sourceDir`"));
+    }
+
+    #[test]
+    fn code_patch_rejects_ambiguous_source_roots_and_unsafe_module_paths() {
+        let tool = code_patch_tool();
+        let mut args = valid_code_patch_args();
+        args.insert("sourceSet".to_string(), json!("main"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("exactly one"));
+
+        for invalid in [
+            "/tmp/Module.bsl",
+            "../outside/Module.bsl",
+            "CommonModules/../outside/Module.bsl",
+            r"..\outside\Module.bsl",
+            r"C:\outside\Module.bsl",
+            r"\\server\share\Module.bsl",
+            "CommonModules/Sample/Ext/Module.txt",
+        ] {
+            let mut args = valid_code_patch_args();
+            args.insert("modulePath".to_string(), json!(invalid));
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains("modulePath"),
+                "invalid path {invalid:?} should be rejected, got {error}"
+            );
+        }
+
+        let mut args = valid_code_patch_args();
+        args.remove("sourceDir");
+        args.insert("sourceSet".to_string(), json!("main"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+    }
+
+    #[test]
+    fn code_patch_enforces_selector_specific_payloads() {
+        let tool = code_patch_tool();
+
+        let mut module = valid_code_patch_args();
+        module.insert("selector".to_string(), json!("module"));
+        module.remove("methodName");
+        module.remove("anchor");
+        validate_tool_arguments(tool, &module, false).unwrap();
+        module.insert("methodName".to_string(), json!("WriteRecord"));
+        let error = validate_tool_arguments(tool, &module, false).unwrap_err();
+        assert!(error.contains("selector `module` does not accept `methodName`"));
+
+        let mut method = valid_code_patch_args();
+        method.insert("selector".to_string(), json!("method"));
+        method.remove("anchor");
+        validate_tool_arguments(tool, &method, false).unwrap();
+        method.remove("methodName");
+        let error = validate_tool_arguments(tool, &method, false).unwrap_err();
+        assert!(error.contains("methodName"));
+
+        let mut method_with_anchor = valid_code_patch_args();
+        method_with_anchor.insert("selector".to_string(), json!("method"));
+        let error = validate_tool_arguments(tool, &method_with_anchor, false).unwrap_err();
+        assert!(error.contains("selector `method` does not accept `anchor`"));
+
+        let mut anchor = valid_code_patch_args();
+        anchor.remove("methodName");
+        validate_tool_arguments(tool, &anchor, false).unwrap();
+        anchor.insert("anchor".to_string(), json!("  \t"));
+        let error = validate_tool_arguments(tool, &anchor, false).unwrap_err();
+        assert!(error.contains("anchor"));
+
+        let mut invalid = valid_code_patch_args();
+        invalid.insert("selector".to_string(), json!("declaration"));
+        let error = validate_tool_arguments(tool, &invalid, false).unwrap_err();
+        assert!(error.contains("must be one of"));
+    }
+
+    #[test]
+    fn code_patch_rejects_invalid_operation_count_content_platform_syntax_and_unknown_args() {
+        let tool = code_patch_tool();
+        let cases = [
+            ("operation", json!("append"), "must be one of"),
+            ("expectedCount", json!(0), "must be positive"),
+            ("expectedCount", json!(-1), "must be positive"),
+            ("expectedCount", json!("1"), "must be integer"),
+            ("content", json!(""), "must be non-empty"),
+            ("platformSyntax", json!("patchedSource"), "must be one of"),
+        ];
+        for (key, value, expected) in cases {
+            let mut args = valid_code_patch_args();
+            args.insert(key.to_string(), value);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "invalid {key} should report {expected:?}, got {error}"
+            );
+        }
+
+        let mut args = valid_code_patch_args();
+        args.insert("platformSyntax".to_string(), json!("configuredInfobase"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        args.insert("rawArgs".to_string(), json!(["--unsafe"]));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("does not accept argument `rawArgs`"));
     }
 }
