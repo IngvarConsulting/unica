@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 
 mod operation_descriptors;
 mod ports;
+mod source_sync;
+#[cfg(test)]
+mod source_sync_integration_tests;
 mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
 
@@ -355,7 +358,144 @@ fn call_tool(
         None
     };
 
-    let mut outcome = ports.invoke_handler(spec, args, &context, dry_run)?;
+    let sync_preview = source_sync::preview_runtime_sync(spec, args, &context, dry_run)?;
+    let mutation_sync = source_sync::prepare_mutation(spec, args, &context, dry_run)?;
+    let build_sync = source_sync::prepare_build(spec, args, &context, dry_run)?;
+    let mut dump_sync = source_sync::prepare_dump(spec, args, &context, dry_run)?;
+    let mut legacy_sync = source_sync::prepare_legacy_guard(spec, &context, dry_run)?;
+    if let source_sync::LegacyPreparation::Allowed(guard) = &legacy_sync {
+        let _ = guard;
+    }
+    let mut sync_details = match &sync_preview {
+        source_sync::RuntimePreviewPreparation::Ready(details)
+        | source_sync::RuntimePreviewPreparation::Blocked { details, .. } => Some(details.clone()),
+        source_sync::RuntimePreviewPreparation::None => None,
+    };
+    let source_sync_session_active =
+        matches!(&mutation_sync, source_sync::MutationPreparation::Ready(_))
+            || matches!(&build_sync, source_sync::BuildPreparation::Ready(_))
+            || matches!(&dump_sync, source_sync::DumpPreparation::Ready(_));
+    let mut invocation_error = None;
+    let mut invoke = |handler_args: &Map<String, Value>| -> Result<AdapterOutcome, String> {
+        match ports.invoke_handler(spec, handler_args, &context, dry_run) {
+            Ok(outcome) => Ok(outcome),
+            Err(error) if source_sync_session_active => {
+                invocation_error = Some(error.clone());
+                let mut outcome = AdapterOutcome::ok(
+                    "source-sync runtime invocation failed before process execution",
+                );
+                outcome.ok = false;
+                outcome.errors.push(error);
+                Ok(outcome)
+            }
+            Err(error) => Err(error),
+        }
+    };
+    let mut outcome = match &sync_preview {
+        source_sync::RuntimePreviewPreparation::Blocked { outcome, details } => {
+            sync_details = Some(details.clone());
+            outcome.as_ref().clone()
+        }
+        source_sync::RuntimePreviewPreparation::None
+        | source_sync::RuntimePreviewPreparation::Ready(_) => match &mutation_sync {
+            source_sync::MutationPreparation::Blocked { outcome } => outcome.as_ref().clone(),
+            source_sync::MutationPreparation::None | source_sync::MutationPreparation::Ready(_) => {
+                match &build_sync {
+                    source_sync::BuildPreparation::Blocked { outcome, details } => {
+                        sync_details = Some(details.clone());
+                        outcome.as_ref().clone()
+                    }
+                    source_sync::BuildPreparation::None
+                    | source_sync::BuildPreparation::Ready(_) => match &mut legacy_sync {
+                        source_sync::LegacyPreparation::Blocked { outcome, details } => {
+                            sync_details = Some(details.clone());
+                            outcome.as_ref().clone()
+                        }
+                        source_sync::LegacyPreparation::None
+                        | source_sync::LegacyPreparation::Allowed(_) => match &mut dump_sync {
+                            source_sync::DumpPreparation::None
+                            | source_sync::DumpPreparation::Passthrough { .. } => {
+                                let handler_args = match &build_sync {
+                                    source_sync::BuildPreparation::Ready(session) => {
+                                        session.handler_args()
+                                    }
+                                    source_sync::BuildPreparation::None
+                                    | source_sync::BuildPreparation::Blocked { .. } => {
+                                        match &mutation_sync {
+                                            source_sync::MutationPreparation::Ready(session) => {
+                                                session.handler_args()
+                                            }
+                                            source_sync::MutationPreparation::None
+                                            | source_sync::MutationPreparation::Blocked {
+                                                ..
+                                            } => args,
+                                        }
+                                    }
+                                };
+                                invoke(handler_args)?
+                            }
+                            source_sync::DumpPreparation::Ready(session) => {
+                                invoke(session.runtime_args())?
+                            }
+                            source_sync::DumpPreparation::Blocked { outcome, details } => {
+                                sync_details = Some(details.clone());
+                                outcome.clone()
+                            }
+                        },
+                    },
+                }
+            }
+        },
+    };
+    drop(invoke);
+    if let source_sync::MutationPreparation::Ready(session) = &mutation_sync {
+        match session.finish() {
+            Ok(details) => {
+                preserve_observed_mutation_change(&mut outcome, details.as_ref());
+                sync_details = details;
+            }
+            Err(error) => {
+                outcome.ok = false;
+                outcome.errors.push(error.clone());
+                outcome.summary =
+                    "source changed but durable source-sync state could not be finalized"
+                        .to_string();
+                sync_details = Some(json!({"sourceSyncError": error}));
+            }
+        }
+    }
+    if let source_sync::BuildPreparation::Ready(session) = &build_sync {
+        if let Some(error) = invocation_error.as_deref() {
+            sync_details = Some(session.failure_details("runnerInvocationFailed", error));
+        } else {
+            match session.finish(&mut outcome) {
+                Ok(details) => sync_details = Some(details),
+                Err(error) => {
+                    outcome.ok = false;
+                    outcome.errors.push(error.clone());
+                    outcome.summary = "source-sync build reconciliation failed closed".to_string();
+                    sync_details =
+                        Some(session.failure_details("sourceSyncFinalizationFailed", &error));
+                }
+            }
+        }
+        session.cleanup_with_warning(&mut outcome);
+    }
+    if let source_sync::DumpPreparation::Ready(session) = &mut dump_sync {
+        if let Some(error) = invocation_error.as_deref() {
+            sync_details = Some(session.invocation_failure_details(&mut outcome, error));
+        } else {
+            match session.finish(&mut outcome) {
+                Ok(details) => sync_details = Some(details),
+                Err(error) => {
+                    outcome.ok = false;
+                    outcome.errors.push(error.clone());
+                    outcome.summary = "shadow partial dump failed closed".to_string();
+                    sync_details = Some(session.finalization_failure_details(&mut outcome, &error));
+                }
+            }
+        }
+    }
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -366,12 +506,20 @@ fn call_tool(
     } else {
         Vec::new()
     };
-    let cache = ports.cache_report(&context, &events, dry_run, spec.cache_access)?;
-    if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
+    let cache_result = ports.cache_report(&context, &events, dry_run, spec.cache_access);
+    if spec.mutating && !dry_run && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
+    let cache = cache_result?;
     let diagnostics = runtime_result_diagnostics(spec, args, &context, &outcome);
-    let details = operation_result_details(spec, &outcome);
+    let base_details = operation_result_details(spec, &outcome);
+    let details = match sync_details {
+        Some(supplemental) => Some(source_sync::merge_operation_details(
+            base_details,
+            supplemental,
+        )),
+        None => base_details,
+    };
 
     Ok(OperationResult {
         ok: outcome.ok,
@@ -389,11 +537,19 @@ fn call_tool(
     })
 }
 
+fn preserve_observed_mutation_change(outcome: &mut AdapterOutcome, details: Option<&Value>) {
+    if details.is_some() && outcome.changes.is_empty() {
+        outcome
+            .changes
+            .push("source-sync observed a changed source target".to_string());
+    }
+}
+
 fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
     if dry_run && is_code_patch(spec) {
         return false;
     }
-    spec.mutating && (dry_run || (outcome.ok && !outcome.changes.is_empty()))
+    spec.mutating && (dry_run || !outcome.changes.is_empty())
 }
 
 fn is_code_patch(spec: ToolSpec) -> bool {
@@ -429,7 +585,7 @@ fn runtime_result_diagnostics(
         .get("operation")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let failure_kind = runtime_failure_kind(outcome);
+    let failure_kind = runtime_failure_kind(outcome)?;
     let status = runtime_failure_status(outcome, failure_kind);
     let argv = outcome.command.clone().unwrap_or_default();
     let executable = argv.first().cloned();
@@ -452,21 +608,25 @@ fn runtime_result_diagnostics(
     }))
 }
 
-fn runtime_failure_kind(outcome: &AdapterOutcome) -> &'static str {
+fn runtime_failure_kind(outcome: &AdapterOutcome) -> Option<&'static str> {
     if outcome
         .warnings
         .iter()
         .any(|warning| warning.contains("failed to spawn"))
     {
-        "spawn"
+        Some("spawn")
     } else if outcome
         .warnings
         .iter()
         .any(|warning| warning.contains("timed out"))
     {
-        "timeout"
+        Some("timeout")
+    } else if outcome.warnings.iter().any(|warning| {
+        warning.starts_with("internal v8-runner runtime adapter exited with status ")
+    }) {
+        Some("exit")
     } else {
-        "exit"
+        None
     }
 }
 
@@ -568,8 +728,14 @@ fn support_guard_target(
             support_guard_object_name_target(args, context).map(|path| (path, requirement))
         }
         SupportGuardPolicy::CodePatch { requirement } => {
-            return code::resolve_module_target(args, context)
-                .map(|path| Some((path, requirement)));
+            // Target resolution is repeated under the source-sync lifecycle
+            // lock before any writer can run. A missing/non-regular module is
+            // returned there as a structured blocked mutation; the support
+            // guard must not turn that safe rejection into a top-level MCP
+            // error first.
+            return Ok(code::resolve_module_target(args, context)
+                .ok()
+                .map(|path| (path, requirement)));
         }
     };
     Ok(target)
@@ -1454,11 +1620,38 @@ mod tests {
             .changes
             .push("updated Configuration.xml".to_string());
         assert!(should_emit_events(spec, false, &outcome));
+        outcome.ok = false;
+        assert!(
+            should_emit_events(spec, false, &outcome),
+            "a post-commit bookkeeping failure must not hide a real source change"
+        );
         assert!(should_emit_events(
             spec,
             true,
             &AdapterOutcome::ok("dry run")
         ));
+    }
+
+    #[test]
+    fn observed_tracked_mutation_preserves_change_signal_after_handler_failure() {
+        let mut outcome = AdapterOutcome::ok("writer failed after changing source");
+        outcome.ok = false;
+        outcome.changes.clear();
+
+        preserve_observed_mutation_change(
+            &mut outcome,
+            Some(&json!({"affectedTargets": [{"targetId": "metadata:main:Catalog:Sample"}]})),
+        );
+
+        assert_eq!(
+            outcome.changes,
+            ["source-sync observed a changed source target"]
+        );
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.edit")
+            .expect("meta.edit is registered");
+        assert!(should_emit_events(spec, false, &outcome));
     }
 
     #[test]
@@ -1568,6 +1761,29 @@ mod tests {
         assert_eq!(details["applied"], true);
         assert_eq!(details["noOp"], false);
         assert_eq!(details["matchCount"], 1);
+        assert_eq!(details["affectedTargets"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            details["affectedTargets"][0]["targetId"],
+            "module:main:CommonModules/SampleService/Ext/Module.bsl"
+        );
+        assert_eq!(details["affectedTargets"][0]["sourceSet"], "main");
+        assert_ne!(
+            details["affectedTargets"][0]["preHash"],
+            details["affectedTargets"][0]["postHash"]
+        );
+        let source_sync_context = WorkspaceContext::discover(workspace.clone()).unwrap();
+        let source_sync_repository =
+            crate::infrastructure::source_sync::SourceSyncRepository::new(&source_sync_context)
+                .unwrap();
+        let persisted_after_apply = source_sync_repository.load_state().unwrap();
+        assert_eq!(persisted_after_apply.targets.len(), 1);
+        assert!(persisted_after_apply
+            .targets
+            .values()
+            .next()
+            .unwrap()
+            .is_dirty());
+        let generation_after_apply = persisted_after_apply.generation;
         assert_eq!(applied.cache.mode, "applied");
         assert_eq!(applied.cache.events, ["ModuleChanged"]);
         assert_eq!(applied.cache.invalidated, ["bsl_diagnostics", "bsl_index"]);
@@ -1606,11 +1822,112 @@ mod tests {
             "module:main:CommonModules/SampleService/Ext/Module.bsl"
         );
         assert_eq!(repeated_details["matchCount"], 1);
+        assert!(repeated_details.get("affectedTargets").is_none());
+        assert_eq!(
+            source_sync_repository.load_state().unwrap().generation,
+            generation_after_apply
+        );
         assert_eq!(repeated.cache.mode, "read");
         assert!(repeated.cache.events.is_empty());
         assert!(repeated.cache.invalidated.is_empty());
         assert!(ports.cache_events.borrow().is_empty());
         assert!(ports.notifications.borrow().is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordinary_runtime_build_clears_only_terminal_successful_dirty_target() {
+        let (root, workspace, _module_path) =
+            code_patch_test_workspace("unica-source-sync-build", None);
+        let ports = std::rc::Rc::new(RecordingCodePatchPorts::default());
+        let app = UnicaApplication::with_ports(Box::new(ports));
+        let mut patch_args = code_patch_test_args(&workspace);
+        patch_args.insert("dryRun".to_string(), Value::Bool(false));
+        let patched = app.call_tool("unica.code.patch", &patch_args).unwrap();
+        assert!(patched.ok, "{:?}", patched.errors);
+
+        let context = WorkspaceContext::discover(workspace.clone()).unwrap();
+        let repository =
+            crate::infrastructure::source_sync::SourceSyncRepository::new(&context).unwrap();
+        assert_eq!(repository.dirty_targets(None).unwrap().targets.len(), 1);
+
+        let mut skipped_outcome = AdapterOutcome::ok("runner returned a skipped step");
+        skipped_outcome
+            .changes
+            .push("internal v8-runner runtime adapter executed".to_string());
+        skipped_outcome.stdout = Some(
+            json!({
+                "ok": true,
+                "command": "build",
+                "data": {
+                    "ok": true,
+                    "steps": [{
+                        "source_set": "main",
+                        "mode": "skipped",
+                        "ok": false,
+                        "message": "no changes detected"
+                    }]
+                }
+            })
+            .to_string(),
+        );
+        let skipped = call_runtime_with_outcome(&workspace, skipped_outcome, "build");
+        assert!(!skipped.ok);
+        assert_eq!(skipped.details.as_ref().unwrap()["processed"], json!([]));
+        assert_eq!(
+            skipped.details.as_ref().unwrap()["skipped"][0]["reason"],
+            "buildStepSkipped"
+        );
+        assert_eq!(repository.dirty_targets(None).unwrap().targets.len(), 1);
+
+        let mut successful_outcome = AdapterOutcome::ok("runner loaded changed source");
+        successful_outcome
+            .changes
+            .push("internal v8-runner runtime adapter executed".to_string());
+        successful_outcome.stdout = Some(
+            json!({
+                "ok": true,
+                "command": "build",
+                "data": {
+                    "ok": true,
+                    "steps": [{
+                        "source_set": "main",
+                        "mode": {"partial": {"file_count": 1}},
+                        "ok": true,
+                        "message": "loaded changed source"
+                    }]
+                }
+            })
+            .to_string(),
+        );
+        let successful = call_runtime_with_outcome(&workspace, successful_outcome, "build");
+        assert!(successful.ok, "{:?}", successful.errors);
+        assert_eq!(
+            successful.details.as_ref().unwrap()["processed"][0]["reason"],
+            "buildStepSucceeded"
+        );
+        assert_eq!(repository.dirty_targets(None).unwrap().targets.len(), 0);
+
+        let legacy_app = UnicaApplication::with_ports(Box::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("legacy handler must not be reached"),
+        }));
+        let legacy_args = json!({
+            "cwd": workspace.display().to_string(),
+            "dryRun": false,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let legacy = legacy_app
+            .call_tool("unica.build.load", &legacy_args)
+            .unwrap();
+        assert!(!legacy.ok);
+        assert!(legacy.errors.join("\n").contains("unica.runtime.execute"));
+        assert_eq!(
+            legacy.details.as_ref().unwrap()["conflicted"][0]["reason"],
+            "legacyRuntimeBypass"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2927,7 +3244,7 @@ mod tests {
         );
         edit_args.insert(
             "Value".to_string(),
-            Value::String("Name=Changed".to_string()),
+            Value::String("Comment=Changed".to_string()),
         );
 
         let edit_result = UnicaApplication::new()
@@ -2938,7 +3255,23 @@ mod tests {
         assert_ne!(std::fs::read_to_string(&object_path).unwrap(), before);
         assert!(std::fs::read_to_string(&object_path)
             .unwrap()
-            .contains("<Name>Changed</Name>"));
+            .contains("<Comment>Changed</Comment>"));
+        let details = edit_result
+            .details
+            .expect("meta.edit exposes affected source-sync target");
+        assert_eq!(details["affectedTargets"].as_array().unwrap().len(), 1);
+        assert_eq!(details["affectedTargets"][0]["kind"], "metadataOwner");
+        assert_eq!(
+            details["affectedTargets"][0]["ownerSelector"],
+            "Catalog:Items"
+        );
+        let context = WorkspaceContext::discover(workspace.clone()).unwrap();
+        let state = crate::infrastructure::source_sync::SourceSyncRepository::new(&context)
+            .unwrap()
+            .load_state()
+            .unwrap();
+        assert_eq!(state.targets.len(), 1);
+        assert!(state.targets.values().next().unwrap().is_dirty());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4517,7 +4850,7 @@ mod tests {
         );
         args.insert(
             "Value".to_string(),
-            Value::String("Name=Changed".to_string()),
+            Value::String("Comment=Changed".to_string()),
         );
 
         let result = UnicaApplication::new()
@@ -4600,7 +4933,7 @@ mod tests {
         assert!(result.warnings.join("\n").contains("support guard"));
         assert!(std::fs::read_to_string(&object_path)
             .unwrap()
-            .contains("<Name>Changed</Name>"));
+            .contains("<Comment>Changed</Comment>"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4696,6 +5029,7 @@ mod tests {
     <Properties>
       <Name>Items</Name>
       <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Items</v8:content></v8:item></Synonym>
+      <Comment/>
     </Properties>
     <ChildObjects/>
   </Catalog>

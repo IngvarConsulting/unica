@@ -68,6 +68,14 @@ mod edit_tests {
         fs::write(path, content).unwrap();
     }
 
+    fn configure_runtime_source_set(context: &WorkspaceContext) {
+        write_file(
+            &context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        );
+        write_file(&context.cwd.join("Configuration.xml"), "<MetaDataObject/>");
+    }
+
     fn sample_document_xml(register_records: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -255,12 +263,15 @@ mod edit_tests {
     #[test]
     fn edit_meta_register_record_dry_run_does_not_write_file() {
         let context = temp_context("dry-run-register-record");
+        configure_runtime_source_set(&context);
         let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
         let original = sample_document_xml("<RegisterRecords/>");
         write_file(&object_path, &original);
 
+        let mut args = register_record_args(&object_path);
+        args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
         let result = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &register_record_args(&object_path))
+            .call_tool("unica.meta.edit", &args)
             .unwrap();
 
         assert!(result.ok);
@@ -766,6 +777,43 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_rejects_root_identity_changes_before_writing() {
+        let context = temp_context("reject-root-identity-change");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let definition_path = context.cwd.join("rename.json");
+        let original = sample_catalog_xml();
+        write_file(&object_path, &original);
+
+        let inline = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Name=Renamed"),
+            &context,
+        );
+        assert!(!inline.ok);
+        assert!(inline
+            .errors
+            .join("\n")
+            .contains("cannot change root metadata identity"));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        write_file(
+            &definition_path,
+            r#"{"modify":{"properties":{"Name":"Renamed"}}}"#,
+        );
+        let definition = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+        assert!(!definition.ok);
+        assert!(definition
+            .errors
+            .join("\n")
+            .contains("cannot change root metadata identity"));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_definition_file_processes_json_dsl() {
         let context = temp_context("definition-file-json-dsl");
         let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
@@ -1192,6 +1240,7 @@ mod edit_tests {
     #[test]
     fn edit_meta_dry_run_accepts_definition_file_mode() {
         let context = temp_context("dry-run-definition-file");
+        configure_runtime_source_set(&context);
         let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
         let definition_path = context.cwd.join("edit.json");
         write_file(&object_path, &sample_document_xml("<RegisterRecords/>"));
@@ -1206,6 +1255,7 @@ mod edit_tests {
             json!(definition_path.display().to_string()),
         );
         args.insert("dryRun".to_string(), json!(true));
+        args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
 
         let result = UnicaApplication::new()
             .call_tool("unica.meta.edit", &args)
@@ -9437,6 +9487,14 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                 value,
                 &mut counts,
             )?;
+        }
+
+        let edited_identity = meta_edit_object_identity(&xml_text)?;
+        if edited_identity != (object_type.clone(), object_name.clone()) {
+            return Err(format!(
+                "meta.edit cannot change root metadata identity from {object_type}.{object_name} to {}.{}; rename/migration requires a dedicated atomic operation",
+                edited_identity.0, edited_identity.1
+            ));
         }
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))

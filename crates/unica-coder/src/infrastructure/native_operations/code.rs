@@ -386,6 +386,12 @@ fn resolve_target(
         .canonicalize()
         .map_err(|error| format!("failed to inspect workspace root: {error}"))?;
     let source_map = discover_project_source_map(&context.workspace_root)?;
+    if !source_map.source_sets_from_config {
+        return Err(
+            "code.patch requires an explicit non-empty `source-set` in v8project.yaml so the mutation can be reconciled by runtime build/dump"
+                .to_string(),
+        );
+    }
 
     let (source_root, source_set) = if let Some(name) = source_set_arg {
         let matches = source_map
@@ -400,7 +406,9 @@ fn resolve_target(
         };
         validate_configuration_source_set(selected.kind, selected.source_format, &selected.name)?;
         let root = context.workspace_root.join(&selected.path);
+        reject_source_root_symlink(&root)?;
         let root = WorkspacePathPolicy::new(context).resolve_write(root)?;
+        ensure_unique_runtime_source_root(&source_map, context, &root)?;
         (root, Some(selected.name.clone()))
     } else {
         let raw = source_dir_arg.expect("sourceDir was checked above");
@@ -410,9 +418,10 @@ fn resolve_target(
         } else {
             context.cwd.join(raw_path)
         };
+        reject_source_root_symlink(&candidate)?;
         let root = WorkspacePathPolicy::new(context).resolve_write(candidate)?;
-        validate_direct_source_root(&root, &source_map, context)?;
-        (root, None)
+        let source_set = validate_direct_source_root(&root, &source_map, context)?;
+        (root, source_set)
     };
 
     let source_root_metadata = fs::metadata(&source_root).map_err(|error| {
@@ -486,6 +495,51 @@ fn resolve_target(
     })
 }
 
+fn reject_source_root_symlink(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect source root {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        Err(format!(
+            "source root must not be a symlink: {}",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_unique_runtime_source_root(
+    source_map: &crate::domain::project_sources::ProjectSourceMap,
+    context: &WorkspaceContext,
+    selected_root: &Path,
+) -> Result<(), String> {
+    let selected_root = selected_root.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve selected source root {}: {error}",
+            selected_root.display()
+        )
+    })?;
+    let owners = source_map
+        .source_sets
+        .iter()
+        .filter(|candidate| {
+            context
+                .workspace_root
+                .join(&candidate.path)
+                .canonicalize()
+                .is_ok_and(|root| root == selected_root)
+        })
+        .count();
+    if owners == 1 {
+        Ok(())
+    } else {
+        Err(format!(
+            "source root {} is assigned to {owners} source-set entries in v8project.yaml",
+            selected_root.display()
+        ))
+    }
+}
+
 fn validate_configuration_source_set(
     kind: SourceSetKind,
     format: SourceFormat,
@@ -508,7 +562,7 @@ fn validate_direct_source_root(
     root: &Path,
     source_map: &crate::domain::project_sources::ProjectSourceMap,
     context: &WorkspaceContext,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let root_canonical = root
         .canonicalize()
         .map_err(|error| format!("failed to resolve sourceDir {}: {error}", root.display()))?;
@@ -523,33 +577,30 @@ fn validate_direct_source_root(
         }
     }
     match exact_matches.as_slice() {
-        [source_set] => validate_configuration_source_set(
-            source_set.kind,
-            source_set.source_format,
-            &source_set.name,
-        ),
-        [] => {
-            let platform_marker = root.join("Configuration.xml");
-            let edt_markers = [
-                root.join(".project"),
-                root.join("DT-INF/PROJECT.PMF"),
-                root.join("Configuration/Configuration.mdo"),
-                root.join("src/Configuration/Configuration.mdo"),
-            ];
-            if !platform_marker.is_file() {
+        [source_set] => {
+            if source_map
+                .source_sets
+                .iter()
+                .filter(|candidate| candidate.name == source_set.name)
+                .count()
+                != 1
+            {
                 return Err(format!(
-                    "sourceDir {} is not an unambiguous platform_xml configuration root",
-                    root.display()
+                    "source-set name `{}` is ambiguous in v8project.yaml",
+                    source_set.name
                 ));
             }
-            if edt_markers.iter().any(|marker| marker.is_file()) {
-                return Err(format!(
-                    "sourceDir {} contains both platform XML and EDT evidence",
-                    root.display()
-                ));
-            }
-            Ok(())
+            validate_configuration_source_set(
+                source_set.kind,
+                source_set.source_format,
+                &source_set.name,
+            )?;
+            Ok(Some(source_set.name.clone()))
         }
+        [] => Err(format!(
+            "sourceDir {} must exactly match one configured platform_xml configuration source-set in v8project.yaml",
+            root.display()
+        )),
         _ => Err(format!(
             "sourceDir {} maps to multiple source-sets",
             root.display()
@@ -2296,9 +2347,147 @@ mod tests {
         let outcome = patch_code(&args, &fixture.context, true);
         assert!(outcome.ok, "{:?}", outcome.errors);
         let details = details(&outcome);
-        assert!(details["sourceSet"].is_null());
+        assert_eq!(details["sourceSet"], "main");
         assert_eq!(details["sourceRoot"], "src");
         assert_eq!(fs::read(&fixture.module).unwrap(), b"TARGET\n");
+    }
+
+    #[test]
+    fn rejects_unconfigured_source_dir_in_preview_and_apply() {
+        let fixture = Fixture::new("unconfigured-source-dir", b"CONFIGURED\n");
+        let direct_root = fixture.root.join("direct");
+        let direct_module = direct_root.join("CommonModules/Test/Ext/Module.bsl");
+        fs::create_dir_all(direct_module.parent().unwrap()).unwrap();
+        fs::write(direct_root.join("Configuration.xml"), "<Configuration/>").unwrap();
+        fs::write(&direct_module, b"TARGET\n").unwrap();
+        let mut args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Changed();",
+            1,
+        );
+        args.remove("sourceSet");
+        args.insert(
+            "sourceDir".to_string(),
+            json!(direct_root.display().to_string()),
+        );
+
+        for dry_run in [true, false] {
+            let outcome = patch_code(&args, &fixture.context, dry_run);
+            assert!(!outcome.ok, "unconfigured sourceDir unexpectedly passed");
+            assert!(outcome
+                .errors
+                .join("\n")
+                .contains("configured platform_xml"));
+            assert_eq!(fs::read(&direct_module).unwrap(), b"TARGET\n");
+        }
+    }
+
+    #[test]
+    fn rejects_autodetected_source_set_without_authoritative_runtime_config() {
+        for (name, project_config) in [
+            ("no-project-config", None),
+            ("empty-project-source-sets", Some("format: DESIGNER\n")),
+        ] {
+            let fixture = Fixture::new(name, b"TARGET\n");
+            match project_config {
+                Some(config) => fs::write(fixture.root.join("v8project.yaml"), config).unwrap(),
+                None => fs::remove_file(fixture.root.join("v8project.yaml")).unwrap(),
+            }
+            let args = fixture.args(
+                json!({"kind": "anchor", "anchor": "TARGET"}),
+                "replace",
+                "Changed();",
+                1,
+            );
+
+            for dry_run in [true, false] {
+                let outcome = patch_code(&args, &fixture.context, dry_run);
+                assert!(!outcome.ok, "autodetected source-set unexpectedly passed");
+                assert!(outcome
+                    .errors
+                    .join("\n")
+                    .contains("explicit non-empty `source-set`"));
+                assert_eq!(fs::read(&fixture.module).unwrap(), b"TARGET\n");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_direct_root_when_source_set_name_is_duplicated_elsewhere() {
+        let fixture = Fixture::new("duplicate-source-set-name", b"TARGET\n");
+        let other = fixture.root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("Configuration.xml"), "<Configuration/>").unwrap();
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: main\n    type: CONFIGURATION\n    path: other\n",
+        )
+        .unwrap();
+        let mut args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Changed();",
+            1,
+        );
+        args.remove("sourceSet");
+        args.insert(
+            "sourceDir".to_string(),
+            json!(fixture.root.join("src").display().to_string()),
+        );
+
+        let outcome = patch_code(&args, &fixture.context, true);
+        assert!(!outcome.ok);
+        assert!(outcome.errors.join("\n").contains("ambiguous"));
+        assert_eq!(fs::read(&fixture.module).unwrap(), b"TARGET\n");
+    }
+
+    #[test]
+    fn rejects_source_set_when_canonical_root_is_assigned_twice() {
+        let fixture = Fixture::new("duplicate-source-set-root", b"TARGET\n");
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: alias\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Changed();",
+            1,
+        );
+
+        for dry_run in [true, false] {
+            let outcome = patch_code(&args, &fixture.context, dry_run);
+            assert!(!outcome.ok);
+            assert!(outcome.errors.join("\n").contains("assigned to 2"));
+            assert_eq!(fs::read(&fixture.module).unwrap(), b"TARGET\n");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_internal_source_dir_symlink_in_preview_and_apply() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new("source-dir-symlink", b"TARGET\n");
+        let alias = fixture.root.join("source-alias");
+        symlink(fixture.root.join("src"), &alias).unwrap();
+        let mut args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Changed();",
+            1,
+        );
+        args.remove("sourceSet");
+        args.insert("sourceDir".to_string(), json!(alias.display().to_string()));
+
+        for dry_run in [true, false] {
+            let outcome = patch_code(&args, &fixture.context, dry_run);
+            assert!(!outcome.ok);
+            assert!(outcome.errors.join("\n").contains("must not be a symlink"));
+            assert_eq!(fs::read(&fixture.module).unwrap(), b"TARGET\n");
+        }
     }
 
     #[test]

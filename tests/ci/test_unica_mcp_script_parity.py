@@ -735,6 +735,7 @@ SUCCESS_SCENARIOS = [
                 "meta-edit/bsp-catalog-ops.json",
                 "fixtures/meta-edit-bsp-catalog-ops.json",
             ),
+            FileFixture("meta-edit/v8project.yaml", "v8project.yaml"),
         ),
         expect_ok=True,
         compare_files=True,

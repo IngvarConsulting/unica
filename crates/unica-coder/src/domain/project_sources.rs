@@ -8,6 +8,8 @@ pub struct ProjectSourceMap {
     pub workspace_root: String,
     pub config_path: Option<String>,
     pub source_sets: Vec<ProjectSourceSet>,
+    #[serde(skip)]
+    pub(crate) source_sets_from_config: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,11 +49,13 @@ struct ConfigSourceSet {
 }
 
 pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourceMap, String> {
-    let config_path = find_project_config(workspace_root);
-    let mut source_sets = if let Some(path) = &config_path {
-        read_config_source_sets(workspace_root, path)?
+    let config_path = find_project_config(workspace_root)?;
+    let (mut source_sets, source_sets_from_config) = if let Some(path) = &config_path {
+        let configured = read_config_source_sets(workspace_root, path)?;
+        let authoritative = !configured.is_empty();
+        (configured, authoritative)
     } else {
-        autodetect_source_sets(workspace_root)
+        (autodetect_source_sets(workspace_root), false)
     };
 
     if source_sets.is_empty() {
@@ -67,12 +71,24 @@ pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourc
         workspace_root: workspace_root.display().to_string(),
         config_path: config_path.map(|path| path.display().to_string()),
         source_sets: project_source_sets,
+        source_sets_from_config,
     })
 }
 
-fn find_project_config(workspace_root: &Path) -> Option<PathBuf> {
+fn find_project_config(workspace_root: &Path) -> Result<Option<PathBuf>, String> {
     let default = workspace_root.join("v8project.yaml");
-    default.is_file().then_some(default)
+    match std::fs::symlink_metadata(&default) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(format!(
+            "project config must be a regular non-symlink file: {}",
+            default.display()
+        )),
+        Ok(_) => Ok(Some(default)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to inspect project config {}: {error}",
+            default.display()
+        )),
+    }
 }
 
 fn read_config_source_sets(
@@ -91,23 +107,25 @@ fn read_config_source_sets(
     match source_set_value {
         Some(YamlValue::Sequence(entries)) => {
             for entry in entries {
+                if !entry.is_mapping() {
+                    return Err(format!(
+                        "{} field `source-set` list entries must be mappings",
+                        config_path.display()
+                    ));
+                }
                 source_sets.push(config_source_set_from_yaml(entry, default_format)?);
             }
         }
-        Some(YamlValue::Mapping(entries)) => {
-            for (key, entry) in entries {
-                let name = key.as_str().unwrap_or("main");
-                source_sets.push(config_source_set_from_named_yaml(
-                    name,
-                    entry,
-                    default_format,
-                )?);
-            }
+        Some(YamlValue::Mapping(_)) => {
+            return Err(format!(
+                "{} field `source-set` must be a list; v8-runner does not accept mapping-form source sets",
+                config_path.display()
+            ));
         }
         Some(YamlValue::Null) | None => {}
         Some(_) => {
             return Err(format!(
-                "{} field `source-set` must be a list or mapping",
+                "{} field `source-set` must be a list",
                 config_path.display()
             ));
         }
@@ -124,7 +142,7 @@ fn config_source_set_from_yaml(
     entry: &YamlValue,
     default_format: Option<SourceFormat>,
 ) -> Result<ConfigSourceSet, String> {
-    let name = yaml_string(entry, "name").unwrap_or_else(|| "main".to_string());
+    let name = required_yaml_string(entry, "name", "source-set entry")?;
     config_source_set_from_named_yaml(&name, entry, default_format)
 }
 
@@ -133,17 +151,62 @@ fn config_source_set_from_named_yaml(
     entry: &YamlValue,
     default_format: Option<SourceFormat>,
 ) -> Result<ConfigSourceSet, String> {
-    let source_type = yaml_string(entry, "type")
-        .or_else(|| yaml_string(entry, "purpose"))
-        .unwrap_or_else(|| "CONFIGURATION".to_string());
+    if name.trim().is_empty() || !is_safe_source_set_name(name) {
+        return Err(format!(
+            "source-set name `{name}` must be one safe path segment"
+        ));
+    }
+    if let Some(entry_name) = optional_strict_yaml_string(entry, "name")? {
+        if entry_name != name {
+            return Err(format!(
+                "source-set mapping key `{name}` does not match entry name `{entry_name}`"
+            ));
+        }
+    }
+    let source_type = required_yaml_string(entry, "type", &format!("source-set `{name}`"))?;
     let kind = source_set_kind_from_config(&source_type)?;
-    let path = yaml_string(entry, "path").unwrap_or_else(|| ".".to_string());
+    let path = required_yaml_string(entry, "path", &format!("source-set `{name}`"))?;
     Ok(ConfigSourceSet {
         name: name.to_string(),
         kind,
         path,
         default_format,
     })
+}
+
+fn is_safe_source_set_name(value: &str) -> bool {
+    use std::path::Component;
+
+    if value.is_empty() {
+        return false;
+    }
+    let mut components = Path::new(value).components();
+    let single_normal =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    single_normal
+        && !value.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'
+                )
+        })
+}
+
+fn optional_strict_yaml_string(value: &YamlValue, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = yaml_mapping_get(value, key) else {
+        return Ok(None);
+    };
+    let text = value
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| format!("field `{key}` must be a non-blank string"))?;
+    Ok(Some(text.to_string()))
+}
+
+fn required_yaml_string(value: &YamlValue, key: &str, context: &str) -> Result<String, String> {
+    optional_strict_yaml_string(value, key)?
+        .ok_or_else(|| format!("{context} requires non-blank string field `{key}`"))
 }
 
 fn normalize_configured_path(workspace_root: &Path, base_path: &str, raw_path: &str) -> String {
@@ -504,6 +567,76 @@ source-set:
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetected_sets_are_not_marked_as_runtime_configured() {
+        for (name, config) in [
+            ("missing-config", None),
+            ("empty-config", Some("format: DESIGNER\n")),
+            (
+                "null-source-set",
+                Some("format: DESIGNER\nsource-set: null\n"),
+            ),
+        ] {
+            let root = temp_workspace(&format!("unica-source-map-{name}"));
+            write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+            if let Some(config) = config {
+                write(&root.join("v8project.yaml"), config);
+            }
+
+            let map = discover_project_source_map(&root).unwrap();
+
+            assert_eq!(map.source_sets.len(), 1);
+            assert!(!map.source_sets_from_config);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn malformed_source_set_shapes_fail_instead_of_becoming_authoritative_defaults() {
+        for (name, source_set) in [
+            ("null-list-entry", "source-set: [null]\n"),
+            ("scalar-list-entry", "source-set: [main]\n"),
+            (
+                "numeric-map-key",
+                "source-set:\n  1:\n    type: CONFIGURATION\n    path: src\n",
+            ),
+            ("scalar-map-value", "source-set:\n  main: 1\n"),
+            (
+                "numeric-name",
+                "source-set:\n  - name: 1\n    type: CONFIGURATION\n    path: src\n",
+            ),
+            (
+                "missing-path",
+                "source-set:\n  - name: main\n    type: CONFIGURATION\n",
+            ),
+            (
+                "missing-type",
+                "source-set:\n  - name: main\n    path: src\n",
+            ),
+            (
+                "unsafe-name",
+                "source-set:\n  - name: bad/name\n    type: CONFIGURATION\n    path: src\n",
+            ),
+            (
+                "dot-name",
+                "source-set:\n  - name: .\n    type: CONFIGURATION\n    path: src\n",
+            ),
+        ] {
+            let root = temp_workspace(&format!("unica-source-map-malformed-{name}"));
+            write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+            write(
+                &root.join("v8project.yaml"),
+                &format!("format: DESIGNER\n{source_set}"),
+            );
+
+            assert!(
+                discover_project_source_map(&root).is_err(),
+                "malformed shape `{name}` was accepted"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn assert_source_set(

@@ -152,6 +152,29 @@ allowed-tools:
 
 ### Обычный build
 
+После успешного `unica.meta.edit` или `unica.code.patch` Unica хранит вне
+исходников raw-byte manifest затронутых XML/BSL-файлов. Обычный build остаётся
+обычным: Unica не подменяет его скрытым `fullRebuild`, а сверяет terminal JSON
+runner-а и помечает синхронизированными только неизменившиеся файлы из реально
+успешных, не пропущенных source-set. В `details` смотри массивы `requested`,
+`processed`, `skipped` и `conflicted`; skipped/conflicted target остаётся dirty.
+Dry-run читает durable state без lock/state/shadow writes и возвращает те же
+terminal-массивы; `dryRunRequiresShadow` означает, что версию ИБ можно узнать
+только реальным shadow dump.
+
+Единый durable authority находится в каноническом workspace по пути
+`.build/unica/source-sync/<workspace-id>` и не зависит от `UNICA_CACHE_DIR`.
+Повреждённый state, symlink вместо state/storage или несовпадающая identity
+блокируют mutation/build/dump; такое состояние не считается пустым.
+
+Tracked mutation разрешена только для уникального `platform_xml` configuration
+entry из непустого списка `source-set` основного `v8project.yaml`. Каждый entry
+обязан иметь безопасное уникальное `name`, `type`, `path` и уникальный canonical
+root. Autodetect, mapping-form source-set, symlink root и дубликаты не считаются
+runtime topology. При active source-sync state build с другим `config` или после
+переноса/удаления source-set блокируется как `sourceTopologyChanged` до запуска
+runner-а.
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -288,6 +311,12 @@ allowed-tools:
 
 ### Partial dump объекта
 
+Для tracked target в platform-XML configuration source-set partial dump
+выполняется сначала в изолированный shadow source. Unica сравнивает результат
+базы с последним успешно загруженным/выгруженным raw-byte manifest и текущими
+исходниками до любой публикации. При divergence обычный вызов завершается
+конфликтом и не меняет ни одного байта рабочего source.
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -323,6 +352,57 @@ allowed-tools:
   }
 }
 ```
+
+`object` и `objects` объединяются, приводятся к форме `TYPE:NAME` и
+дедуплицируются с сохранением первого порядка. Один конфликт блокирует
+публикацию всей группы. Публичный контракт всегда использует `TYPE:NAME`;
+только изолированный вызов Designer получает внутренний селектор `TYPE.NAME`,
+который не возвращается вызывающему коду и не меняет identity target-а.
+
+### Явная публикация версии из базы
+
+`force` — политика оболочки Unica только для `dump/partial`; этот флаг никогда
+не передаётся в v8-runner. Используй его лишь после проверки `conflicted`, когда
+версия объекта из базы действительно должна заменить локальный tracked target:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {
+      "cwd": "<workspace>",
+      "operation": "dump",
+      "mode": "partial",
+      "object": "Catalog:Номенклатура",
+      "force": true,
+      "dryRun": false
+    }
+  }
+}
+```
+
+Защита первого среза относится к tracked metadata/module target в
+platform-XML configuration source-set. EDT, extensions, external source-set и
+full/incremental dump не выдают ложную гарантию object-level round-trip. При
+наличии любого source-sync record Unica блокирует full/incremental dump: сначала заверши
+tracked partial round-trip либо явно разреши нужную object-level публикацию
+через `force`. Не обходи state через legacy `unica.build.load/update/dump`:
+используй typed `unica.runtime.execute`.
+
+Успешный forced partial dump публикует проверенные object/module bytes и
+созданный платформой `ConfigDumpInfo.xml` одной rollback-транзакцией. CDFI не
+входит в dirty manifests и Unica не синтезирует его вручную. В terminal details
+сверяй `observedShadow` и, когда bytes реально опубликованы,
+`publishedManifest`; `force` не попадает в argv runner-а.
+
+Если операция сообщает retained publication journal/recovery required, не
+правь source и state вручную: следующий locked mutation/build/dump сначала
+выполнит rollback recovery. При `sourceTopologyChanged` восстанови исходный
+уникальный source-set/root в основном `v8project.yaml`, затем заверши обычный
+typed build или target-level partial dump. Не удаляй `.build/unica/source-sync`
+как способ «сброса»: это уничтожит synchronized baseline и снимет защиту.
 
 ### Dump расширения или source-set
 

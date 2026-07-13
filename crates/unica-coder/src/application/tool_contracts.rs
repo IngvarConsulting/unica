@@ -375,6 +375,7 @@ const RUNTIME_DUMP_OPERATION_ARGS: &[&str] = &[
     "objects",
     "sourceSet",
     "extension",
+    "force",
 ];
 const RUNTIME_CONVERT_OPERATION_ARGS: &[&str] =
     &["operation", "config", "workdir", "sourceSet", "output"];
@@ -1098,15 +1099,22 @@ fn validate_runtime_operation_payload(
     match operation {
         "dump" => {
             validate_enum_argument(tool_name, args, "mode", RUNTIME_DUMP_MODES)?;
-            if args
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode == "partial")
-                && !args.contains_key("object")
-                && !has_non_empty_array_arg(args, "objects")
-            {
+            let mode = args.get("mode").and_then(Value::as_str);
+            let has_selectors = contains_any(args, &["object", "objects"]);
+            if mode == Some("partial") {
+                if normalized_runtime_dump_selectors(args)?.is_empty() {
+                    return Err(format!(
+                        "{tool_name} operation `dump` with mode `partial` requires `object` or `objects`"
+                    ));
+                }
+            } else if has_selectors {
                 return Err(format!(
-                    "{tool_name} operation `dump` with mode `partial` requires `object` or `objects`"
+                    "{tool_name} operation `dump` accepts object selectors only with mode `partial`"
+                ));
+            }
+            if args.contains_key("force") && mode != Some("partial") {
+                return Err(format!(
+                    "{tool_name} operation `dump` accepts `force` only with mode `partial`"
                 ));
             }
         }
@@ -1248,6 +1256,79 @@ fn has_non_empty_array_arg(args: &Map<String, Value>, key: &str) -> bool {
     args.get(key)
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty())
+}
+
+/// Return partial-dump selectors in stable first-seen order.
+///
+/// The wrapper uses these canonical values for source-sync target identity and
+/// passes no wrapper-only flags to the runner. Keeping normalization at the
+/// typed boundary also makes `object` and `objects` behave identically.
+pub(crate) fn normalized_runtime_dump_selectors(
+    args: &Map<String, Value>,
+) -> Result<Vec<String>, String> {
+    let single = args
+        .get("object")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "unica.runtime.execute argument `object` must be string".to_string())
+        })
+        .transpose()?;
+    let multiple = args
+        .get("objects")
+        .map(|value| {
+            let items = value.as_array().ok_or_else(|| {
+                "unica.runtime.execute argument `objects` must be array".to_string()
+            })?;
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str().ok_or_else(|| {
+                        "unica.runtime.execute argument `objects` must contain strings".to_string()
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for selector in single.into_iter().chain(multiple) {
+        let selector = normalize_runtime_dump_selector(selector)?;
+        if seen.insert(selector.clone()) {
+            normalized.push(selector);
+        }
+    }
+    Ok(normalized)
+}
+
+fn normalize_runtime_dump_selector(selector: &str) -> Result<String, String> {
+    if selector.chars().any(char::is_control) {
+        return Err(
+            "unica.runtime.execute partial dump selector must not contain control characters"
+                .to_string(),
+        );
+    }
+    let selector = selector.trim();
+    let (object_type, object_name) = selector.split_once(':').ok_or_else(|| {
+        "unica.runtime.execute partial dump selector must use `TYPE:NAME` format".to_string()
+    })?;
+    if object_name.contains(':') {
+        return Err(
+            "unica.runtime.execute partial dump selector must contain exactly one `:` separator"
+                .to_string(),
+        );
+    }
+    let object_type = object_type.trim();
+    let object_name = object_name.trim();
+    if object_type.is_empty() || object_name.is_empty() {
+        return Err(
+            "unica.runtime.execute partial dump selector must contain non-blank TYPE and NAME"
+                .to_string(),
+        );
+    }
+    Ok(format!("{object_type}:{object_name}"))
 }
 
 pub fn validate_workspace_paths(
@@ -2030,6 +2111,165 @@ mod tests {
             assert!(
                 error.contains(expected),
                 "expected error containing {expected:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_dump_force_is_typed_and_limited_to_partial_mode() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.execute")
+            .expect("unica.runtime.execute must be registered");
+        let schema = input_schema_for_tool(&tool);
+        assert_eq!(schema["properties"]["force"]["type"], "boolean");
+
+        for force in [false, true] {
+            let args = json!({
+                "operation": "dump",
+                "mode": "partial",
+                "object": "Catalog:Items",
+                "force": force,
+            })
+            .as_object()
+            .expect("runtime arguments must be an object")
+            .clone();
+            validate_tool_arguments(tool, &args, false).unwrap();
+        }
+
+        for input in [
+            json!({"operation": "dump", "mode": "full", "force": false}),
+            json!({"operation": "dump", "mode": "incremental", "force": true}),
+            json!({"operation": "dump", "force": false}),
+        ] {
+            let args = input
+                .as_object()
+                .expect("runtime arguments must be an object")
+                .clone();
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains("accepts `force` only with mode `partial`"),
+                "unexpected validation error: {error}"
+            );
+        }
+
+        let args = json!({"operation": "build", "force": false})
+            .as_object()
+            .expect("runtime arguments must be an object")
+            .clone();
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("operation `build` does not accept `force`"));
+
+        let args = json!({"operation": "dump", "mode": "full", "force": false})
+            .as_object()
+            .expect("runtime arguments must be an object")
+            .clone();
+        let error = validate_tool_arguments(tool, &args, true).unwrap_err();
+        assert!(error.contains("accepts `force` only with mode `partial`"));
+
+        let args = json!({
+            "operation": "dump",
+            "mode": "partial",
+            "object": "Catalog:Items",
+            "force": "false",
+        })
+        .as_object()
+        .expect("runtime arguments must be an object")
+        .clone();
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("argument `force` must be boolean"));
+
+        let args = json!({"operation": "init", "force": false})
+            .as_object()
+            .expect("runtime arguments must be an object")
+            .clone();
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("operation `init` does not accept `force`"));
+
+        // These established runner flags predate the wrapper-only dump flag.
+        for input in [
+            json!({"operation": "config-init", "force": true}),
+            json!({"operation": "tools-download", "tool": "yaxunit", "force": true}),
+        ] {
+            let args = input
+                .as_object()
+                .expect("runtime arguments must be an object")
+                .clone();
+            validate_tool_arguments(tool, &args, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_partial_dump_normalizes_and_deduplicates_selectors() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.execute")
+            .expect("unica.runtime.execute must be registered");
+        let args = json!({
+            "operation": "dump",
+            "mode": "partial",
+            "object": " Catalog : Items ",
+            "objects": [
+                "Catalog:Items",
+                " Document : SalesOrder ",
+                "Document:SalesOrder",
+            ],
+        })
+        .as_object()
+        .expect("runtime arguments must be an object")
+        .clone();
+
+        validate_tool_arguments(tool, &args, false).unwrap();
+        assert_eq!(
+            normalized_runtime_dump_selectors(&args).unwrap(),
+            vec!["Catalog:Items", "Document:SalesOrder"]
+        );
+    }
+
+    #[test]
+    fn runtime_partial_dump_rejects_invalid_or_non_partial_selectors() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.execute")
+            .expect("unica.runtime.execute must be registered");
+
+        for selector in [
+            "",
+            "   ",
+            "Catalog",
+            ":Items",
+            "Catalog:",
+            "Catalog:Items:Extra",
+            "Catalog:\nItems",
+        ] {
+            let args = json!({
+                "operation": "dump",
+                "mode": "partial",
+                "object": selector,
+            })
+            .as_object()
+            .expect("runtime arguments must be an object")
+            .clone();
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains("partial dump selector"),
+                "invalid selector {selector:?} produced unexpected error: {error}"
+            );
+        }
+
+        for input in [
+            json!({"operation": "dump", "mode": "full", "object": "Catalog:Items"}),
+            json!({"operation": "dump", "mode": "incremental", "objects": []}),
+            json!({"operation": "dump", "object": "Catalog:Items"}),
+        ] {
+            let args = input
+                .as_object()
+                .expect("runtime arguments must be an object")
+                .clone();
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains("accepts object selectors only with mode `partial`"),
+                "unexpected validation error: {error}"
             );
         }
     }

@@ -42,6 +42,11 @@ build:
   partialLoadThreshold: 20
 ```
 
+`source-set` is a YAML list. Every entry requires `name`, `type`, and `path`;
+names and canonical paths must be unique, and names must be safe single path
+segments. Mapping-form, autodetected-only roots, duplicate roots and symlink
+aliases are not valid runtime topology for tracked mutations.
+
 `infobase.connection` is the current runner key. Do not use legacy top-level
 `connection` in `v8project.yaml`.
 
@@ -90,6 +95,10 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 | Run syntax checks | `operation=syntax`, `mode=designer-config|designer-modules|edt` |
 | Run tests | `operation=test`, `testRunner=yaxunit|va` |
 | Download configured tools | `operation=tools-download`, `tool=yaxunit|vanessa|client-mcp` |
+
+`TYPE:NAME` — стабильная публичная форма partial-dump selector. Для запуска
+Designer Unica преобразует её во внутреннюю точечную форму `TYPE.NAME`; в
+аргументах MCP, terminal details и source-sync identity остаётся `TYPE:NAME`.
 
 ## Skill Rules
 

@@ -1,3 +1,4 @@
+use crate::domain::source_sync::{BuildStepMode, BuildTerminalEntry, SourceSetName};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
@@ -7,6 +8,7 @@ use crate::infrastructure::workspace_index::{
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::AdapterOutcome;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
@@ -72,6 +74,105 @@ pub struct CliAdapter<'a> {
 
 pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeBuildReport {
+    pub envelope_ok: bool,
+    pub steps: Vec<BuildTerminalEntry>,
+}
+
+#[derive(Deserialize)]
+struct RawRuntimeBuildEnvelope {
+    ok: bool,
+    command: String,
+    data: RawRuntimeBuildData,
+}
+
+#[derive(Deserialize)]
+struct RawRuntimeBuildData {
+    steps: Vec<RawRuntimeBuildStep>,
+}
+
+#[derive(Deserialize)]
+struct RawRuntimeBuildStep {
+    source_set: String,
+    mode: Value,
+    ok: bool,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+pub(crate) fn parse_runtime_build_report(stdout: &str) -> Result<RuntimeBuildReport, String> {
+    let envelope = serde_json::from_str::<RawRuntimeBuildEnvelope>(stdout.trim())
+        .map_err(|error| format!("invalid v8-runner build JSON envelope: {error}"))?;
+    if envelope.command != "build" {
+        return Err(format!(
+            "invalid v8-runner build JSON envelope: expected command `build`, got `{}`",
+            envelope.command
+        ));
+    }
+
+    let mut source_sets = BTreeSet::new();
+    let mut steps = Vec::with_capacity(envelope.data.steps.len());
+    for raw in envelope.data.steps {
+        if raw.source_set.trim().is_empty() {
+            return Err(
+                "invalid v8-runner build JSON envelope: step source_set is blank".to_string(),
+            );
+        }
+        if !source_sets.insert(raw.source_set.clone()) {
+            return Err(format!(
+                "invalid v8-runner build JSON envelope: duplicate source_set `{}`",
+                raw.source_set
+            ));
+        }
+        steps.push(BuildTerminalEntry {
+            source_set: SourceSetName::new(raw.source_set)?,
+            mode: parse_runtime_build_mode(&raw.mode)?,
+            ok: raw.ok,
+            message: raw.message,
+        });
+    }
+
+    Ok(RuntimeBuildReport {
+        envelope_ok: envelope.ok,
+        steps,
+    })
+}
+
+fn parse_runtime_build_mode(value: &Value) -> Result<BuildStepMode, String> {
+    match value {
+        Value::String(mode) => match mode.as_str() {
+            "edt_export" => Ok(BuildStepMode::EdtExport),
+            "full" => Ok(BuildStepMode::Full),
+            "skipped" => Ok(BuildStepMode::Skipped),
+            other => Err(format!(
+                "invalid v8-runner build JSON envelope: unknown build mode `{other}`"
+            )),
+        },
+        Value::Object(mode) if mode.len() == 1 && mode.contains_key("partial") => mode
+            .get("partial")
+            .and_then(Value::as_object)
+            .filter(|payload| {
+                payload.len() == 1 && payload.get("file_count").and_then(Value::as_u64).is_some()
+            })
+            .and_then(|payload| {
+                payload
+                    .get("file_count")
+                    .and_then(Value::as_u64)
+                    .and_then(|count| usize::try_from(count).ok())
+                    .map(|file_count| BuildStepMode::Partial { file_count })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "invalid v8-runner build JSON envelope: malformed partial build mode {value}"
+                )
+            }),
+        _ => Err(format!(
+            "invalid v8-runner build JSON envelope: unsupported build mode {value}"
+        )),
+    }
 }
 
 struct RuntimeInvocation<'a> {
@@ -2465,6 +2566,7 @@ const RUNTIME_MAPPER_DUMP_ARGS: &[&str] = &[
     "objects",
     "sourceSet",
     "extension",
+    "force",
 ];
 const RUNTIME_MAPPER_CONVERT_ARGS: &[&str] =
     &["operation", "config", "workdir", "sourceSet", "output"];
@@ -2577,6 +2679,10 @@ fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, 
         .ok_or_else(|| "unica.runtime.execute requires string `operation` argument".to_string())?;
     validate_runtime_mapper_payload(operation, args)?;
     let mut result = Vec::new();
+
+    if operation == "build" {
+        result.push("--json-message".to_string());
+    }
 
     append_runtime_global_args(&mut result, operation, args, redact);
 
@@ -2743,6 +2849,16 @@ fn validate_runtime_mapper_payload(
     match operation {
         "dump" => {
             validate_mapper_enum(args, "mode", RUNTIME_MAPPER_DUMP_MODES)?;
+            if let Some(force) = args.get("force") {
+                if !force.is_boolean() {
+                    return Err("argument `force` must be boolean".to_string());
+                }
+                if args.get("mode").and_then(Value::as_str) != Some("partial") {
+                    return Err(
+                        "operation `dump` accepts `force` only with mode `partial`".to_string()
+                    );
+                }
+            }
             if args
                 .get("mode")
                 .and_then(Value::as_str)
@@ -3125,7 +3241,13 @@ mod tests {
         let commands = runner.commands.borrow();
         assert_eq!(
             commands[0].args,
-            vec!["build", "--full-rebuild", "--source-set", "main"]
+            vec![
+                "--json-message",
+                "build",
+                "--full-rebuild",
+                "--source-set",
+                "main"
+            ]
         );
         assert!(commands[0].timeout.is_none());
         assert!(commands[0].program.to_string_lossy().contains("bin/"));
@@ -3135,6 +3257,67 @@ mod tests {
             .contains("run-v8-runner.sh"));
         drop(commands);
         cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_build_report_parses_terminal_steps_without_log_inference() {
+        let report = parse_runtime_build_report(
+            r#"{
+                "ok": false,
+                "command": "build",
+                "duration_ms": 42,
+                "data": {
+                    "ok": false,
+                    "steps": [
+                        {"source_set":"main","mode":{"partial":{"file_count":2}},"ok":true,"message":null,"duration_ms":20},
+                        {"source_set":"ext","mode":"skipped","ok":false,"message":"aborted","duration_ms":0}
+                    ],
+                    "duration_ms": 42
+                },
+                "warnings": [],
+                "steps": [],
+                "error": {"code":"build_failed","kind":"runtime","message":"failed"}
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!report.envelope_ok);
+        assert_eq!(report.steps.len(), 2);
+        assert_eq!(report.steps[0].source_set.as_str(), "main");
+        assert_eq!(
+            report.steps[0].mode,
+            BuildStepMode::Partial { file_count: 2 }
+        );
+        assert!(report.steps[0].ok);
+        assert_eq!(report.steps[1].mode, BuildStepMode::Skipped);
+    }
+
+    #[test]
+    fn runtime_build_report_rejects_invalid_or_ambiguous_terminal_json() {
+        let arbitrary_log = parse_runtime_build_report("Designer build completed").unwrap_err();
+        assert!(arbitrary_log.contains("invalid v8-runner build JSON envelope"));
+
+        let wrong_command =
+            parse_runtime_build_report(r#"{"ok":true,"command":"dump","data":{"steps":[]}}"#)
+                .unwrap_err();
+        assert!(wrong_command.contains("expected command `build`"));
+
+        let duplicate = parse_runtime_build_report(
+            r#"{"ok":true,"command":"build","data":{"steps":[
+                {"source_set":"main","mode":"full","ok":true},
+                {"source_set":"main","mode":"skipped","ok":false}
+            ]}}"#,
+        )
+        .unwrap_err();
+        assert!(duplicate.contains("duplicate source_set `main`"));
+
+        let malformed_partial = parse_runtime_build_report(
+            r#"{"ok":true,"command":"build","data":{"steps":[
+                {"source_set":"main","mode":{"partial":null},"ok":true}
+            ]}}"#,
+        )
+        .unwrap_err();
+        assert!(malformed_partial.contains("malformed partial build mode"));
     }
 
     #[test]
@@ -3459,6 +3642,35 @@ mod tests {
             let args = input.as_object().unwrap().clone();
             assert_eq!(runtime_args(&args, false).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn runtime_adapter_keeps_partial_dump_force_inside_unica_wrapper() {
+        let args = json!({
+            "operation": "dump",
+            "mode": "partial",
+            "object": "Catalog:Items",
+            "force": true,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let argv = runtime_args(&args, false).unwrap();
+
+        assert_eq!(
+            argv,
+            vec!["dump", "--mode", "partial", "--object", "Catalog:Items"]
+        );
+        assert!(!argv.iter().any(|arg| arg == "--force"));
+
+        let non_partial = json!({"operation": "dump", "mode": "full", "force": false})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(runtime_args(&non_partial, false)
+            .unwrap_err()
+            .contains("only with mode `partial`"));
     }
 
     #[test]
