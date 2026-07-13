@@ -1,0 +1,4 @@
+interface:
+  display_name: "Создать внешнюю обработку (EPF)"
+  short_description: "Создаёт make-ready EPF scaffold в source-set"
+  default_prompt: "Используй $epf-init, чтобы создать пустую внешнюю обработку с опциональной управляемой формой."

@@ -1,6 +1,6 @@
 use super::operation_descriptors::native_operation_descriptor;
 use super::{ToolHandler, ToolSpec};
-use crate::domain::project_sources::{discover_project_source_map, SourceFormat};
+use crate::domain::project_sources::{discover_project_source_map, SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Map, Value};
@@ -218,6 +218,8 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "version",
     "withText",
 ];
+
+const EXTERNAL_INIT_ARGS: &[&str] = &["FormName", "Name", "OutputDir", "Synonym"];
 
 const BUILD_ARGS: &[&str] = &[
     "config",
@@ -588,8 +590,9 @@ pub fn validate_tool_arguments(
     validate_form_add_arguments(tool, args)?;
     validate_template_add_arguments(tool, args)?;
     validate_support_arguments(tool, args, dry_run)?;
+    validate_external_init_arguments(tool, args)?;
 
-    if !dry_run {
+    if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
             if !args.contains_key(required) {
                 return Err(format!("{} requires `{required}` argument", tool.name));
@@ -597,6 +600,30 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_external_init_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if !is_external_init_tool(tool) {
+        return Ok(());
+    }
+    for key in ["Name", "Synonym", "OutputDir", "FormName"] {
+        let Some(value) = args.get(key) else {
+            continue;
+        };
+        let Some(value) = value.as_str() else {
+            return Err(format!("{} argument `{key}` must be string", tool.name));
+        };
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{} argument `{key}` must be a non-empty string",
+                tool.name
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1078,7 +1105,7 @@ pub fn validate_workspace_paths(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run {
+    if dry_run && !is_external_init_tool(tool) {
         return Ok(());
     }
     if !is_native_xml_tool(tool) && !matches!(tool.handler, ToolHandler::RuntimeAdapter) {
@@ -1105,13 +1132,17 @@ pub fn validate_native_source_set_format(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run || !is_native_xml_tool(tool) {
+    if (dry_run && !is_external_init_tool(tool)) || !is_native_xml_tool(tool) {
         return Ok(());
     }
 
     let source_map = discover_project_source_map(&context.workspace_root)?;
-    if source_map.source_sets.is_empty() {
+    if source_map.source_sets.is_empty() && !is_external_init_tool(tool) {
         return Ok(());
+    }
+
+    if is_external_init_tool(tool) {
+        validate_external_project_format(tool, &source_map)?;
     }
 
     for key in native_source_path_args(tool) {
@@ -1119,6 +1150,10 @@ pub fn validate_native_source_set_format(
             continue;
         };
         let target = resolve_read_path(&context.cwd, raw_path);
+        if is_external_init_tool(tool) {
+            validate_external_init_destination(tool, &target, context, &source_map)?;
+            continue;
+        }
         let Some(source_set) = source_map
             .source_sets
             .iter()
@@ -1149,6 +1184,140 @@ pub fn validate_native_source_set_format(
     }
 
     Ok(())
+}
+
+fn validate_external_project_format(
+    tool: ToolSpec,
+    source_map: &crate::domain::project_sources::ProjectSourceMap,
+) -> Result<(), String> {
+    match source_map.configured_format_raw.as_deref() {
+        None | Some("DESIGNER") => Ok(()),
+        Some("EDT") => Err(format!(
+            "{} requires v8project.yaml format=DESIGNER; format=EDT uses a different external-project layout",
+            tool.name
+        )),
+        Some(other) => Err(format!(
+            "{} requires v8project.yaml format to be exact `DESIGNER` (or omitted for the Designer default); got {other:?}",
+            tool.name
+        )),
+    }
+}
+
+fn validate_external_init_destination(
+    tool: ToolSpec,
+    target: &Path,
+    context: &WorkspaceContext,
+    source_map: &crate::domain::project_sources::ProjectSourceMap,
+) -> Result<(), String> {
+    reject_symlink_components(target, &context.workspace_root)?;
+    let Some(expected_kind) = external_init_source_set_kind(tool) else {
+        return Ok(());
+    };
+
+    let matching_source_set = source_map
+        .source_sets
+        .iter()
+        .filter_map(|source_set| {
+            let source_root = normalize_lexical(&context.workspace_root.join(&source_set.path));
+            path_starts_with_case_insensitive(target, &source_root)
+                .then_some((source_set, source_root))
+        })
+        .max_by_key(|(_, source_root)| source_root.components().count());
+    let Some((source_set, source_root)) = matching_source_set else {
+        return Ok(());
+    };
+
+    if target != source_root {
+        let aliases_source_root = target.components().count() == source_root.components().count();
+        if aliases_source_root
+            || matches!(
+                source_set.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            )
+        {
+            return Err(format!(
+                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
+                tool.name,
+                source_root.display(),
+                target.display()
+            ));
+        }
+        return Ok(());
+    }
+    if source_set.kind != expected_kind {
+        return Err(format!(
+            "{} targets source-set `{}` of kind {:?}; expected {:?}",
+            tool.name, source_set.name, source_set.kind, expected_kind
+        ));
+    }
+    match source_set.source_format {
+        SourceFormat::PlatformXml | SourceFormat::Unknown => Ok(()),
+        SourceFormat::Edt => Err(format!(
+            "{} targets source-set `{}` with sourceFormat=edt; native platform XML tools require sourceFormat=platform_xml",
+            tool.name, source_set.name
+        )),
+        SourceFormat::Invalid => Err(format!(
+            "{} targets source-set `{}` with invalid/ambiguous format; native platform XML tools require sourceFormat=platform_xml",
+            tool.name, source_set.name
+        )),
+    }
+}
+
+fn reject_symlink_components(target: &Path, workspace_root: &Path) -> Result<(), String> {
+    let workspace_root = normalize_lexical(workspace_root);
+    let relative = target.strip_prefix(&workspace_root).map_err(|_| {
+        format!(
+            "external scaffold target is outside workspace root: {}",
+            target.display()
+        )
+    })?;
+    let mut current = workspace_root;
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
+                return Err(format!(
+                    "external scaffold OutputDir must not traverse symlink: {}",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!("failed to inspect {}: {error}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn metadata_is_link_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+    path_components.len() >= base_components.len()
+        && path_components
+            .iter()
+            .zip(base_components.iter())
+            .all(|(left, right)| {
+                left.as_os_str().to_string_lossy().to_lowercase()
+                    == right.as_os_str().to_string_lossy().to_lowercase()
+            })
 }
 
 fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
@@ -1214,8 +1383,23 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     names
 }
 
-fn native_args_for(_operation: &str) -> &'static [&'static str] {
-    NATIVE_XML_DSL_ARGS
+fn native_args_for(operation: &str) -> &'static [&'static str] {
+    match operation {
+        "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
+        _ => NATIVE_XML_DSL_ARGS,
+    }
+}
+
+fn is_external_init_tool(tool: ToolSpec) -> bool {
+    matches!(tool.name, "unica.epf.init" | "unica.erf.init")
+}
+
+fn external_init_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
+    match tool.name {
+        "unica.epf.init" => Some(SourceSetKind::ExternalProcessor),
+        "unica.erf.init" => Some(SourceSetKind::ExternalReport),
+        _ => None,
+    }
 }
 
 fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
@@ -1741,6 +1925,65 @@ mod tests {
         args.insert("operation".to_string(), json!("shell"));
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
         assert!(error.contains("must be one of"));
+    }
+
+    #[test]
+    fn external_artifact_init_contracts_are_typed_and_require_destination() {
+        for tool_name in ["unica.epf.init", "unica.erf.init"] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+            let schema = input_schema_for_tool(&tool);
+
+            assert_eq!(schema["additionalProperties"], false);
+            assert!(schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("Name")));
+            assert!(schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("OutputDir")));
+            for argument in ["Name", "Synonym", "OutputDir", "FormName", "dryRun"] {
+                assert!(
+                    schema["properties"].get(argument).is_some(),
+                    "{tool_name} must expose {argument}"
+                );
+            }
+            assert!(schema["properties"].get("script").is_none());
+            assert!(schema["properties"].get("args").is_none());
+            let actual = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                actual,
+                BTreeSet::from([
+                    "FormName",
+                    "Name",
+                    "OutputDir",
+                    "Synonym",
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                ])
+            );
+
+            let invalid = json!({"Name": "Sample", "OutputDir": 42})
+                .as_object()
+                .unwrap()
+                .clone();
+            let error = validate_tool_arguments(tool, &invalid, false).unwrap_err();
+            assert!(error.contains("OutputDir"), "{error}");
+            assert!(error.contains("must be string"), "{error}");
+
+            let missing_output = json!({"Name": "Sample"}).as_object().unwrap().clone();
+            let error = validate_tool_arguments(tool, &missing_output, true).unwrap_err();
+            assert!(error.contains("requires `OutputDir`"), "{error}");
+        }
     }
 
     #[test]

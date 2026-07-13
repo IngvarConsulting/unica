@@ -6,6 +6,7 @@
 pub(crate) mod cf;
 pub(crate) mod cfe;
 pub(crate) mod common;
+pub(crate) mod external;
 pub(crate) mod form;
 pub(crate) mod help;
 pub(crate) mod interface;
@@ -35,6 +36,9 @@ impl NativeOperationAdapter {
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
         if dry_run {
+            if let Some(outcome) = external::preview(operation, tool_name, args, context) {
+                return Ok(outcome);
+            }
             return Ok(AdapterOutcome {
                 ok: true,
                 summary: format!("dry run: {tool_name} would execute native XML/DSL operation"),

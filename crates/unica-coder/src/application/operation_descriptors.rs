@@ -64,6 +64,7 @@ const FORM_EDIT_REQUIRED: &[&str] = &["FormPath", "JsonPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
+const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 
 pub(super) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
     NATIVE_OPERATION_DESCRIPTORS
@@ -98,6 +99,20 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         None,
     ),
     descriptor("cfe-init", EMPTY, OUTPUT_DIR, OUTPUT_DIR, None),
+    descriptor(
+        "epf-init",
+        EXTERNAL_INIT_REQUIRED,
+        OUTPUT_DIR,
+        OUTPUT_DIR,
+        None,
+    ),
+    descriptor(
+        "erf-init",
+        EXTERNAL_INIT_REQUIRED,
+        OUTPUT_DIR,
+        OUTPUT_DIR,
+        None,
+    ),
     descriptor(
         "cfe-patch-method",
         CFE_PATCH_METHOD_REQUIRED,

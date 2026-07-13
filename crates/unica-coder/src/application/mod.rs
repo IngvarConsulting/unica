@@ -885,6 +885,34 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.epf.init",
+            description:
+                "Create a make-ready external data processor scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
+            mutating: true,
+            cache_access: cache_access_for(
+                "epf-init",
+                Some(DomainEventKind::SourceSetChanged),
+            ),
+            handler: ToolHandler::NativeOperation {
+                operation: "epf-init",
+                event: Some(DomainEventKind::SourceSetChanged),
+            },
+        },
+        ToolSpec {
+            name: "unica.erf.init",
+            description:
+                "Create a make-ready external report scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
+            mutating: true,
+            cache_access: cache_access_for(
+                "erf-init",
+                Some(DomainEventKind::SourceSetChanged),
+            ),
+            handler: ToolHandler::NativeOperation {
+                operation: "erf-init",
+                event: Some(DomainEventKind::SourceSetChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.cfe.patch_method",
             description: "Generate a CFE method interceptor.",
             mutating: true,
@@ -1305,6 +1333,8 @@ mod tests {
         assert!(names.contains(&"unica.mxl.compile"));
         assert!(names.contains(&"unica.role.validate"));
         assert!(names.contains(&"unica.support.edit"));
+        assert!(names.contains(&"unica.epf.init"));
+        assert!(names.contains(&"unica.erf.init"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
         assert!(names.contains(&"unica.code.definition"));
@@ -4617,6 +4647,211 @@ mod tests {
 
         assert!(error.contains("outside workspace root"));
         assert!(!root.join("outside").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_init_preview_is_path_guarded_and_source_set_typed() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-external-init-contract-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+                "  - name: reports\n",
+                "    type: EXTERNAL_REPORTS\n",
+                "    path: erf\n",
+                "  - name: russian-processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: епф\n",
+            ),
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert("Name".to_string(), Value::String("Preview".to_string()));
+        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.artifacts.len(), 2);
+        assert!(!workspace.join("epf").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("EPF").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("ЕПФ".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("ЕПФ").exists());
+
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("epf/nested".to_string()),
+        );
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set root"), "{error}");
+        assert!(!workspace.join("epf").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("erf".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set `reports`"), "{error}");
+        assert!(error.contains("ExternalReport"), "{error}");
+        assert!(!workspace.join("erf").exists());
+
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("../outside".to_string()),
+        );
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("outside workspace root"), "{error}");
+        assert!(!root.join("outside").exists());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(workspace.join("erf"), workspace.join("epf-link")).unwrap();
+            args.insert(
+                "OutputDir".to_string(),
+                Value::String("epf-link".to_string()),
+            );
+            let error = UnicaApplication::new()
+                .call_tool("unica.epf.init", &args)
+                .unwrap_err();
+            assert!(error.contains("must not traverse symlink"), "{error}");
+        }
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: configuration\n",
+                "    type: CONFIGURATION\n",
+                "    path: .\n",
+            ),
+        )
+        .unwrap();
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("external/epf".to_string()),
+        );
+        let preview = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.artifacts.len(), 2);
+        assert!(!workspace.join("external").exists());
+
+        args.insert("OutputDir".to_string(), Value::String(".".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set `configuration`"), "{error}");
+        assert!(error.contains("Configuration"), "{error}");
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: configuration\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        args.insert("OutputDir".to_string(), Value::String("SRC".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("SRC").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.join("epf")).unwrap();
+        std::fs::write(
+            workspace.join("epf/Existing.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("format=DESIGNER"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: designer\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact `DESIGNER`"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: true\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("field `format` must be a string"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
