@@ -7,12 +7,13 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::parse_runtime_build_report;
 use crate::infrastructure::internal_adapters::RuntimeBuildReport;
 use crate::infrastructure::shadow_dump::{
-    recover_stale_shadow_dumps, validate_pinned_shadow_config, ShadowDumpPreparation,
-    ShadowPlatformSeeds,
+    audit_stale_shadow_dumps, recover_stale_shadow_dumps, validate_pinned_shadow_config,
+    ShadowDumpPreparation, ShadowPlatformSeeds,
 };
 use crate::infrastructure::source_sync::{
-    BaselineReceipt, DirtyTargetSnapshot, LifecycleLockGuard, PlatformCdfiPreimage,
-    PublicationError, PublicationOutcome, SourceSyncRepository, SynchronizationConflict,
+    BaselineReceipt, DirtyTargetSnapshot, LifecycleChildLease, LifecycleLockGuard,
+    PlatformCdfiPreimage, PublicationError, PublicationOutcome, SourceSyncRepository,
+    SynchronizationConflict,
 };
 use crate::infrastructure::AdapterOutcome;
 use serde::{Deserialize, Serialize};
@@ -64,7 +65,7 @@ pub(crate) struct MutationSession {
 
 pub(crate) enum MutationPreparation {
     None,
-    Ready(MutationSession),
+    Ready(Box<MutationSession>),
     Blocked { outcome: Box<AdapterOutcome> },
 }
 
@@ -99,7 +100,7 @@ struct PreparedPinnedBuildBytes {
 
 pub(crate) enum BuildPreparation {
     None,
-    Ready(BuildSession),
+    Ready(Box<BuildSession>),
     Blocked {
         outcome: Box<AdapterOutcome>,
         details: Value,
@@ -120,9 +121,9 @@ pub(crate) enum DumpPreparation {
     Passthrough {
         _lock: LifecycleLockGuard,
     },
-    Ready(DumpSession),
+    Ready(Box<DumpSession>),
     Blocked {
-        outcome: AdapterOutcome,
+        outcome: Box<AdapterOutcome>,
         details: Value,
     },
 }
@@ -148,6 +149,28 @@ pub(crate) enum LegacyPreparation {
     },
 }
 
+/// Keep one inheritable duplicate of the active lifecycle lock open solely
+/// across the external runtime invocation. The child then retains the same
+/// lease after an unexpected parent death, preventing another Unica process
+/// from recovering or starting a competing source-sync transaction too early.
+pub(crate) fn runtime_child_lease(
+    build: &BuildPreparation,
+    dump: &DumpPreparation,
+    legacy: &LegacyPreparation,
+) -> Result<Option<LifecycleChildLease>, String> {
+    match build {
+        BuildPreparation::Ready(session) => session._lock.child_lease().map(Some),
+        BuildPreparation::None | BuildPreparation::Blocked { .. } => match dump {
+            DumpPreparation::Ready(session) => session.lock.child_lease().map(Some),
+            DumpPreparation::Passthrough { _lock } => _lock.child_lease().map(Some),
+            DumpPreparation::None | DumpPreparation::Blocked { .. } => match legacy {
+                LegacyPreparation::Allowed(lock) => lock.child_lease().map(Some),
+                LegacyPreparation::None | LegacyPreparation::Blocked { .. } => Ok(None),
+            },
+        },
+    }
+}
+
 pub(crate) fn prepare_mutation(
     spec: ToolSpec,
     args: &Map<String, Value>,
@@ -157,21 +180,43 @@ pub(crate) fn prepare_mutation(
     if !is_tracked_mutation(spec) {
         return Ok(MutationPreparation::None);
     }
-    // Dry-run performs the same source-set, layout, owner and addressability
-    // validation as apply, but must not create a repository, lock or baseline.
+    // Dry-run stays delegated to the native adapter. In particular, the
+    // documented MCP examples intentionally use placeholder paths, so
+    // source-sync must neither create durable authority state nor require a
+    // resolvable runtime source-set before that adapter produces its preview.
     if dry_run {
-        if let Some(outcome) = native_mutation_precheck_failure(spec, args, context) {
-            return Ok(MutationPreparation::Blocked {
-                outcome: Box::new(outcome),
-            });
-        }
-        resolve_validated_mutation_target(spec, args, context)?;
         return Ok(MutationPreparation::None);
     }
 
     // Apply resolves and pins the target only while holding the lifecycle
     // lock. Waiting for a prior operation can therefore never leave us with a
     // stale path/identity paired with a newer baseline.
+    // Reject an invalid target before creating the durable authority or lock.
+    // It is resolved again while locked below, which retains the TOCTOU
+    // protection for every accepted mutation.
+    if let Some(outcome) = native_mutation_precheck_failure(spec, args, context) {
+        return Ok(MutationPreparation::Blocked {
+            outcome: Box::new(outcome),
+        });
+    }
+    let preliminary_target = match resolve_validated_mutation_target(spec, args, context) {
+        Ok(target) => target,
+        Err(error) if is_missing_platform_root(&error) => {
+            // Existing source-only workspaces may declare a source-set before
+            // their first Configuration.xml exists. Keep the native editor's
+            // established behavior in that untracked state. Once a target was
+            // recorded, however, the same missing root is a safety failure and
+            // must remain fail-closed.
+            let repository = SourceSyncRepository::new(context)?;
+            if repository.load_state()?.targets.is_empty() {
+                return Ok(MutationPreparation::None);
+            }
+            return Err(format!(
+                "source-sync has tracked targets and cannot bypass the missing platform root: {error}"
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     let repository = SourceSyncRepository::new(context)?;
     let lock = repository.acquire_lifecycle_lock()?;
     repository.recover_pending_publications()?;
@@ -183,17 +228,28 @@ pub(crate) fn prepare_mutation(
         });
     }
     let target = resolve_validated_mutation_target(spec, args, &bound_context)?;
+    if target != preliminary_target {
+        return Err(
+            "source-sync mutation target changed while acquiring the lifecycle lock".to_string(),
+        );
+    }
     let handler_args = pinned_mutation_handler_args(spec, args, &bound_context, &target)?;
     let preimage = repository.capture_manifest(&target)?;
     let baseline = repository.ensure_baseline(&target, &preimage)?;
-    Ok(MutationPreparation::Ready(MutationSession {
+    Ok(MutationPreparation::Ready(Box::new(MutationSession {
         repository,
         _lock: lock,
         target,
         handler_args,
         preimage,
         baseline,
-    }))
+    })))
+}
+
+fn is_missing_platform_root(error: &str) -> bool {
+    error
+        .strip_prefix("source-sync path is missing: ")
+        .is_some_and(|path| path.ends_with("Configuration.xml"))
 }
 
 fn resolve_validated_mutation_target(
@@ -223,12 +279,9 @@ fn native_mutation_precheck_failure(
                 .err()
         }
         "unica.meta.edit" => {
-            let Some(raw) = ["objectPath", "ObjectPath", "path", "Path"]
+            let raw = ["objectPath", "ObjectPath", "path", "Path"]
                 .iter()
-                .find_map(|key| args.get(*key).and_then(Value::as_str))
-            else {
-                return None;
-            };
+                .find_map(|key| args.get(*key).and_then(Value::as_str))?;
             crate::infrastructure::native_operations::meta::resolve_meta_edit_object_path(
                 std::path::Path::new(raw),
                 &context.cwd,
@@ -445,7 +498,7 @@ pub(crate) fn prepare_build(
             "config".to_string(),
             json!(pinned_config.primary_path.display().to_string()),
         );
-        Ok(BuildPreparation::Ready(BuildSession {
+        Ok(BuildPreparation::Ready(Box::new(BuildSession {
             repository,
             _lock: lock,
             generation,
@@ -453,7 +506,7 @@ pub(crate) fn prepare_build(
             config_snapshot,
             pinned_config,
             handler_args,
-        }))
+        })))
     })();
     Ok(match prepared {
         Ok(preparation) => preparation,
@@ -1134,6 +1187,49 @@ fn recover_stale_build_snapshots(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn audit_stale_build_snapshots(root: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect source-sync root {}: {error}",
+                root.display()
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "source-sync root {} must be a non-symlink directory",
+            root.display()
+        ));
+    }
+    for entry in fs::read_dir(root).map_err(|error| {
+        format!(
+            "failed to scan source-sync root {}: {error}",
+            root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read source-sync entry in {}: {error}",
+                root.display()
+            )
+        })?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| parse_build_snapshot_name(name).is_some())
+        {
+            return Err(
+                "source-sync preview cannot prove apply behavior while pinned build recovery is pending"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn cleanup_uncommitted_build_snapshot(directory: &Path) -> Result<(), String> {
     let name = directory
         .file_name()
@@ -1532,20 +1628,6 @@ fn validate_build_config_identity(
     Ok(())
 }
 
-fn normalize_runtime_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-
 pub(crate) fn preview_runtime_sync(
     spec: ToolSpec,
     args: &Map<String, Value>,
@@ -1562,6 +1644,11 @@ pub(crate) fn preview_runtime_sync(
     let preview = (|| -> Result<Value, String> {
         let repository = SourceSyncRepository::new(context)?;
         let bound_context = bind_context_to_repository(context, &repository)?;
+        repository.audit_pending_publication_recovery()?;
+        audit_stale_build_snapshots(repository.transaction_root())?;
+        if operation == Some("dump") {
+            audit_stale_shadow_dumps(&bound_context)?;
+        }
         let state = repository.load_state()?;
         match operation {
             Some("build") => preview_build_sync(&repository, state, args, &bound_context),
@@ -2028,7 +2115,7 @@ pub(crate) fn prepare_dump(
                 .to_string(),
         );
             return Ok(DumpPreparation::Blocked {
-                outcome,
+                outcome: Box::new(outcome),
                 details: json!({
                     "requested": requested.iter().map(target_details).collect::<Vec<_>>(),
                     "processed": [],
@@ -2146,7 +2233,7 @@ pub(crate) fn prepare_dump(
                 })
             }));
             return Ok(DumpPreparation::Blocked {
-                outcome,
+                outcome: Box::new(outcome),
                 details: json!({
                     "requested": requested_details,
                     "processed": [],
@@ -2189,7 +2276,7 @@ pub(crate) fn prepare_dump(
         }
         let shadow_config_snapshot =
             RuntimeConfigSnapshot::capture_from_paths(shadow.runtime_config_paths())?;
-        Ok(DumpPreparation::Ready(DumpSession {
+        Ok(DumpPreparation::Ready(Box::new(DumpSession {
             repository,
             lock,
             generation,
@@ -2199,7 +2286,7 @@ pub(crate) fn prepare_dump(
             shadow_config_snapshot,
             cdfi_preimage,
             shadow,
-        }))
+        })))
     })();
     Ok(match prepared {
         Ok(preparation) => preparation,
@@ -2629,7 +2716,10 @@ fn dump_internal_error_preparation(
     let mut outcome = AdapterOutcome::ok("source-sync dump preparation failed closed");
     outcome.ok = false;
     outcome.errors.push(error);
-    DumpPreparation::Blocked { outcome, details }
+    DumpPreparation::Blocked {
+        outcome: Box::new(outcome),
+        details,
+    }
 }
 
 fn runtime_internal_failure_details(
@@ -3109,6 +3199,27 @@ mod tests {
             classified.details["conflicted"][0]["reason"],
             "sourceChangedDuringBuild"
         );
+    }
+
+    #[test]
+    fn build_reconciliation_matches_source_set_identity_without_trimming() {
+        let record = record(" main ", "Demo", b"changed");
+        let after = BTreeMap::from([(record.target.id.clone(), record.current.clone())]);
+        let report = RuntimeBuildReport {
+            envelope_ok: true,
+            steps: vec![BuildTerminalEntry {
+                source_set: SourceSetName::new(" main ").unwrap(),
+                mode: BuildStepMode::Full,
+                ok: true,
+                message: None,
+            }],
+        };
+
+        let classified = classify_build_result(std::slice::from_ref(&record), &after, Ok(&report));
+
+        assert_eq!(classified.synchronized.len(), 1);
+        assert_eq!(classified.synchronized[0].0, record.target.id);
+        assert!(classified.details["skipped"].as_array().unwrap().is_empty());
     }
 
     #[test]

@@ -371,7 +371,11 @@ fn code_patch_build_and_shadow_dump_preserve_bytes_and_force_is_wrapper_only() {
         assert!(args
             .get("config")
             .and_then(Value::as_str)
-            .is_some_and(|path| path.contains(".unica-shadow-dump-")));
+            .is_some_and(|path| {
+                Path::new(path).file_name().and_then(|name| name.to_str()) == Some("v8project.yaml")
+                    && path.contains(".build/unica/source-sync/")
+                    && path.contains("/transactions/shadow-dump-")
+            }));
         assert_eq!(args["objects"], json!(["CommonModule.SampleService"]));
     }
     assert!(shadow_artifacts(&workspace).is_empty());
@@ -815,8 +819,60 @@ fn source_sync_dry_runs_neither_create_nor_mutate_state_lock_or_shadow() {
     assert!(ports.runtime_args.borrow().iter().all(|args| {
         args.get("config")
             .and_then(Value::as_str)
-            .is_none_or(|config| !config.contains(".unica-shadow-dump-"))
+            .is_none_or(|config| !config.contains("/transactions/shadow-dump-"))
     }));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn dry_run_blocks_without_recovering_pending_runtime_artifacts() {
+    let (root, workspace, module_path) = round_trip_workspace();
+    let ports = Rc::new(RoundTripPorts::new());
+    let app = UnicaApplication::with_ports(Box::new(ports));
+    activate_source_sync(&app, &workspace, &module_path);
+    let transaction_root = repository(&workspace).transaction_root().to_path_buf();
+
+    let build_snapshot = transaction_root.join(format!("build-snapshot-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&build_snapshot).unwrap();
+    let before = file_tree_snapshot(&transaction_root);
+    let mut build = build_args(&workspace);
+    build.insert("dryRun".to_string(), json!(true));
+    let result = app.call_tool("unica.runtime.execute", &build).unwrap();
+    assert!(!result.ok);
+    assert!(result.errors.join("\n").contains("pinned build recovery"));
+    assert_eq!(file_tree_snapshot(&transaction_root), before);
+    std::fs::remove_dir(&build_snapshot).unwrap();
+
+    let publication = transaction_root
+        .join("publications")
+        .join(format!("publication-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&publication).unwrap();
+    let before = file_tree_snapshot(&transaction_root);
+    let result = app.call_tool("unica.runtime.execute", &build).unwrap();
+    assert!(!result.ok);
+    assert!(result
+        .errors
+        .join("\n")
+        .contains("publication recovery is pending"));
+    assert_eq!(file_tree_snapshot(&transaction_root), before);
+    std::fs::remove_dir(&publication).unwrap();
+    std::fs::remove_dir(transaction_root.join("publications")).unwrap();
+
+    let shadow = transaction_root
+        .join("transactions")
+        .join(format!("shadow-dump-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&shadow).unwrap();
+    let before = file_tree_snapshot(&transaction_root);
+    let mut dump = dump_args(&workspace, false);
+    dump.insert("dryRun".to_string(), json!(true));
+    let result = app.call_tool("unica.runtime.execute", &dump).unwrap();
+    assert!(!result.ok);
+    assert!(result
+        .errors
+        .join("\n")
+        .contains("shadow transaction recovery"));
+    assert_eq!(file_tree_snapshot(&transaction_root), before);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -912,6 +968,29 @@ fn meta_edit_rejects_autodetected_roots_before_writer_or_state() {
         assert!(!transaction_root.exists());
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[test]
+fn untracked_meta_edit_without_platform_root_keeps_native_compatibility() {
+    let (root, workspace, _module_path) = round_trip_workspace();
+    let descriptor = workspace.join("src/Catalogs/Items.xml");
+    std::fs::remove_file(workspace.join("src/Configuration.xml")).unwrap();
+    let transaction_root = repository(&workspace).transaction_root().to_path_buf();
+    let app = UnicaApplication::new();
+    let mut args = meta_edit_args(&workspace);
+    args.insert("NoValidate".to_string(), json!(true));
+
+    let result = app.call_tool("unica.meta.edit", &args).unwrap();
+
+    assert!(result.ok, "{}: {:?}", result.summary, result.errors);
+    assert!(std::fs::read_to_string(&descriptor)
+        .unwrap()
+        .contains("<CodeLength>10</CodeLength>"));
+    assert!(
+        !transaction_root.exists(),
+        "an untracked incomplete source-set must not create source-sync state"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

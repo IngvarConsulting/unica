@@ -1,20 +1,19 @@
-# Persistent Source/Infobase Round-Trip Safety Plan
+# Historical implementation record: Persistent Source/Infobase Round-Trip Safety
 
-> **PAUSED WIP CHECKPOINT — 2026-07-13T20:15:01Z:** The user requested a
-> durable checkpoint and stop. This branch is not ready for a PR or merge.
-> Resume only after reading this section and the matching issue #76 comment.
-> The checkpoint passes rustfmt, `cargo check`, Rust lib-test compilation,
-> `git diff --check`, and 12 focused shadow-dump tests; full post-hardening
-> gates have not run.
+> **COMPLETED LOCALLY — 2026-07-14:** This historical plan records the
+> implementation of issue #76 after the earlier paused checkpoint. The branch
+> is ready for its stacked pull request once the final commit is pushed.
+> Rust final gates pass: rustfmt, all-target/all-feature Clippy with
+> `-D warnings`, `git diff --check`, 393 `unica-coder` tests, and the complete
+> Python CI suite (135 passed, 1 expected skip). The original user database was
+> not opened, copied, or passed to any command.
 >
-> Remaining mandatory work: preserve the lifecycle lease in the spawned
-> v8-runner/Designer process across parent death; repair valid nested
-> form/command and manager module-role resolution; add read-only preview audits
-> for recoverable/pending transactions; finish CDFI per-write CAS and raw
-> sourceSet identity regressions; complete private config/seed crash and swap
-> tests; remove warnings; rerun full Rust/Python/Clippy/platform acceptance and
-> both required reviews. Do not treat the older checked boxes below as current
-> final acceptance evidence—the latest security hardening superseded it.
+> The resumed hardening preserves the lifecycle lease in spawned runtime
+> descendants, restores standard module roles, makes preview recovery
+> read-only, completes CDFI per-write CAS and raw `sourceSet` identity checks,
+> and removes Rust warnings. Do not treat the older checked boxes below as
+> independently current acceptance evidence; this header and the issue/PR
+> record supersede the paused checkpoint.
 
 > **Historical execution record:** code, tests, package metadata, issue #76 and
 > its eventual stacked PR are the source of truth after implementation.
@@ -196,14 +195,17 @@ Python product/skill guardrails, and a new disposable 1C file infobase.
 
 - [x] Document affected-target state, ordinary build reconciliation, partial
       dump conflict/force workflow, scope boundaries and recovery guidance.
-- [x] Run focused tests, full `cargo test --locked -p unica-coder`, all-target/
-      all-feature Clippy with `-D warnings`, rustfmt, full Python CI, skill
-      validator and `git diff --check`.
+- [x] Run focused tests, full `cargo test --locked -p unica-coder` (393 tests),
+      all-target/all-feature Clippy with `-D warnings`, rustfmt, full Python CI
+      (135 passed, 1 expected skip on Python 3.12), Python compilation, plugin
+      manifest validation and `git diff --check`.
 - [x] Run the personal Rust review skill and an independent runtime/security
-      acceptance review; fix every blocking/high finding and repeat gates.
+      acceptance review; fix every blocking/high finding and repeat gates. The
+      final review found no remaining blocking or high-severity issue.
 - [x] In a new disposable file IB, prove `meta.edit -> normal build -> partial
       dump` preserves the property and `code.patch -> normal build -> partial
       dump` preserves BSL bytes/BOM; create a different IB version, prove default
       conflict leaves source exact, then prove explicit force publication.
 - [ ] Commit, push and open a separate stacked ready PR with `Depends on #73 /
-      PR #86` and `Closes #76`; monitor CI and then select the next live issue.
+      PR #86` and `Closes #76`; monitor CI. Do not select another issue in this
+      execution run.

@@ -23,14 +23,6 @@ impl<'a> WorkspacePathPolicy<'a> {
         };
         let normalized = normalize_lexically(&raw);
         let canonical_root = canonical_or_lexical(&self.context.workspace_root);
-        let lexical_root = normalize_lexically(&self.context.workspace_root);
-
-        if !normalized.starts_with(&canonical_root) && !normalized.starts_with(&lexical_root) {
-            return Err(format!(
-                "refusing to {operation} outside workspace root: {}",
-                normalized.display()
-            ));
-        }
 
         let existing_ancestor = nearest_existing_ancestor(&normalized);
         let canonical_ancestor = existing_ancestor

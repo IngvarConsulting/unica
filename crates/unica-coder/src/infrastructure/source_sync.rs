@@ -32,9 +32,55 @@ pub struct LifecycleLockGuard {
     workspace_id: String,
 }
 
-impl Drop for LifecycleLockGuard {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+/// A duplicate of the lifecycle lock deliberately kept inheritable while an
+/// external runtime process is being spawned. On Unix `flock` is associated
+/// with the open file description, so a v8-runner/Designer descendant retains
+/// the workspace lease if the Unica parent is terminated unexpectedly.
+#[derive(Debug)]
+pub struct LifecycleChildLease {
+    _file: File,
+}
+
+impl LifecycleLockGuard {
+    pub fn child_lease(&self) -> Result<LifecycleChildLease, String> {
+        let file = self
+            .file
+            .try_clone()
+            .map_err(|error| format!("failed to duplicate lifecycle lock for child: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let descriptor = file.as_raw_fd();
+            // SAFETY: `descriptor` belongs to `file` for this entire block.
+            // fcntl only reads/updates its close-on-exec descriptor flags.
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+            if flags == -1 {
+                return Err(format!(
+                    "failed to inspect lifecycle child lease flags: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: as above; clearing FD_CLOEXEC makes this duplicate
+            // survive only the immediately spawned child/descendant chain.
+            let result =
+                unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+            if result == -1 {
+                return Err(format!(
+                    "failed to make lifecycle child lease inheritable: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(LifecycleChildLease { _file: file })
+        }
+        #[cfg(not(unix))]
+        {
+            drop(file);
+            Err(
+                "source-sync runtime operations are blocked on this platform until an inheritable lifecycle lease is implemented"
+                    .to_string(),
+            )
+        }
     }
 }
 
@@ -540,6 +586,49 @@ impl SourceSyncRepository {
     /// Callers hold the workspace lifecycle lock while invoking this method.
     pub fn recover_pending_publications(&self) -> Result<PublicationRecoveryReport, String> {
         recover_publications(self)
+    }
+
+    /// A dry-run never performs recovery. Refuse a preview when apply would
+    /// first need to mutate publication journals or working source through
+    /// recovery, rather than reporting a misleading executable plan.
+    pub fn audit_pending_publication_recovery(&self) -> Result<(), String> {
+        self.validate_existing_storage()?;
+        let root = self.transaction_root.join(PUBLICATIONS_DIR_NAME);
+        let metadata = match fs::symlink_metadata(&root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect publication recovery root {}: {error}",
+                    root.display()
+                ))
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "publication recovery root {} must be a non-symlink directory",
+                root.display()
+            ));
+        }
+        let mut entries = fs::read_dir(&root)
+            .map_err(|error| format!("failed to scan publication recovery root: {error}"))?;
+        if entries
+            .next()
+            .transpose()
+            .map_err(|error| {
+                format!(
+                    "failed to inspect publication recovery root {}: {error}",
+                    root.display()
+                )
+            })?
+            .is_some()
+        {
+            return Err(
+                "source-sync preview cannot prove apply behavior while publication recovery is pending"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn publish_from_source_root_transaction<AfterPublish>(
@@ -1224,7 +1313,12 @@ where
     }
     validate_requested_records(repository, requested)?;
     validate_cdfi_preimage(&scope, cdfi_preimage)?;
-    verify_platform_guard_cas(repository, cdfi_preimage)?;
+    verify_platform_guard_cas(
+        repository,
+        cdfi_preimage,
+        &cdfi_preimage.original,
+        &BTreeSet::new(),
+    )?;
     let current_cdfi = fingerprint_working_path(repository, &cdfi_preimage.path)?;
     if current_cdfi != cdfi_preimage.original {
         return Err("publication ConfigDumpInfo.xml CAS changed before staging".to_string());
@@ -1672,10 +1766,12 @@ fn validate_shadow_platform_guards(
 fn verify_platform_guard_cas(
     repository: &SourceSyncRepository,
     preimage: &PlatformCdfiPreimage,
+    expected_cdfi: &FileFingerprint,
+    ignored_staging_paths: &BTreeSet<RelativeSourcePath>,
 ) -> Result<(), String> {
     let cdfi = fingerprint_working_path(repository, &preimage.path)?;
-    if cdfi != preimage.original {
-        return Err("working ConfigDumpInfo.xml changed during forced publication".to_string());
+    if cdfi != *expected_cdfi {
+        return Err("working ConfigDumpInfo.xml CAS changed during forced publication".to_string());
     }
     let configuration = fingerprint_working_path(repository, &preimage.configuration_path)?;
     if configuration != preimage.configuration_original {
@@ -1683,9 +1779,9 @@ fn verify_platform_guard_cas(
     }
     for owner in &preimage.guarded_owners {
         let mut current = repository.capture_manifest(&owner.target)?;
-        current
-            .files
-            .retain(|path, _| !owner.excluded_module_paths.contains(path));
+        current.files.retain(|path, _| {
+            !owner.excluded_module_paths.contains(path) && !ignored_staging_paths.contains(path)
+        });
         if current != owner.original {
             return Err(format!(
                 "working owner bundle `{}` changed during forced publication",
@@ -2077,7 +2173,12 @@ fn verify_publication_cas(
     if current_cdfi != cdfi_preimage.original {
         return Err("publication final ConfigDumpInfo.xml CAS failed".to_string());
     }
-    verify_platform_guard_cas(repository, cdfi_preimage)?;
+    verify_platform_guard_cas(
+        repository,
+        cdfi_preimage,
+        &cdfi_preimage.original,
+        &BTreeSet::new(),
+    )?;
     for file in files {
         let actual = fingerprint_working_path(repository, &file.journal.path)?;
         if actual != file.journal.original {
@@ -2099,6 +2200,12 @@ fn execute_publication<AfterPublish>(
 where
     AfterPublish: FnMut(usize) -> Result<(), String>,
 {
+    let mut expected_cdfi = cdfi_preimage.original.clone();
+    let ignored_staging_paths = plan
+        .files
+        .iter()
+        .filter_map(|file| file.journal.stage_path.clone())
+        .collect::<BTreeSet<_>>();
     for directory in &plan.journal.created_directories {
         let path = destination_path(repository, directory)?;
         if path.exists() {
@@ -2122,7 +2229,12 @@ where
     }
 
     for (index, file) in plan.files.iter().enumerate() {
-        verify_platform_guard_cas(repository, cdfi_preimage)?;
+        verify_platform_guard_cas(
+            repository,
+            cdfi_preimage,
+            &expected_cdfi,
+            &ignored_staging_paths,
+        )?;
         let destination = destination_path(repository, &file.journal.path)?;
         let current = fingerprint_working_path(repository, &file.journal.path)?;
         if current != file.journal.original {
@@ -2166,11 +2278,24 @@ where
                 file.journal.path.as_str()
             ));
         }
+        if file.journal.role == PublicationFileRole::PlatformConfigDumpInfo {
+            expected_cdfi = file.journal.desired.clone();
+        }
         after_publish(index)?;
-        verify_platform_guard_cas(repository, cdfi_preimage)?;
+        verify_platform_guard_cas(
+            repository,
+            cdfi_preimage,
+            &expected_cdfi,
+            &ignored_staging_paths,
+        )?;
     }
 
-    verify_platform_guard_cas(repository, cdfi_preimage)?;
+    verify_platform_guard_cas(
+        repository,
+        cdfi_preimage,
+        &expected_cdfi,
+        &ignored_staging_paths,
+    )?;
     Ok(())
 }
 
@@ -3566,6 +3691,12 @@ fn validate_addressable_module_role(object_type: &str, suffix: &[String]) -> Res
         ),
         ["Ext", "CommandModule.bsl"] => object_type == "CommonCommand",
         ["Ext", "Form", "Module.bsl"] => object_type == "CommonForm",
+        ["Forms", form_name, "Ext", "Form", "Module.bsl"] => {
+            !form_name.is_empty() && supports_nested_form_or_command_module(object_type)
+        }
+        ["Commands", command_name, "Ext", "CommandModule.bsl"] => {
+            !command_name.is_empty() && supports_nested_form_or_command_module(object_type)
+        }
         ["Ext", "ObjectModule.bsl"] => matches!(
             object_type,
             "Catalog"
@@ -3597,6 +3728,9 @@ fn validate_addressable_module_role(object_type: &str, suffix: &[String]) -> Res
                 | "Report"
                 | "DataProcessor"
                 | "Constant"
+                | "DocumentJournal"
+                | "FilterCriterion"
+                | "SettingsStorage"
         ),
         ["Ext", "RecordSetModule.bsl"] => matches!(
             object_type,
@@ -3616,6 +3750,35 @@ fn validate_addressable_module_role(object_type: &str, suffix: &[String]) -> Res
             suffix.join("/")
         ))
     }
+}
+
+/// These metadata owners are dumped safely through their canonical
+/// `TYPE:NAME` selector. The exact nested suffix prevents arbitrary `.bsl`
+/// files under an owner from becoming patchable while retaining the platform's
+/// standard managed-form and command module layouts.
+fn supports_nested_form_or_command_module(object_type: &str) -> bool {
+    matches!(
+        object_type,
+        "Catalog"
+            | "Document"
+            | "ExchangePlan"
+            | "ChartOfAccounts"
+            | "ChartOfCharacteristicTypes"
+            | "ChartOfCalculationTypes"
+            | "BusinessProcess"
+            | "Task"
+            | "Report"
+            | "DataProcessor"
+            | "InformationRegister"
+            | "AccumulationRegister"
+            | "AccountingRegister"
+            | "CalculationRegister"
+            | "DocumentJournal"
+            | "Enum"
+            | "Constant"
+            | "Sequence"
+            | "DocumentNumerator"
+    )
 }
 
 fn metadata_type_for_collection(collection: &str) -> Option<&'static str> {
@@ -4133,6 +4296,7 @@ mod tests {
             b"<Form/>\n",
         );
         write(&fixture.source.join("ConfigDumpInfo.xml"), b"platform");
+        fixture.register_object("Catalog", "Goods");
         let args = json!({"ObjectPath": descriptor.display().to_string()})
             .as_object()
             .unwrap()
@@ -4173,6 +4337,37 @@ mod tests {
     }
 
     #[test]
+    fn module_resolution_preserves_raw_source_set_identity() {
+        let fixture = Fixture::new("module-source-set-identity");
+        write(
+            &fixture.context.workspace_root.join("v8project.yaml"),
+            b"format: DESIGNER\nsource-set:\n  - name: \" main \"\n    type: CONFIGURATION\n    path: src\n",
+        );
+        let module = fixture.source.join("CommonModules/Jobs/Ext/Module.bsl");
+        write(&module, b"Procedure Run()\nEndProcedure\n");
+        write(
+            &fixture.source.join("CommonModules/Jobs.xml"),
+            b"<MetaDataObject><CommonModule><Properties><Name>Jobs</Name></Properties></CommonModule></MetaDataObject>",
+        );
+        fixture.register_object("CommonModule", "Jobs");
+        let args = json!({
+            "sourceSet": " main ",
+            "modulePath": "CommonModules/Jobs/Ext/Module.bsl"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let target = resolve_mutation_target("unica.code.patch", &args, &fixture.context).unwrap();
+
+        assert_eq!(target.source_set.as_ref().unwrap().as_str(), " main ");
+        assert_eq!(
+            target.id.as_str(),
+            "module: main :CommonModules/Jobs/Ext/Module.bsl"
+        );
+    }
+
+    #[test]
     fn module_resolution_requires_a_designer_addressable_owner() {
         let fixture = Fixture::new("module-owner");
         write(
@@ -4185,6 +4380,7 @@ mod tests {
                 .join("CommonCommands/Run/Ext/CommandModule.bsl"),
             b"Procedure Execute()\nEndProcedure\n",
         );
+        fixture.register_object("CommonCommand", "Run");
         let common_command = json!({
             "sourceSet": "main",
             "modulePath": "CommonCommands/Run/Ext/CommandModule.bsl"
@@ -4211,6 +4407,11 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("root configuration module"), "{error}");
 
+        write(
+            &fixture.source.join("Catalogs/Goods.xml"),
+            b"<MetaDataObject><Catalog><Properties><Name>Goods</Name></Properties></Catalog></MetaDataObject>",
+        );
+        fixture.register_object("Catalog", "Goods");
         write(
             &fixture.source.join("Catalogs/Goods/Trash/Loose.bsl"),
             b"Procedure Loose()\nEndProcedure\n",
@@ -4241,6 +4442,64 @@ mod tests {
         let error = resolve_mutation_target("unica.code.patch", &unsupported, &fixture.context)
             .unwrap_err();
         assert!(error.contains("unsupported metadata collection"), "{error}");
+    }
+
+    #[test]
+    fn module_resolution_allows_standard_nested_and_manager_modules() {
+        let fixture = Fixture::new("standard-module-roles");
+        let cases = [
+            (
+                "Catalog",
+                "Catalogs",
+                "Goods",
+                "Catalogs/Goods/Forms/Item/Ext/Form/Module.bsl",
+            ),
+            (
+                "Document",
+                "Documents",
+                "Order",
+                "Documents/Order/Commands/Print/Ext/CommandModule.bsl",
+            ),
+            (
+                "DocumentJournal",
+                "DocumentJournals",
+                "Sales",
+                "DocumentJournals/Sales/Ext/ManagerModule.bsl",
+            ),
+            (
+                "FilterCriterion",
+                "FilterCriteria",
+                "ByPartner",
+                "FilterCriteria/ByPartner/Ext/ManagerModule.bsl",
+            ),
+            (
+                "SettingsStorage",
+                "SettingsStorages",
+                "Ui",
+                "SettingsStorages/Ui/Ext/ManagerModule.bsl",
+            ),
+        ];
+        for (object_type, collection, name, module_path) in cases {
+            write(
+                &fixture.source.join(format!("{collection}/{name}.xml")),
+                format!(
+                    "<MetaDataObject><{object_type}><Properties><Name>{name}</Name></Properties></{object_type}></MetaDataObject>"
+                )
+                .as_bytes(),
+            );
+            write(
+                &fixture.source.join(module_path),
+                b"Procedure Test()\nEndProcedure\n",
+            );
+            fixture.register_object(object_type, name);
+            let args = json!({"sourceSet": "main", "modulePath": module_path})
+                .as_object()
+                .unwrap()
+                .clone();
+            let target = resolve_mutation_target("unica.code.patch", &args, &fixture.context)
+                .unwrap_or_else(|error| panic!("{module_path}: {error}"));
+            assert_eq!(target.owner_selector, format!("{object_type}:{name}"));
+        }
     }
 
     #[test]
@@ -5346,6 +5605,74 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_shadow_cdfi_change_during_owner_publication_rolls_back() {
+        let fixture = Fixture::new("publish-unchanged-cdfi-midflight");
+        let (target, module) = fixture.module_target("Jobs", b"Working\n");
+        let guard = fixture.repository.acquire_lifecycle_lock().unwrap();
+        let working = fixture.repository.capture_manifest(&target).unwrap();
+        fixture
+            .repository
+            .ensure_baseline(&target, &working)
+            .unwrap();
+        let requested = [fixture.repository.target(&target.id).unwrap().unwrap()];
+        let cdfi_preimage = fixture.cdfi_preimage(&guard, &requested);
+        assert_eq!(
+            cdfi_preimage.original,
+            FileFingerprint::present(b"<ConfigDumpInfo version=\"working\"/>\r\n")
+        );
+        let shadow = fixture.root.join("shadow-unchanged-cdfi-midflight");
+        write(
+            &shadow.join("CommonModules/Jobs/Ext/Module.bsl"),
+            b"Infobase\n",
+        );
+        write(
+            &shadow.join("ConfigDumpInfo.xml"),
+            b"<ConfigDumpInfo version=\"working\"/>\r\n",
+        );
+        let desired = fixture
+            .repository
+            .capture_manifest_from_source_root(&target, &shadow)
+            .unwrap();
+        let concurrent_cdfi = fixture.source.join("ConfigDumpInfo.xml");
+
+        let error = fixture
+            .repository
+            .publish_from_source_root_transaction(
+                PublicationRequest {
+                    guard: &guard,
+                    requested: &requested,
+                    desired: &BTreeMap::from([(target.id, desired)]),
+                    alternate_source_root: &shadow,
+                    cdfi_preimage: &cdfi_preimage,
+                },
+                PublicationFailureHandling::Rollback,
+                |index| {
+                    if index == 0 {
+                        assert_eq!(fs::read(&module).unwrap(), b"Infobase\n");
+                        write(
+                            &concurrent_cdfi,
+                            b"<ConfigDumpInfo version=\"concurrent\"/>\n",
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.reason, "publicationRolledBack");
+        assert!(!error.source_may_have_changed);
+        assert!(
+            error.message.contains("ConfigDumpInfo.xml CAS changed"),
+            "{error}"
+        );
+        assert_eq!(fs::read(module).unwrap(), b"Working\n");
+        assert_eq!(
+            fs::read(concurrent_cdfi).unwrap(),
+            b"<ConfigDumpInfo version=\"concurrent\"/>\n"
+        );
+    }
+
+    #[test]
     fn injected_owner_and_cdfi_failure_rolls_back_both() {
         let fixture = Fixture::new("publish-cdfi-rollback");
         let (target, module) = fixture.module_target("Jobs", b"Working\n");
@@ -5614,6 +5941,52 @@ mod tests {
             handle.join().unwrap();
         }
         assert_eq!(repository.load_state().unwrap().targets.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_child_lease_keeps_lifecycle_lock_after_parent_guard_drops() {
+        use std::process::Command;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let fixture = Fixture::new("inherited-lifecycle-lease");
+        let guard = fixture.repository.acquire_lifecycle_lock().unwrap();
+        let child_lease = guard.child_lease().unwrap();
+        // `exec` prevents a shell intermediate from retaining the descriptor
+        // after the process we explicitly terminate below has exited.
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("test helper must start sleep");
+        drop(child_lease);
+        drop(guard);
+
+        let repository = fixture.repository.clone();
+        let (sender, receiver) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let result = repository.acquire_lifecycle_lock();
+            sender.send(result.map(|_guard| ())).unwrap();
+        });
+        let early_result = receiver.recv_timeout(Duration::from_millis(150));
+        child.kill().expect("test helper must stop sleep");
+        child.wait().expect("test helper must reap sleep");
+        match early_result {
+            Err(mpsc::RecvTimeoutError::Timeout) => receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("lifecycle lock must become available after child exit")
+                .unwrap(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("lock waiter stopped before child exit")
+            }
+            Ok(result) => {
+                result.unwrap();
+                panic!(
+                    "a second process-equivalent operation acquired the lock while the inherited child lease was live"
+                );
+            }
+        }
+        waiter.join().unwrap();
     }
 
     #[cfg(unix)]

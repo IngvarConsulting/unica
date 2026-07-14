@@ -73,7 +73,10 @@ mod edit_tests {
             &context.cwd.join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
         );
-        write_file(&context.cwd.join("Configuration.xml"), "<MetaDataObject/>");
+        write_file(
+            &context.cwd.join("Configuration.xml"),
+            "<MetaDataObject><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Document>SampleShipment</Document></ChildObjects></Configuration></MetaDataObject>",
+        );
     }
 
     fn sample_document_xml(register_records: &str) -> String {

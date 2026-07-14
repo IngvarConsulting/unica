@@ -1117,16 +1117,25 @@ pub(crate) fn replace_first_xml_element_text(
 ) -> bool {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let Some(start) = xml_text.find(&open) else {
-        return false;
-    };
-    let content_start = start + open.len();
-    let Some(relative_end) = xml_text[content_start..].find(&close) else {
-        return false;
-    };
-    let content_end = content_start + relative_end;
-    xml_text.replace_range(content_start..content_end, &escape_xml(value));
-    true
+    if let Some(start) = xml_text.find(&open) {
+        let content_start = start + open.len();
+        if let Some(relative_end) = xml_text[content_start..].find(&close) {
+            let content_end = content_start + relative_end;
+            xml_text.replace_range(content_start..content_end, &escape_xml(value));
+            return true;
+        }
+    }
+
+    // Platform XML commonly represents unset scalar properties as `<Tag/>`.
+    // Treat that as the same scalar field instead of inserting a second tag
+    // (or depending on indentation-sensitive insertion fallbacks).
+    let empty = format!("<{tag}/>");
+    if let Some(start) = xml_text.find(&empty) {
+        let replacement = format!("<{tag}>{}</{tag}>", escape_xml(value));
+        xml_text.replace_range(start..start + empty.len(), &replacement);
+        return true;
+    }
+    false
 }
 
 pub(crate) fn insert_meta_property_before_child_objects(

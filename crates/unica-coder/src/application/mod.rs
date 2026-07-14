@@ -375,32 +375,35 @@ fn call_tool(
         matches!(&mutation_sync, source_sync::MutationPreparation::Ready(_))
             || matches!(&build_sync, source_sync::BuildPreparation::Ready(_))
             || matches!(&dump_sync, source_sync::DumpPreparation::Ready(_));
-    let mut invocation_error = None;
-    let mut invoke = |handler_args: &Map<String, Value>| -> Result<AdapterOutcome, String> {
-        match ports.invoke_handler(spec, handler_args, &context, dry_run) {
-            Ok(outcome) => Ok(outcome),
-            Err(error) if source_sync_session_active => {
-                invocation_error = Some(error.clone());
-                let mut outcome = AdapterOutcome::ok(
-                    "source-sync runtime invocation failed before process execution",
-                );
-                outcome.ok = false;
-                outcome.errors.push(error);
-                Ok(outcome)
+    let runtime_child_lease =
+        source_sync::runtime_child_lease(&build_sync, &dump_sync, &legacy_sync)?;
+    let (mut outcome, invocation_error) = {
+        let mut invocation_error = None;
+        let mut invoke = |handler_args: &Map<String, Value>| -> Result<AdapterOutcome, String> {
+            match ports.invoke_handler(spec, handler_args, &context, dry_run) {
+                Ok(outcome) => Ok(outcome),
+                Err(error) if source_sync_session_active => {
+                    invocation_error = Some(error.clone());
+                    let mut outcome = AdapterOutcome::ok(
+                        "source-sync runtime invocation failed before process execution",
+                    );
+                    outcome.ok = false;
+                    outcome.errors.push(error);
+                    Ok(outcome)
+                }
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error),
-        }
-    };
-    let mut outcome = match &sync_preview {
-        source_sync::RuntimePreviewPreparation::Blocked { outcome, details } => {
-            sync_details = Some(details.clone());
-            outcome.as_ref().clone()
-        }
-        source_sync::RuntimePreviewPreparation::None
-        | source_sync::RuntimePreviewPreparation::Ready(_) => match &mutation_sync {
-            source_sync::MutationPreparation::Blocked { outcome } => outcome.as_ref().clone(),
-            source_sync::MutationPreparation::None | source_sync::MutationPreparation::Ready(_) => {
-                match &build_sync {
+        };
+        let outcome = match &sync_preview {
+            source_sync::RuntimePreviewPreparation::Blocked { outcome, details } => {
+                sync_details = Some(details.clone());
+                outcome.as_ref().clone()
+            }
+            source_sync::RuntimePreviewPreparation::None
+            | source_sync::RuntimePreviewPreparation::Ready(_) => match &mutation_sync {
+                source_sync::MutationPreparation::Blocked { outcome } => outcome.as_ref().clone(),
+                source_sync::MutationPreparation::None
+                | source_sync::MutationPreparation::Ready(_) => match &build_sync {
                     source_sync::BuildPreparation::Blocked { outcome, details } => {
                         sync_details = Some(details.clone());
                         outcome.as_ref().clone()
@@ -439,15 +442,16 @@ fn call_tool(
                             }
                             source_sync::DumpPreparation::Blocked { outcome, details } => {
                                 sync_details = Some(details.clone());
-                                outcome.clone()
+                                outcome.as_ref().clone()
                             }
                         },
                     },
-                }
-            }
-        },
+                },
+            },
+        };
+        (outcome, invocation_error)
     };
-    drop(invoke);
+    drop(runtime_child_lease);
     if let source_sync::MutationPreparation::Ready(session) = &mutation_sync {
         match session.finish() {
             Ok(details) => {
@@ -4666,7 +4670,10 @@ mod tests {
         .unwrap();
         std::fs::write(
             src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").replace(
+                "<ChildObjects><Catalog>Items</Catalog></ChildObjects>",
+                "<ChildObjects><Catalog>Items</Catalog><CommonModule>SampleService</CommonModule></ChildObjects>",
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -4922,14 +4929,14 @@ mod tests {
         );
         args.insert(
             "Value".to_string(),
-            Value::String("Name=Changed".to_string()),
+            Value::String("Comment=Changed".to_string()),
         );
 
         let result = UnicaApplication::new()
             .call_tool("unica.meta.edit", &args)
             .unwrap();
 
-        assert!(result.ok);
+        assert!(result.ok, "{}: {:?}", result.summary, result.errors);
         assert!(result.warnings.join("\n").contains("support guard"));
         assert!(std::fs::read_to_string(&object_path)
             .unwrap()

@@ -3293,6 +3293,18 @@ mod tests {
     }
 
     #[test]
+    fn runtime_build_report_preserves_source_set_identity_bytes() {
+        let report = parse_runtime_build_report(
+            r#"{"ok":true,"command":"build","data":{"steps":[
+                {"source_set":" main ","mode":"full","ok":true}
+            ]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(report.steps[0].source_set.as_str(), " main ");
+    }
+
+    #[test]
     fn runtime_build_report_rejects_invalid_or_ambiguous_terminal_json() {
         let arbitrary_log = parse_runtime_build_report("Designer build completed").unwrap_err();
         assert!(arbitrary_log.contains("invalid v8-runner build JSON envelope"));

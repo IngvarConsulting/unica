@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 fs2.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

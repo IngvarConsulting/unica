@@ -3119,4 +3119,29 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+
+    #[test]
+    fn source_set_selector_preserves_significant_whitespace() {
+        let fixture = Fixture::new("source-set-identity", b"Procedure Test()\nEndProcedure\n");
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: \" main \"\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = json!({
+            "sourceSet": " main ",
+            "modulePath": "CommonModules/Test/Ext/Module.bsl"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let resolved = resolve_target(&args, &fixture.context).unwrap();
+
+        assert_eq!(resolved.source_set.as_deref(), Some(" main "));
+        assert_eq!(
+            resolved.module_id,
+            "module: main :CommonModules/Test/Ext/Module.bsl"
+        );
+    }
 }

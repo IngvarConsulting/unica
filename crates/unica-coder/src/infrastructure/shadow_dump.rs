@@ -231,6 +231,7 @@ impl ShadowDumpPreparation {
         &self.shadow_source_dir
     }
 
+    #[cfg(test)]
     pub(crate) fn temporary_config_path(&self) -> &Path {
         &self.temporary_config_path
     }
@@ -352,6 +353,34 @@ pub(crate) fn recover_stale_shadow_dumps(
             errors.join("; ")
         ))
     }
+}
+
+/// Read-only companion to recovery for dry-run. Any canonical shadow
+/// transaction would be removed or rejected by apply, so preview must not
+/// claim that the invocation can proceed unchanged.
+pub(crate) fn audit_stale_shadow_dumps(context: &WorkspaceContext) -> Result<(), String> {
+    canonical_directory(&context.workspace_root, "workspace root")?;
+    let transaction_root = transaction_root(context)?;
+    for directory in controlled_cache_directories(&transaction_root)? {
+        ensure_existing_directory_not_symlink(directory, "shadow cache path")?;
+    }
+    if !transaction_root.exists() {
+        return Ok(());
+    }
+    for directory in controlled_cache_directories(&transaction_root)? {
+        ensure_directory_without_symlink(directory, "shadow cache path")?;
+    }
+    if generated_entries(&transaction_root, is_transaction_name)?
+        .into_iter()
+        .next()
+        .is_some()
+    {
+        return Err(
+            "source-sync preview cannot prove apply behavior while shadow transaction recovery is pending"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_partial_dump_request(
@@ -981,6 +1010,7 @@ fn ensure_directory_without_symlink(path: &Path, description: &str) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 fn ensure_regular_file_without_symlink(path: &Path, description: &str) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         format!(
