@@ -1,8 +1,8 @@
 # Historical implementation record: Persistent Source/Infobase Round-Trip Safety
 
 > **COMPLETED LOCALLY — 2026-07-14:** This historical plan records the
-> implementation of issue #76 after the earlier paused checkpoint. The branch
-> is ready for its stacked pull request once the final commit is pushed.
+> implementation of issue #76 after the earlier paused checkpoint. Draft PR
+> #87 is published; it remains explicitly dependent on PR #86.
 > Rust final gates pass: rustfmt, all-target/all-feature Clippy with
 > `-D warnings`, `git diff --check`, 393 `unica-coder` tests, and the complete
 > Python CI suite (135 passed, 1 expected skip). The original user database was
@@ -206,6 +206,8 @@ Python product/skill guardrails, and a new disposable 1C file infobase.
       dump` preserves the property and `code.patch -> normal build -> partial
       dump` preserves BSL bytes/BOM; create a different IB version, prove default
       conflict leaves source exact, then prove explicit force publication.
-- [ ] Commit, push and open a separate stacked ready PR with `Depends on #73 /
-      PR #86` and `Closes #76`; monitor CI. Do not select another issue in this
-      execution run.
+- [x] Commit `a730495`, push and open Draft PR #87 with `Depends on #73 / PR
+      #86` and `Closes #76`. GitHub cannot use a fork-only branch as an upstream
+      PR base, so #87 targets `main` and stays Draft until #86 merges; then
+      rebase it onto `main`, force-push and recheck CI before marking ready. Do
+      not select another issue in this execution run.
