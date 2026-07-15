@@ -3598,8 +3598,152 @@ fn owner_selector_from_relative_path(source_root: &Path, path: &Path) -> Result<
             path.display()
         )
     })?;
+    validate_nested_module_owner(source_root, &descriptor, collection, name, &components[2..])?;
     validate_root_object_registration(source_root, object_type, name)?;
     Ok(format!("{object_type}:{name}"))
+}
+
+fn validate_nested_module_owner(
+    source_root: &Path,
+    owner_descriptor: &Path,
+    collection: &str,
+    object_name: &str,
+    suffix: &[String],
+) -> Result<(), String> {
+    let suffix = suffix.iter().map(String::as_str).collect::<Vec<_>>();
+    let Some((directory, nested_type, nested_name, descriptor_name)) = (match suffix.as_slice() {
+        ["Forms", form_name, "Ext", "Form", "Module.bsl"] => {
+            Some(("Forms", "Form", *form_name, "Form.xml"))
+        }
+        ["Commands", command_name, "Ext", "CommandModule.bsl"] => {
+            Some(("Commands", "Command", *command_name, "Command.xml"))
+        }
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let nested_descriptor = source_root
+        .join(collection)
+        .join(object_name)
+        .join(directory)
+        .join(nested_name)
+        .join("Ext")
+        .join(descriptor_name);
+    reject_symlink(&nested_descriptor, MissingPath::Allowed)?;
+    let nested_metadata = match fs::symlink_metadata(&nested_descriptor) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "nested {nested_type} descriptor is missing: {}",
+                nested_descriptor.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect nested {nested_type} descriptor {}: {error}",
+                nested_descriptor.display()
+            ));
+        }
+    };
+    if !nested_metadata.is_file() {
+        return Err(format!(
+            "nested {nested_type} descriptor is not a regular file: {}",
+            nested_descriptor.display()
+        ));
+    }
+    let nested_bytes = read_stable_regular_file(&nested_descriptor, source_root)?;
+    let nested_text = std::str::from_utf8(
+        nested_bytes
+            .strip_prefix(b"\xef\xbb\xbf")
+            .unwrap_or(&nested_bytes),
+    )
+    .map_err(|error| {
+        format!(
+            "nested {nested_type} descriptor {} is not UTF-8: {error}",
+            nested_descriptor.display()
+        )
+    })?;
+    let nested_document = Document::parse(nested_text).map_err(|error| {
+        format!(
+            "nested {nested_type} descriptor {} is invalid XML: {error}",
+            nested_descriptor.display()
+        )
+    })?;
+    if nested_document.root_element().tag_name().name() != nested_type {
+        return Err(format!(
+            "nested {nested_type} descriptor {} must have a {nested_type} root element",
+            nested_descriptor.display()
+        ));
+    }
+    validate_nested_child_object_registration(owner_descriptor, nested_type, nested_name)
+}
+
+fn validate_nested_child_object_registration(
+    owner_descriptor: &Path,
+    nested_type: &str,
+    nested_name: &str,
+) -> Result<(), String> {
+    let owner_root = owner_descriptor.parent().ok_or_else(|| {
+        format!(
+            "owner descriptor has no collection directory: {}",
+            owner_descriptor.display()
+        )
+    })?;
+    let owner_bytes = read_stable_regular_file(owner_descriptor, owner_root)?;
+    let owner_text = std::str::from_utf8(
+        owner_bytes
+            .strip_prefix(b"\xef\xbb\xbf")
+            .unwrap_or(&owner_bytes),
+    )
+    .map_err(|error| {
+        format!(
+            "owner descriptor {} is not UTF-8: {error}",
+            owner_descriptor.display()
+        )
+    })?;
+    let owner_document = Document::parse(owner_text).map_err(|error| {
+        format!(
+            "owner descriptor {} is invalid XML: {error}",
+            owner_descriptor.display()
+        )
+    })?;
+    let root = owner_document.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err(format!(
+            "owner descriptor {} must be MetaDataObject",
+            owner_descriptor.display()
+        ));
+    }
+    let owner = exactly_one_element_child(root, None).map_err(|error| {
+        format!(
+            "owner descriptor {} must contain exactly one object element: {error}",
+            owner_descriptor.display()
+        )
+    })?;
+    let child_objects =
+        exactly_one_element_child(owner, Some("ChildObjects")).map_err(|error| {
+            format!(
+                "owner descriptor {} must contain exactly one direct ChildObjects: {error}",
+                owner_descriptor.display()
+            )
+        })?;
+    let count = child_objects
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == nested_type
+                && node.text().is_some_and(|text| text.trim() == nested_name)
+        })
+        .count();
+    match count {
+        1 => Ok(()),
+        0 => Err(format!(
+            "nested {nested_type} `{nested_name}` is not registered in owner ChildObjects"
+        )),
+        _ => Err(format!(
+            "nested {nested_type} `{nested_name}` is registered more than once in owner ChildObjects"
+        )),
+    }
 }
 
 fn validate_target_at_source_root(
@@ -4445,6 +4589,112 @@ mod tests {
     }
 
     #[test]
+    fn module_resolution_rejects_form_module_without_canonical_descriptor() {
+        let fixture = Fixture::new("nested-form-missing-descriptor");
+        let module_path = "Catalogs/Goods/Forms/Item/Ext/Form/Module.bsl";
+        fixture.write_nested_module_owner("Catalog", "Catalogs", "Goods", "Form", "Item", false);
+        write(
+            &fixture.source.join(module_path),
+            b"Procedure Test()\nEndProcedure\n",
+        );
+
+        let args = json!({"sourceSet": "main", "modulePath": module_path})
+            .as_object()
+            .unwrap()
+            .clone();
+        let error =
+            resolve_mutation_target("unica.code.patch", &args, &fixture.context).unwrap_err();
+
+        assert!(
+            error.contains("nested Form descriptor is missing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn module_resolution_rejects_form_module_not_registered_in_parent() {
+        let fixture = Fixture::new("nested-form-unregistered");
+        let module_path = "Catalogs/Goods/Forms/Item/Ext/Form/Module.bsl";
+        fixture.write_nested_module_owner("Catalog", "Catalogs", "Goods", "Form", "Item", true);
+        write(
+            &fixture.source.join(module_path),
+            b"Procedure Test()\nEndProcedure\n",
+        );
+
+        let args = json!({"sourceSet": "main", "modulePath": module_path})
+            .as_object()
+            .unwrap()
+            .clone();
+        let error =
+            resolve_mutation_target("unica.code.patch", &args, &fixture.context).unwrap_err();
+
+        assert!(
+            error.contains("nested Form `Item` is not registered in owner ChildObjects"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn module_resolution_rejects_command_module_without_canonical_descriptor() {
+        let fixture = Fixture::new("nested-command-missing-descriptor");
+        let module_path = "Documents/Order/Commands/Print/Ext/CommandModule.bsl";
+        fixture.write_nested_module_owner(
+            "Document",
+            "Documents",
+            "Order",
+            "Command",
+            "Print",
+            false,
+        );
+        write(
+            &fixture.source.join(module_path),
+            b"Procedure Test()\nEndProcedure\n",
+        );
+
+        let args = json!({"sourceSet": "main", "modulePath": module_path})
+            .as_object()
+            .unwrap()
+            .clone();
+        let error =
+            resolve_mutation_target("unica.code.patch", &args, &fixture.context).unwrap_err();
+
+        assert!(
+            error.contains("nested Command descriptor is missing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn module_resolution_rejects_command_module_not_registered_in_parent() {
+        let fixture = Fixture::new("nested-command-unregistered");
+        let module_path = "Documents/Order/Commands/Print/Ext/CommandModule.bsl";
+        fixture.write_nested_module_owner(
+            "Document",
+            "Documents",
+            "Order",
+            "Command",
+            "Print",
+            true,
+        );
+        write(
+            &fixture.source.join(module_path),
+            b"Procedure Test()\nEndProcedure\n",
+        );
+
+        let args = json!({"sourceSet": "main", "modulePath": module_path})
+            .as_object()
+            .unwrap()
+            .clone();
+        let error =
+            resolve_mutation_target("unica.code.patch", &args, &fixture.context).unwrap_err();
+
+        assert!(
+            error.contains("nested Command `Print` is not registered in owner ChildObjects"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn module_resolution_allows_standard_nested_and_manager_modules() {
         let fixture = Fixture::new("standard-module-roles");
         let cases = [
@@ -4480,13 +4730,36 @@ mod tests {
             ),
         ];
         for (object_type, collection, name, module_path) in cases {
+            let nested = match module_path.split('/').collect::<Vec<_>>().as_slice() {
+                [_, _, "Forms", nested_name, ..] => Some(("Form", *nested_name, "Form.xml")),
+                [_, _, "Commands", nested_name, ..] => {
+                    Some(("Command", *nested_name, "Command.xml"))
+                }
+                _ => None,
+            };
+            let child_objects = nested.map_or_else(String::new, |(kind, nested_name, _)| {
+                format!("<ChildObjects><{kind}>{nested_name}</{kind}></ChildObjects>")
+            });
             write(
                 &fixture.source.join(format!("{collection}/{name}.xml")),
                 format!(
-                    "<MetaDataObject><{object_type}><Properties><Name>{name}</Name></Properties></{object_type}></MetaDataObject>"
+                    "<MetaDataObject><{object_type}><Properties><Name>{name}</Name></Properties>{child_objects}</{object_type}></MetaDataObject>"
                 )
                 .as_bytes(),
             );
+            if let Some((_, nested_name, descriptor_name)) = nested {
+                let nested_directory = if descriptor_name == "Form.xml" {
+                    "Forms"
+                } else {
+                    "Commands"
+                };
+                write(
+                    &fixture
+                        .source
+                        .join(format!("{collection}/{name}/{nested_directory}/{nested_name}/Ext/{descriptor_name}")),
+                    format!("<{} />", descriptor_name.trim_end_matches(".xml")).as_bytes(),
+                );
+            }
             write(
                 &fixture.source.join(module_path),
                 b"Procedure Test()\nEndProcedure\n",
@@ -4499,6 +4772,101 @@ mod tests {
             let target = resolve_mutation_target("unica.code.patch", &args, &fixture.context)
                 .unwrap_or_else(|error| panic!("{module_path}: {error}"));
             assert_eq!(target.owner_selector, format!("{object_type}:{name}"));
+        }
+    }
+
+    #[test]
+    fn shadow_validation_rejects_missing_or_unregistered_nested_module_owner() {
+        let cases = [
+            (
+                "Catalog",
+                "Catalogs",
+                "Goods",
+                "Form",
+                "Item",
+                "Catalogs/Goods/Forms/Item/Ext/Form/Module.bsl",
+            ),
+            (
+                "Document",
+                "Documents",
+                "Order",
+                "Command",
+                "Print",
+                "Documents/Order/Commands/Print/Ext/CommandModule.bsl",
+            ),
+        ];
+        for (object_type, collection, object_name, nested_type, nested_name, module_path) in cases {
+            let fixture = Fixture::new(&format!("shadow-nested-{nested_type}"));
+            fixture.write_nested_module_owner(
+                object_type,
+                collection,
+                object_name,
+                nested_type,
+                nested_name,
+                true,
+            );
+            fixture.register_nested_object(collection, object_name, nested_type, nested_name);
+            write(
+                &fixture.source.join(module_path),
+                b"Procedure Test()\nEndProcedure\n",
+            );
+            let args = json!({"sourceSet": "main", "modulePath": module_path})
+                .as_object()
+                .unwrap()
+                .clone();
+            let target = resolve_mutation_target("unica.code.patch", &args, &fixture.context)
+                .unwrap_or_else(|error| panic!("{module_path}: {error}"));
+            let manifest = fixture.repository.capture_manifest(&target).unwrap();
+            fixture
+                .repository
+                .ensure_baseline(&target, &manifest)
+                .unwrap();
+            let record = fixture.repository.target(&target.id).unwrap().unwrap();
+            let shadow = fixture.root.join("shadow");
+            write(
+                &shadow.join("Configuration.xml"),
+                &fs::read(fixture.source.join("Configuration.xml")).unwrap(),
+            );
+            let descriptor_relative = format!("{collection}/{object_name}.xml");
+            write(
+                &shadow.join(&descriptor_relative),
+                &fs::read(fixture.source.join(&descriptor_relative)).unwrap(),
+            );
+
+            let missing = fixture
+                .repository
+                .validate_shadow_target(&record, &shadow)
+                .unwrap_err();
+            assert!(missing.contains("descriptor is missing"), "{missing}");
+
+            let nested_directory = if nested_type == "Form" {
+                "Forms"
+            } else {
+                "Commands"
+            };
+            let nested_descriptor_relative = format!(
+                "{collection}/{object_name}/{nested_directory}/{nested_name}/Ext/{nested_type}.xml"
+            );
+            write(
+                &shadow.join(&nested_descriptor_relative),
+                &fs::read(fixture.source.join(&nested_descriptor_relative)).unwrap(),
+            );
+            let parent = fs::read_to_string(shadow.join(&descriptor_relative)).unwrap();
+            write(
+                &shadow.join(&descriptor_relative),
+                parent
+                    .replace(&format!("<{nested_type}>{nested_name}</{nested_type}>"), "")
+                    .as_bytes(),
+            );
+
+            let unregistered = fixture
+                .repository
+                .validate_shadow_target(&record, &shadow)
+                .unwrap_err();
+            assert!(
+                unregistered.contains("is not registered in owner ChildObjects"),
+                "{unregistered}"
+            );
         }
     }
 
@@ -6127,6 +6495,57 @@ mod tests {
                 module,
                 form,
             )
+        }
+
+        fn write_nested_module_owner(
+            &self,
+            object_type: &str,
+            collection: &str,
+            object_name: &str,
+            nested_type: &str,
+            nested_name: &str,
+            write_nested_descriptor: bool,
+        ) {
+            write(
+                &self.source.join(format!("{collection}/{object_name}.xml")),
+                format!(
+                    "<MetaDataObject><{object_type}><Properties><Name>{object_name}</Name></Properties><ChildObjects></ChildObjects></{object_type}></MetaDataObject>"
+                )
+                .as_bytes(),
+            );
+            self.register_object(object_type, object_name);
+            if write_nested_descriptor {
+                let nested_directory = match nested_type {
+                    "Form" => "Forms",
+                    "Command" => "Commands",
+                    _ => unreachable!("test fixture only supports nested Form or Command"),
+                };
+                write(
+                    &self.source.join(format!(
+                        "{collection}/{object_name}/{nested_directory}/{nested_name}/Ext/{nested_type}.xml"
+                    )),
+                    format!("<{nested_type}/>").as_bytes(),
+                );
+            }
+        }
+
+        fn register_nested_object(
+            &self,
+            collection: &str,
+            object_name: &str,
+            nested_type: &str,
+            nested_name: &str,
+        ) {
+            let path = self.source.join(format!("{collection}/{object_name}.xml"));
+            let text = fs::read_to_string(&path).unwrap();
+            let entry = format!("<{nested_type}>{nested_name}</{nested_type}>");
+            if !text.contains(&entry) {
+                fs::write(
+                    path,
+                    text.replacen("</ChildObjects>", &format!("{entry}</ChildObjects>"), 1),
+                )
+                .unwrap();
+            }
         }
 
         fn register_object(&self, object_type: &str, name: &str) {
