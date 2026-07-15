@@ -769,6 +769,9 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
                 "project map discovered {} source set(s)",
                 source_map.source_sets.len()
             ));
+            if let Some(error) = &source_map.source_selection_error {
+                outcome.warnings.push(error.clone());
+            }
             outcome.stdout =
                 Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
             outcome
@@ -1728,6 +1731,44 @@ mod tests {
         assert!(stdout.contains("\"sourceSets\""));
         assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
         assert!(stdout.contains("\"kind\": \"configuration\""));
+        assert!(stdout.contains(r#""effectiveSourceSet": "main""#));
+        assert!(stdout.contains(r#""effectiveSourceRoot""#));
+        assert!(!stdout.contains("sourceSelectionError"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_reports_ambiguous_configuration_source_sets_without_failing() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-map-ambiguous-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("app")).unwrap();
+        std::fs::create_dir_all(workspace.join("tests")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: app\n  - name: tests\n    type: CONFIGURATION\n    path: tests\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result.warnings.join("\n").contains("sourceDir"));
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains(r#""name": "app""#));
+        assert!(stdout.contains(r#""name": "tests""#));
+        assert!(stdout.contains(r#""sourceSelectionError""#));
+        assert!(stdout.contains("sourceDir"));
 
         let _ = std::fs::remove_dir_all(root);
     }

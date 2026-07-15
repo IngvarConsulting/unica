@@ -1,3 +1,4 @@
+use crate::domain::source_roots::select_default_source_set;
 use serde::Serialize;
 use serde_yaml::Value as YamlValue;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,12 @@ pub struct ProjectSourceMap {
     pub workspace_root: String,
     pub config_path: Option<String>,
     pub source_sets: Vec<ProjectSourceSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_set: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_selection_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,11 +69,23 @@ pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourc
         .into_iter()
         .map(|source_set| detect_source_set_format(workspace_root, source_set))
         .collect::<Vec<_>>();
+    let (effective_source_set, effective_source_root, source_selection_error) =
+        match select_default_source_set(&project_source_sets) {
+            Ok(source_set) => (
+                Some(source_set.name.clone()),
+                Some(source_set.path.clone()),
+                None,
+            ),
+            Err(error) => (None, None, Some(error)),
+        };
 
     Ok(ProjectSourceMap {
         workspace_root: workspace_root.display().to_string(),
         config_path: config_path.map(|path| path.display().to_string()),
         source_sets: project_source_sets,
+        effective_source_set,
+        effective_source_root,
+        source_selection_error,
     })
 }
 
