@@ -11,7 +11,8 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -859,7 +860,7 @@ impl<'a> CodeNavigationAdapter<'a> {
             .get("includeMethods")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        let body = module_outline(&db_path, &candidates, include_methods)?;
+        let body = module_outline(&context.cache_root, &db_path, &candidates, include_methods)?;
         Ok(AdapterOutcome {
             ok: true,
             summary: format!("{tool_name} completed through internal RLM index"),
@@ -985,7 +986,7 @@ impl<'a> CodeNavigationAdapter<'a> {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
         };
-        match metadata_profile(&db_path, args) {
+        match metadata_profile(&context.cache_root, &db_path, args) {
             Ok(body) => Ok(AdapterOutcome {
                 ok: true,
                 summary: format!("{tool_name} completed through internal RLM metadata index"),
@@ -1192,12 +1193,256 @@ pub(crate) fn find_definitions(
     }
 }
 
-fn open_read_only_index(cache_root: &Path, db_path: &Path) -> Result<Connection, String> {
-    open_read_only_index_with_validation_hooks(cache_root, db_path, || {}, || {})
+struct ReadOnlyIndexConnection {
+    connection: Connection,
+    // Drop the SQLite connection before its security anchor so the VFS never observes a closed
+    // descriptor or an unlocked path while it is still using the database.
+    #[cfg(unix)]
+    _database_descriptor: File,
+    #[cfg(windows)]
+    _path_locks: Vec<File>,
 }
 
-#[cfg(test)]
-fn open_read_only_index_after_validation<F>(
+impl Deref for ReadOnlyIndexConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+fn open_read_only_index(
+    cache_root: &Path,
+    db_path: &Path,
+) -> Result<ReadOnlyIndexConnection, String> {
+    #[cfg(unix)]
+    {
+        return open_read_only_index_unix_with_hooks(cache_root, db_path, || {});
+    }
+    #[cfg(windows)]
+    {
+        return open_read_only_index_windows(cache_root, db_path);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (cache_root, db_path);
+        Err(
+            "secure descriptor-anchored SQLite index access is unavailable on this platform"
+                .to_string(),
+        )
+    }
+}
+
+fn index_db_components(
+    cache_root: &Path,
+    db_path: &Path,
+) -> Result<(PathBuf, Vec<std::ffi::OsString>), String> {
+    let trusted_cache_root = fs::canonicalize(cache_root).map_err(|error| error.to_string())?;
+    let candidate = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        trusted_cache_root.join(db_path)
+    };
+    let relative = candidate
+        .strip_prefix(&trusted_cache_root)
+        .map_err(|_| "index database must remain inside the workspace cache".to_string())?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(value) => components.push(value.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("index database must remain inside the workspace cache".to_string())
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err("index database must be a regular, non-symlink file".to_string());
+    }
+    Ok((trusted_cache_root, components))
+}
+
+#[cfg(unix)]
+fn open_read_only_index_unix_with_hooks<F>(
+    cache_root: &Path,
+    db_path: &Path,
+    after_descriptor_open: F,
+) -> Result<ReadOnlyIndexConnection, String>
+where
+    F: FnOnce(),
+{
+    use std::os::fd::AsRawFd;
+
+    let (trusted_cache_root, mut components) = index_db_components(cache_root, db_path)?;
+    let file_name = components
+        .pop()
+        .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())?;
+    let mut directory = open_unix_directory(&trusted_cache_root)?;
+    for component in components {
+        directory = open_unix_directory_at(&directory, &component)?;
+    }
+    let database = open_unix_regular_file_at(&directory, &file_name)?;
+
+    // `/dev/fd/<n>` duplicates this already-open file descriptor. It cannot traverse the original
+    // cache path, which is why SQLITE_OPEN_NOFOLLOW is intentionally not used for this pseudo-path.
+    after_descriptor_open();
+    let sqlite_path = PathBuf::from(format!("/dev/fd/{}", database.as_raw_fd()));
+    let connection = Connection::open_with_flags(
+        sqlite_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(ReadOnlyIndexConnection {
+        connection,
+        _database_descriptor: database,
+    })
+}
+
+#[cfg(unix)]
+fn open_unix_directory(path: &Path) -> Result<File, String> {
+    open_unix_path_at(
+        None,
+        path.as_os_str(),
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+    )
+}
+
+#[cfg(unix)]
+fn open_unix_directory_at(directory: &File, name: &std::ffi::OsStr) -> Result<File, String> {
+    use std::os::fd::AsRawFd;
+
+    open_unix_path_at(
+        Some(directory.as_raw_fd()),
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+    )
+}
+
+#[cfg(unix)]
+fn open_unix_regular_file_at(directory: &File, name: &std::ffi::OsStr) -> Result<File, String> {
+    use std::os::fd::AsRawFd;
+
+    let file = open_unix_path_at(
+        Some(directory.as_raw_fd()),
+        name,
+        libc::O_RDONLY | libc::O_NOFOLLOW,
+    )?;
+    file.metadata()
+        .map_err(|error| error.to_string())?
+        .file_type()
+        .is_file()
+        .then_some(file)
+        .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())
+}
+
+#[cfg(unix)]
+fn open_unix_path_at(
+    directory_fd: Option<std::os::fd::RawFd>,
+    path: &std::ffi::OsStr,
+    flags: std::os::raw::c_int,
+) -> Result<File, String> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_bytes())
+        .map_err(|_| "index database path contains an interior NUL byte".to_string())?;
+    let flags = flags | libc::O_CLOEXEC;
+    let descriptor = unsafe {
+        match directory_fd {
+            Some(directory_fd) => libc::openat(directory_fd, path.as_ptr(), flags),
+            None => libc::open(path.as_ptr(), flags),
+        }
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    // `open`/`openat` returned a fresh owned descriptor, so transferring it into `File` is valid.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+#[cfg(windows)]
+fn open_read_only_index_windows(
+    cache_root: &Path,
+    db_path: &Path,
+) -> Result<ReadOnlyIndexConnection, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+    fn open_directory(path: &Path) -> Result<File, String> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("index database path must not contain a reparse point".to_string());
+        }
+        Ok(file)
+    }
+
+    fn open_database(path: &Path) -> Result<File, String> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_file()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            return Err("index database must be a regular, non-symlink file".to_string());
+        }
+        Ok(file)
+    }
+
+    let (trusted_cache_root, mut components) = index_db_components(cache_root, db_path)?;
+    let file_name = components
+        .pop()
+        .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())?;
+    let mut path = trusted_cache_root.clone();
+    let mut path_locks = vec![open_directory(&path)?];
+    for component in components {
+        path.push(component);
+        path_locks.push(open_directory(&path)?);
+    }
+    path.push(file_name);
+    let database = open_database(&path)?;
+    let connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| error.to_string())?;
+    path_locks.push(database);
+    Ok(ReadOnlyIndexConnection {
+        connection,
+        _path_locks: path_locks,
+    })
+}
+
+#[cfg(all(test, unix))]
+fn open_read_only_index_after_descriptor_open<F>(
+    cache_root: &Path,
+    db_path: &Path,
+    after_descriptor_open: F,
+) -> Result<ReadOnlyIndexConnection, String>
+where
+    F: FnOnce(),
+{
+    open_read_only_index_unix_with_hooks(cache_root, db_path, after_descriptor_open)
+}
+
+#[cfg(all(test, unix))]
+fn legacy_path_open_after_validation<F>(
     cache_root: &Path,
     db_path: &Path,
     after_validation: F,
@@ -1205,38 +1450,7 @@ fn open_read_only_index_after_validation<F>(
 where
     F: FnOnce(),
 {
-    open_read_only_index_with_validation_hooks(cache_root, db_path, || {}, after_validation)
-}
-
-#[cfg(test)]
-fn open_read_only_index_after_cache_root_validation<F>(
-    cache_root: &Path,
-    db_path: &Path,
-    after_cache_root_validation: F,
-) -> Result<Connection, String>
-where
-    F: FnOnce(),
-{
-    open_read_only_index_with_validation_hooks(
-        cache_root,
-        db_path,
-        after_cache_root_validation,
-        || {},
-    )
-}
-
-fn open_read_only_index_with_validation_hooks<F, G>(
-    cache_root: &Path,
-    db_path: &Path,
-    after_cache_root_validation: F,
-    after_validation: G,
-) -> Result<Connection, String>
-where
-    F: FnOnce(),
-    G: FnOnce(),
-{
     let trusted_cache_root = fs::canonicalize(cache_root).map_err(|error| error.to_string())?;
-    after_cache_root_validation();
     let file_name = db_path
         .file_name()
         .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())?;
@@ -1248,16 +1462,17 @@ where
     if !canonical_parent.starts_with(&trusted_cache_root) {
         return Err("index database must remain inside the workspace cache".to_string());
     }
-    let db_path = canonical_parent.join(file_name);
-    let file_type = fs::symlink_metadata(&db_path)
+    let path = canonical_parent.join(file_name);
+    if !fs::symlink_metadata(&path)
         .map_err(|error| error.to_string())?
-        .file_type();
-    if file_type.is_symlink() || !file_type.is_file() {
+        .file_type()
+        .is_file()
+    {
         return Err("index database must be a regular, non-symlink file".to_string());
     }
     after_validation();
     Connection::open_with_flags(
-        &db_path,
+        path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -1301,11 +1516,12 @@ fn definition_line(row: &Row<'_>) -> rusqlite::Result<String> {
 }
 
 fn module_outline(
-    db_path: &PathBuf,
+    cache_root: &Path,
+    db_path: &Path,
     candidates: &[String],
     include_methods: bool,
 ) -> Result<String, String> {
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let conn = open_read_only_index(cache_root, db_path)?;
     let mut module = None;
     for candidate in candidates {
         module = conn
@@ -1415,11 +1631,15 @@ fn module_outline(
     Ok(lines.join("\n"))
 }
 
-fn metadata_profile(db_path: &PathBuf, args: &Map<String, Value>) -> Result<String, String> {
+fn metadata_profile(
+    cache_root: &Path,
+    db_path: &Path,
+    args: &Map<String, Value>,
+) -> Result<String, String> {
     let requested_name = required_string(args, "name")?;
     let limit = read_limit(args, 20);
     let sections = profile_sections(args)?;
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
+    let conn = open_read_only_index(cache_root, db_path)?;
     let identity = resolve_profile_identity(&conn, requested_name)?;
 
     let mut lines = vec![format!("object: {}", identity.object_ref())];
@@ -3883,31 +4103,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn open_read_only_index_rejects_symlink_installed_after_validation() {
+    fn open_read_only_index_keeps_final_database_descriptor_after_path_swap() {
         use std::os::unix::fs::symlink;
 
-        let context = temp_context("read-only-index-symlink-race");
+        let context = temp_context("read-only-index-final-descriptor-race");
         let db_path = context.cache_root.join("rlm-tools-bsl/index.db");
         let outside_db = context.workspace_root.join("outside-index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         Connection::open(&db_path)
             .unwrap()
-            .execute_batch("CREATE TABLE trusted (value TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('trusted');",
+            )
             .unwrap();
         Connection::open(&outside_db)
             .unwrap()
-            .execute_batch("CREATE TABLE outside_data (value TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('outside');",
+            )
             .unwrap();
 
-        let result = open_read_only_index_after_validation(&context.cache_root, &db_path, || {
-            fs::remove_file(&db_path).unwrap();
-            symlink(&outside_db, &db_path).unwrap();
-        });
+        let connection =
+            open_read_only_index_after_descriptor_open(&context.cache_root, &db_path, || {
+                fs::remove_file(&db_path).unwrap();
+                symlink(&outside_db, &db_path).unwrap();
+            })
+            .unwrap();
+        let marker: String = connection
+            .query_row("SELECT value FROM marker", [], |row| row.get(0))
+            .unwrap();
 
-        assert!(
-            result.is_err(),
-            "the no-follow open must reject a symlink installed after validation"
-        );
+        assert_eq!(marker, "trusted");
         cleanup_context(&context);
     }
 
@@ -3935,35 +4161,73 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn open_read_only_index_rejects_intermediate_symlink_outside_cache_root() {
+    fn descriptor_anchor_blocks_intermediate_swap_after_legacy_validation() {
         use std::os::unix::fs::symlink;
 
-        let context = temp_context("read-only-index-intermediate-symlink-race");
-        let index_dir = context.cache_root.join("rlm-tools-bsl");
-        let db_path = index_dir.join("index.db");
-        let outside_dir = context.workspace_root.join("outside-index");
-        let outside_db = outside_dir.join("index.db");
-        fs::create_dir_all(&index_dir).unwrap();
-        Connection::open(&db_path)
+        let context = temp_context("read-only-index-intermediate-descriptor-race");
+        let legacy_dir = context.cache_root.join("legacy-index");
+        let legacy_db = legacy_dir.join("index.db");
+        let legacy_outside_dir = context.workspace_root.join("legacy-outside-index");
+        let legacy_outside_db = legacy_outside_dir.join("index.db");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        Connection::open(&legacy_db)
             .unwrap()
-            .execute_batch("CREATE TABLE trusted (value TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('trusted');",
+            )
             .unwrap();
-        fs::create_dir_all(&outside_dir).unwrap();
-        Connection::open(&outside_db)
+        fs::create_dir_all(&legacy_outside_dir).unwrap();
+        Connection::open(&legacy_outside_db)
             .unwrap()
-            .execute_batch("CREATE TABLE outside_data (value TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('outside');",
+            )
             .unwrap();
 
-        let result =
-            open_read_only_index_after_cache_root_validation(&context.cache_root, &db_path, || {
-                fs::remove_dir_all(&index_dir).unwrap();
-                symlink(&outside_dir, &index_dir).unwrap();
-            });
-
-        assert!(
-            result.is_err(),
-            "the canonicalized parent must remain inside the trusted cache root"
+        let legacy_connection =
+            legacy_path_open_after_validation(&context.cache_root, &legacy_db, || {
+                fs::remove_dir_all(&legacy_dir).unwrap();
+                symlink(&legacy_outside_dir, &legacy_dir).unwrap();
+            })
+            .unwrap();
+        let legacy_marker: String = legacy_connection
+            .query_row("SELECT value FROM marker", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            legacy_marker, "outside",
+            "SQLite NOFOLLOW protects only the final component of the legacy path open"
         );
+
+        let anchored_dir = context.cache_root.join("anchored-index");
+        let anchored_db = anchored_dir.join("index.db");
+        let anchored_outside_dir = context.workspace_root.join("anchored-outside-index");
+        let anchored_outside_db = anchored_outside_dir.join("index.db");
+        fs::create_dir_all(&anchored_dir).unwrap();
+        Connection::open(&anchored_db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('trusted');",
+            )
+            .unwrap();
+        fs::create_dir_all(&anchored_outside_dir).unwrap();
+        Connection::open(&anchored_outside_db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('outside');",
+            )
+            .unwrap();
+
+        let connection =
+            open_read_only_index_after_descriptor_open(&context.cache_root, &anchored_db, || {
+                fs::remove_dir_all(&anchored_dir).unwrap();
+                symlink(&anchored_outside_dir, &anchored_dir).unwrap();
+            })
+            .unwrap();
+        let marker: String = connection
+            .query_row("SELECT value FROM marker", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(marker, "trusted");
         cleanup_context(&context);
     }
 

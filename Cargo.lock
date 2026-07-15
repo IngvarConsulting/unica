@@ -705,6 +705,7 @@ name = "unica-coder"
 version = "0.6.1"
 dependencies = [
  "fs2",
+ "libc",
  "roxmltree",
  "rusqlite",
  "serde",
