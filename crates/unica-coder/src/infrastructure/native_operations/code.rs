@@ -1167,7 +1167,9 @@ fn scan_methods(text: &str, mask: &[bool]) -> Result<Vec<MethodRange>, String> {
     let mut methods = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
-        let Some(kind) = declaration_kind(&tokens[index].folded) else {
+        let Some(kind) = declaration_kind(&tokens[index].folded)
+            .filter(|_| is_line_start_after_whitespace(text, tokens[index].start))
+        else {
             index += 1;
             continue;
         };
@@ -1178,6 +1180,7 @@ fn scan_methods(text: &str, mask: &[bool]) -> Result<Vec<MethodRange>, String> {
         let mut end_index = index + 2;
         while end_index < tokens.len() {
             if declaration_kind(&tokens[end_index].folded).is_some()
+                && is_line_start_after_whitespace(text, tokens[end_index].start)
                 && tokens[end_index].start >= body_start
             {
                 return Err(format!(
@@ -1215,6 +1218,19 @@ fn scan_methods(text: &str, mask: &[bool]) -> Result<Vec<MethodRange>, String> {
         index = end_index + 1;
     }
     Ok(methods)
+}
+
+fn is_line_start_after_whitespace(text: &str, position: usize) -> bool {
+    let bytes = text.as_bytes();
+    let line_start = text[..position]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let prefix = &bytes[line_start..position];
+    let prefix = prefix.strip_prefix(UTF8_BOM).unwrap_or(prefix);
+    prefix
+        .iter()
+        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
 }
 
 fn method_body_end(text: &str, end_keyword_start: usize) -> usize {
@@ -2480,6 +2496,65 @@ mod tests {
                 "#EndRegion\n"
             )
         );
+        let repeated = patch_code(&args, &fixture.context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert_eq!(details(&repeated)["noOp"], true);
+    }
+
+    #[test]
+    fn method_scoped_patch_handles_russian_crlf_region_with_procedure_property() {
+        let source = concat!(
+            "\u{feff}#Область ПрограммныйИнтерфейс\r\n",
+            "\r\n",
+            "Процедура ПриДобавленииОбработчиковОбновления(Обработчики) Экспорт\r\n",
+            "\t\r\n",
+            "\tКодОсновногоЯзыка = ОбщегоНазначения.КодОсновногоЯзыка();\r\n",
+            "\t\r\n",
+            "\t#Область Версия_1_0_1_2\r\n",
+            "\t\r\n",
+            "\tОбработчик.Процедура = \"ПланыВидовХарактеристик.кшДополнительныеНастройки.кшПерейтиНаВерсию_1_0_1_3\";\r\n",
+            "\tОбработчик.Комментарий = НСтр(\"ru = 'Изменение дополнительных настроек'\", КодОсновногоЯзыка);\r\n",
+            "\t\r\n",
+            "\t#КонецОбласти\r\n",
+            "\t\r\n",
+            "КонецПроцедуры\r\n",
+            "\r\n",
+            "#КонецОбласти\r\n"
+        );
+
+        let fixture = Fixture::new("russian-crlf-region-property", source.as_bytes());
+        let args = fixture.args(
+            json!({
+                "kind": "anchor",
+                "anchor": "Обработчик.Комментарий = НСтр(\"ru = 'Изменение дополнительных настроек'\", КодОсновногоЯзыка);",
+                "methodName": "ПриДобавленииОбработчиковОбновления",
+            }),
+            "insertAfter",
+            "\r\n\tПроверитьОбработчик();",
+            1,
+        );
+
+        let preview = patch_code(&args, &fixture.context, true);
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(details(&preview)["noOp"], false);
+        assert_eq!(details(&preview)["matchCount"], 1);
+        assert!(details(&preview)["diff"]
+            .as_str()
+            .is_some_and(|diff| diff.contains("+\tПроверитьОбработчик();")));
+        assert_eq!(fs::read_to_string(&fixture.module).unwrap(), source);
+
+        let applied = patch_code(&args, &fixture.context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(details(&applied)["noOp"], false);
+        assert_eq!(
+            fs::read_to_string(&fixture.module).unwrap(),
+            source.replacen(
+                "\tОбработчик.Комментарий = НСтр(\"ru = 'Изменение дополнительных настроек'\", КодОсновногоЯзыка);",
+                "\tОбработчик.Комментарий = НСтр(\"ru = 'Изменение дополнительных настроек'\", КодОсновногоЯзыка);\r\n\tПроверитьОбработчик();",
+                1,
+            )
+        );
+
         let repeated = patch_code(&args, &fixture.context, false);
         assert!(repeated.ok, "{:?}", repeated.errors);
         assert_eq!(details(&repeated)["noOp"], true);
