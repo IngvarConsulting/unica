@@ -235,7 +235,7 @@ fn execute_patch(
     let resolved = resolve_target(args, context)?;
     let raw = read_stable_target(&resolved.target)?;
     let envelope = SourceEnvelope::parse(&raw)?;
-    let request = PatchRequest::parse(args, envelope.eol)?;
+    let request = PatchRequest::parse(args)?;
     let plan = plan_patch(envelope.text, &request)?;
 
     let mut post_raw = Vec::with_capacity(envelope.bom_len + plan.post_text.len());
@@ -661,7 +661,6 @@ impl Eol {
 
 struct SourceEnvelope<'a> {
     bom_len: usize,
-    eol: Eol,
     text: &'a str,
 }
 
@@ -674,8 +673,6 @@ impl<'a> SourceEnvelope<'a> {
         }
         let text = std::str::from_utf8(content)
             .map_err(|error| format!("module is not valid UTF-8: {error}"))?;
-        let mut saw_lf = false;
-        let mut saw_crlf = false;
         let bytes = text.as_bytes();
         let mut index = 0;
         while index < bytes.len() {
@@ -684,24 +681,13 @@ impl<'a> SourceEnvelope<'a> {
                     if bytes.get(index + 1) != Some(&b'\n') {
                         return Err("module contains a lone CR line ending".to_string());
                     }
-                    saw_crlf = true;
                     index += 2;
                 }
-                b'\n' => {
-                    saw_lf = true;
-                    index += 1;
-                }
+                b'\n' => index += 1,
                 _ => index += 1,
             }
         }
-        if saw_lf && saw_crlf {
-            return Err("module contains mixed LF and CRLF line endings".to_string());
-        }
-        Ok(Self {
-            bom_len,
-            eol: if saw_crlf { Eol::CrLf } else { Eol::Lf },
-            text,
-        })
+        Ok(Self { bom_len, text })
     }
 }
 
@@ -732,7 +718,7 @@ struct PatchRequest {
 }
 
 impl PatchRequest {
-    fn parse(args: &Map<String, Value>, eol: Eol) -> Result<Self, String> {
+    fn parse(args: &Map<String, Value>) -> Result<Self, String> {
         let kind = required_nonempty_string(args, "selector")?;
         let parsed_selector = match kind {
             "module" => {
@@ -771,7 +757,7 @@ impl PatchRequest {
         if raw_content.is_empty() {
             return Err("`content` must not be empty".to_string());
         }
-        let content = normalize_payload_eol(raw_content, eol);
+        let content = canonicalize_payload_eol(raw_content);
         if content.is_empty() {
             return Err("`content` must not be empty".to_string());
         }
@@ -814,12 +800,15 @@ fn reject_present(args: &Map<String, Value>, key: &str, selector: &str) -> Resul
     }
 }
 
-fn normalize_payload_eol(content: &str, eol: Eol) -> String {
-    let logical = content.replace("\r\n", "\n").replace('\r', "\n");
+fn canonicalize_payload_eol(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn render_payload_eol(content: &str, eol: Eol) -> String {
     if eol == Eol::Lf {
-        logical
+        content.to_string()
     } else {
-        logical.replace('\n', eol.text())
+        content.replace('\n', eol.text())
     }
 }
 
@@ -951,7 +940,7 @@ fn plan_anchor_edits(
         ));
     }
 
-    if request.content == *anchor {
+    if request.content == canonicalize_payload_eol(anchor) {
         if ranges.len() != request.expected_count {
             return Err(cardinality_error(request.expected_count, ranges.len()));
         }
@@ -962,19 +951,11 @@ fn plan_anchor_edits(
             "anchor replacement content contains a code occurrence of the anchor and cannot be proven idempotent".to_string(),
         );
     }
-    let applied_ranges = find_raw_occurrences(text, &request.content, scopes);
+    let applied_ranges = find_rendered_content_occurrences(text, &request.content, scopes);
     match (ranges.len(), applied_ranges.len()) {
-        (old, 0) if old == request.expected_count => Ok((
-            ranges
-                .into_iter()
-                .map(|range| Edit {
-                    start: range.start,
-                    end: range.end,
-                    replacement: request.content.clone(),
-                })
-                .collect(),
-            old,
-        )),
+        (old, 0) if old == request.expected_count => {
+            Ok((plan_selected_edits(text, ranges, request, true)?, old))
+        }
         (0, applied) if applied == request.expected_count => Ok((Vec::new(), applied)),
         (old, 0) => Err(cardinality_error(request.expected_count, old)),
         (0, applied) => Err(format!(
@@ -993,26 +974,31 @@ fn plan_selected_edits(
     request: &PatchRequest,
     anchor_selector: bool,
 ) -> Result<Vec<Edit>, String> {
+    let rendered_contents = ranges
+        .iter()
+        .map(|range| render_payload_for_range(text, range, &request.content))
+        .collect::<Vec<_>>();
     let already_applied = ranges
         .iter()
-        .map(|range| match request.operation {
+        .zip(rendered_contents.iter())
+        .map(|(range, content)| match request.operation {
             Operation::Replace => text
                 .get(range.start..range.end)
-                .is_some_and(|selected| selected == request.content),
+                .is_some_and(|selected| selected == content),
             Operation::InsertBefore if anchor_selector => range
                 .start
-                .checked_sub(request.content.len())
+                .checked_sub(content.len())
                 .and_then(|start| text.get(start..range.start))
-                .is_some_and(|adjacent| adjacent == request.content),
+                .is_some_and(|adjacent| adjacent == content),
             Operation::InsertAfter if anchor_selector => text
-                .get(range.end..range.end.saturating_add(request.content.len()))
-                .is_some_and(|adjacent| adjacent == request.content),
+                .get(range.end..range.end.saturating_add(content.len()))
+                .is_some_and(|adjacent| adjacent == content),
             Operation::InsertBefore => text
                 .get(range.start..range.end)
-                .is_some_and(|selected| selected.starts_with(&request.content)),
+                .is_some_and(|selected| selected.starts_with(content)),
             Operation::InsertAfter => text
                 .get(range.start..range.end)
-                .is_some_and(|selected| selected.ends_with(&request.content)),
+                .is_some_and(|selected| selected.ends_with(content)),
         })
         .collect::<Vec<_>>();
     if already_applied.iter().all(|applied| *applied) {
@@ -1026,24 +1012,95 @@ fn plan_selected_edits(
 
     ranges
         .into_iter()
-        .map(|range| match request.operation {
+        .zip(rendered_contents)
+        .map(|(range, content)| match request.operation {
             Operation::InsertBefore => Ok(Edit {
                 start: range.start,
                 end: range.start,
-                replacement: request.content.clone(),
+                replacement: content,
             }),
             Operation::InsertAfter => Ok(Edit {
                 start: range.end,
                 end: range.end,
-                replacement: request.content.clone(),
+                replacement: content,
             }),
             Operation::Replace => Ok(Edit {
                 start: range.start,
                 end: range.end,
-                replacement: request.content.clone(),
+                replacement: content,
             }),
         })
         .collect()
+}
+
+fn render_payload_for_range(text: &str, range: &ByteRange, content: &str) -> String {
+    render_payload_eol(content, local_eol_for_range(text, range))
+}
+
+fn local_eol_for_range(text: &str, range: &ByteRange) -> Eol {
+    let bytes = text.as_bytes();
+    let start = range.start.min(bytes.len());
+    let end = range.end.min(bytes.len());
+
+    // Preserve mixed modules byte-for-byte outside the edit: only the payload
+    // adopts the nearest unambiguous local terminator.
+    find_eol_after(bytes, end)
+        .or_else(|| find_eol_before(bytes, start))
+        .or_else(|| find_eol_within(bytes, start, end))
+        .unwrap_or(Eol::Lf)
+}
+
+fn find_eol_after(bytes: &[u8], start: usize) -> Option<Eol> {
+    bytes[start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|offset| eol_at_newline(bytes, start + offset))
+}
+
+fn find_eol_before(bytes: &[u8], end: usize) -> Option<Eol> {
+    bytes[..end]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|index| eol_at_newline(bytes, index))
+}
+
+fn find_eol_within(bytes: &[u8], start: usize, end: usize) -> Option<Eol> {
+    bytes[start..end]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|offset| eol_at_newline(bytes, start + offset))
+}
+
+fn eol_at_newline(bytes: &[u8], newline: usize) -> Eol {
+    if newline > 0 && bytes.get(newline - 1) == Some(&b'\r') {
+        Eol::CrLf
+    } else {
+        Eol::Lf
+    }
+}
+
+fn find_rendered_content_occurrences(
+    text: &str,
+    content: &str,
+    scopes: &[ByteRange],
+) -> Vec<ByteRange> {
+    let mut candidates = [Eol::Lf, Eol::CrLf]
+        .into_iter()
+        .map(|eol| render_payload_eol(content, eol))
+        .collect::<Vec<_>>();
+    candidates.dedup();
+
+    let mut matches = candidates
+        .iter()
+        .flat_map(|candidate| find_raw_occurrences(text, candidate, scopes))
+        .filter(|range| {
+            text.get(range.start..range.end)
+                .is_some_and(|selected| selected == render_payload_for_range(text, range, content))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|range| (range.start, range.end));
+    matches.dedup_by_key(|range| (range.start, range.end));
+    matches
 }
 
 fn cardinality_error(expected: usize, actual: usize) -> String {
@@ -2482,21 +2539,86 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_and_lone_cr_line_endings_without_writing() {
-        for (name, source) in [
-            ("mixed", b"A\r\nTARGET\n".as_slice()),
-            ("lone-cr", b"A\rTARGET".as_slice()),
-        ] {
-            let fixture = Fixture::new(name, source);
-            let before = fs::read(&fixture.module).unwrap();
-            let args = fixture.args(
-                json!({"kind": "anchor", "anchor": "TARGET"}),
-                "replace",
-                "Changed();",
-                1,
-            );
-            let outcome = patch_code(&args, &fixture.context, false);
+    fn patches_mixed_eol_bom_two_anchors_with_local_eol_preview_apply_and_noop() {
+        let source = [
+            UTF8_BOM,
+            b"Before\nTARGET\r\nMiddle\r\nTARGET\nAfter\r\n".as_slice(),
+        ]
+        .concat();
+        let expected = [
+            UTF8_BOM,
+            b"Before\nOne();\r\nTwo();\r\nTARGET\r\nMiddle\r\nOne();\nTwo();\nTARGET\nAfter\r\n"
+                .as_slice(),
+        ]
+        .concat();
+        let fixture = Fixture::new("mixed-bom-two-anchors", &source);
+        let args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "insertBefore",
+            "One();\nTwo();\n",
+            2,
+        );
+
+        let preview = patch_code(&args, &fixture.context, true);
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(details(&preview)["dryRun"], true);
+        assert_eq!(details(&preview)["matchCount"], 2);
+        assert_ne!(details(&preview)["preHash"], details(&preview)["postHash"]);
+        assert!(!details(&preview)["diff"].as_str().unwrap().is_empty());
+        assert_eq!(fs::read(&fixture.module).unwrap(), source);
+
+        let applied = patch_code(&args, &fixture.context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(details(&applied)["applied"], true);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+
+        let repeated = patch_code(&args, &fixture.context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert_eq!(details(&repeated)["noOp"], true);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+    }
+
+    #[test]
+    fn mixed_eol_anchor_replace_uses_local_content_for_absent_anchor_noop() {
+        let source = [UTF8_BOM, b"Before\nTARGET\r\nAfter\n".as_slice()].concat();
+        let expected = [
+            UTF8_BOM,
+            b"Before\nDone();\r\nMore();\r\nAfter\n".as_slice(),
+        ]
+        .concat();
+        let fixture = Fixture::new("mixed-bom-replace", &source);
+        let args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Done();\nMore();",
+            1,
+        );
+
+        let applied = patch_code(&args, &fixture.context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+
+        let repeated = patch_code(&args, &fixture.context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert_eq!(details(&repeated)["noOp"], true);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+    }
+
+    #[test]
+    fn rejects_lone_cr_preview_and_apply_without_writing() {
+        let fixture = Fixture::new("lone-cr", b"A\rTARGET");
+        let before = fs::read(&fixture.module).unwrap();
+        let args = fixture.args(
+            json!({"kind": "anchor", "anchor": "TARGET"}),
+            "replace",
+            "Changed();",
+            1,
+        );
+
+        for dry_run in [true, false] {
+            let outcome = patch_code(&args, &fixture.context, dry_run);
             assert!(!outcome.ok);
+            assert!(outcome.errors[0].contains("lone CR"));
             assert_eq!(fs::read(&fixture.module).unwrap(), before);
         }
     }
