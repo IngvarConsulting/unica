@@ -1189,13 +1189,33 @@ pub(crate) fn find_definitions(
 }
 
 fn open_read_only_index(db_path: &Path) -> Result<Connection, String> {
-    let file_type = fs::symlink_metadata(db_path)
+    open_read_only_index_after_validation(db_path, || {})
+}
+
+fn open_read_only_index_after_validation<F>(
+    db_path: &Path,
+    after_validation: F,
+) -> Result<Connection, String>
+where
+    F: FnOnce(),
+{
+    let file_name = db_path
+        .file_name()
+        .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())?;
+    let parent = db_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let db_path = fs::canonicalize(parent)
+        .map_err(|error| error.to_string())?
+        .join(file_name);
+    let file_type = fs::symlink_metadata(&db_path)
         .map_err(|error| error.to_string())?
         .file_type();
     if file_type.is_symlink() || !file_type.is_file() {
         return Err("index database must be a regular, non-symlink file".to_string());
     }
-    let db_path = fs::canonicalize(db_path).map_err(|error| error.to_string())?;
+    after_validation();
     Connection::open_with_flags(
         &db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -3818,6 +3838,58 @@ mod tests {
         assert!(stdout.contains("=== git grep ==="));
         assert!(stdout.contains("CommonModules/Проведение.bsl:42"));
         assert!(stdout.contains("Procedure ОбработкаПроведения() export"));
+        cleanup_context(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_read_only_index_rejects_symlink_installed_after_validation() {
+        use std::os::unix::fs::symlink;
+
+        let context = temp_context("read-only-index-symlink-race");
+        let db_path = context.cache_root.join("rlm-tools-bsl/index.db");
+        let outside_db = context.workspace_root.join("outside-index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        Connection::open(&db_path)
+            .unwrap()
+            .execute_batch("CREATE TABLE trusted (value TEXT NOT NULL);")
+            .unwrap();
+        Connection::open(&outside_db)
+            .unwrap()
+            .execute_batch("CREATE TABLE outside_data (value TEXT NOT NULL);")
+            .unwrap();
+
+        let result = open_read_only_index_after_validation(&db_path, || {
+            fs::remove_file(&db_path).unwrap();
+            symlink(&outside_db, &db_path).unwrap();
+        });
+
+        assert!(
+            result.is_err(),
+            "the no-follow open must reject a symlink installed after validation"
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn open_read_only_index_opens_regular_database() {
+        let context = temp_context("read-only-index-regular");
+        let db_path = context.cache_root.join("rlm-tools-bsl/index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let writer = Connection::open(&db_path).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('ok');",
+            )
+            .unwrap();
+        drop(writer);
+
+        let connection = open_read_only_index(&db_path).unwrap();
+        let marker: String = connection
+            .query_row("SELECT value FROM marker", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(marker, "ok");
         cleanup_context(&context);
     }
 
