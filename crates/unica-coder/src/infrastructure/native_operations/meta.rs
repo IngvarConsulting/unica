@@ -858,6 +858,88 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_definition_preserves_crlf_bom_and_unrelated_bytes() {
+        let context = temp_context("definition-preserves-crlf");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        let child_objects = sample_attribute(
+            "ExistingAttribute",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>xs:boolean</v8:Type>\n\t\t\t\t\t</Type>",
+            "\t\t\t\t\t<FillValue xsi:type=\"xs:boolean\">false</FillValue>",
+        );
+        let before = format!(
+            "\u{feff}{}",
+            sample_catalog_xml()
+                .replace(
+                    "\t\t<ChildObjects/>",
+                    &format!("\t\t<ChildObjects>\n{child_objects}\n\t\t</ChildObjects>"),
+                )
+                .trim_end_matches('\n')
+                .replace('\n', "\r\n")
+        );
+        write_file(&object_path, &before);
+        write_file(
+            &definition_path,
+            r#"{
+  "add": {
+    "attributes": [
+      { "name": "SeparateSupplierOrder", "type": "Boolean" }
+    ]
+  },
+  "modify": {
+    "attributes": {
+      "SeparateSupplierOrder": {
+        "synonym": "Separate supplier order",
+        "comment": "AS-030"
+      }
+    }
+  }
+}"#,
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+        assert!(outcome.ok, "{:?}", outcome.errors);
+
+        let after = fs::read_to_string(&object_path).unwrap();
+        assert!(after.starts_with('\u{feff}'), "BOM was not preserved");
+        assert!(!after.ends_with('\n'), "terminal newline was added");
+        assert!(
+            after
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .all(|(index, _)| index > 0 && after.as_bytes()[index - 1] == b'\r'),
+            "non-CRLF newline found: {after}"
+        );
+        assert!(
+            !after.contains("&#13;"),
+            "unexpected XML character entity: {after}"
+        );
+        assert!(after.contains("<Name>SeparateSupplierOrder</Name>"));
+        assert!(after.contains("<v8:content>Separate supplier order</v8:content>"));
+        assert!(after.contains("<Comment>AS-030</Comment>"));
+
+        let added_name = after.find("<Name>SeparateSupplierOrder</Name>").unwrap();
+        let added_start = after[..added_name]
+            .rfind("\t\t\t<Attribute uuid=\"")
+            .unwrap();
+        let added_end = after[added_name..]
+            .find("\t\t\t</Attribute>\r\n")
+            .map(|index| added_name + index + "\t\t\t</Attribute>\r\n".len())
+            .unwrap();
+        let restored = format!("{}{}", &after[..added_start], &after[added_end..]);
+        assert_eq!(
+            restored, before,
+            "bytes outside the added Attribute changed"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_rejects_tabular_section_type_change() {
         let context = temp_context("modify-tabular-section-type");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -9431,6 +9513,12 @@ pub(crate) struct MetaEditCounts {
     pub(crate) removed: usize,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum MetaEditEol {
+    Lf,
+    CrLf,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, usize), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -9451,6 +9539,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
 
         let mut xml_text = fs::read_to_string(&object_path)
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
+        let source_eol = meta_edit_source_eol(&xml_text);
         if xml_text.starts_with('\u{feff}') {
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
         }
@@ -9492,7 +9581,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
-        let serialized_text = meta_edit_lxml_serialized_text(&xml_text);
+        let serialized_text = meta_edit_lxml_serialized_text(&xml_text, source_eol);
         write_utf8_bom(&object_path, &serialized_text)?;
         info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         let stdout = format!(
@@ -9529,23 +9618,23 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
     }
 }
 
-pub(crate) fn meta_edit_lxml_serialized_text(text: &str) -> String {
-    let mut output = text
+pub(crate) fn meta_edit_source_eol(text: &str) -> MetaEditEol {
+    let bytes = text.as_bytes();
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(index) if index > 0 && bytes[index - 1] == b'\r' => MetaEditEol::CrLf,
+        _ => MetaEditEol::Lf,
+    }
+}
+
+pub(crate) fn meta_edit_lxml_serialized_text(text: &str, eol: MetaEditEol) -> String {
+    let output = text
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    if output.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>") {
-        output = output.replacen(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
-            1,
-        );
+    match eol {
+        MetaEditEol::Lf => output,
+        MetaEditEol::CrLf => output.replace('\n', "\r\n"),
     }
-    output = output.replace(" />", "/>");
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
 }
 
 pub(crate) fn resolve_meta_edit_object_path(raw: &Path, cwd: &Path) -> Result<PathBuf, String> {
@@ -11984,27 +12073,11 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
         .chars()
         .all(|ch| ch == '\t' || ch == ' ');
     if insert_at_closing_indent {
-        let insert_pos = meta_edit_mark_lxml_append_tail(xml_text, line_start);
-        xml_text.insert_str(insert_pos, &format!("{content}\n"));
+        xml_text.insert_str(line_start, &format!("{content}\n"));
     } else {
         xml_text.insert_str(close_pos, &format!("{content}\n{close_indent}"));
     }
     Ok(())
-}
-
-pub(crate) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
-    if insert_pos == 0 || xml_text[..insert_pos].ends_with("&#13;\n") {
-        return insert_pos;
-    }
-    if insert_pos >= 2 && &xml_text[insert_pos - 2..insert_pos] == "\r\n" {
-        xml_text.replace_range(insert_pos - 2..insert_pos, "&#13;\n");
-        return insert_pos + 4;
-    }
-    if insert_pos >= 1 && &xml_text[insert_pos - 1..insert_pos] == "\n" {
-        xml_text.replace_range(insert_pos - 1..insert_pos, "&#13;\n");
-        return insert_pos + 5;
-    }
-    insert_pos
 }
 
 pub(crate) fn meta_edit_insert_lines_near_node(
@@ -12017,7 +12090,7 @@ pub(crate) fn meta_edit_insert_lines_near_node(
     if after {
         if let Some(relative_newline) = xml_text[range.end..].find('\n') {
             let insert_pos = range.end + relative_newline + 1;
-            xml_text.insert_str(insert_pos, &format!("{content}&#13;\n"));
+            xml_text.insert_str(insert_pos, &format!("{content}\n"));
         } else {
             xml_text.insert_str(range.end, &format!("\n{content}"));
         }
