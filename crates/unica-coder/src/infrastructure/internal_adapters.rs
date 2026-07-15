@@ -2,6 +2,9 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
+use crate::infrastructure::runtime_jobs::{
+    self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
+};
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
@@ -74,6 +77,23 @@ pub struct CliAdapter<'a> {
 pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeJobAction {
+    Start,
+    Status,
+    Wait,
+    Logs,
+    Cancel,
+    List,
+}
+
+pub struct RuntimeJobAdapterOutcome {
+    pub outcome: AdapterOutcome,
+    pub job: Option<Value>,
+}
+
+pub struct RuntimeJobAdapter;
 
 pub struct CodeSearchAdapter<'a> {
     bsl_runner: &'a dyn ProcessRunner,
@@ -347,6 +367,301 @@ impl<'a> Default for RuntimeAdapter<'a> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl RuntimeJobAdapter {
+    pub fn invoke(
+        action: RuntimeJobAction,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        match action {
+            RuntimeJobAction::Start => Self::start(tool_name, args, context, dry_run),
+            RuntimeJobAction::Status => Self::status(tool_name, args, context),
+            RuntimeJobAction::Wait => Self::wait(tool_name, args, context),
+            RuntimeJobAction::Logs => Self::logs(tool_name, args, context),
+            RuntimeJobAction::Cancel => Self::cancel(tool_name, args, context, dry_run),
+            RuntimeJobAction::List => Self::list(tool_name, context),
+        }
+    }
+
+    fn start(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for internal adapter lookup".to_string()
+        })?;
+        let reported_args = runtime_args(args, true)?;
+        let execution_args = runtime_args(args, false)?;
+        let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
+        let mut command = vec![bundled_tool.program.display().to_string()];
+        command.extend(reported_args);
+
+        if dry_run {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!("dry run: {tool_name} would start a durable runtime job"),
+                    changes: vec!["no runtime job started because dryRun is true".to_string()],
+                    warnings: bundled_tool.warnings,
+                    errors: Vec::new(),
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    command: Some(command),
+                },
+                job: None,
+            });
+        }
+
+        let operation_name = args
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{tool_name} requires string `operation` argument"))?;
+        let operation = RuntimeJobOperation::from_label(operation_name)?;
+        let request = RuntimeJobRequest::new(
+            operation,
+            execution_args,
+            runtime_job_safe_target(context),
+            args.get("output")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        );
+        match runtime_jobs::start_detached_worker(
+            context.cache_root.clone(),
+            bundled_tool.program,
+            context.cwd.clone(),
+            request,
+        ) {
+            Ok(snapshot) => Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!("{tool_name} queued durable runtime job {}", snapshot.id),
+                    changes: Vec::new(),
+                    warnings: bundled_tool.warnings,
+                    errors: Vec::new(),
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    command: Some(command),
+                },
+                job: Some(runtime_job_snapshot_value(&snapshot)),
+            }),
+            Err(error) => Ok(Self::failure(tool_name, error, Some(command))),
+        }
+    }
+
+    fn status(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let id = runtime_job_id(tool_name, args)?;
+        match RuntimeJobService::status_at(context.cache_root.clone(), id) {
+            Ok(snapshot) => Ok(Self::success(
+                format!("{tool_name} read durable runtime job {id}"),
+                runtime_job_snapshot_value(&snapshot),
+            )),
+            Err(error) => Ok(Self::failure(tool_name, error, None)),
+        }
+    }
+
+    fn wait(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let id = runtime_job_id(tool_name, args)?;
+        let timeout_seconds = args
+            .get("timeoutSeconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(30);
+        match RuntimeJobService::wait_at(
+            context.cache_root.clone(),
+            id,
+            Duration::from_secs(timeout_seconds),
+        ) {
+            Ok(snapshot) => Ok(Self::success(
+                format!("{tool_name} observed durable runtime job {id}"),
+                runtime_job_snapshot_value(&snapshot),
+            )),
+            Err(error) => Ok(Self::failure(tool_name, error, None)),
+        }
+    }
+
+    fn logs(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let id = runtime_job_id(tool_name, args)?;
+        let tail_chars = args
+            .get("tailChars")
+            .and_then(Value::as_u64)
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
+            .unwrap_or(4096);
+        let snapshot = match RuntimeJobService::status_at(context.cache_root.clone(), id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Ok(Self::failure(tool_name, error, None)),
+        };
+        match RuntimeJobService::logs_at(context.cache_root.clone(), id, tail_chars) {
+            Ok(logs) => {
+                let mut job = runtime_job_snapshot_value(&snapshot);
+                if let Value::Object(ref mut object) = job {
+                    object.insert("stdout".to_string(), Value::String(logs.stdout));
+                    object.insert("stderr".to_string(), Value::String(logs.stderr));
+                    object.insert("stdoutPath".to_string(), Value::String(logs.stdout_path));
+                    object.insert("stderrPath".to_string(), Value::String(logs.stderr_path));
+                }
+                Ok(Self::success(
+                    format!("{tool_name} read durable runtime job logs for {id}"),
+                    job,
+                ))
+            }
+            Err(error) => Ok(Self::failure(tool_name, error, None)),
+        }
+    }
+
+    fn cancel(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let id = runtime_job_id(tool_name, args)?;
+        if dry_run {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!("dry run: {tool_name} would request cancellation for {id}"),
+                    changes: vec!["no cancellation requested because dryRun is true".to_string()],
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                job: None,
+            });
+        }
+        match RuntimeJobService::request_cancel_at(context.cache_root.clone(), id) {
+            Ok(snapshot) => Ok(Self::success(
+                format!("{tool_name} requested cancellation for durable runtime job {id}"),
+                runtime_job_snapshot_value(&snapshot),
+            )),
+            Err(error) => Ok(Self::failure(tool_name, error, None)),
+        }
+    }
+
+    fn list(
+        tool_name: &str,
+        context: &WorkspaceContext,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
+        let list = RuntimeJobService::list_at(context.cache_root.clone());
+        let jobs = list
+            .jobs
+            .iter()
+            .map(runtime_job_snapshot_value)
+            .collect::<Vec<_>>();
+        Ok(RuntimeJobAdapterOutcome {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!("{tool_name} listed durable runtime jobs"),
+                changes: Vec::new(),
+                warnings: list.warnings,
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            job: Some(json!({ "jobs": jobs })),
+        })
+    }
+
+    fn success(summary: String, job: Value) -> RuntimeJobAdapterOutcome {
+        RuntimeJobAdapterOutcome {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary,
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            job: Some(job),
+        }
+    }
+
+    fn failure(
+        tool_name: &str,
+        error: String,
+        command: Option<Vec<String>>,
+    ) -> RuntimeJobAdapterOutcome {
+        RuntimeJobAdapterOutcome {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} failed for durable runtime job lifecycle"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![redactor(&error)],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{}\n", redactor(&error))),
+                command,
+            },
+            job: None,
+        }
+    }
+}
+
+fn runtime_job_id<'a>(tool_name: &str, args: &'a Map<String, Value>) -> Result<&'a str, String> {
+    args.get("jobId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool_name} requires string `jobId` argument"))
+}
+
+fn runtime_job_safe_target(context: &WorkspaceContext) -> String {
+    let name = context
+        .workspace_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    format!("workspace:{name}")
+}
+
+fn runtime_job_snapshot_value(snapshot: &runtime_jobs::RuntimeJobSnapshot) -> Value {
+    json!({
+        "jobId": snapshot.id,
+        "phase": snapshot.phase,
+        "operation": snapshot.operation,
+        "safeTarget": snapshot.safe_target,
+        "createdAt": snapshot.created_at_ms,
+        "startedAt": snapshot.started_at_ms,
+        "heartbeatAt": snapshot.heartbeat_at_ms,
+        "finishedAt": snapshot.finished_at_ms,
+        "pid": snapshot.pid,
+        "pidIdentity": snapshot.pid_identity,
+        "exitCode": snapshot.exit_code,
+        "cancelled": snapshot.cancelled,
+        "cancelDeferred": snapshot.cancel_deferred,
+        "unsafePhase": snapshot.unsafe_phase,
+        "timeoutReason": snapshot.timeout_reason,
+        "artifactPath": snapshot.artifact_path,
+        "stdoutPath": snapshot.stdout_path,
+        "stderrPath": snapshot.stderr_path,
+        "warnings": snapshot.warnings,
+        "waitTimedOut": snapshot.wait_timed_out,
+    })
 }
 
 impl<'a> CodeSearchAdapter<'a> {

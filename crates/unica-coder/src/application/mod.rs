@@ -1,7 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
-use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::internal_adapters::RuntimeJobAction;
 use crate::infrastructure::native_operations::common::{
     absolutize, path_arg, required_string, support_guard_violation, SupportGuardRequirement,
     SupportGuardViolation,
@@ -42,6 +43,9 @@ pub enum ToolHandler {
         event: Option<DomainEventKind>,
     },
     RuntimeAdapter,
+    RuntimeJob {
+        action: RuntimeJobAction,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -67,6 +71,8 @@ pub struct OperationResult {
     pub command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<Value>,
 }
 
 pub struct UnicaApplication {
@@ -202,6 +208,61 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::RuntimeAdapter,
         },
         ToolSpec {
+            name: "unica.runtime.job.start",
+            description:
+                "Start a durable typed v8-runner runtime job without changing runtime.execute.",
+            mutating: true,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Start,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.status",
+            description: "Read a durable runtime job snapshot by jobId.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Status,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.wait",
+            description: "Wait for a durable runtime job with a caller-side bounded timeout.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Wait,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.logs",
+            description: "Read bounded redacted stdout and stderr tails for a durable runtime job.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Logs,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.cancel",
+            description: "Request safe cancellation for a durable runtime job.",
+            mutating: true,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Cancel,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.list",
+            description: "List durable runtime job snapshots in the current workspace.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::List,
+            },
+        },
+        ToolSpec {
             name: "unica.code.search",
             description: "Search BSL code through the internal RLM index.",
             mutating: false,
@@ -331,6 +392,7 @@ fn call_tool(
                     stderr: outcome.stderr,
                     command: outcome.command,
                     diagnostics: None,
+                    job: None,
                 });
             }
         }
@@ -338,7 +400,8 @@ fn call_tool(
         None
     };
 
-    let mut outcome = ports.invoke_handler(spec, args, &context, dry_run)?;
+    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run)?;
+    let mut outcome = handler_outcome.adapter;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -367,6 +430,7 @@ fn call_tool(
         stderr: outcome.stderr,
         command: outcome.command,
         diagnostics,
+        job: handler_outcome.job,
     })
 }
 
@@ -720,17 +784,15 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
         ToolHandler::RuntimeAdapter => runtime_event(args)
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
+        ToolHandler::RuntimeJob { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
 
 fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
-    match args.get("operation").and_then(Value::as_str)? {
-        "config-init" | "init" | "convert" | "dump" => Some(DomainEventKind::SourceSetChanged),
-        "build" | "load" | "extensions" | "test" => Some(DomainEventKind::BuildCompleted),
-        "make" | "syntax" | "launch" => None,
-        _ => None,
-    }
+    args.get("operation")
+        .and_then(Value::as_str)
+        .and_then(runtime_event_kind)
 }
 
 fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
@@ -1307,6 +1369,16 @@ mod tests {
         assert!(names.contains(&"unica.support.edit"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
+        for name in [
+            "unica.runtime.job.start",
+            "unica.runtime.job.status",
+            "unica.runtime.job.wait",
+            "unica.runtime.job.logs",
+            "unica.runtime.job.cancel",
+            "unica.runtime.job.list",
+        ] {
+            assert!(names.contains(&name), "missing {name}");
+        }
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
         assert!(names.contains(&"unica.code.grep"));
@@ -1349,6 +1421,22 @@ mod tests {
             .events
             .contains(&"SourceSetChanged".to_string()));
         assert!(result.command.unwrap().join(" ").contains(" dump"));
+    }
+
+    #[test]
+    fn runtime_job_start_defaults_to_dry_run_without_runtime_cache_invalidation() {
+        let mut args = Map::new();
+        args.insert("operation".to_string(), Value::String("dump".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.runtime.job.start", &args)
+            .expect("dry-run job start succeeds");
+
+        assert!(result.ok);
+        assert!(result.summary.contains("dry run"));
+        assert_eq!(result.job, None);
+        assert_eq!(result.cache.mode, "read");
+        assert!(result.cache.events.is_empty());
     }
 
     #[test]
@@ -2306,9 +2394,11 @@ mod tests {
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _dry_run: bool,
-            ) -> Result<AdapterOutcome, String> {
+            ) -> Result<ports::HandlerOutcome, String> {
                 self.invoked.borrow_mut().push(spec.name);
-                Ok(AdapterOutcome::ok("fake port outcome"))
+                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
+                    "fake port outcome",
+                )))
             }
 
             fn cache_report(
@@ -3930,8 +4020,8 @@ mod tests {
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _dry_run: bool,
-        ) -> Result<AdapterOutcome, String> {
-            Ok(self.outcome.clone())
+        ) -> Result<ports::HandlerOutcome, String> {
+            Ok(ports::HandlerOutcome::plain(self.outcome.clone()))
         }
 
         fn cache_report(

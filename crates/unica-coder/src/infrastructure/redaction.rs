@@ -118,7 +118,7 @@ impl StreamRedactorState {
                     Self::after_secret_key(ch, output)
                 }
             }
-            Self::AfterSecretKey => Self::after_secret_key(ch, output),
+            Self::AfterSecretKey => Self::after_secret_key_value(ch, output),
             Self::RedactingSecretValue { marker } => Self::redact_value(ch, marker, output),
         }
     }
@@ -156,6 +156,21 @@ impl StreamRedactorState {
         } else {
             output.push(ch);
             Self::Text
+        }
+    }
+
+    fn after_secret_key_value(ch: char, output: &mut String) -> Self {
+        if ch.is_whitespace() {
+            output.push(ch);
+            Self::AfterSecretKey
+        } else if secret_value_delimiter(ch) {
+            output.push(ch);
+            Self::Text
+        } else {
+            output.push_str("<redacted>");
+            Self::RedactingSecretValue {
+                marker: RedactionMarker::Written,
+            }
         }
     }
 
@@ -321,5 +336,17 @@ mod tests {
             redactor("starting build\nfinished successfully\n"),
             "starting build\nfinished successfully\n"
         );
+    }
+
+    #[test]
+    fn redactor_hides_whitespace_delimited_runtime_secrets() {
+        let output = redactor(
+            "v8-runner --password runtime-secret --connection Srvr=server;Pwd=connection-secret\n",
+        );
+
+        assert!(!output.contains("runtime-secret"), "{output}");
+        assert!(!output.contains("connection-secret"), "{output}");
+        assert!(output.contains("--password <redacted>"), "{output}");
+        assert!(output.contains("Pwd=<redacted>"), "{output}");
     }
 }

@@ -1,13 +1,20 @@
-//! Durable, private runtime-job state used by future runtime tool adapters.
-#![allow(dead_code)] // Wired to the public transport in the follow-up runtime-tools task.
+//! Durable runtime-job state used by the runtime-job worker and transport adapter.
 
 use super::redaction;
+use crate::domain::cache::CacheAccess;
+use crate::domain::events::{runtime_event_kind, DomainEvent};
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::workspace_services::WorkspaceServiceManager;
+use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -29,7 +36,8 @@ pub(crate) enum CancelPolicy {
 }
 
 /// The operation classes deliberately accepted by the durable core.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum RuntimeJobOperation {
     Make,
     Syntax,
@@ -42,6 +50,7 @@ pub(crate) enum RuntimeJobOperation {
     Convert,
     Load,
     Launch,
+    Extensions,
 }
 
 impl RuntimeJobOperation {
@@ -54,11 +63,12 @@ impl RuntimeJobOperation {
             | Self::Dump
             | Self::Convert
             | Self::Load
-            | Self::Launch => CancelPolicy::Critical,
+            | Self::Launch
+            | Self::Extensions => CancelPolicy::Critical,
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Make => "make",
             Self::Syntax => "syntax",
@@ -71,6 +81,25 @@ impl RuntimeJobOperation {
             Self::Convert => "convert",
             Self::Load => "load",
             Self::Launch => "launch",
+            Self::Extensions => "extensions",
+        }
+    }
+
+    pub(crate) fn from_label(label: &str) -> JobResult<Self> {
+        match label {
+            "make" => Ok(Self::Make),
+            "syntax" => Ok(Self::Syntax),
+            "test" => Ok(Self::Test),
+            "tools-download" => Ok(Self::ToolsDownload),
+            "config-init" => Ok(Self::ConfigInit),
+            "init" => Ok(Self::Init),
+            "build" => Ok(Self::Build),
+            "dump" => Ok(Self::Dump),
+            "convert" => Ok(Self::Convert),
+            "load" => Ok(Self::Load),
+            "launch" => Ok(Self::Launch),
+            "extensions" => Ok(Self::Extensions),
+            _ => Err(redacted_error("unsupported runtime job operation")),
         }
     }
 }
@@ -134,8 +163,15 @@ impl RuntimeJobPhase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeJobProcessState {
     Running,
-    Exited { exit_code: i32 },
-    TimedOut { reason: String },
+    Exited {
+        exit_code: i32,
+    },
+    // SystemRuntimeJobRunner delegates execution timeouts to v8-runner, while
+    // the runner boundary still models timeout-capable implementations.
+    #[allow(dead_code)]
+    TimedOut {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,14 +195,215 @@ pub(crate) trait RuntimeJobRunner: Send + Sync {
     fn attach(&self, process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>>;
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkerStartRequest {
+    cache_root: PathBuf,
+    job_id: String,
+    program: PathBuf,
+    cwd: PathBuf,
+    operation: String,
+    argv: Vec<String>,
+    safe_target: String,
+    artifact_path: Option<String>,
+    timeout_reason: Option<String>,
+}
+
+impl WorkerStartRequest {
+    fn runtime_request(&self) -> JobResult<RuntimeJobRequest> {
+        let operation = RuntimeJobOperation::from_label(&self.operation)?;
+        let mut request = RuntimeJobRequest::new(
+            operation,
+            self.argv.clone(),
+            self.safe_target.clone(),
+            self.artifact_path.clone(),
+        );
+        request.timeout_reason = self.timeout_reason.clone();
+        Ok(request)
+    }
+}
+
+struct SystemRuntimeJobRunner {
+    program: PathBuf,
+    cwd: PathBuf,
+}
+
+impl RuntimeJobRunner for SystemRuntimeJobRunner {
+    fn spawn(&self, request: &RuntimeJobRequest) -> JobResult<Box<dyn RuntimeJobProcess>> {
+        let mut command = Command::new(&self.program);
+        command
+            .args(&request.raw_argv)
+            .current_dir(&self.cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // The group makes safe cancellation cover v8-runner descendants too.
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
+            .spawn()
+            .map_err(|error| redacted_error(&format!("spawn runtime job process: {error}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| redacted_error("runtime job process has no stdout pipe"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| redacted_error("runtime job process has no stderr pipe"))?;
+        Ok(Box::new(SystemRuntimeJobProcess {
+            id: child.id(),
+            child,
+            stdout: StreamTail::spawn(stdout),
+            stderr: StreamTail::spawn(stderr),
+            exited: false,
+        }))
+    }
+
+    fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+        Err(redacted_error(
+            "runtime job worker cannot attach to an unowned process",
+        ))
+    }
+}
+
+struct SystemRuntimeJobProcess {
+    id: u32,
+    child: Child,
+    stdout: StreamTail,
+    stderr: StreamTail,
+    exited: bool,
+}
+
+impl RuntimeJobProcess for SystemRuntimeJobProcess {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+        match self
+            .child
+            .try_wait()
+            .map_err(|error| redacted_error(&format!("poll runtime job process: {error}")))?
+        {
+            Some(status) => {
+                self.exited = true;
+                Ok(RuntimeJobProcessState::Exited {
+                    exit_code: status.code().unwrap_or(1),
+                })
+            }
+            None => Ok(RuntimeJobProcessState::Running),
+        }
+    }
+
+    fn cancel(&mut self) -> JobResult<()> {
+        #[cfg(unix)]
+        {
+            let group = i32::try_from(self.id)
+                .map_err(|_| redacted_error("runtime job process id is outside Unix pid range"))?;
+            // A negative pid targets the process group created in spawn().
+            let result = unsafe { libc::kill(-group, libc::SIGKILL) };
+            if result == 0 {
+                Ok(())
+            } else {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    Ok(())
+                } else {
+                    Err(io_error("cancel runtime job process group", &error))
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let status = Command::new("taskkill")
+                .args(["/PID", &self.id.to_string(), "/T", "/F"])
+                .status()
+                .map_err(|error| io_error("cancel runtime job process tree", &error))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(redacted_error("cancel runtime job process tree failed"))
+            }
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        Err(redacted_error(
+            "runtime job process-tree cancellation is unsupported on this platform",
+        ))
+    }
+
+    fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+        if self.exited {
+            self.stdout.finish()?;
+            self.stderr.finish()?;
+        }
+        Ok(RuntimeJobOutput {
+            stdout: self.stdout.tail(max_bytes)?,
+            stderr: self.stderr.tail(max_bytes)?,
+        })
+    }
+}
+
+struct StreamTail {
+    text: Arc<Mutex<String>>,
+    reader: Option<thread::JoinHandle<io::Result<()>>>,
+}
+
+impl StreamTail {
+    fn spawn<R>(mut stream: R) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        let text = Arc::new(Mutex::new(String::new()));
+        let captured = Arc::clone(&text);
+        let reader = thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            let mut redactor = redaction::StreamRedactor::new();
+            loop {
+                let count = stream.read(&mut buffer)?;
+                if count == 0 {
+                    append_tail(&captured, &redactor.finish())?;
+                    return Ok(());
+                }
+                let chunk = String::from_utf8_lossy(&buffer[..count]);
+                append_tail(&captured, &redactor.push(&chunk))?;
+            }
+        });
+        Self {
+            text,
+            reader: Some(reader),
+        }
+    }
+
+    fn finish(&mut self) -> JobResult<()> {
+        let Some(reader) = self.reader.take() else {
+            return Ok(());
+        };
+        reader
+            .join()
+            .map_err(|_| redacted_error("join runtime job output reader"))?
+            .map_err(|error| io_error("read runtime job output", &error))
+    }
+
+    fn tail(&self, max_bytes: usize) -> JobResult<String> {
+        let text = self
+            .text
+            .lock()
+            .map_err(|error| redacted_error(&format!("lock runtime job output: {error}")))?;
+        Ok(bounded_tail(&text, max_bytes))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeJobSnapshot {
     pub(crate) id: String,
     pub(crate) phase: RuntimeJobPhase,
+    pub(crate) operation: String,
     pub(crate) safe_target: String,
     pub(crate) redacted_argv: Vec<String>,
     pub(crate) created_at_ms: u64,
+    pub(crate) started_at_ms: Option<u64>,
     pub(crate) heartbeat_at_ms: Option<u64>,
     pub(crate) finished_at_ms: Option<u64>,
     pub(crate) pid: Option<u32>,
@@ -187,6 +424,8 @@ pub(crate) struct RuntimeJobSnapshot {
 pub(crate) struct RuntimeJobLogs {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
+    pub(crate) stdout_path: String,
+    pub(crate) stderr_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +441,7 @@ struct RuntimeJobRecord {
     schema_version: u8,
     id: String,
     phase: RuntimeJobPhase,
+    operation: String,
     safe_target: String,
     redacted_argv: Vec<String>,
     created_at_ms: u64,
@@ -214,6 +454,7 @@ struct RuntimeJobRecord {
     cancel_policy: CancelPolicy,
     cancelled: bool,
     cancel_deferred: bool,
+    cancel_attempted: bool,
     unsafe_phase: Option<String>,
     timeout_reason: Option<String>,
     artifact_path: Option<String>,
@@ -229,10 +470,14 @@ impl RuntimeJobRecord {
             schema_version: RECORD_SCHEMA_VERSION,
             id: id.clone(),
             phase: RuntimeJobPhase::Queued,
+            operation: request.operation.label().to_string(),
             safe_target: redact_text(&request.safe_target),
             redacted_argv: redact_argv(&request.raw_argv),
             created_at_ms: now,
-            started_at_ms: None,
+            // The public start contract reports when the durable job lifecycle
+            // began. The worker replaces this with the child-start timestamp
+            // once it has successfully claimed the queued record.
+            started_at_ms: Some(now),
             heartbeat_at_ms: Some(now),
             finished_at_ms: None,
             pid: None,
@@ -241,7 +486,8 @@ impl RuntimeJobRecord {
             cancel_policy: request.operation.cancel_policy(),
             cancelled: false,
             cancel_deferred: false,
-            unsafe_phase: Some(request.operation.label().to_string()),
+            cancel_attempted: false,
+            unsafe_phase: None,
             timeout_reason: request.timeout_reason.as_deref().map(redact_text),
             artifact_path: request.artifact_path.as_deref().map(redact_text),
             stdout_path: format!("jobs/{id}/stdout.log"),
@@ -254,9 +500,11 @@ impl RuntimeJobRecord {
         RuntimeJobSnapshot {
             id: self.id.clone(),
             phase: self.phase,
+            operation: self.operation.clone(),
             safe_target: self.safe_target.clone(),
             redacted_argv: self.redacted_argv.clone(),
             created_at_ms: self.created_at_ms,
+            started_at_ms: self.started_at_ms,
             heartbeat_at_ms: self.heartbeat_at_ms,
             finished_at_ms: self.finished_at_ms,
             pid: self.pid,
@@ -279,6 +527,7 @@ impl RuntimeJobRecord {
             RuntimeJobPhase::Queued => matches!(
                 next,
                 RuntimeJobPhase::Running
+                    | RuntimeJobPhase::CancelRequested
                     | RuntimeJobPhase::Failed
                     | RuntimeJobPhase::Cancelled
                     | RuntimeJobPhase::Lost
@@ -345,6 +594,10 @@ impl RuntimeJobStore {
 
     fn active_lock_path(&self) -> PathBuf {
         self.jobs_root().join("active.lock")
+    }
+
+    fn recovery_lock_path(&self) -> PathBuf {
+        self.jobs_root().join("active.recovery.lock")
     }
 
     fn job_dir(&self, id: &str) -> JobResult<PathBuf> {
@@ -431,6 +684,70 @@ impl RuntimeJobStore {
         fs::write(directory.join("stderr.log"), "")
             .map_err(|error| io_error("create runtime job stderr log", &error))?;
         Ok(record)
+    }
+
+    fn enqueue(&self, id: &str, request: &RuntimeJobRequest) -> JobResult<RuntimeJobRecord> {
+        if let Err(error) = self.acquire_active_lock(id) {
+            if !self.recover_stale_active()? {
+                return Err(error);
+            }
+            self.acquire_active_lock(id)?;
+        }
+        match self.create_record(id, request) {
+            Ok(record) => Ok(record),
+            Err(error) => {
+                let _ = self.release_active_lock_for(id);
+                Err(error)
+            }
+        }
+    }
+
+    fn recover_stale_active(&self) -> JobResult<bool> {
+        fs::create_dir_all(self.jobs_root())
+            .map_err(|error| io_error("create runtime jobs directory", &error))?;
+        let recovery_lock = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.recovery_lock_path())
+        {
+            Ok(lock) => lock,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(io_error("create runtime job recovery lock", &error)),
+        };
+        let result = self.recover_stale_active_locked();
+        drop(recovery_lock);
+        match fs::remove_file(self.recovery_lock_path()) {
+            Ok(()) => result,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => result,
+            Err(error) => Err(io_error("remove runtime job recovery lock", &error)),
+        }
+    }
+
+    fn recover_stale_active_locked(&self) -> JobResult<bool> {
+        let id = match fs::read_to_string(self.active_lock_path()) {
+            Ok(id) => id.trim().to_string(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(io_error("read active runtime job lock", &error)),
+        };
+        let mut record = self.read_record(&id)?;
+        if record.phase.is_terminal() {
+            // A terminal write can succeed while the final lock removal fails.
+            // Its own id makes this cleanup safe. Lost is deliberately excluded:
+            // its child may still be alive after a worker crash.
+            if record.phase != RuntimeJobPhase::Lost {
+                self.release_active_lock_for(&id)?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        if !self.stale(&record) {
+            return Ok(false);
+        }
+        record.transition(RuntimeJobPhase::Lost)?;
+        record.finished_at_ms = Some(now_millis());
+        record.warnings.push("stale worker heartbeat".to_string());
+        self.write_record(&record)?;
+        Ok(true)
     }
 
     fn read_record(&self, id: &str) -> JobResult<RuntimeJobRecord> {
@@ -590,17 +907,50 @@ impl RuntimeJobService {
         }
     }
 
-    pub(crate) fn start(&self, request: RuntimeJobRequest) -> JobResult<RuntimeJobSnapshot> {
+    #[cfg(test)]
+    fn start(&self, request: RuntimeJobRequest) -> JobResult<RuntimeJobSnapshot> {
         let id = Uuid::new_v4().to_string();
-        self.store.acquire_active_lock(&id)?;
-        let mut record = match self.store.create_record(&id, &request) {
-            Ok(record) => record,
-            Err(error) => {
-                let _ = self.store.release_active_lock_for(&id);
-                return Err(error);
-            }
-        };
-        let process = match self.runner.spawn(&request) {
+        self.store.enqueue(&id, &request)?;
+        self.activate_enqueued(&id, &request)
+    }
+
+    pub(crate) fn enqueue(
+        cache_root: impl Into<PathBuf>,
+        request: &RuntimeJobRequest,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let id = Uuid::new_v4().to_string();
+        let record = store.enqueue(&id, request)?;
+        Ok(record.snapshot(false))
+    }
+
+    fn activate_enqueued(
+        &self,
+        id: &str,
+        request: &RuntimeJobRequest,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        let mut record = self.store.read_record(id)?;
+        // A cancellation that arrived before the worker claimed the record is
+        // safe to complete without starting the child process. A cancellation
+        // that races after this read is observed by poll() through cancel.json.
+        if record.phase == RuntimeJobPhase::CancelRequested {
+            record.cancelled = true;
+            record.finished_at_ms = Some(now_millis());
+            record.heartbeat_at_ms = Some(now_millis());
+            record.transition(RuntimeJobPhase::Cancelled)?;
+            self.store.write_record(&record)?;
+            self.store.release_active_lock_for(id)?;
+            return Ok(record.snapshot(false));
+        }
+        if record.phase != RuntimeJobPhase::Queued {
+            return Err(redacted_error("runtime job worker expected a queued job"));
+        }
+        if record.operation != request.operation.label() {
+            return Err(redacted_error(
+                "runtime job worker operation does not match queued job",
+            ));
+        }
+        let mut process = match self.runner.spawn(request) {
             Ok(process) => process,
             Err(error) => {
                 let error = redacted_error(&error);
@@ -614,18 +964,32 @@ impl RuntimeJobService {
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Running)?;
         if let Err(error) = self.store.write_record(&record) {
-            let _ = self.store.release_active_lock_for(&id);
+            self.cleanup_activation_failure(&mut record, &mut *process, &error);
             return Err(error);
         }
-        let mut processes = self.lock_processes()?;
-        processes.insert(id, process);
+        let mut processes = match self.lock_processes() {
+            Ok(processes) => processes,
+            Err(error) => {
+                self.cleanup_activation_failure(&mut record, &mut *process, &error);
+                return Err(error);
+            }
+        };
+        processes.insert(id.to_string(), process);
         Ok(record.snapshot(false))
     }
 
-    pub(crate) fn status(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
-        self.store
-            .read_record(id)
-            .map(|record| record.snapshot(false))
+    #[cfg(test)]
+    fn status(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
+        Self::status_at(&self.store.cache_root, id)
+    }
+
+    pub(crate) fn status_at(
+        cache_root: impl Into<PathBuf>,
+        id: &str,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let _ = store.recover_stale_active()?;
+        store.read_record(id).map(|record| record.snapshot(false))
     }
 
     pub(crate) fn poll(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
@@ -638,27 +1002,22 @@ impl RuntimeJobService {
             record.finished_at_ms = Some(now_millis());
             record.warnings.push("stale heartbeat".to_string());
             self.store.write_record(&record)?;
-            self.store.release_active_lock_for(&record.id)?;
             self.remove_process(&record.id)?;
             return Ok(record.snapshot(false));
         }
 
         let cancel_requested = self.store.has_cancel_marker(id)?;
-        let (process_state, output, safe_cancel) =
-            self.observe_process(&record, cancel_requested)?;
-        self.store.write_logs(&record.id, &output)?;
-
-        if safe_cancel {
-            record.transition(RuntimeJobPhase::Cancelled)?;
-            record.cancelled = true;
-            record.finished_at_ms = Some(now_millis());
+        let request_safe_cancel = cancel_requested
+            && record.cancel_policy == CancelPolicy::Safe
+            && !record.cancel_attempted;
+        if request_safe_cancel {
+            if record.phase == RuntimeJobPhase::Running {
+                record.transition(RuntimeJobPhase::CancelRequested)?;
+            }
+            record.cancel_attempted = true;
             record.heartbeat_at_ms = Some(now_millis());
             self.store.write_record(&record)?;
-            self.store.release_active_lock_for(&record.id)?;
-            self.remove_process(&record.id)?;
-            return Ok(record.snapshot(false));
         }
-
         if cancel_requested && record.cancel_policy == CancelPolicy::Critical {
             match record.phase {
                 RuntimeJobPhase::Queued | RuntimeJobPhase::Running => {
@@ -676,7 +1035,12 @@ impl RuntimeJobService {
                 }
             }
             record.cancel_deferred = true;
+            record.unsafe_phase = Some(record.operation.clone());
+            record.heartbeat_at_ms = Some(now_millis());
+            self.store.write_record(&record)?;
         }
+        let (process_state, output) = self.observe_process(&record, request_safe_cancel)?;
+        self.store.write_logs(&record.id, &output)?;
 
         match process_state {
             RuntimeJobProcessState::Running => {
@@ -685,7 +1049,10 @@ impl RuntimeJobService {
                 Ok(record.snapshot(false))
             }
             RuntimeJobProcessState::Exited { exit_code } => {
-                let phase = if exit_code == 0 {
+                let phase = if cancel_requested && record.cancel_policy == CancelPolicy::Safe {
+                    record.cancelled = true;
+                    RuntimeJobPhase::Cancelled
+                } else if exit_code == 0 {
                     RuntimeJobPhase::Succeeded
                 } else {
                     RuntimeJobPhase::Failed
@@ -701,7 +1068,8 @@ impl RuntimeJobService {
         }
     }
 
-    pub(crate) fn wait(&self, id: &str, caller_timeout: Duration) -> JobResult<RuntimeJobSnapshot> {
+    #[cfg(test)]
+    fn wait(&self, id: &str, caller_timeout: Duration) -> JobResult<RuntimeJobSnapshot> {
         let started_at = Instant::now();
         let deadline = match started_at.checked_add(caller_timeout) {
             Some(deadline) => deadline,
@@ -721,16 +1089,32 @@ impl RuntimeJobService {
         }
     }
 
-    pub(crate) fn logs(&self, id: &str) -> JobResult<RuntimeJobLogs> {
-        let record = self.store.read_record(id)?;
-        let stdout = fs::read_to_string(self.store.stdout_path(&record.id)?)
-            .map_err(|error| io_error("read runtime job stdout log", &error))?;
-        let stderr = fs::read_to_string(self.store.stderr_path(&record.id)?)
-            .map_err(|error| io_error("read runtime job stderr log", &error))?;
-        Ok(RuntimeJobLogs { stdout, stderr })
+    #[cfg(test)]
+    fn logs(&self, id: &str) -> JobResult<RuntimeJobLogs> {
+        Self::logs_at(&self.store.cache_root, id, OUTPUT_TAIL_BYTES)
     }
 
-    pub(crate) fn cancel(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
+    pub(crate) fn logs_at(
+        cache_root: impl Into<PathBuf>,
+        id: &str,
+        tail_chars: usize,
+    ) -> JobResult<RuntimeJobLogs> {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let record = store.read_record(id)?;
+        let stdout = fs::read_to_string(store.stdout_path(&record.id)?)
+            .map_err(|error| io_error("read runtime job stdout log", &error))?;
+        let stderr = fs::read_to_string(store.stderr_path(&record.id)?)
+            .map_err(|error| io_error("read runtime job stderr log", &error))?;
+        Ok(RuntimeJobLogs {
+            stdout: bounded_char_tail(&stdout, tail_chars),
+            stderr: bounded_char_tail(&stderr, tail_chars),
+            stdout_path: record.stdout_path,
+            stderr_path: record.stderr_path,
+        })
+    }
+
+    #[cfg(test)]
+    fn cancel(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
         let record = self.store.read_record(id)?;
         if record.phase.is_terminal() {
             return Ok(record.snapshot(false));
@@ -739,15 +1123,70 @@ impl RuntimeJobService {
         self.poll(id)
     }
 
-    pub(crate) fn list(&self) -> RuntimeJobList {
+    #[cfg(test)]
+    fn list(&self) -> RuntimeJobList {
         self.store.list()
+    }
+
+    pub(crate) fn list_at(cache_root: impl Into<PathBuf>) -> RuntimeJobList {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let recovery_warning = store.recover_stale_active().err();
+        let mut list = store.list();
+        if let Some(warning) = recovery_warning {
+            list.warnings.push(warning);
+        }
+        list
+    }
+
+    pub(crate) fn request_cancel_at(
+        cache_root: impl Into<PathBuf>,
+        id: &str,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let mut record = store.read_record(id)?;
+        if record.phase.is_terminal() {
+            return Ok(record.snapshot(false));
+        }
+        store.write_cancel_marker(id)?;
+        if record.phase == RuntimeJobPhase::Queued || record.phase == RuntimeJobPhase::Running {
+            record.transition(RuntimeJobPhase::CancelRequested)?;
+        }
+        if record.cancel_policy == CancelPolicy::Critical {
+            record.cancel_deferred = true;
+            record.unsafe_phase = Some(record.operation.clone());
+        }
+        record.heartbeat_at_ms = Some(now_millis());
+        store.write_record(&record)?;
+        Ok(record.snapshot(false))
+    }
+
+    pub(crate) fn wait_at(
+        cache_root: impl Into<PathBuf>,
+        id: &str,
+        caller_timeout: Duration,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        let cache_root = cache_root.into();
+        let started_at = Instant::now();
+        let deadline = started_at.checked_add(caller_timeout).unwrap_or(started_at);
+        loop {
+            let snapshot = Self::status_at(cache_root.clone(), id)?;
+            if snapshot.phase.is_terminal() {
+                return Ok(snapshot);
+            }
+            if Instant::now() >= deadline {
+                let mut timed_out = snapshot;
+                timed_out.wait_timed_out = true;
+                return Ok(timed_out);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     fn observe_process(
         &self,
         record: &RuntimeJobRecord,
-        cancel_requested: bool,
-    ) -> JobResult<(RuntimeJobProcessState, RuntimeJobOutput, bool)> {
+        request_safe_cancel: bool,
+    ) -> JobResult<(RuntimeJobProcessState, RuntimeJobOutput)> {
         let mut processes = self.lock_processes()?;
         if !processes.contains_key(&record.id) {
             let process_id = record.pid.ok_or_else(|| {
@@ -765,23 +1204,18 @@ impl RuntimeJobService {
             redacted_error(&format!("runtime job {} process is unavailable", record.id))
         })?;
 
-        let safe_cancel = cancel_requested && record.cancel_policy == CancelPolicy::Safe;
-        if safe_cancel {
+        if request_safe_cancel {
             process.cancel().map_err(|error| {
                 redacted_error(&format!("cancel runtime job {}: {error}", record.id))
             })?;
         }
-        let state = if safe_cancel {
-            RuntimeJobProcessState::Running
-        } else {
-            process.try_wait().map_err(|error| {
-                redacted_error(&format!("observe runtime job {}: {error}", record.id))
-            })?
-        };
+        let state = process.try_wait().map_err(|error| {
+            redacted_error(&format!("observe runtime job {}: {error}", record.id))
+        })?;
         let output = process.output_tails(OUTPUT_TAIL_BYTES).map_err(|error| {
             redacted_error(&format!("read runtime job {} output: {error}", record.id))
         })?;
-        Ok((state, output, safe_cancel))
+        Ok((state, output))
     }
 
     fn finish(
@@ -812,6 +1246,50 @@ impl RuntimeJobService {
         self.store.release_active_lock_for(&record.id)
     }
 
+    fn cleanup_activation_failure(
+        &self,
+        record: &mut RuntimeJobRecord,
+        process: &mut dyn RuntimeJobProcess,
+        activation_error: &str,
+    ) {
+        match cancel_and_reap(process) {
+            Ok(()) => {
+                if record.phase == RuntimeJobPhase::Running {
+                    let _ = record.transition(RuntimeJobPhase::Failed);
+                }
+                record.finished_at_ms = Some(now_millis());
+                record.heartbeat_at_ms = Some(now_millis());
+                record.warnings.push(redact_text(&format!(
+                    "worker activation failed after child spawn: {activation_error}"
+                )));
+                if self.store.write_record(record).is_ok() {
+                    let _ = self.store.release_active_lock_for(&record.id);
+                }
+            }
+            Err(cleanup_error) => {
+                if record.phase == RuntimeJobPhase::Running {
+                    let _ = record.transition(RuntimeJobPhase::Lost);
+                }
+                record.finished_at_ms = Some(now_millis());
+                record.heartbeat_at_ms = Some(now_millis());
+                record.warnings.push(redact_text(&format!(
+                    "worker activation lost child ownership: {activation_error}; cleanup: {cleanup_error}"
+                )));
+                // The lock intentionally remains: the child tree may still be mutating.
+                let _ = self.store.write_record(record);
+            }
+        }
+    }
+
+    fn append_warning(&self, id: &str, warning: &str) -> JobResult<()> {
+        let mut record = self.store.read_record(id)?;
+        if record.phase.is_terminal() {
+            record.warnings.push(redact_text(warning));
+            self.store.write_record(&record)?;
+        }
+        Ok(())
+    }
+
     fn lock_processes(
         &self,
     ) -> JobResult<std::sync::MutexGuard<'_, HashMap<String, Box<dyn RuntimeJobProcess>>>> {
@@ -824,6 +1302,157 @@ impl RuntimeJobService {
         let mut processes = self.lock_processes()?;
         processes.remove(id);
         Ok(())
+    }
+}
+
+pub(crate) fn run_worker_from_args(_args: &[String]) -> Result<(), String> {
+    let handoff: WorkerStartRequest = serde_json::from_reader(io::stdin())
+        .map_err(|error| redacted_error(&format!("read runtime job worker request: {error}")))?;
+    let runner = Arc::new(SystemRuntimeJobRunner {
+        program: handoff.program.clone(),
+        cwd: handoff.cwd.clone(),
+    });
+    run_worker_request(handoff, runner)
+}
+
+pub(crate) fn start_detached_worker(
+    cache_root: PathBuf,
+    program: PathBuf,
+    cwd: PathBuf,
+    request: RuntimeJobRequest,
+) -> JobResult<RuntimeJobSnapshot> {
+    let queued = RuntimeJobService::enqueue(cache_root.clone(), &request)?;
+    let handoff = WorkerStartRequest {
+        cache_root: cache_root.clone(),
+        job_id: queued.id.clone(),
+        program,
+        cwd,
+        operation: request.operation.label().to_string(),
+        argv: request.raw_argv.clone(),
+        safe_target: request.safe_target.clone(),
+        artifact_path: request.artifact_path.clone(),
+        timeout_reason: request.timeout_reason.clone(),
+    };
+    let mut worker = match Command::new(std::env::current_exe().map_err(|error| {
+        redacted_error(&format!("resolve runtime job worker executable: {error}"))
+    })?)
+    .arg("--runtime-job-worker")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    {
+        Ok(worker) => worker,
+        Err(error) => {
+            let error = redacted_error(&format!("spawn runtime job worker: {error}"));
+            fail_queued_job(&cache_root, &queued.id, &error)?;
+            return Err(error);
+        }
+    };
+    let write_result = worker
+        .stdin
+        .take()
+        .ok_or_else(|| redacted_error("runtime job worker stdin is unavailable"))
+        .and_then(|mut stdin| {
+            serde_json::to_writer(&mut stdin, &handoff).map_err(|error| {
+                redacted_error(&format!("write runtime job worker request: {error}"))
+            })?;
+            stdin
+                .flush()
+                .map_err(|error| io_error("flush runtime job worker request", &error))
+        });
+    if let Err(error) = write_result {
+        let _ = worker.kill();
+        let _ = worker.wait();
+        fail_queued_job(&cache_root, &queued.id, &error)?;
+        return Err(error);
+    }
+    Ok(queued)
+}
+
+fn run_worker_request(
+    handoff: WorkerStartRequest,
+    runner: Arc<dyn RuntimeJobRunner>,
+) -> Result<(), String> {
+    let job_id = canonical_job_id(&handoff.job_id)?;
+    let request = handoff.runtime_request()?;
+    let worker_cwd = handoff.cwd.clone();
+    let operation = request.operation.label();
+    let service = RuntimeJobService::new(handoff.cache_root, runner);
+    service.activate_enqueued(&job_id, &request)?;
+
+    loop {
+        let snapshot = service.poll(&job_id)?;
+        if snapshot.phase.is_terminal() {
+            if snapshot.phase == RuntimeJobPhase::Succeeded {
+                if let Err(error) = apply_runtime_success_effects(&worker_cwd, operation, &job_id) {
+                    let _ = service.append_warning(&job_id, &error);
+                }
+            }
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> JobResult<()> {
+    let Some(event_kind) = runtime_event_kind(operation) else {
+        return Ok(());
+    };
+    let context = WorkspaceContext::discover(cwd.to_path_buf())?;
+    let events = vec![DomainEvent::new(
+        event_kind,
+        format!("runtime-job:{job_id}"),
+    )];
+    WorkspaceStateRepository::new(&context).report(
+        &context,
+        &events,
+        false,
+        CacheAccess {
+            reads: &[],
+            writes: &["workspace_graph", "metadata_graph"],
+        },
+    )?;
+    WorkspaceServiceManager::new().notify_invalidation(&context, &events);
+    Ok(())
+}
+
+fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
+    let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
+    let mut record = store.read_record(id)?;
+    if record.phase != RuntimeJobPhase::Queued {
+        return Ok(());
+    }
+    record.transition(RuntimeJobPhase::Failed)?;
+    record.finished_at_ms = Some(now_millis());
+    record.heartbeat_at_ms = Some(now_millis());
+    record.warnings.push(redact_text(error));
+    store.write_record(&record)?;
+    store.release_active_lock_for(id)
+}
+
+fn cancel_and_reap(process: &mut dyn RuntimeJobProcess) -> JobResult<()> {
+    const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
+    process.cancel()?;
+    let deadline = Instant::now()
+        .checked_add(REAP_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    loop {
+        match process.try_wait()? {
+            RuntimeJobProcessState::Exited { .. } | RuntimeJobProcessState::TimedOut { .. } => {
+                // The process has been reaped. Reader failures cannot revive it,
+                // so they do not make lock release unsafe.
+                let _ = process.output_tails(OUTPUT_TAIL_BYTES);
+                return Ok(());
+            }
+            RuntimeJobProcessState::Running if Instant::now() >= deadline => {
+                return Err(redacted_error(
+                    "runtime job process did not exit after cancellation request",
+                ));
+            }
+            RuntimeJobProcessState::Running => thread::sleep(Duration::from_millis(10)),
+        }
     }
 }
 
@@ -874,9 +1503,9 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
             let redact_argument = redact_next;
             redact_next = matches!(
                 lower.as_str(),
-                "password" | "pwd" | "token" | "secret" | "connection"
+                "password" | "pwd" | "token" | "secret" | "connection" | "c"
             );
-            if redact_argument {
+            if redact_argument || looks_like_connection_string(argument) {
                 "<redacted>".to_string()
             } else {
                 redact_text(argument)
@@ -885,16 +1514,49 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn looks_like_connection_string(argument: &str) -> bool {
+    let lower = argument.to_ascii_lowercase();
+    [
+        "file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname=",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 fn bounded_redacted_tail(text: &str, max_bytes: usize) -> String {
-    let redacted = redact_text(text);
-    if redacted.len() <= max_bytes {
-        return redacted;
+    bounded_tail(&redact_text(text), max_bytes)
+}
+
+fn append_tail(target: &Arc<Mutex<String>>, addition: &str) -> io::Result<()> {
+    let mut text = target
+        .lock()
+        .map_err(|_| io::Error::other("runtime job output lock is poisoned"))?;
+    text.push_str(addition);
+    if text.len() > OUTPUT_TAIL_BYTES {
+        *text = bounded_tail(&text, OUTPUT_TAIL_BYTES);
     }
-    let mut start = redacted.len().saturating_sub(max_bytes);
-    while start < redacted.len() && !redacted.is_char_boundary(start) {
+    Ok(())
+}
+
+fn bounded_tail(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
         start = start.saturating_add(1);
     }
-    redacted[start..].to_string()
+    text[start..].to_string()
+}
+
+fn bounded_char_tail(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    text.chars()
+        .skip(char_count.saturating_sub(max_chars))
+        .collect()
 }
 
 fn redact_text(text: &str) -> String {
@@ -914,6 +1576,7 @@ mod tests {
     use super::*;
     use std::{
         collections::HashMap,
+        io::Cursor,
         sync::atomic::{AtomicU32, Ordering},
     };
 
@@ -936,6 +1599,41 @@ mod tests {
             reconnected.poll(&job.id).expect("reconnected poll").phase,
             RuntimeJobPhase::Succeeded
         );
+    }
+
+    #[test]
+    fn detached_worker_owns_the_queued_record_until_terminal_state() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        assert_eq!(queued.phase, RuntimeJobPhase::Queued);
+
+        run_worker_request(
+            worker_request(&cache, &queued.id, &request),
+            Arc::new(FakeRunner::success_after(2)),
+        )
+        .expect("worker completes job");
+
+        let reconnected =
+            RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
+        let terminal = reconnected.status(&queued.id).expect("read terminal job");
+        assert_eq!(terminal.phase, RuntimeJobPhase::Succeeded);
+        assert_eq!(terminal.operation, "test");
+        assert!(terminal.started_at_ms.is_some());
+        assert!(terminal.finished_at_ms.is_some());
+        assert!(!reconnected.store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn worker_stream_tail_redacts_output_before_retaining_it() {
+        let mut tail = StreamTail::spawn(Cursor::new(
+            b"build started\nPwd=stream-secret\ncompleted\n".to_vec(),
+        ));
+        tail.finish().expect("finish output reader");
+        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
+
+        assert!(output.contains("Pwd=<redacted>"));
+        assert!(!output.contains("stream-secret"));
     }
 
     #[test]
@@ -987,9 +1685,89 @@ mod tests {
             replacement
         );
         assert_eq!(
-            service.status(&stale.id).expect("read lost job").phase,
+            service
+                .store
+                .read_record(&stale.id)
+                .expect("read lost record")
+                .snapshot(false)
+                .phase,
             RuntimeJobPhase::Lost
         );
+    }
+
+    #[test]
+    fn stale_queued_job_is_lost_but_retains_the_active_lock() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue stale job");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let mut record = store.read_record(&queued.id).expect("read queued record");
+        record.heartbeat_at_ms = Some(0);
+        store.write_record(&record).expect("age queued record");
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let recovered = RuntimeJobService::status_at(cache.path(), &queued.id)
+            .expect("status recovers stale job");
+        let error = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("a possibly live orphan must continue to block replacement work");
+
+        assert_eq!(recovered.phase, RuntimeJobPhase::Lost);
+        assert!(error.contains(&queued.id), "{error}");
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read retained active lock")
+                .trim(),
+            queued.id
+        );
+        assert!(!store.recovery_lock_path().exists());
+    }
+
+    #[test]
+    fn recovery_releases_its_own_lock_for_a_persisted_terminal_job() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let mut record = store.read_record(&queued.id).expect("read queued record");
+        record
+            .transition(RuntimeJobPhase::Failed)
+            .expect("mark terminal record");
+        record.finished_at_ms = Some(now_millis());
+        store
+            .write_record(&record)
+            .expect("persist terminal record");
+
+        let terminal =
+            RuntimeJobService::status_at(cache.path(), &queued.id).expect("recover terminal lock");
+
+        assert_eq!(terminal.phase, RuntimeJobPhase::Failed);
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_cancellation_reaps_the_runtime_process_group() {
+        let cache = TestCache::new();
+        fs::create_dir_all(cache.path()).expect("create worker cwd");
+        let runner = SystemRuntimeJobRunner {
+            program: PathBuf::from("/bin/sh"),
+            cwd: cache.path().to_path_buf(),
+        };
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Test,
+            vec!["-c".to_string(), "sleep 10 & wait".to_string()],
+            "workspace:test".to_string(),
+            None,
+        );
+        let mut process = runner.spawn(&request).expect("spawn process group");
+        let group = i32::try_from(process.id()).expect("pid is a Unix process id");
+
+        cancel_and_reap(&mut *process).expect("cancel and reap process group");
+
+        let state = unsafe { libc::kill(-group, 0) };
+        assert_eq!(state, -1, "the process group must no longer be alive");
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]
@@ -1029,7 +1807,9 @@ mod tests {
                 .expect("read serialized record");
 
         assert_eq!(terminal.phase, RuntimeJobPhase::Failed);
+        assert_eq!(terminal.operation, "test");
         assert_eq!(terminal.exit_code, Some(17));
+        assert!(terminal.started_at_ms.is_some());
         assert_eq!(repeated.phase, terminal.phase);
         assert_eq!(repeated.exit_code, terminal.exit_code);
         assert_eq!(repeated.finished_at_ms, terminal.finished_at_ms);
@@ -1151,6 +1931,23 @@ mod tests {
     }
 
     #[test]
+    fn runner_timeout_becomes_terminal_without_a_process_exit_code() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::times_out_after(1, "runner timeout"));
+        let service = RuntimeJobService::new(cache.path(), runner);
+        let job = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start job");
+
+        let terminal = service.poll(&job.id).expect("observe timeout");
+
+        assert_eq!(terminal.phase, RuntimeJobPhase::TimedOut);
+        assert_eq!(terminal.exit_code, None);
+        assert_eq!(terminal.timeout_reason.as_deref(), Some("runner timeout"));
+        assert!(!service.store.active_lock_path().exists());
+    }
+
+    #[test]
     fn caller_wait_timeout_does_not_stop_the_active_job() {
         let cache = TestCache::new();
         let runner = Arc::new(FakeRunner::success_after(3));
@@ -1190,6 +1987,7 @@ mod tests {
 
         assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
         assert!(cancelled.cancelled);
+        assert_eq!(cancelled.unsafe_phase, None);
         let process_id = job.pid.expect("persisted fake pid");
         assert_eq!(runner.cancel_calls(process_id).expect("cancel calls"), 1);
         assert!(!service.store.active_lock_path().exists());
@@ -1217,6 +2015,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detached_critical_cancel_publishes_deferred_state_before_a_worker_polls() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+
+        let deferred = RuntimeJobService::request_cancel_at(cache.path(), &queued.id)
+            .expect("request durable cancellation");
+
+        assert_eq!(deferred.phase, RuntimeJobPhase::CancelRequested);
+        assert!(deferred.cancel_deferred);
+        assert_eq!(deferred.unsafe_phase.as_deref(), Some("build"));
+        assert!(!deferred.cancelled);
+    }
+
+    #[test]
+    fn worker_does_not_spawn_a_job_cancelled_while_queued() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(2));
+        let service = RuntimeJobService::new(cache.path(), runner.clone());
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        RuntimeJobService::request_cancel_at(cache.path(), &queued.id).expect("cancel queued job");
+
+        let cancelled = service
+            .activate_enqueued(&queued.id, &request)
+            .expect("observe queued cancellation");
+
+        assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
+        assert!(cancelled.cancelled);
+        assert!(cancelled.pid.is_none());
+        assert!(!service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_handoff_never_persists_actual_argv_or_output_secrets() {
+        const REQUEST_SECRET: &str = "request-secret";
+        const OUTPUT_SECRET: &str = "output-secret";
+
+        let cache = TestCache::new();
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Make,
+            vec![
+                "make".to_string(),
+                "--connection".to_string(),
+                format!("Pwd={REQUEST_SECRET}"),
+            ],
+            "workspace:test".to_string(),
+            None,
+        );
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let handoff = WorkerStartRequest {
+            cache_root: cache.path().to_path_buf(),
+            job_id: queued.id.clone(),
+            program: PathBuf::from("fake-v8-runner"),
+            cwd: cache.path().to_path_buf(),
+            operation: "make".to_string(),
+            argv: request.raw_argv.clone(),
+            safe_target: request.safe_target.clone(),
+            artifact_path: None,
+            timeout_reason: None,
+        };
+        let runner = Arc::new(FakeRunner::exits_after(
+            0,
+            0,
+            &format!("token={OUTPUT_SECRET}\\n"),
+            "",
+        ));
+
+        run_worker_request(handoff, runner).expect("run worker handoff");
+
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let persisted = [
+            fs::read_to_string(store.record_path(&queued.id).expect("record path"))
+                .expect("read record"),
+            fs::read_to_string(store.stdout_path(&queued.id).expect("stdout path"))
+                .expect("read stdout"),
+            fs::read_to_string(store.stderr_path(&queued.id).expect("stderr path"))
+                .expect("read stderr"),
+        ]
+        .join("\\n");
+        assert!(!persisted.contains(REQUEST_SECRET), "{persisted}");
+        assert!(!persisted.contains(OUTPUT_SECRET), "{persisted}");
+        assert!(persisted.contains("<redacted>"), "{persisted}");
+    }
+
+    #[test]
+    fn persisted_command_redacts_a_launch_connection_string_completely() {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
+        let job = service
+            .start(RuntimeJobRequest::new(
+                RuntimeJobOperation::Launch,
+                vec![
+                    "v8-runner".to_string(),
+                    "launch".to_string(),
+                    "--c".to_string(),
+                    "Srvr=prod;Ref=finance;Usr=svc;Pwd=secret".to_string(),
+                ],
+                "workspace:demo",
+                None,
+            ))
+            .expect("start launch job");
+        let snapshot_json = serde_json::to_string(&job).expect("serialize snapshot");
+        let record_json =
+            fs::read_to_string(service.store.record_path(&job.id).expect("record path"))
+                .expect("read record");
+
+        for value in ["prod", "finance", "svc", "secret", "Srvr=", "Ref="] {
+            assert!(!snapshot_json.contains(value), "snapshot leaked {value}");
+            assert!(!record_json.contains(value), "record leaked {value}");
+        }
+        assert_eq!(job.redacted_argv[3], "<redacted>");
+    }
+
     fn fake_request(operation: RuntimeJobOperation) -> RuntimeJobRequest {
         RuntimeJobRequest::new(
             operation,
@@ -1224,6 +2142,24 @@ mod tests {
             "workspace:demo",
             None,
         )
+    }
+
+    fn worker_request(
+        cache: &TestCache,
+        job_id: &str,
+        request: &RuntimeJobRequest,
+    ) -> WorkerStartRequest {
+        WorkerStartRequest {
+            cache_root: cache.path(),
+            job_id: job_id.to_string(),
+            program: PathBuf::from("fake-runtime"),
+            cwd: cache.path(),
+            operation: request.operation.label().to_string(),
+            argv: request.raw_argv.clone(),
+            safe_target: request.safe_target.clone(),
+            artifact_path: request.artifact_path.clone(),
+            timeout_reason: request.timeout_reason.clone(),
+        }
     }
 
     struct TestCache {
@@ -1269,6 +2205,20 @@ mod tests {
                     result: FakeResult::Exit(exit_code),
                     stdout: stdout.to_string(),
                     stderr: stderr.to_string(),
+                    cancel_calls: 0,
+                },
+            }
+        }
+
+        fn times_out_after(polls: u32, reason: &str) -> Self {
+            Self {
+                next_id: Arc::new(AtomicU32::new(100)),
+                processes: Arc::new(Mutex::new(HashMap::new())),
+                initial: FakeProcessState {
+                    polls_until_exit: polls,
+                    result: FakeResult::TimedOut(reason.to_string()),
+                    stdout: String::new(),
+                    stderr: String::new(),
                     cancel_calls: 0,
                 },
             }
@@ -1366,6 +2316,8 @@ mod tests {
                 .lock()
                 .map_err(|error| redacted_error(&format!("lock fake process: {error}")))?;
             state.cancel_calls = state.cancel_calls.saturating_add(1);
+            state.polls_until_exit = 0;
+            state.result = FakeResult::Exit(143);
             Ok(())
         }
 

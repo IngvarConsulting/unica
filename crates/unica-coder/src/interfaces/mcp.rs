@@ -155,6 +155,19 @@ mod tests {
         assert!(listed
             .iter()
             .any(|tool| tool["name"] == "unica.standards.explain"));
+        for name in [
+            "unica.runtime.job.start",
+            "unica.runtime.job.status",
+            "unica.runtime.job.wait",
+            "unica.runtime.job.logs",
+            "unica.runtime.job.cancel",
+            "unica.runtime.job.list",
+        ] {
+            assert!(
+                listed.iter().any(|tool| tool["name"] == name),
+                "missing {name}"
+            );
+        }
     }
 
     #[test]

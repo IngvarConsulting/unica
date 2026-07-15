@@ -6,8 +6,12 @@ use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
+const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
+const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
 
 const META_EDIT_OPERATIONS: &[&str] = &[
     "modify-property",
@@ -583,6 +587,9 @@ pub fn validate_tool_arguments(
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
+    if let ToolHandler::RuntimeJob { action } = tool.handler {
+        validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
+    }
     validate_code_arguments(tool, args, dry_run)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
@@ -881,6 +888,58 @@ fn validate_runtime_arguments(
     Ok(())
 }
 
+fn validate_runtime_job_arguments(
+    tool_name: &str,
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    if action == RuntimeJobAction::Start {
+        return validate_runtime_arguments(tool_name, args, dry_run);
+    }
+    if action == RuntimeJobAction::List {
+        return Ok(());
+    }
+    let Some(job_id) = args.get("jobId") else {
+        return Err(format!("{tool_name} requires `jobId` argument"));
+    };
+    let Some(job_id) = job_id.as_str() else {
+        return Err(format!("{tool_name} argument `jobId` must be string"));
+    };
+    Uuid::parse_str(job_id).map_err(|_| format!("{tool_name} argument `jobId` must be a UUID"))?;
+
+    if action == RuntimeJobAction::Wait {
+        validate_runtime_job_bound(tool_name, args, "timeoutSeconds", 1, 60)?;
+    }
+    if action == RuntimeJobAction::Logs {
+        validate_runtime_job_bound(tool_name, args, "tailChars", 1, 32_768)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_job_bound(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+    minimum: u64,
+    maximum: u64,
+) -> Result<(), String> {
+    let Some(value) = args.get(key) else {
+        return Ok(());
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(format!("{tool_name} argument `{key}` must be integer"));
+    };
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!(
+            "{tool_name} argument `{key}` must be between {minimum} and {maximum}"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_string_array_argument(
     tool_name: &str,
     args: &Map<String, Value>,
@@ -1081,7 +1140,15 @@ pub fn validate_workspace_paths(
     if dry_run {
         return Ok(());
     }
-    if !is_native_xml_tool(tool) && !matches!(tool.handler, ToolHandler::RuntimeAdapter) {
+    if !is_native_xml_tool(tool)
+        && !matches!(
+            tool.handler,
+            ToolHandler::RuntimeAdapter
+                | ToolHandler::RuntimeJob {
+                    action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start
+                }
+        )
+    {
         return Ok(());
     }
 
@@ -1157,6 +1224,9 @@ fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
             .map(|descriptor| descriptor.write_path_args)
             .unwrap_or(&[]),
         ToolHandler::RuntimeAdapter => &["config", "path", "output", "settings", "mcpConfig"],
+        ToolHandler::RuntimeJob {
+            action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start,
+        } => &["config", "path", "output", "settings", "mcpConfig"],
         _ => &[],
     }
 }
@@ -1205,6 +1275,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         }
         ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
+        ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1228,6 +1299,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             ..
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
+        ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.definition" => vec!["name"],
             "unica.code.outline" => vec!["path"],
@@ -1255,6 +1327,35 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
 fn runtime_required_args(tool: &ToolSpec) -> Vec<&'static str> {
     debug_assert!(matches!(tool.handler, ToolHandler::RuntimeAdapter));
     vec!["operation"]
+}
+
+fn runtime_job_args(
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+) -> &'static [&'static str] {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    match action {
+        RuntimeJobAction::Start => RUNTIME_ARGS,
+        RuntimeJobAction::Status | RuntimeJobAction::Cancel => RUNTIME_JOB_STATUS_ARGS,
+        RuntimeJobAction::Wait => RUNTIME_JOB_WAIT_ARGS,
+        RuntimeJobAction::Logs => RUNTIME_JOB_LOGS_ARGS,
+        RuntimeJobAction::List => &[],
+    }
+}
+
+fn runtime_job_required_args(
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+) -> Vec<&'static str> {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    match action {
+        RuntimeJobAction::Start => vec!["operation"],
+        RuntimeJobAction::Status
+        | RuntimeJobAction::Wait
+        | RuntimeJobAction::Logs
+        | RuntimeJobAction::Cancel => vec!["jobId"],
+        RuntimeJobAction::List => Vec::new(),
+    }
 }
 
 fn property_schema(name: &str) -> Value {
@@ -1328,6 +1429,8 @@ fn property_schema(name: &str) -> Value {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "timeoutSeconds"
+            | "tailChars"
     ) {
         "integer"
     } else if matches!(
@@ -1367,7 +1470,13 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
-    if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
+    if matches!(
+        tool.handler,
+        ToolHandler::RuntimeAdapter
+            | ToolHandler::RuntimeJob {
+                action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start
+            }
+    ) {
         match name {
             "operation" => return json!({ "type": "string", "enum": RUNTIME_OPERATIONS }),
             "clientMode" => {
@@ -1504,6 +1613,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "timeoutSeconds"
+            | "tailChars"
     ) {
         Some("integer")
     } else if matches!(
@@ -1848,6 +1959,96 @@ mod tests {
         assert_eq!(schema["properties"]["ignoreTags"]["type"], "array");
         assert_eq!(schema["properties"]["scenarioFilters"]["type"], "array");
         assert_eq!(schema["properties"]["projects"]["type"], "array");
+    }
+
+    #[test]
+    fn runtime_job_schemas_keep_execution_typed_and_controls_narrow() {
+        let job_start = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.start")
+            .expect("runtime job start is registered");
+        let job_wait = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.wait")
+            .expect("runtime job wait is registered");
+        let job_logs = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.logs")
+            .expect("runtime job logs is registered");
+
+        let start_schema = input_schema_for_tool(&job_start);
+        assert_eq!(start_schema["additionalProperties"], false);
+        assert!(start_schema["properties"].get("operation").is_some());
+        assert!(start_schema["properties"].get("args").is_none());
+
+        let wait_schema = input_schema_for_tool(&job_wait);
+        assert_eq!(wait_schema["required"], json!(["jobId"]));
+        assert_eq!(
+            wait_schema["properties"]["timeoutSeconds"]["type"],
+            "integer"
+        );
+        assert!(wait_schema["properties"].get("operation").is_none());
+
+        let logs_schema = input_schema_for_tool(&job_logs);
+        assert_eq!(logs_schema["required"], json!(["jobId"]));
+        assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+    }
+
+    #[test]
+    fn runtime_job_controls_reject_invalid_ids_bounds_and_execution_arguments() {
+        let wait = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.wait")
+            .expect("runtime job wait is registered");
+        let cancel = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.cancel")
+            .expect("runtime job cancel is registered");
+        let logs = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.logs")
+            .expect("runtime job logs is registered");
+        let valid_id = "00000000-0000-4000-8000-000000000001";
+
+        assert!(validate_tool_arguments(wait, &Map::new(), false).is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":"not-a-uuid"}).as_object().unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":valid_id,"timeoutSeconds":0})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":valid_id,"timeoutSeconds":61})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            logs,
+            json!({"jobId":valid_id,"tailChars":32769})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            cancel,
+            json!({"jobId":valid_id,"operation":"build"})
+                .as_object()
+                .unwrap(),
+            true
+        )
+        .is_err());
     }
 
     #[test]
