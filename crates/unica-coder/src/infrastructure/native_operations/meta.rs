@@ -68,6 +68,44 @@ mod edit_tests {
         fs::write(path, content).unwrap();
     }
 
+    #[test]
+    fn compiled_metadata_registration_preserves_crlf_and_missing_terminal_newline() {
+        let context = temp_context("compiled-registration-crlf");
+        let config_path = context.cwd.join("src/Configuration.xml");
+        let before = concat!(
+            "\u{feff}<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Catalog>Existing</Catalog>\r\n",
+            "\t\t</ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        );
+        write_file(&config_path, before);
+
+        let result = register_compiled_meta_in_configuration(
+            &context.cwd.join("src"),
+            "InformationRegister",
+            "ReservationIdentity",
+        )
+        .unwrap();
+
+        assert_eq!(result.as_deref(), Some("added"));
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            concat!(
+                "\u{feff}<MetaDataObject>\r\n",
+                "\t<Configuration>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "\t\t\t<Catalog>Existing</Catalog>\r\n",
+                "\t\t\t<InformationRegister>ReservationIdentity</InformationRegister>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Configuration>\r\n",
+                "</MetaDataObject>"
+            )
+        );
+    }
+
     fn sample_document_xml(register_records: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -9337,6 +9375,7 @@ fn register_compiled_meta_child_text(
 ) -> Option<String> {
     let close = "</ChildObjects>";
     let index = xml_text.find(close)?;
+    let eol = local_xml_eol_before(xml_text, index);
     let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
     let before_close_on_line = &xml_text[line_start..index];
     let closing_indent = if before_close_on_line
@@ -9362,15 +9401,27 @@ fn register_compiled_meta_child_text(
         .chars()
         .all(|ch| ch == '\t' || ch == ' ')
     {
-        result.push('\n');
+        result.push_str(eol);
         result.push_str(closing_indent);
     }
     result.push('\t');
     result.push_str(&insertion);
-    result.push('\n');
+    result.push_str(eol);
     result.push_str(closing_indent);
     result.push_str(&xml_text[index..]);
     Some(result)
+}
+
+fn local_xml_eol_before(xml_text: &str, index: usize) -> &'static str {
+    let bytes = xml_text.as_bytes();
+    if xml_text[..index]
+        .rfind('\n')
+        .is_some_and(|newline| newline > 0 && bytes[newline - 1] == b'\r')
+    {
+        "\r\n"
+    } else {
+        "\n"
+    }
 }
 
 #[derive(Default)]
