@@ -1901,6 +1901,173 @@ mod tests {
         args
     }
 
+    #[test]
+    fn cf_edit_definition_file_rejects_invalid_child_object_before_sidecar_writes() {
+        let mut violations = Vec::new();
+
+        for (sidecar_operation, sidecar_value, sidecar_name, child_operation, child_value, error) in [
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+        ] {
+            let (root, workspace, _) = support_test_workspace(
+                &format!("unica-cf-edit-unknown-kind-atomic-{sidecar_operation}-{child_operation}"),
+                String::new(),
+            );
+            let config_path = workspace.join("src/Configuration.xml");
+            let definition_path =
+                workspace.join(format!("{sidecar_operation}-{child_operation}.json"));
+            std::fs::write(
+                &definition_path,
+                serde_json::to_string(&json!([
+                    {"operation": sidecar_operation, "value": sidecar_value},
+                    {"operation": child_operation, "value": child_value}
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            let config_before = std::fs::read(&config_path).unwrap();
+            let definition_before = std::fs::read(&definition_path).unwrap();
+            let sidecar_path = workspace.join("src/Ext").join(sidecar_name);
+            let sidecar_before = b"sidecar content before failed batch";
+            std::fs::write(&sidecar_path, sidecar_before).unwrap();
+
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+            args.insert(
+                "DefinitionFile".to_string(),
+                Value::String(definition_path.display().to_string()),
+            );
+            args.insert("NoValidate".to_string(), Value::Bool(true));
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.cf.edit", &args)
+                .unwrap();
+
+            let case = format!("{sidecar_operation} -> {child_operation} {child_value}");
+            if result.ok {
+                violations.push(format!("{case}: batch unexpectedly succeeded"));
+            }
+            if !result.errors.join("\n").contains(error) {
+                violations.push(format!("{case}: wrong error: {result:?}"));
+            }
+            if std::fs::read(&config_path).unwrap() != config_before {
+                violations.push(format!("{case}: Configuration.xml changed"));
+            }
+            if std::fs::read(&definition_path).unwrap() != definition_before {
+                violations.push(format!("{case}: definition file changed"));
+            }
+            if std::fs::read(&sidecar_path).unwrap() != sidecar_before {
+                violations.push(format!(
+                    "{case}: failed batch changed {}",
+                    sidecar_path.display()
+                ));
+            }
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        assert!(
+            violations.is_empty(),
+            "failed batches must leave all affected files byte-identical: {violations:#?}"
+        );
+    }
+
+    #[test]
+    fn cf_edit_definition_file_keeps_valid_ordered_child_object_batch() {
+        let (root, workspace, _) =
+            support_test_workspace("unica-cf-edit-known-kind-batch", String::new());
+        let definition_path = workspace.join("ordered-batch.json");
+        std::fs::write(
+            &definition_path,
+            serde_json::to_string(&json!([
+                {"operation": "set-panels", "value": {"top": ["open"]}},
+                {"operation": "remove-childObject", "value": "Catalog.Items"},
+                {"operation": "add-childObject", "value": "Catalog.Items"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "DefinitionFile".to_string(),
+            Value::String(definition_path.display().to_string()),
+        );
+        args.insert("NoValidate".to_string(), Value::Bool(true));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(workspace
+            .join("src/Ext/ClientApplicationInterface.xml")
+            .is_file());
+        assert!(
+            std::fs::read_to_string(workspace.join("src/Configuration.xml"))
+                .unwrap()
+                .contains("<Catalog>Items</Catalog>")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn cf_edit_issue55_config_xml(child_indent: &str) -> String {
         format!(
             concat!(

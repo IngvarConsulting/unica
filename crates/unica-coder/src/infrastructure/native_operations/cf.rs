@@ -1806,6 +1806,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let obj_name = cf_edit_config_name(&text)?;
 
         let operations = cf_edit_operations(args, &context.cwd, operation, definition_file)?;
+        cf_edit_validate_child_object_kinds(&operations)?;
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
@@ -1842,15 +1843,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 }
                 "remove-childObject" => {
                     for item in cf_edit_batch_value(&op_value) {
-                        let Some(dot_idx) = item.find('.') else {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        };
-                        if dot_idx < 1 {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        }
-                        let type_name = item[..dot_idx].to_string();
-                        let obj_name_val = item[dot_idx + 1..].to_string();
-                        if cf_edit_remove_child_object_text(&mut text, &type_name, &obj_name_val)? {
+                        let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
+                        if cf_edit_remove_child_object_text(&mut text, type_name, obj_name_val)? {
                             remove_count += 1;
                             config_changed = true;
                             stdout
@@ -1864,18 +1858,11 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 }
                 "add-childObject" => {
                     for item in cf_edit_batch_value(&op_value) {
-                        let Some(dot_idx) = item.find('.') else {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        };
-                        if dot_idx < 1 {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        }
-                        let type_name = item[..dot_idx].to_string();
-                        let obj_name_val = item[dot_idx + 1..].to_string();
-                        if cf_validate_child_object_type_index(&type_name).is_none() {
+                        let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
+                        if cf_validate_child_object_type_index(type_name).is_none() {
                             return Err(format!("Unknown type '{type_name}'"));
                         }
-                        let type_dir = cf_validate_child_type_dir(&type_name)
+                        let type_dir = cf_validate_child_type_dir(type_name)
                             .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
                         let object_file = config_dir
                             .join(type_dir)
@@ -1888,7 +1875,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                                      meta-compile does not support Bot; create the Bot metadata with platform tooling, then retry."
                                 ));
                             }
-                            let hint_skill = match type_name.as_str() {
+                            let hint_skill = match type_name {
                                 "Subsystem" => "subsystem-compile",
                                 "Role" => "role-compile",
                                 _ => "meta-compile",
@@ -1900,7 +1887,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                                    /{hint_skill} with {{\"type\":\"{type_name}\",\"name\":\"{obj_name_val}\"}}"
                             ));
                         }
-                        if cf_edit_add_child_object_text(&mut text, &type_name, &obj_name_val)? {
+                        if cf_edit_add_child_object_text(&mut text, type_name, obj_name_val)? {
                             add_count += 1;
                             config_changed = true;
                             stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
@@ -2089,6 +2076,33 @@ pub(crate) fn cf_edit_operations(
             ),
         )])
     }
+}
+
+pub(crate) fn cf_edit_validate_child_object_kinds(
+    operations: &[(String, Value)],
+) -> Result<(), String> {
+    for (op_name, op_value) in operations {
+        if !matches!(op_name.as_str(), "add-childObject" | "remove-childObject") {
+            continue;
+        }
+        for item in cf_edit_batch_value(op_value) {
+            let (type_name, _) = cf_edit_parse_child_object(&item)?;
+            if cf_validate_child_object_type_index(type_name).is_none() {
+                return Err(format!("Unknown type '{type_name}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cf_edit_parse_child_object(item: &str) -> Result<(&str, &str), String> {
+    let Some((type_name, object_name)) = item.split_once('.') else {
+        return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
+    };
+    if type_name.is_empty() || object_name.is_empty() {
+        return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
+    }
+    Ok((type_name, object_name))
 }
 
 pub(crate) fn cf_edit_batch_value(value: &Value) -> Vec<String> {
