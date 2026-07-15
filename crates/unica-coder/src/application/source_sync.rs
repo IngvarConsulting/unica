@@ -2423,7 +2423,7 @@ impl DumpSession {
         for record in &self.requested {
             match self
                 .repository
-                .validate_shadow_target(record, self.shadow.shadow_source_dir())
+                .validate_shadow_target(record, self.shadow.shadow_source_dir(), &self.requested)
                 .and_then(|()| {
                     self.repository.capture_manifest_from_source_root(
                         &record.target,

@@ -14,6 +14,12 @@ enum DumpBehavior {
     Exact(Vec<u8>),
     Divergent(Vec<u8>),
     Metadata(Vec<u8>),
+    OwnerBundle {
+        descriptor_path: &'static str,
+        module_path: &'static str,
+        descriptor: Vec<u8>,
+        module: Vec<u8>,
+    },
     Fail,
 }
 
@@ -142,6 +148,29 @@ impl ApplicationPorts for Rc<RoundTripPorts> {
                 DumpBehavior::Metadata(bytes) => {
                     let shadow_root = shadow_source_root(args)?;
                     write_shadow_output(&shadow_root, "Catalogs/Items.xml", &bytes)?;
+                    write_shadow_output(
+                        &shadow_root,
+                        "Catalogs/Items/Ext/ObjectModule.bsl",
+                        &std::fs::read(
+                            context
+                                .workspace_root
+                                .join("src/Catalogs/Items/Ext/ObjectModule.bsl"),
+                        )
+                        .map_err(|error| {
+                            format!("failed to read fake catalog owner module: {error}")
+                        })?,
+                    )?;
+                    Ok(successful_dump_outcome())
+                }
+                DumpBehavior::OwnerBundle {
+                    descriptor_path,
+                    module_path,
+                    descriptor,
+                    module,
+                } => {
+                    let shadow_root = shadow_source_root(args)?;
+                    write_shadow_output(&shadow_root, descriptor_path, &descriptor)?;
+                    write_shadow_output(&shadow_root, module_path, &module)?;
                     Ok(successful_dump_outcome())
                 }
             },
@@ -379,6 +408,160 @@ fn code_patch_build_and_shadow_dump_preserve_bytes_and_force_is_wrapper_only() {
         assert_eq!(args["objects"], json!(["CommonModule.SampleService"]));
     }
     assert!(shadow_artifacts(&workspace).is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn matching_owner_and_module_batch_blocks_default_and_forces_atomic_bundle() {
+    let (root, workspace, _module_path) = round_trip_workspace();
+    let module_path = workspace.join("src/Catalogs/Items/Ext/ObjectModule.bsl");
+    let descriptor_path = workspace.join("src/Catalogs/Items.xml");
+    let ports = Rc::new(RoundTripPorts::new());
+    let app = UnicaApplication::with_ports(Box::new(ports.clone()));
+
+    assert!(
+        app.call_tool("unica.code.patch", &catalog_code_patch_args(&workspace))
+            .unwrap()
+            .ok
+    );
+    let owner_mutation = app
+        .call_tool("unica.meta.edit", &meta_edit_args(&workspace))
+        .unwrap();
+    assert!(
+        owner_mutation.ok,
+        "{}: {:?}",
+        owner_mutation.summary, owner_mutation.errors
+    );
+    assert!(
+        app.call_tool("unica.runtime.execute", &build_args(&workspace))
+            .unwrap()
+            .ok
+    );
+
+    let working_descriptor = std::fs::read(&descriptor_path).unwrap();
+    let working_module = std::fs::read(&module_path).unwrap();
+    let infobase_descriptor = String::from_utf8(working_descriptor.clone())
+        .unwrap()
+        .replacen(
+            "<Properties>",
+            "<Properties><Comment>FromInfobase</Comment>",
+            1,
+        )
+        .into_bytes();
+    let infobase_module = b"\xef\xbb\xbfProcedure FromInfobase()\r\nEndProcedure\r\n".to_vec();
+    ports.set_dump_behavior(DumpBehavior::OwnerBundle {
+        descriptor_path: "Catalogs/Items.xml",
+        module_path: "Catalogs/Items/Ext/ObjectModule.bsl",
+        descriptor: infobase_descriptor.clone(),
+        module: infobase_module.clone(),
+    });
+
+    let blocked = app
+        .call_tool(
+            "unica.runtime.execute",
+            &catalog_dump_args(&workspace, false),
+        )
+        .unwrap();
+    assert!(!blocked.ok);
+    let blocked_details = blocked.details.as_ref().unwrap();
+    assert_eq!(
+        blocked_details["conflicted"].as_array().unwrap().len(),
+        2,
+        "{blocked_details}"
+    );
+    assert!(blocked_details["conflicted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["reason"] == "infobaseDiverged"));
+    assert_eq!(std::fs::read(&descriptor_path).unwrap(), working_descriptor);
+    assert_eq!(std::fs::read(&module_path).unwrap(), working_module);
+
+    let forced = app
+        .call_tool(
+            "unica.runtime.execute",
+            &catalog_dump_args(&workspace, true),
+        )
+        .unwrap();
+    assert!(forced.ok, "{}: {:?}", forced.summary, forced.errors);
+    assert_eq!(
+        std::fs::read(&descriptor_path).unwrap(),
+        infobase_descriptor
+    );
+    assert_eq!(std::fs::read(&module_path).unwrap(), infobase_module);
+    assert_eq!(
+        forced.details.as_ref().unwrap()["processed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(forced.details.as_ref().unwrap()["processed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["reason"] == "forcedInfobasePublication" && entry["forced"] == true));
+    assert!(repository(&workspace)
+        .load_state()
+        .unwrap()
+        .targets
+        .values()
+        .all(|record| !record.is_dirty()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn module_only_force_rejects_owner_descriptor_drift() {
+    let (root, workspace, module_path) = round_trip_workspace();
+    let descriptor_path = workspace.join("src/CommonModules/SampleService.xml");
+    let ports = Rc::new(RoundTripPorts::new());
+    let app = UnicaApplication::with_ports(Box::new(ports.clone()));
+    let working_module = activate_source_sync(&app, &workspace, &module_path);
+    assert!(
+        app.call_tool("unica.runtime.execute", &build_args(&workspace))
+            .unwrap()
+            .ok
+    );
+    let working_descriptor = std::fs::read(&descriptor_path).unwrap();
+    let infobase_descriptor = String::from_utf8(working_descriptor.clone())
+        .unwrap()
+        .replacen(
+            "<Properties>",
+            "<Properties><Comment>FromInfobase</Comment>",
+            1,
+        )
+        .into_bytes();
+    ports.set_dump_behavior(DumpBehavior::OwnerBundle {
+        descriptor_path: "CommonModules/SampleService.xml",
+        module_path: "CommonModules/SampleService/Ext/Module.bsl",
+        descriptor: infobase_descriptor,
+        module: b"\xef\xbb\xbfProcedure FromInfobase()\r\nEndProcedure\r\n".to_vec(),
+    });
+
+    let rejected = app
+        .call_tool("unica.runtime.execute", &dump_args(&workspace, true))
+        .unwrap();
+
+    assert!(!rejected.ok);
+    assert!(
+        rejected.details.as_ref().unwrap()["conflicted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["reason"] == "shadowTopologyInvalid"),
+        "{}",
+        rejected.details.as_ref().unwrap()
+    );
+    assert_eq!(std::fs::read(&descriptor_path).unwrap(), working_descriptor);
+    assert_eq!(std::fs::read(&module_path).unwrap(), working_module);
+    assert!(repository(&workspace)
+        .load_state()
+        .unwrap()
+        .targets
+        .values()
+        .all(|record| !record.is_dirty()));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1219,6 +1402,10 @@ fn dump_args(workspace: &Path, force: bool) -> Map<String, Value> {
     .clone()
 }
 
+fn catalog_dump_args(workspace: &Path, force: bool) -> Map<String, Value> {
+    partial_dump_args(workspace, &["Catalog:Items"], force)
+}
+
 fn metadata_dump_args(workspace: &Path) -> Map<String, Value> {
     json!({
         "cwd": workspace.display().to_string(),
@@ -1243,6 +1430,23 @@ fn code_patch_args(workspace: &Path) -> Map<String, Value> {
         "anchor": "МенеджерЗаписи.Записать();",
         "operation": "insertBefore",
         "content": "ПодготовитьДанные();\n    ",
+        "expectedCount": 1,
+        "platformSyntax": "none",
+        "dryRun": false,
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+}
+
+fn catalog_code_patch_args(workspace: &Path) -> Map<String, Value> {
+    json!({
+        "cwd": workspace.display().to_string(),
+        "sourceSet": "main",
+        "modulePath": "Catalogs/Items/Ext/ObjectModule.bsl",
+        "selector": "module",
+        "operation": "replace",
+        "content": "Procedure FromSource() Export\nEndProcedure\n",
         "expectedCount": 1,
         "platformSyntax": "none",
         "dryRun": false,
@@ -1314,6 +1518,11 @@ fn round_trip_workspace() -> (PathBuf, PathBuf, PathBuf) {
     <Properties><Name>Items</Name><CodeLength>9</CodeLength></Properties>
   </Catalog>
 </MetaDataObject>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+        b"\xef\xbb\xbfProcedure FromFixture() Export\r\nEndProcedure\r\n",
     )
     .unwrap();
     let module_path = module_dir.join("Module.bsl");

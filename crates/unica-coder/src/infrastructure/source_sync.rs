@@ -509,9 +509,21 @@ impl SourceSyncRepository {
         &self,
         record: &SourceTargetRecord,
         alternate_source_root: &Path,
+        requested: &[SourceTargetRecord],
     ) -> Result<(), String> {
         let working_source_root = workspace_path(&self.workspace_root, &record.target.source_root)?;
-        validate_target_at_source_root(&record.target, alternate_source_root, &working_source_root)
+        let owner_bundle_requested = requested.iter().any(|candidate| {
+            candidate.target.target_kind == SourceTargetKind::MetadataOwner
+                && candidate.target.source_set == record.target.source_set
+                && candidate.target.source_root == record.target.source_root
+                && candidate.target.owner_selector == record.target.owner_selector
+        });
+        validate_target_at_source_root(
+            &record.target,
+            alternate_source_root,
+            &working_source_root,
+            owner_bundle_requested,
+        )
     }
 
     /// Capture the platform-owned ConfigDumpInfo.xml preimage while the caller
@@ -3750,6 +3762,7 @@ fn validate_target_at_source_root(
     target: &SourceTarget,
     alternate_source_root: &Path,
     working_source_root: &Path,
+    owner_bundle_requested: bool,
 ) -> Result<(), String> {
     target.validate()?;
     reject_symlink(alternate_source_root, MissingPath::Rejected)?;
@@ -3781,7 +3794,7 @@ fn validate_target_at_source_root(
             let shadow_bytes =
                 read_stable_regular_file(&shadow_descriptor, &alternate_source_root)?;
             let working_bytes = read_stable_regular_file(&working_descriptor, working_source_root)?;
-            if shadow_bytes != working_bytes {
+            if !owner_bundle_requested && shadow_bytes != working_bytes {
                 return Err(format!(
                     "shadow module owner descriptor {} differs from working source; module-only force cannot publish a matching ConfigDumpInfo.xml safely",
                     relative_descriptor.display()
@@ -4835,7 +4848,7 @@ mod tests {
 
             let missing = fixture
                 .repository
-                .validate_shadow_target(&record, &shadow)
+                .validate_shadow_target(&record, &shadow, std::slice::from_ref(&record))
                 .unwrap_err();
             assert!(missing.contains("descriptor is missing"), "{missing}");
 
@@ -4861,7 +4874,7 @@ mod tests {
 
             let unregistered = fixture
                 .repository
-                .validate_shadow_target(&record, &shadow)
+                .validate_shadow_target(&record, &shadow, std::slice::from_ref(&record))
                 .unwrap_err();
             assert!(
                 unregistered.contains("is not registered in owner ChildObjects"),
@@ -5407,6 +5420,109 @@ mod tests {
             fs::read(fixture.source.join("ConfigDumpInfo.xml")).unwrap(),
             b"<ConfigDumpInfo version=\"working\"/>\r\n"
         );
+    }
+
+    #[test]
+    fn shadow_descriptor_drift_requires_exact_requested_metadata_owner() {
+        let fixture = Fixture::new("shadow-owner-bundle");
+        let (metadata_target, descriptor, module, form) = fixture.catalog_target();
+        let module_args = json!({
+            "sourceSet": "main",
+            "modulePath": "Catalogs/Goods/Ext/ObjectModule.bsl"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let module_target =
+            resolve_mutation_target("unica.code.patch", &module_args, &fixture.context).unwrap();
+        for target in [&metadata_target, &module_target] {
+            let manifest = fixture.repository.capture_manifest(target).unwrap();
+            fixture
+                .repository
+                .ensure_baseline(target, &manifest)
+                .unwrap();
+        }
+        let metadata_record = fixture
+            .repository
+            .target(&metadata_target.id)
+            .unwrap()
+            .unwrap();
+        let module_record = fixture
+            .repository
+            .target(&module_target.id)
+            .unwrap()
+            .unwrap();
+        let shadow = fixture.root.join("shadow");
+        write(
+            &shadow.join("Configuration.xml"),
+            &fs::read(fixture.source.join("Configuration.xml")).unwrap(),
+        );
+        write(
+            &shadow.join("Catalogs/Goods.xml"),
+            fs::read_to_string(&descriptor)
+                .unwrap()
+                .replacen(
+                    "<Properties>",
+                    "<Properties><Comment>FromInfobase</Comment>",
+                    1,
+                )
+                .as_bytes(),
+        );
+        write(
+            &shadow.join("Catalogs/Goods/Ext/ObjectModule.bsl"),
+            &fs::read(module).unwrap(),
+        );
+        write(
+            &shadow.join("Catalogs/Goods/Forms/Item/Ext/Form.xml"),
+            &fs::read(form).unwrap(),
+        );
+
+        let module_only = fixture
+            .repository
+            .validate_shadow_target(
+                &module_record,
+                &shadow,
+                std::slice::from_ref(&module_record),
+            )
+            .unwrap_err();
+        assert!(module_only.contains("module-only force"), "{module_only}");
+
+        for unrelated_owner in [
+            {
+                let mut owner = metadata_record.clone();
+                owner.target.source_set = Some(SourceSetName::new("other").unwrap());
+                owner
+            },
+            {
+                let mut owner = metadata_record.clone();
+                owner.target.source_root = RelativeSourcePath::new("other").unwrap();
+                owner
+            },
+            {
+                let mut owner = metadata_record.clone();
+                owner.target.owner_selector = "Catalog:Other".to_string();
+                owner
+            },
+        ] {
+            let error = fixture
+                .repository
+                .validate_shadow_target(
+                    &module_record,
+                    &shadow,
+                    &[module_record.clone(), unrelated_owner],
+                )
+                .unwrap_err();
+            assert!(error.contains("module-only force"), "{error}");
+        }
+
+        fixture
+            .repository
+            .validate_shadow_target(
+                &module_record,
+                &shadow,
+                &[module_record.clone(), metadata_record],
+            )
+            .unwrap();
     }
 
     #[test]
