@@ -492,13 +492,15 @@ impl<'a> CodeSearchAdapter<'a> {
         args: &Map<String, Value>,
     ) -> SearchBackendResult {
         match self.rlm_readiness(context, args) {
-            IndexReadiness::Ready { db_path } => match search_rlm_index(&db_path, args) {
-                Ok(Some(rlm_stdout)) => {
-                    successful_backend("rlm", rlm_stdout, vec![db_path.display().to_string()])
+            IndexReadiness::Ready { db_path } => {
+                match search_rlm_index(&context.cache_root, &db_path, args) {
+                    Ok(Some(rlm_stdout)) => {
+                        successful_backend("rlm", rlm_stdout, vec![db_path.display().to_string()])
+                    }
+                    Ok(None) => unavailable_backend("rlm", "missing required `query` argument"),
+                    Err(error) => failed_backend("rlm", error),
                 }
-                Ok(None) => unavailable_backend("rlm", "missing required `query` argument"),
-                Err(error) => failed_backend("rlm", error),
-            },
+            }
             other => unavailable_backend("rlm", readiness_warning(other)),
         }
     }
@@ -704,6 +706,7 @@ fn secret_value_delimiter(ch: char) -> bool {
 }
 
 pub(crate) fn search_rlm_index(
+    cache_root: &Path,
     db_path: &Path,
     args: &Map<String, Value>,
 ) -> Result<Option<String>, String> {
@@ -719,7 +722,7 @@ pub(crate) fn search_rlm_index(
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(20);
-    let conn = open_read_only_index(db_path)?;
+    let conn = open_read_only_index(cache_root, db_path)?;
     let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
     let mut stmt = conn
         .prepare(
@@ -826,7 +829,7 @@ impl<'a> CodeNavigationAdapter<'a> {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
         };
-        let body = find_definitions(&db_path, args)?;
+        let body = find_definitions(&context.cache_root, &db_path, args)?;
         Ok(AdapterOutcome {
             ok: true,
             summary: format!("{tool_name} completed through internal RLM index"),
@@ -1132,12 +1135,13 @@ impl ProfileIdentity {
 }
 
 pub(crate) fn find_definitions(
+    cache_root: &Path,
     db_path: &Path,
     args: &Map<String, Value>,
 ) -> Result<String, String> {
     let name = required_string(args, "name")?;
     let limit = read_limit(args, 50);
-    let conn = open_read_only_index(db_path)?;
+    let conn = open_read_only_index(cache_root, db_path)?;
     let mut lines = Vec::new();
     if let Some(module_hint) = args.get("moduleHint").and_then(Value::as_str) {
         let hint = format!("%{}%", module_hint.trim());
@@ -1188,17 +1192,51 @@ pub(crate) fn find_definitions(
     }
 }
 
-fn open_read_only_index(db_path: &Path) -> Result<Connection, String> {
-    open_read_only_index_after_validation(db_path, || {})
+fn open_read_only_index(cache_root: &Path, db_path: &Path) -> Result<Connection, String> {
+    open_read_only_index_with_validation_hooks(cache_root, db_path, || {}, || {})
 }
 
+#[cfg(test)]
 fn open_read_only_index_after_validation<F>(
+    cache_root: &Path,
     db_path: &Path,
     after_validation: F,
 ) -> Result<Connection, String>
 where
     F: FnOnce(),
 {
+    open_read_only_index_with_validation_hooks(cache_root, db_path, || {}, after_validation)
+}
+
+#[cfg(test)]
+fn open_read_only_index_after_cache_root_validation<F>(
+    cache_root: &Path,
+    db_path: &Path,
+    after_cache_root_validation: F,
+) -> Result<Connection, String>
+where
+    F: FnOnce(),
+{
+    open_read_only_index_with_validation_hooks(
+        cache_root,
+        db_path,
+        after_cache_root_validation,
+        || {},
+    )
+}
+
+fn open_read_only_index_with_validation_hooks<F, G>(
+    cache_root: &Path,
+    db_path: &Path,
+    after_cache_root_validation: F,
+    after_validation: G,
+) -> Result<Connection, String>
+where
+    F: FnOnce(),
+    G: FnOnce(),
+{
+    let trusted_cache_root = fs::canonicalize(cache_root).map_err(|error| error.to_string())?;
+    after_cache_root_validation();
     let file_name = db_path
         .file_name()
         .ok_or_else(|| "index database must be a regular, non-symlink file".to_string())?;
@@ -1206,9 +1244,11 @@ where
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let db_path = fs::canonicalize(parent)
-        .map_err(|error| error.to_string())?
-        .join(file_name);
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| error.to_string())?;
+    if !canonical_parent.starts_with(&trusted_cache_root) {
+        return Err("index database must remain inside the workspace cache".to_string());
+    }
+    let db_path = canonical_parent.join(file_name);
     let file_type = fs::symlink_metadata(&db_path)
         .map_err(|error| error.to_string())?
         .file_type();
@@ -3859,7 +3899,7 @@ mod tests {
             .execute_batch("CREATE TABLE outside_data (value TEXT NOT NULL);")
             .unwrap();
 
-        let result = open_read_only_index_after_validation(&db_path, || {
+        let result = open_read_only_index_after_validation(&context.cache_root, &db_path, || {
             fs::remove_file(&db_path).unwrap();
             symlink(&outside_db, &db_path).unwrap();
         });
@@ -3884,12 +3924,46 @@ mod tests {
             .unwrap();
         drop(writer);
 
-        let connection = open_read_only_index(&db_path).unwrap();
+        let connection = open_read_only_index(&context.cache_root, &db_path).unwrap();
         let marker: String = connection
             .query_row("SELECT value FROM marker", [], |row| row.get(0))
             .unwrap();
 
         assert_eq!(marker, "ok");
+        cleanup_context(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_read_only_index_rejects_intermediate_symlink_outside_cache_root() {
+        use std::os::unix::fs::symlink;
+
+        let context = temp_context("read-only-index-intermediate-symlink-race");
+        let index_dir = context.cache_root.join("rlm-tools-bsl");
+        let db_path = index_dir.join("index.db");
+        let outside_dir = context.workspace_root.join("outside-index");
+        let outside_db = outside_dir.join("index.db");
+        fs::create_dir_all(&index_dir).unwrap();
+        Connection::open(&db_path)
+            .unwrap()
+            .execute_batch("CREATE TABLE trusted (value TEXT NOT NULL);")
+            .unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        Connection::open(&outside_db)
+            .unwrap()
+            .execute_batch("CREATE TABLE outside_data (value TEXT NOT NULL);")
+            .unwrap();
+
+        let result =
+            open_read_only_index_after_cache_root_validation(&context.cache_root, &db_path, || {
+                fs::remove_dir_all(&index_dir).unwrap();
+                symlink(&outside_dir, &index_dir).unwrap();
+            });
+
+        assert!(
+            result.is_err(),
+            "the canonicalized parent must remain inside the trusted cache root"
+        );
         cleanup_context(&context);
     }
 

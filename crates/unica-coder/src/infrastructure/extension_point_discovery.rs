@@ -161,6 +161,7 @@ trait CodeEvidenceProvider {
     fn search_rlm(
         &self,
         query: &str,
+        cache_root: &Path,
         db_path: &Path,
         source_root: &Path,
         limit: usize,
@@ -169,6 +170,7 @@ trait CodeEvidenceProvider {
     fn find_definition(
         &self,
         name: &str,
+        cache_root: &Path,
         db_path: &Path,
         source_root: &Path,
         limit: usize,
@@ -248,6 +250,7 @@ impl CodeEvidenceProvider for SystemCodeEvidenceProvider {
     fn search_rlm(
         &self,
         query: &str,
+        cache_root: &Path,
         db_path: &Path,
         source_root: &Path,
         limit: usize,
@@ -255,13 +258,14 @@ impl CodeEvidenceProvider for SystemCodeEvidenceProvider {
         let mut args = Map::new();
         args.insert("query".to_string(), json!(query));
         args.insert("limit".to_string(), json!(limit.min(20)));
-        let output = search_rlm_index(db_path, &args)?.unwrap_or_default();
+        let output = search_rlm_index(cache_root, db_path, &args)?.unwrap_or_default();
         Ok(parse_index_hits(&output, query, source_root, limit))
     }
 
     fn find_definition(
         &self,
         name: &str,
+        cache_root: &Path,
         db_path: &Path,
         source_root: &Path,
         limit: usize,
@@ -269,7 +273,7 @@ impl CodeEvidenceProvider for SystemCodeEvidenceProvider {
         let mut args = Map::new();
         args.insert("name".to_string(), json!(name));
         args.insert("limit".to_string(), json!(limit.min(20)));
-        let output = find_definitions(db_path, &args)?;
+        let output = find_definitions(cache_root, db_path, &args)?;
         Ok(parse_index_hits(&output, name, source_root, limit))
     }
 
@@ -1310,10 +1314,13 @@ impl<'a> Discovery<'a> {
             ));
         }
         for query in queries {
-            match self
-                .code_evidence
-                .search_rlm(&query, &db_path, source_root, self.limit)
-            {
+            match self.code_evidence.search_rlm(
+                &query,
+                &self.context.cache_root,
+                &db_path,
+                source_root,
+                self.limit,
+            ) {
                 Ok(hits) => {
                     for hit in hits {
                         self.record_provider_hit(
@@ -1368,10 +1375,13 @@ impl<'a> Discovery<'a> {
         }
         let mut graph_anchor = None;
         for name in definition_names {
-            match self
-                .code_evidence
-                .find_definition(&name, &db_path, source_root, self.limit)
-            {
+            match self.code_evidence.find_definition(
+                &name,
+                &self.context.cache_root,
+                &db_path,
+                source_root,
+                self.limit,
+            ) {
                 Ok(hits) => {
                     for hit in hits {
                         if self.record_provider_hit(
@@ -3171,6 +3181,7 @@ mod tests {
         fn search_rlm(
             &self,
             query: &str,
+            _cache_root: &Path,
             _db_path: &Path,
             source_root: &Path,
             _limit: usize,
@@ -3187,6 +3198,7 @@ mod tests {
         fn find_definition(
             &self,
             name: &str,
+            _cache_root: &Path,
             _db_path: &Path,
             source_root: &Path,
             _limit: usize,
