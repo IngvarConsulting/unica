@@ -772,14 +772,14 @@ fn normalize_pinned_build_yaml(
     if !local {
         let base_path_key = YamlValue::String("basePath".to_string());
         let base_path = mapping
-            .get(&base_path_key)
+            .remove(&base_path_key)
             .map(|value| {
                 value
                     .as_str()
                     .ok_or_else(|| "pinned build basePath must be a string".to_string())
+                    .map(PathBuf::from)
             })
             .transpose()?
-            .map(PathBuf::from)
             .unwrap_or_default();
         let absolute_base_path = if base_path.as_os_str().is_empty() {
             original_config_dir.to_path_buf()
@@ -788,17 +788,7 @@ fn normalize_pinned_build_yaml(
         } else {
             original_config_dir.join(base_path)
         };
-        mapping.insert(
-            base_path_key,
-            YamlValue::String(absolute_base_path.display().to_string()),
-        );
-        // source-set paths intentionally remain byte-for-byte semantic YAML
-        // values: v8-runner resolves them against the now-absolute basePath.
-        // Rewriting `link/../src` lexically could change symlink traversal.
-        mapping
-            .get(YamlValue::String("source-set".to_string()))
-            .and_then(YamlValue::as_sequence)
-            .ok_or_else(|| "pinned build config requires a source-set sequence".to_string())?;
+        absolutize_source_set_paths(mapping, &absolute_base_path)?;
     }
 
     for path in [
@@ -811,6 +801,41 @@ fn normalize_pinned_build_yaml(
     }
     absolutize_va_profile_paths(value, original_config_dir)?;
     absolutize_infobase_connection(value, original_config_dir)?;
+    Ok(())
+}
+
+fn absolutize_source_set_paths(
+    mapping: &mut serde_yaml::Mapping,
+    resolution_base: &Path,
+) -> Result<(), String> {
+    let source_sets_key = YamlValue::String("source-set".to_string());
+    let source_sets = mapping
+        .get_mut(&source_sets_key)
+        .and_then(YamlValue::as_sequence_mut)
+        .ok_or_else(|| "pinned build config requires a source-set sequence".to_string())?;
+    for (index, source_set) in source_sets.iter_mut().enumerate() {
+        let source_set = source_set
+            .as_mapping_mut()
+            .ok_or_else(|| format!("pinned build source-set[{index}] must be a YAML mapping"))?;
+        let path = source_set
+            .get_mut(YamlValue::String("path".to_string()))
+            .ok_or_else(|| format!("pinned build source-set[{index}].path is required"))?;
+        let raw = path.as_str().ok_or_else(|| {
+            format!("pinned build source-set[{index}].path must be a non-empty string")
+        })?;
+        if raw.is_empty() {
+            return Err(format!(
+                "pinned build source-set[{index}].path must be a non-empty string"
+            ));
+        }
+        let raw = PathBuf::from(raw);
+        let absolute = if raw.is_absolute() {
+            raw
+        } else {
+            resolution_base.join(raw)
+        };
+        *path = YamlValue::String(absolute.display().to_string());
+    }
     Ok(())
 }
 
@@ -3376,6 +3401,121 @@ mod tests {
             details["conflicted"][0]["reason"],
             "synchronizationStateFailed"
         );
+    }
+
+    #[test]
+    fn pinned_primary_config_removes_base_path_and_absolutizes_source_set_paths() {
+        let original_config_dir = Path::new("/workspace/project");
+        let mut config: YamlValue = serde_yaml::from_str(
+            r#"
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+  - name: external
+    type: EXTERNAL_PROCESSOR
+    path: /shared/external
+"#,
+        )
+        .unwrap();
+
+        normalize_pinned_build_yaml(&mut config, original_config_dir, false).unwrap();
+
+        let mapping = config.as_mapping().unwrap();
+        assert!(!mapping.contains_key(YamlValue::String("basePath".to_string())));
+        let source_sets = mapping
+            .get(YamlValue::String("source-set".to_string()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        assert_eq!(
+            source_sets[0]
+                .as_mapping()
+                .unwrap()
+                .get(YamlValue::String("path".to_string()))
+                .unwrap()
+                .as_str(),
+            Some("/workspace/project/src")
+        );
+        assert_eq!(
+            source_sets[1]
+                .as_mapping()
+                .unwrap()
+                .get(YamlValue::String("path".to_string()))
+                .unwrap()
+                .as_str(),
+            Some("/shared/external")
+        );
+    }
+
+    #[test]
+    fn pinned_primary_config_uses_legacy_base_path_without_serializing_it() {
+        let mut config: YamlValue = serde_yaml::from_str(
+            r#"
+format: DESIGNER
+basePath: legacy
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: link/../src
+"#,
+        )
+        .unwrap();
+
+        normalize_pinned_build_yaml(&mut config, Path::new("/workspace/project"), false).unwrap();
+
+        let mapping = config.as_mapping().unwrap();
+        assert!(!mapping.contains_key(YamlValue::String("basePath".to_string())));
+        let source_set = mapping
+            .get(YamlValue::String("source-set".to_string()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            source_set
+                .get(YamlValue::String("path".to_string()))
+                .unwrap()
+                .as_str(),
+            Some("/workspace/project/legacy/link/../src")
+        );
+    }
+
+    #[test]
+    fn pinned_primary_config_rejects_malformed_base_path_and_source_set_entries() {
+        let mut malformed_base_path: YamlValue = serde_yaml::from_str(
+            r#"
+basePath: 42
+source-set: []
+"#,
+        )
+        .unwrap();
+        let error = normalize_pinned_build_yaml(
+            &mut malformed_base_path,
+            Path::new("/workspace/project"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("basePath must be a string"), "{error}");
+
+        let mut malformed_source_set: YamlValue = serde_yaml::from_str(
+            r#"
+source-set:
+  - name: main
+"#,
+        )
+        .unwrap();
+        let error = normalize_pinned_build_yaml(
+            &mut malformed_source_set,
+            Path::new("/workspace/project"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("source-set[0].path"), "{error}");
     }
 
     fn record(source_set: &str, name: &str, bytes: &[u8]) -> SourceTargetRecord {
