@@ -1,6 +1,7 @@
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
+use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
@@ -279,7 +280,7 @@ impl<'a> RuntimeAdapter<'a> {
         let output = match self.runner.run(&process_command) {
             Ok(output) => output,
             Err(error) => {
-                let error = redact_sensitive_text(&error);
+                let error = redactor(&error);
                 return Ok(AdapterOutcome {
                     ok: false,
                     summary: format!(
@@ -298,8 +299,8 @@ impl<'a> RuntimeAdapter<'a> {
             }
         };
         let ok = output.status_success;
-        let stdout = redact_sensitive_text(&output.stdout);
-        let stderr = redact_sensitive_text(&output.stderr);
+        let stdout = redactor(&output.stdout);
+        let stderr = redactor(&output.stderr);
         Ok(AdapterOutcome {
             ok,
             summary: if ok {
@@ -646,59 +647,6 @@ fn process_timeout_error(label: &str, timeout: Option<Duration>) -> String {
         ),
         None => format!("internal {label} adapter timed out"),
     }
-}
-
-fn redact_sensitive_text(text: &str) -> String {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut output = String::with_capacity(text.len());
-    let mut index = 0;
-    while index < chars.len() {
-        if secret_key_char(chars[index]) {
-            let key_start = index;
-            index += 1;
-            while index < chars.len() && secret_key_char(chars[index]) {
-                index += 1;
-            }
-            let key_end = index;
-            let mut separator = index;
-            while separator < chars.len() && chars[separator].is_whitespace() {
-                separator += 1;
-            }
-            if separator < chars.len() && matches!(chars[separator], '=' | ':') {
-                let mut value_start = separator + 1;
-                while value_start < chars.len() && chars[value_start].is_whitespace() {
-                    value_start += 1;
-                }
-                let key = chars[key_start..key_end].iter().collect::<String>();
-                if is_secret_key(&key) {
-                    for ch in &chars[key_start..value_start] {
-                        output.push(*ch);
-                    }
-                    output.push_str("<redacted>");
-                    index = value_start;
-                    while index < chars.len() && !secret_value_delimiter(chars[index]) {
-                        index += 1;
-                    }
-                    continue;
-                }
-            }
-            for ch in &chars[key_start..key_end] {
-                output.push(*ch);
-            }
-            continue;
-        }
-        output.push(chars[index]);
-        index += 1;
-    }
-    output
-}
-
-fn secret_key_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
-}
-
-fn secret_value_delimiter(ch: char) -> bool {
-    matches!(ch, ';' | '&' | ',' | '\n' | '\r' | '}')
 }
 
 fn search_rlm_index(
@@ -2936,15 +2884,6 @@ fn string_arg(args: &Map<String, Value>, key: &str, redact: bool) -> Option<Stri
             Some(value_to_cli_string(value))
         }
     })
-}
-
-fn is_secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    key == "connection"
-        || key == "pwd"
-        || key.contains("password")
-        || key.contains("token")
-        || key.contains("secret")
 }
 
 fn kebab_case(key: &str) -> String {
