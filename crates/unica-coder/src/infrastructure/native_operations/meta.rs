@@ -253,6 +253,64 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_modify_property_comment_rejects_duplicate_without_mutation() {
+        let context = temp_context("modify-property-comment-duplicate");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = sample_catalog_xml().replace(
+            "<Comment/>",
+            "<Comment>FIRST</Comment>\n\t\t\t<Comment>SECOND</Comment>",
+        );
+        write_file(&object_path, &xml);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("2 direct <Comment>")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_modify_property_same_comment_is_byte_identical_noop() {
+        let context = temp_context("modify-property-comment-noop");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = meta_edit_lxml_serialized_text(
+            &sample_catalog_xml().replace("<Comment/>", "<Comment>TEST-COMMENT</Comment>"),
+        );
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        write_utf8_bom(&object_path, &xml).unwrap();
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No changes"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_adds_register_record_to_document() {
         let context = temp_context("add-register-record");
         let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
@@ -9422,7 +9480,7 @@ pub(crate) struct MetaEditCounts {
 }
 
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, usize), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -9439,7 +9497,9 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
         let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
-        let mut xml_text = fs::read_to_string(&object_path)
+        let original_bytes = fs::read(&object_path)
+            .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
+        let mut xml_text = String::from_utf8(original_bytes.clone())
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
         if xml_text.starts_with('\u{feff}') {
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
@@ -9483,21 +9543,33 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
         let serialized_text = meta_edit_lxml_serialized_text(&xml_text);
-        write_utf8_bom(&object_path, &serialized_text)?;
-        info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
+        let mut serialized_bytes = b"\xef\xbb\xbf".to_vec();
+        serialized_bytes.extend_from_slice(serialized_text.as_bytes());
+        let changed = serialized_bytes != original_bytes;
+        if changed {
+            write_utf8_bom(&object_path, &serialized_text)?;
+            info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
+        } else {
+            counts = MetaEditCounts::default();
+            info_lines.push("[INFO] No changes".to_string());
+        }
         let stdout = format!(
             "{}\n\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
             info_lines.join("\n"),
             counts.added, counts.removed, counts.modified
         );
-        Ok((stdout, object_path, counts.modified))
+        Ok((stdout, object_path, changed))
     })();
 
     match edit_result {
-        Ok((stdout, object_path, _modified)) => AdapterOutcome {
+        Ok((stdout, object_path, changed)) => AdapterOutcome {
             ok: true,
             summary: "unica.meta.edit completed with native metadata editor".to_string(),
-            changes: vec![format!("updated {}", object_path.display())],
+            changes: if changed {
+                vec![format!("updated {}", object_path.display())]
+            } else {
+                Vec::new()
+            },
             warnings: Vec::new(),
             errors: Vec::new(),
             artifacts: vec![object_path.display().to_string()],
@@ -10164,6 +10236,12 @@ pub(crate) fn meta_edit_set_scalar_property(
     let object = meta_edit_object_node(&doc)?;
     let properties = meta_info_child(object, "Properties")
         .ok_or_else(|| "Object has no Properties".to_string())?;
+    let matching_properties = meta_info_children(properties, key).len();
+    if matching_properties > 1 {
+        return Err(format!(
+            "Properties contains {matching_properties} direct <{key}> elements; expected at most one"
+        ));
+    }
     let range = properties.range();
     drop(doc);
 
