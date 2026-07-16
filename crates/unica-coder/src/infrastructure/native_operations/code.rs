@@ -704,6 +704,9 @@ enum Selector {
     Method {
         method_name: String,
     },
+    MethodDocs {
+        method_name: String,
+    },
     Anchor {
         anchor: String,
         method_name: Option<String>,
@@ -729,6 +732,12 @@ impl PatchRequest {
             "method" => {
                 reject_present(args, "anchor", "method")?;
                 Selector::Method {
+                    method_name: required_nonempty_string(args, "methodName")?.to_string(),
+                }
+            }
+            "methodDocs" => {
+                reject_present(args, "anchor", "methodDocs")?;
+                Selector::MethodDocs {
                     method_name: required_nonempty_string(args, "methodName")?.to_string(),
                 }
             }
@@ -777,6 +786,9 @@ impl PatchRequest {
             Selector::Module => json!({"kind": "module"}),
             Selector::Method { method_name } => {
                 json!({"kind": "method", "methodName": method_name})
+            }
+            Selector::MethodDocs { method_name } => {
+                json!({"kind": "methodDocs", "methodName": method_name})
             }
             Selector::Anchor {
                 anchor,
@@ -862,6 +874,10 @@ fn plan_patch_once(text: &str, request: &PatchRequest) -> Result<PatchPlan, Stri
         Selector::Method { method_name } => {
             let methods = scan_methods(text, &mask)?;
             (method_body_ranges(&methods, method_name), Vec::new(), false)
+        }
+        Selector::MethodDocs { method_name } => {
+            let methods = scan_methods(text, &mask)?;
+            (method_docs_ranges(&methods, method_name), Vec::new(), false)
         }
         Selector::Anchor {
             anchor,
@@ -1146,6 +1162,7 @@ fn apply_edits(text: &str, edits: &[Edit]) -> Result<String, String> {
 struct MethodRange {
     name_folded: String,
     body: ByteRange,
+    leading_docs: Option<ByteRange>,
 }
 
 #[derive(Debug)]
@@ -1214,6 +1231,7 @@ fn scan_methods(text: &str, mask: &[bool]) -> Result<Vec<MethodRange>, String> {
                 start: body_start,
                 end: method_body_end(text, end.start),
             },
+            leading_docs: leading_method_docs_range(text, tokens[index].start),
         });
         index = end_index + 1;
     }
@@ -1246,6 +1264,70 @@ fn method_body_end(text: &str, end_keyword_start: usize) -> usize {
     } else {
         end_keyword_start
     }
+}
+
+fn leading_method_docs_range(text: &str, declaration_start: usize) -> Option<ByteRange> {
+    let mut docs_end = line_start(text, declaration_start);
+    while let Some(line) = previous_line_range(text, docs_end) {
+        if is_annotation_line(&text[line.start..line.end]) {
+            docs_end = line.start;
+        } else {
+            break;
+        }
+    }
+
+    let mut docs_start = docs_end;
+    let mut scan_start = docs_end;
+    let mut has_comment = false;
+    while let Some(line) = previous_line_range(text, scan_start) {
+        let content = &text[line.start..line.end];
+        if is_blank_line(content) || is_comment_line(content) {
+            has_comment |= is_comment_line(content);
+            docs_start = line.start;
+            scan_start = line.start;
+        } else {
+            break;
+        }
+    }
+
+    has_comment.then_some(ByteRange {
+        start: docs_start,
+        end: docs_end,
+    })
+}
+
+fn line_start(text: &str, position: usize) -> usize {
+    text[..position]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+fn previous_line_range(text: &str, line_start: usize) -> Option<ByteRange> {
+    if line_start == 0 {
+        return None;
+    }
+    let previous_end = line_start;
+    let previous_start = text[..line_start - 1]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    Some(ByteRange {
+        start: previous_start,
+        end: previous_end,
+    })
+}
+
+fn is_blank_line(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+fn is_comment_line(line: &str) -> bool {
+    line.trim_start().starts_with("//")
+}
+
+fn is_annotation_line(line: &str) -> bool {
+    line.trim_start().starts_with('&')
 }
 
 fn without_preprocessor_directive_lines(text: &str, mask: &[bool]) -> Vec<bool> {
@@ -1363,6 +1445,15 @@ fn method_body_ranges(methods: &[MethodRange], name: &str) -> Vec<ByteRange> {
         .iter()
         .filter(|method| method.name_folded == folded)
         .map(|method| method.body.clone())
+        .collect()
+}
+
+fn method_docs_ranges(methods: &[MethodRange], name: &str) -> Vec<ByteRange> {
+    let folded = name.to_lowercase();
+    methods
+        .iter()
+        .filter(|method| method.name_folded == folded)
+        .filter_map(|method| method.leading_docs.clone())
         .collect()
 }
 
@@ -2651,6 +2742,88 @@ mod tests {
         assert!(repeated.ok, "{:?}", repeated.errors);
         assert_eq!(details(&repeated)["noOp"], true);
         assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+    }
+
+    #[test]
+    fn method_docs_selector_replaces_framed_docs_with_bom_mixed_eol_preview_apply_and_noop() {
+        let source = [
+            UTF8_BOM,
+            b"//+ Old signature\r\n// Documentation\r\n//\n// Parameters:\r\n//  Value - String.\r\n\r\n&AtClient\r\nProcedure Work(Value)\r\n\t// Internal comment\n\tOld();\r\nEndProcedure\r\n//- Old signature\nTail();\r\n"
+                .as_slice(),
+        ]
+        .concat();
+        let expected = [
+            UTF8_BOM,
+            b"//+ New signature\r\n// Updated documentation\r\n//\r\n// Parameters:\r\n//  Value - String.\r\n\r\n&AtClient\r\nProcedure Work(Value)\r\n\t// Internal comment\n\tOld();\r\nEndProcedure\r\n//- Old signature\nTail();\r\n"
+                .as_slice(),
+        ]
+        .concat();
+        let fixture = Fixture::new("method-docs-bom-mixed-eol", &source);
+        let args = fixture.args(
+            json!({"kind": "methodDocs", "methodName": "Work"}),
+            "replace",
+            "//+ New signature\n// Updated documentation\n//\n// Parameters:\n//  Value - String.\n\n",
+            1,
+        );
+
+        let preview = patch_code(&args, &fixture.context, true);
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(details(&preview)["dryRun"], true);
+        assert_eq!(details(&preview)["selector"]["kind"], "methodDocs");
+        assert_eq!(details(&preview)["matchCount"], 1);
+        assert_ne!(details(&preview)["preHash"], details(&preview)["postHash"]);
+        assert_eq!(fs::read(&fixture.module).unwrap(), source);
+
+        let applied = patch_code(&args, &fixture.context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(details(&applied)["applied"], true);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+        assert!(
+            fs::read(&fixture.module)
+                .unwrap()
+                .windows(b"&AtClient\r\n".len())
+                .any(|window| window == b"&AtClient\r\n"),
+            "annotation immediately before the method must remain byte-identical"
+        );
+
+        let repeated = patch_code(&args, &fixture.context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert_eq!(details(&repeated)["noOp"], true);
+        assert_eq!(fs::read(&fixture.module).unwrap(), expected);
+    }
+
+    #[test]
+    fn method_docs_selector_rejects_method_without_leading_docs_without_writing() {
+        let source = b"Procedure WithoutDocs()\nEndProcedure\n";
+        let fixture = Fixture::new("method-docs-absent", source);
+        let args = fixture.args(
+            json!({"kind": "methodDocs", "methodName": "WithoutDocs"}),
+            "replace",
+            "// Documentation\n",
+            1,
+        );
+
+        let result = patch_code(&args, &fixture.context, false);
+        assert!(!result.ok);
+        assert!(result.errors[0].contains("selector cardinality mismatch"));
+        assert_eq!(fs::read(&fixture.module).unwrap(), source);
+    }
+
+    #[test]
+    fn method_docs_selector_does_not_cross_preprocessor_boundary_without_writing() {
+        let source = b"// File header\n#If Client Then\nProcedure Work()\nEndProcedure\n#EndIf\n";
+        let fixture = Fixture::new("method-docs-preprocessor-boundary", source);
+        let args = fixture.args(
+            json!({"kind": "methodDocs", "methodName": "Work"}),
+            "replace",
+            "// Method documentation\n",
+            1,
+        );
+
+        let result = patch_code(&args, &fixture.context, false);
+        assert!(!result.ok);
+        assert!(result.errors[0].contains("selector cardinality mismatch"));
+        assert_eq!(fs::read(&fixture.module).unwrap(), source);
     }
 
     #[test]

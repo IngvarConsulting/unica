@@ -543,7 +543,7 @@ const CODE_PATCH_REQUIRED_ARGS: &[&str] = &[
     "content",
     "expectedCount",
 ];
-const CODE_PATCH_SELECTORS: &[&str] = &["module", "method", "anchor"];
+const CODE_PATCH_SELECTORS: &[&str] = &["module", "method", "methodDocs", "anchor"];
 const CODE_PATCH_OPERATIONS: &[&str] = &["insertBefore", "insertAfter", "replace"];
 const CODE_PATCH_PLATFORM_SYNTAX: &[&str] = &["none", "configuredInfobase"];
 const META_PROFILE_ARGS: &[&str] = &["limit", "name", "sections", "sourceDir"];
@@ -871,6 +871,10 @@ fn validate_code_patch_arguments(tool_name: &str, args: &Map<String, Value>) -> 
         "method" => {
             code_patch_required_nonblank_string(tool_name, args, "methodName")?;
             code_patch_reject_present(tool_name, args, "anchor", "method")?;
+        }
+        "methodDocs" => {
+            code_patch_required_nonblank_string(tool_name, args, "methodName")?;
+            code_patch_reject_present(tool_name, args, "anchor", "methodDocs")?;
         }
         "anchor" => {
             code_patch_required_nonblank_string(tool_name, args, "anchor")?;
@@ -2317,7 +2321,7 @@ mod tests {
         assert_eq!(properties["expectedCount"]["type"], "integer");
         assert_eq!(
             properties["selector"]["enum"],
-            json!(["module", "method", "anchor"])
+            json!(["module", "method", "methodDocs", "anchor"])
         );
         assert_eq!(
             properties["operation"]["enum"],
@@ -2409,6 +2413,19 @@ mod tests {
         method_with_anchor.insert("selector".to_string(), json!("method"));
         let error = validate_tool_arguments(tool, &method_with_anchor, false).unwrap_err();
         assert!(error.contains("selector `method` does not accept `anchor`"));
+
+        let mut method_docs = valid_code_patch_args();
+        method_docs.insert("selector".to_string(), json!("methodDocs"));
+        method_docs.remove("anchor");
+        validate_tool_arguments(tool, &method_docs, false).unwrap();
+        method_docs.remove("methodName");
+        let error = validate_tool_arguments(tool, &method_docs, false).unwrap_err();
+        assert!(error.contains("methodName"));
+
+        let mut method_docs_with_anchor = valid_code_patch_args();
+        method_docs_with_anchor.insert("selector".to_string(), json!("methodDocs"));
+        let error = validate_tool_arguments(tool, &method_docs_with_anchor, false).unwrap_err();
+        assert!(error.contains("selector `methodDocs` does not accept `anchor`"));
 
         let mut anchor = valid_code_patch_args();
         anchor.remove("methodName");
