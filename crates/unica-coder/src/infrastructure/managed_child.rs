@@ -51,6 +51,7 @@ impl ManagedChild {
         let process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
         let mut child = process.spawn().map_err(process_error)?;
         if let Err(error) = process_tree.attach(&child) {
+            let _ = process_tree.terminate(&mut child);
             let _ = child.kill();
             let _ = child.try_wait();
             return Err(process_error(error));
@@ -201,12 +202,16 @@ unsafe impl Sync for ProcessTree {}
 
 #[cfg(windows)]
 impl ProcessTree {
-    fn prepare(_command: &mut Command) -> io::Result<Self> {
+    fn prepare(command: &mut Command) -> io::Result<Self> {
         use std::mem::{size_of, zeroed};
+        use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+        command.creation_flags(CREATE_SUSPENDED);
 
         // SAFETY: null security attributes and name request an unnamed job with defaults.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -241,10 +246,22 @@ impl ProcessTree {
     fn attach(&self, child: &Child) -> io::Result<()> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::ResumeThread;
 
         // SAFETY: both handles are live for the duration of the call.
         if unsafe { AssignProcessToJobObject(self.job, child.as_raw_handle() as _) } == 0 {
             return Err(io::Error::last_os_error());
+        }
+        let primary_thread = open_primary_thread(child.id())?;
+        // SAFETY: the thread handle was opened with `THREAD_SUSPEND_RESUME` access.
+        let previous_suspend_count = unsafe { ResumeThread(primary_thread.0) };
+        if previous_suspend_count == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        if previous_suspend_count != 1 {
+            return Err(io::Error::other(format!(
+                "unexpected primary thread suspend count: {previous_suspend_count}"
+            )));
         }
         Ok(())
     }
@@ -257,6 +274,67 @@ impl ProcessTree {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+struct ScopedWindowsHandle(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: Windows kernel handles may be transferred and used from other threads.
+#[cfg(windows)]
+unsafe impl Send for ScopedWindowsHandle {}
+
+// SAFETY: this adapter only performs thread-safe Windows handle operations.
+#[cfg(windows)]
+unsafe impl Sync for ScopedWindowsHandle {}
+
+#[cfg(windows)]
+impl Drop for ScopedWindowsHandle {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper owns a valid handle and closes it exactly once.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn open_primary_thread(process_id: u32) -> io::Result<ScopedWindowsHandle> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: the flags request a system thread snapshot; the process ID is ignored for it.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = ScopedWindowsHandle(snapshot);
+    // SAFETY: this Windows POD structure is valid when zero-initialized and sized below.
+    let mut entry: THREADENTRY32 = unsafe { zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    // SAFETY: `snapshot` and `entry` satisfy the ToolHelp API contract.
+    if unsafe { Thread32First(snapshot.0, &mut entry) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    loop {
+        if entry.th32OwnerProcessID == process_id {
+            // `CREATE_SUSPENDED` prevents this process from creating any additional threads.
+            // SAFETY: the snapshot supplied this live thread ID; inheritance is disabled.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            return Ok(ScopedWindowsHandle(thread));
+        }
+        // SAFETY: `snapshot` and `entry` remain valid across enumeration calls.
+        if unsafe { Thread32Next(snapshot.0, &mut entry) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
 }
 
@@ -333,11 +411,15 @@ fn receive_output(receiver: Option<Receiver<Vec<u8>>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::ProcessTree;
     use super::{ManagedChild, ManagedCommand, ManagedOutput};
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
     use std::io::Read;
     use std::path::{Path, PathBuf};
+    #[cfg(windows)]
+    use std::process::Child;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -362,7 +444,7 @@ mod tests {
                 print!("stdin closed");
             }
             "sleep" => thread::sleep(Duration::from_secs(10)),
-            "process_tree_parent" => {
+            "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
@@ -384,6 +466,10 @@ mod tests {
                 child.wait().unwrap();
             }
             "process_tree_child" => thread::sleep(Duration::from_secs(10)),
+            "write_marker" => {
+                let marker = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                std::fs::write(marker, b"started").unwrap();
+            }
             other => panic!("unknown managed child helper mode: {other}"),
         }
     }
@@ -453,6 +539,62 @@ mod tests {
     impl Drop for FileCleanupGuard {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    struct ChildCleanupGuard(Option<Child>);
+
+    #[cfg(windows)]
+    impl ChildCleanupGuard {
+        fn child(&self) -> &Child {
+            self.0.as_ref().unwrap()
+        }
+
+        fn wait(mut self) {
+            self.0.as_mut().unwrap().wait().unwrap();
+            self.0 = None;
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for ChildCleanupGuard {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    struct ManagedChildCleanupGuard {
+        managed: Option<ManagedChild>,
+        cancellation: CancellationToken,
+    }
+
+    impl ManagedChildCleanupGuard {
+        fn new(managed: ManagedChild, cancellation: CancellationToken) -> Self {
+            Self {
+                managed: Some(managed),
+                cancellation,
+            }
+        }
+
+        fn managed_mut(&mut self) -> &mut ManagedChild {
+            self.managed.as_mut().unwrap()
+        }
+
+        fn disarm(&mut self) {
+            self.managed = None;
+        }
+    }
+
+    impl Drop for ManagedChildCleanupGuard {
+        fn drop(&mut self) {
+            if let Some(managed) = &mut self.managed {
+                self.cancellation.cancel();
+                let _ = managed.wait_for_output();
+            }
         }
     }
 
@@ -595,7 +737,7 @@ mod tests {
         ));
         let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
         let cancellation = CancellationToken::new();
-        let mut managed = ManagedChild::spawn(ManagedCommand {
+        let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
@@ -606,7 +748,7 @@ mod tests {
             env: vec![
                 (
                     OsString::from(HELPER_ENV),
-                    OsString::from("process_tree_parent"),
+                    OsString::from("process_tree_immediate_parent"),
                 ),
                 (
                     OsString::from(HELPER_PID_FILE_ENV),
@@ -617,13 +759,15 @@ mod tests {
             cancellation: cancellation.clone(),
         })
         .unwrap();
+        let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation.clone());
         let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
         let mut cleanup = ProcessCleanupGuard(pids.clone());
         let parent_pid = pids[0];
         let child_pid = pids[1];
 
         cancellation.cancel();
-        let output = managed.wait_for_output().unwrap();
+        let output = managed_cleanup.managed_mut().wait_for_output().unwrap();
+        managed_cleanup.disarm();
 
         assert!(output.cancelled);
         assert!(wait_until_dead(parent_pid, Duration::from_secs(2)));
@@ -635,5 +779,44 @@ mod tests {
     fn managed_child_preserves_thread_safe_auto_traits() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ManagedChild>();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_tree_keeps_child_suspended_until_attach() {
+        let marker = std::env::temp_dir().join(format!(
+            "unica-managed-child-marker-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _marker_cleanup = FileCleanupGuard(marker.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "write_marker")
+            .env(HELPER_PID_FILE_ENV, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let process_tree = ProcessTree::prepare(&mut command).unwrap();
+        let child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+
+        thread::sleep(Duration::from_millis(500));
+        assert!(!marker.exists(), "child ran before process-tree attachment");
+
+        process_tree.attach(child.child()).unwrap();
+        let started = Instant::now();
+        while !marker.exists() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(marker.exists(), "child did not resume after attachment");
+        child.wait();
     }
 }
