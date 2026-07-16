@@ -791,7 +791,10 @@ fn write_with_deadline(
                     io::Error::from(ErrorKind::WriteZero)
                 ));
             }
-            Ok(count) => written += count,
+            Ok(count) => {
+                remaining_or_timeout(deadline, clock)?;
+                written += count;
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 cancellation_error(cancellation)?;
                 remaining_or_timeout(deadline, clock)?;
@@ -827,7 +830,11 @@ fn flush_with_deadline(
             ));
         }
         match stream.flush() {
-            Ok(()) => return cancellation_error(cancellation),
+            Ok(()) => {
+                cancellation_error(cancellation)?;
+                remaining_or_timeout(deadline, clock)?;
+                return Ok(());
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 cancellation_error(cancellation)?;
                 remaining_or_timeout(deadline, clock)?;
@@ -4217,6 +4224,36 @@ fn main() {
         }
     }
 
+    struct DeadlineFlushStream {
+        clock: ManualClock,
+        advance: Duration,
+    }
+
+    impl Read for DeadlineFlushStream {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for DeadlineFlushStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.clock.advance(self.advance);
+            Ok(())
+        }
+    }
+
+    impl ConnectorStream for DeadlineFlushStream {
+        fn set_read_timeout(&self, _timeout: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+        fn set_write_timeout(&self, _timeout: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Read for RacingStream {
         fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
             match self.stage {
@@ -4448,6 +4485,38 @@ fn main() {
                 Duration::from_millis(80)
             ]
         );
+    }
+
+    #[test]
+    fn cancellable_connector_successful_final_write_cannot_cross_deadline() {
+        let clock = ManualClock::default();
+        let cancellation = CancellationToken::new();
+        let deadline = Deadline::new(&clock, Duration::from_millis(10));
+        let mut stream = PartialWriteStream {
+            clock: clock.clone(),
+            cancellation: cancellation.clone(),
+            max_write: 1,
+            advance_per_write: Duration::from_millis(10),
+            failure: PartialWriteFailure::None,
+            writes: Vec::new(),
+            timeouts: Mutex::new(Vec::new()),
+        };
+        let error =
+            write_with_deadline(&mut stream, b"x", &deadline, &clock, &cancellation).unwrap_err();
+        assert!(error.starts_with("timeout:"), "{error}");
+    }
+
+    #[test]
+    fn cancellable_connector_successful_flush_cannot_cross_deadline() {
+        let clock = ManualClock::default();
+        let deadline = Deadline::new(&clock, Duration::from_millis(10));
+        let mut stream = DeadlineFlushStream {
+            clock: clock.clone(),
+            advance: Duration::from_millis(10),
+        };
+        let error = flush_with_deadline(&mut stream, &deadline, &clock, &CancellationToken::new())
+            .unwrap_err();
+        assert!(error.starts_with("timeout:"), "{error}");
     }
 
     #[test]
