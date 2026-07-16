@@ -167,9 +167,21 @@ provided by the plugin, not stale cached MCP registrations.
   admitted cannot begin I/O; an admitted arbitrary `Write` may complete after
   the injectable handler returns. The real stdio process then exits and closes
   stdout. Verify with `cargo test -p unica-coder mcp_dispatcher_close`.
+- Public MCP JSONL lines are limited to 8 MiB and at most 32 `tools/call`
+  workers are admitted. Oversized lines return `-32700`; excess calls return
+  `-32603` with `overloaded` without delaying `ping` or cancellation.
 - `ping`, cancellation, and shutdown must remain responsive while analyzer or
   RLM work is active. Cancelling one request must not require restarting the
   service before a later request succeeds.
+- Internal request/response lines are limited to 8 MiB. At most 64 general
+  handlers, 8 reserved control handlers, and 8 work workers may run. A bounded
+  64-socket control classifier uses a 500 ms aggregate lifetime and a 64 KiB
+  classification prefix when general handlers are full. Classified work then
+  returns `workspace service overloaded: general connection handlers are
+  saturated`; unclassified overflow is closed. A complete `ping`, `cancel`, or
+  `shutdown` must still complete through the reserved path.
+- Request-header parsing has one 5-second aggregate deadline from accept. Reads
+  poll in at most 100 ms slices and slow-drip bytes do not renew that deadline.
 - Work and ordinary `Ping`, `Invalidate`, and `Shutdown` requests have one
   120-second overall deadline starting before connect. Control kinds have a
   500 ms connect cap; connect, write, flush, and read consume the remaining

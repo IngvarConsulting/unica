@@ -19,6 +19,9 @@
 
 1. The stdio reader handles `initialize`, `tools/list`, and `ping` without
    waiting for an active `tools/call`; each tool call runs in its own worker.
+   Input lines are capped at 8 MiB and only 32 tool workers are admitted.
+   Oversized input returns `-32700`; saturation returns `-32603` with an
+   `overloaded` message while synchronous `ping` and cancellation stay usable.
 2. The dispatcher registers the JSON-RPC request ID with a cancellation token.
    Numeric and string IDs remain distinct.
 3. `notifications/cancelled` with `params.requestId` cancels that token. The
@@ -83,6 +86,12 @@ state and, in future slices, trigger lazy refresh if a required cache is stale.
    `shutdown` never acquire the analyzer lane and remain responsive while work
    is active. RLM jobs run outside that lane; only mutable access to the single
    warm analyzer session is serialized.
+   The runtime caps general handlers at 64 and work workers at 8. Saturated
+   general capacity feeds a bounded 64-socket, 500 ms aggregate control
+   classifier (64 KiB classification prefix) and up to 8 reserved control
+   handlers. It rejects classified work with the stable general-handler
+   overload error and closes unclassified overflow; no unbounded thread or
+   connection queue is created.
 9. MCP cancellation causes the connector to send `cancel { operation_id }` on a
    separate connection. A disconnected work socket also cancels its operation.
    An operation guard removes the ID on every completion path, so the next call
@@ -94,6 +103,9 @@ state and, in future slices, trigger lazy refresh if a required cache is stale.
     cancellation takes precedence over timeout, EOF, protocol, and successful
     process-exit races. A best-effort `Cancel` is different: it uses a separate
     500 ms aggregate budget for connect, write, and flush and does not read a response.
+    Internal request/response lines are capped at 8 MiB. Request-header parsing
+    has one 5-second aggregate deadline from accept and polls in at most 100 ms
+    slices; receiving another byte never resets the deadline.
 11. Shutdown marks the runtime unavailable, cancels all active operations,
     rejects new work, removes the service record it owns, and drains handlers
     within the configured grace period.

@@ -42,10 +42,22 @@ Unica may start hidden internal services scoped by workspace and source root.
    MCP `notifications/cancelled` flips the same request token that is propagated
    through the application and internal service connector. A cancelled public
    request completes once with JSON-RPC error `-32800` (`request cancelled`).
+   Public JSONL input is limited to 8 MiB per line and at most 32 tool workers
+   are admitted. An oversized line returns parse error `-32700`; excess work
+   returns deterministic JSON-RPC error `-32603` containing `overloaded`.
 10. The service accepts each connection independently. `ping`, `cancel`, and
     `shutdown` do not wait for analyzer or RLM work. RLM jobs may run
     independently, while access to the single warm analyzer session remains
     serialized. Disconnecting a work client cancels its operation.
+    It admits at most 64 general connection handlers and 8 work workers. When
+    general handlers are saturated, a bounded 64-connection classifier with a
+    500 ms aggregate lifetime and a 64 KiB classification prefix preserves a
+    separate capacity of 8 control handlers. Complete work received through
+    that path is rejected with `workspace service overloaded: general connection
+    handlers are saturated`; unclassified overflow is closed. The classifier
+    is processed before each new accept and evicts its oldest pending socket at
+    capacity, so idle clients cannot create an unbounded queue or starve a
+    complete control line.
 11. `shutdown` rejects new work, cancels every registered operation, removes
     the owned `service.json`, and exits after bounded handler cleanup.
 12. Analyzer and RLM child processes are owned as process trees. On Windows a
@@ -73,6 +85,9 @@ Unica may start hidden internal services scoped by workspace and source root.
     protocol, and successful process-exit races. A best-effort `Cancel` has a
     separate 500 ms aggregate budget for connect, write, and flush and does not
     read a response.
+16. Public and internal request lines are limited to 8 MiB. Workspace-service
+    request headers have one 5-second aggregate deadline beginning at accept;
+    100 ms read slices do not reset it when a peer drips bytes.
 
 ## Неграницы
 
