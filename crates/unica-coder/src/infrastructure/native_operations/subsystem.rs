@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, template::*};
 pub(crate) struct SubsystemInfoData {
     pub(crate) name: String,
@@ -1303,11 +1304,39 @@ pub(crate) fn subsystem_known_plural_types() -> &'static [&'static str] {
     ]
 }
 
+struct SubsystemCompileResult {
+    stdout: String,
+    artifacts: Vec<PathBuf>,
+    changes: Vec<String>,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn compile_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = (|| -> Result<(String, Vec<PathBuf>), String> {
+    compile_subsystem_internal(args, context, false)
+}
+
+pub(crate) fn preview_subsystem_compile(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<AdapterOutcome, String> {
+    let outcome = compile_subsystem_internal(args, context, true);
+    if outcome.ok {
+        Ok(outcome)
+    } else {
+        Err(outcome.errors.join("; "))
+    }
+}
+
+fn compile_subsystem_internal(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    dry_run: bool,
+) -> AdapterOutcome {
+    let write_result = (|| -> Result<SubsystemCompileResult, String> {
+        let mut transaction = CompileTransaction::new();
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let value_arg = string_arg(args, &["value", "Value"]);
         if definition_file.is_some() && value_arg.is_some() {
@@ -1478,19 +1507,41 @@ pub(crate) fn compile_subsystem(
             output_dir.join("Subsystems")
         };
 
-        fs::create_dir_all(&subs_dir)
-            .map_err(|err| format!("failed to create {}: {err}", subs_dir.display()))?;
         let target_xml = subs_dir.join(format!("{obj_name}.xml"));
-        write_utf8_bom(&target_xml, &format!("{}\n", lines.join("\n")))?;
+        match fs::symlink_metadata(&target_xml) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                let message = format!(
+                    "[SKIP] Subsystem '{obj_name}' already exists at {}; no files changed\n",
+                    target_xml.display()
+                );
+                return Ok(SubsystemCompileResult {
+                    stdout: message,
+                    artifacts: Vec::new(),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                });
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "existing subsystem target is not a regular file: {}",
+                    target_xml.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect subsystem target {}: {error}",
+                    target_xml.display()
+                ));
+            }
+        }
+        transaction.create_utf8_bom_text(&target_xml, format!("{}\n", lines.join("\n")))?;
         let mut artifacts = vec![target_xml.clone()];
         stdout.push_str(&format!("[OK] Created: {}\n", target_xml.display()));
 
         if !children.is_empty() {
             let child_subs_dir = subs_dir.join(&obj_name).join("Subsystems");
             if !child_subs_dir.exists() {
-                fs::create_dir_all(&child_subs_dir).map_err(|err| {
-                    format!("failed to create {}: {err}", child_subs_dir.display())
-                })?;
                 stdout.push_str(&format!(
                     "[OK] Created directory: {}\n",
                     child_subs_dir.display()
@@ -1504,7 +1555,10 @@ pub(crate) fn compile_subsystem(
                 seen.push(child.clone());
                 let child_xml = child_subs_dir.join(format!("{child}.xml"));
                 if !child_xml.exists() {
-                    write_child_subsystem_stub(&child_xml, child, &format_version)?;
+                    transaction.create_utf8_bom_text(
+                        &child_xml,
+                        child_subsystem_stub_xml(child, &format_version),
+                    )?;
                     stdout.push_str(&format!("[OK] Created stub: {}\n", child_xml.display()));
                     artifacts.push(child_xml);
                 }
@@ -1519,46 +1573,18 @@ pub(crate) fn compile_subsystem(
         };
 
         if let Some(parent_xml_path) = parent_xml_path {
-            if parent_xml_path.exists() {
-                let mut raw_text = fs::read_to_string(&parent_xml_path)
-                    .map_err(|err| format!("failed to read {}: {err}", parent_xml_path.display()))?
-                    .trim_start_matches('\u{feff}')
-                    .to_string();
-                let tag = format!("<Subsystem>{}</Subsystem>", escape_xml(&obj_name));
-                if raw_text.contains(&tag) {
-                    stdout.push_str(&format!(
-                        "[SKIP] Already registered in: {}\n",
-                        parent_xml_path.display()
-                    ));
-                } else if raw_text.contains("<ChildObjects/>") {
-                    let replacement = format!("<ChildObjects>\n\t\t\t{tag}\n\t\t</ChildObjects>");
-                    raw_text = raw_text.replacen("<ChildObjects/>", &replacement, 1);
-                    write_utf8_bom(&parent_xml_path, &raw_text)?;
-                    stdout.push_str(&format!(
-                        "[OK] Registered in: {}\n",
-                        parent_xml_path.display()
-                    ));
-                    artifacts.push(parent_xml_path);
-                } else if raw_text.contains("</ChildObjects>") {
-                    raw_text = raw_text.replacen(
-                        "</ChildObjects>",
-                        &format!("\t\t\t{tag}\n\t\t</ChildObjects>"),
-                        1,
-                    );
-                    write_utf8_bom(&parent_xml_path, &raw_text)?;
-                    stdout.push_str(&format!(
-                        "[OK] Registered in: {}\n",
-                        parent_xml_path.display()
-                    ));
-                    artifacts.push(parent_xml_path);
-                } else {
-                    stdout.push_str(&format!(
-                        "[WARN] ChildObjects not found in: {}\n",
-                        parent_xml_path.display()
-                    ));
+            match transaction.register_canonical_child(&parent_xml_path, "Subsystem", &obj_name)? {
+                RegistrationStatus::Added => stdout.push_str(&format!(
+                    "[OK] Registered in: {}\n",
+                    parent_xml_path.display()
+                )),
+                RegistrationStatus::AlreadyPresent => stdout.push_str(&format!(
+                    "[SKIP] Already registered in: {}\n",
+                    parent_xml_path.display()
+                )),
+                RegistrationStatus::MissingTarget => {
+                    stdout.push_str("[INFO] No parent XML to register in\n")
                 }
-            } else {
-                stdout.push_str("[INFO] No parent XML to register in\n");
             }
         } else {
             stdout.push_str("[INFO] No parent XML to register in\n");
@@ -1572,24 +1598,61 @@ pub(crate) fn compile_subsystem(
         stdout.push_str(&format!("  Children: {}\n", children.len()));
         stdout.push_str(&format!("  File:     {}\n", target_xml.display()));
 
-        Ok((stdout, artifacts))
+        let (artifacts, changes, warnings, output) = if dry_run {
+            (
+                Vec::new(),
+                transaction.dry_run_changes(),
+                Vec::new(),
+                transaction.dry_run_stdout(),
+            )
+        } else {
+            let report = transaction.commit()?;
+            let mut changes = report
+                .created
+                .iter()
+                .map(|path| format!("created {}", path.display()))
+                .collect::<Vec<_>>();
+            changes.extend(
+                report
+                    .updated
+                    .iter()
+                    .map(|path| format!("updated {}", path.display())),
+            );
+            let mut committed_artifacts = report.created;
+            committed_artifacts.extend(report.updated);
+            (
+                committed_artifacts,
+                changes,
+                report.cleanup_warnings,
+                stdout,
+            )
+        };
+
+        Ok(SubsystemCompileResult {
+            stdout: output,
+            artifacts,
+            changes,
+            warnings,
+        })
     })();
 
     match write_result {
-        Ok((stdout, artifacts)) => AdapterOutcome {
+        Ok(result) => AdapterOutcome {
             ok: true,
-            summary: "unica.subsystem.compile completed with native XML writer".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings: Vec::new(),
+            summary: if dry_run {
+                "dry run: unica.subsystem.compile planned native subsystem compilation".to_string()
+            } else {
+                "unica.subsystem.compile completed with native XML writer".to_string()
+            },
+            changes: result.changes,
+            warnings: result.warnings,
             errors: Vec::new(),
-            artifacts: artifacts
+            artifacts: result
+                .artifacts
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect(),
-            stdout: Some(stdout),
+            stdout: Some(result.stdout),
             stderr: None,
             command: None,
         },
@@ -1612,6 +1675,13 @@ pub(crate) fn write_child_subsystem_stub(
     child_name: &str,
     format_version: &str,
 ) -> Result<(), String> {
+    write_utf8_bom(
+        child_path,
+        &child_subsystem_stub_xml(child_name, format_version),
+    )
+}
+
+pub(crate) fn child_subsystem_stub_xml(child_name: &str, format_version: &str) -> String {
     let subsystem_uuid = fresh_uuid();
     let mut lines = Vec::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -1633,7 +1703,7 @@ pub(crate) fn write_child_subsystem_stub(
     lines.push("\t\t<ChildObjects/>".to_string());
     lines.push("\t</Subsystem>".to_string());
     lines.push("</MetaDataObject>".to_string());
-    write_utf8_bom(child_path, &format!("{}\n", lines.join("\n")))
+    format!("{}\n", lines.join("\n"))
 }
 
 pub(crate) fn normalize_subsystem_content_ref(raw: &str) -> String {
@@ -1899,6 +1969,183 @@ mod tests {
         let first_uuid = child_subsystem_uuid(&context.cwd, "GeneratedParentA", "GeneratedChildA");
         let second_uuid = child_subsystem_uuid(&context.cwd, "GeneratedParentB", "GeneratedChildB");
         assert_ne!(first_uuid, second_uuid);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn compile_subsystem_registers_in_canonical_position_and_preserves_crlf() {
+        let context = temp_context("canonical-registration");
+        let config_path = context.cwd.join("Configuration.xml");
+        fs::write(
+            &config_path,
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\r\n",
+                "\t<Configuration>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "\t\t\t<Language>Russian</Language>\r\n",
+                "\t\t\t<StyleItem>Accent</StyleItem>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Configuration>\r\n",
+                "</MetaDataObject><!-- registrar-tail -->\r\n\r\n"
+            ),
+        )
+        .unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let args = compile_args(
+            &context.cwd,
+            json!({
+                "name": "SampleArea",
+                "uuid": "11111111-2222-4333-8444-555555555555"
+            }),
+        );
+
+        let preview = preview_subsystem_compile(&args, &context).unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert!(preview.summary.contains("dry run"));
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.contains("would create") && change.contains("SampleArea.xml")));
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
+        assert!(preview.stdout.unwrap_or_default().contains("@@ bytes"));
+        assert!(preview.artifacts.is_empty());
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert!(!context.cwd.join("Subsystems/SampleArea.xml").exists());
+
+        let outcome = compile_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let bytes = fs::read(&config_path).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains(concat!(
+            "\t\t\t<Language>Russian</Language>\r\n",
+            "\t\t\t<Subsystem>SampleArea</Subsystem>\r\n",
+            "\t\t\t<StyleItem>Accent</StyleItem>\r\n"
+        )));
+        assert!(text.ends_with("<!-- registrar-tail -->\r\n\r\n"));
+        assert!(!text.replace("\r\n", "").contains('\n'));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn nested_subsystem_compile_sorts_names_case_insensitively_in_parent() {
+        let context = temp_context("nested-canonical-order");
+        let parent_path = context.cwd.join("Subsystems/Parent.xml");
+        fs::create_dir_all(parent_path.parent().unwrap()).unwrap();
+        fs::write(
+            &parent_path,
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\r\n",
+                "\t<Subsystem>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "\t\t\t<Subsystem>alpha</Subsystem>\r\n",
+                "\t\t\t<Subsystem>Zulu</Subsystem>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Subsystem>\r\n",
+                "</MetaDataObject><!-- parent-tail -->\r\n"
+            ),
+        )
+        .unwrap();
+        let mut args = compile_args(
+            &context.cwd,
+            json!({
+                "name": "Beta",
+                "uuid": "11111111-2222-4333-8444-555555555555"
+            }),
+        );
+        args.insert(
+            "Parent".to_string(),
+            Value::String(parent_path.display().to_string()),
+        );
+
+        let outcome = compile_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let parent = String::from_utf8(fs::read(&parent_path).unwrap()).unwrap();
+        assert!(parent.contains(concat!(
+            "\t\t\t<Subsystem>alpha</Subsystem>\r\n",
+            "\t\t\t<Subsystem>Beta</Subsystem>\r\n",
+            "\t\t\t<Subsystem>Zulu</Subsystem>\r\n"
+        )));
+        assert!(parent.ends_with("<!-- parent-tail -->\r\n"));
+        assert!(!parent.replace("\r\n", "").contains('\n'));
+        assert!(context
+            .cwd
+            .join("Subsystems/Parent/Subsystems/Beta.xml")
+            .is_file());
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
+        let context = temp_context("repeat-noop");
+        let args = compile_args(
+            &context.cwd,
+            json!({
+                "name": "StableArea",
+                "uuid": "11111111-2222-4333-8444-555555555555",
+                "children": ["StableChild"]
+            }),
+        );
+        let first = compile_subsystem(&args, &context);
+        assert!(first.ok, "{:?}", first.errors);
+        let object_path = context.cwd.join("Subsystems/StableArea.xml");
+        let child_path = context
+            .cwd
+            .join("Subsystems/StableArea/Subsystems/StableChild.xml");
+        let object_before = fs::read(&object_path).unwrap();
+        let child_before = fs::read(&child_path).unwrap();
+
+        let repeated = compile_subsystem(&args, &context);
+
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert!(repeated.changes.is_empty(), "{:?}", repeated.changes);
+        assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&child_path).unwrap(), child_before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn subsystem_compile_rolls_back_after_object_files_failure() {
+        use crate::infrastructure::native_operations::compile_transaction::{
+            with_commit_failpoint, CommitFailpoint,
+        };
+
+        let context = temp_context("rollback-after-files");
+        let config_path = context.cwd.join("Configuration.xml");
+        let config_before = concat!(
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\r\n",
+            "\t<Configuration><ChildObjects/></Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .as_bytes()
+        .to_vec();
+        fs::write(&config_path, &config_before).unwrap();
+        let args = compile_args(
+            &context.cwd,
+            json!({
+                "name": "RollbackArea",
+                "uuid": "11111111-2222-4333-8444-555555555555",
+                "children": ["RollbackChild"]
+            }),
+        );
+
+        let outcome = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            compile_subsystem(&args, &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.errors.join("\n").contains("after object files"));
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert!(!context.cwd.join("Subsystems").exists());
         let _ = fs::remove_dir_all(&context.cwd);
     }
 }

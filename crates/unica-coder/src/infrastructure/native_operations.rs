@@ -6,6 +6,7 @@
 pub(crate) mod cf;
 pub(crate) mod cfe;
 pub(crate) mod common;
+pub(crate) mod compile_transaction;
 pub(crate) mod external;
 pub(crate) mod form;
 pub(crate) mod help;
@@ -39,7 +40,7 @@ impl NativeOperationAdapter {
             if let Some(outcome) = external::preview(operation, tool_name, args, context) {
                 return Ok(outcome);
             }
-            return Ok(AdapterOutcome {
+            let mut fallback = AdapterOutcome {
                 ok: true,
                 summary: format!("dry run: {tool_name} would execute native XML/DSL operation"),
                 changes: if mutating {
@@ -53,7 +54,30 @@ impl NativeOperationAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            });
+            };
+            if let Some(preview) = registry::invoke_preview(operation, args, context) {
+                return match preview {
+                    registry::PreviewInvocation::Unavailable(error) => {
+                        fallback.warnings.push(format!(
+                            "detailed compile preview is unavailable; using safe placeholder: {error}"
+                        ));
+                        Ok(fallback)
+                    }
+                    registry::PreviewInvocation::Planned(Ok(outcome)) => Ok(outcome),
+                    registry::PreviewInvocation::Planned(Err(error)) => Ok(AdapterOutcome {
+                        ok: false,
+                        summary: format!("dry run: {tool_name} compile planning failed"),
+                        changes: Vec::new(),
+                        warnings: Vec::new(),
+                        errors: vec![error.clone()],
+                        artifacts: Vec::new(),
+                        stdout: None,
+                        stderr: Some(format!("{error}\n")),
+                        command: None,
+                    }),
+                };
+            }
+            return Ok(fallback);
         }
 
         if mutating {
@@ -103,6 +127,64 @@ mod tests {
         assert!(result
             .unwrap_err()
             .contains("native mutation handler is not registered"));
+    }
+
+    #[test]
+    fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
+        let root = temp_root("compile-preview-fallback");
+        let context = WorkspaceContext::discover(root.clone()).unwrap();
+
+        let result = NativeOperationAdapter::invoke(
+            "meta-compile",
+            "unica.meta.compile",
+            &Map::new(),
+            &context,
+            true,
+            true,
+        )
+        .expect("a missing preview payload must preserve the legacy dry-run contract");
+
+        assert!(result.ok);
+        assert!(result.summary.contains("dry run"));
+        assert_eq!(
+            result.changes,
+            vec!["no files changed because dryRun is true".to_string()]
+        );
+        assert!(result.artifacts.is_empty());
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("detailed compile preview is unavailable")));
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
+        let root = temp_root("subsystem-preview-parent-fallback");
+        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let args = serde_json::from_value(serde_json::json!({
+            "OutputDir": root.display().to_string(),
+            "Value": r#"{"name":"Child"}"#,
+            "Parent": "Subsystems/Missing.xml"
+        }))
+        .unwrap();
+
+        let result = NativeOperationAdapter::invoke(
+            "subsystem-compile",
+            "unica.subsystem.compile",
+            &args,
+            &context,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(result.ok);
+        assert!(result.summary.contains("dry run"));
+        assert!(result.warnings[0].contains("parent subsystem is unavailable"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root(name: &str) -> PathBuf {

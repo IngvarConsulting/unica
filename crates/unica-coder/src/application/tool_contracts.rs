@@ -1105,7 +1105,7 @@ pub fn validate_workspace_paths(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run && !is_external_init_tool(tool) {
+    if dry_run && !validates_compile_preview_like_apply(tool) && !is_external_init_tool(tool) {
         return Ok(());
     }
     if !is_native_xml_tool(tool) && !matches!(tool.handler, ToolHandler::RuntimeAdapter) {
@@ -1132,7 +1132,9 @@ pub fn validate_native_source_set_format(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if (dry_run && !is_external_init_tool(tool)) || !is_native_xml_tool(tool) {
+    if (dry_run && !validates_compile_preview_like_apply(tool) && !is_external_init_tool(tool))
+        || !is_native_xml_tool(tool)
+    {
         return Ok(());
     }
 
@@ -1184,6 +1186,16 @@ pub fn validate_native_source_set_format(
     }
 
     Ok(())
+}
+
+fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
+    matches!(
+        tool.handler,
+        ToolHandler::NativeOperation {
+            operation: "meta-compile" | "role-compile" | "subsystem-compile",
+            ..
+        }
+    )
 }
 
 fn validate_external_project_format(

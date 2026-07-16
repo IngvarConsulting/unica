@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::common::*;
+use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{
     cf::*, cfe::*, form::*, interface::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
 };
@@ -5868,33 +5869,28 @@ pub(crate) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = (|| -> Result<(String, Vec<PathBuf>), String> {
-        let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
-        let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
-            .ok_or_else(|| "missing required OutputDir argument".to_string())?
-            .to_string();
-        let output_dir = absolutize(PathBuf::from(&output_dir_label), &context.cwd);
-        let json_path = absolutize(json_path_raw.clone(), &context.cwd);
-        if !json_path.is_file() {
-            return Err(format!("File not found: {}", json_path_raw.display()));
-        }
-
-        let json_text = fs::read_to_string(&json_path)
-            .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
-        let defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("failed to parse metadata JSON: {err}"))?;
-        compile_meta_value(defn, &output_dir_label, &output_dir)
-    })();
+    let write_result = plan_meta_compile(args, context).and_then(|(stdout, transaction)| {
+        let report = transaction.commit()?;
+        let mut changes = report
+            .created
+            .iter()
+            .map(|path| format!("created {}", path.display()))
+            .collect::<Vec<_>>();
+        changes.extend(
+            report
+                .updated
+                .iter()
+                .map(|path| format!("updated {}", path.display())),
+        );
+        Ok((stdout, report.created, changes, report.cleanup_warnings))
+    });
 
     match write_result {
-        Ok((stdout, artifacts)) => AdapterOutcome {
+        Ok((stdout, artifacts, changes, warnings)) => AdapterOutcome {
             ok: true,
             summary: "unica.meta.compile completed with native metadata compiler".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings: Vec::new(),
+            changes,
+            warnings,
             errors: Vec::new(),
             artifacts: artifacts
                 .iter()
@@ -5918,14 +5914,57 @@ pub(crate) fn compile_meta(
     }
 }
 
+pub(crate) fn preview_meta_compile(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<AdapterOutcome, String> {
+    let (_stdout, transaction) = plan_meta_compile(args, context)?;
+    Ok(AdapterOutcome {
+        ok: true,
+        summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
+        changes: transaction.dry_run_changes(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        stdout: Some(transaction.dry_run_stdout()),
+        stderr: None,
+        command: None,
+    })
+}
+
+fn plan_meta_compile(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(String, CompileTransaction), String> {
+    let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
+    let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
+        .ok_or_else(|| "missing required OutputDir argument".to_string())?
+        .to_string();
+    let output_dir = absolutize(PathBuf::from(&output_dir_label), &context.cwd);
+    let json_path = absolutize(json_path_raw.clone(), &context.cwd);
+    if !json_path.is_file() {
+        return Err(format!("File not found: {}", json_path_raw.display()));
+    }
+
+    let json_text = fs::read_to_string(&json_path)
+        .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
+    let defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("failed to parse metadata JSON: {err}"))?;
+    let mut transaction = CompileTransaction::new();
+    let (stdout, _planned_artifacts) =
+        compile_meta_value(defn, &output_dir_label, &output_dir, &mut transaction)?;
+    Ok((stdout, transaction))
+}
+
 fn compile_meta_value(
     defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     match defn {
-        Value::Array(items) => compile_meta_batch(items, output_dir_label, output_dir),
-        single => compile_meta_object(single, output_dir_label, output_dir),
+        Value::Array(items) => compile_meta_batch(items, output_dir_label, output_dir, transaction),
+        single => compile_meta_object(single, output_dir_label, output_dir, transaction),
     }
 }
 
@@ -5933,6 +5972,7 @@ fn compile_meta_batch(
     items: Vec<Value>,
     output_dir_label: &str,
     output_dir: &Path,
+    transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     let total = items.len();
     let mut stdout = String::new();
@@ -5940,7 +5980,7 @@ fn compile_meta_batch(
     let mut failed = Vec::<String>::new();
 
     for (index, item) in items.into_iter().enumerate() {
-        match compile_meta_object(item, output_dir_label, output_dir) {
+        match compile_meta_object(item, output_dir_label, output_dir, transaction) {
             Ok((item_stdout, mut item_artifacts)) => {
                 stdout.push_str(&item_stdout);
                 artifacts.append(&mut item_artifacts);
@@ -5969,6 +6009,7 @@ fn compile_meta_object(
     mut defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     if defn.get("type").is_none() {
         if let Some(object_type) = defn.get("objectType").cloned() {
@@ -6002,25 +6043,41 @@ fn compile_meta_object(
     let obj_sub_dir = type_dir.join(obj_name);
     let ext_dir = obj_sub_dir.join("Ext");
 
-    fs::create_dir_all(&type_dir)
-        .map_err(|err| format!("failed to create {}: {err}", type_dir.display()))?;
-    if meta_compile_uses_object_subdir(&obj_type) {
-        fs::create_dir_all(&obj_sub_dir)
-            .map_err(|err| format!("failed to create {}: {err}", obj_sub_dir.display()))?;
+    match fs::symlink_metadata(&main_xml_path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            return Ok((
+                format!(
+                    "[SKIP] {obj_type} '{obj_name}' already exists at {}; no files changed\n",
+                    main_xml_path.display()
+                ),
+                Vec::new(),
+            ));
+        }
+        Ok(_) => {
+            return Err(format!(
+                "existing metadata target is not a regular file: {}",
+                main_xml_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect metadata target {}: {error}",
+                main_xml_path.display()
+            ));
+        }
     }
     let format_version = detect_format_version(output_dir);
     let (metadata_xml, uid) =
         meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
-    write_utf8_bom(&main_xml_path, &metadata_xml)?;
+    transaction.create_utf8_bom_text(&main_xml_path, &metadata_xml)?;
 
     let mut artifacts = vec![main_xml_path.clone()];
     let mut modules_created = Vec::<PathBuf>::new();
     for module_name in meta_compile_module_files(&obj_type) {
         let module_path = ext_dir.join(module_name);
         if !module_path.is_file() {
-            fs::create_dir_all(&ext_dir)
-                .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
-            write_utf8_bom(&module_path, "")?;
+            transaction.create_utf8_bom_text(&module_path, "")?;
             modules_created.push(module_path.clone());
             artifacts.push(module_path.clone());
         }
@@ -6028,15 +6085,17 @@ fn compile_meta_object(
     for (file_name, content) in meta_compile_extra_ext_files(&obj_type, &format_version) {
         let file_path = ext_dir.join(file_name);
         if !file_path.is_file() {
-            fs::create_dir_all(&ext_dir)
-                .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
-            write_utf8_bom(&file_path, &content)?;
+            transaction.create_utf8_bom_text(&file_path, &content)?;
             modules_created.push(file_path.clone());
             artifacts.push(file_path.clone());
         }
     }
 
-    let reg_result = register_compiled_meta_in_configuration(output_dir, &obj_type, obj_name)?;
+    let reg_result = transaction.register_canonical_child(
+        output_dir.join("Configuration.xml"),
+        &obj_type,
+        obj_name,
+    )?;
 
     let attr_count = object
         .get("attributes")
@@ -6098,15 +6157,14 @@ fn compile_meta_object(
                 .unwrap_or("ObjectModule.bsl")
         ));
     }
-    match reg_result.as_deref() {
-        Some("added") => stdout.push_str(&format!(
+    match reg_result {
+        RegistrationStatus::Added => stdout.push_str(&format!(
             "     Configuration.xml: <{obj_type}>{obj_name}</{obj_type}> added to ChildObjects\n"
         )),
-        Some("already") => stdout.push_str(&format!(
+        RegistrationStatus::AlreadyPresent => stdout.push_str(&format!(
             "     Configuration.xml: <{obj_type}>{obj_name}</{obj_type}> already registered\n"
         )),
-        Some("no-childobj") => {}
-        _ => stdout.push_str(&format!(
+        RegistrationStatus::MissingTarget => stdout.push_str(&format!(
             "     Configuration.xml: not found at {}/Configuration.xml (register manually)\n",
             output_dir_label.trim_end_matches(['/', '\\'])
         )),
@@ -9471,19 +9529,19 @@ pub(crate) fn register_compiled_meta_in_configuration(
 ) -> Result<Option<String>, String> {
     metadata_kind(child_tag).ok_or_else(|| format!("Unknown type '{child_tag}'"))?;
     let config_xml_path = output_dir.join("Configuration.xml");
-    if !config_xml_path.is_file() {
-        return Ok(Some("no-config".to_string()));
+    let mut transaction = CompileTransaction::new();
+    let status = transaction.register_canonical_child(&config_xml_path, child_tag, obj_name)?;
+    if status == RegistrationStatus::Added {
+        transaction.commit()?;
     }
-    let mut raw_text = read_utf8_sig(&config_xml_path)?;
-    if !raw_text.contains("<ChildObjects") {
-        return Ok(Some("no-childobj".to_string()));
-    }
-    if cf_edit_add_child_object_text(&mut raw_text, child_tag, obj_name)? {
-        write_utf8_bom(&config_xml_path, &raw_text)?;
-        Ok(Some("added".to_string()))
-    } else {
-        Ok(Some("already".to_string()))
-    }
+    Ok(Some(
+        match status {
+            RegistrationStatus::Added => "added",
+            RegistrationStatus::AlreadyPresent => "already",
+            RegistrationStatus::MissingTarget => "no-config",
+        }
+        .to_string(),
+    ))
 }
 
 #[derive(Default)]
