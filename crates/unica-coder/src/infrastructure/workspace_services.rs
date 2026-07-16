@@ -1426,6 +1426,7 @@ struct BslMcpSession {
     writer: mpsc::SyncSender<BslWriteRequest>,
     rx: mpsc::Receiver<BslReaderEvent>,
     stderr_tail: Arc<Mutex<BoundedByteTail>>,
+    stdout_closed: Arc<AtomicBool>,
     next_id: i64,
     valid: bool,
 }
@@ -1535,7 +1536,9 @@ impl BslMcpSession {
         let (writer, writer_rx) = mpsc::sync_channel::<BslWriteRequest>(1);
         thread::spawn(move || bsl_writer(stdin, writer_rx));
         let (tx, rx) = mpsc::sync_channel::<BslReaderEvent>(8);
-        thread::spawn(move || bsl_reader(stdout, tx));
+        let stdout_closed = Arc::new(AtomicBool::new(false));
+        let stdout_state = Arc::clone(&stdout_closed);
+        thread::spawn(move || bsl_reader_with_state(stdout, tx, stdout_state));
         let stderr_tail = Arc::new(Mutex::new(BoundedByteTail::new(BSL_STDERR_TAIL_LIMIT)));
         let stderr_target = Arc::clone(&stderr_tail);
         thread::spawn(move || bsl_stderr_reader(stderr, stderr_target));
@@ -1545,6 +1548,7 @@ impl BslMcpSession {
             writer,
             rx,
             stderr_tail,
+            stdout_closed,
             next_id: 2,
             valid: true,
         };
@@ -1657,7 +1661,9 @@ impl BslMcpSession {
     }
 
     fn is_reusable(&mut self) -> bool {
-        self.valid && self.child.is_running().unwrap_or(false)
+        self.valid
+            && !self.stdout_closed.load(Ordering::Acquire)
+            && self.child.is_running().unwrap_or(false)
     }
 
     fn send_json_cancellable(
@@ -2341,12 +2347,22 @@ fn bsl_stderr_reader(mut stderr: impl Read, tail: Arc<Mutex<BoundedByteTail>>) {
     }
 }
 
-fn bsl_reader(mut stdout: impl Read, events: mpsc::SyncSender<BslReaderEvent>) {
+#[cfg(test)]
+fn bsl_reader(stdout: impl Read, events: mpsc::SyncSender<BslReaderEvent>) {
+    bsl_reader_with_state(stdout, events, Arc::new(AtomicBool::new(false)));
+}
+
+fn bsl_reader_with_state(
+    mut stdout: impl Read,
+    events: mpsc::SyncSender<BslReaderEvent>,
+    closed: Arc<AtomicBool>,
+) {
     let mut pending = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
         match stdout.read(&mut chunk) {
             Ok(0) => {
+                closed.store(true, Ordering::Release);
                 let event = if pending.is_empty() {
                     BslReaderEvent::Closed
                 } else {
@@ -2387,6 +2403,7 @@ fn bsl_reader(mut stdout: impl Read, events: mpsc::SyncSender<BslReaderEvent>) {
                 }
             }
             Err(error) => {
+                closed.store(true, Ordering::Release);
                 let _ = events.send(BslReaderEvent::ProtocolError(format!(
                     "failed to read persistent bsl-analyzer stdout: {error}"
                 )));
@@ -3281,16 +3298,24 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(2));
         }
         let pid_file = context.cache_root.join("incomplete-eof-child-pid.txt");
+        let read_marker = context
+            .cache_root
+            .join("incomplete-eof-initialize-read.txt");
         let mut command = Command::new(&fixture);
-        command.args(["incomplete-eof", pid_file.to_str().unwrap()]);
+        command.args([
+            "incomplete-eof",
+            pid_file.to_str().unwrap(),
+            read_marker.to_str().unwrap(),
+        ]);
         let started = Instant::now();
         let error = BslMcpSession::start_with_command(command, &CancellationToken::new())
             .err()
             .expect("incomplete initialize response must fail");
-        let child_pid = wait_for_recorded_pid(&pid_file);
+        let process_pid = wait_for_recorded_pid(&pid_file);
+        assert_eq!(fs::read_to_string(&read_marker).unwrap(), "initialize-read");
         assert!(error.contains("incomplete JSON line"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(wait_for_process_exit(child_pid, Duration::from_secs(2)));
+        assert!(wait_for_process_exit(process_pid, Duration::from_secs(2)));
         cleanup(&context);
     }
 
@@ -3437,6 +3462,7 @@ mod tests {
         let context = test_context("dead-warm-session");
         let fixture = compile_exit_after_call_fixture(&context);
         let pid_file = context.cache_root.join("warm-session-pids.txt");
+        let completion_file = context.cache_root.join("warm-session-completed.txt");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
@@ -3444,20 +3470,23 @@ mod tests {
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let fixture_for_start = fixture.clone();
         let pid_file_for_start = pid_file.clone();
+        let completion_file_for_start = completion_file.clone();
         runtime.analyzer_starter = Arc::new(move |_context, _source_root, cancellation| {
             let mut command = Command::new(&fixture_for_start);
-            command.arg(&pid_file_for_start);
+            command.args([&pid_file_for_start, &completion_file_for_start]);
             BslMcpSession::start_with_command(command, cancellation)
         });
         let first =
             runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
         assert!(first.ok, "{:?}", first.error);
         let first_pid = wait_for_recorded_pid(&pid_file);
-        assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
+        wait_for_file(&completion_file, Duration::from_secs(2));
+        wait_for_runtime_stdout_eof(&runtime, Duration::from_secs(2));
 
         let second =
             runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
         assert!(second.ok, "{:?}", second.error);
+        assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
         let pids = fs::read_to_string(&pid_file).unwrap();
         let pids = pids.lines().collect::<Vec<_>>();
         assert_eq!(pids.len(), 2, "{pids:?}");
@@ -3478,12 +3507,13 @@ mod tests {
             r#"use std::{env, fs::OpenOptions, io::{self, BufRead, Write}};
 fn main() {
     let pid_file = env::args().nth(1).unwrap();
+    let completion_file = env::args().nth(2).unwrap();
     writeln!(OpenOptions::new().create(true).append(true).open(pid_file).unwrap(), "{}", std::process::id()).unwrap();
     for (index, line) in io::stdin().lock().lines().enumerate() {
         line.unwrap();
         match index {
             0 => println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}"),
-            2 => { println!("{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}"); io::stdout().flush().unwrap(); break; }
+            2 => { println!("{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}"); io::stdout().flush().unwrap(); std::fs::write(completion_file, b"completed").unwrap(); break; }
             _ => {}
         }
         io::stdout().flush().unwrap();
@@ -3559,6 +3589,34 @@ fn main() {
         }
     }
 
+    fn wait_for_file(path: &Path, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !path.is_file() {
+            assert!(Instant::now() < deadline, "fixture marker was not written");
+            thread::yield_now();
+        }
+    }
+
+    fn wait_for_runtime_stdout_eof(runtime: &WorkspaceServiceRuntime, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let closed = runtime
+                .analyzer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|session| session.stdout_closed.load(Ordering::Acquire));
+            if closed {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "analyzer stdout EOF was not observed"
+            );
+            thread::yield_now();
+        }
+    }
+
     #[cfg(unix)]
     fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -3600,11 +3658,15 @@ fn main() {
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,
-            r#"use std::{env, fs, io::{self, Write}, thread, time::Duration};
+            r#"use std::{env, fs, io::{self, BufRead, Write}, thread, time::Duration};
 fn main() {
     let mode = env::args().nth(1).unwrap_or_default();
     if mode == "incomplete-eof" {
         fs::write(env::args().nth(2).unwrap(), std::process::id().to_string()).unwrap();
+        let mut request = String::new();
+        io::stdin().lock().read_line(&mut request).unwrap();
+        assert!(request.contains("\"method\":\"initialize\""));
+        fs::write(env::args().nth(3).unwrap(), "initialize-read").unwrap();
         print!("{{\"jsonrpc\":\"2.0\",\"id\":1");
         io::stdout().flush().unwrap();
         return;
