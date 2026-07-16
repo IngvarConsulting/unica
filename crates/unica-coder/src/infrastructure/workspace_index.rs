@@ -2,7 +2,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::source_roots::resolve_source_root;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::managed_child::{ManagedChild, ManagedCommand};
+use crate::infrastructure::managed_child::{ManagedChild, ManagedCommand, ManagedOutput};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -624,7 +624,7 @@ fn run_background_job(mut job: IndexBackgroundJob) {
     let result = run_index_command_with_heartbeat(&job.primary, Some(&mut job.lock_lease));
     let finished_at = now_secs();
     match result {
-        Ok(output) if output.status_success => {
+        Ok(output) if output.status_success && !output.cancelled && !output.timed_out => {
             let metrics =
                 BslIndexRunMetrics::from_output(&job.action, started_at, finished_at, &output);
             match run_index_command(&job.info) {
@@ -724,15 +724,19 @@ fn run_index_command_with_heartbeat(
             }
         })
         .map_err(|error| format!("failed to collect RLM index output: {error}"))?;
-    Ok(IndexOutput {
-        status_success: output.status_success,
+    Ok(map_managed_output(output, started.elapsed()))
+}
+
+fn map_managed_output(output: ManagedOutput, elapsed: Duration) -> IndexOutput {
+    IndexOutput {
+        status_success: output.status_success && !output.cancelled && !output.timed_out,
         status: output.status,
         stdout: output.stdout,
         stderr: output.stderr,
         timed_out: output.timed_out,
         cancelled: output.cancelled,
-        duration_ms: duration_ms(started.elapsed()),
-    })
+        duration_ms: duration_ms(elapsed),
+    }
 }
 
 fn readiness_from_info(output: &IndexOutput) -> IndexReadiness {
@@ -1501,6 +1505,44 @@ source-set:
         assert!(!output.status_success);
         assert!(started.elapsed() < Duration::from_secs(2));
         cleanup(&context);
+    }
+
+    #[test]
+    fn managed_cancelled_output_never_maps_to_success() {
+        let output = map_managed_output(
+            crate::infrastructure::managed_child::ManagedOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+            },
+            Duration::from_millis(1),
+        );
+
+        assert!(!output.status_success);
+        assert!(output.cancelled);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn managed_timed_out_output_never_maps_to_success() {
+        let output = map_managed_output(
+            crate::infrastructure::managed_child::ManagedOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: true,
+                cancelled: false,
+            },
+            Duration::from_millis(1),
+        );
+
+        assert!(!output.status_success);
+        assert!(output.timed_out);
+        assert!(!output.cancelled);
     }
 
     #[test]
