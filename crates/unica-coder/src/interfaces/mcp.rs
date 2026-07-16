@@ -103,7 +103,7 @@ fn dispatch_tool_call<W: Write + Send + 'static>(
     handler: Arc<ToolCallHandler>,
     registry: CancellationRegistry,
     writer: Arc<Mutex<W>>,
-) {
+) -> bool {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let cancellation = match registry.register(&id) {
         Ok(cancellation) => cancellation,
@@ -111,7 +111,7 @@ fn dispatch_tool_call<W: Write + Send + 'static>(
             if !write_response(&writer, error_response(id, -32600, &message)) {
                 registry.fail();
             }
-            return;
+            return false;
         }
     };
 
@@ -138,6 +138,7 @@ fn dispatch_tool_call<W: Write + Send + 'static>(
             registry.fail();
         }
     });
+    true
 }
 
 fn write_response<W: Write>(writer: &Arc<Mutex<W>>, response: Value) -> bool {
@@ -676,12 +677,13 @@ mod tests {
 
     #[test]
     fn mcp_dispatcher_worker_panic_releases_request_id() {
-        let (sender, receiver) = mpsc::channel();
+        let registry = CancellationRegistry::default();
         let writer = SharedWriter::default();
         let output = writer.clone();
+        let writer = Arc::new(Mutex::new(writer));
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
-        let handler = Arc::new(
+        let handler: Arc<ToolCallHandler> = Arc::new(
             move |_name: &str,
                   _arguments: &Map<String, Value>,
                   _cancellation: CancellationToken| {
@@ -691,24 +693,32 @@ mod tests {
                 Ok("second call completed".to_string())
             },
         );
-        let dispatcher = thread::spawn(move || {
-            run_stdio_with_handler(
-                BufReader::new(ChannelReader::new(receiver)),
-                writer,
-                Arc::new(UnicaApplication::new()),
-                handler,
-            )
-        });
         let request = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "unica.code.search", "arguments": {} } });
 
-        send_message(&sender, request.clone());
+        assert!(dispatch_tool_call(
+            request.clone(),
+            Arc::clone(&handler),
+            registry.clone(),
+            Arc::clone(&writer),
+        ));
         let deadline = Instant::now() + Duration::from_secs(2);
-        while calls.load(Ordering::SeqCst) < 1 {
-            assert!(Instant::now() < deadline, "first worker did not start");
-            thread::sleep(Duration::from_millis(5));
+        loop {
+            match registry.register(&json!(7)) {
+                Ok(_) => {
+                    registry.finish(&json!(7));
+                    break;
+                }
+                Err(error) if error.starts_with("duplicate request id:") => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "panic cleanup did not release request id"
+                    );
+                    thread::yield_now();
+                }
+                Err(error) => panic!("unexpected registry error: {error}"),
+            }
         }
-        thread::sleep(Duration::from_millis(20));
-        send_message(&sender, request);
+        assert!(dispatch_tool_call(request, handler, registry, writer));
 
         let responses = output.wait_for_responses(1);
         assert_eq!(responses[0]["id"], 7);
@@ -718,9 +728,6 @@ mod tests {
             responses[0]
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-
-        drop(sender);
-        dispatcher.join().unwrap();
     }
 
     #[test]
@@ -794,12 +801,12 @@ mod tests {
             Ok("done".to_string())
         });
 
-        dispatch_tool_call(
+        assert!(dispatch_tool_call(
             json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "unica.code.search", "arguments": {} } }),
             Arc::clone(&handler),
             registry.clone(),
             Arc::clone(&writer),
-        );
+        ));
         let deadline = Instant::now() + Duration::from_secs(2);
         while !write_failed.load(Ordering::SeqCst) || !registry.is_failed() {
             assert!(
@@ -809,14 +816,14 @@ mod tests {
             thread::yield_now();
         }
 
-        dispatch_tool_call(
+        let spawned = dispatch_tool_call(
             json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": { "name": "unica.code.search", "arguments": {} } }),
             handler,
             registry,
             writer,
         );
-        thread::sleep(Duration::from_millis(20));
 
+        assert!(!spawned, "terminal dispatcher spawned a rejected worker");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
