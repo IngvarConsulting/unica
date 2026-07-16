@@ -15,6 +15,8 @@ pub struct ProjectSourceMap {
     pub effective_source_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_selection_error: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) configured_format_raw: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,10 +57,10 @@ struct ConfigSourceSet {
 
 pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourceMap, String> {
     let config_path = find_project_config(workspace_root);
-    let mut source_sets = if let Some(path) = &config_path {
+    let (mut source_sets, configured_format_raw) = if let Some(path) = &config_path {
         read_config_source_sets(workspace_root, path)?
     } else {
-        autodetect_source_sets(workspace_root)
+        (autodetect_source_sets(workspace_root), None)
     };
 
     if source_sets.is_empty() {
@@ -91,6 +93,7 @@ pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourc
         effective_source_set,
         effective_source_root,
         source_selection_error,
+        configured_format_raw,
     })
 }
 
@@ -102,12 +105,24 @@ fn find_project_config(workspace_root: &Path) -> Option<PathBuf> {
 fn read_config_source_sets(
     workspace_root: &Path,
     config_path: &Path,
-) -> Result<Vec<ConfigSourceSet>, String> {
+) -> Result<(Vec<ConfigSourceSet>, Option<String>), String> {
     let text = std::fs::read_to_string(config_path)
         .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
     let yaml = serde_yaml::from_str::<YamlValue>(&text)
         .map_err(|err| format!("failed to parse {}: {err}", config_path.display()))?;
-    let default_format = yaml_string(&yaml, "format").and_then(source_format_from_config);
+    let configured_format_raw = match yaml_mapping_get(&yaml, "format") {
+        None => None,
+        Some(YamlValue::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(format!(
+                "{} field `format` must be a string",
+                config_path.display()
+            ));
+        }
+    };
+    let default_format = configured_format_raw
+        .clone()
+        .and_then(source_format_from_config);
     let base_path = yaml_string(&yaml, "basePath").unwrap_or_else(|| ".".to_string());
     let source_set_value = yaml_mapping_get(&yaml, "source-set");
     let mut source_sets = Vec::new();
@@ -141,7 +156,7 @@ fn read_config_source_sets(
         source_set.path = normalize_configured_path(workspace_root, &base_path, &source_set.path);
     }
 
-    Ok(source_sets)
+    Ok((source_sets, configured_format_raw))
 }
 
 fn config_source_set_from_yaml(

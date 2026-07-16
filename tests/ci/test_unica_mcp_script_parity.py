@@ -4,10 +4,13 @@ import dataclasses
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -1130,6 +1133,35 @@ SUCCESS_SCENARIOS = [
         fixtures=(
             FileFixture("form-simple.json", "fixtures/form-simple.json"),
             FileFixture("form-edit/additions.json", "fixtures/form-edit-additions.json"),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
+        name="form-edit-valuetable-attribute-columns",
+        tool="unica.form.edit",
+        skill="form-edit",
+        script="form-edit.py",
+        arguments={
+            "FormPath": "forms/Form.xml",
+            "JsonPath": "fixtures/form-edit-valuetable-columns.json",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="form-compile",
+                script="form-compile.py",
+                arguments={
+                    "JsonPath": "fixtures/form-simple.json",
+                    "OutputPath": "forms/Form.xml",
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture("form-simple.json", "fixtures/form-simple.json"),
+            FileFixture(
+                "form-edit/valuetable-columns.json",
+                "fixtures/form-edit-valuetable-columns.json",
+            ),
         ),
         expect_ok=True,
         compare_files=True,
@@ -4091,6 +4123,52 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             self.assertTrue(validate["ok"], json.dumps(validate, ensure_ascii=False, indent=2))
             self.assertEqual(config_path.read_bytes(), before)
 
+    def test_form_edit_rejects_invalid_platform_event_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="unica-issue77-form-events-") as temp:
+            temp_root = Path(temp)
+            workspace = temp_root / "workspace"
+            cache = temp_root / "cache"
+            workspace.mkdir()
+            form_path = workspace / "Form.xml"
+            form_path.write_text(
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+      xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"
+      xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+\t<AutoCommandBar name="FormCommandBar" id="-1"/>
+\t<ChildItems/>
+\t<Attributes>
+\t\t<Attribute name="Object" id="1">
+\t\t\t<Type><v8:Type>cfg:DataProcessorObject.EventProbe</v8:Type></Type>
+\t\t\t<MainAttribute>true</MainAttribute>
+\t\t</Attribute>
+\t</Attributes>
+\t<Commands/>
+</Form>""",
+                encoding="utf-8",
+            )
+            definition_path = workspace / "invalid-events.json"
+            shutil.copyfile(
+                FIXTURES_ROOT / "form-edit" / "invalid-events.json",
+                definition_path,
+            )
+            before = form_path.read_bytes()
+
+            result = self.call_mcp_tool(
+                "unica.form.edit",
+                {
+                    "FormPath": "Form.xml",
+                    "JsonPath": "invalid-events.json",
+                },
+                workspace,
+                cache,
+            )
+
+            self.assertFalse(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
+            self.assertIn("FORM_EVENT_NOT_ALLOWED", "\n".join(result.get("errors", [])))
+            self.assertEqual(result.get("changes"), [])
+            self.assertEqual(form_path.read_bytes(), before)
+
     def test_bsp_skd_edit_parity_covers_documented_operations(self) -> None:
         covered = set()
         for scenario in SCENARIOS:
@@ -4117,6 +4195,26 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
                 encoding="utf-8",
             )
+            for example in examples:
+                if example.skill != "form-edit":
+                    continue
+                arguments = example.payload["params"]["arguments"]
+                form_path = workspace / arguments["FormPath"]
+                form_path.parent.mkdir(parents=True, exist_ok=True)
+                form_path.write_text(
+                    """<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+\t<AutoCommandBar name="FormCommandBar" id="-1"/>
+\t<ChildItems/>
+\t<Attributes/>
+\t<Commands/>
+</Form>
+""",
+                    encoding="utf-8",
+                )
+                json_path = workspace / arguments["JsonPath"]
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                json_path.write_text("{}\n", encoding="utf-8")
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
@@ -4307,24 +4405,73 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        result = subprocess.run(
+        responses = self.run_mcp_messages([message], env)
+        self.assertEqual(len(responses), 1, responses)
+        response = responses[0]
+        if "error" in response:
+            raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
+        return json.loads(response["result"]["content"][0]["text"])
+
+    def run_mcp_messages(
+        self,
+        messages: list[dict[str, Any]],
+        env: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        process = subprocess.Popen(
             [str(self.unica_bin)],
-            input=json.dumps(message, ensure_ascii=False) + "\n",
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             cwd=REPO_ROOT,
             env=env,
-            check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        response_lines = [line for line in result.stdout.splitlines() if line.strip()]
-        self.assertEqual(len(response_lines), 1, result.stdout)
-        response = json.loads(response_lines[0])
-        if "error" in response:
-            raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
-        return json.loads(response["result"]["content"][0]["text"])
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        lines: queue.Queue[str] = queue.Queue()
+
+        def read_stdout() -> None:
+            while True:
+                line = process.stdout.readline()
+                lines.put(line)
+                if not line:
+                    return
+
+        threading.Thread(target=read_stdout, daemon=True).start()
+        deadline = time.monotonic() + 30
+        try:
+            for message in messages:
+                process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+
+            responses = []
+            for _ in messages:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.fail("timed out waiting for MCP response")
+                try:
+                    line = lines.get(timeout=remaining)
+                except queue.Empty:
+                    self.fail("timed out waiting for MCP response")
+                if not line:
+                    self.fail("MCP process exited before all responses arrived")
+                responses.append(json.loads(line))
+
+            process.stdin.close()
+            return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            stderr = process.stderr.read()
+            self.assertEqual(return_code, 0, stderr)
+            return responses
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
 
     def call_mcp_messages(
         self,
@@ -4334,19 +4481,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        result = subprocess.run(
-            [str(self.unica_bin)],
-            input="\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            cwd=REPO_ROOT,
-            env=env,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        responses = []
+        for start in range(0, len(messages), 32):
+            batch = messages[start : start + 32]
+            responses.extend(self.run_mcp_messages(batch, env))
         return {response["id"]: response for response in responses}
 
 

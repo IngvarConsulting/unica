@@ -103,6 +103,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.project.status", tools)
         self.assertIn("unica.project.map", tools)
         self.assertIn("unica.form.edit", tools)
+        self.assertIn("unica.epf.init", tools)
+        self.assertIn("unica.erf.init", tools)
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
@@ -179,3 +181,90 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("bin/", command)
         self.assertIn("v8-runner", command)
         self.assertNotIn("run-v8-runner.sh", command)
+
+    def test_external_init_creates_epf_and_erf_fixture_scenarios(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "v8project.yaml").write_text(
+                "format: DESIGNER\n"
+                "source-set:\n"
+                "  - name: external-processors\n"
+                "    type: EXTERNAL_DATA_PROCESSORS\n"
+                "    path: epf\n"
+                "  - name: external-reports\n"
+                "    type: EXTERNAL_REPORTS\n"
+                "    path: erf\n",
+                encoding="utf-8",
+            )
+            responses = self.call_mcp(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.epf.init",
+                            "arguments": {
+                                "cwd": str(tmp_path),
+                                "Name": "Import",
+                                "Synonym": "Import & prices",
+                                "OutputDir": "epf",
+                                "FormName": "MainForm",
+                                "dryRun": False,
+                            },
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.erf.init",
+                            "arguments": {
+                                "cwd": str(tmp_path),
+                                "Name": "Balances",
+                                "OutputDir": "erf",
+                                "dryRun": False,
+                            },
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.project.map",
+                            "arguments": {"cwd": str(tmp_path)},
+                        },
+                    },
+                ],
+                cache_dir=tmp_path / "cache",
+            )
+
+            payloads = {
+                response["id"]: json.loads(response["result"]["content"][0]["text"])
+                for response in responses
+            }
+            self.assertTrue(payloads[1]["ok"], payloads[1])
+            self.assertTrue(payloads[2]["ok"], payloads[2])
+            self.assertEqual(len(payloads[1]["artifacts"]), 5)
+            self.assertEqual(len(payloads[2]["artifacts"]), 2)
+
+            epf_descriptor = (tmp_path / "epf/Import.xml").read_text(encoding="utf-8-sig")
+            erf_descriptor = (tmp_path / "erf/Balances.xml").read_text(encoding="utf-8-sig")
+            self.assertIn("<ExternalDataProcessor", epf_descriptor)
+            self.assertIn("Import &amp; prices", epf_descriptor)
+            self.assertIn("<Form>MainForm</Form>", epf_descriptor)
+            self.assertIn("<ExternalReport", erf_descriptor)
+            self.assertIn("<MainDataCompositionSchema/>", erf_descriptor)
+            self.assertTrue((tmp_path / "epf/Import/Ext/ObjectModule.bsl").is_file())
+            self.assertTrue((tmp_path / "epf/Import/Forms/MainForm/Ext/Form.xml").is_file())
+            self.assertTrue((tmp_path / "erf/Balances/Ext/ObjectModule.bsl").is_file())
+            source_sets = {
+                source_set["name"]: source_set
+                for source_set in json.loads(payloads[3]["stdout"])["sourceSets"]
+            }
+            self.assertEqual(source_sets["external-processors"]["kind"], "external_processor")
+            self.assertEqual(source_sets["external-processors"]["sourceFormat"], "platform_xml")
+            self.assertEqual(source_sets["external-reports"]["kind"], "external_report")
+            self.assertEqual(source_sets["external-reports"]["sourceFormat"], "platform_xml")

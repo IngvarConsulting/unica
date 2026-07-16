@@ -1,13 +1,17 @@
 use super::operation_descriptors::native_operation_descriptor;
 use super::{ToolHandler, ToolSpec};
-use crate::domain::project_sources::{discover_project_source_map, SourceFormat};
+use crate::domain::project_sources::{discover_project_source_map, SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
+const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
+const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
 
 const META_EDIT_OPERATIONS: &[&str] = &[
     "modify-property",
@@ -218,6 +222,8 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "version",
     "withText",
 ];
+
+const EXTERNAL_INIT_ARGS: &[&str] = &["FormName", "Name", "OutputDir", "Synonym"];
 
 const BUILD_ARGS: &[&str] = &[
     "config",
@@ -555,12 +561,20 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         properties.insert(name.to_string(), property_schema_for_tool(tool, name));
     }
 
-    json!({
+    let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
         "required": required_args(tool),
-    })
+    });
+    if tool.name == "unica.form.edit" {
+        schema["oneOf"] = json!([
+            {"required": ["JsonPath"]},
+            {"required": ["jsonPath"]},
+            {"required": ["definition"]}
+        ]);
+    }
+    schema
 }
 
 pub fn validate_tool_arguments(
@@ -583,13 +597,18 @@ pub fn validate_tool_arguments(
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
+    if let ToolHandler::RuntimeJob { action } = tool.handler {
+        validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
+    }
     validate_code_arguments(tool, args, dry_run)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
+    validate_form_edit_arguments(tool, args, dry_run)?;
     validate_template_add_arguments(tool, args)?;
     validate_support_arguments(tool, args, dry_run)?;
+    validate_external_init_arguments(tool, args)?;
 
-    if !dry_run {
+    if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
             if !args.contains_key(required) {
                 return Err(format!("{} requires `{required}` argument", tool.name));
@@ -600,11 +619,64 @@ pub fn validate_tool_arguments(
     Ok(())
 }
 
+fn validate_external_init_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if !is_external_init_tool(tool) {
+        return Ok(());
+    }
+    for key in ["Name", "Synonym", "OutputDir", "FormName"] {
+        let Some(value) = args.get(key) else {
+            continue;
+        };
+        let Some(value) = value.as_str() else {
+            return Err(format!("{} argument `{key}` must be string", tool.name));
+        };
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{} argument `{key}` must be a non-empty string",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
     if tool.name != "unica.form.add" {
         return Ok(());
     }
     validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
+}
+
+fn validate_form_edit_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    if tool.name != "unica.form.edit" {
+        return Ok(());
+    }
+
+    validate_unique_alias_group(tool.name, args, &["FormPath", "formPath", "Path", "path"])?;
+    validate_unique_alias_group(tool.name, args, &["JsonPath", "jsonPath", "definition"])?;
+
+    let has_target = contains_any(args, &["FormPath", "formPath", "Path", "path"]);
+    let has_payload = contains_any(args, &["JsonPath", "jsonPath", "definition"]);
+    if !dry_run || has_target || has_payload {
+        if !has_target {
+            return Err(format!("{} requires `FormPath` argument", tool.name));
+        }
+        if !has_payload {
+            return Err(format!(
+                "{} requires exactly one of `JsonPath` or `definition`",
+                tool.name
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_template_add_arguments(
@@ -881,6 +953,58 @@ fn validate_runtime_arguments(
     Ok(())
 }
 
+fn validate_runtime_job_arguments(
+    tool_name: &str,
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    if action == RuntimeJobAction::Start {
+        return validate_runtime_arguments(tool_name, args, dry_run);
+    }
+    if action == RuntimeJobAction::List {
+        return Ok(());
+    }
+    let Some(job_id) = args.get("jobId") else {
+        return Err(format!("{tool_name} requires `jobId` argument"));
+    };
+    let Some(job_id) = job_id.as_str() else {
+        return Err(format!("{tool_name} argument `jobId` must be string"));
+    };
+    Uuid::parse_str(job_id).map_err(|_| format!("{tool_name} argument `jobId` must be a UUID"))?;
+
+    if action == RuntimeJobAction::Wait {
+        validate_runtime_job_bound(tool_name, args, "timeoutSeconds", 1, 60)?;
+    }
+    if action == RuntimeJobAction::Logs {
+        validate_runtime_job_bound(tool_name, args, "tailChars", 1, 32_768)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_job_bound(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+    minimum: u64,
+    maximum: u64,
+) -> Result<(), String> {
+    let Some(value) = args.get(key) else {
+        return Ok(());
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(format!("{tool_name} argument `{key}` must be integer"));
+    };
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!(
+            "{tool_name} argument `{key}` must be between {minimum} and {maximum}"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_string_array_argument(
     tool_name: &str,
     args: &Map<String, Value>,
@@ -1078,10 +1202,18 @@ pub fn validate_workspace_paths(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run {
+    if dry_run && !validates_compile_preview_like_apply(tool) && !is_external_init_tool(tool) {
         return Ok(());
     }
-    if !is_native_xml_tool(tool) && !matches!(tool.handler, ToolHandler::RuntimeAdapter) {
+    if !is_native_xml_tool(tool)
+        && !matches!(
+            tool.handler,
+            ToolHandler::RuntimeAdapter
+                | ToolHandler::RuntimeJob {
+                    action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start
+                }
+        )
+    {
         return Ok(());
     }
 
@@ -1105,13 +1237,19 @@ pub fn validate_native_source_set_format(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run || !is_native_xml_tool(tool) {
+    if (dry_run && !validates_compile_preview_like_apply(tool) && !is_external_init_tool(tool))
+        || !is_native_xml_tool(tool)
+    {
         return Ok(());
     }
 
     let source_map = discover_project_source_map(&context.workspace_root)?;
-    if source_map.source_sets.is_empty() {
+    if source_map.source_sets.is_empty() && !is_external_init_tool(tool) {
         return Ok(());
+    }
+
+    if is_external_init_tool(tool) {
+        validate_external_project_format(tool, &source_map)?;
     }
 
     for key in native_source_path_args(tool) {
@@ -1119,6 +1257,10 @@ pub fn validate_native_source_set_format(
             continue;
         };
         let target = resolve_read_path(&context.cwd, raw_path);
+        if is_external_init_tool(tool) {
+            validate_external_init_destination(tool, &target, context, &source_map)?;
+            continue;
+        }
         let Some(source_set) = source_map
             .source_sets
             .iter()
@@ -1151,12 +1293,159 @@ pub fn validate_native_source_set_format(
     Ok(())
 }
 
+fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
+    matches!(
+        tool.handler,
+        ToolHandler::NativeOperation {
+            operation: "meta-compile" | "role-compile" | "subsystem-compile",
+            ..
+        }
+    )
+}
+
+fn validate_external_project_format(
+    tool: ToolSpec,
+    source_map: &crate::domain::project_sources::ProjectSourceMap,
+) -> Result<(), String> {
+    match source_map.configured_format_raw.as_deref() {
+        None | Some("DESIGNER") => Ok(()),
+        Some("EDT") => Err(format!(
+            "{} requires v8project.yaml format=DESIGNER; format=EDT uses a different external-project layout",
+            tool.name
+        )),
+        Some(other) => Err(format!(
+            "{} requires v8project.yaml format to be exact `DESIGNER` (or omitted for the Designer default); got {other:?}",
+            tool.name
+        )),
+    }
+}
+
+fn validate_external_init_destination(
+    tool: ToolSpec,
+    target: &Path,
+    context: &WorkspaceContext,
+    source_map: &crate::domain::project_sources::ProjectSourceMap,
+) -> Result<(), String> {
+    reject_symlink_components(target, &context.workspace_root)?;
+    let Some(expected_kind) = external_init_source_set_kind(tool) else {
+        return Ok(());
+    };
+
+    let matching_source_set = source_map
+        .source_sets
+        .iter()
+        .filter_map(|source_set| {
+            let source_root = normalize_lexical(&context.workspace_root.join(&source_set.path));
+            path_starts_with_case_insensitive(target, &source_root)
+                .then_some((source_set, source_root))
+        })
+        .max_by_key(|(_, source_root)| source_root.components().count());
+    let Some((source_set, source_root)) = matching_source_set else {
+        return Ok(());
+    };
+
+    if target != source_root {
+        let aliases_source_root = target.components().count() == source_root.components().count();
+        if aliases_source_root
+            || matches!(
+                source_set.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            )
+        {
+            return Err(format!(
+                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
+                tool.name,
+                source_root.display(),
+                target.display()
+            ));
+        }
+        return Ok(());
+    }
+    if source_set.kind != expected_kind {
+        return Err(format!(
+            "{} targets source-set `{}` of kind {:?}; expected {:?}",
+            tool.name, source_set.name, source_set.kind, expected_kind
+        ));
+    }
+    match source_set.source_format {
+        SourceFormat::PlatformXml | SourceFormat::Unknown => Ok(()),
+        SourceFormat::Edt => Err(format!(
+            "{} targets source-set `{}` with sourceFormat=edt; native platform XML tools require sourceFormat=platform_xml",
+            tool.name, source_set.name
+        )),
+        SourceFormat::Invalid => Err(format!(
+            "{} targets source-set `{}` with invalid/ambiguous format; native platform XML tools require sourceFormat=platform_xml",
+            tool.name, source_set.name
+        )),
+    }
+}
+
+fn reject_symlink_components(target: &Path, workspace_root: &Path) -> Result<(), String> {
+    let workspace_root = normalize_lexical(workspace_root);
+    let relative = target.strip_prefix(&workspace_root).map_err(|_| {
+        format!(
+            "external scaffold target is outside workspace root: {}",
+            target.display()
+        )
+    })?;
+    let mut current = workspace_root;
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
+                return Err(format!(
+                    "external scaffold OutputDir must not traverse symlink: {}",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!("failed to inspect {}: {error}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn metadata_is_link_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+    path_components.len() >= base_components.len()
+        && path_components
+            .iter()
+            .zip(base_components.iter())
+            .all(|(left, right)| {
+                left.as_os_str().to_string_lossy().to_lowercase()
+                    == right.as_os_str().to_string_lossy().to_lowercase()
+            })
+}
+
 fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.write_path_args)
             .unwrap_or(&[]),
         ToolHandler::RuntimeAdapter => &["config", "path", "output", "settings", "mcpConfig"],
+        ToolHandler::RuntimeJob {
+            action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start,
+        } => &["config", "path", "output", "settings", "mcpConfig"],
         _ => &[],
     }
 }
@@ -1202,9 +1491,13 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => {
             names.extend(native_args_for(operation));
+            if operation == "form-edit" {
+                names.push("definition");
+            }
         }
         ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
+        ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1214,8 +1507,23 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     names
 }
 
-fn native_args_for(_operation: &str) -> &'static [&'static str] {
-    NATIVE_XML_DSL_ARGS
+fn native_args_for(operation: &str) -> &'static [&'static str] {
+    match operation {
+        "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
+        _ => NATIVE_XML_DSL_ARGS,
+    }
+}
+
+fn is_external_init_tool(tool: ToolSpec) -> bool {
+    matches!(tool.name, "unica.epf.init" | "unica.erf.init")
+}
+
+fn external_init_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
+    match tool.name {
+        "unica.epf.init" => Some(SourceSetKind::ExternalProcessor),
+        "unica.erf.init" => Some(SourceSetKind::ExternalReport),
+        _ => None,
+    }
 }
 
 fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
@@ -1228,6 +1536,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             ..
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
+        ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.definition" => vec!["name"],
             "unica.code.outline" => vec!["path"],
@@ -1255,6 +1564,35 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
 fn runtime_required_args(tool: &ToolSpec) -> Vec<&'static str> {
     debug_assert!(matches!(tool.handler, ToolHandler::RuntimeAdapter));
     vec!["operation"]
+}
+
+fn runtime_job_args(
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+) -> &'static [&'static str] {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    match action {
+        RuntimeJobAction::Start => RUNTIME_ARGS,
+        RuntimeJobAction::Status | RuntimeJobAction::Cancel => RUNTIME_JOB_STATUS_ARGS,
+        RuntimeJobAction::Wait => RUNTIME_JOB_WAIT_ARGS,
+        RuntimeJobAction::Logs => RUNTIME_JOB_LOGS_ARGS,
+        RuntimeJobAction::List => &[],
+    }
+}
+
+fn runtime_job_required_args(
+    action: crate::infrastructure::internal_adapters::RuntimeJobAction,
+) -> Vec<&'static str> {
+    use crate::infrastructure::internal_adapters::RuntimeJobAction;
+
+    match action {
+        RuntimeJobAction::Start => vec!["operation"],
+        RuntimeJobAction::Status
+        | RuntimeJobAction::Wait
+        | RuntimeJobAction::Logs
+        | RuntimeJobAction::Cancel => vec!["jobId"],
+        RuntimeJobAction::List => Vec::new(),
+    }
 }
 
 fn property_schema(name: &str) -> Value {
@@ -1316,6 +1654,8 @@ fn property_schema(name: &str) -> Value {
             | "regex"
     ) {
         "boolean"
+    } else if name == "definition" {
+        "object"
     } else if matches!(
         name,
         "limit"
@@ -1328,6 +1668,8 @@ fn property_schema(name: &str) -> Value {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "timeoutSeconds"
+            | "tailChars"
     ) {
         "integer"
     } else if matches!(
@@ -1367,7 +1709,13 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
-    if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
+    if matches!(
+        tool.handler,
+        ToolHandler::RuntimeAdapter
+            | ToolHandler::RuntimeJob {
+                action: crate::infrastructure::internal_adapters::RuntimeJobAction::Start
+            }
+    ) {
         match name {
             "operation" => return json!({ "type": "string", "enum": RUNTIME_OPERATIONS }),
             "clientMode" => {
@@ -1428,6 +1776,9 @@ fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(
         }
         Some("array") if !value.is_array() => {
             Err(format!("{tool_name} argument `{key}` must be array"))
+        }
+        Some("object") if !value.is_object() => {
+            Err(format!("{tool_name} argument `{key}` must be object"))
         }
         _ => Ok(()),
     }
@@ -1492,6 +1843,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "regex"
     ) {
         Some("boolean")
+    } else if key == "definition" {
+        Some("object")
     } else if matches!(
         key,
         "limit"
@@ -1504,6 +1857,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "maxFiles"
             | "rangeStart"
             | "rangeEnd"
+            | "timeoutSeconds"
+            | "tailChars"
     ) {
         Some("integer")
     } else if matches!(
@@ -1562,6 +1917,61 @@ mod tests {
         let args = Map::new();
 
         validate_tool_arguments(tool, &args, true).unwrap();
+    }
+
+    #[test]
+    fn form_edit_contract_accepts_inline_definition_or_json_path() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.form.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&tool);
+        assert_eq!(schema["properties"]["definition"]["type"], "object");
+        assert_eq!(schema["required"], json!(["FormPath"]));
+        assert_eq!(
+            schema["oneOf"],
+            json!([
+                {"required": ["JsonPath"]},
+                {"required": ["jsonPath"]},
+                {"required": ["definition"]}
+            ])
+        );
+
+        let validate_tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.form.validate")
+            .unwrap();
+        let validate_schema = input_schema_for_tool(&validate_tool);
+        assert!(validate_schema["properties"].get("definition").is_none());
+
+        let mut inline = Map::new();
+        inline.insert("FormPath".to_string(), json!("Form.xml"));
+        inline.insert("definition".to_string(), json!({"formEvents": []}));
+        validate_tool_arguments(tool, &inline, false).unwrap();
+
+        let mut file = Map::new();
+        file.insert("FormPath".to_string(), json!("Form.xml"));
+        file.insert("JsonPath".to_string(), json!("edit.json"));
+        validate_tool_arguments(tool, &file, false).unwrap();
+
+        let mut both = inline.clone();
+        both.insert("JsonPath".to_string(), json!("edit.json"));
+        assert!(validate_tool_arguments(tool, &both, false)
+            .unwrap_err()
+            .contains("conflicting aliases"));
+
+        let mut missing_payload = Map::new();
+        missing_payload.insert("FormPath".to_string(), json!("Form.xml"));
+        assert!(validate_tool_arguments(tool, &missing_payload, false)
+            .unwrap_err()
+            .contains("exactly one"));
+
+        let mut wrong_type = Map::new();
+        wrong_type.insert("FormPath".to_string(), json!("Form.xml"));
+        wrong_type.insert("definition".to_string(), json!("not-an-object"));
+        assert!(validate_tool_arguments(tool, &wrong_type, false)
+            .unwrap_err()
+            .contains("must be object"));
     }
 
     #[test]
@@ -1744,6 +2154,65 @@ mod tests {
     }
 
     #[test]
+    fn external_artifact_init_contracts_are_typed_and_require_destination() {
+        for tool_name in ["unica.epf.init", "unica.erf.init"] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+            let schema = input_schema_for_tool(&tool);
+
+            assert_eq!(schema["additionalProperties"], false);
+            assert!(schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("Name")));
+            assert!(schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("OutputDir")));
+            for argument in ["Name", "Synonym", "OutputDir", "FormName", "dryRun"] {
+                assert!(
+                    schema["properties"].get(argument).is_some(),
+                    "{tool_name} must expose {argument}"
+                );
+            }
+            assert!(schema["properties"].get("script").is_none());
+            assert!(schema["properties"].get("args").is_none());
+            let actual = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                actual,
+                BTreeSet::from([
+                    "FormName",
+                    "Name",
+                    "OutputDir",
+                    "Synonym",
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                ])
+            );
+
+            let invalid = json!({"Name": "Sample", "OutputDir": 42})
+                .as_object()
+                .unwrap()
+                .clone();
+            let error = validate_tool_arguments(tool, &invalid, false).unwrap_err();
+            assert!(error.contains("OutputDir"), "{error}");
+            assert!(error.contains("must be string"), "{error}");
+
+            let missing_output = json!({"Name": "Sample"}).as_object().unwrap().clone();
+            let error = validate_tool_arguments(tool, &missing_output, true).unwrap_err();
+            assert!(error.contains("requires `OutputDir`"), "{error}");
+        }
+    }
+
+    #[test]
     fn runtime_contract_requires_operation_specific_fields_for_real_execution() {
         let tool = tools()
             .into_iter()
@@ -1848,6 +2317,96 @@ mod tests {
         assert_eq!(schema["properties"]["ignoreTags"]["type"], "array");
         assert_eq!(schema["properties"]["scenarioFilters"]["type"], "array");
         assert_eq!(schema["properties"]["projects"]["type"], "array");
+    }
+
+    #[test]
+    fn runtime_job_schemas_keep_execution_typed_and_controls_narrow() {
+        let job_start = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.start")
+            .expect("runtime job start is registered");
+        let job_wait = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.wait")
+            .expect("runtime job wait is registered");
+        let job_logs = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.logs")
+            .expect("runtime job logs is registered");
+
+        let start_schema = input_schema_for_tool(&job_start);
+        assert_eq!(start_schema["additionalProperties"], false);
+        assert!(start_schema["properties"].get("operation").is_some());
+        assert!(start_schema["properties"].get("args").is_none());
+
+        let wait_schema = input_schema_for_tool(&job_wait);
+        assert_eq!(wait_schema["required"], json!(["jobId"]));
+        assert_eq!(
+            wait_schema["properties"]["timeoutSeconds"]["type"],
+            "integer"
+        );
+        assert!(wait_schema["properties"].get("operation").is_none());
+
+        let logs_schema = input_schema_for_tool(&job_logs);
+        assert_eq!(logs_schema["required"], json!(["jobId"]));
+        assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+    }
+
+    #[test]
+    fn runtime_job_controls_reject_invalid_ids_bounds_and_execution_arguments() {
+        let wait = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.wait")
+            .expect("runtime job wait is registered");
+        let cancel = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.cancel")
+            .expect("runtime job cancel is registered");
+        let logs = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.logs")
+            .expect("runtime job logs is registered");
+        let valid_id = "00000000-0000-4000-8000-000000000001";
+
+        assert!(validate_tool_arguments(wait, &Map::new(), false).is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":"not-a-uuid"}).as_object().unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":valid_id,"timeoutSeconds":0})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            wait,
+            json!({"jobId":valid_id,"timeoutSeconds":61})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            logs,
+            json!({"jobId":valid_id,"tailChars":32769})
+                .as_object()
+                .unwrap(),
+            false
+        )
+        .is_err());
+        assert!(validate_tool_arguments(
+            cancel,
+            json!({"jobId":valid_id,"operation":"build"})
+                .as_object()
+                .unwrap(),
+            true
+        )
+        .is_err());
     }
 
     #[test]

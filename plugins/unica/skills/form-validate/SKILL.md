@@ -17,7 +17,7 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.form.validate`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Проверяет Form.xml на структурные ошибки: уникальность ID, наличие companion-элементов, корректность ссылок DataPath и команд.
+Проверяет Form.xml на структурные ошибки: уникальность ID, наличие companion-элементов, корректность ссылок DataPath и команд. События формы и элементов проверяются по платформенной матрице с типом прямого главного реквизита; duplicate, пустой handler, неверный element/event и неподходящий контекст возвращают стабильные коды `FORM_EVENT_*`. `callType` допустим только в форме с прямым `BaseForm` и только со значениями `Before`, `After`, `Override`. Если у заимствованной формы нет доступного прямого главного реквизита ни в `Form`, ни в `BaseForm`, object-specific binding помечается предупреждением `FORM_EVENT_CONTEXT_UNKNOWN` как непроверенный; editor при добавлении такого binding остаётся консервативным и отклоняет изменение.
 
 ## Параметры
 

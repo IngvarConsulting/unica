@@ -2049,14 +2049,14 @@ fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
         return;
     };
     path.display().to_string().hash(hasher);
-    metadata.len().hash(hasher);
-    if let Ok(modified) = metadata.modified() {
-        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-            duration.as_secs().hash(hasher);
-            duration.subsec_nanos().hash(hasher);
-        }
-    }
     if !metadata.is_dir() {
+        metadata.len().hash(hasher);
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(hasher);
+                duration.subsec_nanos().hash(hasher);
+            }
+        }
         return;
     }
     let Ok(entries) = fs::read_dir(path) else {
@@ -2066,11 +2066,14 @@ fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.is_dir()
-                || matches!(
-                    path.extension().and_then(|value| value.to_str()),
-                    Some("bsl" | "xml" | "yaml" | "yml")
-                )
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_none_or(|name| name != ".build")
+                && (path.is_dir()
+                    || matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("bsl" | "xml" | "yaml" | "yml")
+                    ))
         })
         .collect::<Vec<_>>();
     paths.sort();
@@ -2843,6 +2846,23 @@ fn mcp_tool_text(response: &Value) -> Result<String, String> {
     let result = response
         .get("result")
         .ok_or_else(|| "bsl-analyzer MCP response is missing result".to_string())?;
+    if result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let message = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|content| {
+                content
+                    .iter()
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .next()
+            })
+            .unwrap_or("bsl-analyzer MCP tool returned an error");
+        return Err(message.to_string());
+    }
     if let Some(content) = result.get("content").and_then(Value::as_array) {
         let parts = content
             .iter()
@@ -5146,6 +5166,44 @@ fn main() {
             .unwrap_err();
 
         assert!(error.starts_with("cancelled:"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn mcp_tool_text_rejects_tool_level_error() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "content": [{ "type": "text", "text": "schema is unavailable" }],
+                "isError": true
+            }
+        });
+
+        let error = mcp_tool_text(&response).unwrap_err();
+
+        assert_eq!(error, "schema is unavailable");
+    }
+
+    #[test]
+    fn source_generation_ignores_generated_build_cache_but_tracks_bsl_source() {
+        let context = test_context("source-generation");
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::write(&module, "Процедура Тест() Экспорт\nКонецПроцедуры\n").unwrap();
+        let baseline = source_generation(&source_root);
+
+        let generated = source_root.join(".build/bsl-graph.db");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(&generated, "generated cache").unwrap();
+        assert_eq!(source_generation(&source_root), baseline);
+
+        fs::write(
+            &module,
+            "Процедура Тест() Экспорт\n\tСообщить(\"Изменено\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        assert_ne!(source_generation(&source_root), baseline);
         cleanup(&context);
     }
 

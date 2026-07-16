@@ -110,7 +110,7 @@ allowed-tools:
 
 - `title` — заголовок формы (multilingual). Можно указать и в `properties`, но лучше на верхнем уровне
 - `properties` — свойства формы: `autoTitle`, `windowOpeningMode`, `commandBarLocation`, `saveDataInSettings`, `width`, `height` и др.
-- `events` — обработчики событий формы (ключ: имя события 1С, значение: имя процедуры)
+- `events` — обработчики событий формы (ключ: имя события 1С, значение: непустое строковое имя процедуры). Этот формат не поддерживает `callType`.
 - `excludedCommands` — исключённые стандартные команды
 
 ### Новые возможности DSL
@@ -130,18 +130,13 @@ allowed-tools:
 | `"group"`    | UsualGroup        | `"horizontal"` / `"vertical"` / `"alwaysHorizontal"` / `"alwaysVertical"` / `"collapsible"` |
 | `"input"`    | InputField        | имя элемента                                      |
 | `"check"`    | CheckBoxField     | имя                                               |
-| `"label"`    | LabelDecoration   | имя (текст задаётся через `title`)                |
 | `"labelField"` | LabelField      | имя                                               |
 | `"table"`    | Table             | имя                                               |
 | `"pages"`    | Pages             | имя                                               |
 | `"page"`     | Page              | имя                                               |
 | `"button"`   | Button            | имя                                               |
-| `"picture"`  | PictureDecoration | имя                                               |
-| `"picField"` | PictureField      | имя                                               |
-| `"calendar"` | CalendarField     | имя                                               |
 | `"cmdBar"`   | CommandBar        | имя                                               |
 | `"autoCmdBar"` | AutoCommandBar формы | имя — наполняет главную АКП формы (id=-1), не попадает в `<ChildItems>` |
-| `"popup"`    | Popup             | имя                                               |
 
 ### Общие свойства (все типы элементов)
 
@@ -152,28 +147,31 @@ allowed-tools:
 | `visible: false` | Скрыть (синоним: `hidden: true`) |
 | `enabled: false` | Сделать недоступным (синоним: `disabled: true`) |
 | `readOnly: true` | Только чтение |
-| `on: [...]` | События с автоименованием обработчиков |
+| `on: [...]` | События с автоименованием обработчиков (если они допустимы для типа элемента) |
 | `handlers: {...}` | Явное задание имён обработчиков: `{"OnChange": "МоёИмя"}` |
 
 ### Допустимые имена событий (`on`)
 
-Компилятор предупреждает о неизвестных событиях. Имена регистрозависимы — используйте точно как указано.
+Компилятор отклоняет незарегистрированные события. Имена регистрозависимы — используйте точно как указано.
 
-**Форма** (`events`): `OnCreateAtServer`, `OnOpen`, `BeforeClose`, `OnClose`, `NotificationProcessing`, `ChoiceProcessing`, `OnReadAtServer`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer`, `BeforeWrite`, `AfterWrite`, `FillCheckProcessingAtServer`, `BeforeLoadDataFromSettingsAtServer`, `OnLoadDataFromSettingsAtServer`, `ExternalEvent`, `Opening`
+**Форма** (`events`): `OnCreateAtServer`, `OnOpen`, `BeforeClose`, `OnClose`, `NotificationProcessing`, `ChoiceProcessing`, `ExternalEvent`, `OnReopen`, `OnMainServerAvailabilityChange`, `OnReadAtServer`, `BeforeWrite`, `NewWriteProcessing`, `FillCheckProcessingAtServer`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer`, `AfterWrite`, `BeforeLoadDataFromSettingsAtServer`, `OnLoadDataFromSettingsAtServer`, `OnSaveDataInSettingsAtServer`, `BeforeLoadUserSettingsAtServer`, `OnLoadUserSettingsAtServer`, `OnSaveUserSettingsAtServer`, `OnUpdateUserSettingSetAtServer`, `BeforeLoadVariantAtServer`, `OnLoadVariantAtServer`, `OnSaveVariantAtServer`, `OnChangeDisplaySettings`, `URLProcessing`, `URLListGetProcessing`, `URLGetProcessing`, `NavigationProcessing`
 
-**input / picField**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `AutoComplete`, `TextEditEnd`, `Clearing`, `Creating`, `EditTextChange`
+События `OnReadAtServer`, `BeforeWrite`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer` и `AfterWrite` допустимы только при главном реквизите формы постоянного объекта или записи.
 
-**check**: `OnChange`
-
-**table**: `OnStartEdit`, `OnEditEnd`, `OnChange`, `Selection`, `ValueChoice`, `BeforeAddRow`, `BeforeDeleteRow`, `AfterDeleteRow`, `BeforeRowChange`, `BeforeEditEnd`, `OnActivateRow`, `OnActivateCell`, `Drag`, `DragStart`, `DragCheck`, `DragEnd`
-
-**label / picture**: `Click`, `URLProcessing`
-
-**labelField**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `Click`, `URLProcessing`, `Clearing`
-
-**button**: `Click`
-
-**pages**: `OnCurrentPageChange`
+<!-- form-event-registry:start -->
+| DSL ключ | Допустимые события `on` |
+|----------|--------------------------|
+| `input` | `OnChange`, `StartChoice`, `Clearing`, `ChoiceProcessing`, `AutoComplete`, `TextEditEnd`, `Opening`, `Creating`, `EditTextChange`, `Tuning`, `StartListChoice`, `MultipleValuesDelete` |
+| `check` | `OnChange` |
+| `labelField` | `URLProcessing`, `Click`, `OnChange` |
+| `table` | `Selection`, `OnActivateRow`, `BeforeAddRow`, `BeforeDeleteRow`, `OnStartEdit`, `OnChange`, `BeforeRowChange`, `AfterDeleteRow`, `OnEditEnd`, `OnActivateCell`, `OnGetDataAtServer`, `Drag`, `DragCheck`, `ValueChoice`, `ChoiceProcessing`, `DragStart`, `BeforeEditEnd`, `BeforeExpand`, `DragEnd`, `OnUpdateUserSettingSetAtServer`, `BeforeCollapse`, `BeforeLoadUserSettingsAtServer`, `OnActivateField`, `RefreshRequestProcessing`, `NewWriteProcessing`, `OnLoadUserSettingsAtServer`, `OnCurrentParentChange`, `OnSaveUserSettingsAtServer`, `URLGetProcessing` |
+| `pages` | `OnCurrentPageChange` |
+| `page` | — |
+| `button` | — |
+| `cmdBar` | — |
+| `autoCmdBar` | — |
+| `group` | — |
+<!-- form-event-registry:end -->
 
 ### Поле ввода (input)
 
@@ -200,14 +198,6 @@ allowed-tools:
 |------|----------|
 | `path` | DataPath |
 | `titleLocation` | Размещение заголовка |
-
-### Надпись-декорация (label)
-
-| Ключ | Описание |
-|------|----------|
-| `title` | Текст надписи (обязательно) |
-| `hyperlink: true` | Сделать ссылкой |
-| `width` / `height` | Размер |
 
 ### Группа (group)
 
@@ -284,29 +274,12 @@ allowed-tools:
 |------|----------|
 | `autofill: true/false` | Автозаполнение стандартными командами |
 | `horizontalAlign` | `"Left"` / `"Center"` / `"Right"` |
-| `children: [...]` | Кнопки/popup |
+| `children: [...]` | Кнопки |
 
 ```json
 { "autoCmdBar": "ФормаКоманднаяПанель", "autofill": true, "children": [
    { "button": "ИзменитьВыделенные", "command": "ИзменитьВыделенные",
      "locationInCommandBar": "InAdditionalSubmenu" }
-]}
-```
-
-### Выпадающее меню (popup)
-
-| Ключ | Описание |
-|------|----------|
-| `title` | Заголовок подменю |
-| `children: [...]` | Кнопки подменю |
-
-Используется внутри `cmdBar` для группировки кнопок в подменю:
-```json
-{ "cmdBar": "Панель", "children": [
-  { "popup": "Добавить", "title": "Добавить", "children": [
-    { "button": "ДобавитьСтроку", "stdCommand": "Товары.Add" },
-    { "button": "ДобавитьИзДокумента", "command": "ДобавитьИзДокумента", "title": "Из документа" }
-  ]}
 ]}
 ```
 

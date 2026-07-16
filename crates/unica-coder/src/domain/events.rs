@@ -53,3 +53,30 @@ impl DomainEvent {
         self.kind.as_str()
     }
 }
+
+pub fn runtime_event_kind(operation: &str) -> Option<DomainEventKind> {
+    match operation {
+        "config-init" | "init" | "convert" | "dump" => Some(DomainEventKind::SourceSetChanged),
+        "build" | "load" | "extensions" | "test" => Some(DomainEventKind::BuildCompleted),
+        "make" | "syntax" | "launch" | "tools-download" => None,
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{runtime_event_kind, DomainEventKind};
+
+    #[test]
+    fn runtime_job_and_synchronous_runtime_share_event_mapping() {
+        assert_eq!(
+            runtime_event_kind("dump"),
+            Some(DomainEventKind::SourceSetChanged)
+        );
+        assert_eq!(
+            runtime_event_kind("build"),
+            Some(DomainEventKind::BuildCompleted)
+        );
+        assert_eq!(runtime_event_kind("make"), None);
+    }
+}

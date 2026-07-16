@@ -11,6 +11,23 @@
       "title": "Do something"
     }
   ],
+  "formEvents": [
+    {
+      "name": "OnCreateAtServer",
+      "handler": "FormOnCreateAtServer"
+    },
+    {
+      "name": "OnReadAtServer",
+      "handler": "FormOnReadAtServer"
+    }
+  ],
+  "elementEvents": [
+    {
+      "element": "Code",
+      "name": "OnChange",
+      "handler": "CodeOnChange"
+    }
+  ],
   "elements": [
     {
       "input": "Comment",

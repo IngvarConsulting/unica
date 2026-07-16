@@ -1,8 +1,9 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::internal_adapters::RuntimeJobAction;
 use crate::infrastructure::native_operations::common::{
     absolutize, path_arg, required_string, support_guard_violation, SupportGuardRequirement,
     SupportGuardViolation,
@@ -44,6 +45,9 @@ pub enum ToolHandler {
         event: Option<DomainEventKind>,
     },
     RuntimeAdapter,
+    RuntimeJob {
+        action: RuntimeJobAction,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -69,6 +73,8 @@ pub struct OperationResult {
     pub command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<Value>,
 }
 
 pub struct UnicaApplication {
@@ -213,6 +219,61 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::RuntimeAdapter,
         },
         ToolSpec {
+            name: "unica.runtime.job.start",
+            description:
+                "Start a durable typed v8-runner runtime job without changing runtime.execute.",
+            mutating: true,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Start,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.status",
+            description: "Read a durable runtime job snapshot by jobId.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Status,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.wait",
+            description: "Wait for a durable runtime job with a caller-side bounded timeout.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Wait,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.logs",
+            description: "Read bounded redacted stdout and stderr tails for a durable runtime job.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Logs,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.cancel",
+            description: "Request safe cancellation for a durable runtime job.",
+            mutating: true,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::Cancel,
+            },
+        },
+        ToolSpec {
+            name: "unica.runtime.job.list",
+            description: "List durable runtime job snapshots in the current workspace.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::RuntimeJob {
+                action: RuntimeJobAction::List,
+            },
+        },
+        ToolSpec {
             name: "unica.code.search",
             description: "Search BSL code through the internal RLM index.",
             mutating: false,
@@ -324,7 +385,7 @@ fn call_tool(
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
     tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let index_report = crate::infrastructure::workspace_index::IndexStartReport::default();
-    let support_guard_warning = if spec.mutating && !dry_run {
+    let mut support_guard_warning = if spec.mutating && !dry_run {
         match support_guard_check(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
             SupportGuardCheck::Warn(warning) => Some(warning),
@@ -343,6 +404,7 @@ fn call_tool(
                     stderr: outcome.stderr,
                     command: outcome.command,
                     diagnostics: None,
+                    job: None,
                 });
             }
         }
@@ -350,13 +412,38 @@ fn call_tool(
         None
     };
 
-    let mut outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
+    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
+    let mut outcome = handler_outcome.adapter;
+    if is_successful_detailed_compile_preview(spec, dry_run, &outcome) {
+        match support_guard_check(spec, args, &context)? {
+            SupportGuardCheck::Allow => {}
+            SupportGuardCheck::Warn(warning) => support_guard_warning = Some(warning),
+            SupportGuardCheck::Block(mut blocked) => {
+                blocked.warnings.extend(index_report.warnings);
+                let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+                return Ok(OperationResult {
+                    ok: blocked.ok,
+                    summary: blocked.summary,
+                    changes: blocked.changes,
+                    warnings: blocked.warnings,
+                    errors: blocked.errors,
+                    artifacts: blocked.artifacts,
+                    cache,
+                    stdout: blocked.stdout,
+                    stderr: blocked.stderr,
+                    command: blocked.command,
+                    diagnostics: None,
+                    job: None,
+                });
+            }
+        }
+    }
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
     outcome.warnings.extend(index_report.warnings);
 
-    let events = if should_emit_events(spec, dry_run, &outcome) {
+    let events = if should_emit_events(spec, args, dry_run, &outcome) {
         domain_events(spec, args)
     } else {
         Vec::new()
@@ -379,11 +466,48 @@ fn call_tool(
         stderr: outcome.stderr,
         command: outcome.command,
         diagnostics,
+        job: handler_outcome.job,
     })
 }
 
-fn should_emit_events(spec: ToolSpec, dry_run: bool, outcome: &AdapterOutcome) -> bool {
-    spec.mutating && (dry_run || (outcome.ok && !outcome.changes.is_empty()))
+fn should_emit_events(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+    outcome: &AdapterOutcome,
+) -> bool {
+    if !spec.mutating || !outcome.ok {
+        return false;
+    }
+    if !dry_run {
+        return !outcome.changes.is_empty();
+    }
+
+    let is_semantic_form_edit_preview = spec.name == "unica.form.edit"
+        && args.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "FormPath" | "formPath" | "Path" | "path" | "JsonPath" | "jsonPath" | "definition"
+            )
+        });
+    !is_semantic_form_edit_preview || !outcome.changes.is_empty()
+}
+
+fn is_successful_detailed_compile_preview(
+    spec: ToolSpec,
+    dry_run: bool,
+    outcome: &AdapterOutcome,
+) -> bool {
+    dry_run
+        && outcome.ok
+        && outcome.summary.contains("planned native")
+        && matches!(
+            spec.handler,
+            ToolHandler::NativeOperation {
+                operation: "meta-compile" | "role-compile" | "subsystem-compile",
+                ..
+            }
+        )
 }
 
 fn runtime_result_diagnostics(
@@ -732,17 +856,15 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
         ToolHandler::RuntimeAdapter => runtime_event(args)
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
+        ToolHandler::RuntimeJob { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
 
 fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
-    match args.get("operation").and_then(Value::as_str)? {
-        "config-init" | "init" | "convert" | "dump" => Some(DomainEventKind::SourceSetChanged),
-        "build" | "load" | "extensions" | "test" => Some(DomainEventKind::BuildCompleted),
-        "make" | "syntax" | "launch" => None,
-        _ => None,
-    }
+    args.get("operation")
+        .and_then(Value::as_str)
+        .and_then(runtime_event_kind)
 }
 
 fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
@@ -900,6 +1022,34 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.epf.init",
+            description:
+                "Create a make-ready external data processor scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
+            mutating: true,
+            cache_access: cache_access_for(
+                "epf-init",
+                Some(DomainEventKind::SourceSetChanged),
+            ),
+            handler: ToolHandler::NativeOperation {
+                operation: "epf-init",
+                event: Some(DomainEventKind::SourceSetChanged),
+            },
+        },
+        ToolSpec {
+            name: "unica.erf.init",
+            description:
+                "Create a make-ready external report scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
+            mutating: true,
+            cache_access: cache_access_for(
+                "erf-init",
+                Some(DomainEventKind::SourceSetChanged),
+            ),
+            handler: ToolHandler::NativeOperation {
+                operation: "erf-init",
+                event: Some(DomainEventKind::SourceSetChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.cfe.patch_method",
             description: "Generate a CFE method interceptor.",
             mutating: true,
@@ -1016,7 +1166,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.form.edit",
-            description: "Edit managed Form.xml elements, attributes, and commands.",
+            description:
+                "Edit managed Form.xml elements, attributes, commands, and validated events.",
             mutating: true,
             cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
@@ -1320,8 +1471,20 @@ mod tests {
         assert!(names.contains(&"unica.mxl.compile"));
         assert!(names.contains(&"unica.role.validate"));
         assert!(names.contains(&"unica.support.edit"));
+        assert!(names.contains(&"unica.epf.init"));
+        assert!(names.contains(&"unica.erf.init"));
         assert!(names.contains(&"unica.build.load"));
         assert!(names.contains(&"unica.runtime.execute"));
+        for name in [
+            "unica.runtime.job.start",
+            "unica.runtime.job.status",
+            "unica.runtime.job.wait",
+            "unica.runtime.job.logs",
+            "unica.runtime.job.cancel",
+            "unica.runtime.job.list",
+        ] {
+            assert!(names.contains(&name), "missing {name}");
+        }
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
         assert!(names.contains(&"unica.code.grep"));
@@ -1367,6 +1530,22 @@ mod tests {
     }
 
     #[test]
+    fn runtime_job_start_defaults_to_dry_run_without_runtime_cache_invalidation() {
+        let mut args = Map::new();
+        args.insert("operation".to_string(), Value::String("dump".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.runtime.job.start", &args)
+            .expect("dry-run job start succeeds");
+
+        assert!(result.ok);
+        assert!(result.summary.contains("dry run"));
+        assert_eq!(result.job, None);
+        assert_eq!(result.cache.mode, "read");
+        assert!(result.cache.events.is_empty());
+    }
+
+    #[test]
     fn runtime_event_is_not_emitted_for_non_invalidating_operations() {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("launch".to_string()));
@@ -1396,16 +1575,58 @@ mod tests {
             },
         };
 
-        assert!(!should_emit_events(spec, false, &outcome));
+        let args = Map::new();
+        assert!(!should_emit_events(spec, &args, false, &outcome));
 
         outcome
             .changes
             .push("updated Configuration.xml".to_string());
-        assert!(should_emit_events(spec, false, &outcome));
+        assert!(should_emit_events(spec, &args, false, &outcome));
         assert!(should_emit_events(
             spec,
+            &args,
             true,
-            &AdapterOutcome::ok("dry run")
+            &AdapterOutcome::ok("generic dry run")
+        ));
+
+        let form_edit_spec = ToolSpec {
+            name: "unica.form.edit",
+            description: "test",
+            mutating: true,
+            cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "form-edit",
+                event: Some(DomainEventKind::FormChanged),
+            },
+        };
+        let semantic_args = Map::from_iter([
+            ("FormPath".to_string(), json!("Form.xml")),
+            ("definition".to_string(), json!({"formEvents": []})),
+        ]);
+        assert!(!should_emit_events(
+            form_edit_spec,
+            &semantic_args,
+            true,
+            &AdapterOutcome::ok("semantic dry run no-op")
+        ));
+
+        let mut planned = AdapterOutcome::ok("dry run planned change");
+        planned.changes.push("would update Form.xml".to_string());
+        assert!(should_emit_events(
+            form_edit_spec,
+            &semantic_args,
+            true,
+            &planned
+        ));
+
+        let mut rejected = AdapterOutcome::ok("dry run rejected");
+        rejected.ok = false;
+        rejected.changes.push("would update Form.xml".to_string());
+        assert!(!should_emit_events(
+            form_edit_spec,
+            &semantic_args,
+            true,
+            &rejected
         ));
     }
 
@@ -1954,6 +2175,173 @@ mod tests {
         args
     }
 
+    #[test]
+    fn cf_edit_definition_file_rejects_invalid_child_object_before_sidecar_writes() {
+        let mut violations = Vec::new();
+
+        for (sidecar_operation, sidecar_value, sidecar_name, child_operation, child_value, error) in [
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+        ] {
+            let (root, workspace, _) = support_test_workspace(
+                &format!("unica-cf-edit-unknown-kind-atomic-{sidecar_operation}-{child_operation}"),
+                String::new(),
+            );
+            let config_path = workspace.join("src/Configuration.xml");
+            let definition_path =
+                workspace.join(format!("{sidecar_operation}-{child_operation}.json"));
+            std::fs::write(
+                &definition_path,
+                serde_json::to_string(&json!([
+                    {"operation": sidecar_operation, "value": sidecar_value},
+                    {"operation": child_operation, "value": child_value}
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            let config_before = std::fs::read(&config_path).unwrap();
+            let definition_before = std::fs::read(&definition_path).unwrap();
+            let sidecar_path = workspace.join("src/Ext").join(sidecar_name);
+            let sidecar_before = b"sidecar content before failed batch";
+            std::fs::write(&sidecar_path, sidecar_before).unwrap();
+
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+            args.insert(
+                "DefinitionFile".to_string(),
+                Value::String(definition_path.display().to_string()),
+            );
+            args.insert("NoValidate".to_string(), Value::Bool(true));
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.cf.edit", &args)
+                .unwrap();
+
+            let case = format!("{sidecar_operation} -> {child_operation} {child_value}");
+            if result.ok {
+                violations.push(format!("{case}: batch unexpectedly succeeded"));
+            }
+            if !result.errors.join("\n").contains(error) {
+                violations.push(format!("{case}: wrong error: {result:?}"));
+            }
+            if std::fs::read(&config_path).unwrap() != config_before {
+                violations.push(format!("{case}: Configuration.xml changed"));
+            }
+            if std::fs::read(&definition_path).unwrap() != definition_before {
+                violations.push(format!("{case}: definition file changed"));
+            }
+            if std::fs::read(&sidecar_path).unwrap() != sidecar_before {
+                violations.push(format!(
+                    "{case}: failed batch changed {}",
+                    sidecar_path.display()
+                ));
+            }
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        assert!(
+            violations.is_empty(),
+            "failed batches must leave all affected files byte-identical: {violations:#?}"
+        );
+    }
+
+    #[test]
+    fn cf_edit_definition_file_keeps_valid_ordered_child_object_batch() {
+        let (root, workspace, _) =
+            support_test_workspace("unica-cf-edit-known-kind-batch", String::new());
+        let definition_path = workspace.join("ordered-batch.json");
+        std::fs::write(
+            &definition_path,
+            serde_json::to_string(&json!([
+                {"operation": "set-panels", "value": {"top": ["open"]}},
+                {"operation": "remove-childObject", "value": "Catalog.Items"},
+                {"operation": "add-childObject", "value": "Catalog.Items"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "DefinitionFile".to_string(),
+            Value::String(definition_path.display().to_string()),
+        );
+        args.insert("NoValidate".to_string(), Value::Bool(true));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(workspace
+            .join("src/Ext/ClientApplicationInterface.xml")
+            .is_file());
+        assert!(
+            std::fs::read_to_string(workspace.join("src/Configuration.xml"))
+                .unwrap()
+                .contains("<Catalog>Items</Catalog>")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn cf_edit_issue55_config_xml(child_indent: &str) -> String {
         format!(
             concat!(
@@ -1977,6 +2365,185 @@ mod tests {
             ),
             child_indent
         )
+    }
+
+    fn bot_configuration_xml(include_bot: bool) -> String {
+        let children = if include_bot {
+            concat!(
+                "\t\t\t<Language>Русский</Language>\n",
+                "\t\t\t<CommonModule>Core</CommonModule>\n",
+                "\t\t\t<Bot>Assistant</Bot>\n",
+                "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
+            )
+        } else {
+            concat!(
+                "\t\t\t<Language>Русский</Language>\n",
+                "\t\t\t<CommonModule>Core</CommonModule>\n",
+                "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
+            )
+        };
+        include_str!(
+            "../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Configuration.xml"
+        )
+        .replace("\r\n", "\n")
+        .replace("\t\t\t<Language>Русский</Language>", children)
+    }
+
+    fn bot_cf_workspace(prefix: &str, include_bot: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        for directory in ["Languages", "CommonModules", "Bots", "CommonAttributes"] {
+            std::fs::create_dir_all(src.join(directory)).unwrap();
+        }
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            format!("\u{feff}{}", bot_configuration_xml(include_bot)),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Languages/Русский.xml"),
+            include_str!("../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Languages/Русский.xml"),
+        )
+        .unwrap();
+        if include_bot {
+            std::fs::write(src.join("Bots/Assistant.xml"), "<MetaDataObject/>").unwrap();
+        }
+        (root, workspace, config_path)
+    }
+
+    #[test]
+    fn cf_info_and_validate_recognize_bot_in_canonical_order() {
+        let (root, workspace, _config_path) = bot_cf_workspace("unica-cf-bot-read", true);
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+
+        let overview = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .unwrap();
+        assert!(overview.ok, "{overview:?}");
+        let overview_stdout = overview.stdout.unwrap();
+        assert!(
+            overview_stdout
+                .lines()
+                .any(|line| line.starts_with("  Боты") && line.ends_with('1')),
+            "{overview_stdout}"
+        );
+
+        args.insert("Mode".to_string(), Value::String("full".to_string()));
+        let full = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .unwrap();
+        assert!(full.ok, "{full:?}");
+        let full_stdout = full.stdout.unwrap();
+        assert!(full_stdout.contains("Боты (Bot): 1"), "{full_stdout}");
+        assert!(full_stdout.contains("    Assistant"), "{full_stdout}");
+
+        args.remove("Mode");
+        let validation = UnicaApplication::new()
+            .call_tool("unica.cf.validate", &args)
+            .unwrap();
+        assert!(validation.ok, "{validation:?}");
+        let validation_stdout = validation.stdout.unwrap_or_default();
+        assert!(!validation_stdout.contains("Unknown type 'Bot'"));
+        assert!(!validation_stdout.contains("out of canonical order"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cf_edit_adds_removes_and_noops_bot_through_registry() {
+        let (root, workspace, config_path) = bot_cf_workspace("unica-cf-bot-edit", false);
+        let src = workspace.join("src");
+        std::fs::write(src.join("Bots/Assistant.xml"), "<MetaDataObject/>").unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+
+        let add = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(add.ok, "{add:?}");
+        let after_add = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            after_add.find("<CommonModule>Core</CommonModule>").unwrap()
+                < after_add.find("<Bot>Assistant</Bot>").unwrap()
+        );
+        assert!(
+            after_add.find("<Bot>Assistant</Bot>").unwrap()
+                < after_add
+                    .find("<CommonAttribute>Shared</CommonAttribute>")
+                    .unwrap()
+        );
+
+        let duplicate = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(duplicate.ok, "{duplicate:?}");
+        assert!(duplicate.changes.is_empty(), "{duplicate:?}");
+        assert!(duplicate.cache.events.is_empty(), "{duplicate:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), after_add);
+
+        let remove = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "remove-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(remove.ok, "{remove:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let missing = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Missing"),
+            )
+            .unwrap();
+        assert!(!missing.ok, "{missing:?}");
+        let missing_errors = missing.errors.join("\n");
+        assert!(missing_errors.contains("Bots/Missing.xml"), "{missing:?}");
+        assert!(!missing_errors.contains("use meta-compile"), "{missing:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let unknown = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(
+                    &workspace,
+                    "remove-childObject",
+                    "SyntheticMetadata.Unknown",
+                ),
+            )
+            .unwrap();
+        assert!(!unknown.ok, "{unknown:?}");
+        assert!(
+            unknown
+                .errors
+                .join("\n")
+                .contains("Unknown type 'SyntheticMetadata'"),
+            "{unknown:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2361,12 +2928,16 @@ mod tests {
                 _context: &WorkspaceContext,
                 _dry_run: bool,
                 cancellation: &CancellationToken,
-            ) -> Result<AdapterOutcome, String> {
+            ) -> Result<ports::HandlerOutcome, String> {
                 *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
                 if cancellation.is_cancelled() {
-                    return Ok(AdapterOutcome::cancelled("recording port stopped"));
+                    return Ok(ports::HandlerOutcome::plain(AdapterOutcome::cancelled(
+                        "recording port stopped",
+                    )));
                 }
-                Ok(AdapterOutcome::ok("recording port completed"))
+                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
+                    "recording port completed",
+                )))
             }
 
             fn cache_report(
@@ -2443,9 +3014,11 @@ mod tests {
                 _context: &WorkspaceContext,
                 _dry_run: bool,
                 _cancellation: &CancellationToken,
-            ) -> Result<AdapterOutcome, String> {
+            ) -> Result<ports::HandlerOutcome, String> {
                 self.invoked.lock().unwrap().push(spec.name);
-                Ok(AdapterOutcome::ok("fake port outcome"))
+                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
+                    "fake port outcome",
+                )))
             }
 
             fn cache_report(
@@ -2825,6 +3398,158 @@ mod tests {
     }
 
     #[test]
+    fn meta_compile_dry_run_reports_exact_registration_diff_without_writes() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-dry-run-plan");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let config_before = concat!(
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.17\">\r\n",
+            "\t<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">\r\n",
+            "\t\t<Properties><Name>Demo</Name></Properties>\r\n",
+            "\t\t<ChildObjects><Catalog>Items</Catalog></ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject><!-- registrar-tail -->\r\n\r\n"
+        )
+        .as_bytes()
+        .to_vec();
+        std::fs::write(&config_path, &config_before).unwrap();
+        let json_path = workspace.join("common-module.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "CommonModule",
+  "name": "SampleService",
+  "synonym": "Sample service"
+}"#,
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        assert!(result.summary.contains("dry run"), "{}", result.summary);
+        assert!(result
+            .changes
+            .iter()
+            .any(|change| change.contains("would create") && change.contains("SampleService.xml")));
+        assert!(result
+            .changes
+            .iter()
+            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
+        let preview = result.stdout.unwrap_or_default();
+        assert!(preview.contains("@@ bytes"), "{preview}");
+        assert!(
+            preview.contains("<CommonModule>SampleService</CommonModule>\\r\\n"),
+            "{preview}"
+        );
+        assert!(result.artifacts.is_empty());
+        assert_eq!(result.cache.mode, "dry-run");
+        assert!(result.cache.events.contains(&"MetadataChanged".to_string()));
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("CommonModules/SampleService.xml").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_meta_compile_is_a_byte_for_byte_noop() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-repeat-noop");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let json_path = workspace.join("common-module.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "CommonModule",
+  "name": "SampleService",
+  "synonym": "Sample service"
+}"#,
+        )
+        .unwrap();
+        let first = call_meta_compile(&workspace, &json_path);
+        assert!(first.ok, "{:?}", first.errors);
+        let metadata_path = src.join("CommonModules/SampleService.xml");
+        let module_path = src.join("CommonModules/SampleService/Ext/Module.bsl");
+        let config_path = src.join("Configuration.xml");
+        let metadata_before = std::fs::read(&metadata_path).unwrap();
+        let module_before = std::fs::read(&module_path).unwrap();
+        let config_before = std::fs::read(&config_path).unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "CommonModule",
+  "name": "SampleService",
+  "synonym": "A changed definition must not overwrite the object"
+}"#,
+        )
+        .unwrap();
+
+        let repeated = call_meta_compile(&workspace, &json_path);
+
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert!(repeated.changes.is_empty(), "{:?}", repeated.changes);
+        assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
+        assert_eq!(std::fs::read(&metadata_path).unwrap(), metadata_before);
+        assert_eq!(std::fs::read(&module_path).unwrap(), module_before);
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_batch_rolls_back_after_object_files_failure() {
+        use crate::infrastructure::native_operations::compile_transaction::{
+            with_commit_failpoint, CommitFailpoint,
+        };
+
+        let root = temp_meta_compile_workspace("unica-meta-compile-batch-rollback");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let config_before = std::fs::read(&config_path).unwrap();
+        let json_path = workspace.join("batch.json");
+        std::fs::write(
+            &json_path,
+            r#"[
+  {"type":"CommonModule","name":"RollbackService"},
+  {"type":"Catalog","name":"RollbackCatalog"}
+]"#,
+        )
+        .unwrap();
+
+        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            call_meta_compile(&workspace, &json_path)
+        });
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.errors.join("\n").contains("after object files"),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("CommonModules").exists());
+        assert!(!src.join("Catalogs").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn meta_compile_preserves_single_configuration_bom() {
         let root = temp_meta_compile_workspace("unica-meta-compile-single-bom");
         let workspace = root.join("workspace");
@@ -2858,6 +3583,32 @@ mod tests {
         assert!(config_text.contains("<Report>MetaCompileBomReport</Report>"));
         roxmltree::Document::parse(config_text.trim_start_matches('\u{feff}')).unwrap();
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_keeps_bot_outside_its_narrow_capability_gate() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-bot-unsupported");
+        let workspace = root.join("workspace");
+        let json_path = workspace.join("bot.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Bot",
+  "name": "Assistant",
+  "synonym": "Assistant"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.errors.join("\n").contains("Unsupported type: Bot"),
+            "{result:?}"
+        );
+        assert!(!workspace.join("src/Bots").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2902,12 +3653,59 @@ mod tests {
             String::from_utf8_lossy(&std::fs::read(&config_path).unwrap()).to_string();
         assert!(config_text.contains(concat!(
             "\r\n\t\t\t<Catalog>Items</Catalog>\r\n",
-            "\t\t\t<Report>MetaCompileFormatReport</Report>\n",
+            "\t\t\t<Report>MetaCompileFormatReport</Report>\r\n",
             "\t\t</ChildObjects>"
         )));
         assert!(!config_text.contains("\t\t\t\t\t<Report>MetaCompileFormatReport</Report>"));
-        assert!(!config_text
-            .contains("<Report>MetaCompileFormatReport</Report>\r\n\t\t</ChildObjects>"));
+        assert!(
+            !config_text.contains("<Report>MetaCompileFormatReport</Report>\n\t\t</ChildObjects>")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_catalog_comment_emits_single_object_comment() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-catalog-comment");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("catalog-comment.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Catalog",
+  "name": "Issue67Catalog",
+  "synonym": "Issue67Catalog",
+  "comment": "TEST-COMMENT"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.stderr);
+        let xml_path = src.join("Catalogs").join("Issue67Catalog.xml");
+        assert!(xml_path.is_file());
+        let xml = std::fs::read_to_string(&xml_path).unwrap();
+        assert_eq!(xml.matches("<Comment>TEST-COMMENT</Comment>").count(), 1);
+        let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let catalog = doc
+            .root_element()
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "Catalog")
+            .unwrap();
+        let properties = catalog
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .unwrap();
+        let comments = properties
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Comment")
+            .collect::<Vec<_>>();
+        assert_eq!(comments.len(), 1, "{xml}");
+        assert_eq!(comments[0].text(), Some("TEST-COMMENT"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3106,6 +3904,134 @@ mod tests {
     }
 
     #[test]
+    fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
+        let root = temp_meta_compile_workspace("unica-role-compile-canonical-registration");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\r\n",
+                "\t<Configuration>\r\n",
+                "\t\t<ChildObjects>\r\n",
+                "\t\t\t<SessionParameter>CurrentUser</SessionParameter>\r\n",
+                "\t\t\t<CommonTemplate>Shared</CommonTemplate>\r\n",
+                "\t\t</ChildObjects>\r\n",
+                "\t</Configuration>\r\n",
+                "</MetaDataObject><!-- registrar-tail -->\r\n\r\n"
+            ),
+        )
+        .unwrap();
+        let config_before = std::fs::read(&config_path).unwrap();
+        let role_json = workspace.join("sample-user.json");
+        std::fs::write(
+            &role_json,
+            r#"{
+  "name": "SampleUser",
+  "synonym": "Sample user",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(role_json.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert!(preview.summary.contains("dry run"));
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.contains("would create") && change.contains("SampleUser.xml")));
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
+        assert!(preview.stdout.unwrap_or_default().contains("@@ bytes"));
+        assert!(preview.artifacts.is_empty());
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("Roles/SampleUser.xml").exists());
+
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        let result = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let config = String::from_utf8(std::fs::read(&config_path).unwrap()).unwrap();
+        assert!(config.contains(concat!(
+            "\t\t\t<SessionParameter>CurrentUser</SessionParameter>\r\n",
+            "\t\t\t<Role>SampleUser</Role>\r\n",
+            "\t\t\t<CommonTemplate>Shared</CommonTemplate>\r\n"
+        )));
+        assert!(config.ends_with("<!-- registrar-tail -->\r\n\r\n"));
+        assert!(!config.replace("\r\n", "").contains('\n'));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn role_compile_rolls_back_after_object_files_failure() {
+        use crate::infrastructure::native_operations::compile_transaction::{
+            with_commit_failpoint, CommitFailpoint,
+        };
+
+        let root = temp_meta_compile_workspace("unica-role-compile-rollback");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let config_before = std::fs::read(&config_path).unwrap();
+        let role_json = workspace.join("rollback-user.json");
+        std::fs::write(
+            &role_json,
+            r#"{
+  "name": "RollbackUser",
+  "synonym": "Rollback user",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(role_json.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            UnicaApplication::new()
+                .call_tool("unica.role.compile", &args)
+                .unwrap()
+        });
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.errors.join("\n").contains("after object files"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("Roles").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn role_compile_generates_distinct_non_placeholder_uuid_v4() {
         let root = temp_meta_compile_workspace("unica-role-compile-uuid-v4");
         let workspace = root.join("workspace");
@@ -3217,6 +4143,22 @@ mod tests {
         let first_xml =
             std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
         let first_uuid = metadata_root_uuid(&first_xml, "Role");
+        let metadata_path = workspace.join("src/Roles/SampleReader.xml");
+        let rights_path = workspace.join("src/Roles/SampleReader/Ext/Rights.xml");
+        let config_path = workspace.join("src/Configuration.xml");
+        let metadata_before = std::fs::read(&metadata_path).unwrap();
+        let rights_before = std::fs::read(&rights_path).unwrap();
+        let config_before = std::fs::read(&config_path).unwrap();
+        std::fs::write(
+            &role_json,
+            r#"{
+  "name": "SampleReader",
+  "synonym": "Changed definition must not overwrite",
+  "comment": "Synthetic repro",
+  "objects": ["Catalog.Items: @view @edit"]
+}"#,
+        )
+        .unwrap();
 
         let mut args = Map::new();
         args.insert(
@@ -3234,11 +4176,16 @@ mod tests {
             .unwrap();
 
         assert!(result.ok, "{:?}", result.errors);
+        assert!(result.changes.is_empty(), "{:?}", result.changes);
+        assert!(result.artifacts.is_empty(), "{:?}", result.artifacts);
 
         let regenerated_xml =
             std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
         let regenerated_uuid = metadata_root_uuid(&regenerated_xml, "Role");
         assert_eq!(first_uuid, regenerated_uuid);
+        assert_eq!(std::fs::read(&metadata_path).unwrap(), metadata_before);
+        assert_eq!(std::fs::read(&rights_path).unwrap(), rights_before);
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4072,8 +5019,8 @@ mod tests {
             _context: &WorkspaceContext,
             _dry_run: bool,
             _cancellation: &CancellationToken,
-        ) -> Result<AdapterOutcome, String> {
-            Ok(self.outcome.clone())
+        ) -> Result<ports::HandlerOutcome, String> {
+            Ok(ports::HandlerOutcome::plain(self.outcome.clone()))
         }
 
         fn cache_report(
@@ -4759,6 +5706,379 @@ mod tests {
 
         assert!(error.contains("outside workspace root"));
         assert!(!root.join("outside").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detailed_compile_dry_run_rejects_output_escape_like_apply() {
+        let root = temp_meta_compile_workspace("unica-compile-preview-path-policy");
+        let workspace = root.join("workspace");
+        let json_path = workspace.join("module.json");
+        std::fs::write(
+            &json_path,
+            r#"{"type":"CommonModule","name":"PreviewPathPolicy"}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("../outside".to_string()),
+        );
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .expect_err("preview must enforce the same output path policy as apply");
+
+        assert!(error.contains("outside workspace root"), "{error}");
+        assert!(!root.join("outside").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detailed_compile_dry_run_rejects_edt_source_set_like_apply() {
+        let root = test_workspace_root("unica-compile-preview-edt-guard");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let json_path = workspace.join("module.json");
+        std::fs::write(
+            &json_path,
+            r#"{"type":"CommonModule","name":"PreviewEdtGuard"}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .expect_err("preview must enforce the same source-format guard as apply");
+
+        assert!(error.contains("sourceFormat=edt"), "{error}");
+        assert!(error.contains("platform_xml"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detailed_compile_dry_run_reports_planner_errors_instead_of_masking_them() {
+        let root = temp_meta_compile_workspace("unica-compile-preview-error-parity");
+        let workspace = root.join("workspace");
+        let config_path = workspace.join("src/Configuration.xml");
+        let config_before = std::fs::read(&config_path).unwrap();
+        let json_path = workspace.join("invalid.json");
+        std::fs::write(
+            &json_path,
+            r#"{"type":"UnknownMetadata","name":"InvalidPreview"}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.summary.contains("dry run"), "{}", result.summary);
+        assert!(
+            result.errors.join("\n").contains("UnknownMetadata"),
+            "{:?}",
+            result.errors
+        );
+        assert!(result.changes.is_empty());
+        assert!(result.artifacts.is_empty());
+        assert!(result.cache.events.is_empty());
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detailed_compile_dry_run_applies_the_same_support_guard_as_apply() {
+        let root = temp_meta_compile_workspace("unica-compile-preview-support-guard");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            )
+            .replace("{6,0,", "{6,1,"),
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        let config_before = std::fs::read(&config_path).unwrap();
+        let json_path = workspace.join("module.json");
+        std::fs::write(
+            &json_path,
+            r#"{"type":"CommonModule","name":"PreviewSupportGuard"}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.summary.contains("support guard"), "{result:?}");
+        assert!(result.cache.events.is_empty(), "{result:?}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("CommonModules/PreviewSupportGuard.xml").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_init_preview_is_path_guarded_and_source_set_typed() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-external-init-contract-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+                "  - name: reports\n",
+                "    type: EXTERNAL_REPORTS\n",
+                "    path: erf\n",
+                "  - name: russian-processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: епф\n",
+            ),
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert("Name".to_string(), Value::String("Preview".to_string()));
+        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.artifacts.len(), 2);
+        assert!(!workspace.join("epf").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("EPF").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("ЕПФ".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("ЕПФ").exists());
+
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("epf/nested".to_string()),
+        );
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set root"), "{error}");
+        assert!(!workspace.join("epf").exists());
+
+        args.insert("OutputDir".to_string(), Value::String("erf".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set `reports`"), "{error}");
+        assert!(error.contains("ExternalReport"), "{error}");
+        assert!(!workspace.join("erf").exists());
+
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("../outside".to_string()),
+        );
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("outside workspace root"), "{error}");
+        assert!(!root.join("outside").exists());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(workspace.join("erf"), workspace.join("epf-link")).unwrap();
+            args.insert(
+                "OutputDir".to_string(),
+                Value::String("epf-link".to_string()),
+            );
+            let error = UnicaApplication::new()
+                .call_tool("unica.epf.init", &args)
+                .unwrap_err();
+            assert!(error.contains("must not traverse symlink"), "{error}");
+        }
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: configuration\n",
+                "    type: CONFIGURATION\n",
+                "    path: .\n",
+            ),
+        )
+        .unwrap();
+        args.insert(
+            "OutputDir".to_string(),
+            Value::String("external/epf".to_string()),
+        );
+        let preview = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.artifacts.len(), 2);
+        assert!(!workspace.join("external").exists());
+
+        args.insert("OutputDir".to_string(), Value::String(".".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("source-set `configuration`"), "{error}");
+        assert!(error.contains("Configuration"), "{error}");
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: configuration\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        args.insert("OutputDir".to_string(), Value::String("SRC".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact source-set root"), "{error}");
+        assert!(!workspace.join("SRC").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.join("epf")).unwrap();
+        std::fs::write(
+            workspace.join("epf/Existing.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("format=DESIGNER"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: designer\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("exact `DESIGNER`"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: true\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        let error = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap_err();
+        assert!(error.contains("field `format` must be a string"), "{error}");
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
