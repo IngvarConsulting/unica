@@ -5,7 +5,7 @@ Unica is a Codex plugin for day-to-day 1C:Enterprise development work.
 The public skills model developer operations, not infrastructure tools:
 
 - create, inspect, edit, validate, compile, dump, and load 1C metadata;
-- build, dump, and publish external processing/report source sets (`EPF`/`ERF`) through v8-runner MCP workflows;
+- create make-ready external processing/report scaffolds (`EPF`/`ERF`) inside Designer/platform-XML external source sets and build, dump, or publish them through v8-runner MCP workflows;
 - run v8-runner database/build/runtime workflows through MCP `unica`;
 - work with forms, roles, SKD, MXL, subsystems, command interfaces, help, templates, and autonomous web-client debug;
 - search, review, diagnose, test, and analyze BSL code inside those workflows.
@@ -20,6 +20,7 @@ The `skills/` directory contains operation skills and scenario references for 1C
 - `cf-edit`, `cf-info`, `cf-init`, `cf-validate`
 - `cfe-init`, `cfe-borrow`, `cfe-diff`, `cfe-patch-method`, `cfe-validate`
 - `v8-runner`, `db-auth-check`
+- `epf-init`, `erf-init` for make-ready EPF/ERF scaffolds inside Designer/platform-XML external source sets
 - `epf-bsp-init`, `epf-bsp-add-command` for BSP registration helpers; EPF/ERF build and dump workflows live in `v8-runner`
 - `form-add`, `form-edit`, `form-info`, `form-compile`, `form-validate`, `form-remove`
 - `meta-compile`, `meta-edit`, `meta-info`, `meta-remove`, `meta-validate`

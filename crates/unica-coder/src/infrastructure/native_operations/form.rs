@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::form_event_registry::{
+    context_from_root, validate_event, FormDefinitionKind, FormElementKind, FormEventBinding,
+    FormEventContext, FormEventDiagnostic, FormEventDiagnosticCode, FormEventTarget,
+    MainAttributeKind, MainAttributeProvenance,
+};
 use super::{
     cf::*, cfe::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
 };
@@ -315,7 +320,7 @@ pub(crate) fn validate_form(
             form_validate_button_commands(&elements, &cmd_map, &mut report);
         }
         if !report.stopped {
-            form_validate_events(root, &elements, &mut report);
+            form_validate_events(root, &mut report);
         }
         if !report.stopped {
             form_validate_command_actions(&cmd_nodes, &mut report);
@@ -707,42 +712,138 @@ pub(crate) fn form_validate_button_commands(
 
 pub(crate) fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
-    elements: &[FormElementInfo<'_>],
     report: &mut FormValidationReporter,
 ) {
-    let mut event_errors = 0usize;
-    let mut event_checked = 0usize;
-    if let Some(form_events) = form_validation_child(root, "Events") {
-        for event in form_validation_children(form_events, "Event") {
-            let name = event.attribute("name").unwrap_or("");
-            event_checked += 1;
-            if event.text().unwrap_or("").trim().is_empty() {
-                report.error(format!("Form event '{name}': empty handler name"));
-                event_errors += 1;
-            }
-        }
+    struct EventValidationState<'report> {
+        context: FormEventContext,
+        report: &'report mut FormValidationReporter,
+        errors: usize,
+        checked: usize,
+        unverified: usize,
     }
-    for element in elements {
-        if let Some(events) = form_validation_child(element.node, "Events") {
+
+    impl EventValidationState<'_> {
+        fn validate_owner(
+            &mut self,
+            owner: roxmltree::Node<'_, '_>,
+            target: Option<FormEventTarget>,
+            target_label: &str,
+        ) {
+            let Some(events) = form_validation_child(owner, "Events") else {
+                return;
+            };
+            let mut names = HashSet::<String>::new();
             for event in form_validation_children(events, "Event") {
-                let event_name = event.attribute("name").unwrap_or("");
-                event_checked += 1;
-                if event.text().unwrap_or("").trim().is_empty() {
-                    report.error(format!(
-                        "[{}] '{}' event '{}': empty handler name",
-                        element.tag, element.name, event_name
+                let name = event.attribute("name").unwrap_or("");
+                self.checked += 1;
+                if !names.insert(name.to_string()) {
+                    self.report.error(form_edit_event_diagnostic(
+                        FormEventDiagnosticCode::Duplicate,
+                        target_label,
+                        name,
+                        "event names must be unique within an Events section",
                     ));
-                    event_errors += 1;
+                    self.errors += 1;
                 }
-                if report.stopped {
+                let handler = event.text().unwrap_or("").trim();
+                let binding = if let Some(call_type) = event.attribute("callType") {
+                    FormEventBinding::new(name, handler).with_call_type(call_type)
+                } else {
+                    FormEventBinding::new(name, handler)
+                };
+                let validation = target.map_or_else(
+                    || {
+                        Err(FormEventDiagnostic::new(
+                            FormEventDiagnosticCode::EventNotAllowed,
+                            target_label,
+                            name,
+                        )
+                        .with_detail("event owner has no registered platform event matrix"))
+                    },
+                    |target| {
+                        validate_event_owner_node(owner, target, &binding)
+                            .and_then(|_| validate_event(&self.context, target, &binding))
+                    },
+                );
+                if let Err(mut diagnostic) = validation {
+                    diagnostic.target = target_label.to_string();
+                    if diagnostic.code == FormEventDiagnosticCode::ContextUnknown
+                        && self.context.main_attribute_provenance
+                            == MainAttributeProvenance::InheritedBaseFormUnavailable
+                    {
+                        self.report.warn(format!(
+                        "{}; inherited base-form context is unavailable, so this binding was not verified",
+                        diagnostic
+                    ));
+                        self.unverified += 1;
+                    } else {
+                        self.report.error(diagnostic.to_string());
+                        self.errors += 1;
+                    }
+                }
+                if self.report.stopped {
                     return;
                 }
             }
         }
     }
-    if event_errors == 0 && event_checked > 0 {
-        report.ok(format!("Event handlers: {event_checked} events checked"));
+
+    let base_form = form_validation_child(root, "BaseForm");
+    let mut state = EventValidationState {
+        context: context_from_root(root),
+        report,
+        errors: 0,
+        checked: 0,
+        unverified: 0,
+    };
+    state.validate_owner(root, Some(FormEventTarget::Form), "form");
+
+    for owner in root.descendants().skip(1).filter(|node| {
+        node.is_element()
+            && form_validation_child(*node, "Events").is_some()
+            && !base_form.is_some_and(|base| {
+                *node == base || node.ancestors().any(|ancestor| ancestor == base)
+            })
+    }) {
+        let tag = owner.tag_name().name();
+        let name = owner.attribute("name").unwrap_or("");
+        let target_label = if name.is_empty() {
+            format!("{tag} element")
+        } else {
+            format!("{tag} element '{name}'")
+        };
+        let target = FormElementKind::from_xml_tag(tag).map(FormEventTarget::Element);
+        state.validate_owner(owner, target, &target_label);
+        if state.report.stopped {
+            return;
+        }
     }
+
+    if state.errors == 0 && state.unverified == 0 && state.checked > 0 {
+        state
+            .report
+            .ok(format!("Event handlers: {} events checked", state.checked));
+    }
+}
+
+fn validate_event_owner_node(
+    owner: roxmltree::Node<'_, '_>,
+    target: FormEventTarget,
+    binding: &FormEventBinding<'_>,
+) -> Result<(), FormEventDiagnostic> {
+    if target == FormEventTarget::Element(FormElementKind::Table)
+        && form_validation_child_text(owner, "DataPath").is_none_or(|path| path.trim().is_empty())
+    {
+        return Err(FormEventDiagnostic::new(
+            FormEventDiagnosticCode::EventNotAllowed,
+            "table",
+            binding.name,
+        )
+        .with_detail(
+            "Table event bindings require a non-empty direct DataPath; the platform drops bindings on unbound tables",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn form_validate_command_actions(
@@ -778,7 +879,7 @@ pub(crate) fn form_validate_command_actions(
 
 pub(crate) fn form_validate_extension(
     root: roxmltree::Node<'_, '_>,
-    elements: &[FormElementInfo<'_>],
+    _elements: &[FormElementInfo<'_>],
     attr_nodes: &[roxmltree::Node<'_, '_>],
     cmd_nodes: &[roxmltree::Node<'_, '_>],
     report: &mut FormValidationReporter,
@@ -797,47 +898,6 @@ pub(crate) fn form_validate_extension(
 
     let mut ct_errors = 0usize;
     let mut ct_checked = 0usize;
-    for event in form_validation_child(root, "Events")
-        .map(|events| form_validation_children(events, "Event"))
-        .unwrap_or_default()
-    {
-        if let Some(call_type) = event
-            .attribute("callType")
-            .filter(|value| !value.is_empty())
-        {
-            ct_checked += 1;
-            if !form_valid_call_type(call_type) {
-                report.error(format!(
-                    "Form event '{}': invalid callType='{}' (expected: Before, After, Override)",
-                    event.attribute("name").unwrap_or(""),
-                    call_type
-                ));
-                ct_errors += 1;
-            }
-        }
-    }
-    for element in elements {
-        if let Some(events) = form_validation_child(element.node, "Events") {
-            for event in form_validation_children(events, "Event") {
-                if let Some(call_type) = event
-                    .attribute("callType")
-                    .filter(|value| !value.is_empty())
-                {
-                    ct_checked += 1;
-                    if !form_valid_call_type(call_type) {
-                        report.error(format!(
-                            "[{}] '{}' event '{}': invalid callType='{}'",
-                            element.tag,
-                            element.name,
-                            event.attribute("name").unwrap_or(""),
-                            call_type
-                        ));
-                        ct_errors += 1;
-                    }
-                }
-            }
-        }
-    }
     for command in cmd_nodes {
         let cmd_name = command.attribute("name").unwrap_or("");
         for action in form_validation_children(*command, "Action") {
@@ -1169,7 +1229,8 @@ pub(crate) fn analyze_form_info(
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", form_path.display()))?;
         let root = doc.root_element();
-        let is_extension = form_child(root, "BaseForm").is_some();
+        let base_form = form_child(root, "BaseForm");
+        let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
 
         let mut lines = Vec::new();
@@ -1299,8 +1360,7 @@ pub(crate) fn analyze_form_info(
             }
         }
 
-        if is_extension {
-            let base_form = form_child(root, "BaseForm").expect("checked above");
+        if let Some(base_form) = base_form {
             let version = base_form.attribute("version").unwrap_or("");
             let base_form_text = if version.is_empty() {
                 "present".to_string()
@@ -3463,7 +3523,8 @@ pub(crate) fn compile_form(
             stdout.push_str(&from_object_stdout);
             defn
         } else {
-            let json_path_raw = json_path_raw.expect("checked above");
+            let json_path_raw = json_path_raw
+                .ok_or_else(|| "Either -JsonPath or -FromObject is required.".to_string())?;
             let json_path = absolutize(json_path_raw.clone(), &context.cwd);
             if !json_path.exists() {
                 return Err(format!("File not found: {}", json_path_raw.display()));
@@ -3528,29 +3589,83 @@ pub(crate) fn compile_form(
 }
 
 pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf), String> {
+    edit_form_with_mode(args, context, FormEditMode::Apply)
+}
+
+pub(crate) fn preview_form_edit(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> AdapterOutcome {
+    edit_form_with_mode(args, context, FormEditMode::Preview)
+}
+
+pub(crate) fn has_edit_payload(args: &Map<String, Value>) -> bool {
+    const KEYS: &[&str] = &[
+        "FormPath",
+        "formPath",
+        "Path",
+        "path",
+        "JsonPath",
+        "jsonPath",
+        "definition",
+    ];
+    args.keys().any(|key| KEYS.contains(&key.as_str()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormEditMode {
+    Apply,
+    Preview,
+}
+
+impl FormEditMode {
+    const fn is_preview(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+}
+
+pub(crate) fn edit_form_with_mode(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mode: FormEditMode,
+) -> AdapterOutcome {
+    let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
         let form_path_raw =
             required_path(args, &["formPath", "FormPath", "path", "Path"], "FormPath")?;
-        let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
         let form_path = absolutize(form_path_raw.clone(), &context.cwd);
         if !form_path.exists() {
             return Err(format!("File not found: {}", form_path_raw.display()));
         }
-        let json_path = absolutize(json_path_raw.clone(), &context.cwd);
-        if !json_path.exists() {
-            return Err(format!("File not found: {}", json_path_raw.display()));
-        }
 
-        let json_text = fs::read_to_string(&json_path)
-            .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
-        let defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("failed to parse form edit JSON: {err}"))?;
-        let mut xml_text = fs::read_to_string(&form_path)
+        let defn = form_edit_resolve_definition(args, context)?;
+        let original_bytes = fs::read(&form_path)
             .map_err(|err| format!("failed to read {}: {err}", form_path.display()))?;
-        if xml_text.starts_with('\u{feff}') {
-            xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
-        }
+        let bom = if original_bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+            Utf8Bom::Present
+        } else {
+            Utf8Bom::Absent
+        };
+        let content_bytes = if bom == Utf8Bom::Present {
+            &original_bytes[3..]
+        } else {
+            original_bytes.as_slice()
+        };
+        let mut xml_text = String::from_utf8(content_bytes.to_vec())
+            .map_err(|err| format!("{} is not valid UTF-8: {err}", form_path.display()))?;
+        let original_xml_text = xml_text.clone();
         Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+        if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
+            form_edit_validate_named_objects(&xml_text, attributes, "Attribute", "attribute")?;
+        }
+        if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
+            form_edit_validate_named_objects(&xml_text, commands, "Command", "command")?;
+        }
+        let planned_events = form_edit_plan_events(&defn, &xml_text)?;
+        let form_root_start = Document::parse(&xml_text)
+            .map_err(|err| format!("[ERROR] XML parse error: {err}"))?
+            .root_element()
+            .range()
+            .start;
 
         let form_name = form_edit_form_name(&form_path);
         let mut elem_ids = FormIdAllocator {
@@ -3580,6 +3695,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         }
 
         let mut added_elements = Vec::<String>::new();
+        let mut emitted_fragments = String::new();
         let mut companion_count = 0usize;
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
             if !elements.is_empty() {
@@ -3599,6 +3715,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         added_elements.push(summary);
                     }
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
                 companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
             }
@@ -3607,7 +3724,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         let mut added_attrs = Vec::<String>::new();
         if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
             if !attrs.is_empty() {
-                form_edit_validate_named_objects(&xml_text, attrs, "Attribute", "attribute")?;
+                form_edit_validate_attribute_columns(attrs)?;
                 let mut lines = Vec::<String>::new();
                 for attr in attrs {
                     let Some(object) = attr.as_object() else {
@@ -3617,13 +3734,14 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         continue;
                     };
                     let id = attr_ids.next();
-                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t");
+                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
                     let type_name = object
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("(no type)");
                     added_attrs.push(format!("  + {name}: {type_name} (id={id})"));
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
             }
         }
@@ -3631,7 +3749,6 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         let mut added_cmds = Vec::<String>::new();
         if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
             if !commands.is_empty() {
-                form_edit_validate_named_objects(&xml_text, commands, "Command", "command")?;
                 let mut lines = Vec::<String>::new();
                 for cmd in commands {
                     let Some(object) = cmd.as_object() else {
@@ -3649,33 +3766,82 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         .unwrap_or_default();
                     added_cmds.push(format!("  + {name}{action} (id={id})"));
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
             }
         }
 
-        let mut xml_text = xml_text.replacen("encoding=\"UTF-8\"", "encoding=\"utf-8\"", 1);
-        if !xml_text.ends_with('\n') {
-            xml_text.push('\n');
+        let mut added_form_events = Vec::<String>::new();
+        let mut added_element_events = Vec::<String>::new();
+        for event in &planned_events {
+            form_edit_apply_planned_event(&mut xml_text, event)?;
+            match &event.owner {
+                FormEditEventOwner::Form => added_form_events.push(event.summary()),
+                FormEditEventOwner::Element(_) => added_element_events.push(event.summary()),
+            }
         }
-        write_utf8_bom(&form_path, &xml_text)?;
+
+        form_edit_ensure_emitted_namespaces(&mut xml_text, form_root_start, &emitted_fragments)?;
+        Document::parse(&xml_text)
+            .map_err(|err| format!("[ERROR] XML parse error after edit: {err}"))?;
+        let changed = xml_text != original_xml_text;
+        if changed && !mode.is_preview() {
+            form_edit_write_preserving_bom(&form_path, &xml_text, bom)?;
+        }
 
         let mut stdout = format!("=== form-edit: {form_name} ===\n\n");
+        if !added_form_events.is_empty() {
+            stdout.push_str(if mode.is_preview() {
+                "Planned form events:\n"
+            } else {
+                "Added form events:\n"
+            });
+            stdout.push_str(&added_form_events.join("\n"));
+            stdout.push_str("\n\n");
+        }
+        if !added_element_events.is_empty() {
+            stdout.push_str(if mode.is_preview() {
+                "Planned element events:\n"
+            } else {
+                "Added element events:\n"
+            });
+            stdout.push_str(&added_element_events.join("\n"));
+            stdout.push_str("\n\n");
+        }
         if !added_elements.is_empty() {
-            stdout.push_str("Added elements:\n");
+            stdout.push_str(if mode.is_preview() {
+                "Planned elements:\n"
+            } else {
+                "Added elements:\n"
+            });
             stdout.push_str(&added_elements.join("\n"));
             stdout.push_str("\n\n");
         }
         if !added_attrs.is_empty() {
-            stdout.push_str("Added attributes:\n");
+            stdout.push_str(if mode.is_preview() {
+                "Planned attributes:\n"
+            } else {
+                "Added attributes:\n"
+            });
             stdout.push_str(&added_attrs.join("\n"));
             stdout.push_str("\n\n");
         }
         if !added_cmds.is_empty() {
-            stdout.push_str("Added commands:\n");
+            stdout.push_str(if mode.is_preview() {
+                "Planned commands:\n"
+            } else {
+                "Added commands:\n"
+            });
             stdout.push_str(&added_cmds.join("\n"));
             stdout.push_str("\n\n");
         }
         let mut total_parts = Vec::new();
+        if !added_form_events.is_empty() {
+            total_parts.push(format!("{} form event(s)", added_form_events.len()));
+        }
+        if !added_element_events.is_empty() {
+            total_parts.push(format!("{} element event(s)", added_element_events.len()));
+        }
         if !added_elements.is_empty() {
             if companion_count > 0 {
                 total_parts.push(format!(
@@ -3694,17 +3860,41 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
             total_parts.push(format!("{} command(s)", added_cmds.len()));
         }
         stdout.push_str("---\n");
-        stdout.push_str(&format!("Total: {}\n", total_parts.join(", ")));
+        if changed {
+            stdout.push_str(&format!("Total: {}\n", total_parts.join(", ")));
+        } else {
+            stdout.push_str("Total: idempotent no-op; source bytes preserved.\n");
+        }
         stdout.push_str("Run /form-validate to verify.\n");
 
-        Ok((stdout, form_path))
+        Ok((stdout, form_path, changed))
     })();
 
     match edit_result {
-        Ok((stdout, form_path)) => AdapterOutcome {
+        Ok((stdout, form_path, changed)) => AdapterOutcome {
             ok: true,
-            summary: "unica.form.edit completed with native managed form editor".to_string(),
-            changes: vec![format!("updated {}", form_path.display())],
+            summary: if mode.is_preview() && !changed {
+                "dry run: unica.form.edit found an idempotent no-op".to_string()
+            } else if !changed {
+                "unica.form.edit completed with idempotent no-op".to_string()
+            } else if mode.is_preview() {
+                "dry run: unica.form.edit planned native managed form changes".to_string()
+            } else {
+                "unica.form.edit completed with native managed form editor".to_string()
+            },
+            changes: if changed {
+                vec![format!(
+                    "{} {}",
+                    if mode.is_preview() {
+                        "would update"
+                    } else {
+                        "updated"
+                    },
+                    form_path.display()
+                )]
+            } else {
+                Vec::new()
+            },
             warnings: Vec::new(),
             errors: Vec::new(),
             artifacts: vec![form_path.display().to_string()],
@@ -3724,6 +3914,971 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
             command: None,
         },
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum FormEditEventOwner {
+    Form,
+    Element(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FormEditEventSlot {
+    owner: FormEditEventOwner,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormEditRequestedBinding {
+    handler: String,
+    call_type: Option<String>,
+}
+
+struct FormEditEventPlanner {
+    context: FormEventContext,
+    requested: HashMap<FormEditEventSlot, FormEditRequestedBinding>,
+    planned: Vec<FormEditPlannedEvent>,
+}
+
+impl FormEditEventPlanner {
+    fn new(context: FormEventContext) -> Self {
+        Self {
+            context,
+            requested: HashMap::new(),
+            planned: Vec::new(),
+        }
+    }
+
+    fn request(
+        &mut self,
+        owner_node: roxmltree::Node<'_, '_>,
+        target: FormEventTarget,
+        event: FormEditPlannedEvent,
+    ) -> Result<(), String> {
+        let binding = if let Some(call_type) = event.call_type.as_deref() {
+            FormEventBinding::new(&event.name, &event.handler).with_call_type(call_type)
+        } else {
+            FormEventBinding::new(&event.name, &event.handler)
+        };
+        validate_event_owner_node(owner_node, target, &binding)
+            .and_then(|_| validate_event(&self.context, target, &binding))
+            .map_err(|diagnostic| diagnostic.to_string())?;
+
+        let slot = FormEditEventSlot {
+            owner: event.owner.clone(),
+            name: event.name.clone(),
+        };
+        let requested_binding = FormEditRequestedBinding {
+            handler: event.handler.clone(),
+            call_type: event.call_type.clone(),
+        };
+        if let Some(seen) = self.requested.get(&slot) {
+            if seen == &requested_binding {
+                return Ok(());
+            }
+            return Err(form_edit_event_diagnostic(
+                FormEventDiagnosticCode::BindingConflict,
+                form_edit_event_owner_label(&event.owner),
+                &event.name,
+                "the request contains conflicting handlers or callType values for the same event slot",
+            ));
+        }
+        self.requested.insert(slot, requested_binding);
+
+        let existing = form_validation_child(owner_node, "Events")
+            .map(|events| {
+                form_validation_children(events, "Event")
+                    .into_iter()
+                    .filter(|candidate| candidate.attribute("name") == Some(event.name.as_str()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if existing.len() > 1 {
+            return Err(form_edit_event_diagnostic(
+                FormEventDiagnosticCode::Duplicate,
+                form_edit_event_owner_label(&event.owner),
+                &event.name,
+                "the source form already contains duplicate bindings for this event slot",
+            ));
+        }
+        if let Some(existing_event) = existing.first() {
+            let existing_handler = existing_event.text().unwrap_or("").trim();
+            let existing_call_type = existing_event.attribute("callType");
+            if existing_handler == event.handler && existing_call_type == event.call_type.as_deref()
+            {
+                return Ok(());
+            }
+            return Err(form_edit_event_diagnostic(
+                FormEventDiagnosticCode::BindingConflict,
+                form_edit_event_owner_label(&event.owner),
+                &event.name,
+                format!(
+                    "existing binding is handler='{existing_handler}', callType={existing_call_type:?}"
+                ),
+            ));
+        }
+
+        self.planned.push(event);
+        Ok(())
+    }
+
+    fn finish(self) -> Vec<FormEditPlannedEvent> {
+        self.planned
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FormEditPlannedEvent {
+    pub(crate) owner: FormEditEventOwner,
+    pub(crate) name: String,
+    pub(crate) handler: String,
+    pub(crate) call_type: Option<String>,
+}
+
+impl FormEditPlannedEvent {
+    pub(crate) fn summary(&self) -> String {
+        let call_type = self
+            .call_type
+            .as_deref()
+            .map(|value| format!("[{value}]"))
+            .unwrap_or_default();
+        match &self.owner {
+            FormEditEventOwner::Form => {
+                format!("  + {}{call_type} -> {}", self.name, self.handler)
+            }
+            FormEditEventOwner::Element(element) => {
+                format!("  + {element}.{}{call_type} -> {}", self.name, self.handler)
+            }
+        }
+    }
+}
+
+pub(crate) fn form_edit_resolve_definition(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Value, String> {
+    let inline = args.get("definition");
+    let json_path_raw = path_arg(args, &["jsonPath", "JsonPath"]);
+    match (inline, json_path_raw) {
+        (Some(_), Some(_)) => {
+            Err("unica.form.edit accepts exactly one of JsonPath or inline definition".to_string())
+        }
+        (Some(definition), None) => {
+            if !definition.is_object() {
+                return Err("unica.form.edit argument `definition` must be object".to_string());
+            }
+            Ok(definition.clone())
+        }
+        (None, Some(json_path_raw)) => {
+            let json_path = absolutize(json_path_raw.clone(), &context.cwd);
+            if !json_path.exists() {
+                return Err(format!("File not found: {}", json_path_raw.display()));
+            }
+            let json_text = fs::read_to_string(&json_path)
+                .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
+            let definition: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
+                .map_err(|err| format!("failed to parse form edit JSON: {err}"))?;
+            if !definition.is_object() {
+                return Err("form edit JSON root must be an object".to_string());
+            }
+            Ok(definition)
+        }
+        (None, None) => {
+            Err("unica.form.edit requires exactly one of JsonPath or definition".to_string())
+        }
+    }
+}
+
+pub(crate) fn form_edit_plan_events(
+    definition: &Value,
+    xml_text: &str,
+) -> Result<Vec<FormEditPlannedEvent>, String> {
+    let document = Document::parse(xml_text)
+        .map_err(|err| format!("[ERROR] XML parse error while planning events: {err}"))?;
+    let root = document.root_element();
+    let direct_main_count = form_edit_direct_main_attribute_count(root);
+    form_edit_validate_projected_main_attribute_count(direct_main_count, definition)?;
+    let context =
+        form_project_event_context(context_from_root(root), direct_main_count, definition);
+    let mut planner = FormEditEventPlanner::new(context.clone());
+
+    if let Some(values) = definition.get("formEvents") {
+        let events = values.as_array().ok_or_else(|| {
+            form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EventNotAllowed,
+                "form",
+                "<definition>",
+                "formEvents must be an array",
+            )
+        })?;
+        for value in events {
+            let (name, handler, call_type) = form_edit_definition_event(value, "name", "form")?;
+            planner.request(
+                root,
+                FormEventTarget::Form,
+                FormEditPlannedEvent {
+                    owner: FormEditEventOwner::Form,
+                    name,
+                    handler,
+                    call_type,
+                },
+            )?;
+        }
+    }
+
+    if let Some(values) = definition.get("elementEvents") {
+        let events = values.as_array().ok_or_else(|| {
+            form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EventNotAllowed,
+                "element",
+                "<definition>",
+                "elementEvents must be an array",
+            )
+        })?;
+        for value in events {
+            let object = value.as_object().ok_or_else(|| {
+                form_edit_event_diagnostic(
+                    FormEventDiagnosticCode::EventNotAllowed,
+                    "element",
+                    "<definition>",
+                    "elementEvents items must be objects",
+                )
+            })?;
+            let element_name = object
+                .get("element")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    form_edit_event_diagnostic(
+                        FormEventDiagnosticCode::TargetNotFound,
+                        "element",
+                        "<definition>",
+                        "element must be a non-empty string",
+                    )
+                })?;
+            let event_name = object
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<definition>");
+            let element_node = form_edit_resolve_element_node(root, element_name, event_name)?;
+            let kind =
+                FormElementKind::from_xml_tag(element_node.tag_name().name()).ok_or_else(|| {
+                    form_edit_event_diagnostic(
+                        FormEventDiagnosticCode::EventNotAllowed,
+                        format!("element '{element_name}'"),
+                        object
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<definition>"),
+                        format!(
+                            "element tag '{}' has no registered event matrix",
+                            element_node.tag_name().name()
+                        ),
+                    )
+                })?;
+            let (name, handler, call_type) =
+                form_edit_definition_event(value, "name", &format!("element '{element_name}'"))?;
+            planner.request(
+                element_node,
+                FormEventTarget::Element(kind),
+                FormEditPlannedEvent {
+                    owner: FormEditEventOwner::Element(element_name.to_string()),
+                    name,
+                    handler,
+                    call_type,
+                },
+            )?;
+        }
+    }
+
+    if let Some(elements) = definition.get("elements").and_then(Value::as_array) {
+        form_edit_validate_new_element_event_tree(elements, &context)?;
+    }
+
+    Ok(planner.finish())
+}
+
+fn form_project_event_context(
+    mut context: FormEventContext,
+    direct_main_count: usize,
+    definition: &Value,
+) -> FormEventContext {
+    if direct_main_count != 0 {
+        return context;
+    }
+
+    let projected_main_attributes = definition
+        .get("attributes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter(|attribute| attribute.get("main").and_then(Value::as_bool) == Some(true))
+        .filter(|attribute| {
+            attribute
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty())
+        })
+        .collect::<Vec<_>>();
+
+    if let [attribute] = projected_main_attributes.as_slice() {
+        let type_name = attribute
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        context.main_attribute = type_name
+            .map(MainAttributeKind::from_type_name)
+            .unwrap_or(MainAttributeKind::Unknown);
+        context.main_attribute_type = type_name.map(ToOwned::to_owned);
+        context.main_attribute_provenance = MainAttributeProvenance::DirectForm;
+    }
+    context
+}
+
+fn form_edit_direct_main_attribute_count(root: roxmltree::Node<'_, '_>) -> usize {
+    form_validation_child(root, "Attributes")
+        .map(|attributes| {
+            form_validation_children(attributes, "Attribute")
+                .into_iter()
+                .filter(|attribute| {
+                    form_validation_child_text(*attribute, "MainAttribute").as_deref()
+                        == Some("true")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn form_edit_validate_projected_main_attribute_count(
+    direct_main_count: usize,
+    definition: &Value,
+) -> Result<(), String> {
+    let added_main_count = definition
+        .get("attributes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter(|attribute| attribute.get("main").and_then(Value::as_bool) == Some(true))
+        .filter(|attribute| {
+            attribute
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty())
+        })
+        .count();
+    let resulting_count = direct_main_count + added_main_count;
+    if resulting_count > 1 {
+        return Err(format!(
+            "[ERROR] Resulting form would contain {resulting_count} direct MainAttribute=true entries; expected at most one"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_definition_event(
+    value: &Value,
+    name_key: &str,
+    target: &str,
+) -> Result<(String, String, Option<String>), String> {
+    let object = value.as_object().ok_or_else(|| {
+        form_edit_event_diagnostic(
+            FormEventDiagnosticCode::EventNotAllowed,
+            target,
+            "<definition>",
+            "event definition must be an object",
+        )
+    })?;
+    let name = object
+        .get(name_key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EventNotAllowed,
+                target,
+                "<definition>",
+                format!("{name_key} must be a non-empty string"),
+            )
+        })?
+        .to_string();
+    let handler = object
+        .get("handler")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EmptyHandler,
+                target,
+                &name,
+                "handler must be a string",
+            )
+        })?
+        .trim()
+        .to_string();
+    let call_type = match object.get("callType") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(form_edit_event_diagnostic(
+                FormEventDiagnosticCode::InvalidCallType,
+                target,
+                &name,
+                "callType must be a string",
+            ));
+        }
+    };
+    Ok((name, handler, call_type))
+}
+
+fn form_edit_optional_event_handler(
+    value: Option<&Value>,
+    target: &str,
+    event: &str,
+) -> Result<Option<String>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(form_edit_event_diagnostic(
+            FormEventDiagnosticCode::EmptyHandler,
+            target,
+            event,
+            "handler must be a string or null",
+        )),
+    }
+}
+
+fn form_edit_validate_element_event_payload_types(
+    object: &Map<String, Value>,
+    kind: FormEditElementDefinitionKind,
+    element_name: &str,
+) -> Result<(), String> {
+    let handlers = match object.get("handlers") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(values)) => Some(values),
+        Some(_) => {
+            return Err(form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EventNotAllowed,
+                format!("new element '{element_name}'"),
+                "<definition>",
+                "handlers must be an object",
+            ));
+        }
+    };
+    let Some(events_value) = object.get("on") else {
+        return Ok(());
+    };
+    let events = events_value.as_array().ok_or_else(|| {
+        form_edit_event_diagnostic(
+            FormEventDiagnosticCode::EventNotAllowed,
+            format!("new element '{element_name}'"),
+            "<definition>",
+            "on must be an array",
+        )
+    })?;
+    let target = format!("new element '{element_name}'");
+    if kind == FormEditElementDefinitionKind::Table
+        && !events.is_empty()
+        && object
+            .get("path")
+            .and_then(Value::as_str)
+            .is_none_or(|path| path.trim().is_empty())
+    {
+        return Err(form_edit_event_diagnostic(
+            FormEventDiagnosticCode::EventNotAllowed,
+            &target,
+            "<definition>",
+            "Table event bindings require a non-empty path/DataPath; the platform drops bindings on unbound tables",
+        ));
+    }
+    for value in events {
+        if let Some(event_name) = value.as_str() {
+            form_edit_optional_event_handler(
+                handlers.and_then(|values| values.get(event_name)),
+                &target,
+                event_name,
+            )?;
+            continue;
+        }
+        let event = value.as_object().ok_or_else(|| {
+            form_edit_event_diagnostic(
+                FormEventDiagnosticCode::EventNotAllowed,
+                &target,
+                "<definition>",
+                "on items must be strings or objects",
+            )
+        })?;
+        let event_name = event
+            .get("event")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                form_edit_event_diagnostic(
+                    FormEventDiagnosticCode::EventNotAllowed,
+                    &target,
+                    "<definition>",
+                    "event must be a non-empty string",
+                )
+            })?;
+        if form_edit_optional_event_handler(event.get("handler"), &target, event_name)?.is_none() {
+            form_edit_optional_event_handler(
+                handlers.and_then(|values| values.get(event_name)),
+                &target,
+                event_name,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_validate_new_element_event_tree(
+    elements: &[Value],
+    context: &FormEventContext,
+) -> Result<(), String> {
+    for element in elements {
+        let Some(object) = element.as_object() else {
+            continue;
+        };
+        let definition_kind = FormEditElementDefinitionKind::from_object(object)?;
+        let element_name = definition_kind.name(object)?;
+        form_edit_validate_element_event_payload_types(object, definition_kind, element_name)?;
+        let kind = definition_kind.event_kind();
+        let handlers = match object.get("handlers") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(values)) => Some(values),
+            Some(_) => {
+                return Err(form_edit_event_diagnostic(
+                    FormEventDiagnosticCode::EventNotAllowed,
+                    "new element",
+                    "<definition>",
+                    "handlers must be an object",
+                ));
+            }
+        };
+        if let Some(events_value) = object.get("on") {
+            let events = events_value.as_array().ok_or_else(|| {
+                form_edit_event_diagnostic(
+                    FormEventDiagnosticCode::EventNotAllowed,
+                    "new element",
+                    "<definition>",
+                    "on must be an array",
+                )
+            })?;
+            let element_name = element_name.to_string();
+            let mut seen = HashSet::<String>::new();
+            for value in events {
+                let (name, handler, call_type) = if let Some(name) = value.as_str() {
+                    let target = format!("new element '{element_name}'");
+                    let handler = form_edit_optional_event_handler(
+                        handlers.and_then(|values| values.get(name)),
+                        &target,
+                        name,
+                    )?
+                    .unwrap_or_else(|| form_event_handler_name(&element_name, name));
+                    (name.to_string(), handler, None)
+                } else {
+                    let object = value.as_object().ok_or_else(|| {
+                        form_edit_event_diagnostic(
+                            FormEventDiagnosticCode::EventNotAllowed,
+                            format!("new element '{element_name}'"),
+                            "<definition>",
+                            "on items must be strings or objects",
+                        )
+                    })?;
+                    let name = object
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            form_edit_event_diagnostic(
+                                FormEventDiagnosticCode::EventNotAllowed,
+                                format!("new element '{element_name}'"),
+                                "<definition>",
+                                "event must be a non-empty string",
+                            )
+                        })?
+                        .to_string();
+                    let target = format!("new element '{element_name}'");
+                    let handler = match form_edit_optional_event_handler(
+                        object.get("handler"),
+                        &target,
+                        &name,
+                    )? {
+                        Some(handler) => Some(handler),
+                        None => form_edit_optional_event_handler(
+                            handlers.and_then(|values| values.get(&name)),
+                            &target,
+                            &name,
+                        )?,
+                    }
+                    .unwrap_or_else(|| form_event_handler_name(&element_name, &name));
+                    let call_type = match object.get("callType") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(value)) => Some(value.clone()),
+                        Some(_) => {
+                            return Err(form_edit_event_diagnostic(
+                                FormEventDiagnosticCode::InvalidCallType,
+                                format!("new element '{element_name}'"),
+                                &name,
+                                "callType must be a string",
+                            ));
+                        }
+                    };
+                    (name, handler, call_type)
+                };
+                if !seen.insert(name.clone()) {
+                    return Err(form_edit_event_diagnostic(
+                        FormEventDiagnosticCode::Duplicate,
+                        format!("new element '{element_name}'"),
+                        &name,
+                        "the on array contains the same event more than once",
+                    ));
+                }
+                let binding = if let Some(call_type) = call_type.as_deref() {
+                    FormEventBinding::new(&name, &handler).with_call_type(call_type)
+                } else {
+                    FormEventBinding::new(&name, &handler)
+                };
+                validate_event(context, FormEventTarget::Element(kind), &binding)
+                    .map_err(|diagnostic| diagnostic.to_string())?;
+            }
+        }
+        for child_key in ["children", "columns"] {
+            if let Some(children) = object.get(child_key).and_then(Value::as_array) {
+                form_edit_validate_new_element_event_tree(children, context)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_event_owner_label(owner: &FormEditEventOwner) -> String {
+    match owner {
+        FormEditEventOwner::Form => "form".to_string(),
+        FormEditEventOwner::Element(name) => format!("element '{name}'"),
+    }
+}
+
+pub(crate) fn form_edit_event_diagnostic(
+    code: FormEventDiagnosticCode,
+    target: impl Into<String>,
+    event: impl Into<String>,
+    detail: impl Into<String>,
+) -> String {
+    FormEventDiagnostic::new(code, target, event)
+        .with_detail(detail)
+        .to_string()
+}
+
+pub(crate) fn form_edit_find_element_nodes<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    name: &str,
+) -> Vec<roxmltree::Node<'a, 'input>> {
+    let auto_command_bar = root.children().find(|child| {
+        child.is_element()
+            && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+            && child.tag_name().name() == "AutoCommandBar"
+    });
+    let mut matches = auto_command_bar
+        .filter(|node| node.attribute("name") == Some(name))
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let mut containers = root
+        .children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+                && child.tag_name().name() == "ChildItems"
+        })
+        .collect::<Vec<_>>();
+    if let Some(child_items) = auto_command_bar.and_then(|node| {
+        node.children().find(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+                && child.tag_name().name() == "ChildItems"
+        })
+    }) {
+        containers.push(child_items);
+    }
+    for container in containers {
+        matches.extend(container.descendants().filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+                && node.attribute("name") == Some(name)
+                && FormElementKind::from_xml_tag(node.tag_name().name()).is_some()
+        }));
+    }
+    matches
+}
+
+pub(crate) fn form_edit_resolve_element_node<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    name: &str,
+    event_name: &str,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    let matches = form_edit_find_element_nodes(root, name);
+    match matches.as_slice() {
+        [] => Err(form_edit_event_diagnostic(
+            FormEventDiagnosticCode::TargetNotFound,
+            format!("element '{name}'"),
+            event_name,
+            "target element was not found in Form ChildItems or AutoCommandBar",
+        )),
+        [node] => Ok(*node),
+        _ => Err(form_edit_event_diagnostic(
+            FormEventDiagnosticCode::Duplicate,
+            format!("element '{name}'"),
+            event_name,
+            format!(
+                "target name is ambiguous: the source form contains {} matching elements",
+                matches.len()
+            ),
+        )),
+    }
+}
+
+pub(crate) fn form_edit_apply_planned_event(
+    xml_text: &mut String,
+    event: &FormEditPlannedEvent,
+) -> Result<(), String> {
+    enum InsertTarget {
+        ExistingEvents(Range<usize>),
+        AfterRootAutoCommandBar {
+            pos: usize,
+            indent: String,
+        },
+        IntoElement {
+            range: Range<usize>,
+            tag: String,
+            indent: String,
+        },
+        BeforeChildItems {
+            pos: usize,
+            indent: String,
+        },
+    }
+
+    let target = {
+        let document = Document::parse(xml_text)
+            .map_err(|err| format!("[ERROR] XML parse error while applying event: {err}"))?;
+        let root = document.root_element();
+        let owner_node = match &event.owner {
+            FormEditEventOwner::Form => root,
+            FormEditEventOwner::Element(name) => {
+                form_edit_resolve_element_node(root, name, &event.name)?
+            }
+        };
+        if let Some(events) = form_validation_child(owner_node, "Events") {
+            InsertTarget::ExistingEvents(events.range())
+        } else {
+            match &event.owner {
+                FormEditEventOwner::Form => {
+                    let auto_command_bar = form_validation_child(root, "AutoCommandBar")
+                        .ok_or_else(|| {
+                            form_edit_event_diagnostic(
+                                FormEventDiagnosticCode::TargetNotFound,
+                                "form",
+                                &event.name,
+                                "AutoCommandBar is required to position the Events section",
+                            )
+                        })?;
+                    InsertTarget::AfterRootAutoCommandBar {
+                        pos: auto_command_bar.range().end,
+                        indent: form_edit_whitespace_indent_at(
+                            xml_text,
+                            auto_command_bar.range().start,
+                        ),
+                    }
+                }
+                FormEditEventOwner::Element(_) => {
+                    match form_validation_child(owner_node, "ChildItems")
+                        .filter(|_| matches!(owner_node.tag_name().name(), "Pages" | "Table"))
+                    {
+                        Some(child_items) => {
+                            let indent =
+                                form_edit_whitespace_indent_at(xml_text, child_items.range().start);
+                            InsertTarget::BeforeChildItems {
+                                pos: child_items.range().start.saturating_sub(indent.len()),
+                                indent,
+                            }
+                        }
+                        None => InsertTarget::IntoElement {
+                            range: owner_node.range(),
+                            tag: owner_node.tag_name().name().to_string(),
+                            indent: form_edit_whitespace_indent_at(
+                                xml_text,
+                                owner_node.range().start,
+                            ),
+                        },
+                    }
+                }
+            }
+        }
+    };
+
+    let call_type = event
+        .call_type
+        .as_deref()
+        .map(|value| format!(" callType=\"{}\"", escape_xml(value)))
+        .unwrap_or_default();
+    let event_xml = format!(
+        "<Event name=\"{}\"{}>{}</Event>",
+        escape_xml(&event.name),
+        call_type,
+        escape_xml(&event.handler)
+    );
+    let eol = form_edit_eol(xml_text);
+    match target {
+        InsertTarget::ExistingEvents(range) => {
+            form_edit_insert_event_into_events(xml_text, range, &event_xml, eol)
+        }
+        InsertTarget::AfterRootAutoCommandBar { pos, indent } => {
+            let event_indent = format!("{indent}\t");
+            let block =
+                format!("{indent}<Events>{eol}{event_indent}{event_xml}{eol}{indent}</Events>");
+            let suffix_has_eol = xml_text[pos..].starts_with(eol);
+            let after = if suffix_has_eol {
+                String::new()
+            } else {
+                format!("{eol}{indent}")
+            };
+            xml_text.insert_str(pos, &format!("{eol}{block}{after}"));
+            Ok(())
+        }
+        InsertTarget::IntoElement { range, tag, indent } => {
+            form_edit_insert_events_into_element(xml_text, range, &tag, &indent, &event_xml, eol)
+        }
+        InsertTarget::BeforeChildItems { pos, indent } => {
+            let event_indent = format!("{indent}\t");
+            let block = format!(
+                "{indent}<Events>{eol}{event_indent}{event_xml}{eol}{indent}</Events>{eol}"
+            );
+            xml_text.insert_str(pos, &block);
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn form_edit_insert_event_into_events(
+    xml_text: &mut String,
+    range: Range<usize>,
+    event_xml: &str,
+    eol: &str,
+) -> Result<(), String> {
+    let section = &xml_text[range.clone()];
+    let events_indent = form_edit_whitespace_indent_at(xml_text, range.start);
+    let event_indent = format!("{events_indent}\t");
+    if section.trim_end().ends_with("/>") {
+        let relative_close = section
+            .rfind("/>")
+            .ok_or_else(|| "Self-closing Events section has no '/>' terminator".to_string())?;
+        let opening = section[..relative_close].trim_end();
+        let replacement =
+            format!("{opening}>{eol}{event_indent}{event_xml}{eol}{events_indent}</Events>");
+        xml_text.replace_range(range, &replacement);
+        return Ok(());
+    }
+
+    let relative_close = section
+        .rfind("</Events>")
+        .ok_or_else(|| "No closing </Events> found in form event section".to_string())?;
+    let close_pos = range.start + relative_close;
+    let line_start = xml_text[..close_pos]
+        .rfind('\n')
+        .map(|position| position + 1)
+        .unwrap_or(close_pos);
+    if xml_text[line_start..close_pos].trim().is_empty() {
+        xml_text.insert_str(line_start, &format!("{event_indent}{event_xml}{eol}"));
+    } else {
+        xml_text.insert_str(
+            close_pos,
+            &format!("{eol}{event_indent}{event_xml}{eol}{events_indent}"),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_insert_events_into_element(
+    xml_text: &mut String,
+    range: Range<usize>,
+    tag: &str,
+    element_indent: &str,
+    event_xml: &str,
+    eol: &str,
+) -> Result<(), String> {
+    let element = &xml_text[range.clone()];
+    let section_indent = format!("{element_indent}\t");
+    let event_indent = format!("{section_indent}\t");
+    let block = format!(
+        "{section_indent}<Events>{eol}{event_indent}{event_xml}{eol}{section_indent}</Events>"
+    );
+    if element.trim_end().ends_with("/>") {
+        let relative_close = element
+            .rfind("/>")
+            .ok_or_else(|| "Self-closing form element has no '/>' terminator".to_string())?;
+        let opening = element[..relative_close].trim_end();
+        let replacement = format!("{opening}>{eol}{block}{eol}{element_indent}</{tag}>");
+        xml_text.replace_range(range, &replacement);
+        return Ok(());
+    }
+
+    let close = format!("</{tag}>");
+    let relative_close = element
+        .rfind(&close)
+        .ok_or_else(|| format!("No closing {close} found in element target"))?;
+    let close_pos = range.start + relative_close;
+    let line_start = xml_text[..close_pos]
+        .rfind('\n')
+        .map(|position| position + 1)
+        .unwrap_or(close_pos);
+    if xml_text[line_start..close_pos].trim().is_empty() {
+        xml_text.insert_str(line_start, &format!("{block}{eol}"));
+    } else {
+        xml_text.insert_str(close_pos, &format!("{eol}{block}{eol}{element_indent}"));
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_eol(xml_text: &str) -> &'static str {
+    if xml_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+pub(crate) fn form_edit_whitespace_indent_at(xml_text: &str, pos: usize) -> String {
+    let line_start = xml_text[..pos]
+        .rfind('\n')
+        .map(|position| position + 1)
+        .unwrap_or(0);
+    xml_text[line_start..pos]
+        .chars()
+        .take_while(|character| matches!(character, ' ' | '\t' | '\r'))
+        .filter(|character| *character != '\r')
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Utf8Bom {
+    Present,
+    Absent,
+}
+
+pub(crate) fn form_edit_write_preserving_bom(
+    path: &Path,
+    xml_text: &str,
+    bom: Utf8Bom,
+) -> Result<(), String> {
+    let bom_len = if bom == Utf8Bom::Present { 3 } else { 0 };
+    let mut bytes = Vec::with_capacity(xml_text.len() + bom_len);
+    if bom == Utf8Bom::Present {
+        bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
+    }
+    bytes.extend_from_slice(xml_text.as_bytes());
+    fs::write(path, bytes).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
 pub(crate) fn form_edit_form_name(path: &Path) -> String {
@@ -3825,6 +4980,11 @@ pub(crate) fn form_edit_validate_named_objects(
         else {
             continue;
         };
+        if name.is_empty() {
+            return Err(format!(
+                "[ERROR] Empty {label} name in edit definition -- names must be non-empty"
+            ));
+        }
         if !names.insert(name.to_string()) {
             return Err(format!(
                 "[ERROR] Duplicate {label} name '{name}' in edit definition -- names must be unique"
@@ -3834,6 +4994,66 @@ pub(crate) fn form_edit_validate_named_objects(
             return Err(format!(
                 "[ERROR] {tag} '{name}' already exists in form -- {label} names must be unique"
             ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_validate_attribute_columns(attrs: &[Value]) -> Result<(), String> {
+    for attr in attrs {
+        let Some(object) = attr.as_object() else {
+            continue;
+        };
+        let Some(attr_name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(columns_value) = object.get("columns") else {
+            continue;
+        };
+        let columns = columns_value
+            .as_array()
+            .ok_or_else(|| format!("[ERROR] Attribute '{attr_name}' columns must be an array"))?;
+        let attr_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(attr_type, "ValueTable" | "ValueTree") {
+            return Err(format!(
+                "[ERROR] Attribute '{attr_name}' of type '{attr_type}' cannot define columns; columns are supported only for ValueTable or ValueTree"
+            ));
+        }
+        let mut names = HashSet::new();
+        for (index, column) in columns.iter().enumerate() {
+            let column = column.as_object().ok_or_else(|| {
+                format!(
+                    "[ERROR] Attribute '{attr_name}' column #{} must be an object",
+                    index + 1
+                )
+            })?;
+            let name = column
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "[ERROR] Attribute '{attr_name}' column #{} requires non-empty name",
+                        index + 1
+                    )
+                })?;
+            column
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|column_type| !column_type.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "[ERROR] Attribute '{attr_name}' column '{name}' requires non-empty type"
+                    )
+                })?;
+            if !names.insert(name.to_string()) {
+                return Err(format!(
+                    "[ERROR] Duplicate column name '{name}' in attribute '{attr_name}' edit definition -- column names must be unique"
+                ));
+            }
         }
     }
     Ok(())
@@ -3852,55 +5072,35 @@ pub(crate) fn form_edit_element_name_exists(xml_text: &str, name: &str) -> bool 
     let Ok(doc) = Document::parse(xml_text) else {
         return false;
     };
-    const ELEMENT_TAGS: &[&str] = &["InputField", "UsualGroup", "Table", "Button", "CommandBar"];
     doc.descendants().any(|node| {
         node.is_element()
-            && ELEMENT_TAGS.contains(&node.tag_name().name())
+            && FormElementKind::from_xml_tag(node.tag_name().name()).is_some()
             && node.attribute("name") == Some(name)
     })
 }
 
 pub(crate) fn form_edit_element_display_name(element: &Value) -> Option<String> {
     let object = element.as_object()?;
-    if object.contains_key("input") {
-        return object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("input").and_then(Value::as_str))
-            .map(ToOwned::to_owned);
-    }
-    if object.contains_key("button") {
-        return object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("button").and_then(Value::as_str))
-            .map(ToOwned::to_owned);
-    }
-    if object.contains_key("cmdBar") || object.contains_key("commandBar") {
-        return object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("cmdBar").and_then(Value::as_str))
-            .or_else(|| object.get("commandBar").and_then(Value::as_str))
-            .map(ToOwned::to_owned);
-    }
-    object
-        .get("name")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+    let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
+    kind.name(object).ok().map(ToOwned::to_owned)
 }
 
 pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
     let object = element.as_object()?;
-    let (tag, name) = if object.contains_key("button") {
-        ("Button", form_edit_element_display_name(element)?)
-    } else if object.contains_key("cmdBar") || object.contains_key("commandBar") {
-        ("CommandBar", form_edit_element_display_name(element)?)
-    } else if object.contains_key("input") || object.contains_key("name") {
-        ("Input", form_edit_element_display_name(element)?)
-    } else {
-        return None;
+    let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
+    let tag = match kind {
+        FormEditElementDefinitionKind::Table => "Table",
+        FormEditElementDefinitionKind::LabelField => "LabelField",
+        FormEditElementDefinitionKind::Button => "Button",
+        FormEditElementDefinitionKind::CommandBar => "CommandBar",
+        FormEditElementDefinitionKind::Pages => "Pages",
+        FormEditElementDefinitionKind::Page => "Page",
+        FormEditElementDefinitionKind::Group => "Group",
+        FormEditElementDefinitionKind::CheckBox => "CheckBox",
+        FormEditElementDefinitionKind::InputField => "Input",
+        FormEditElementDefinitionKind::AutoCommandBar => return None,
     };
+    let name = form_edit_element_display_name(element)?;
     let path = object
         .get("path")
         .and_then(Value::as_str)
@@ -4059,19 +5259,12 @@ pub(crate) fn form_edit_target_child_items_range(
         else {
             return Err(format!("[ERROR] Element '{after_name}' not found"));
         };
-        if after_element
-            .ancestors()
-            .find(|node| node.is_element() && node.tag_name().name() == "ChildItems")
-            .is_none()
-        {
-            return Err(format!(
-                "No parent <ChildItems> section found for form element '{after_name}'"
-            ));
-        };
         let child_items = after_element
             .ancestors()
             .find(|node| node.is_element() && node.tag_name().name() == "ChildItems")
-            .expect("checked above");
+            .ok_or_else(|| {
+                format!("No parent <ChildItems> section found for form element '{after_name}'")
+            })?;
         return Ok(FormEditInsertTarget::AfterElement {
             child_indent: form_edit_child_indent_for_section(xml_text, child_items.range()),
             pos: after_element.range().end,
@@ -4231,7 +5424,13 @@ pub(crate) fn form_edit_insert_child_items_into_element(
 ) -> Result<(), String> {
     let content = lines.join("\n");
     let element_text = &xml_text[range.clone()];
-    if let Some(relative_pos) = element_text.rfind("/>") {
+    let open_tag_end = form_edit_opening_tag_end(element_text, 0)
+        .ok_or_else(|| format!("No opening <{tag}> tag found in form target"))?;
+    let opening_tag = &element_text[..=open_tag_end];
+    if opening_tag.trim_end().ends_with("/>") {
+        let relative_pos = opening_tag
+            .rfind("/>")
+            .ok_or_else(|| format!("Self-closing <{tag}> tag has no '/>' terminator"))?;
         let pos = range.start + relative_pos;
         xml_text.replace_range(
             pos..pos + 2,
@@ -4256,6 +5455,76 @@ pub(crate) fn form_edit_insert_child_items_into_element(
         ),
     );
     Ok(())
+}
+
+pub(crate) fn form_edit_opening_tag_end(text: &str, start: usize) -> Option<usize> {
+    let mut quote = None::<char>;
+    for (relative_idx, ch) in text[start..].char_indices() {
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '>' => return Some(start + relative_idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn form_edit_ensure_emitted_namespaces(
+    xml_text: &mut String,
+    root_start: usize,
+    emitted_fragments: &str,
+) -> Result<(), String> {
+    if emitted_fragments.is_empty() {
+        return Ok(());
+    }
+    let root_open_end = form_edit_opening_tag_end(xml_text, root_start)
+        .ok_or_else(|| "No opening <Form> tag found in form".to_string())?;
+    let additions = {
+        let root_opening = &xml_text[root_start..=root_open_end];
+        let mut additions = String::new();
+        for (prefix, uri) in form_edit_emitter_namespaces() {
+            let needed = emitted_fragments.contains(&format!("{prefix}:"));
+            if needed && !form_edit_opening_tag_declares_namespace(root_opening, prefix) {
+                additions.push_str(&format!(" xmlns:{prefix}=\"{uri}\""));
+            }
+        }
+        additions
+    };
+    if !additions.is_empty() {
+        xml_text.insert_str(root_open_end, &additions);
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_emitter_namespaces() -> [(&'static str, &'static str); 6] {
+    [
+        ("app", "http://v8.1c.ru/8.2/managed-application/core"),
+        ("cfg", "http://v8.1c.ru/8.1/data/enterprise/current-config"),
+        ("v8", FORM_V8_NS),
+        ("xr", "http://v8.1c.ru/8.3/xcf/readable"),
+        ("xs", "http://www.w3.org/2001/XMLSchema"),
+        ("xsi", "http://www.w3.org/2001/XMLSchema-instance"),
+    ]
+}
+
+pub(crate) fn form_edit_opening_tag_declares_namespace(opening: &str, prefix: &str) -> bool {
+    let needle = format!("xmlns:{prefix}");
+    let mut search_start = 0usize;
+    while let Some(relative_start) = opening[search_start..].find(&needle) {
+        let start = search_start + relative_start + needle.len();
+        let remainder = opening[start..].trim_start();
+        if remainder.starts_with('=') {
+            return true;
+        }
+        search_start = start;
+    }
+    false
 }
 
 pub(crate) fn form_edit_find_section_close(xml_text: &str, section: &str) -> Option<usize> {
@@ -4310,7 +5579,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     name: &str,
     id: usize,
     indent: &str,
-) {
+) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Attribute name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -4336,7 +5605,9 @@ pub(crate) fn emit_form_edit_attribute_item(
             escape_xml(fill_checking)
         ));
     }
+    emit_form_attribute_columns(lines, attr.get("columns"), &inner)?;
     lines.push(format!("{indent}</Attribute>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_edit_command_item(
@@ -4367,6 +5638,11 @@ pub(crate) struct FormCompileStats {
     pub(crate) parameters: usize,
 }
 
+struct FormCompileEvent {
+    name: String,
+    handler: String,
+}
+
 pub(crate) struct FormIdAllocator {
     pub(crate) next: usize,
 }
@@ -4382,10 +5658,144 @@ impl FormIdAllocator {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormEditElementDefinitionKind {
+    Table,
+    LabelField,
+    Button,
+    CommandBar,
+    Pages,
+    Page,
+    Group,
+    CheckBox,
+    InputField,
+    AutoCommandBar,
+}
+
+impl FormEditElementDefinitionKind {
+    fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
+        // `commandBar` is also a nested Table property, and `group` is also a
+        // Page layout property. Prefer unambiguous primary discriminators before
+        // considering those two standalone-element shorthands.
+        let primary_candidates = [
+            (Self::Table, "table", object.contains_key("table")),
+            (
+                Self::LabelField,
+                "labelField",
+                object.contains_key("labelField"),
+            ),
+            (Self::Button, "button", object.contains_key("button")),
+            (Self::Pages, "pages", object.contains_key("pages")),
+            (Self::Page, "page", object.contains_key("page")),
+            (Self::CheckBox, "check", object.contains_key("check")),
+            (Self::InputField, "input", object.contains_key("input")),
+            (
+                Self::AutoCommandBar,
+                "autoCmdBar/autoCommandBar",
+                object.contains_key("autoCmdBar") || object.contains_key("autoCommandBar"),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(kind, label, present)| present.then_some((kind, label)))
+        .collect::<Vec<_>>();
+
+        match primary_candidates.as_slice() {
+            [(kind, _label)] => Ok(*kind),
+            [] => {
+                let command_bar =
+                    object.contains_key("cmdBar") || object.contains_key("commandBar");
+                let group = object.contains_key("group");
+                match (command_bar, group, object.contains_key("name")) {
+                    (true, false, _) => Ok(Self::CommandBar),
+                    (false, true, _) => Ok(Self::Group),
+                    (false, false, true) => Ok(Self::InputField),
+                    (true, true, _) => Err(
+                        "Form element has ambiguous commandBar and group discriminators"
+                            .to_string(),
+                    ),
+                    (false, false, false) => Err(format!(
+                        "Unsupported form element in native compiler: {}",
+                        serde_json::to_string(object).unwrap_or_else(|_| "<invalid>".to_string())
+                    )),
+                }
+            }
+            multiple => Err(format!(
+                "Form element must contain exactly one type discriminator; found: {}",
+                multiple
+                    .iter()
+                    .map(|(_kind, label)| *label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    const fn event_kind(self) -> FormElementKind {
+        match self {
+            Self::Table => FormElementKind::Table,
+            Self::LabelField => FormElementKind::LabelField,
+            Self::Button => FormElementKind::Button,
+            Self::CommandBar | Self::AutoCommandBar => FormElementKind::CommandBar,
+            Self::Pages => FormElementKind::Pages,
+            Self::Page => FormElementKind::Page,
+            Self::Group => FormElementKind::Group,
+            Self::CheckBox => FormElementKind::CheckBoxField,
+            Self::InputField => FormElementKind::InputField,
+        }
+    }
+
+    fn name(self, object: &Map<String, Value>) -> Result<&str, String> {
+        let (keys, description): (&[&str], &str) = match self {
+            Self::Table => (&["table"], "table"),
+            Self::LabelField => (&["labelField"], "label field"),
+            Self::Button => (&["button"], "button"),
+            Self::CommandBar => (&["cmdBar", "commandBar"], "command bar"),
+            Self::Pages => (&["pages"], "pages container"),
+            Self::Page => (&["page"], "page"),
+            Self::Group => (&["group"], "group"),
+            Self::CheckBox => (&["check"], "checkbox"),
+            Self::InputField => (&["input"], "input"),
+            Self::AutoCommandBar => (&["autoCmdBar", "autoCommandBar"], "auto command bar"),
+        };
+        form_edit_definition_element_name(object, keys, description)
+    }
+}
+
+fn form_edit_definition_element_name<'a>(
+    object: &'a Map<String, Value>,
+    keys: &[&str],
+    description: &str,
+) -> Result<&'a str, String> {
+    object
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            keys.iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_str))
+        })
+        .ok_or_else(|| format!("Form {description} is missing name"))
+}
+
 pub(crate) fn form_compile_xml(
     defn: &Value,
     format_version: &str,
 ) -> Result<(String, FormCompileStats), String> {
+    let context = form_project_event_context(
+        FormEventContext {
+            definition: FormDefinitionKind::Regular,
+            main_attribute: MainAttributeKind::Unknown,
+            main_attribute_type: None,
+            main_attribute_provenance: MainAttributeProvenance::Missing,
+        },
+        0,
+        defn,
+    );
+    let events = form_compile_plan_events(defn, &context)?;
+
+    if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
+        form_edit_validate_new_element_event_tree(elements, &context)?;
+    }
+
     let mut ids = FormIdAllocator::new();
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -4416,6 +5826,7 @@ pub(crate) fn form_compile_xml(
     }
 
     emit_form_auto_command_bar(&mut lines, defn, "\t");
+    emit_form_events(&mut lines, &events, "\t");
 
     if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
         if !elements.is_empty() {
@@ -4455,6 +5866,68 @@ pub(crate) fn form_compile_xml(
             parameters,
         },
     ))
+}
+
+fn form_compile_plan_events(
+    defn: &Value,
+    context: &FormEventContext,
+) -> Result<Vec<FormCompileEvent>, String> {
+    let Some(value) = defn.get("events") else {
+        return Ok(Vec::new());
+    };
+    let events = value.as_object().ok_or_else(|| {
+        FormEventDiagnostic::new(FormEventDiagnosticCode::EventNotAllowed, "form", "events")
+            .with_detail("events must be an object mapping event names to string handlers")
+            .to_string()
+    })?;
+
+    events
+        .iter()
+        .map(|(name, value)| {
+            let handler = value.as_str().ok_or_else(|| {
+                let (code, detail) = if value
+                    .as_object()
+                    .is_some_and(|event| event.contains_key("callType"))
+                {
+                    (
+                        FormEventDiagnosticCode::EventNotAllowed,
+                        "events map accepts only string handlers; callType is not supported",
+                    )
+                } else {
+                    (
+                        FormEventDiagnosticCode::EmptyHandler,
+                        "event handler must be a string",
+                    )
+                };
+                FormEventDiagnostic::new(code, "form", name)
+                    .with_detail(detail)
+                    .to_string()
+            })?;
+            let binding = FormEventBinding::new(name, handler);
+            validate_event(context, FormEventTarget::Form, &binding)
+                .map_err(|diagnostic| diagnostic.to_string())?;
+            Ok(FormCompileEvent {
+                name: name.clone(),
+                handler: handler.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn emit_form_events(lines: &mut Vec<String>, events: &[FormCompileEvent], indent: &str) {
+    if events.is_empty() {
+        return;
+    }
+
+    lines.push(format!("{indent}<Events>"));
+    for event in events {
+        lines.push(format!(
+            "{indent}\t<Event name=\"{}\">{}</Event>",
+            escape_xml(&event.name),
+            escape_xml(&event.handler)
+        ));
+    }
+    lines.push(format!("{indent}</Events>"));
 }
 
 pub(crate) fn emit_form_auto_command_bar(lines: &mut Vec<String>, defn: &Value, indent: &str) {
@@ -4614,95 +6087,42 @@ pub(crate) fn emit_form_element(
     let Some(object) = element.as_object() else {
         return Ok(());
     };
-    if object.contains_key("table") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("table").and_then(Value::as_str))
-            .ok_or_else(|| "Form table is missing name".to_string())?;
-        emit_form_table(lines, object, name, indent, ids)?;
-        return Ok(());
+    let kind = FormEditElementDefinitionKind::from_object(object)?;
+    form_edit_validate_element_event_payload_types(object, kind, kind.name(object)?)?;
+    match kind {
+        FormEditElementDefinitionKind::Table => {
+            emit_form_table(lines, object, kind.name(object)?, indent, ids)
+        }
+        FormEditElementDefinitionKind::LabelField => {
+            emit_form_label_field(lines, object, kind.name(object)?, indent, ids);
+            Ok(())
+        }
+        FormEditElementDefinitionKind::Button => {
+            emit_form_button(lines, object, kind.name(object)?, indent, ids);
+            Ok(())
+        }
+        FormEditElementDefinitionKind::CommandBar => {
+            emit_form_command_bar_element(lines, object, kind.name(object)?, indent, ids)
+        }
+        FormEditElementDefinitionKind::Pages => {
+            emit_form_pages(lines, object, kind.name(object)?, indent, ids)
+        }
+        FormEditElementDefinitionKind::Page => {
+            emit_form_page(lines, object, kind.name(object)?, indent, ids)
+        }
+        FormEditElementDefinitionKind::Group => {
+            emit_form_group(lines, object, kind.name(object)?, indent, ids)
+        }
+        FormEditElementDefinitionKind::CheckBox => {
+            emit_form_check(lines, object, kind.name(object)?, indent, ids);
+            Ok(())
+        }
+        FormEditElementDefinitionKind::InputField => {
+            emit_form_input(lines, object, kind.name(object)?, indent, ids);
+            Ok(())
+        }
+        FormEditElementDefinitionKind::AutoCommandBar => Ok(()),
     }
-    if object.contains_key("labelField") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("labelField").and_then(Value::as_str))
-            .ok_or_else(|| "Form label field is missing name".to_string())?;
-        emit_form_label_field(lines, object, name, indent, ids);
-        return Ok(());
-    }
-    if object.contains_key("button") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("button").and_then(Value::as_str))
-            .ok_or_else(|| "Form button is missing name".to_string())?;
-        emit_form_button(lines, object, name, indent, ids);
-        return Ok(());
-    }
-    if object.contains_key("cmdBar") || object.contains_key("commandBar") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("cmdBar").and_then(Value::as_str))
-            .or_else(|| object.get("commandBar").and_then(Value::as_str))
-            .ok_or_else(|| "Form command bar is missing name".to_string())?;
-        emit_form_command_bar_element(lines, object, name, indent, ids)?;
-        return Ok(());
-    }
-    if object.contains_key("pages") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("pages").and_then(Value::as_str))
-            .ok_or_else(|| "Form pages container is missing name".to_string())?;
-        emit_form_pages(lines, object, name, indent, ids)?;
-        return Ok(());
-    }
-    if object.contains_key("page") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("page").and_then(Value::as_str))
-            .ok_or_else(|| "Form page is missing name".to_string())?;
-        emit_form_page(lines, object, name, indent, ids)?;
-        return Ok(());
-    }
-    if object.contains_key("group") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("group").and_then(Value::as_str))
-            .ok_or_else(|| "Form group is missing name".to_string())?;
-        emit_form_group(lines, object, name, indent, ids)?;
-        return Ok(());
-    }
-    if object.contains_key("check") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("check").and_then(Value::as_str))
-            .ok_or_else(|| "Form checkbox is missing name".to_string())?;
-        emit_form_check(lines, object, name, indent, ids);
-        return Ok(());
-    }
-    if object.contains_key("input") || object.contains_key("name") {
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("input").and_then(Value::as_str))
-            .ok_or_else(|| "Form input is missing name".to_string())?;
-        emit_form_input(lines, object, name, indent, ids);
-        return Ok(());
-    }
-    if object.contains_key("autoCmdBar") || object.contains_key("autoCommandBar") {
-        return Ok(());
-    }
-    Err(format!(
-        "Unsupported form element in native compiler: {}",
-        serde_json::to_string(element).unwrap_or_else(|_| "<invalid>".to_string())
-    ))
 }
 
 pub(crate) fn emit_form_group(
@@ -5191,6 +6611,7 @@ pub(crate) fn emit_form_label_field(
         &inner,
         ids,
     );
+    emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</LabelField>"));
 }
 
@@ -5304,6 +6725,7 @@ pub(crate) fn emit_form_table(
         ids,
     );
 
+    emit_form_element_events(lines, element, name, &inner);
     if let Some(columns) = element.get("columns").and_then(Value::as_array) {
         if !columns.is_empty() {
             lines.push(format!("{inner}<ChildItems>"));
@@ -5654,6 +7076,51 @@ pub(crate) fn emit_form_attributes(
     Ok(())
 }
 
+pub(crate) fn emit_form_attribute_columns(
+    lines: &mut Vec<String>,
+    columns: Option<&Value>,
+    indent: &str,
+) -> Result<(), String> {
+    let Some(columns) = columns else {
+        return Ok(());
+    };
+    let columns = columns
+        .as_array()
+        .ok_or_else(|| "Form attribute columns must be an array".to_string())?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+
+    lines.push(format!("{indent}<Columns>"));
+    for (idx, column) in columns.iter().enumerate() {
+        let object = column
+            .as_object()
+            .ok_or_else(|| format!("Form attribute column #{} must be an object", idx + 1))?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Form attribute column #{} is missing name", idx + 1))?;
+        let column_indent = format!("{indent}\t");
+        lines.push(format!(
+            "{column_indent}<Column name=\"{}\" id=\"{}\">",
+            escape_xml(name),
+            idx + 1
+        ));
+        let inner = format!("{column_indent}\t");
+        if let Some(title) = object.get("title").and_then(Value::as_str) {
+            emit_form_mltext(lines, &inner, "Title", title);
+        }
+        let type_name = object
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Form attribute column '{name}' is missing type"))?;
+        emit_form_type(lines, type_name, &inner);
+        lines.push(format!("{column_indent}</Column>"));
+    }
+    lines.push(format!("{indent}</Columns>"));
+    Ok(())
+}
+
 pub(crate) fn emit_form_dynamic_list_attribute_settings(
     lines: &mut Vec<String>,
     settings: &Map<String, Value>,
@@ -5842,8 +7309,8 @@ pub(crate) fn emit_form_single_type(lines: &mut Vec<String>, type_name: &str, in
     let normalized = normalize_form_type(type_name);
     if normalized == "boolean" {
         lines.push(format!("{indent}<v8:Type>xs:boolean</v8:Type>"));
-    } else if normalized == "DynamicList" {
-        lines.push(format!("{indent}<v8:Type>cfg:DynamicList</v8:Type>"));
+    } else if matches!(normalized.as_str(), "DynamicList" | "ConstantsSet") {
+        lines.push(format!("{indent}<v8:Type>cfg:{normalized}</v8:Type>"));
     } else if matches!(
         normalized.as_str(),
         "ValueTable"
@@ -6090,6 +7557,7 @@ pub(crate) fn invoke_mutation(
 mod tests {
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::NativeOperationAdapter;
     use serde_json::{json, Map};
     use std::fs;
     use std::path::Path;
@@ -6337,7 +7805,7 @@ mod tests {
         write_file(
             &form_path,
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>
@@ -6572,6 +8040,182 @@ mod tests {
     }
 
     #[test]
+    fn edit_form_emits_valuetable_attribute_columns() {
+        let context = temp_context("edit-valuetable-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>true</Autofill>
+	</AutoCommandBar>
+	<ChildItems>
+		<UsualGroup name="ГруппаДанных" id="1">
+			<ChildItems/>
+			<ExtendedTooltip name="ГруппаДанныхРасширеннаяПодсказка" id="2"/>
+		</UsualGroup>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаДанных",
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "НомерСтроки", "type": "decimal(5,0)"},
+        {"name": "Значение", "type": "string(200)"}
+      ]
+    }
+  ],
+  "elements": [
+    {
+      "table": "ТаблицаДанных",
+      "path": "ТаблицаДанных",
+      "columns": [
+        {"input": "НомерСтроки", "path": "ТаблицаДанных.НомерСтроки"},
+        {"input": "Значение", "path": "ТаблицаДанных.Значение"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(updated.contains("<Columns>"), "{updated}");
+        assert!(
+            updated.contains("<Column name=\"НомерСтроки\" id=\"1\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<Column name=\"Значение\" id=\"2\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<v8:Type>xs:decimal</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:NumberQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<v8:Type>xs:string</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:StringQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.НомерСтроки</DataPath>"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.Значение</DataPath>"),
+            "{updated}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_duplicate_attribute_column_names() {
+        let context = temp_context("edit-duplicate-attribute-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(&form_path, editable_form_xml(false));
+        write_file(
+            &json_path,
+            r#"{
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "Значение", "type": "string"},
+        {"name": "Значение", "type": "string"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(!outcome.ok, "{outcome:?}");
+        let stderr = outcome.stderr.unwrap_or_default();
+        assert!(
+            stderr.contains(
+                "Duplicate column name 'Значение' in attribute 'ТаблицаДанных' edit definition"
+            ),
+            "{stderr}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_rejects_malformed_or_unsupported_attribute_columns() {
+        let cases = [
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": {"name": "A", "type": "string"}}]),
+                "columns must be an array",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [null]}]),
+                "column #1 must be an object",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [{"type": "string"}]}]),
+                "column #1 requires non-empty name",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [{"name": "A"}]}]),
+                "column 'A' requires non-empty type",
+            ),
+            (
+                json!([{"name": "Data", "type": "string", "columns": [{"name": "A", "type": "string"}]}]),
+                "columns are supported only for ValueTable or ValueTree",
+            ),
+        ];
+
+        for (attrs, expected) in cases {
+            let error =
+                form_edit_validate_attribute_columns(attrs.as_array().unwrap()).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn edit_form_emits_button_bound_to_form_command() {
         let context = temp_context("edit-button");
         let form_path = context.cwd.join("Form.xml");
@@ -6764,6 +8408,105 @@ mod tests {
         assert!(updated.contains("<Button name=\"Заполнить\""), "{updated}");
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_creates_child_items_after_self_closing_extended_tooltip() {
+        let context = temp_context("edit-group-with-extended-tooltip");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<UsualGroup name="ГруппаЗамены" id="1">
+			<ExtendedTooltip name="ГруппаЗаменыРасширеннаяПодсказка" id="2"/>
+		</UsualGroup>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаЗамены",
+  "elements": [
+    { "table": "ТаблицаЗамены" }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        let tooltip_pos = updated
+            .find("<ExtendedTooltip name=\"ГруппаЗаменыРасширеннаяПодсказка\" id=\"2\"/>")
+            .unwrap();
+        let child_items_pos = updated[tooltip_pos..]
+            .find("<ChildItems>")
+            .map(|pos| tooltip_pos + pos)
+            .unwrap();
+        assert!(tooltip_pos < child_items_pos, "{updated}");
+        assert!(
+            updated.contains("<Table name=\"ТаблицаЗамены\""),
+            "{updated}"
+        );
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let validate_outcome = validate_form(&args, &context);
+        assert!(validate_outcome.ok, "{validate_outcome:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_accepts_whitespace_around_equals() {
+        let mut xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8 = "http://v8.1c.ru/8.1/data/core"><ChildItems/></Form>"#.to_string();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<v8:item/>").unwrap();
+
+        assert_eq!(xml.matches("xmlns:v8").count(), 1, "{xml}");
+        Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_uses_parsed_root_after_comment() {
+        let mut xml = r#"<!-- misleading <Form marker --><Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems/></Form>"#.to_string();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<v8:item/>").unwrap();
+
+        assert!(xml.starts_with("<!-- misleading <Form marker -->"), "{xml}");
+        assert!(xml[root_start..].starts_with("<Form "), "{xml}");
+        Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_is_noop_without_emitted_prefixes() {
+        let mut xml =
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems/></Form>"#.to_string();
+        let original = xml.clone();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<Table/>").unwrap();
+
+        assert_eq!(xml, original);
     }
 
     #[test]
@@ -7080,6 +8823,55 @@ mod tests {
     }
 
     #[test]
+    fn edit_form_rejects_unparseable_mutation_without_writing_file() {
+        let context = temp_context("edit-invalid-generated-xml");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems/>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        let original = fs::read_to_string(&form_path).unwrap();
+        write_file(
+            &json_path,
+            r#"{
+  "elements": [
+    {
+      "check": "ФлагПроверки",
+      "checkBoxType": "Bad<Name"
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(!outcome.ok, "{outcome:?}");
+        let stderr = outcome.stderr.unwrap_or_default();
+        assert!(stderr.contains("XML parse error"), "{stderr}");
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_form_rejects_duplicate_command_name() {
         let context = temp_context("edit-duplicate-command");
         let form_path = context.cwd.join("Form.xml");
@@ -7177,10 +8969,1757 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    #[test]
+    fn validate_form_checks_form_event_against_main_attribute_context() {
+        let cases = [
+            (Some("CatalogObject.Goods"), true, None),
+            (
+                Some("DataProcessorObject.EventProbe"),
+                false,
+                Some("FORM_EVENT_NOT_ALLOWED"),
+            ),
+            (Some("DynamicList"), false, Some("FORM_EVENT_NOT_ALLOWED")),
+            (None, false, Some("FORM_EVENT_CONTEXT_UNKNOWN")),
+        ];
+
+        for (main_type, expected_ok, expected_code) in cases {
+            let context = temp_context("validate-form-event-context");
+            let form_path = context.cwd.join("Form.xml");
+            write_file(
+                &form_path,
+                &event_form_xml(
+                    main_type,
+                    r#"\t<Events>\n\t\t<Event name="OnReadAtServer">OnReadAtServer</Event>\n\t</Events>\n"#,
+                    "",
+                    false,
+                ),
+            );
+            let args = Map::from_iter([(
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            )]);
+
+            let outcome = validate_form(&args, &context);
+
+            assert_eq!(outcome.ok, expected_ok, "{main_type:?}: {outcome:?}");
+            if let Some(code) = expected_code {
+                assert!(
+                    outcome.errors.iter().any(|error| error.contains(code)),
+                    "{main_type:?}: {:?}",
+                    outcome.errors
+                );
+            }
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn validate_form_reports_unresolved_borrowed_event_context_without_false_failure() {
+        let context = temp_context("validate-borrowed-event-context");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(
+                None,
+                r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="Before">OnReadAtServer</Event>\n\t</Events>\n"#,
+                "",
+                true,
+            ),
+        );
+        let args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+
+        let outcome = validate_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(stdout.contains("[WARN]"), "{stdout}");
+        assert!(stdout.contains("FORM_EVENT_CONTEXT_UNKNOWN"), "{stdout}");
+        assert!(stdout.contains("was not verified"), "{stdout}");
+
+        let borrowed_reference = event_form_xml(
+            None,
+            r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="Before">OnReadAtServer</Event>\n\t</Events>\n"#,
+            "",
+            true,
+        )
+        .replace(
+            "\t<BaseForm version=\"2.20\"/>",
+            "\t<BaseForm version=\"2.20\">Catalog.Goods.Form.ItemForm</BaseForm>",
+        );
+        write_file(&form_path, &borrowed_reference);
+        let borrowed_reference_outcome = validate_form(&args, &context);
+        assert!(
+            borrowed_reference_outcome.ok,
+            "{borrowed_reference_outcome:?}"
+        );
+        assert!(
+            borrowed_reference_outcome
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .contains("was not verified"),
+            "{borrowed_reference_outcome:?}"
+        );
+
+        let embedded_base_context = event_form_xml(
+            None,
+            r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="Before">OnReadAtServer</Event>\n\t</Events>\n"#,
+            "",
+            true,
+        )
+        .replace(
+            "\t<BaseForm version=\"2.20\"/>",
+            concat!(
+                "\t<BaseForm version=\"2.20\">\n",
+                "\t\t<Attributes>\n",
+                "\t\t\t<Attribute name=\"BaseObject\" id=\"1\">\n",
+                "\t\t\t\t<Type><v8:Type>cfg:CatalogObject.Goods</v8:Type></Type>\n",
+                "\t\t\t\t<MainAttribute>true</MainAttribute>\n",
+                "\t\t\t</Attribute>\n",
+                "\t\t</Attributes>\n",
+                "\t</BaseForm>"
+            ),
+        );
+        write_file(&form_path, &embedded_base_context);
+        let embedded_base_outcome = validate_form(&args, &context);
+        assert!(embedded_base_outcome.ok, "{embedded_base_outcome:?}");
+        assert!(
+            !embedded_base_outcome
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .contains("FORM_EVENT_CONTEXT_UNKNOWN"),
+            "{embedded_base_outcome:?}"
+        );
+
+        for (index, malformed_context) in [
+            event_form_xml(
+                None,
+                r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="Before">OnReadAtServer</Event>\n\t</Events>\n"#,
+                "",
+                true,
+            )
+            .replace(
+                "\t<Attributes/>",
+                concat!(
+                    "\t<Attributes>\n",
+                    "\t\t<Attribute name=\"Object\" id=\"1\">\n",
+                    "\t\t\t<Type/>\n",
+                    "\t\t\t<MainAttribute>true</MainAttribute>\n",
+                    "\t\t</Attribute>\n",
+                    "\t</Attributes>"
+                ),
+            ),
+            event_form_xml(
+                None,
+                r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="Before">OnReadAtServer</Event>\n\t</Events>\n"#,
+                "",
+                true,
+            )
+            .replace(
+                "\t<BaseForm version=\"2.20\"/>",
+                concat!(
+                    "\t<BaseForm version=\"2.20\">\n",
+                    "\t\t<Attributes>\n",
+                    "\t\t\t<Attribute name=\"BaseObject\" id=\"1\">\n",
+                    "\t\t\t\t<Type/>\n",
+                    "\t\t\t\t<MainAttribute>true</MainAttribute>\n",
+                    "\t\t\t</Attribute>\n",
+                    "\t\t</Attributes>\n",
+                    "\t</BaseForm>"
+                ),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_file(&form_path, &malformed_context);
+            let invalid_context = validate_form(&args, &context);
+            assert!(!invalid_context.ok, "case {index}: {invalid_context:?}");
+            assert!(
+                invalid_context
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("FORM_EVENT_CONTEXT_UNKNOWN")),
+                "case {index}: {invalid_context:?}"
+            );
+            assert!(
+                !invalid_context
+                    .stdout
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("was not verified"),
+                "case {index}: {invalid_context:?}"
+            );
+        }
+
+        write_file(
+            &form_path,
+            &event_form_xml(
+                None,
+                r#"\t<Events>\n\t\t<Event name="OnReadAtServer" callType="after">OnReadAtServer</Event>\n\t</Events>\n"#,
+                "",
+                true,
+            ),
+        );
+        let invalid_call_type = validate_form(&args, &context);
+        assert!(!invalid_call_type.ok, "{invalid_call_type:?}");
+        assert!(invalid_call_type
+            .errors
+            .iter()
+            .any(|error| error.contains("FORM_EVENT_INVALID_CALL_TYPE")));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_form_rejects_event_for_wrong_element_kind_and_duplicates() {
+        let context = temp_context("validate-element-events");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(
+                Some("CatalogObject.Goods"),
+                r#"\t<Events>\n\t\t<Event name="OnOpen">OnOpen</Event>\n\t\t<Event name="OnOpen">OnOpenAgain</Event>\n\t</Events>\n"#,
+                r#"\t\t<InputField name="Name" id="1">\n\t\t\t<DataPath>Object.Name</DataPath>\n\t\t\t<Events>\n\t\t\t\t<Event name="OnCreateAtServer">NameOnCreateAtServer</Event>\n\t\t\t</Events>\n\t\t\t<ContextMenu name="NameContextMenu" id="2"/>\n\t\t\t<ExtendedTooltip name="NameExtendedTooltip" id="3"/>\n\t\t</InputField>\n"#,
+                false,
+            ),
+        );
+        let args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+
+        let outcome = validate_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_DUPLICATE")),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_NOT_ALLOWED")),
+            "{:?}",
+            outcome.errors
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_form_rejects_table_event_without_direct_data_path() {
+        let context = temp_context("validate-unbound-table-event");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(
+                Some("CatalogObject.Goods"),
+                "",
+                concat!(
+                    "\t\t<Table name=\"Rows\" id=\"1\">\n",
+                    "\t\t\t<DataPath>   </DataPath>\n",
+                    "\t\t\t<Events>\n",
+                    "\t\t\t\t<Event name=\"Selection\">RowsSelection</Event>\n",
+                    "\t\t\t</Events>\n",
+                    "\t\t\t<ContextMenu name=\"RowsContextMenu\" id=\"2\"/>\n",
+                    "\t\t\t<AutoCommandBar name=\"RowsCommandBar\" id=\"3\"/>\n",
+                    "\t\t\t<ExtendedTooltip name=\"RowsTooltip\" id=\"4\"/>\n",
+                    "\t\t</Table>\n"
+                ),
+                false,
+            ),
+        );
+        let args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+
+        let outcome = validate_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("FORM_EVENT_NOT_ALLOWED")
+                    && error.contains("non-empty direct DataPath")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_form_checks_root_command_bar_and_companion_event_owners() {
+        let context = temp_context("validate-companion-events");
+        let form_path = context.cwd.join("Form.xml");
+        let xml = event_form_xml(
+            Some("CatalogObject.Goods"),
+            "",
+            concat!(
+                "\t\t<InputField name=\"Name\" id=\"1\">\n",
+                "\t\t\t<ContextMenu name=\"NameContextMenu\" id=\"2\"/>\n",
+                "\t\t\t<ExtendedTooltip name=\"NameTooltip\" id=\"3\">\n",
+                "\t\t\t\t<Events><Event name=\"OnCreateAtServer\">BadTooltipEvent</Event></Events>\n",
+                "\t\t\t</ExtendedTooltip>\n",
+                "\t\t</InputField>\n"
+            ),
+            false,
+        )
+        .replace(
+            "\t<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>",
+            concat!(
+                "\t<AutoCommandBar name=\"FormCommandBar\" id=\"-1\">\n",
+                "\t\t<Events><Event name=\"Click\">BadBarEvent</Event></Events>\n",
+                "\t</AutoCommandBar>"
+            ),
+        );
+        write_file(&form_path, &xml);
+        let args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+
+        let outcome = validate_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(errors.contains("FormCommandBar"), "{errors}");
+        assert!(errors.contains("NameTooltip"), "{errors}");
+        assert!(
+            errors.matches("FORM_EVENT_NOT_ALLOWED").count() >= 2,
+            "{errors}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_adds_supported_inline_form_and_element_events() {
+        let context = temp_context("edit-events-inline");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(
+            Some("CatalogObject.Goods"),
+            "",
+            r#"\t\t<InputField name="Name" id="1">\n\t\t\t<DataPath>Object.Name</DataPath>\n\t\t\t<ContextMenu name="NameContextMenu" id="2"/>\n\t\t\t<ExtendedTooltip name="NameExtendedTooltip" id="3"/>\n\t\t</InputField>\n"#,
+            false,
+        );
+        write_file(&form_path, &original);
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [
+                        {"name": "OnCreateAtServer", "handler": "OnCreateAtServer"}
+                    ],
+                    "elementEvents": [
+                        {"element": "Name", "name": "OnChange", "handler": "NameOnChange"}
+                    ]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.changes.len(), 1, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert_eq!(updated.matches("name=\"OnCreateAtServer\"").count(), 1);
+        assert_eq!(updated.matches("name=\"OnChange\"").count(), 1);
+        assert!(
+            updated.contains("<Event name=\"OnChange\">NameOnChange</Event>"),
+            "{updated}"
+        );
+        let validate_args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+        let validation = validate_form(&validate_args, &context);
+        assert!(validation.ok, "{validation:?}");
+        let info = analyze_form_info(&validate_args, &context);
+        assert!(info.ok, "{info:?}");
+        assert!(
+            info.stdout
+                .as_deref()
+                .is_some_and(|stdout| stdout.contains("OnCreateAtServer -> OnCreateAtServer")),
+            "{info:?}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_element_dispatcher_ignores_nested_table_and_page_properties() {
+        let definition = json!({
+            "elements": [
+                {
+                    "table": "Rows",
+                    "commandBar": {"autofill": false},
+                    "columns": []
+                },
+                {
+                    "pages": "Tabs",
+                    "children": [
+                        {"page": "Main", "group": "horizontal"}
+                    ]
+                }
+            ]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+
+        assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
+        assert!(xml.contains("<Page name=\"Main\""), "{xml}");
+        assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+    }
+
+    #[test]
+    fn form_compile_rejects_non_string_element_event_handlers() {
+        for definition in [
+            json!({
+                "elements": [{
+                    "input": "Field",
+                    "on": [{"event": "OnChange", "handler": 123}]
+                }]
+            }),
+            json!({
+                "elements": [{
+                    "input": "Field",
+                    "handlers": {"OnChange": 123},
+                    "on": ["OnChange"]
+                }]
+            }),
+        ] {
+            let Err(error) = form_compile_xml(&definition, "2.20") else {
+                panic!("non-string event handler must be rejected");
+            };
+            assert!(error.contains("FORM_EVENT_EMPTY_HANDLER"), "{error}");
+        }
+    }
+
+    #[test]
+    fn form_compile_rejects_table_events_without_path() {
+        let definition = json!({
+            "elements": [{
+                "table": "Rows",
+                "on": ["Selection"],
+                "columns": []
+            }]
+        });
+
+        let Err(error) = form_compile_xml(&definition, "2.20") else {
+            panic!("an unbound Table event must be rejected");
+        };
+        assert!(error.contains("FORM_EVENT_NOT_ALLOWED"), "{error}");
+        assert!(error.contains("non-empty path/DataPath"), "{error}");
+    }
+
+    #[test]
+    fn form_compile_uses_shared_element_event_matrix() {
+        let valid = json!({
+            "attributes": [{"name": "Rows", "type": "ValueTable"}],
+            "elements": [{
+                "table": "Rows",
+                "path": "Rows",
+                "on": ["Selection"],
+                "columns": []
+            }]
+        });
+        let (xml, _) = form_compile_xml(&valid, "2.20").unwrap();
+        assert!(
+            xml.contains("<Event name=\"Selection\">RowsВыборСтроки</Event>"),
+            "{xml}"
+        );
+
+        for (definition, expected_code) in [
+            (
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "path": "Rows",
+                        "on": ["OnCreateAtServer"],
+                        "columns": []
+                    }]
+                }),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+            (
+                json!({"elements": [{"button": "Run", "on": ["Click"]}]}),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+            (
+                json!({
+                    "elements": [{
+                        "input": "Name",
+                        "on": [{
+                            "event": "OnChange",
+                            "handler": "NameOnChange",
+                            "callType": "After"
+                        }]
+                    }]
+                }),
+                "FORM_EVENT_CALL_TYPE_NOT_ALLOWED",
+            ),
+        ] {
+            let Err(error) = form_compile_xml(&definition, "2.20") else {
+                panic!("invalid element event must be rejected: {definition}");
+            };
+            assert!(error.contains(expected_code), "{error}");
+        }
+    }
+
+    #[test]
+    fn form_compile_emits_root_events_from_json_map_and_passes_validation() {
+        let context = temp_context("compile-root-events");
+        let definition_path = context.cwd.join("form.json");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &definition_path,
+            r#"{"events":{"OnCreateAtServer":"ПриСозданииНаСервере"}}"#,
+        );
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            (
+                "OutputPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+        ]);
+
+        let outcome = compile_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let xml = read_utf8_sig(&form_path).unwrap();
+        assert_eq!(xml.matches("<Events>").count(), 1, "{xml}");
+        assert_eq!(xml.matches("name=\"OnCreateAtServer\"").count(), 1, "{xml}");
+        assert!(
+            xml.contains("<Event name=\"OnCreateAtServer\">ПриСозданииНаСервере</Event>"),
+            "{xml}"
+        );
+        let validation_args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+        let validation = validate_form(&validation_args, &context);
+        assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_compile_rejects_invalid_root_events_before_writing() {
+        let context = temp_context("compile-invalid-root-events");
+        let definition_path = context.cwd.join("form.json");
+        let form_path = context.cwd.join("Form.xml");
+        let original = b"do-not-replace-invalid-form";
+        let cases = [
+            (
+                "event outside root registry",
+                json!({"events": {"Opening": "OnOpening"}}),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+            (
+                "record event without main attribute",
+                json!({"events": {"OnReadAtServer": "OnReadAtServer"}}),
+                "FORM_EVENT_CONTEXT_UNKNOWN",
+            ),
+            (
+                "record event with non-persistent main attribute",
+                json!({
+                    "attributes": [{"name": "List", "type": "DynamicList", "main": true}],
+                    "events": {"OnReadAtServer": "OnReadAtServer"}
+                }),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+            (
+                "events payload is not a map",
+                json!({"events": ["OnOpen"]}),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+            (
+                "event handler is not a string",
+                json!({"events": {"OnOpen": 42}}),
+                "FORM_EVENT_EMPTY_HANDLER",
+            ),
+            (
+                "map does not silently accept call type",
+                json!({
+                    "events": {"OnOpen": {"handler": "OnOpen", "callType": "Before"}}
+                }),
+                "FORM_EVENT_NOT_ALLOWED",
+            ),
+        ];
+
+        for (name, definition, expected_code) in cases {
+            write_file(
+                &definition_path,
+                &serde_json::to_string(&definition).unwrap(),
+            );
+            fs::write(&form_path, original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "JsonPath".to_string(),
+                    json!(definition_path.display().to_string()),
+                ),
+                (
+                    "OutputPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+            ]);
+
+            let outcome = compile_form(&args, &context);
+
+            assert!(!outcome.ok, "{name}: {outcome:?}");
+            assert!(
+                outcome.errors.join("\n").contains(expected_code),
+                "{name}: {outcome:?}"
+            );
+            assert!(outcome.changes.is_empty(), "{name}: {outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{name}: {outcome:?}");
+            assert!(outcome.stdout.is_none(), "{name}: {outcome:?}");
+            assert_eq!(fs::read(&form_path).unwrap(), original, "{name}");
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_compile_skill_tables_document_only_supported_dsl_keys() {
+        const SKILL: &str =
+            include_str!("../../../../../plugins/unica/skills/form-compile/SKILL.md");
+        const ELEMENTS_START: &str = "### Элементы (ключ определяет тип)\n\n";
+        const START: &str = "<!-- form-event-registry:start -->";
+        const END: &str = "<!-- form-event-registry:end -->";
+
+        let element_table = SKILL
+            .split_once(ELEMENTS_START)
+            .and_then(|(_, tail)| tail.split_once("\n\n### ").map(|(table, _)| table))
+            .expect("form-compile element table must remain present for contract checks");
+        let documented_element_keys = element_table.lines().filter_map(|line| {
+            line.strip_prefix("| `\"")
+                .and_then(|line| line.split_once("\"`"))
+                .map(|(key, _)| key)
+        });
+
+        for key in documented_element_keys {
+            let element = Map::from_iter([(key.to_string(), json!("DocumentedElement"))]);
+            assert!(
+                FormEditElementDefinitionKind::from_object(&element).is_ok(),
+                "form-compile element table documents unsupported DSL key `{key}`"
+            );
+        }
+
+        let section = SKILL
+            .split_once(START)
+            .and_then(|(_, tail)| tail.split_once(END).map(|(section, _)| section))
+            .expect("form-compile event table must be delimited for contract checks");
+        let documented_keys = section.lines().filter_map(|line| {
+            line.strip_prefix("| `")
+                .and_then(|line| line.split_once("` | "))
+                .map(|(key, _)| key)
+        });
+
+        for key in documented_keys {
+            let element = Map::from_iter([(key.to_string(), json!("DocumentedElement"))]);
+            assert!(
+                FormEditElementDefinitionKind::from_object(&element).is_ok(),
+                "form-compile event table documents unsupported DSL key `{key}`"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_form_emits_and_validates_new_table_and_column_events() {
+        let context = temp_context("edit-new-element-events");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", "", false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{"name": "Rows", "type": "ValueTable"}],
+                    "elements": [{
+                        "table": "Rows",
+                        "path": "Rows",
+                        "commandBar": {"autofill": false},
+                        "on": [{"event": "Selection", "handler": "RowsSelection"}],
+                        "columns": [{
+                            "labelField": "Description",
+                            "on": [{
+                                "event": "OnChange",
+                                "handler": "DescriptionOnChange"
+                            }]
+                        }]
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(
+            updated.contains("<Event name=\"Selection\">RowsSelection</Event>"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<Event name=\"OnChange\">DescriptionOnChange</Event>"),
+            "{updated}"
+        );
+        let table_start = updated.find("<Table name=\"Rows\"").unwrap();
+        let table_end = updated[table_start..].find("</Table>").unwrap() + table_start;
+        let table_xml = &updated[table_start..table_end];
+        let table_event_pos = table_xml.find("<Event name=\"Selection\"").unwrap();
+        let child_items_pos = table_xml.find("<ChildItems>").unwrap();
+        assert!(table_event_pos < child_items_pos, "{table_xml}");
+        let validation = validate_form(&args, &context);
+        assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_invalid_nested_new_element_events_atomically() {
+        let cases = [
+            json!({
+                "elements": [{
+                    "table": "Rows",
+                    "columns": [{"labelField": "Description", "on": ["Opening"]}]
+                }]
+            }),
+            json!({"elements": [{"name": "FallbackInput", "on": ["OnCurrentPageChange"]}]}),
+            json!({"elements": [{"input": "Field", "button": "Button", "on": ["OnChange"]}]}),
+            json!({"elements": [{"input": "Field", "on": {"event": "OnChange"}}]}),
+            json!({"elements": [{"input": "Field", "handlers": "invalid", "on": ["OnChange"]}]}),
+            json!({"elements": [{"input": "Field", "on": [{"event": "OnChange", "handler": 123}]}]}),
+            json!({"elements": [{"input": "Field", "handlers": {"OnChange": 123}, "on": ["OnChange"]}]}),
+            json!({"elements": [{"table": "Rows", "on": ["Selection"], "columns": []}]}),
+        ];
+
+        for (index, definition) in cases.into_iter().enumerate() {
+            let context = temp_context(&format!("edit-invalid-new-event-{index}"));
+            let form_path = context.cwd.join("Form.xml");
+            let original = event_form_xml(Some("CatalogObject.Goods"), "", "", false).into_bytes();
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                ("definition".to_string(), definition),
+            ]);
+
+            let outcome = edit_form(&args, &context);
+
+            assert!(!outcome.ok, "case {index}: {outcome:?}");
+            assert!(outcome.changes.is_empty(), "case {index}: {outcome:?}");
+            assert_eq!(fs::read(&form_path).unwrap(), original, "case {index}");
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn edit_form_emits_constants_set_for_projected_object_event_context() {
+        let context = temp_context("edit-projected-constants-set-context");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(&form_path, &event_form_xml(None, "", "", false));
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{
+                        "name": "Constants",
+                        "type": "ConstantsSet",
+                        "main": true
+                    }],
+                    "formEvents": [{
+                        "name": "OnReadAtServer",
+                        "handler": "OnReadAtServer"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(
+            updated.contains("<v8:Type>cfg:ConstantsSet</v8:Type>"),
+            "{updated}"
+        );
+        assert!(!updated.contains("<v8:Type>ConstantsSet</v8:Type>"));
+        let validation = validate_form(&args, &context);
+        assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_empty_main_attribute_name_before_event_planning() {
+        let context = temp_context("edit-empty-main-attribute-name");
+        let form_path = context.cwd.join("Form.xml");
+        let base_form = concat!(
+            "\t<BaseForm version=\"2.20\">\n",
+            "\t\t<Attributes>\n",
+            "\t\t\t<Attribute name=\"BaseObject\" id=\"1\">\n",
+            "\t\t\t\t<Type><v8:Type>cfg:CatalogObject.Base</v8:Type></Type>\n",
+            "\t\t\t\t<MainAttribute>true</MainAttribute>\n",
+            "\t\t\t</Attribute>\n",
+            "\t\t</Attributes>\n",
+            "\t</BaseForm>\n"
+        );
+        let original = event_form_xml(None, "", "", true)
+            .replace("\t<BaseForm version=\"2.20\"/>\n", base_form)
+            .into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{
+                        "name": "",
+                        "type": "DataProcessorObject.Override",
+                        "main": true
+                    }],
+                    "formEvents": [{
+                        "name": "OnReadAtServer",
+                        "handler": "OnReadAtServer"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("Empty attribute name")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_projects_only_attributes_that_can_be_emitted() {
+        let cases = [
+            (
+                json!({
+                    "attributes": [{
+                        "name": "Object",
+                        "type": "CatalogObject.Goods",
+                        "main": true
+                    }],
+                    "formEvents": [{
+                        "name": "OnReadAtServer",
+                        "handler": "OnReadAtServer"
+                    }]
+                }),
+                true,
+            ),
+            (
+                json!({
+                    "attributes": [{"type": "CatalogObject.Goods", "main": true}],
+                    "formEvents": [{
+                        "name": "OnReadAtServer",
+                        "handler": "OnReadAtServer"
+                    }]
+                }),
+                false,
+            ),
+        ];
+
+        for (index, (definition, expected_ok)) in cases.into_iter().enumerate() {
+            let context = temp_context(&format!("edit-projected-context-{index}"));
+            let form_path = context.cwd.join("Form.xml");
+            let original = event_form_xml(None, "", "", false).into_bytes();
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                ("definition".to_string(), definition),
+            ]);
+
+            let outcome = edit_form(&args, &context);
+
+            assert_eq!(outcome.ok, expected_ok, "case {index}: {outcome:?}");
+            if expected_ok {
+                let validation = validate_form(&args, &context);
+                assert!(validation.ok, "case {index}: {validation:?}");
+            } else {
+                assert!(outcome
+                    .errors
+                    .iter()
+                    .any(|error| { error.contains("FORM_EVENT_CONTEXT_UNKNOWN") }));
+                assert_eq!(fs::read(&form_path).unwrap(), original, "case {index}");
+            }
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+
+        let context = temp_context("edit-existing-unknown-main-context");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(None, "", "", false)
+            .replace(
+                "\t<Attributes/>",
+                concat!(
+                    "\t<Attributes>\n",
+                    "\t\t<Attribute name=\"Existing\" id=\"1\">\n",
+                    "\t\t\t<Type/>\n",
+                    "\t\t\t<MainAttribute>true</MainAttribute>\n",
+                    "\t\t</Attribute>\n",
+                    "\t</Attributes>"
+                ),
+            )
+            .into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{
+                        "name": "Object",
+                        "type": "CatalogObject.Goods",
+                        "main": true
+                    }],
+                    "formEvents": [{
+                        "name": "OnReadAtServer",
+                        "handler": "OnReadAtServer"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("MainAttribute=true")));
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+
+        let override_cases = [
+            (
+                "CatalogObject.Base",
+                Some(json!("DynamicList")),
+                Some("FORM_EVENT_NOT_ALLOWED"),
+            ),
+            ("DynamicList", Some(json!("CatalogObject.Override")), None),
+            (
+                "CatalogObject.Base",
+                None,
+                Some("FORM_EVENT_CONTEXT_UNKNOWN"),
+            ),
+            (
+                "CatalogObject.Base",
+                Some(Value::Null),
+                Some("FORM_EVENT_CONTEXT_UNKNOWN"),
+            ),
+            (
+                "CatalogObject.Base",
+                Some(json!("")),
+                Some("FORM_EVENT_CONTEXT_UNKNOWN"),
+            ),
+            (
+                "CatalogObject.Base",
+                Some(json!(42)),
+                Some("FORM_EVENT_CONTEXT_UNKNOWN"),
+            ),
+        ];
+        for (index, (base_type, added_type, expected_code)) in
+            override_cases.into_iter().enumerate()
+        {
+            let context = temp_context(&format!("edit-base-context-override-{index}"));
+            let form_path = context.cwd.join("Form.xml");
+            let base_form = format!(
+                concat!(
+                    "\t<BaseForm version=\"2.20\">\n",
+                    "\t\t<Attributes>\n",
+                    "\t\t\t<Attribute name=\"BaseObject\" id=\"1\">\n",
+                    "\t\t\t\t<Type><v8:Type>cfg:{base_type}</v8:Type></Type>\n",
+                    "\t\t\t\t<MainAttribute>true</MainAttribute>\n",
+                    "\t\t\t</Attribute>\n",
+                    "\t\t</Attributes>\n",
+                    "\t</BaseForm>\n"
+                ),
+                base_type = base_type
+            );
+            let original = event_form_xml(None, "", "", true)
+                .replace("\t<BaseForm version=\"2.20\"/>\n", &base_form)
+                .into_bytes();
+            fs::write(&form_path, &original).unwrap();
+            let mut projected_attribute = json!({
+                "name": "Object",
+                "main": true
+            });
+            if let Some(added_type) = added_type {
+                projected_attribute["type"] = added_type;
+            }
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({
+                        "attributes": [projected_attribute],
+                        "formEvents": [{
+                            "name": "OnReadAtServer",
+                            "handler": "OnReadAtServer"
+                        }]
+                    }),
+                ),
+            ]);
+
+            let outcome = edit_form(&args, &context);
+
+            assert_eq!(
+                outcome.ok,
+                expected_code.is_none(),
+                "case {index}: {outcome:?}"
+            );
+            if expected_code.is_none() {
+                let validation = validate_form(&args, &context);
+                assert!(validation.ok, "case {index}: {validation:?}");
+            } else {
+                let expected_code = expected_code.unwrap_or_default();
+                assert!(
+                    outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains(expected_code)),
+                    "case {index}: {outcome:?}"
+                );
+                assert_eq!(fs::read(&form_path).unwrap(), original);
+            }
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn edit_form_rejects_ambiguous_existing_element_target() {
+        let context = temp_context("edit-ambiguous-event-target");
+        let form_path = context.cwd.join("Form.xml");
+        let children = concat!(
+            "\t\t<InputField name=\"Duplicate\" id=\"1\"/>\n",
+            "\t\t<InputField name=\"Duplicate\" id=\"2\"/>\n"
+        );
+        let original =
+            event_form_xml(Some("CatalogObject.Goods"), "", children, false).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elementEvents": [{
+                        "element": "Duplicate",
+                        "name": "OnChange",
+                        "handler": "DuplicateOnChange"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_DUPLICATE")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_event_success_preserves_source_byte_layout() {
+        let context = temp_context("edit-event-byte-layout");
+        let form_path = context.cwd.join("Form.xml");
+        let text = event_form_xml(Some("CatalogObject.Goods"), "", "", false)
+            .replace("encoding=\"utf-8\"", "encoding=\"UTF-8\"")
+            .replace('\n', "\r\n")
+            .trim_end_matches("\r\n")
+            .to_string();
+        let mut original = vec![0xef, 0xbb, 0xbf];
+        original.extend_from_slice(text.as_bytes());
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [{
+                        "name": "OnCreateAtServer",
+                        "handler": "OnCreateAtServer"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read(&form_path).unwrap();
+        assert!(updated.starts_with(&[0xef, 0xbb, 0xbf]));
+        let content = &updated[3..];
+        assert!(content.starts_with(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n"));
+        assert!(!content.ends_with(b"\n"));
+        assert!(content
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| *byte != b'\n' || index > 0 && content[index - 1] == b'\r'));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_expands_self_closing_event_and_element_targets() {
+        let context = temp_context("edit-self-closing-event-targets");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(
+            Some("CatalogObject.Goods"),
+            "\t<Events/>\n",
+            "\t\t<InputField name=\"Name\" id=\"1\"/>\n",
+            false,
+        );
+        write_file(&form_path, &original);
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [{"name": "OnOpen", "handler": "OnOpen"}],
+                    "elementEvents": [{
+                        "element": "Name",
+                        "name": "OnChange",
+                        "handler": "NameOnChange"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(updated.contains("<Events>\n\t\t<Event name=\"OnOpen\">OnOpen</Event>"));
+        assert!(updated.contains("<InputField name=\"Name\" id=\"1\">"));
+        assert!(updated.contains("<Event name=\"OnChange\">NameOnChange</Event>"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_inserts_existing_pages_event_before_child_items() {
+        let context = temp_context("edit-pages-event-order");
+        let form_path = context.cwd.join("Form.xml");
+        let children = concat!(
+            "\t\t<Pages name=\"Tabs\" id=\"1\">\n",
+            "\t\t\t<ExtendedTooltip name=\"TabsTooltip\" id=\"2\"/>\n",
+            "\t\t\t<ChildItems>\n",
+            "\t\t\t\t<Page name=\"MainPage\" id=\"3\">\n",
+            "\t\t\t\t\t<ExtendedTooltip name=\"MainPageTooltip\" id=\"4\"/>\n",
+            "\t\t\t\t</Page>\n",
+            "\t\t\t</ChildItems>\n",
+            "\t\t</Pages>\n"
+        );
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", children, false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elementEvents": [{
+                        "element": "Tabs",
+                        "name": "OnCurrentPageChange",
+                        "handler": "TabsOnCurrentPageChange"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        let event_pos = updated.find("<Events>").unwrap();
+        let child_items_pos = updated.rfind("<ChildItems>").unwrap();
+        assert!(event_pos < child_items_pos, "{updated}");
+        let validation = validate_form(&args, &context);
+        assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_inserts_existing_table_event_before_child_items() {
+        let context = temp_context("edit-table-event-order");
+        let form_path = context.cwd.join("Form.xml");
+        let children = concat!(
+            "\t\t<Table name=\"Rows\" id=\"1\">\n",
+            "\t\t\t<DataPath>Rows</DataPath>\n",
+            "\t\t\t<ContextMenu name=\"RowsContextMenu\" id=\"2\"/>\n",
+            "\t\t\t<AutoCommandBar name=\"RowsCommandBar\" id=\"3\"/>\n",
+            "\t\t\t<ExtendedTooltip name=\"RowsTooltip\" id=\"4\"/>\n",
+            "\t\t\t<ChildItems>\n",
+            "\t\t\t\t<LabelField name=\"Description\" id=\"5\">\n",
+            "\t\t\t\t\t<ExtendedTooltip name=\"DescriptionTooltip\" id=\"6\"/>\n",
+            "\t\t\t\t</LabelField>\n",
+            "\t\t\t</ChildItems>\n",
+            "\t\t</Table>\n"
+        );
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", children, false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elementEvents": [{
+                        "element": "Rows",
+                        "name": "Selection",
+                        "handler": "RowsSelection"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        let table_start = updated.find("<Table name=\"Rows\"").unwrap();
+        let table_end = updated[table_start..].find("</Table>").unwrap() + table_start;
+        let table_xml = &updated[table_start..table_end];
+        let event_pos = table_xml.find("<Event name=\"Selection\"").unwrap();
+        let child_items_pos = table_xml.find("<ChildItems>").unwrap();
+        assert!(event_pos < child_items_pos, "{table_xml}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_unbound_table_event_without_byte_changes() {
+        let context = temp_context("edit-unbound-table-event");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(
+            Some("CatalogObject.Goods"),
+            "",
+            concat!(
+                "\t\t<Table name=\"Rows\" id=\"1\">\n",
+                "\t\t\t<ContextMenu name=\"RowsContextMenu\" id=\"2\"/>\n",
+                "\t\t\t<AutoCommandBar name=\"RowsCommandBar\" id=\"3\"/>\n",
+                "\t\t\t<ExtendedTooltip name=\"RowsTooltip\" id=\"4\"/>\n",
+                "\t\t</Table>\n"
+            ),
+            false,
+        )
+        .into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elementEvents": [{
+                        "element": "Rows",
+                        "name": "Selection",
+                        "handler": "RowsSelection"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("FORM_EVENT_NOT_ALLOWED")
+                    && error.contains("non-empty direct DataPath")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_mixed_event_batch_without_serializer_diff() {
+        let context = temp_context("edit-events-rollback");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("DataProcessorObject.EventProbe"), "", "", false)
+            .replace("encoding=\"utf-8\"", "encoding=\"UTF-8\"")
+            .replace('\n', "\r\n")
+            .trim_end_matches("\r\n")
+            .to_string();
+        write_file(&form_path, &original);
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                serde_json::from_str(include_str!(
+                    "../../../../../tests/fixtures/unica_mcp_script_parity/form-edit/invalid-events.json"
+                ))
+                .unwrap(),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_NOT_ALLOWED")),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
+        let context = temp_context("edit-event-idempotent");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(
+            Some("CatalogObject.Goods"),
+            r#"\t<Events>\n\t\t<Event name="OnCreateAtServer">OnCreateAtServer</Event>\n\t</Events>\n"#,
+            "",
+            false,
+        )
+        .replace("encoding=\"utf-8\"", "encoding=\"UTF-8\"")
+        .replace('\n', "\r\n")
+        .trim_end_matches("\r\n")
+        .to_string();
+        write_file(&form_path, &original);
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [
+                        {"name": "OnCreateAtServer", "handler": "OnCreateAtServer"}
+                    ]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome.summary.contains("no-op")
+                || outcome
+                    .stdout
+                    .as_deref()
+                    .is_some_and(|stdout| stdout.contains("no-op")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_conflicting_event_binding_without_byte_changes() {
+        let context = temp_context("edit-event-conflict");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(
+            Some("CatalogObject.Goods"),
+            r#"\t<Events>\n\t\t<Event name="OnCreateAtServer">ExistingHandler</Event>\n\t</Events>\n"#,
+            "",
+            false,
+        )
+        .into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [
+                        {"name": "OnCreateAtServer", "handler": "DifferentHandler"}
+                    ]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_BINDING_CONFLICT")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_missing_element_event_target_atomically() {
+        let context = temp_context("edit-event-missing-target");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("CatalogObject.Goods"), "", "", false).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elementEvents": [{
+                        "element": "MissingField",
+                        "name": "OnChange",
+                        "handler": "MissingFieldOnChange"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("FORM_EVENT_TARGET_NOT_FOUND")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_form_enforces_event_call_type_scope_for_root_and_element_events() {
+        let child_events = r#"\t\t<InputField name="Name" id="1">\n\t\t\t<DataPath>Object.Name</DataPath>\n\t\t\t<Events>\n\t\t\t\t<Event name="OnChange" callType="Override">NameOnChange</Event>\n\t\t\t</Events>\n\t\t\t<ContextMenu name="NameContextMenu" id="2"/>\n\t\t\t<ExtendedTooltip name="NameExtendedTooltip" id="3"/>\n\t\t</InputField>\n"#;
+        let cases = [
+            (
+                false,
+                r#"\t<Events>\n\t\t<Event name="OnOpen" callType="After">OnOpen</Event>\n\t</Events>\n"#,
+                child_events,
+                false,
+                Some("FORM_EVENT_CALL_TYPE_NOT_ALLOWED"),
+            ),
+            (
+                true,
+                r#"\t<Events>\n\t\t<Event name="OnOpen" callType="Before">OnOpen</Event>\n\t</Events>\n"#,
+                child_events,
+                true,
+                None,
+            ),
+            (
+                true,
+                r#"\t<Events>\n\t\t<Event name="OnOpen" callType="after">OnOpen</Event>\n\t</Events>\n"#,
+                "",
+                false,
+                Some("FORM_EVENT_INVALID_CALL_TYPE"),
+            ),
+            (
+                true,
+                r#"\t<Events>\n\t\t<Event name="OnOpen" callType="">OnOpen</Event>\n\t</Events>\n"#,
+                "",
+                false,
+                Some("FORM_EVENT_INVALID_CALL_TYPE"),
+            ),
+        ];
+
+        for (extension, form_events, child_items, expected_ok, expected_code) in cases {
+            let context = temp_context("validate-event-call-type");
+            let form_path = context.cwd.join("Form.xml");
+            write_file(
+                &form_path,
+                &event_form_xml(
+                    Some("CatalogObject.Goods"),
+                    form_events,
+                    child_items,
+                    extension,
+                ),
+            );
+            let args = Map::from_iter([(
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            )]);
+
+            let outcome = validate_form(&args, &context);
+
+            assert_eq!(outcome.ok, expected_ok, "{outcome:?}");
+            if let Some(code) = expected_code {
+                assert!(
+                    outcome.errors.iter().any(|error| error.contains(code)),
+                    "{:?}",
+                    outcome.errors
+                );
+            }
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn form_edit_dry_run_uses_event_planner_without_writing() {
+        let cases = [
+            ("CatalogObject.Goods", "OnCreateAtServer", true, None),
+            (
+                "DataProcessorObject.EventProbe",
+                "OnReadAtServer",
+                false,
+                Some("FORM_EVENT_NOT_ALLOWED"),
+            ),
+        ];
+        for (main_type, event, expected_ok, expected_code) in cases {
+            let context = temp_context("edit-event-dry-run");
+            let form_path = context.cwd.join("Form.xml");
+            let original = event_form_xml(Some(main_type), "", "", false).into_bytes();
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({"formEvents": [{"name": event, "handler": event}]}),
+                ),
+            ]);
+
+            let outcome = NativeOperationAdapter::invoke(
+                "form-edit",
+                "unica.form.edit",
+                &args,
+                &context,
+                true,
+                true,
+            )
+            .unwrap();
+
+            assert_eq!(outcome.ok, expected_ok, "{outcome:?}");
+            if expected_ok {
+                assert!(
+                    outcome
+                        .changes
+                        .iter()
+                        .any(|change| change.contains("would update")),
+                    "{outcome:?}"
+                );
+            } else {
+                assert!(outcome.changes.is_empty(), "{outcome:?}");
+            }
+            if let Some(code) = expected_code {
+                assert!(
+                    outcome.errors.iter().any(|error| error.contains(code)),
+                    "{outcome:?}"
+                );
+            }
+            assert_eq!(fs::read(&form_path).unwrap(), original);
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+
+        let context = temp_context("edit-element-dry-run-wording");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("CatalogObject.Goods"), "", "", false).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({"elements": [{"input": "Name"}]}),
+            ),
+        ]);
+        let outcome = preview_form_edit(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(stdout.contains("Planned elements:"), "{stdout}");
+        assert!(!stdout.contains("Added elements:"), "{stdout}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_writes_call_type_only_for_extension_events() {
+        let child_items = r#"\t\t<InputField name="Name" id="1">\n\t\t\t<DataPath>Object.Name</DataPath>\n\t\t\t<ContextMenu name="NameContextMenu" id="2"/>\n\t\t\t<ExtendedTooltip name="NameExtendedTooltip" id="3"/>\n\t\t</InputField>\n"#;
+        let definition = json!({
+            "formEvents": [{
+                "name": "OnOpen",
+                "handler": "OnOpenAfter",
+                "callType": "After"
+            }],
+            "elementEvents": [{
+                "element": "Name",
+                "name": "OnChange",
+                "handler": "NameOnChangeBefore",
+                "callType": "Before"
+            }]
+        });
+
+        for extension in [false, true] {
+            let context = temp_context("edit-event-call-type");
+            let form_path = context.cwd.join("Form.xml");
+            let original = event_form_xml(Some("CatalogObject.Goods"), "", child_items, extension)
+                .into_bytes();
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                ("definition".to_string(), definition.clone()),
+            ]);
+
+            let outcome = edit_form(&args, &context);
+
+            if extension {
+                assert!(outcome.ok, "{outcome:?}");
+                let updated = fs::read_to_string(&form_path).unwrap();
+                assert!(updated.contains("name=\"OnOpen\" callType=\"After\""));
+                assert!(updated.contains("name=\"OnChange\" callType=\"Before\""));
+                let validation = validate_form(&args, &context);
+                assert!(validation.ok, "{validation:?}");
+            } else {
+                assert!(!outcome.ok, "{outcome:?}");
+                assert!(outcome
+                    .errors
+                    .iter()
+                    .any(|error| { error.contains("FORM_EVENT_CALL_TYPE_NOT_ALLOWED") }));
+                assert_eq!(fs::read(&form_path).unwrap(), original);
+            }
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    fn event_form_xml(
+        main_type: Option<&str>,
+        form_events: &str,
+        child_items: &str,
+        extension: bool,
+    ) -> String {
+        let base_form = if extension {
+            "\t<BaseForm version=\"2.20\"/>\n"
+        } else {
+            ""
+        };
+        let attributes = main_type.map_or_else(
+            || "\t<Attributes/>\n".to_string(),
+            |main_type| {
+                format!(
+                    "\t<Attributes>\n\t\t<Attribute name=\"Object\" id=\"1\">\n\t\t\t<Type><v8:Type>cfg:{main_type}</v8:Type></Type>\n\t\t\t<MainAttribute>true</MainAttribute>\n\t\t</Attribute>\n\t</Attributes>\n"
+                )
+            },
+        );
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Form xmlns=\"{FORM_LOGFORM_NS}\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:v8=\"{FORM_V8_NS}\" version=\"2.20\">\n{base_form}\t<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>\n{form_events}\t<ChildItems>\n{child_items}\t</ChildItems>\n{attributes}\t<Commands/>\n</Form>\n"
+        )
+    }
+
     fn editable_form_xml(extension: bool) -> &'static str {
         if extension {
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
 	<BaseForm>Catalog.ParityCatalog.Form.ItemForm</BaseForm>
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
@@ -7199,7 +10738,7 @@ mod tests {
 "#
         } else {
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>

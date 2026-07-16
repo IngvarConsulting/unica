@@ -1,7 +1,7 @@
 ---
 name: form-edit
 description: Добавление элементов, реквизитов и команд в существующую управляемую форму 1С. Используй когда нужно точечно модифицировать готовую форму
-argument-hint: <FormPath> <JsonPath>
+argument-hint: <FormPath> (<JsonPath> | <definition>)
 allowed-tools:
   - Bash
   - Read
@@ -23,14 +23,15 @@ allowed-tools:
 
 ## Использование
 
-Используй MCP `unica` tool `unica.form.edit` с `FormPath` и `JsonPath`.
+Используй MCP `unica` tool `unica.form.edit` с `FormPath` и ровно одним источником изменений: `JsonPath` или inline-объектом `definition`.
 
 ## Параметры
 
-| Параметр  | Обязательный | Описание                         |
-|-----------|:------------:|----------------------------------|
-| FormPath  | да           | Путь к существующему Form.xml    |
-| JsonPath  | да           | Путь к JSON с описанием добавлений |
+| Параметр | Обязательный | Описание |
+|----------|:------------:|----------|
+| FormPath | да | Путь к существующему Form.xml |
+| JsonPath | один из двух | Путь к JSON с описанием добавлений |
+| definition | один из двух | То же описание как inline JSON object |
 
 ## MCP вызов
 
@@ -42,11 +43,25 @@ allowed-tools:
     "name": "unica.form.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента",
+      "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента/Ext/Form.xml",
       "JsonPath": "forms/patch-add-article.json",
       "dryRun": false
     }
   }
+}
+```
+
+Для небольшого изменения можно передать DSL без временного файла:
+
+```json
+{
+  "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента/Ext/Form.xml",
+  "definition": {
+    "formEvents": [
+      { "name": "OnCreateAtServer", "handler": "ПриСозданииНаСервере" }
+    ]
+  },
+  "dryRun": false
 }
 ```
 
@@ -127,14 +142,19 @@ allowed-tools:
 
 ### Допустимые события (`on`)
 
-Компилятор предупреждает об ошибках в именах событий. Основные:
+Editor до записи проверяет событие по единой платформенной матрице. Недопустимое сочетание возвращает `ok=false` и код `FORM_EVENT_*`, не меняя файл. Основные сочетания:
 
-- **input**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `Clearing`, `AutoComplete`, `TextEditEnd`
+- **input**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `Clearing`, `AutoComplete`, `TextEditEnd`, `Opening`, `Creating`, `EditTextChange`
 - **check**: `OnChange`
 - **table**: `OnStartEdit`, `OnEditEnd`, `OnChange`, `Selection`, `BeforeAddRow`, `BeforeDeleteRow`, `OnActivateRow`
-- **label/picture**: `Click`, `URLProcessing`
+- **label**: `Click`, `URLProcessing`
+- **picture**: `Click`, `Drag`, `DragCheck`
 - **pages**: `OnCurrentPageChange`
-- **button**: `Click`
+- **page/button/group/command bar**: события не поддерживаются
+
+События `table` требуют непустой привязки: `path` для нового элемента или прямого `DataPath` у существующего `Table`. Платформа удаляет обработчики событий у несвязанной таблицы при загрузке/выгрузке конфигурации.
+
+`OnReadAtServer`, `BeforeWrite`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer` и `AfterWrite` разрешены только при подтверждённом persistent object/record типе главного реквизита. Для `DataProcessorObject`, `ReportObject`, `DynamicList` и неизвестного контекста они отклоняются. `NewWriteProcessing` и `FillCheckProcessingAtServer` являются общими событиями формы и этим ограничением не связаны.
 
 ### Система типов (для attributes)
 
@@ -144,12 +164,14 @@ allowed-tools:
 
 | Секция | Назначение |
 |--------|-----------|
-| `formEvents` | События уровня формы с `callType` (Before/After/Override) |
-| `elementEvents` | События на существующих элементах заимствованной формы |
+| `formEvents` | События уровня формы; `callType` только для расширения |
+| `elementEvents` | События существующих элементов; `callType` только для расширения |
 | `callType` на `commands` | callType на Action команды |
 | `callType` на `on` | callType на событиях новых элементов (объектный формат) |
 
 Все extension-секции опциональны — без них навык работает как с обычными формами.
+
+Повтор идентичного binding является явным idempotent no-op. Конфликт обработчика/`callType`, duplicate, отсутствующий элемент и любой недопустимый event отклоняют весь batch до мутации; `dryRun: true` использует тот же planner.
 
 ## Workflow
 

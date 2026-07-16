@@ -4,7 +4,7 @@ use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter,
-    StandardsAdapter,
+    RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
@@ -12,6 +12,17 @@ use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use crate::infrastructure::AdapterOutcome;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+
+pub(crate) struct HandlerOutcome {
+    pub(crate) adapter: AdapterOutcome,
+    pub(crate) job: Option<Value>,
+}
+
+impl HandlerOutcome {
+    pub(crate) fn plain(adapter: AdapterOutcome) -> Self {
+        Self { adapter, job: None }
+    }
+}
 
 pub(crate) trait ApplicationPorts {
     fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String>;
@@ -22,7 +33,7 @@ pub(crate) trait ApplicationPorts {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-    ) -> Result<AdapterOutcome, String>;
+    ) -> Result<HandlerOutcome, String>;
 
     fn cache_report(
         &self,
@@ -48,7 +59,7 @@ impl ApplicationPorts for DefaultApplicationPorts {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<HandlerOutcome, String> {
         match spec.handler {
             ToolHandler::NativeOperation { operation, .. } => NativeOperationAdapter::invoke(
                 operation,
@@ -57,36 +68,48 @@ impl ApplicationPorts for DefaultApplicationPorts {
                 context,
                 dry_run,
                 spec.mutating,
-            ),
-            ToolHandler::ProjectStatus => Ok(project_status(context)),
-            ToolHandler::ProjectMap => Ok(project_map(context)),
-            ToolHandler::BuildRuntime { command, .. } => CliAdapter::new(
-                "v8-runner",
-                command,
-                "build/runtime",
             )
-            .invoke(spec.name, args, context, dry_run, spec.mutating),
-            ToolHandler::RuntimeAdapter => {
-                RuntimeAdapter::new().invoke(spec.name, args, context, dry_run, spec.mutating)
+            .map(HandlerOutcome::plain),
+            ToolHandler::ProjectStatus => Ok(HandlerOutcome::plain(project_status(context))),
+            ToolHandler::ProjectMap => Ok(HandlerOutcome::plain(project_map(context))),
+            ToolHandler::BuildRuntime { command, .. } => {
+                CliAdapter::new("v8-runner", command, "build/runtime")
+                    .invoke(spec.name, args, context, dry_run, spec.mutating)
+                    .map(HandlerOutcome::plain)
             }
+            ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
+                .invoke(spec.name, args, context, dry_run, spec.mutating)
+                .map(HandlerOutcome::plain),
+            ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke(
+                action, spec.name, args, context, dry_run,
+            )
+            .map(|outcome| HandlerOutcome {
+                adapter: outcome.outcome,
+                job: outcome.job,
+            }),
             ToolHandler::CodeAdapter { command } if command == ["search"] => {
-                CodeSearchAdapter::new().invoke(spec.name, args, context, dry_run)
+                CodeSearchAdapter::new()
+                    .invoke(spec.name, args, context, dry_run)
+                    .map(HandlerOutcome::plain)
             }
             ToolHandler::CodeAdapter {
                 command: ["definition"] | ["outline"] | ["grep"] | ["meta-profile"],
-            } => CodeNavigationAdapter::new().invoke(spec.name, args, context, dry_run),
+            } => CodeNavigationAdapter::new()
+                .invoke(spec.name, args, context, dry_run)
+                .map(HandlerOutcome::plain),
             ToolHandler::CodeAdapter {
                 command: ["graph"] | ["analyze"],
-            } => BslAnalyzerMcpAdapter::new().invoke(spec.name, args, context, dry_run),
-            ToolHandler::CodeAdapter { command } => CliAdapter::new(
-                "bsl-analyzer",
-                command,
-                "code analysis",
-            )
-            .invoke(spec.name, args, context, dry_run, spec.mutating),
-            ToolHandler::StandardsAdapter { operation } => {
-                Ok(StandardsAdapter::invoke(operation, args))
+            } => BslAnalyzerMcpAdapter::new()
+                .invoke(spec.name, args, context, dry_run)
+                .map(HandlerOutcome::plain),
+            ToolHandler::CodeAdapter { command } => {
+                CliAdapter::new("bsl-analyzer", command, "code analysis")
+                    .invoke(spec.name, args, context, dry_run, spec.mutating)
+                    .map(HandlerOutcome::plain)
             }
+            ToolHandler::StandardsAdapter { operation } => Ok(HandlerOutcome::plain(
+                StandardsAdapter::invoke(operation, args),
+            )),
         }
     }
 

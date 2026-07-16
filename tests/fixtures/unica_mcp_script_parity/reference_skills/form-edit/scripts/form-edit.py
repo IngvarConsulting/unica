@@ -63,6 +63,10 @@ if not os.path.exists(json_path):
     sys.exit(1)
 
 resolved_form_path = os.path.abspath(form_path)
+with open(resolved_form_path, "rb") as source_file:
+    source_bytes = source_file.read()
+source_eol = b"\r\n" if b"\r\n" in source_bytes else b"\n"
+source_has_trailing_eol = source_bytes.endswith((b"\n", b"\r"))
 xml_parser = etree.XMLParser(remove_blank_text=False)
 try:
     tree = etree.parse(resolved_form_path, xml_parser)
@@ -1224,7 +1228,9 @@ if form_events_list:
         acb_node = root.find("f:AutoCommandBar", NS)
         if acb_node is not None:
             acb_idx = list(root).index(acb_node)
-            acb_node.tail = (acb_node.tail or "") + "\r\n\t"
+            following_indent = acb_node.tail or "\n\t"
+            acb_node.tail = "\n\t"
+            events_section.tail = following_indent
             root.insert(acb_idx + 1, events_section)
         else:
             root.append(events_section)
@@ -1270,7 +1276,12 @@ if elem_events_list:
         # Find or create Events element within the target
         target_events = target_el.find("f:Events", NS)
         if target_events is None:
+            target_child_indent = get_child_indent(target_el)
+            target_children = list(target_el)
+            if target_children:
+                target_children[-1].tail = "\n" + target_child_indent
             target_events = etree.SubElement(target_el, f"{{{FORM_NS}}}Events")
+            target_events.tail = "\n" + target_child_indent[:-1]
 
         ee_child_indent = get_child_indent(target_events)
         if not ee_child_indent:
@@ -1301,8 +1312,8 @@ if elem_events_list:
 xml_bytes = etree.tostring(tree, xml_declaration=True, encoding="UTF-8")
 # Fix XML declaration quotes
 xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-if not xml_bytes.endswith(b"\n"):
-    xml_bytes += b"\n"
+if source_has_trailing_eol and not xml_bytes.endswith((b"\n", b"\r")):
+    xml_bytes += source_eol
 # Write with BOM
 with open(resolved_form_path, "wb") as f:
     f.write(b'\xef\xbb\xbf')

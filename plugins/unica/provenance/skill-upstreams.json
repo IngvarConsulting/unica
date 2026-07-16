@@ -261,6 +261,49 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
+          "skill": "epf-init",
+          "status": "ported-to-unica",
+          "notes": "Ported the current donor EPF scaffold contract into native typed Unica MCP. Unica adds workspace path policy, source-set kind validation, dry-run artifact preview, no-clobber publication, and an optional canonical managed form while preserving the make-ready ExternalDataProcessor descriptor and ObjectModule layout.",
+          "upstreamPaths": [
+            ".claude/skills/epf-init/**",
+            "docs/epf-guide.md",
+            "docs/1c-epf-spec.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/epf-init"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/external.rs",
+            "tests/ci/test_unica_mcp_smoke.py",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "9e1341b80bbd9eab65f8d9f6e7caa72add930ea9",
+          "decision": "ported"
+        },
+        {
+          "skill": "erf-init",
+          "status": "ported-to-unica",
+          "notes": "Ported the current donor ERF scaffold contract into native typed Unica MCP. Unica adds workspace path policy, source-set kind validation, dry-run artifact preview, no-clobber publication, and an optional canonical managed form while preserving the make-ready ExternalReport descriptor and ObjectModule layout; optional SKD remains a follow-up through existing SKD/template tools.",
+          "upstreamPaths": [
+            ".claude/skills/erf-init/**",
+            "docs/1c-erf-spec.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/erf-init"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/external.rs",
+            "tests/ci/test_unica_mcp_smoke.py",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "9e1341b80bbd9eab65f8d9f6e7caa72add930ea9",
+          "decision": "ported"
+        },
+        {
           "skill": "form-add",
           "status": "ported-to-unica",
           "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/form.rs) behind unica.form.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",

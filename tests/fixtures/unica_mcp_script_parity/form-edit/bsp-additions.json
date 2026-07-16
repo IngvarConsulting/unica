@@ -27,14 +27,7 @@
       "button": "RunParityActionButton",
       "type": "commandBar",
       "command": "RunParityAction",
-      "title": "Run parity action",
-      "on": [
-        {
-          "handler": "RunParityActionOnClick",
-          "event": "Click",
-          "callType": "Before"
-        }
-      ]
+      "title": "Run parity action"
     }
   ]
 }

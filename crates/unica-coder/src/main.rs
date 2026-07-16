@@ -7,6 +7,13 @@ fn main() {
         }
         return;
     }
+    if args.iter().any(|arg| arg == "--runtime-job-worker") {
+        if let Err(error) = unica_coder::interfaces::runtime_job_worker::run_from_args(&args) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!("unica {}", env!("CARGO_PKG_VERSION"));

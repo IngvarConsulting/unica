@@ -1,0 +1,4 @@
+interface:
+  display_name: "Создать внешний отчёт (ERF)"
+  short_description: "Создаёт make-ready ERF scaffold в source-set"
+  default_prompt: "Используй $erf-init, чтобы создать пустой внешний отчёт с опциональной управляемой формой."

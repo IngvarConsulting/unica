@@ -1,6 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::{
+    metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
+};
 use crate::infrastructure::AdapterOutcome;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -800,108 +803,15 @@ pub(crate) fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str
 }
 
 pub(crate) fn cf_validate_child_object_type_index(type_name: &str) -> Option<usize> {
-    cf_validate_child_object_types()
-        .iter()
-        .position(|known| *known == type_name)
+    metadata_kind_index(type_name)
 }
 
 pub(crate) fn cf_validate_child_object_types() -> &'static [&'static str] {
-    &[
-        "Language",
-        "Subsystem",
-        "StyleItem",
-        "Style",
-        "CommonPicture",
-        "SessionParameter",
-        "Role",
-        "CommonTemplate",
-        "FilterCriterion",
-        "CommonModule",
-        "CommonAttribute",
-        "ExchangePlan",
-        "XDTOPackage",
-        "WebService",
-        "HTTPService",
-        "WSReference",
-        "EventSubscription",
-        "ScheduledJob",
-        "SettingsStorage",
-        "FunctionalOption",
-        "FunctionalOptionsParameter",
-        "DefinedType",
-        "CommonCommand",
-        "CommandGroup",
-        "Constant",
-        "CommonForm",
-        "Catalog",
-        "Document",
-        "DocumentNumerator",
-        "Sequence",
-        "DocumentJournal",
-        "Enum",
-        "Report",
-        "DataProcessor",
-        "InformationRegister",
-        "AccumulationRegister",
-        "ChartOfCharacteristicTypes",
-        "ChartOfAccounts",
-        "AccountingRegister",
-        "ChartOfCalculationTypes",
-        "CalculationRegister",
-        "BusinessProcess",
-        "Task",
-        "IntegrationService",
-    ]
+    METADATA_KIND_TAGS
 }
 
 pub(crate) fn cf_validate_child_type_dir(type_name: &str) -> Option<&'static str> {
-    match type_name {
-        "Language" => Some("Languages"),
-        "Subsystem" => Some("Subsystems"),
-        "StyleItem" => Some("StyleItems"),
-        "Style" => Some("Styles"),
-        "CommonPicture" => Some("CommonPictures"),
-        "SessionParameter" => Some("SessionParameters"),
-        "Role" => Some("Roles"),
-        "CommonTemplate" => Some("CommonTemplates"),
-        "FilterCriterion" => Some("FilterCriteria"),
-        "CommonModule" => Some("CommonModules"),
-        "CommonAttribute" => Some("CommonAttributes"),
-        "ExchangePlan" => Some("ExchangePlans"),
-        "XDTOPackage" => Some("XDTOPackages"),
-        "WebService" => Some("WebServices"),
-        "HTTPService" => Some("HTTPServices"),
-        "WSReference" => Some("WSReferences"),
-        "EventSubscription" => Some("EventSubscriptions"),
-        "ScheduledJob" => Some("ScheduledJobs"),
-        "SettingsStorage" => Some("SettingsStorages"),
-        "FunctionalOption" => Some("FunctionalOptions"),
-        "FunctionalOptionsParameter" => Some("FunctionalOptionsParameters"),
-        "DefinedType" => Some("DefinedTypes"),
-        "CommonCommand" => Some("CommonCommands"),
-        "CommandGroup" => Some("CommandGroups"),
-        "Constant" => Some("Constants"),
-        "CommonForm" => Some("CommonForms"),
-        "Catalog" => Some("Catalogs"),
-        "Document" => Some("Documents"),
-        "DocumentNumerator" => Some("DocumentNumerators"),
-        "Sequence" => Some("Sequences"),
-        "DocumentJournal" => Some("DocumentJournals"),
-        "Enum" => Some("Enums"),
-        "Report" => Some("Reports"),
-        "DataProcessor" => Some("DataProcessors"),
-        "InformationRegister" => Some("InformationRegisters"),
-        "AccumulationRegister" => Some("AccumulationRegisters"),
-        "ChartOfCharacteristicTypes" => Some("ChartsOfCharacteristicTypes"),
-        "ChartOfAccounts" => Some("ChartsOfAccounts"),
-        "AccountingRegister" => Some("AccountingRegisters"),
-        "ChartOfCalculationTypes" => Some("ChartsOfCalculationTypes"),
-        "CalculationRegister" => Some("CalculationRegisters"),
-        "BusinessProcess" => Some("BusinessProcesses"),
-        "Task" => Some("Tasks"),
-        "IntegrationService" => Some("IntegrationServices"),
-        _ => None,
-    }
+    metadata_kind(type_name).map(|kind| kind.directory)
 }
 
 pub(crate) fn cf_validate_form_properties() -> &'static [&'static str] {
@@ -1799,101 +1709,172 @@ pub(crate) fn cf_paginate(lines: Vec<String>, args: &Map<String, Value>) -> Stri
 }
 
 pub(crate) fn cf_type_order() -> &'static [&'static str] {
-    &[
-        "Language",
-        "Subsystem",
-        "StyleItem",
-        "Style",
-        "CommonPicture",
-        "SessionParameter",
-        "Role",
-        "CommonTemplate",
-        "FilterCriterion",
-        "CommonModule",
-        "CommonAttribute",
-        "ExchangePlan",
-        "XDTOPackage",
-        "WebService",
-        "HTTPService",
-        "WSReference",
-        "EventSubscription",
-        "ScheduledJob",
-        "SettingsStorage",
-        "FunctionalOption",
-        "FunctionalOptionsParameter",
-        "DefinedType",
-        "CommonCommand",
-        "CommandGroup",
-        "Constant",
-        "CommonForm",
-        "Catalog",
-        "Document",
-        "DocumentNumerator",
-        "Sequence",
-        "DocumentJournal",
-        "Enum",
-        "Report",
-        "DataProcessor",
-        "InformationRegister",
-        "AccumulationRegister",
-        "ChartOfCharacteristicTypes",
-        "ChartOfAccounts",
-        "AccountingRegister",
-        "ChartOfCalculationTypes",
-        "CalculationRegister",
-        "BusinessProcess",
-        "Task",
-        "IntegrationService",
-    ]
+    METADATA_KIND_TAGS
 }
 
 pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {
-    match type_name {
-        "Language" => "Языки",
-        "Subsystem" => "Подсистемы",
-        "StyleItem" => "Элементы стиля",
-        "Style" => "Стили",
-        "CommonPicture" => "Общие картинки",
-        "SessionParameter" => "Параметры сеанса",
-        "Role" => "Роли",
-        "CommonTemplate" => "Общие макеты",
-        "FilterCriterion" => "Критерии отбора",
-        "CommonModule" => "Общие модули",
-        "CommonAttribute" => "Общие реквизиты",
-        "ExchangePlan" => "Планы обмена",
-        "XDTOPackage" => "XDTO-пакеты",
-        "WebService" => "Веб-сервисы",
-        "HTTPService" => "HTTP-сервисы",
-        "WSReference" => "WS-ссылки",
-        "EventSubscription" => "Подписки на события",
-        "ScheduledJob" => "Регламентные задания",
-        "SettingsStorage" => "Хранилища настроек",
-        "FunctionalOption" => "Функциональные опции",
-        "FunctionalOptionsParameter" => "Параметры ФО",
-        "DefinedType" => "Определяемые типы",
-        "CommonCommand" => "Общие команды",
-        "CommandGroup" => "Группы команд",
-        "Constant" => "Константы",
-        "CommonForm" => "Общие формы",
-        "Catalog" => "Справочники",
-        "Document" => "Документы",
-        "DocumentNumerator" => "Нумераторы",
-        "Sequence" => "Последовательности",
-        "DocumentJournal" => "Журналы документов",
-        "Enum" => "Перечисления",
-        "Report" => "Отчёты",
-        "DataProcessor" => "Обработки",
-        "InformationRegister" => "Регистры сведений",
-        "AccumulationRegister" => "Регистры накопления",
-        "ChartOfCharacteristicTypes" => "ПВХ",
-        "ChartOfAccounts" => "Планы счетов",
-        "AccountingRegister" => "Регистры бухгалтерии",
-        "ChartOfCalculationTypes" => "ПВР",
-        "CalculationRegister" => "Регистры расчёта",
-        "BusinessProcess" => "Бизнес-процессы",
-        "Task" => "Задачи",
-        "IntegrationService" => "Сервисы интеграции",
-        _ => "Unknown",
+    metadata_kind(type_name).map_or("Unknown", |kind| kind.display_name_ru)
+}
+
+#[cfg(test)]
+mod metadata_kind_consumer_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn cf_consumers_share_the_canonical_metadata_kind_order() {
+        let validate_kinds = cf_validate_child_object_types();
+
+        assert_eq!(validate_kinds.len(), 45);
+        assert_eq!(validate_kinds, cf_type_order());
+        let bot_index = validate_kinds
+            .iter()
+            .position(|kind| *kind == "Bot")
+            .expect("Bot must be a modeled metadata kind");
+        assert_eq!(validate_kinds[bot_index - 1], "CommonModule");
+        assert_eq!(validate_kinds[bot_index + 1], "CommonAttribute");
+        assert_eq!(cf_validate_child_type_dir("Bot"), Some("Bots"));
+        assert_eq!(cf_type_ru_name("Bot"), "Боты");
+        assert_eq!(cf_validate_child_type_dir("SyntheticMetadata"), None);
+
+        let directories = validate_kinds
+            .iter()
+            .map(|kind| cf_validate_child_type_dir(kind).expect("known kind has a directory"))
+            .collect::<HashSet<_>>();
+        assert_eq!(directories.len(), validate_kinds.len());
+        for kind in validate_kinds {
+            let directory = cf_validate_child_type_dir(kind).unwrap();
+            assert_eq!(cf_edit_dir_to_type(directory), Some(*kind));
+        }
+    }
+
+    #[test]
+    fn child_object_insertion_orders_bot_and_rejects_unknown_kinds() {
+        let mut xml = concat!(
+            "<MetaDataObject><Configuration><ChildObjects>\n",
+            "\t<CommonModule>Core</CommonModule>\n",
+            "\t<CommonAttribute>Shared</CommonAttribute>\n",
+            "</ChildObjects></Configuration></MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut xml, "Bot", "Assistant").unwrap());
+        assert!(
+            xml.find("<CommonModule>Core</CommonModule>").unwrap()
+                < xml.find("<Bot>Assistant</Bot>").unwrap()
+        );
+        assert!(
+            xml.find("<Bot>Assistant</Bot>").unwrap()
+                < xml
+                    .find("<CommonAttribute>Shared</CommonAttribute>")
+                    .unwrap()
+        );
+        assert!(!cf_edit_add_child_object_text(&mut xml, "Bot", "Assistant").unwrap());
+
+        let before_unknown = xml.clone();
+        let error = cf_edit_add_child_object_text(&mut xml, "SyntheticMetadata", "Unknown")
+            .expect_err("unknown metadata kinds must be rejected");
+        assert!(
+            error.contains("Unknown type 'SyntheticMetadata'"),
+            "{error}"
+        );
+        assert_eq!(xml, before_unknown);
+    }
+
+    #[test]
+    fn child_object_insertion_preserves_crlf_for_existing_and_self_closing_lists() {
+        let mut populated = concat!(
+            "<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut populated, "Report", "Sales").unwrap());
+        assert!(populated.contains(concat!(
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t\t<Report>Sales</Report>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert!(!populated.replace("\r\n", "").contains('\n'));
+
+        let mut empty = concat!(
+            "<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<ChildObjects/>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+        assert!(cf_edit_add_child_object_text(&mut empty, "Role", "User").unwrap());
+        assert!(empty.contains(concat!(
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Role>User</Role>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert!(!empty.replace("\r\n", "").contains('\n'));
+    }
+
+    #[test]
+    fn child_object_insertion_preserves_cr_only_line_boundaries() {
+        let mut xml = concat!(
+            "<MetaDataObject>\r",
+            "\t<Configuration>\r",
+            "\t\t<ChildObjects>\r",
+            "\t\t\t<Catalog>Items</Catalog>\r",
+            "\t\t</ChildObjects>\r",
+            "\t</Configuration>\r",
+            "</MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut xml, "Role", "Reader").unwrap());
+
+        assert!(
+            xml.contains(concat!(
+                "\t\t\t<Role>Reader</Role>\r",
+                "\t\t\t<Catalog>Items</Catalog>\r",
+                "\t\t</ChildObjects>"
+            )),
+            "{xml:?}"
+        );
+        assert!(!xml.contains('\n'));
+    }
+
+    #[test]
+    fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
+        let mut xml = concat!(
+            "\u{feff}<MetaDataObject>\r\n",
+            "\t<Configuration>\r\n",
+            "\t\t<Properties>\r\n",
+            "\t\t\t<!-- <ChildObjects><Role>CommentTrap</Role></ChildObjects> -->\r\n",
+            "\t\t\t<Nested><ChildObjects><Role>NestedTrap</Role></ChildObjects></Nested>\r\n",
+            "\t\t</Properties>\r\n",
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject>"
+        )
+        .to_string();
+
+        assert!(cf_edit_add_child_object_text(&mut xml, "Role", "Reader").unwrap());
+
+        assert!(
+            xml.contains("<Nested><ChildObjects><Role>NestedTrap</Role></ChildObjects></Nested>")
+        );
+        assert!(xml.contains(concat!(
+            "\t\t<ChildObjects>\r\n",
+            "\t\t\t<Role>Reader</Role>\r\n",
+            "\t\t\t<Catalog>Items</Catalog>\r\n",
+            "\t\t</ChildObjects>"
+        )));
+        assert_eq!(xml.matches("<Role>Reader</Role>").count(), 1);
+        assert!(!xml.replace("\r\n", "").contains('\n'));
     }
 }
 
@@ -1921,6 +1902,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let obj_name = cf_edit_config_name(&text)?;
 
         let operations = cf_edit_operations(args, &context.cwd, operation, definition_file)?;
+        cf_edit_validate_child_object_kinds(&operations)?;
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
@@ -1957,15 +1939,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 }
                 "remove-childObject" => {
                     for item in cf_edit_batch_value(&op_value) {
-                        let Some(dot_idx) = item.find('.') else {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        };
-                        if dot_idx < 1 {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        }
-                        let type_name = item[..dot_idx].to_string();
-                        let obj_name_val = item[dot_idx + 1..].to_string();
-                        if cf_edit_remove_child_object_text(&mut text, &type_name, &obj_name_val)? {
+                        let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
+                        if cf_edit_remove_child_object_text(&mut text, type_name, obj_name_val)? {
                             remove_count += 1;
                             config_changed = true;
                             stdout
@@ -1979,24 +1954,24 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 }
                 "add-childObject" => {
                     for item in cf_edit_batch_value(&op_value) {
-                        let Some(dot_idx) = item.find('.') else {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        };
-                        if dot_idx < 1 {
-                            return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
-                        }
-                        let type_name = item[..dot_idx].to_string();
-                        let obj_name_val = item[dot_idx + 1..].to_string();
-                        if cf_validate_child_object_type_index(&type_name).is_none() {
+                        let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
+                        if cf_validate_child_object_type_index(type_name).is_none() {
                             return Err(format!("Unknown type '{type_name}'"));
                         }
-                        let type_dir = cf_validate_child_type_dir(&type_name)
+                        let type_dir = cf_validate_child_type_dir(type_name)
                             .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
                         let object_file = config_dir
                             .join(type_dir)
                             .join(format!("{obj_name_val}.xml"));
                         if !object_file.exists() {
-                            let hint_skill = match type_name.as_str() {
+                            if type_name == "Bot" {
+                                return Err(format!(
+                                    "Object file not found: {type_dir}/{obj_name_val}.xml\n\
+                                     cf-edit add-childObject only references objects that already exist on disk.\n\
+                                     meta-compile does not support Bot; create the Bot metadata with platform tooling, then retry."
+                                ));
+                            }
+                            let hint_skill = match type_name {
                                 "Subsystem" => "subsystem-compile",
                                 "Role" => "role-compile",
                                 _ => "meta-compile",
@@ -2008,7 +1983,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                                    /{hint_skill} with {{\"type\":\"{type_name}\",\"name\":\"{obj_name_val}\"}}"
                             ));
                         }
-                        if cf_edit_add_child_object_text(&mut text, &type_name, &obj_name_val)? {
+                        if cf_edit_add_child_object_text(&mut text, type_name, obj_name_val)? {
                             add_count += 1;
                             config_changed = true;
                             stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
@@ -2197,6 +2172,33 @@ pub(crate) fn cf_edit_operations(
             ),
         )])
     }
+}
+
+pub(crate) fn cf_edit_validate_child_object_kinds(
+    operations: &[(String, Value)],
+) -> Result<(), String> {
+    for (op_name, op_value) in operations {
+        if !matches!(op_name.as_str(), "add-childObject" | "remove-childObject") {
+            continue;
+        }
+        for item in cf_edit_batch_value(op_value) {
+            let (type_name, _) = cf_edit_parse_child_object(&item)?;
+            if cf_validate_child_object_type_index(type_name).is_none() {
+                return Err(format!("Unknown type '{type_name}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cf_edit_parse_child_object(item: &str) -> Result<(&str, &str), String> {
+    let Some((type_name, object_name)) = item.split_once('.') else {
+        return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
+    };
+    if type_name.is_empty() || object_name.is_empty() {
+        return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
+    }
+    Ok((type_name, object_name))
 }
 
 pub(crate) fn cf_edit_batch_value(value: &Value) -> Vec<String> {
@@ -2405,16 +2407,56 @@ pub(crate) struct CfEditChildObjectEntry {
 pub(crate) fn cf_edit_child_object_entries(
     text: &str,
 ) -> Result<Vec<CfEditChildObjectEntry>, String> {
-    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error: {err}"))?;
-    let child_objects = doc
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
-        .ok_or_else(|| "No <ChildObjects> element found".to_string())?;
+    cf_edit_root_child_objects(text).map(|(_, entries)| entries)
+}
+
+fn cf_edit_root_child_objects(
+    text: &str,
+) -> Result<(CfEditElementRange, Vec<CfEditChildObjectEntry>), String> {
+    let source = text.trim_start_matches('\u{feff}');
+    let source_offset = text.len() - source.len();
+    let doc = Document::parse(source).map_err(|err| format!("XML parse error: {err}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err("Root element must be <MetaDataObject>".to_string());
+    }
+
+    let mut direct_lists = root
+        .children()
+        .filter(|node| node.is_element())
+        .filter_map(|owner| {
+            owner
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+        });
+    let child_objects = direct_lists.next().ok_or_else(|| {
+        "No <ChildObjects> element found directly under the root metadata object".to_string()
+    })?;
+    if direct_lists.next().is_some() {
+        return Err("Multiple root metadata <ChildObjects> elements found".to_string());
+    }
+
+    let node_range = child_objects.range();
+    let child_start = source_offset + node_range.start;
+    let child_end = source_offset + node_range.end;
+    let child_text = &text[child_start..child_end];
+    let open_end = child_text
+        .find('>')
+        .ok_or_else(|| "Malformed root metadata <ChildObjects> element".to_string())?;
+    let body_range = if child_text[..=open_end].trim_end().ends_with("/>") {
+        None
+    } else {
+        let close_start = child_text
+            .rfind("</ChildObjects>")
+            .ok_or_else(|| "Malformed root metadata </ChildObjects> element".to_string())?;
+        Some((child_start + open_end + 1, child_start + close_start))
+    };
+
     let mut entries = Vec::new();
     for child in child_objects.children().filter(|node| node.is_element()) {
-        let range = child.range();
-        let line_start = text[..range.start].rfind('\n').map_or(0, |pos| pos + 1);
+        let raw_range = child.range();
+        let range = (source_offset + raw_range.start)..(source_offset + raw_range.end);
+        let line_start = cf_edit_line_start(text, range.start);
         let prefix_is_indent = text[line_start..range.start]
             .chars()
             .all(|ch| ch == '\t' || ch == ' ');
@@ -2423,7 +2465,9 @@ pub(crate) fn cf_edit_child_object_entries(
         } else {
             range.start
         };
-        let end = if text[range.end..].starts_with('\n') {
+        let end = if text[range.end..].starts_with("\r\n") {
+            range.end + 2
+        } else if matches!(text[range.end..].chars().next(), Some('\n' | '\r')) {
             range.end + 1
         } else {
             range.end
@@ -2435,17 +2479,23 @@ pub(crate) fn cf_edit_child_object_entries(
             line_range: start..end,
         });
     }
-    Ok(entries)
+    Ok(((child_start, child_end, body_range), entries))
 }
 
 pub(crate) fn cf_edit_line_indent(text: &str, index: usize) -> Option<String> {
-    let line_start = text[..index].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_start = cf_edit_line_start(text, index);
     let indent = &text[line_start..index];
     if indent.chars().all(|ch| ch == '\t' || ch == ' ') {
         Some(indent.to_string())
     } else {
         None
     }
+}
+
+fn cf_edit_line_start(text: &str, index: usize) -> usize {
+    text[..index]
+        .rfind(['\r', '\n'])
+        .map_or(0, |position| position + 1)
 }
 
 pub(crate) fn cf_edit_child_name_key(value: &str) -> String {
@@ -2458,14 +2508,29 @@ pub(crate) fn cf_edit_child_name_cmp(left: &str, right: &str) -> std::cmp::Order
         .then_with(|| left.cmp(right))
 }
 
+pub(crate) fn cf_edit_line_ending(text: &str) -> &'static str {
+    let bytes = text.as_bytes();
+    let Some(index) = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) else {
+        return "\n";
+    };
+    if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+        "\r\n"
+    } else if bytes[index] == b'\r' {
+        "\r"
+    } else {
+        "\n"
+    }
+}
+
 pub(crate) fn cf_edit_child_object_line(
     type_name: &str,
     object_name: &str,
     indent: &str,
+    line_ending: &str,
 ) -> String {
     format!(
-        "{indent}<{type_name}>{}</{type_name}>\n",
-        escape_xml(object_name)
+        "{indent}<{type_name}>{}</{type_name}>{line_ending}",
+        escape_xml(object_name),
     )
 }
 
@@ -2474,6 +2539,9 @@ pub(crate) fn cf_edit_remove_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
+    if metadata_kind(type_name).is_none() {
+        return Err(format!("Unknown type '{type_name}'"));
+    }
     let entries = cf_edit_child_object_entries(text)?;
     let Some(entry) = entries
         .into_iter()
@@ -2490,11 +2558,10 @@ pub(crate) fn cf_edit_add_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
-    let Some((child_start, child_end, body_range)) = cf_edit_element_range(text, "ChildObjects")
-    else {
-        return Err("No <ChildObjects> element found".to_string());
-    };
-    let entries = cf_edit_child_object_entries(text)?;
+    let new_type_index =
+        metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+    let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
+    let line_ending = cf_edit_line_ending(text);
     if entries
         .iter()
         .any(|entry| entry.type_name == type_name && entry.object_name == object_name)
@@ -2502,7 +2569,6 @@ pub(crate) fn cf_edit_add_child_object_text(
         return Ok(false);
     }
 
-    let new_type_index = cf_validate_child_object_type_index(type_name).unwrap_or(usize::MAX);
     let target = entries.iter().find(|entry| {
         let entry_type_index =
             cf_validate_child_object_type_index(&entry.type_name).unwrap_or(usize::MAX);
@@ -2514,7 +2580,7 @@ pub(crate) fn cf_edit_add_child_object_text(
     if let Some(target) = target {
         let indent =
             cf_edit_line_indent(text, target.range.start).unwrap_or_else(|| "\t\t\t".to_string());
-        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        let line = cf_edit_child_object_line(type_name, object_name, &indent, line_ending);
         text.insert_str(target.line_range.start, &line);
         return Ok(true);
     }
@@ -2522,7 +2588,7 @@ pub(crate) fn cf_edit_add_child_object_text(
     if let Some(last) = entries.last() {
         let indent =
             cf_edit_line_indent(text, last.range.start).unwrap_or_else(|| "\t\t\t".to_string());
-        let line = cf_edit_child_object_line(type_name, object_name, &indent);
+        let line = cf_edit_child_object_line(type_name, object_name, &indent, line_ending);
         text.insert_str(last.line_range.end, &line);
         return Ok(true);
     }
@@ -2532,15 +2598,15 @@ pub(crate) fn cf_edit_add_child_object_text(
         let child_indent = format!("{open_indent}\t");
         let close_indent = open_indent;
         let replacement = format!(
-            "<ChildObjects>\n{}{}</ChildObjects>",
-            cf_edit_child_object_line(type_name, object_name, &child_indent),
+            "<ChildObjects>{line_ending}{}{}</ChildObjects>",
+            cf_edit_child_object_line(type_name, object_name, &child_indent, line_ending),
             close_indent
         );
         text.replace_range(child_start..child_end, &replacement);
         return Ok(true);
     };
 
-    let close_line_start = text[..body_end].rfind('\n').map_or(body_end, |pos| pos + 1);
+    let close_line_start = cf_edit_line_start(text, body_end);
     let close_indent = if text[close_line_start..body_end]
         .chars()
         .all(|ch| ch == '\t' || ch == ' ')
@@ -2550,9 +2616,9 @@ pub(crate) fn cf_edit_add_child_object_text(
         cf_edit_line_indent(text, child_start).unwrap_or_default()
     };
     let child_indent = format!("{close_indent}\t");
-    let line = cf_edit_child_object_line(type_name, object_name, &child_indent);
+    let line = cf_edit_child_object_line(type_name, object_name, &child_indent, line_ending);
     if body_start == body_end {
-        text.insert_str(body_start, &format!("\n{line}{close_indent}"));
+        text.insert_str(body_start, &format!("{line_ending}{line}{close_indent}"));
     } else {
         text.insert_str(close_line_start, &line);
     }
@@ -2966,27 +3032,7 @@ pub(crate) fn cf_edit_ru_type(value: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn cf_edit_dir_to_type(value: &str) -> Option<&'static str> {
-    match value.to_lowercase().as_str() {
-        "catalogs" => Some("Catalog"),
-        "documents" => Some("Document"),
-        "enums" => Some("Enum"),
-        "reports" => Some("Report"),
-        "dataprocessors" => Some("DataProcessor"),
-        "commonforms" => Some("CommonForm"),
-        "documentjournals" => Some("DocumentJournal"),
-        "informationregisters" => Some("InformationRegister"),
-        "accumulationregisters" => Some("AccumulationRegister"),
-        "chartsofcharacteristictypes" => Some("ChartOfCharacteristicTypes"),
-        "chartsofaccounts" => Some("ChartOfAccounts"),
-        "accountingregisters" => Some("AccountingRegister"),
-        "chartsofcalculationtypes" => Some("ChartOfCalculationTypes"),
-        "calculationregisters" => Some("CalculationRegister"),
-        "businessprocesses" => Some("BusinessProcess"),
-        "tasks" => Some("Task"),
-        "exchangeplans" => Some("ExchangePlan"),
-        "settingsstorages" => Some("SettingsStorage"),
-        _ => None,
-    }
+    metadata_kind_by_directory(value).map(|kind| kind.tag)
 }
 
 pub(crate) fn cf_edit_json_object(

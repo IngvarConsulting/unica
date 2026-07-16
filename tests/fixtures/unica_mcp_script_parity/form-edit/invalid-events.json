@@ -1,0 +1,12 @@
+{
+  "formEvents": [
+    {
+      "name": "OnCreateAtServer",
+      "handler": "OnCreateAtServer"
+    },
+    {
+      "name": "OnReadAtServer",
+      "handler": "OnReadAtServer"
+    }
+  ]
+}

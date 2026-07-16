@@ -16,6 +16,8 @@ IN_SCOPE_TOOLS = {
     "cfe-init": "unica.cfe.init",
     "cfe-patch-method": "unica.cfe.patch_method",
     "cfe-validate": "unica.cfe.validate",
+    "epf-init": "unica.epf.init",
+    "erf-init": "unica.erf.init",
     "meta-compile": "unica.meta.compile",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
@@ -258,11 +260,9 @@ REPLACED_RUNTIME_SKILLS = {
     "db-update",
     "db-run",
     "workspace-init",
-    "epf-init",
     "epf-build",
     "epf-dump",
     "epf-validate",
-    "erf-init",
     "erf-build",
     "erf-dump",
     "erf-validate",
@@ -278,6 +278,8 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cfe-init": ["Name", "OutputDir"],
     "cfe-patch-method": ["ExtensionPath", "ModulePath", "MethodName"],
     "cfe-validate": ["ExtensionPath"],
+    "epf-init": ["Name", "OutputDir", "FormName"],
+    "erf-init": ["Name", "OutputDir", "FormName"],
     "meta-compile": ["JsonPath", "OutputDir"],
     "meta-edit": ["ObjectPath", "Operation", "Value"],
     "meta-info": ["ObjectPath"],
@@ -349,6 +351,8 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "cf-init": {"unica.cf.info", "unica.cf.validate"},
     "cfe-borrow": {"unica.cfe.validate"},
     "cfe-init": {"unica.cfe.validate"},
+    "epf-init": {"unica.runtime.execute"},
+    "erf-init": {"unica.runtime.execute"},
     "form-compile": {"unica.form.info", "unica.form.validate"},
     "interface-edit": {"unica.interface.validate"},
     "meta-edit": {"unica.meta.info", "unica.meta.validate"},
@@ -1182,7 +1186,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         referenced_skills = {
             path.parent.parent.name for path in reference_root.glob("*/scripts/*.py")
         }
-        self.assertEqual(referenced_skills, set(IN_SCOPE_TOOLS))
+        self.assertEqual(
+            referenced_skills,
+            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init"},
+        )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in reference_root.rglob("*"):
             if path.is_file():

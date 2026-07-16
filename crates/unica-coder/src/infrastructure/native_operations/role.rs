@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{
     cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, skd::*, subsystem::*, template::*,
 };
@@ -1139,11 +1140,40 @@ pub(crate) fn role_validate_known_rights(object_type: &str) -> &'static [&'stati
     }
 }
 
+struct RoleCompileResult {
+    stdout: String,
+    stderr: String,
+    artifacts: Vec<PathBuf>,
+    changes: Vec<String>,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn compile_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = (|| -> Result<(String, String, Vec<PathBuf>), String> {
+    compile_role_internal(args, context, false)
+}
+
+pub(crate) fn preview_role_compile(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<AdapterOutcome, String> {
+    let outcome = compile_role_internal(args, context, true);
+    if outcome.ok {
+        Ok(outcome)
+    } else {
+        Err(outcome.errors.join("; "))
+    }
+}
+
+fn compile_role_internal(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    dry_run: bool,
+) -> AdapterOutcome {
+    let write_result = (|| -> Result<RoleCompileResult, String> {
+        let mut transaction = CompileTransaction::new();
         let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
         let output_dir_raw = required_path(args, &["outputDir", "OutputDir"], "OutputDir")?;
         let json_path = absolutize(json_path_raw, &context.cwd);
@@ -1269,42 +1299,42 @@ pub(crate) fn compile_role(
 
         let metadata_path = roles_dir.join(format!("{role_name}.xml"));
         let rights_path = roles_dir.join(&role_name).join("Ext").join("Rights.xml");
-        let uid =
-            reusable_existing_role_uuid(&metadata_path).unwrap_or_else(fresh_meta_compile_uuid);
-        let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
-        fs::create_dir_all(&roles_dir)
-            .map_err(|err| format!("failed to create {}: {err}", roles_dir.display()))?;
-        if let Some(ext_dir) = rights_path.parent() {
-            fs::create_dir_all(ext_dir)
-                .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
+        match fs::symlink_metadata(&metadata_path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                let message = format!(
+                    "[SKIP] Role '{role_name}' already exists at {}; no files changed\n",
+                    metadata_path.display()
+                );
+                return Ok(RoleCompileResult {
+                    stdout: message,
+                    stderr,
+                    artifacts: Vec::new(),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                });
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "existing role target is not a regular file: {}",
+                    metadata_path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect role target {}: {error}",
+                    metadata_path.display()
+                ));
+            }
         }
-        write_utf8_bom(&metadata_path, &metadata_xml)?;
-        write_utf8_bom(&rights_path, &rights_xml)?;
+        let uid = fresh_meta_compile_uuid();
+        let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
+        transaction.create_utf8_bom_text(&metadata_path, &metadata_xml)?;
+        transaction.create_utf8_bom_text(&rights_path, &rights_xml)?;
 
         let config_xml_path = config_dir.join("Configuration.xml");
-        let reg_result = if config_xml_path.exists() {
-            let mut raw_text = fs::read_to_string(&config_xml_path)
-                .map_err(|err| format!("failed to read {}: {err}", config_xml_path.display()))?
-                .trim_start_matches('\u{feff}')
-                .to_string();
-            let role_tag = format!("<Role>{role_name}</Role>");
-            if raw_text.contains(&role_tag) {
-                "already"
-            } else {
-                if let Some(insert_at) = last_xml_role_end(&raw_text) {
-                    raw_text.insert_str(insert_at, &format!("\n\t\t\t{role_tag}"));
-                } else {
-                    raw_text = raw_text.replace(
-                        "</ChildObjects>",
-                        &format!("\t\t\t{role_tag}\n\t\t</ChildObjects>"),
-                    );
-                }
-                write_utf8_bom(&config_xml_path, &raw_text)?;
-                "added"
-            }
-        } else {
-            "no-config"
-        };
+        let reg_result =
+            transaction.register_canonical_child(&config_xml_path, "Role", &role_name)?;
 
         let mut stdout = format!(
             "[OK] Role '{role_name}' compiled\n     UUID: {uid}\n     Metadata: {}\n     Rights:   {}\n     Objects: {}, Rights: {total_rights}, Templates: {template_count}\n",
@@ -1313,38 +1343,68 @@ pub(crate) fn compile_role(
             parsed_objects.len()
         );
         match reg_result {
-            "added" => stdout.push_str(&format!(
+            RegistrationStatus::Added => stdout.push_str(&format!(
                 "     Configuration.xml: <Role>{role_name}</Role> added to ChildObjects\n"
             )),
-            "already" => stdout.push_str(&format!(
+            RegistrationStatus::AlreadyPresent => stdout.push_str(&format!(
                 "     Configuration.xml: <Role>{role_name}</Role> already registered\n"
             )),
-            "no-config" => stderr.push_str(&format!(
+            RegistrationStatus::MissingTarget => stderr.push_str(&format!(
                 "WARNING: Configuration.xml not found at {} -- register manually\n",
                 config_xml_path.display()
             )),
-            _ => {}
         }
 
-        Ok((stdout, stderr, vec![metadata_path, rights_path]))
+        let (artifacts, changes, warnings, output) = if dry_run {
+            (
+                Vec::new(),
+                transaction.dry_run_changes(),
+                Vec::new(),
+                transaction.dry_run_stdout(),
+            )
+        } else {
+            let report = transaction.commit()?;
+            let mut changes = report
+                .created
+                .iter()
+                .map(|path| format!("created {}", path.display()))
+                .collect::<Vec<_>>();
+            changes.extend(
+                report
+                    .updated
+                    .iter()
+                    .map(|path| format!("updated {}", path.display())),
+            );
+            (report.created, changes, report.cleanup_warnings, stdout)
+        };
+
+        Ok(RoleCompileResult {
+            stdout: output,
+            stderr,
+            artifacts,
+            changes,
+            warnings,
+        })
     })();
 
     match write_result {
-        Ok((stdout, stderr, artifacts)) => AdapterOutcome {
+        Ok(result) => AdapterOutcome {
             ok: true,
-            summary: "unica.role.compile completed with native role writer".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings: Vec::new(),
+            summary: if dry_run {
+                "dry run: unica.role.compile planned native role compilation".to_string()
+            } else {
+                "unica.role.compile completed with native role writer".to_string()
+            },
+            changes: result.changes,
+            warnings: result.warnings,
             errors: Vec::new(),
-            artifacts: artifacts
+            artifacts: result
+                .artifacts
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect(),
-            stdout: Some(stdout),
-            stderr: (!stderr.is_empty()).then_some(stderr),
+            stdout: Some(result.stdout),
+            stderr: (!result.stderr.is_empty()).then_some(result.stderr),
             command: None,
         },
         Err(error) => AdapterOutcome {
@@ -1359,20 +1419,6 @@ pub(crate) fn compile_role(
             command: None,
         },
     }
-}
-
-fn reusable_existing_role_uuid(metadata_path: &Path) -> Option<String> {
-    let text = fs::read_to_string(metadata_path).ok()?;
-    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let role_node = doc
-        .descendants()
-        .find(|node| role_info_element(*node, "Role", None))?;
-    let uuid = role_node.attribute("uuid")?.to_string();
-    (is_valid_uuid(&uuid) && !is_placeholder_uuid(&uuid)).then_some(uuid)
-}
-
-fn is_placeholder_uuid(value: &str) -> bool {
-    value.starts_with("00000000-0000-0000-")
 }
 
 pub(crate) fn role_metadata_xml(
@@ -1705,20 +1751,6 @@ pub(crate) fn role_preset_rights(
     .into_iter()
     .map(ToOwned::to_owned)
     .collect()
-}
-
-pub(crate) fn last_xml_role_end(text: &str) -> Option<usize> {
-    let mut search_start = 0usize;
-    let mut last_end = None;
-    while let Some(rel_start) = text[search_start..].find("<Role>") {
-        let start = search_start + rel_start;
-        let Some(rel_end) = text[start..].find("</Role>") else {
-            break;
-        };
-        last_end = Some(start + rel_end + "</Role>".len());
-        search_start = start + rel_end + "</Role>".len();
-    }
-    last_end
 }
 
 pub(crate) fn invoke_read(

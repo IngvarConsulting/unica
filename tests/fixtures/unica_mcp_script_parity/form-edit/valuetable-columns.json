@@ -1,0 +1,18 @@
+{
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {
+          "name": "НомерСтроки",
+          "type": "decimal(5,0)"
+        },
+        {
+          "name": "Значение",
+          "type": "string(200)"
+        }
+      ]
+    }
+  ]
+}

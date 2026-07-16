@@ -1135,6 +1135,35 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="form-edit-valuetable-attribute-columns",
+        tool="unica.form.edit",
+        skill="form-edit",
+        script="form-edit.py",
+        arguments={
+            "FormPath": "forms/Form.xml",
+            "JsonPath": "fixtures/form-edit-valuetable-columns.json",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="form-compile",
+                script="form-compile.py",
+                arguments={
+                    "JsonPath": "fixtures/form-simple.json",
+                    "OutputPath": "forms/Form.xml",
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture("form-simple.json", "fixtures/form-simple.json"),
+            FileFixture(
+                "form-edit/valuetable-columns.json",
+                "fixtures/form-edit-valuetable-columns.json",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="bsp-form-info-real-form-full",
         tool="unica.form.info",
         skill="form-info",
@@ -4091,6 +4120,52 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             self.assertTrue(validate["ok"], json.dumps(validate, ensure_ascii=False, indent=2))
             self.assertEqual(config_path.read_bytes(), before)
 
+    def test_form_edit_rejects_invalid_platform_event_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="unica-issue77-form-events-") as temp:
+            temp_root = Path(temp)
+            workspace = temp_root / "workspace"
+            cache = temp_root / "cache"
+            workspace.mkdir()
+            form_path = workspace / "Form.xml"
+            form_path.write_text(
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+      xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"
+      xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+\t<AutoCommandBar name="FormCommandBar" id="-1"/>
+\t<ChildItems/>
+\t<Attributes>
+\t\t<Attribute name="Object" id="1">
+\t\t\t<Type><v8:Type>cfg:DataProcessorObject.EventProbe</v8:Type></Type>
+\t\t\t<MainAttribute>true</MainAttribute>
+\t\t</Attribute>
+\t</Attributes>
+\t<Commands/>
+</Form>""",
+                encoding="utf-8",
+            )
+            definition_path = workspace / "invalid-events.json"
+            shutil.copyfile(
+                FIXTURES_ROOT / "form-edit" / "invalid-events.json",
+                definition_path,
+            )
+            before = form_path.read_bytes()
+
+            result = self.call_mcp_tool(
+                "unica.form.edit",
+                {
+                    "FormPath": "Form.xml",
+                    "JsonPath": "invalid-events.json",
+                },
+                workspace,
+                cache,
+            )
+
+            self.assertFalse(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
+            self.assertIn("FORM_EVENT_NOT_ALLOWED", "\n".join(result.get("errors", [])))
+            self.assertEqual(result.get("changes"), [])
+            self.assertEqual(form_path.read_bytes(), before)
+
     def test_bsp_skd_edit_parity_covers_documented_operations(self) -> None:
         covered = set()
         for scenario in SCENARIOS:
@@ -4112,6 +4187,26 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             temp_root = Path(temp)
             workspace = temp_root / "workspace"
             workspace.mkdir()
+            for example in examples:
+                if example.skill != "form-edit":
+                    continue
+                arguments = example.payload["params"]["arguments"]
+                form_path = workspace / arguments["FormPath"]
+                form_path.parent.mkdir(parents=True, exist_ok=True)
+                form_path.write_text(
+                    """<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+\t<AutoCommandBar name="FormCommandBar" id="-1"/>
+\t<ChildItems/>
+\t<Attributes/>
+\t<Commands/>
+</Form>
+""",
+                    encoding="utf-8",
+                )
+                json_path = workspace / arguments["JsonPath"]
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                json_path.write_text("{}\n", encoding="utf-8")
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
