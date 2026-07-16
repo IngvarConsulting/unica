@@ -1426,7 +1426,7 @@ struct BslMcpSession {
     writer: mpsc::SyncSender<BslWriteRequest>,
     rx: mpsc::Receiver<BslReaderEvent>,
     stderr_tail: Arc<Mutex<BoundedByteTail>>,
-    stdout_closed: Arc<AtomicBool>,
+    reader_terminal: Arc<AtomicBool>,
     next_id: i64,
     valid: bool,
 }
@@ -1536,8 +1536,8 @@ impl BslMcpSession {
         let (writer, writer_rx) = mpsc::sync_channel::<BslWriteRequest>(1);
         thread::spawn(move || bsl_writer(stdin, writer_rx));
         let (tx, rx) = mpsc::sync_channel::<BslReaderEvent>(8);
-        let stdout_closed = Arc::new(AtomicBool::new(false));
-        let stdout_state = Arc::clone(&stdout_closed);
+        let reader_terminal = Arc::new(AtomicBool::new(false));
+        let stdout_state = Arc::clone(&reader_terminal);
         thread::spawn(move || bsl_reader_with_state(stdout, tx, stdout_state));
         let stderr_tail = Arc::new(Mutex::new(BoundedByteTail::new(BSL_STDERR_TAIL_LIMIT)));
         let stderr_target = Arc::clone(&stderr_tail);
@@ -1548,7 +1548,7 @@ impl BslMcpSession {
             writer,
             rx,
             stderr_tail,
-            stdout_closed,
+            reader_terminal,
             next_id: 2,
             valid: true,
         };
@@ -1662,7 +1662,7 @@ impl BslMcpSession {
 
     fn is_reusable(&mut self) -> bool {
         self.valid
-            && !self.stdout_closed.load(Ordering::Acquire)
+            && !self.reader_terminal.load(Ordering::Acquire)
             && self.child.is_running().unwrap_or(false)
     }
 
@@ -2357,12 +2357,12 @@ fn bsl_reader_with_state(
     events: mpsc::SyncSender<BslReaderEvent>,
     closed: Arc<AtomicBool>,
 ) {
+    let _terminal = BslReaderTerminalGuard(closed);
     let mut pending = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
         match stdout.read(&mut chunk) {
             Ok(0) => {
-                closed.store(true, Ordering::Release);
                 let event = if pending.is_empty() {
                     BslReaderEvent::Closed
                 } else {
@@ -2403,13 +2403,20 @@ fn bsl_reader_with_state(
                 }
             }
             Err(error) => {
-                closed.store(true, Ordering::Release);
                 let _ = events.send(BslReaderEvent::ProtocolError(format!(
                     "failed to read persistent bsl-analyzer stdout: {error}"
                 )));
                 return;
             }
         }
+    }
+}
+
+struct BslReaderTerminalGuard(Arc<AtomicBool>);
+
+impl Drop for BslReaderTerminalGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -3396,14 +3403,17 @@ mod tests {
         ));
 
         let (tx, rx) = mpsc::sync_channel(8);
-        bsl_reader(
+        let terminal = Arc::new(AtomicBool::new(false));
+        bsl_reader_with_state(
             std::io::Cursor::new(vec![b'x'; SERVICE_RESPONSE_LINE_LIMIT + 1]),
             tx,
+            Arc::clone(&terminal),
         );
         assert!(matches!(
             rx.recv().unwrap(),
             BslReaderEvent::ProtocolError(error) if error.contains("exceeds")
         ));
+        assert!(terminal.load(Ordering::Acquire));
     }
 
     #[test]
@@ -3481,7 +3491,7 @@ mod tests {
         assert!(first.ok, "{:?}", first.error);
         let first_pid = wait_for_recorded_pid(&pid_file);
         wait_for_file(&completion_file, Duration::from_secs(2));
-        wait_for_runtime_stdout_eof(&runtime, Duration::from_secs(2));
+        wait_for_runtime_reader_terminal(&runtime, Duration::from_secs(2));
 
         let second =
             runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
@@ -3492,6 +3502,93 @@ mod tests {
         assert_eq!(pids.len(), 2, "{pids:?}");
         assert_ne!(pids[0], pids[1]);
         cleanup(&context);
+    }
+
+    #[test]
+    fn bsl_session_replaces_reader_terminal_session_before_next_request() {
+        let context = test_context(&format!("terminal-warm-session-{}", Uuid::new_v4()));
+        let fixture = compile_terminal_after_call_fixture(&context);
+        let pid_file = context.cache_root.join("terminal-session-pids.txt");
+        let terminal_marker = context.cache_root.join("terminal-session-marker.txt");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        runtime.analyzer_starter = Arc::new({
+            let fixture = fixture.clone();
+            let pid_file = pid_file.clone();
+            let terminal_marker = terminal_marker.clone();
+            move |_context, _source_root, cancellation| {
+                let mut command = Command::new(&fixture);
+                command.args([&pid_file, &terminal_marker]);
+                BslMcpSession::start_with_command(command, cancellation)
+            }
+        });
+
+        let first =
+            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        assert!(first.ok, "{:?}", first.error);
+        let first_pid = wait_for_recorded_pid(&pid_file);
+        wait_for_file(&terminal_marker, Duration::from_secs(5));
+        wait_for_runtime_reader_terminal(&runtime, Duration::from_secs(5));
+
+        let second =
+            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        assert!(second.ok, "{:?}", second.error);
+        assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
+        let pids = fs::read_to_string(&pid_file).unwrap();
+        let pids = pids.lines().collect::<Vec<_>>();
+        assert_eq!(pids.len(), 2, "{pids:?}");
+        assert_ne!(pids[0], pids[1]);
+        cleanup(&context);
+    }
+
+    fn compile_terminal_after_call_fixture(context: &WorkspaceContext) -> PathBuf {
+        let source = context.cache_root.join("terminal-after-call-fixture.rs");
+        let executable = context.cache_root.join(if cfg!(windows) {
+            "terminal-after-call-fixture.exe"
+        } else {
+            "terminal-after-call-fixture"
+        });
+        fs::create_dir_all(&context.cache_root).unwrap();
+        fs::write(
+            &source,
+            r#"use std::{env, fs::{self, OpenOptions}, io::{self, BufRead, Write}, thread, time::Duration};
+fn main() {
+    let pid_file = env::args().nth(1).unwrap();
+    let marker = env::args().nth(2).unwrap();
+    let first = fs::read_to_string(&pid_file).unwrap_or_default().lines().count() == 0;
+    writeln!(OpenOptions::new().create(true).append(true).open(&pid_file).unwrap(), "{}", std::process::id()).unwrap();
+    for (index, line) in io::stdin().lock().lines().enumerate() {
+        line.unwrap();
+        match index {
+            0 => println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}"),
+            2 => {
+                println!("{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}");
+                io::stdout().flush().unwrap();
+                if first {
+                    println!("malformed-after-success");
+                    io::stdout().flush().unwrap();
+                    fs::write(&marker, b"malformed-written").unwrap();
+                    thread::sleep(Duration::from_secs(30));
+                }
+            }
+            _ => {}
+        }
+        io::stdout().flush().unwrap();
+    }
+}"#,
+        )
+        .unwrap();
+        let status = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        executable
     }
 
     fn compile_exit_after_call_fixture(context: &WorkspaceContext) -> PathBuf {
@@ -3577,7 +3674,7 @@ fn main() {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(text) = fs::read_to_string(path) {
-                if let Ok(pid) = text.trim().parse() {
+                if let Some(pid) = text.lines().find_map(|line| line.trim().parse().ok()) {
                     return pid;
                 }
             }
@@ -3597,7 +3694,7 @@ fn main() {
         }
     }
 
-    fn wait_for_runtime_stdout_eof(runtime: &WorkspaceServiceRuntime, timeout: Duration) {
+    fn wait_for_runtime_reader_terminal(runtime: &WorkspaceServiceRuntime, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
             let closed = runtime
@@ -3605,13 +3702,13 @@ fn main() {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .is_some_and(|session| session.stdout_closed.load(Ordering::Acquire));
+                .is_some_and(|session| session.reader_terminal.load(Ordering::Acquire));
             if closed {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "analyzer stdout EOF was not observed"
+                "analyzer stdout reader terminal state was not observed"
             );
             thread::yield_now();
         }
