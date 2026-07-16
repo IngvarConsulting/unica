@@ -44,7 +44,16 @@ impl ManagedChild {
         process
             .args(&command.args)
             .current_dir(&command.cwd)
-            .envs(command.env)
+            .envs(command.env);
+        Self::spawn_process(process, command.timeout, command.cancellation)
+    }
+
+    pub(crate) fn spawn_process(
+        mut process: Command,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<Self, String> {
+        process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -60,8 +69,8 @@ impl ManagedChild {
         Ok(Self {
             child,
             process_tree,
-            timeout: command.timeout,
-            cancellation: command.cancellation,
+            timeout,
+            cancellation,
         })
     }
 
@@ -154,6 +163,14 @@ impl ManagedChild {
             timed_out,
             cancelled,
         })
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.terminate();
+        }
     }
 }
 

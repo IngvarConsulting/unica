@@ -3,6 +3,7 @@ use crate::domain::events::DomainEvent;
 use crate::domain::source_roots::normalize_path_identity;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::managed_child::ManagedChild;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
 use fs2::FileExt;
@@ -15,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc, Condvar, Mutex,
@@ -1408,10 +1409,9 @@ pub struct WorkspaceServiceBslOutput {
 }
 
 struct BslMcpSession {
-    child: Child,
+    child: ManagedChild,
     stdin: ChildStdin,
     rx: mpsc::Receiver<String>,
-    stdout_reader: Option<thread::JoinHandle<()>>,
     stderr_text: Arc<Mutex<String>>,
     next_id: i64,
 }
@@ -1447,33 +1447,26 @@ impl BslMcpSession {
     }
 
     fn start_with_command(
-        mut command: Command,
+        command: Command,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         if cancellation.is_cancelled() {
             return Err(cancelled_error("persistent bsl-analyzer start stopped"));
         }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        let mut child = ManagedChild::spawn_process(command, None, cancellation.clone())
             .map_err(|err| format!("failed to start persistent bsl-analyzer MCP: {err}"))?;
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| "failed to open persistent bsl-analyzer stdin".to_string())?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| "failed to open persistent bsl-analyzer stdout".to_string())?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| "failed to open persistent bsl-analyzer stderr".to_string())?;
 
         let (tx, rx) = mpsc::channel::<String>();
-        let stdout_reader = thread::spawn(move || {
+        thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
                 let mut line = String::new();
@@ -1503,7 +1496,6 @@ impl BslMcpSession {
             child,
             stdin,
             rx,
-            stdout_reader: Some(stdout_reader),
             stderr_text,
             next_id: 2,
         };
@@ -1566,7 +1558,7 @@ impl BslMcpSession {
         }
         let id = self.next_id;
         self.next_id += 1;
-        send_json_line(
+        if let Err(error) = send_json_line(
             &mut self.stdin,
             &json!({
                 "jsonrpc": "2.0",
@@ -1577,9 +1569,24 @@ impl BslMcpSession {
                     "arguments": tool_args
                 }
             }),
-        )?;
-        let response = read_json_response_cancellable(&self.rx, id, timeout, cancellation)?;
-        let result_text = mcp_tool_text(&response)?;
+        ) {
+            let _ = self.child.terminate();
+            return Err(error);
+        }
+        let response = match read_json_response_cancellable(&self.rx, id, timeout, cancellation) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = self.child.terminate();
+                return Err(error);
+            }
+        };
+        let result_text = match mcp_tool_text(&response) {
+            Ok(text) => text,
+            Err(error) => {
+                let _ = self.child.terminate();
+                return Err(error);
+            }
+        };
         let stderr = self
             .stderr_text
             .lock()
@@ -1594,11 +1601,7 @@ impl BslMcpSession {
 
 impl Drop for BslMcpSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(handle) = self.stdout_reader.take() {
-            let _ = handle.join();
-        }
+        let _ = self.child.terminate();
     }
 }
 
@@ -3027,6 +3030,131 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(2));
         }
         cleanup(&context);
+    }
+
+    #[test]
+    fn cancelled_bsl_session_terminates_process_tree_without_blocking_drop() {
+        let context = test_context("cancelled-session-tree");
+        let fixture = compile_session_tree_fixture(&context);
+        let pid_file = context.cache_root.join("session-tree-pids.txt");
+        let mut command = Command::new(&fixture);
+        command.arg(&pid_file);
+        let cancellation = CancellationToken::new();
+        let mut session = BslMcpSession::start_with_command(command, &cancellation).unwrap();
+        let parent_pid = session.child.id();
+        let child_pid = wait_for_recorded_pid(&pid_file);
+        let cancel = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancel.cancel();
+        });
+
+        let error = session
+            .call(
+                "unica.code.search",
+                json!({}),
+                Duration::from_secs(30),
+                &cancellation,
+            )
+            .unwrap_err();
+        assert!(error.starts_with("cancelled:"), "{error}");
+        let drop_started = Instant::now();
+        drop(session);
+        canceller.join().unwrap();
+
+        assert!(drop_started.elapsed() < Duration::from_secs(2));
+        assert!(wait_for_process_exit(parent_pid, Duration::from_secs(2)));
+        assert!(wait_for_process_exit(child_pid, Duration::from_secs(2)));
+        cleanup(&context);
+    }
+
+    fn compile_session_tree_fixture(context: &WorkspaceContext) -> PathBuf {
+        let source = context.cache_root.join("session-tree-fixture.rs");
+        let executable = context.cache_root.join(if cfg!(windows) {
+            "session-tree-fixture.exe"
+        } else {
+            "session-tree-fixture"
+        });
+        fs::create_dir_all(&context.cache_root).unwrap();
+        fs::write(
+            &source,
+            r#"use std::{env, fs, io::{self, BufRead, Write}, process::Command, thread, time::Duration};
+fn main() {
+    if env::args().nth(1).as_deref() == Some("child") {
+        thread::sleep(Duration::from_secs(5));
+        return;
+    }
+    let pid_file = env::args().nth(1).unwrap();
+    let child = Command::new(env::current_exe().unwrap()).arg("child").spawn().unwrap();
+    fs::write(pid_file, child.id().to_string()).unwrap();
+    let stdin = io::stdin();
+    for (index, line) in stdin.lock().lines().enumerate() {
+        line.unwrap();
+        if index == 0 {
+            println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}");
+            io::stdout().flush().unwrap();
+        } else {
+            thread::sleep(Duration::from_secs(30));
+        }
+    }
+}"#,
+        )
+        .unwrap();
+        let status = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        executable
+    }
+
+    fn wait_for_recorded_pid(path: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(text) = fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse() {
+                    return pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture did not record child pid"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            // SAFETY: signal zero only probes whether this PID still exists.
+            if unsafe { libc::kill(pid as i32, 0) } == -1 {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        false
+    }
+
+    #[cfg(windows)]
+    fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: the returned synchronization handle is closed below.
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if process.is_null() {
+            return true;
+        }
+        // SAFETY: process is a live synchronization handle.
+        let result = unsafe { WaitForSingleObject(process, timeout.as_millis() as u32) };
+        // SAFETY: process is owned by this function and closed exactly once.
+        unsafe { CloseHandle(process) };
+        result == WAIT_OBJECT_0
     }
 
     fn compile_initialize_fixture(context: &WorkspaceContext) -> PathBuf {
