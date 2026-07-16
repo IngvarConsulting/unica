@@ -143,6 +143,7 @@ impl<'a> WorkspaceIndexService<'a> {
         Self { runner }
     }
 
+    #[allow(dead_code)]
     pub fn start_for_workspace(
         &self,
         context: &WorkspaceContext,
@@ -244,6 +245,7 @@ impl<'a> WorkspaceIndexService<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn ready_index(
         &self,
         context: &WorkspaceContext,

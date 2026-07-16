@@ -7,7 +7,7 @@ use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -15,7 +15,10 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -26,6 +29,7 @@ const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const SERVICE_SPAWN_LOCK_STALE_SECS: u64 = 30;
 
@@ -832,15 +836,17 @@ impl ServiceSpawner for SystemServiceSpawner {
     }
 }
 
-struct WorkspaceServiceState {
+struct WorkspaceServiceRuntime {
     identity: WorkspaceServiceIdentity,
     token: String,
     context: WorkspaceContext,
-    bsl: Option<BslMcpSession>,
-    source_generation: u64,
+    analyzer: Mutex<Option<BslMcpSession>>,
+    source_generation: Mutex<u64>,
+    operations: Mutex<HashMap<String, CancellationToken>>,
+    shutting_down: AtomicBool,
 }
 
-impl WorkspaceServiceState {
+impl WorkspaceServiceRuntime {
     fn new(identity: WorkspaceServiceIdentity, token: String) -> Self {
         let context = WorkspaceContext {
             cwd: PathBuf::from(&identity.workspace_root),
@@ -853,93 +859,149 @@ impl WorkspaceServiceState {
             identity,
             token,
             context,
-            bsl: None,
-            source_generation,
+            analyzer: Mutex::new(None),
+            source_generation: Mutex::new(source_generation),
+            operations: Mutex::new(HashMap::new()),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
-    fn handle_request(&mut self, request: ServiceRequest) -> ServiceResponse {
-        if request.token != self.token {
-            return ServiceResponse::error("invalid workspace service token");
+    fn ping(&self) -> ServiceResponse {
+        ServiceResponse {
+            ok: true,
+            status: Some(if self.shutting_down.load(Ordering::Acquire) {
+                "shutting-down".to_string()
+            } else {
+                "alive".to_string()
+            }),
+            ..ServiceResponse::default()
         }
-        match request.kind {
-            ServiceRequestKind::Ping => ServiceResponse {
-                ok: true,
-                status: Some("alive".to_string()),
-                ..ServiceResponse::default()
+    }
+
+    fn authenticate(&self, token: &str) -> Result<(), &'static str> {
+        if token == self.token {
+            Ok(())
+        } else {
+            Err("invalid workspace service token")
+        }
+    }
+
+    fn register_operation(
+        self: &Arc<Self>,
+        operation_id: String,
+    ) -> Result<(CancellationToken, OperationGuard), String> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("workspace service is shutting down".to_string());
+        }
+        let mut operations = self
+            .operations
+            .lock()
+            .map_err(|_| "workspace service operation registry is unavailable".to_string())?;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("workspace service is shutting down".to_string());
+        }
+        if operations.contains_key(&operation_id) {
+            return Err(format!(
+                "workspace service operation id is already active: {operation_id}"
+            ));
+        }
+        let cancellation = CancellationToken::new();
+        operations.insert(operation_id.clone(), cancellation.clone());
+        Ok((
+            cancellation,
+            OperationGuard {
+                runtime: Arc::clone(self),
+                operation_id,
             },
-            ServiceRequestKind::BslMcp {
-                operation_id: _,
-                tool_name,
-                tool_args,
-                timeout_secs,
-            } => self.handle_bsl_mcp(&tool_name, tool_args, timeout_secs),
-            ServiceRequestKind::RlmReady {
-                operation_id: _,
-                args,
-            } => self.handle_rlm_ready(args),
-            ServiceRequestKind::Cancel { .. } => ServiceResponse {
-                ok: true,
-                status: Some("cancel-requested".to_string()),
-                ..ServiceResponse::default()
-            },
-            ServiceRequestKind::Invalidate { events } => {
-                if events.iter().any(|event| {
-                    matches!(
-                        event.as_str(),
-                        "ModuleChanged"
-                            | "SourceSetChanged"
-                            | "BuildCompleted"
-                            | "MetadataChanged"
-                            | "ConfigXmlChanged"
-                            | "CfeChanged"
-                            | "FormChanged"
-                            | "RoleChanged"
-                            | "SkdChanged"
-                    )
-                }) {
-                    self.bsl = None;
-                    self.source_generation =
-                        source_generation(Path::new(&self.identity.source_root));
-                }
-                ServiceResponse {
-                    ok: true,
-                    status: Some("invalidated".to_string()),
-                    ..ServiceResponse::default()
-                }
+        ))
+    }
+
+    fn cancel_operation(&self, operation_id: &str) -> ServiceResponse {
+        let cancellation = self
+            .operations
+            .lock()
+            .ok()
+            .and_then(|operations| operations.get(operation_id).cloned());
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
+        ServiceResponse {
+            ok: true,
+            status: Some("cancel-requested".to_string()),
+            ..ServiceResponse::default()
+        }
+    }
+
+    fn begin_shutdown(&self) -> ServiceResponse {
+        self.shutting_down.store(true, Ordering::Release);
+        let cancellations = self
+            .operations
+            .lock()
+            .map(|operations| operations.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+        ServiceResponse {
+            ok: true,
+            status: Some("shutdown".to_string()),
+            shutdown: true,
+            ..ServiceResponse::default()
+        }
+    }
+
+    fn invalidate(&self, events: &[String]) -> ServiceResponse {
+        if events.iter().any(|event| invalidates_analyzer(event)) {
+            if let Ok(mut analyzer) = self.analyzer.lock() {
+                *analyzer = None;
             }
-            ServiceRequestKind::Shutdown => ServiceResponse {
-                ok: true,
-                status: Some("shutdown".to_string()),
-                shutdown: true,
-                ..ServiceResponse::default()
-            },
+            if let Ok(mut generation) = self.source_generation.lock() {
+                *generation = source_generation(Path::new(&self.identity.source_root));
+            }
+        }
+        ServiceResponse {
+            ok: true,
+            status: Some("invalidated".to_string()),
+            ..ServiceResponse::default()
         }
     }
 
     fn handle_bsl_mcp(
-        &mut self,
+        &self,
         tool_name: &str,
         tool_args: Value,
         timeout_secs: u64,
+        cancellation: &CancellationToken,
     ) -> ServiceResponse {
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error("workspace analyzer operation stopped"));
+        }
+        let mut analyzer = match self.analyzer.lock() {
+            Ok(analyzer) => analyzer,
+            Err(_) => return ServiceResponse::error("workspace analyzer state is unavailable"),
+        };
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error("workspace analyzer operation stopped"));
+        }
         let current_generation = source_generation(Path::new(&self.identity.source_root));
-        if current_generation != self.source_generation {
-            self.bsl = None;
-            self.source_generation = current_generation;
+        if let Ok(mut generation) = self.source_generation.lock() {
+            if current_generation != *generation {
+                *analyzer = None;
+                *generation = current_generation;
+            }
         }
         let timeout = Duration::from_secs(timeout_secs.max(1));
         let result = (|| {
-            if self.bsl.is_none() {
-                self.bsl = Some(BslMcpSession::start(
+            if analyzer.is_none() {
+                *analyzer = Some(BslMcpSession::start(
                     &self.context,
                     Path::new(&self.identity.source_root),
                 )?);
             }
-            self.bsl
+            analyzer
                 .as_mut()
                 .expect("bsl session must exist after start")
-                .call(tool_name, tool_args, timeout)
+                .call(tool_name, tool_args, timeout, cancellation)
         })();
         match result {
             Ok(output) => ServiceResponse {
@@ -949,22 +1011,88 @@ impl WorkspaceServiceState {
                 ..ServiceResponse::default()
             },
             Err(error) => {
-                self.bsl = None;
+                let stale_session = analyzer.take();
+                drop(analyzer);
+                if let Some(stale_session) = stale_session {
+                    thread::spawn(move || drop(stale_session));
+                }
                 ServiceResponse::error(error)
             }
         }
     }
 
-    fn handle_rlm_ready(&mut self, args: Value) -> ServiceResponse {
+    fn handle_rlm_ready(&self, args: Value, cancellation: &CancellationToken) -> ServiceResponse {
         let mut args = args.as_object().cloned().unwrap_or_default();
         args.insert(
             "sourceDir".to_string(),
             Value::String(self.identity.source_root.clone()),
         );
         let service = WorkspaceIndexService::new();
-        let start_report = service.start_for_workspace(&self.context, &args, false);
-        let readiness = service.ready_index(&self.context, &args);
+        let start_report =
+            service.start_for_workspace_cancellable(&self.context, &args, false, cancellation);
+        let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
         ServiceResponse::from_readiness(readiness, start_report.warnings)
+    }
+}
+
+fn invalidates_analyzer(event: &str) -> bool {
+    matches!(
+        event,
+        "ModuleChanged"
+            | "SourceSetChanged"
+            | "BuildCompleted"
+            | "MetadataChanged"
+            | "ConfigXmlChanged"
+            | "CfeChanged"
+            | "FormChanged"
+            | "RoleChanged"
+            | "SkdChanged"
+    )
+}
+
+struct OperationGuard {
+    runtime: Arc<WorkspaceServiceRuntime>,
+    operation_id: String,
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut operations) = self.runtime.operations.lock() {
+            operations.remove(&self.operation_id);
+        }
+    }
+}
+
+trait WorkspaceServiceOperationExecutor: Send + Sync {
+    fn execute(
+        &self,
+        runtime: &WorkspaceServiceRuntime,
+        kind: ServiceRequestKind,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse;
+}
+
+struct SystemWorkspaceServiceOperationExecutor;
+
+impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecutor {
+    fn execute(
+        &self,
+        runtime: &WorkspaceServiceRuntime,
+        kind: ServiceRequestKind,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        match kind {
+            ServiceRequestKind::BslMcp {
+                tool_name,
+                tool_args,
+                timeout_secs,
+                ..
+            } => runtime.handle_bsl_mcp(&tool_name, tool_args, timeout_secs, cancellation),
+            ServiceRequestKind::RlmReady { args, .. } => {
+                runtime.handle_rlm_ready(args, cancellation)
+            }
+            _ => ServiceResponse::error("workspace service received non-work operation"),
+        }
     }
 }
 
@@ -1236,7 +1364,11 @@ impl BslMcpSession {
         tool_name: &str,
         tool_args: Value,
         timeout: Duration,
+        cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceBslOutput, String> {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error("persistent bsl-analyzer request stopped"));
+        }
         let id = self.next_id;
         self.next_id += 1;
         send_json_line(
@@ -1251,7 +1383,7 @@ impl BslMcpSession {
                 }
             }),
         )?;
-        let response = read_json_response(&self.rx, id, timeout)?;
+        let response = read_json_response_cancellable(&self.rx, id, timeout, cancellation)?;
         let result_text = mcp_tool_text(&response)?;
         let stderr = self
             .stderr_text
@@ -1478,7 +1610,7 @@ fn run_workspace_service(
         .local_addr()
         .map_err(|err| format!("failed to read workspace service listener address: {err}"))?
         .port();
-    let mut record = WorkspaceServiceRecord {
+    let record = WorkspaceServiceRecord {
         schema_version: SERVICE_SCHEMA_VERSION,
         pid: std::process::id(),
         port,
@@ -1491,37 +1623,92 @@ fn run_workspace_service(
     };
     write_record(&identity, &record)?;
 
-    let mut state = WorkspaceServiceState::new(identity.clone(), token);
+    let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, token));
+    serve_workspace_service(
+        listener,
+        runtime,
+        Arc::new(SystemWorkspaceServiceOperationExecutor),
+        Duration::from_secs(idle_secs.max(1)),
+        Duration::from_secs(max_age_secs.max(1)),
+    )
+}
+
+fn serve_workspace_service<E: WorkspaceServiceOperationExecutor + 'static>(
+    listener: TcpListener,
+    runtime: Arc<WorkspaceServiceRuntime>,
+    executor: Arc<E>,
+    idle_timeout: Duration,
+    max_age: Duration,
+) -> Result<(), String> {
     let started = Instant::now();
     let mut last_access = Instant::now();
+    let mut handlers: Vec<thread::JoinHandle<Result<(), String>>> = Vec::new();
+    let mut result = Ok(());
     loop {
-        if started.elapsed() >= Duration::from_secs(max_age_secs.max(1)) {
+        let mut index = 0;
+        while index < handlers.len() {
+            if handlers[index].is_finished() {
+                let handler = handlers.swap_remove(index);
+                let _ = handler.join();
+            } else {
+                index += 1;
+            }
+        }
+        if runtime.shutting_down.load(Ordering::Acquire) {
             break;
         }
-        if last_access.elapsed() >= Duration::from_secs(idle_secs.max(1)) {
+        if started.elapsed() >= max_age || last_access.elapsed() >= idle_timeout {
+            runtime.begin_shutdown();
             break;
         }
         match listener.accept() {
             Ok((stream, _addr)) => {
                 last_access = Instant::now();
-                record.last_access_at = now_secs();
-                let shutdown = handle_stream(stream, &mut state)?;
-                let _ = write_record(&identity, &record);
-                if shutdown {
-                    break;
+                if let Some(mut record) = read_record(&runtime.identity) {
+                    record.last_access_at = now_secs();
+                    let _ = write_record(&runtime.identity, &record);
                 }
+                let handler_runtime = Arc::clone(&runtime);
+                let handler_executor = Arc::clone(&executor);
+                handlers.push(thread::spawn(move || {
+                    handle_workspace_service_stream(stream, handler_runtime, handler_executor)
+                }));
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => return Err(format!("workspace service accept failed: {error}")),
+            Err(error) => {
+                result = Err(format!("workspace service accept failed: {error}"));
+                break;
+            }
         }
     }
-    let _ = fs::remove_file(identity.record_path());
-    Ok(())
+
+    runtime.begin_shutdown();
+    let drain_deadline = Instant::now() + SERVICE_SHUTDOWN_GRACE;
+    while !handlers.is_empty() && Instant::now() < drain_deadline {
+        let mut index = 0;
+        while index < handlers.len() {
+            if handlers[index].is_finished() {
+                let handler = handlers.swap_remove(index);
+                let _ = handler.join();
+            } else {
+                index += 1;
+            }
+        }
+        if !handlers.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let _ = fs::remove_file(runtime.identity.record_path());
+    result
 }
 
-fn handle_stream(stream: TcpStream, state: &mut WorkspaceServiceState) -> Result<bool, String> {
+fn handle_workspace_service_stream<E: WorkspaceServiceOperationExecutor + 'static>(
+    stream: TcpStream,
+    runtime: Arc<WorkspaceServiceRuntime>,
+    executor: Arc<E>,
+) -> Result<(), String> {
     stream
         .set_read_timeout(Some(SERVICE_REQUEST_TIMEOUT))
         .map_err(|err| format!("failed to set workspace service request read timeout: {err}"))?;
@@ -1537,18 +1724,124 @@ fn handle_stream(stream: TcpStream, state: &mut WorkspaceServiceState) -> Result
     reader
         .read_line(&mut line)
         .map_err(|err| format!("failed to read workspace service request: {err}"))?;
-    let (response, best_effort_response) = match serde_json::from_str::<ServiceRequest>(line.trim())
-    {
-        Ok(request) => {
-            let best_effort = matches!(request.kind, ServiceRequestKind::Cancel { .. });
-            (state.handle_request(request), best_effort)
+    let request = match serde_json::from_str::<ServiceRequest>(line.trim()) {
+        Ok(request) => request,
+        Err(error) => {
+            let response =
+                ServiceResponse::error(format!("invalid workspace service request: {error}"));
+            write_service_response(stream, &response, false)?;
+            return Ok(());
         }
-        Err(error) => (
-            ServiceResponse::error(format!("invalid workspace service request: {error}")),
-            false,
-        ),
     };
-    write_service_response(stream, &response, best_effort_response)
+    if let Err(error) = runtime.authenticate(&request.token) {
+        write_service_response(stream, &ServiceResponse::error(error), false)?;
+        return Ok(());
+    }
+
+    match request.kind {
+        ServiceRequestKind::Ping => {
+            write_service_response(stream, &runtime.ping(), false)?;
+        }
+        ServiceRequestKind::Cancel { operation_id } => {
+            write_service_response(stream, &runtime.cancel_operation(&operation_id), true)?;
+        }
+        ServiceRequestKind::Invalidate { events } => {
+            write_service_response(stream, &runtime.invalidate(&events), false)?;
+        }
+        ServiceRequestKind::Shutdown => {
+            write_service_response(stream, &runtime.begin_shutdown(), false)?;
+        }
+        kind @ (ServiceRequestKind::BslMcp { .. } | ServiceRequestKind::RlmReady { .. }) => {
+            let operation_id = kind
+                .operation_id()
+                .expect("work request must carry operation id")
+                .to_string();
+            let (cancellation, guard) = match runtime.register_operation(operation_id) {
+                Ok(registered) => registered,
+                Err(error) => {
+                    write_service_response(stream, &ServiceResponse::error(error), false)?;
+                    return Ok(());
+                }
+            };
+            let (result_tx, result_rx) = mpsc::sync_channel(1);
+            let worker_runtime = Arc::clone(&runtime);
+            let worker_cancellation = cancellation.clone();
+            thread::spawn(move || {
+                let response = executor.execute(&worker_runtime, kind, &worker_cancellation);
+                drop(guard);
+                let _ = result_tx.send(response);
+            });
+            if let Err(error) = stream.set_nonblocking(true) {
+                cancellation.cancel();
+                return Err(format!(
+                    "failed to monitor workspace service caller: {error}"
+                ));
+            }
+            let mut caller_connected = true;
+            loop {
+                match result_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(response) => {
+                        if caller_connected {
+                            stream.set_nonblocking(false).map_err(|err| {
+                                format!(
+                                    "failed to restore workspace service response stream: {err}"
+                                )
+                            })?;
+                            write_service_response(stream, &response, false)?;
+                        }
+                        break;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        cancellation.cancel();
+                        if caller_connected {
+                            stream.set_nonblocking(false).map_err(|err| {
+                                format!(
+                                    "failed to restore workspace service response stream: {err}"
+                                )
+                            })?;
+                            write_service_response(
+                                stream,
+                                &ServiceResponse::error("workspace service worker disconnected"),
+                                false,
+                            )?;
+                        }
+                        break;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if !caller_connected {
+                            continue;
+                        }
+                        let mut byte = [0_u8; 1];
+                        match stream.peek(&mut byte) {
+                            Ok(0) => {
+                                cancellation.cancel();
+                                caller_connected = false;
+                            }
+                            Ok(_) => {}
+                            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    ErrorKind::ConnectionAborted
+                                        | ErrorKind::ConnectionReset
+                                        | ErrorKind::BrokenPipe
+                                        | ErrorKind::NotConnected
+                                ) =>
+                            {
+                                cancellation.cancel();
+                                caller_connected = false;
+                            }
+                            Err(_) => {
+                                cancellation.cancel();
+                                caller_connected = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_service_response(
@@ -1603,10 +1896,29 @@ fn read_json_response(
     id: i64,
     timeout: Duration,
 ) -> Result<Value, String> {
+    read_json_response_cancellable(rx, id, timeout, &CancellationToken::new())
+}
+
+fn read_json_response_cancellable(
+    rx: &mpsc::Receiver<String>,
+    id: i64,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+) -> Result<Value, String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error(format!(
+                "persistent bsl-analyzer request {id} stopped"
+            )));
+        }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
+                if cancellation.is_cancelled() {
+                    return Err(cancelled_error(format!(
+                        "persistent bsl-analyzer request {id} stopped"
+                    )));
+                }
                 let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
                     continue;
                 };
@@ -1619,6 +1931,11 @@ fn read_json_response(
                 return Err("persistent bsl-analyzer stdout closed before response".to_string());
             }
         }
+    }
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error(format!(
+            "persistent bsl-analyzer request {id} stopped"
+        )));
     }
     Err(format!("persistent bsl-analyzer request {id} timed out"))
 }
@@ -1660,6 +1977,369 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct BlockingWorkspaceExecutor {
+        started: Mutex<Vec<String>>,
+        cancelled: Mutex<Vec<String>>,
+        release_cancelled: Mutex<bool>,
+        wake: std::sync::Condvar,
+    }
+
+    impl BlockingWorkspaceExecutor {
+        fn wait_started(&self, expected: usize) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut started = self.started.lock().unwrap();
+            while started.len() < expected {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "work did not start before test deadline"
+                );
+                let (next, timeout) = self.wake.wait_timeout(started, remaining).unwrap();
+                started = next;
+                assert!(!timeout.timed_out() || started.len() >= expected);
+            }
+        }
+
+        fn wait_cancelled(&self, expected: usize) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut cancelled = self.cancelled.lock().unwrap();
+            while cancelled.len() < expected {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "operation was not cancelled before test deadline"
+                );
+                let (next, timeout) = self.wake.wait_timeout(cancelled, remaining).unwrap();
+                cancelled = next;
+                assert!(!timeout.timed_out() || cancelled.len() >= expected);
+            }
+        }
+
+        fn release_cancelled(&self) {
+            *self.release_cancelled.lock().unwrap() = true;
+            self.wake.notify_all();
+        }
+    }
+
+    impl WorkspaceServiceOperationExecutor for BlockingWorkspaceExecutor {
+        fn execute(
+            &self,
+            _runtime: &WorkspaceServiceRuntime,
+            kind: ServiceRequestKind,
+            cancellation: &CancellationToken,
+        ) -> ServiceResponse {
+            let operation_id = kind.operation_id().unwrap_or("missing").to_string();
+            {
+                let mut started = self.started.lock().unwrap();
+                started.push(operation_id.clone());
+                self.wake.notify_all();
+            }
+            if operation_id.starts_with("success") {
+                return ServiceResponse {
+                    ok: true,
+                    status: Some("ready".to_string()),
+                    ..ServiceResponse::default()
+                };
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !cancellation.is_cancelled() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if cancellation.is_cancelled() {
+                self.cancelled.lock().unwrap().push(operation_id.clone());
+                self.wake.notify_all();
+                if operation_id.starts_with("held-after-cancel") {
+                    let mut released = self.release_cancelled.lock().unwrap();
+                    while !*released {
+                        released = self.wake.wait(released).unwrap();
+                    }
+                }
+                ServiceResponse::error(cancelled_error("workspace operation stopped"))
+            } else {
+                ServiceResponse::error("test operation was not cancelled")
+            }
+        }
+    }
+
+    type WorkspaceControlTestServer = (
+        WorkspaceContext,
+        WorkspaceServiceRecord,
+        Arc<WorkspaceServiceRuntime>,
+        Arc<BlockingWorkspaceExecutor>,
+        thread::JoinHandle<Result<(), String>>,
+    );
+
+    fn workspace_control_test_server(name: &str) -> WorkspaceControlTestServer {
+        let context = test_context(name);
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let record = test_record(&identity, port, env!("CARGO_PKG_VERSION"));
+        write_record(&identity, record.clone());
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, record.token.clone()));
+        let executor = Arc::new(BlockingWorkspaceExecutor::default());
+        let server_runtime = Arc::clone(&runtime);
+        let server_executor = Arc::clone(&executor);
+        let server = thread::spawn(move || {
+            serve_workspace_service(
+                listener,
+                server_runtime,
+                server_executor,
+                Duration::from_secs(30),
+                Duration::from_secs(30),
+            )
+        });
+        (context, record, runtime, executor, server)
+    }
+
+    fn open_test_request(
+        record: &WorkspaceServiceRecord,
+        kind: ServiceRequestKind,
+    ) -> BufReader<TcpStream> {
+        let mut stream = TcpStream::connect(("127.0.0.1", record.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = ServiceRequest {
+            token: record.token.clone(),
+            kind,
+        };
+        writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+        stream.flush().unwrap();
+        BufReader::new(stream)
+    }
+
+    fn read_test_response(reader: &mut BufReader<TcpStream>) -> ServiceResponse {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(line.trim()).unwrap()
+    }
+
+    fn send_test_request(
+        record: &WorkspaceServiceRecord,
+        kind: ServiceRequestKind,
+    ) -> ServiceResponse {
+        read_test_response(&mut open_test_request(record, kind))
+    }
+
+    #[test]
+    fn workspace_service_control_path_ping_cancel_and_recover() {
+        let (context, record, runtime, executor, server) =
+            workspace_control_test_server("control-ping-cancel");
+        let mut work = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "blocked-1".to_string(),
+                args: json!({}),
+            },
+        );
+        executor.wait_started(1);
+
+        let ping_started = Instant::now();
+        let ping = send_test_request(&record, ServiceRequestKind::Ping);
+        assert!(ping.ok);
+        assert!(ping_started.elapsed() < Duration::from_millis(500));
+
+        let cancel = send_test_request(
+            &record,
+            ServiceRequestKind::Cancel {
+                operation_id: "blocked-1".to_string(),
+            },
+        );
+        assert!(cancel.ok);
+        let cancelled = read_test_response(&mut work);
+        assert!(!cancelled.ok);
+        assert!(cancelled.error.unwrap().starts_with("cancelled:"));
+        assert!(runtime.operations.lock().unwrap().is_empty());
+
+        let recovered = send_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "success-2".to_string(),
+                args: json!({}),
+            },
+        );
+        assert!(recovered.ok);
+        assert!(runtime.operations.lock().unwrap().is_empty());
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        server.join().unwrap().unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        assert!(!identity.record_path().exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_control_path_shutdown_cancels_all_and_rejects_new_work() {
+        let (context, record, runtime, executor, server) =
+            workspace_control_test_server("control-shutdown");
+        let mut first = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "blocked-first".to_string(),
+                args: json!({}),
+            },
+        );
+        let mut second = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "blocked-second".to_string(),
+                args: json!({}),
+            },
+        );
+        executor.wait_started(2);
+        let shutdown = send_test_request(&record, ServiceRequestKind::Shutdown);
+        assert!(shutdown.ok);
+        for response in [
+            read_test_response(&mut first),
+            read_test_response(&mut second),
+        ] {
+            assert!(response.error.unwrap().starts_with("cancelled:"));
+        }
+
+        let rejected = match runtime.register_operation("late-work".to_string()) {
+            Ok(_) => panic!("workspace service accepted work after shutdown"),
+            Err(error) => error,
+        };
+        assert!(rejected.contains("shutting down"));
+        executor.wait_cancelled(2);
+
+        server.join().unwrap().unwrap();
+        assert!(runtime.operations.lock().unwrap().is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_control_path_disconnect_cancels_only_its_operation() {
+        let (context, record, _runtime, executor, server) =
+            workspace_control_test_server("control-disconnect");
+        let disconnected = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "blocked-disconnected".to_string(),
+                args: json!({}),
+            },
+        );
+        executor.wait_started(1);
+        drop(disconnected);
+        executor.wait_cancelled(1);
+        assert_eq!(
+            executor.cancelled.lock().unwrap().as_slice(),
+            &["blocked-disconnected".to_string()]
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let recovered = send_test_request(
+                &record,
+                ServiceRequestKind::RlmReady {
+                    operation_id: "success-after-disconnect".to_string(),
+                    args: json!({}),
+                },
+            );
+            if recovered.ok {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+        }
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        server.join().unwrap().unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_control_path_analyzer_wait_observes_operation_token() {
+        let (_tx, rx) = mpsc::channel::<String>();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let started = Instant::now();
+
+        let error = read_json_response_cancellable(&rx, 7, Duration::from_secs(30), &cancellation)
+            .unwrap_err();
+
+        assert!(error.starts_with("cancelled:"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn workspace_service_control_path_rejects_duplicate_active_operation_id() {
+        let (context, record, _runtime, executor, server) =
+            workspace_control_test_server("control-duplicate");
+        let mut first = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "duplicate-id".to_string(),
+                args: json!({}),
+            },
+        );
+        executor.wait_started(1);
+
+        let duplicate = send_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "duplicate-id".to_string(),
+                args: json!({}),
+            },
+        );
+        assert!(!duplicate.ok);
+        assert!(duplicate.error.unwrap().contains("already active"));
+
+        assert!(
+            send_test_request(
+                &record,
+                ServiceRequestKind::Cancel {
+                    operation_id: "duplicate-id".to_string(),
+                },
+            )
+            .ok
+        );
+        assert!(read_test_response(&mut first)
+            .error
+            .unwrap()
+            .starts_with("cancelled:"));
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        server.join().unwrap().unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_control_path_drains_disconnected_worker_before_cleanup() {
+        let (context, record, runtime, executor, server) =
+            workspace_control_test_server("control-disconnected-drain");
+        let disconnected = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "held-after-cancel-1".to_string(),
+                args: json!({}),
+            },
+        );
+        executor.wait_started(1);
+        drop(disconnected);
+        executor.wait_cancelled(1);
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+
+        let (joined_tx, joined_rx) = mpsc::channel();
+        let joiner = thread::spawn(move || {
+            let result = server.join().unwrap();
+            let _ = joined_tx.send(result);
+        });
+        assert!(joined_rx.recv_timeout(Duration::from_millis(150)).is_err());
+        executor.release_cancelled();
+        joined_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        joiner.join().unwrap();
+
+        assert!(runtime.operations.lock().unwrap().is_empty());
+        cleanup(&context);
+    }
 
     #[derive(Clone, Default)]
     struct ManualClock(Arc<Mutex<Duration>>);
@@ -2273,14 +2953,12 @@ mod tests {
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
         let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
         write_record(&identity, record);
-        let mut state = WorkspaceServiceState::new(identity.clone(), "secret".to_string());
-        let response = state.handle_request(connector_test_request(ServiceRequestKind::Cancel {
-            operation_id: "gone-caller".to_string(),
-        }));
+        let runtime = WorkspaceServiceRuntime::new(identity.clone(), "secret".to_string());
+        let response = runtime.cancel_operation("gone-caller");
 
         assert!(!write_service_response(FailingWriter, &response, true).unwrap());
         assert!(read_record(&identity).is_some());
-        let ping = state.handle_request(connector_test_request(ServiceRequestKind::Ping));
+        let ping = runtime.ping();
         assert!(ping.ok);
         cleanup(&context);
     }
@@ -2468,22 +3146,17 @@ mod tests {
         let context = test_context("protocol");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let mut state = WorkspaceServiceState::new(identity, "secret".to_string());
+        let runtime = WorkspaceServiceRuntime::new(identity, "secret".to_string());
 
-        let invalid = state.handle_request(ServiceRequest {
-            token: "wrong".to_string(),
-            kind: ServiceRequestKind::Ping,
-        });
+        let invalid = ServiceResponse::error(runtime.authenticate("wrong").unwrap_err());
         assert!(!invalid.ok);
         assert_eq!(
             invalid.error.as_deref(),
             Some("invalid workspace service token")
         );
 
-        let valid = state.handle_request(ServiceRequest {
-            token: "secret".to_string(),
-            kind: ServiceRequestKind::Ping,
-        });
+        runtime.authenticate("secret").unwrap();
+        let valid = runtime.ping();
         assert!(valid.ok);
         assert_eq!(valid.status.as_deref(), Some("alive"));
 
