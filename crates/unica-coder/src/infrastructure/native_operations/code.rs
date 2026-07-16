@@ -742,7 +742,7 @@ impl PatchRequest {
                 }
             }
             "anchor" => Selector::Anchor {
-                anchor: required_nonempty_string(args, "anchor")?.to_string(),
+                anchor: canonicalize_payload_eol(required_nonempty_string(args, "anchor")?),
                 method_name: nonempty_string(args, "methodName").map(str::to_string),
             },
             other => return Err(format!("unsupported selector kind `{other}`")),
@@ -885,7 +885,7 @@ fn plan_patch_once(text: &str, request: &PatchRequest) -> Result<PatchPlan, Stri
         } => {
             let scopes = if let Some(method_name) = method_name {
                 let methods = scan_methods(text, &mask)?;
-                let scopes = method_body_ranges(&methods, method_name);
+                let scopes = method_anchor_ranges(&methods, method_name);
                 if scopes.is_empty() {
                     return Err(format!("method `{method_name}` was not found"));
                 }
@@ -1162,6 +1162,7 @@ fn apply_edits(text: &str, edits: &[Edit]) -> Result<String, String> {
 struct MethodRange {
     name_folded: String,
     body: ByteRange,
+    anchor_scope: ByteRange,
     leading_docs: Option<ByteRange>,
 }
 
@@ -1231,6 +1232,10 @@ fn scan_methods(text: &str, mask: &[bool]) -> Result<Vec<MethodRange>, String> {
                 start: body_start,
                 end: method_body_end(text, end.start),
             },
+            anchor_scope: ByteRange {
+                start: body_start,
+                end: method_anchor_scope_end(text, end.end),
+            },
             leading_docs: leading_method_docs_range(text, tokens[index].start),
         });
         index = end_index + 1;
@@ -1263,6 +1268,15 @@ fn method_body_end(text: &str, end_keyword_start: usize) -> usize {
         line_start
     } else {
         end_keyword_start
+    }
+}
+
+fn method_anchor_scope_end(text: &str, end_keyword_end: usize) -> usize {
+    let bytes = text.as_bytes();
+    match bytes.get(end_keyword_end..) {
+        Some([b'\r', b'\n', ..]) => end_keyword_end + 2,
+        Some([b'\n', ..]) => end_keyword_end + 1,
+        _ => end_keyword_end,
     }
 }
 
@@ -1448,6 +1462,15 @@ fn method_body_ranges(methods: &[MethodRange], name: &str) -> Vec<ByteRange> {
         .collect()
 }
 
+fn method_anchor_ranges(methods: &[MethodRange], name: &str) -> Vec<ByteRange> {
+    let folded = name.to_lowercase();
+    methods
+        .iter()
+        .filter(|method| method.name_folded == folded)
+        .map(|method| method.anchor_scope.clone())
+        .collect()
+}
+
 fn method_docs_ranges(methods: &[MethodRange], name: &str) -> Vec<ByteRange> {
     let folded = name.to_lowercase();
     methods
@@ -1519,23 +1542,30 @@ fn find_code_occurrences(
         return Vec::new();
     }
     let haystack = text.as_bytes();
-    let needle = needle.as_bytes();
+    let mut needles = [Eol::Lf, Eol::CrLf]
+        .into_iter()
+        .map(|eol| render_payload_eol(needle, eol))
+        .collect::<Vec<_>>();
+    needles.dedup();
     let mut matches = Vec::new();
     for scope in scopes {
-        if scope.start > scope.end
-            || scope.end > haystack.len()
-            || needle.len() > scope.end - scope.start
-        {
+        if scope.start > scope.end || scope.end > haystack.len() {
             continue;
         }
-        for start in scope.start..=scope.end - needle.len() {
-            if mask.get(start) == Some(&true)
-                && haystack.get(start..start + needle.len()) == Some(needle)
-            {
-                matches.push(ByteRange {
-                    start,
-                    end: start + needle.len(),
-                });
+        for needle in &needles {
+            let needle = needle.as_bytes();
+            if needle.len() > scope.end - scope.start {
+                continue;
+            }
+            for start in scope.start..=scope.end - needle.len() {
+                if mask.get(start) == Some(&true)
+                    && haystack.get(start..start + needle.len()) == Some(needle)
+                {
+                    matches.push(ByteRange {
+                        start,
+                        end: start + needle.len(),
+                    });
+                }
             }
         }
     }
@@ -2384,6 +2414,40 @@ mod tests {
             patched,
             "Procedure Work(Value) Export\n    NewBody();\nEndProcedure\n"
         );
+    }
+
+    #[test]
+    fn anchor_can_target_closing_method_token_with_crlf_and_repeats_as_noop() {
+        let source = concat!(
+            "Процедура Цель()\r\n",
+            "\tЕсли Условие Тогда\r\n",
+            "\tКонецЕсли;\r\n",
+            "КонецПроцедуры\r\n",
+            "//- Frame\r\n"
+        );
+        let fixture = Fixture::new("anchor-closing-method-token", source.as_bytes());
+        let args = fixture.args(
+            json!({
+                "kind": "anchor",
+                "anchor": "\tКонецЕсли;\nКонецПроцедуры\n",
+                "methodName": "цЕЛЬ"
+            }),
+            "insertAfter",
+            "\n",
+            1,
+        );
+
+        let first = patch_code(&args, &fixture.context, false);
+
+        assert!(first.ok, "{:?}", first.errors);
+        assert_eq!(details(&first)["applied"], true);
+        assert_eq!(
+            fs::read_to_string(&fixture.module).unwrap(),
+            source.replacen("КонецПроцедуры\r\n//-", "КонецПроцедуры\r\n\r\n//-", 1)
+        );
+        let second = patch_code(&args, &fixture.context, false);
+        assert!(second.ok, "{:?}", second.errors);
+        assert_eq!(details(&second)["noOp"], true);
     }
 
     #[test]
