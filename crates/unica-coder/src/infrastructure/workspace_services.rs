@@ -33,6 +33,7 @@ const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
+const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 const SERVICE_SPAWN_LOCK_STALE_SECS: u64 = 30;
 const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
 
@@ -923,11 +924,16 @@ struct WorkspaceServiceRuntime {
     context: WorkspaceContext,
     analyzer_lane: AnalyzerLane,
     analyzer: Mutex<Option<BslMcpSession>>,
+    analyzer_starter: Arc<BslSessionStarter>,
     source_generation: Mutex<u64>,
     analyzer_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, CancellationToken>>,
     shutting_down: AtomicBool,
 }
+
+type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<BslMcpSession, String>
+    + Send
+    + Sync;
 
 impl WorkspaceServiceRuntime {
     fn new(identity: WorkspaceServiceIdentity, record_owner: &WorkspaceServiceRecord) -> Self {
@@ -945,6 +951,7 @@ impl WorkspaceServiceRuntime {
             context,
             analyzer_lane: AnalyzerLane::default(),
             analyzer: Mutex::new(None),
+            analyzer_starter: Arc::new(BslMcpSession::start),
             source_generation: Mutex::new(source_generation),
             analyzer_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
@@ -1105,7 +1112,7 @@ impl WorkspaceServiceRuntime {
                 *analyzer = None;
             }
             if analyzer.is_none() {
-                *analyzer = Some(BslMcpSession::start(
+                *analyzer = Some((self.analyzer_starter)(
                     &self.context,
                     Path::new(&self.identity.source_root),
                     cancellation,
@@ -1418,9 +1425,51 @@ struct BslMcpSession {
     child: ManagedChild,
     writer: mpsc::SyncSender<BslWriteRequest>,
     rx: mpsc::Receiver<BslReaderEvent>,
-    stderr_text: Arc<Mutex<String>>,
+    stderr_tail: Arc<Mutex<BoundedByteTail>>,
     next_id: i64,
     valid: bool,
+}
+
+struct BoundedByteTail {
+    bytes: VecDeque<u8>,
+    limit: usize,
+}
+
+impl BoundedByteTail {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: VecDeque::with_capacity(limit),
+            limit,
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        let bytes = if bytes.len() > self.limit {
+            &bytes[bytes.len() - self.limit..]
+        } else {
+            bytes
+        };
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(self.limit);
+        self.bytes.drain(..overflow.min(self.bytes.len()));
+        self.bytes.extend(bytes);
+    }
+
+    fn snapshot(&self) -> String {
+        let bytes = self.bytes.iter().copied().collect::<Vec<_>>();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if text.len() <= self.limit {
+            return text;
+        }
+        let mut start = text.len() - self.limit;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text[start..].to_string()
+    }
 }
 
 struct BslWriteRequest {
@@ -1487,22 +1536,15 @@ impl BslMcpSession {
         thread::spawn(move || bsl_writer(stdin, writer_rx));
         let (tx, rx) = mpsc::sync_channel::<BslReaderEvent>(8);
         thread::spawn(move || bsl_reader(stdout, tx));
-        let stderr_text = Arc::new(Mutex::new(String::new()));
-        let stderr_target = Arc::clone(&stderr_text);
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut text = String::new();
-            let _ = reader.read_to_string(&mut text);
-            if let Ok(mut target) = stderr_target.lock() {
-                *target = text;
-            }
-        });
+        let stderr_tail = Arc::new(Mutex::new(BoundedByteTail::new(BSL_STDERR_TAIL_LIMIT)));
+        let stderr_target = Arc::clone(&stderr_tail);
+        thread::spawn(move || bsl_stderr_reader(stderr, stderr_target));
 
         let mut session = Self {
             child,
             writer,
             rx,
-            stderr_text,
+            stderr_tail,
             next_id: 2,
             valid: true,
         };
@@ -1597,17 +1639,16 @@ impl BslMcpSession {
                 if cancellation.is_cancelled() {
                     return self.fail(cancelled_error("persistent bsl-analyzer request stopped"));
                 }
-                self.invalidate();
-                return Err(error);
+                return self.fail(error);
             }
         };
         if cancellation.is_cancelled() {
             return self.fail(cancelled_error("persistent bsl-analyzer request stopped"));
         }
         let stderr = self
-            .stderr_text
+            .stderr_tail
             .lock()
-            .map(|text| text.clone())
+            .map(|tail| tail.snapshot())
             .unwrap_or_default();
         Ok(WorkspaceServiceBslOutput {
             result_text,
@@ -1686,8 +1727,17 @@ impl BslMcpSession {
     }
 
     fn fail<T>(&mut self, error: String) -> Result<T, String> {
+        let stderr = self
+            .stderr_tail
+            .lock()
+            .map(|tail| tail.snapshot())
+            .unwrap_or_default();
         self.invalidate();
-        Err(error)
+        if stderr.is_empty() {
+            Err(error)
+        } else {
+            Err(format!("{error}; stderr tail: {stderr}"))
+        }
     }
 
     fn invalidate(&mut self) {
@@ -2271,6 +2321,22 @@ fn bsl_writer(mut stdin: ChildStdin, requests: mpsc::Receiver<BslWriteRequest>) 
         let _ = request.result.send(result);
         if failed {
             break;
+        }
+    }
+}
+
+fn bsl_stderr_reader(mut stderr: impl Read, tail: Arc<Mutex<BoundedByteTail>>) {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match stderr.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(count) => {
+                if let Ok(mut tail) = tail.lock() {
+                    tail.append(&chunk[..count]);
+                } else {
+                    return;
+                }
+            }
         }
     }
 }
@@ -3214,6 +3280,17 @@ mod tests {
             assert!(error.starts_with("cancelled:"), "{error}");
             assert!(started.elapsed() < Duration::from_secs(2));
         }
+        let pid_file = context.cache_root.join("incomplete-eof-child-pid.txt");
+        let mut command = Command::new(&fixture);
+        command.args(["incomplete-eof", pid_file.to_str().unwrap()]);
+        let started = Instant::now();
+        let error = BslMcpSession::start_with_command(command, &CancellationToken::new())
+            .err()
+            .expect("incomplete initialize response must fail");
+        let child_pid = wait_for_recorded_pid(&pid_file);
+        assert!(error.contains("incomplete JSON line"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(wait_for_process_exit(child_pid, Duration::from_secs(2)));
         cleanup(&context);
     }
 
@@ -3271,16 +3348,20 @@ mod tests {
         bsl_reader(
             ChunkedReader {
                 bytes: std::io::Cursor::new(
-                    b"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n".to_vec(),
+                    b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n".to_vec(),
                 ),
                 chunk_size: 3,
             },
             tx,
         );
-        assert!(matches!(
-            rx.recv().unwrap(),
-            BslReaderEvent::Message(value) if value["id"] == 7
-        ));
+        let response = read_json_response_cancellable(
+            &rx,
+            7,
+            Instant::now() + Duration::from_secs(1),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(response["id"], 7);
 
         let (tx, rx) = mpsc::sync_channel(8);
         bsl_reader(std::io::Cursor::new(b"not-json\n"), tx);
@@ -3298,6 +3379,36 @@ mod tests {
             rx.recv().unwrap(),
             BslReaderEvent::ProtocolError(error) if error.contains("exceeds")
         ));
+    }
+
+    #[test]
+    fn bsl_session_incomplete_eof_is_an_immediate_protocol_error() {
+        let (tx, rx) = mpsc::sync_channel(8);
+        bsl_reader(std::io::Cursor::new(b"{\"jsonrpc\":\"2.0\""), tx);
+        let started = Instant::now();
+        let error = read_json_response_cancellable(
+            &rx,
+            1,
+            Instant::now() + Duration::from_secs(30),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("incomplete JSON line"), "{error}");
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn bsl_session_stderr_reader_keeps_only_a_bounded_lossy_tail() {
+        let mut noisy = vec![b'x'; BSL_STDERR_TAIL_LIMIT * 4];
+        noisy.extend_from_slice(&[0xff, 0xfe]);
+        noisy.extend_from_slice(b"TAIL-MARKER");
+        let tail = Arc::new(Mutex::new(BoundedByteTail::new(BSL_STDERR_TAIL_LIMIT)));
+        let started = Instant::now();
+        bsl_stderr_reader(std::io::Cursor::new(noisy), Arc::clone(&tail));
+        let snapshot = tail.lock().unwrap().snapshot();
+        assert!(snapshot.len() <= BSL_STDERR_TAIL_LIMIT);
+        assert!(snapshot.ends_with("TAIL-MARKER"), "{snapshot}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
@@ -3326,45 +3437,27 @@ mod tests {
         let context = test_context("dead-warm-session");
         let fixture = compile_exit_after_call_fixture(&context);
         let pid_file = context.cache_root.join("warm-session-pids.txt");
-        let start = || {
-            let mut command = Command::new(&fixture);
-            command.arg(&pid_file);
-            BslMcpSession::start_with_command(command, &CancellationToken::new()).unwrap()
-        };
-        let mut analyzer = Some(start());
-        analyzer
-            .as_mut()
-            .unwrap()
-            .call(
-                "unica.code.search",
-                json!({}),
-                Duration::from_secs(2),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while analyzer.as_mut().unwrap().is_reusable() {
-            assert!(Instant::now() < deadline, "fixture process did not exit");
-            thread::sleep(Duration::from_millis(25));
-        }
-        if analyzer
-            .as_mut()
-            .is_some_and(|session| !session.is_reusable())
-        {
-            drop(analyzer.take());
-        }
-        assert!(analyzer.is_none());
-        analyzer = Some(start());
-        analyzer
-            .as_mut()
-            .unwrap()
-            .call(
-                "unica.code.search",
-                json!({}),
-                Duration::from_secs(2),
-                &CancellationToken::new(),
-            )
-            .unwrap();
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let fixture_for_start = fixture.clone();
+        let pid_file_for_start = pid_file.clone();
+        runtime.analyzer_starter = Arc::new(move |_context, _source_root, cancellation| {
+            let mut command = Command::new(&fixture_for_start);
+            command.arg(&pid_file_for_start);
+            BslMcpSession::start_with_command(command, cancellation)
+        });
+        let first =
+            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        assert!(first.ok, "{:?}", first.error);
+        let first_pid = wait_for_recorded_pid(&pid_file);
+        assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
+
+        let second =
+            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        assert!(second.ok, "{:?}", second.error);
         let pids = fs::read_to_string(&pid_file).unwrap();
         let pids = pids.lines().collect::<Vec<_>>();
         assert_eq!(pids.len(), 2, "{pids:?}");
@@ -3507,9 +3600,16 @@ fn main() {
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,
-            r#"use std::{env, io::{self, Write}, thread, time::Duration};
+            r#"use std::{env, fs, io::{self, Write}, thread, time::Duration};
 fn main() {
-    if env::args().nth(1).as_deref() == Some("fragmented") {
+    let mode = env::args().nth(1).unwrap_or_default();
+    if mode == "incomplete-eof" {
+        fs::write(env::args().nth(2).unwrap(), std::process::id().to_string()).unwrap();
+        print!("{{\"jsonrpc\":\"2.0\",\"id\":1");
+        io::stdout().flush().unwrap();
+        return;
+    }
+    if mode == "fragmented" {
         print!("{{\"jsonrpc\":\"2.0\",\"id\":1");
         io::stdout().flush().unwrap();
     }
