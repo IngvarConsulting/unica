@@ -547,6 +547,7 @@ const CODE_PATCH_OPERATION_ARGS: &[&str] = &[
     "selector",
 ];
 const CODE_PATCH_SELECTORS: &[&str] = &["module", "method", "methodDocs", "anchor"];
+const CODE_PATCH_BATCH_SELECTORS: &[&str] = &["method", "methodDocs", "anchor"];
 const CODE_PATCH_OPERATIONS: &[&str] = &["insertBefore", "insertAfter", "replace"];
 const CODE_PATCH_PLATFORM_SYNTAX: &[&str] = &["none", "configuredInfobase"];
 const META_PROFILE_ARGS: &[&str] = &["limit", "name", "sections", "sourceDir"];
@@ -887,6 +888,13 @@ fn validate_code_patch_arguments(tool_name: &str, args: &Map<String, Value>) -> 
                         "{tool_name} operations[{index}] does not accept `{key}`"
                     ));
                 }
+            }
+            let selector = code_patch_required_nonblank_string(tool_name, operation, "selector")?;
+            if !CODE_PATCH_BATCH_SELECTORS.contains(&selector) {
+                return Err(format!(
+                    "{tool_name} operations[{index}] argument `selector` must be one of: {}",
+                    CODE_PATCH_BATCH_SELECTORS.join(", ")
+                ));
             }
             validate_code_patch_operation(tool_name, operation, &format!("operations[{index}]"))?;
         }
@@ -1654,9 +1662,25 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                             "expectedCount": {"type": "integer", "minimum": 1},
                             "methodName": {"type": "string"},
                             "operation": {"type": "string", "enum": CODE_PATCH_OPERATIONS},
-                            "selector": {"type": "string", "enum": CODE_PATCH_SELECTORS}
+                            "selector": {"type": "string", "enum": CODE_PATCH_BATCH_SELECTORS}
                         },
-                        "required": ["selector", "operation", "content", "expectedCount"]
+                        "required": ["selector", "operation", "content", "expectedCount"],
+                        "oneOf": [
+                            {
+                                "properties": {"selector": {"const": "method"}},
+                                "required": ["methodName"],
+                                "not": {"required": ["anchor"]}
+                            },
+                            {
+                                "properties": {"selector": {"const": "methodDocs"}},
+                                "required": ["methodName"],
+                                "not": {"required": ["anchor"]}
+                            },
+                            {
+                                "properties": {"selector": {"const": "anchor"}},
+                                "required": ["anchor"]
+                            }
+                        ]
                     }
                 });
             }
@@ -2402,7 +2426,14 @@ mod tests {
         assert_eq!(properties["operations"]["minItems"], 2);
         assert_eq!(
             properties["operations"]["items"]["properties"]["selector"]["enum"],
-            json!(["module", "method", "methodDocs", "anchor"])
+            json!(["method", "methodDocs", "anchor"])
+        );
+        assert_eq!(
+            properties["operations"]["items"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
         );
         assert_eq!(
             properties["selector"]["enum"],
@@ -2465,6 +2496,24 @@ mod tests {
         ]);
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
         assert!(error.contains("at least two edits"));
+
+        args["operations"] = json!([
+            {
+                "selector": "module",
+                "operation": "replace",
+                "content": "    PrepareRecord();\n",
+                "expectedCount": 1
+            },
+            {
+                "selector": "anchor",
+                "anchor": "EndProcedure",
+                "operation": "insertBefore",
+                "content": "    VerifyRecord();\n",
+                "expectedCount": 1
+            }
+        ]);
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("selector` must be one of: method, methodDocs, anchor"));
     }
 
     #[test]
