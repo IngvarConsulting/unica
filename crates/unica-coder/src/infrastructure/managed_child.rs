@@ -148,7 +148,7 @@ fn prepare_process_tree(_command: &mut Command) -> io::Result<()> {
 }
 
 fn process_error(error: io::Error) -> String {
-    format!("managed process error: {error}")
+    format!("process_failed: {error}")
 }
 
 fn start_reader<R>(pipe: Option<R>) -> Option<Receiver<Vec<u8>>>
@@ -259,6 +259,22 @@ mod tests {
         );
         assert!(!output.timed_out);
         assert!(!output.cancelled);
+    }
+
+    #[test]
+    fn managed_child_spawn_failure_uses_stable_process_failed_prefix() {
+        let error = ManagedChild::spawn(ManagedCommand {
+            program: std::env::temp_dir().join("unica-managed-child-missing-executable"),
+            args: Vec::new(),
+            cwd: std::env::current_dir().unwrap(),
+            env: Vec::new(),
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        })
+        .err()
+        .expect("missing executable must fail to spawn");
+
+        assert!(error.starts_with("process_failed:"), "{error}");
     }
 
     #[test]
