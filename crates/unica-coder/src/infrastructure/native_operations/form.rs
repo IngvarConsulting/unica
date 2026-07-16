@@ -3550,7 +3550,11 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         if xml_text.starts_with('\u{feff}') {
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
         }
-        Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+        let form_root_start = Document::parse(&xml_text)
+            .map_err(|err| format!("[ERROR] XML parse error: {err}"))?
+            .root_element()
+            .range()
+            .start;
 
         let form_name = form_edit_form_name(&form_path);
         let mut elem_ids = FormIdAllocator {
@@ -3580,6 +3584,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         }
 
         let mut added_elements = Vec::<String>::new();
+        let mut emitted_fragments = String::new();
         let mut companion_count = 0usize;
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
             if !elements.is_empty() {
@@ -3599,6 +3604,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         added_elements.push(summary);
                     }
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
                 companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
             }
@@ -3608,6 +3614,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
             if !attrs.is_empty() {
                 form_edit_validate_named_objects(&xml_text, attrs, "Attribute", "attribute")?;
+                form_edit_validate_attribute_columns(attrs)?;
                 let mut lines = Vec::<String>::new();
                 for attr in attrs {
                     let Some(object) = attr.as_object() else {
@@ -3617,13 +3624,14 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         continue;
                     };
                     let id = attr_ids.next();
-                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t");
+                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
                     let type_name = object
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("(no type)");
                     added_attrs.push(format!("  + {name}: {type_name} (id={id})"));
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
             }
         }
@@ -3649,6 +3657,7 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
                         .unwrap_or_default();
                     added_cmds.push(format!("  + {name}{action} (id={id})"));
                 }
+                emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
             }
         }
@@ -3657,6 +3666,8 @@ pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -
         if !xml_text.ends_with('\n') {
             xml_text.push('\n');
         }
+        form_edit_ensure_emitted_namespaces(&mut xml_text, form_root_start, &emitted_fragments)?;
+        Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
         write_utf8_bom(&form_path, &xml_text)?;
 
         let mut stdout = format!("=== form-edit: {form_name} ===\n\n");
@@ -3834,6 +3845,66 @@ pub(crate) fn form_edit_validate_named_objects(
             return Err(format!(
                 "[ERROR] {tag} '{name}' already exists in form -- {label} names must be unique"
             ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_validate_attribute_columns(attrs: &[Value]) -> Result<(), String> {
+    for attr in attrs {
+        let Some(object) = attr.as_object() else {
+            continue;
+        };
+        let Some(attr_name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(columns_value) = object.get("columns") else {
+            continue;
+        };
+        let columns = columns_value
+            .as_array()
+            .ok_or_else(|| format!("[ERROR] Attribute '{attr_name}' columns must be an array"))?;
+        let attr_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(attr_type, "ValueTable" | "ValueTree") {
+            return Err(format!(
+                "[ERROR] Attribute '{attr_name}' of type '{attr_type}' cannot define columns; columns are supported only for ValueTable or ValueTree"
+            ));
+        }
+        let mut names = HashSet::new();
+        for (index, column) in columns.iter().enumerate() {
+            let column = column.as_object().ok_or_else(|| {
+                format!(
+                    "[ERROR] Attribute '{attr_name}' column #{} must be an object",
+                    index + 1
+                )
+            })?;
+            let name = column
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "[ERROR] Attribute '{attr_name}' column #{} requires non-empty name",
+                        index + 1
+                    )
+                })?;
+            column
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|column_type| !column_type.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "[ERROR] Attribute '{attr_name}' column '{name}' requires non-empty type"
+                    )
+                })?;
+            if !names.insert(name.to_string()) {
+                return Err(format!(
+                    "[ERROR] Duplicate column name '{name}' in attribute '{attr_name}' edit definition -- column names must be unique"
+                ));
+            }
         }
     }
     Ok(())
@@ -4231,7 +4302,13 @@ pub(crate) fn form_edit_insert_child_items_into_element(
 ) -> Result<(), String> {
     let content = lines.join("\n");
     let element_text = &xml_text[range.clone()];
-    if let Some(relative_pos) = element_text.rfind("/>") {
+    let open_tag_end = form_edit_opening_tag_end(element_text, 0)
+        .ok_or_else(|| format!("No opening <{tag}> tag found in form target"))?;
+    let opening_tag = &element_text[..=open_tag_end];
+    if opening_tag.trim_end().ends_with("/>") {
+        let relative_pos = opening_tag
+            .rfind("/>")
+            .ok_or_else(|| format!("Self-closing <{tag}> tag has no '/>' terminator"))?;
         let pos = range.start + relative_pos;
         xml_text.replace_range(
             pos..pos + 2,
@@ -4256,6 +4333,76 @@ pub(crate) fn form_edit_insert_child_items_into_element(
         ),
     );
     Ok(())
+}
+
+pub(crate) fn form_edit_opening_tag_end(text: &str, start: usize) -> Option<usize> {
+    let mut quote = None::<char>;
+    for (relative_idx, ch) in text[start..].char_indices() {
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '>' => return Some(start + relative_idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn form_edit_ensure_emitted_namespaces(
+    xml_text: &mut String,
+    root_start: usize,
+    emitted_fragments: &str,
+) -> Result<(), String> {
+    if emitted_fragments.is_empty() {
+        return Ok(());
+    }
+    let root_open_end = form_edit_opening_tag_end(xml_text, root_start)
+        .ok_or_else(|| "No opening <Form> tag found in form".to_string())?;
+    let additions = {
+        let root_opening = &xml_text[root_start..=root_open_end];
+        let mut additions = String::new();
+        for (prefix, uri) in form_edit_emitter_namespaces() {
+            let needed = emitted_fragments.contains(&format!("{prefix}:"));
+            if needed && !form_edit_opening_tag_declares_namespace(root_opening, prefix) {
+                additions.push_str(&format!(" xmlns:{prefix}=\"{uri}\""));
+            }
+        }
+        additions
+    };
+    if !additions.is_empty() {
+        xml_text.insert_str(root_open_end, &additions);
+    }
+    Ok(())
+}
+
+pub(crate) fn form_edit_emitter_namespaces() -> [(&'static str, &'static str); 6] {
+    [
+        ("app", "http://v8.1c.ru/8.2/managed-application/core"),
+        ("cfg", "http://v8.1c.ru/8.1/data/enterprise/current-config"),
+        ("v8", FORM_V8_NS),
+        ("xr", "http://v8.1c.ru/8.3/xcf/readable"),
+        ("xs", "http://www.w3.org/2001/XMLSchema"),
+        ("xsi", "http://www.w3.org/2001/XMLSchema-instance"),
+    ]
+}
+
+pub(crate) fn form_edit_opening_tag_declares_namespace(opening: &str, prefix: &str) -> bool {
+    let needle = format!("xmlns:{prefix}");
+    let mut search_start = 0usize;
+    while let Some(relative_start) = opening[search_start..].find(&needle) {
+        let start = search_start + relative_start + needle.len();
+        let remainder = opening[start..].trim_start();
+        if remainder.starts_with('=') {
+            return true;
+        }
+        search_start = start;
+    }
+    false
 }
 
 pub(crate) fn form_edit_find_section_close(xml_text: &str, section: &str) -> Option<usize> {
@@ -4310,7 +4457,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     name: &str,
     id: usize,
     indent: &str,
-) {
+) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Attribute name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -4336,7 +4483,9 @@ pub(crate) fn emit_form_edit_attribute_item(
             escape_xml(fill_checking)
         ));
     }
+    emit_form_attribute_columns(lines, attr.get("columns"), &inner)?;
     lines.push(format!("{indent}</Attribute>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_edit_command_item(
@@ -5654,6 +5803,51 @@ pub(crate) fn emit_form_attributes(
     Ok(())
 }
 
+pub(crate) fn emit_form_attribute_columns(
+    lines: &mut Vec<String>,
+    columns: Option<&Value>,
+    indent: &str,
+) -> Result<(), String> {
+    let Some(columns) = columns else {
+        return Ok(());
+    };
+    let columns = columns
+        .as_array()
+        .ok_or_else(|| "Form attribute columns must be an array".to_string())?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+
+    lines.push(format!("{indent}<Columns>"));
+    for (idx, column) in columns.iter().enumerate() {
+        let object = column
+            .as_object()
+            .ok_or_else(|| format!("Form attribute column #{} must be an object", idx + 1))?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Form attribute column #{} is missing name", idx + 1))?;
+        let column_indent = format!("{indent}\t");
+        lines.push(format!(
+            "{column_indent}<Column name=\"{}\" id=\"{}\">",
+            escape_xml(name),
+            idx + 1
+        ));
+        let inner = format!("{column_indent}\t");
+        if let Some(title) = object.get("title").and_then(Value::as_str) {
+            emit_form_mltext(lines, &inner, "Title", title);
+        }
+        let type_name = object
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Form attribute column '{name}' is missing type"))?;
+        emit_form_type(lines, type_name, &inner);
+        lines.push(format!("{column_indent}</Column>"));
+    }
+    lines.push(format!("{indent}</Columns>"));
+    Ok(())
+}
+
 pub(crate) fn emit_form_dynamic_list_attribute_settings(
     lines: &mut Vec<String>,
     settings: &Map<String, Value>,
@@ -6572,6 +6766,182 @@ mod tests {
     }
 
     #[test]
+    fn edit_form_emits_valuetable_attribute_columns() {
+        let context = temp_context("edit-valuetable-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>true</Autofill>
+	</AutoCommandBar>
+	<ChildItems>
+		<UsualGroup name="ГруппаДанных" id="1">
+			<ChildItems/>
+			<ExtendedTooltip name="ГруппаДанныхРасширеннаяПодсказка" id="2"/>
+		</UsualGroup>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаДанных",
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "НомерСтроки", "type": "decimal(5,0)"},
+        {"name": "Значение", "type": "string(200)"}
+      ]
+    }
+  ],
+  "elements": [
+    {
+      "table": "ТаблицаДанных",
+      "path": "ТаблицаДанных",
+      "columns": [
+        {"input": "НомерСтроки", "path": "ТаблицаДанных.НомерСтроки"},
+        {"input": "Значение", "path": "ТаблицаДанных.Значение"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(updated.contains("<Columns>"), "{updated}");
+        assert!(
+            updated.contains("<Column name=\"НомерСтроки\" id=\"1\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<Column name=\"Значение\" id=\"2\">"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<v8:Type>xs:decimal</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:NumberQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<v8:Type>xs:string</v8:Type>"),
+            "{updated}"
+        );
+        assert!(updated.contains("<v8:StringQualifiers>"), "{updated}");
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.НомерСтроки</DataPath>"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<DataPath>ТаблицаДанных.Значение</DataPath>"),
+            "{updated}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_duplicate_attribute_column_names() {
+        let context = temp_context("edit-duplicate-attribute-columns");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(&form_path, editable_form_xml(false));
+        write_file(
+            &json_path,
+            r#"{
+  "attributes": [
+    {
+      "name": "ТаблицаДанных",
+      "type": "ValueTable",
+      "columns": [
+        {"name": "Значение", "type": "string"},
+        {"name": "Значение", "type": "string"}
+      ]
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(!outcome.ok, "{outcome:?}");
+        let stderr = outcome.stderr.unwrap_or_default();
+        assert!(
+            stderr.contains(
+                "Duplicate column name 'Значение' in attribute 'ТаблицаДанных' edit definition"
+            ),
+            "{stderr}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_rejects_malformed_or_unsupported_attribute_columns() {
+        let cases = [
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": {"name": "A", "type": "string"}}]),
+                "columns must be an array",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [null]}]),
+                "column #1 must be an object",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [{"type": "string"}]}]),
+                "column #1 requires non-empty name",
+            ),
+            (
+                json!([{"name": "Data", "type": "ValueTable", "columns": [{"name": "A"}]}]),
+                "column 'A' requires non-empty type",
+            ),
+            (
+                json!([{"name": "Data", "type": "string", "columns": [{"name": "A", "type": "string"}]}]),
+                "columns are supported only for ValueTable or ValueTree",
+            ),
+        ];
+
+        for (attrs, expected) in cases {
+            let error =
+                form_edit_validate_attribute_columns(attrs.as_array().unwrap()).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn edit_form_emits_button_bound_to_form_command() {
         let context = temp_context("edit-button");
         let form_path = context.cwd.join("Form.xml");
@@ -6764,6 +7134,105 @@ mod tests {
         assert!(updated.contains("<Button name=\"Заполнить\""), "{updated}");
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_creates_child_items_after_self_closing_extended_tooltip() {
+        let context = temp_context("edit-group-with-extended-tooltip");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<UsualGroup name="ГруппаЗамены" id="1">
+			<ExtendedTooltip name="ГруппаЗаменыРасширеннаяПодсказка" id="2"/>
+		</UsualGroup>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        write_file(
+            &json_path,
+            r#"{
+  "into": "ГруппаЗамены",
+  "elements": [
+    { "table": "ТаблицаЗамены" }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        let tooltip_pos = updated
+            .find("<ExtendedTooltip name=\"ГруппаЗаменыРасширеннаяПодсказка\" id=\"2\"/>")
+            .unwrap();
+        let child_items_pos = updated[tooltip_pos..]
+            .find("<ChildItems>")
+            .map(|pos| tooltip_pos + pos)
+            .unwrap();
+        assert!(tooltip_pos < child_items_pos, "{updated}");
+        assert!(
+            updated.contains("<Table name=\"ТаблицаЗамены\""),
+            "{updated}"
+        );
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let validate_outcome = validate_form(&args, &context);
+        assert!(validate_outcome.ok, "{validate_outcome:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_accepts_whitespace_around_equals() {
+        let mut xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8 = "http://v8.1c.ru/8.1/data/core"><ChildItems/></Form>"#.to_string();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<v8:item/>").unwrap();
+
+        assert_eq!(xml.matches("xmlns:v8").count(), 1, "{xml}");
+        Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_uses_parsed_root_after_comment() {
+        let mut xml = r#"<!-- misleading <Form marker --><Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems/></Form>"#.to_string();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<v8:item/>").unwrap();
+
+        assert!(xml.starts_with("<!-- misleading <Form marker -->"), "{xml}");
+        assert!(xml[root_start..].starts_with("<Form "), "{xml}");
+        Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn form_edit_namespace_repair_is_noop_without_emitted_prefixes() {
+        let mut xml =
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems/></Form>"#.to_string();
+        let original = xml.clone();
+        let root_start = Document::parse(&xml).unwrap().root_element().range().start;
+
+        form_edit_ensure_emitted_namespaces(&mut xml, root_start, "<Table/>").unwrap();
+
+        assert_eq!(xml, original);
     }
 
     #[test]
@@ -7075,6 +7544,55 @@ mod tests {
             !updated.contains("<ChildItems>\n\n</ChildItems>"),
             "{updated}"
         );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_unparseable_mutation_without_writing_file() {
+        let context = temp_context("edit-invalid-generated-xml");
+        let form_path = context.cwd.join("Form.xml");
+        let json_path = context.cwd.join("edit.json");
+        write_file(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems/>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        );
+        let original = fs::read_to_string(&form_path).unwrap();
+        write_file(
+            &json_path,
+            r#"{
+  "elements": [
+    {
+      "check": "ФлагПроверки",
+      "checkBoxType": "Bad<Name"
+    }
+  ]
+}
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        );
+        args.insert(
+            "JsonPath".to_string(),
+            json!(json_path.display().to_string()),
+        );
+
+        let outcome = edit_form(&args, &context);
+        assert!(!outcome.ok, "{outcome:?}");
+        let stderr = outcome.stderr.unwrap_or_default();
+        assert!(stderr.contains("XML parse error"), "{stderr}");
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

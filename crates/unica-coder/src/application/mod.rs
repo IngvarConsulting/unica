@@ -1931,6 +1931,173 @@ mod tests {
         args
     }
 
+    #[test]
+    fn cf_edit_definition_file_rejects_invalid_child_object_before_sidecar_writes() {
+        let mut violations = Vec::new();
+
+        for (sidecar_operation, sidecar_value, sidecar_name, child_operation, child_value, error) in [
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "add-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-home-page",
+                json!({"template": "OneColumn", "left": ["CommonForm.Demo"]}),
+                "HomePageWorkArea.xml",
+                "remove-childObject",
+                "SyntheticMetadata.Unknown",
+                "Unknown type 'SyntheticMetadata'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "add-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+            (
+                "set-panels",
+                json!({"top": ["open"]}),
+                "ClientApplicationInterface.xml",
+                "remove-childObject",
+                "Catalog.",
+                "Invalid format 'Catalog.', expected 'Type.Name'",
+            ),
+        ] {
+            let (root, workspace, _) = support_test_workspace(
+                &format!("unica-cf-edit-unknown-kind-atomic-{sidecar_operation}-{child_operation}"),
+                String::new(),
+            );
+            let config_path = workspace.join("src/Configuration.xml");
+            let definition_path =
+                workspace.join(format!("{sidecar_operation}-{child_operation}.json"));
+            std::fs::write(
+                &definition_path,
+                serde_json::to_string(&json!([
+                    {"operation": sidecar_operation, "value": sidecar_value},
+                    {"operation": child_operation, "value": child_value}
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            let config_before = std::fs::read(&config_path).unwrap();
+            let definition_before = std::fs::read(&definition_path).unwrap();
+            let sidecar_path = workspace.join("src/Ext").join(sidecar_name);
+            let sidecar_before = b"sidecar content before failed batch";
+            std::fs::write(&sidecar_path, sidecar_before).unwrap();
+
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+            args.insert(
+                "DefinitionFile".to_string(),
+                Value::String(definition_path.display().to_string()),
+            );
+            args.insert("NoValidate".to_string(), Value::Bool(true));
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.cf.edit", &args)
+                .unwrap();
+
+            let case = format!("{sidecar_operation} -> {child_operation} {child_value}");
+            if result.ok {
+                violations.push(format!("{case}: batch unexpectedly succeeded"));
+            }
+            if !result.errors.join("\n").contains(error) {
+                violations.push(format!("{case}: wrong error: {result:?}"));
+            }
+            if std::fs::read(&config_path).unwrap() != config_before {
+                violations.push(format!("{case}: Configuration.xml changed"));
+            }
+            if std::fs::read(&definition_path).unwrap() != definition_before {
+                violations.push(format!("{case}: definition file changed"));
+            }
+            if std::fs::read(&sidecar_path).unwrap() != sidecar_before {
+                violations.push(format!(
+                    "{case}: failed batch changed {}",
+                    sidecar_path.display()
+                ));
+            }
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        assert!(
+            violations.is_empty(),
+            "failed batches must leave all affected files byte-identical: {violations:#?}"
+        );
+    }
+
+    #[test]
+    fn cf_edit_definition_file_keeps_valid_ordered_child_object_batch() {
+        let (root, workspace, _) =
+            support_test_workspace("unica-cf-edit-known-kind-batch", String::new());
+        let definition_path = workspace.join("ordered-batch.json");
+        std::fs::write(
+            &definition_path,
+            serde_json::to_string(&json!([
+                {"operation": "set-panels", "value": {"top": ["open"]}},
+                {"operation": "remove-childObject", "value": "Catalog.Items"},
+                {"operation": "add-childObject", "value": "Catalog.Items"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "DefinitionFile".to_string(),
+            Value::String(definition_path.display().to_string()),
+        );
+        args.insert("NoValidate".to_string(), Value::Bool(true));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(workspace
+            .join("src/Ext/ClientApplicationInterface.xml")
+            .is_file());
+        assert!(
+            std::fs::read_to_string(workspace.join("src/Configuration.xml"))
+                .unwrap()
+                .contains("<Catalog>Items</Catalog>")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn cf_edit_issue55_config_xml(child_indent: &str) -> String {
         format!(
             concat!(
@@ -1954,6 +2121,184 @@ mod tests {
             ),
             child_indent
         )
+    }
+
+    fn bot_configuration_xml(include_bot: bool) -> String {
+        let children = if include_bot {
+            concat!(
+                "\t\t\t<Language>Русский</Language>\n",
+                "\t\t\t<CommonModule>Core</CommonModule>\n",
+                "\t\t\t<Bot>Assistant</Bot>\n",
+                "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
+            )
+        } else {
+            concat!(
+                "\t\t\t<Language>Русский</Language>\n",
+                "\t\t\t<CommonModule>Core</CommonModule>\n",
+                "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
+            )
+        };
+        include_str!(
+            "../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Configuration.xml"
+        )
+        .replace("\t\t\t<Language>Русский</Language>", children)
+    }
+
+    fn bot_cf_workspace(prefix: &str, include_bot: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        for directory in ["Languages", "CommonModules", "Bots", "CommonAttributes"] {
+            std::fs::create_dir_all(src.join(directory)).unwrap();
+        }
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            format!("\u{feff}{}", bot_configuration_xml(include_bot)),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Languages/Русский.xml"),
+            include_str!("../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Languages/Русский.xml"),
+        )
+        .unwrap();
+        if include_bot {
+            std::fs::write(src.join("Bots/Assistant.xml"), "<MetaDataObject/>").unwrap();
+        }
+        (root, workspace, config_path)
+    }
+
+    #[test]
+    fn cf_info_and_validate_recognize_bot_in_canonical_order() {
+        let (root, workspace, _config_path) = bot_cf_workspace("unica-cf-bot-read", true);
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+
+        let overview = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .unwrap();
+        assert!(overview.ok, "{overview:?}");
+        let overview_stdout = overview.stdout.unwrap();
+        assert!(
+            overview_stdout
+                .lines()
+                .any(|line| line.starts_with("  Боты") && line.ends_with('1')),
+            "{overview_stdout}"
+        );
+
+        args.insert("Mode".to_string(), Value::String("full".to_string()));
+        let full = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .unwrap();
+        assert!(full.ok, "{full:?}");
+        let full_stdout = full.stdout.unwrap();
+        assert!(full_stdout.contains("Боты (Bot): 1"), "{full_stdout}");
+        assert!(full_stdout.contains("    Assistant"), "{full_stdout}");
+
+        args.remove("Mode");
+        let validation = UnicaApplication::new()
+            .call_tool("unica.cf.validate", &args)
+            .unwrap();
+        assert!(validation.ok, "{validation:?}");
+        let validation_stdout = validation.stdout.unwrap_or_default();
+        assert!(!validation_stdout.contains("Unknown type 'Bot'"));
+        assert!(!validation_stdout.contains("out of canonical order"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cf_edit_adds_removes_and_noops_bot_through_registry() {
+        let (root, workspace, config_path) = bot_cf_workspace("unica-cf-bot-edit", false);
+        let src = workspace.join("src");
+        std::fs::write(src.join("Bots/Assistant.xml"), "<MetaDataObject/>").unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+
+        let add = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(add.ok, "{add:?}");
+        let after_add = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            after_add.find("<CommonModule>Core</CommonModule>").unwrap()
+                < after_add.find("<Bot>Assistant</Bot>").unwrap()
+        );
+        assert!(
+            after_add.find("<Bot>Assistant</Bot>").unwrap()
+                < after_add
+                    .find("<CommonAttribute>Shared</CommonAttribute>")
+                    .unwrap()
+        );
+
+        let duplicate = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(duplicate.ok, "{duplicate:?}");
+        assert!(duplicate.changes.is_empty(), "{duplicate:?}");
+        assert!(duplicate.cache.events.is_empty(), "{duplicate:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), after_add);
+
+        let remove = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "remove-childObject", "Bot.Assistant"),
+            )
+            .unwrap();
+        assert!(remove.ok, "{remove:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let missing = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "add-childObject", "Bot.Missing"),
+            )
+            .unwrap();
+        assert!(!missing.ok, "{missing:?}");
+        let missing_errors = missing.errors.join("\n");
+        assert!(missing_errors.contains("Bots/Missing.xml"), "{missing:?}");
+        assert!(!missing_errors.contains("use meta-compile"), "{missing:?}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let unknown = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(
+                    &workspace,
+                    "remove-childObject",
+                    "SyntheticMetadata.Unknown",
+                ),
+            )
+            .unwrap();
+        assert!(!unknown.ok, "{unknown:?}");
+        assert!(
+            unknown
+                .errors
+                .join("\n")
+                .contains("Unknown type 'SyntheticMetadata'"),
+            "{unknown:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2751,6 +3096,32 @@ mod tests {
     }
 
     #[test]
+    fn meta_compile_keeps_bot_outside_its_narrow_capability_gate() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-bot-unsupported");
+        let workspace = root.join("workspace");
+        let json_path = workspace.join("bot.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Bot",
+  "name": "Assistant",
+  "synonym": "Assistant"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.errors.join("\n").contains("Unsupported type: Bot"),
+            "{result:?}"
+        );
+        assert!(!workspace.join("src/Bots").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn meta_compile_preserves_configuration_child_objects_formatting() {
         let root = temp_meta_compile_workspace("unica-meta-compile-child-format");
         let workspace = root.join("workspace");
@@ -2797,6 +3168,52 @@ mod tests {
         assert!(!config_text.contains("\t\t\t\t\t<Report>MetaCompileFormatReport</Report>"));
         assert!(!config_text
             .contains("<Report>MetaCompileFormatReport</Report>\r\n\t\t</ChildObjects>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_catalog_comment_emits_single_object_comment() {
+        let root = temp_meta_compile_workspace("unica-meta-compile-catalog-comment");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let json_path = fixtures.join("catalog-comment.json");
+        std::fs::write(
+            &json_path,
+            r#"{
+  "type": "Catalog",
+  "name": "Issue67Catalog",
+  "synonym": "Issue67Catalog",
+  "comment": "TEST-COMMENT"
+}"#,
+        )
+        .unwrap();
+
+        let result = call_meta_compile(&workspace, &json_path);
+
+        assert!(result.ok, "{:?}", result.stderr);
+        let xml_path = src.join("Catalogs").join("Issue67Catalog.xml");
+        assert!(xml_path.is_file());
+        let xml = std::fs::read_to_string(&xml_path).unwrap();
+        assert_eq!(xml.matches("<Comment>TEST-COMMENT</Comment>").count(), 1);
+        let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let catalog = doc
+            .root_element()
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "Catalog")
+            .unwrap();
+        let properties = catalog
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .unwrap();
+        let comments = properties
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Comment")
+            .collect::<Vec<_>>();
+        assert_eq!(comments.len(), 1, "{xml}");
+        assert_eq!(comments[0].text(), Some("TEST-COMMENT"));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::AdapterOutcome;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -33,6 +34,123 @@ mod uuid_tests {
             matches!(value.as_bytes()[19], b'8' | b'9' | b'a' | b'b'),
             "{value}"
         );
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_output_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!("unica-register-{name}-{nanos}"));
+        fs::create_dir_all(&output_dir).unwrap();
+        output_dir
+    }
+
+    #[test]
+    fn root_registration_uses_canonical_order_and_is_idempotent() {
+        let output_dir = temp_output_dir("canonical");
+        let config_path = output_dir.join("Configuration.xml");
+        fs::write(
+            &config_path,
+            concat!(
+                "<MetaDataObject><Configuration><ChildObjects>\n",
+                "\t<CommonModule>Core</CommonModule>\n",
+                "\t<CommonAttribute>Shared</CommonAttribute>\n",
+                "</ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+
+        let status = register_compiled_meta_in_configuration(&output_dir, "Bot", "Assistant")
+            .expect("Bot registration must succeed");
+        assert_eq!(status.as_deref(), Some("added"));
+        let after_add = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            after_add.find("<CommonModule>Core</CommonModule>").unwrap()
+                < after_add.find("<Bot>Assistant</Bot>").unwrap()
+        );
+        assert!(
+            after_add.find("<Bot>Assistant</Bot>").unwrap()
+                < after_add
+                    .find("<CommonAttribute>Shared</CommonAttribute>")
+                    .unwrap()
+        );
+
+        let duplicate = register_compiled_meta_in_configuration(&output_dir, "Bot", "Assistant")
+            .expect("duplicate registration must be a no-op");
+        assert_eq!(duplicate.as_deref(), Some("already"));
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), after_add);
+
+        fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn root_registration_expands_self_closing_child_objects() {
+        let output_dir = temp_output_dir("self-closing");
+        let config_path = output_dir.join("Configuration.xml");
+        fs::write(
+            &config_path,
+            "<MetaDataObject><Configuration><ChildObjects/></Configuration></MetaDataObject>",
+        )
+        .unwrap();
+
+        let status = register_compiled_meta_in_configuration(&output_dir, "Bot", "Assistant")
+            .expect("Bot registration must succeed");
+
+        assert_eq!(status.as_deref(), Some("added"));
+        assert!(fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("<ChildObjects>\n\t<Bot>Assistant</Bot>\n</ChildObjects>"));
+        fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn root_registration_rejects_unknown_metadata_kind_without_mutation() {
+        let output_dir = temp_output_dir("unknown");
+        let config_path = output_dir.join("Configuration.xml");
+        let before =
+            "<MetaDataObject><Configuration><ChildObjects/></Configuration></MetaDataObject>";
+        fs::write(&config_path, before).unwrap();
+
+        let error =
+            register_compiled_meta_in_configuration(&output_dir, "SyntheticMetadata", "Unknown")
+                .expect_err("unknown metadata kinds must be rejected");
+
+        assert!(
+            error.contains("Unknown type 'SyntheticMetadata'"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), before);
+        fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn narrower_metadata_capability_sets_use_registry_directories_without_expansion() {
+        assert_eq!(meta_remove_supported_types().len(), 39);
+        assert!(!meta_remove_supported_types().contains(&"Bot"));
+        for object_type in meta_remove_supported_types() {
+            assert_eq!(
+                meta_remove_type_plural(object_type),
+                metadata_kind(object_type).map(|kind| kind.directory)
+            );
+        }
+
+        assert_eq!(META_COMPILE_SUPPORTED_TYPES.len(), 23);
+        assert!(!META_COMPILE_SUPPORTED_TYPES.contains(&"Bot"));
+        for object_type in META_COMPILE_SUPPORTED_TYPES {
+            assert_eq!(
+                meta_compile_type_plural(object_type),
+                metadata_kind(object_type).map(|kind| kind.directory)
+            );
+        }
+        assert_eq!(meta_compile_type_plural("Bot"), None);
+        assert_eq!(meta_remove_type_plural("Bot"), None);
     }
 }
 
@@ -207,6 +325,107 @@ mod edit_tests {
             json!(definition_path.display().to_string()),
         );
         args
+    }
+
+    #[test]
+    fn edit_meta_modify_property_comment_replaces_self_closing_object_comment() {
+        let context = temp_context("modify-property-comment-self-closing");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        write_file(&object_path, &sample_catalog_xml());
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Comment>TEST-COMMENT</Comment>"));
+        assert_eq!(updated.matches("<Comment").count(), 1, "{updated}");
+        assert!(!updated.contains("<Comment/>"), "{updated}");
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_modify_property_comment_replaces_existing_object_comment() {
+        let context = temp_context("modify-property-comment-existing");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = sample_catalog_xml().replace("<Comment/>", "<Comment>OLD</Comment>");
+        write_file(&object_path, &xml);
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Comment>TEST-COMMENT</Comment>"));
+        assert!(!updated.contains("<Comment>OLD</Comment>"));
+        assert_eq!(updated.matches("<Comment").count(), 1, "{updated}");
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_modify_property_comment_rejects_duplicate_without_mutation() {
+        let context = temp_context("modify-property-comment-duplicate");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = sample_catalog_xml().replace(
+            "<Comment/>",
+            "<Comment>FIRST</Comment>\n\t\t\t<Comment>SECOND</Comment>",
+        );
+        write_file(&object_path, &xml);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("2 direct <Comment>")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_modify_property_same_comment_is_byte_identical_noop() {
+        let context = temp_context("modify-property-comment-noop");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = meta_edit_lxml_serialized_text(
+            &sample_catalog_xml().replace("<Comment/>", "<Comment>TEST-COMMENT</Comment>"),
+        );
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        write_utf8_bom(&object_path, &xml).unwrap();
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No changes"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]
@@ -5510,48 +5729,10 @@ pub(crate) fn meta_remove_supported_types() -> &'static [&'static str] {
 }
 
 pub(crate) fn meta_remove_type_plural(obj_type: &str) -> Option<&'static str> {
-    match obj_type {
-        "Catalog" => Some("Catalogs"),
-        "Document" => Some("Documents"),
-        "Enum" => Some("Enums"),
-        "Constant" => Some("Constants"),
-        "InformationRegister" => Some("InformationRegisters"),
-        "AccumulationRegister" => Some("AccumulationRegisters"),
-        "AccountingRegister" => Some("AccountingRegisters"),
-        "CalculationRegister" => Some("CalculationRegisters"),
-        "ChartOfAccounts" => Some("ChartsOfAccounts"),
-        "ChartOfCharacteristicTypes" => Some("ChartsOfCharacteristicTypes"),
-        "ChartOfCalculationTypes" => Some("ChartsOfCalculationTypes"),
-        "BusinessProcess" => Some("BusinessProcesses"),
-        "Task" => Some("Tasks"),
-        "ExchangePlan" => Some("ExchangePlans"),
-        "DocumentJournal" => Some("DocumentJournals"),
-        "Report" => Some("Reports"),
-        "DataProcessor" => Some("DataProcessors"),
-        "CommonModule" => Some("CommonModules"),
-        "ScheduledJob" => Some("ScheduledJobs"),
-        "EventSubscription" => Some("EventSubscriptions"),
-        "HTTPService" => Some("HTTPServices"),
-        "WebService" => Some("WebServices"),
-        "DefinedType" => Some("DefinedTypes"),
-        "Role" => Some("Roles"),
-        "Subsystem" => Some("Subsystems"),
-        "CommonForm" => Some("CommonForms"),
-        "CommonTemplate" => Some("CommonTemplates"),
-        "CommonPicture" => Some("CommonPictures"),
-        "CommonAttribute" => Some("CommonAttributes"),
-        "SessionParameter" => Some("SessionParameters"),
-        "FunctionalOption" => Some("FunctionalOptions"),
-        "FunctionalOptionsParameter" => Some("FunctionalOptionsParameters"),
-        "Sequence" => Some("Sequences"),
-        "FilterCriterion" => Some("FilterCriteria"),
-        "SettingsStorage" => Some("SettingsStorages"),
-        "XDTOPackage" => Some("XDTOPackages"),
-        "WSReference" => Some("WSReferences"),
-        "StyleItem" => Some("StyleItems"),
-        "Language" => Some("Languages"),
-        _ => None,
+    if !meta_remove_supported_types().contains(&obj_type) {
+        return None;
     }
+    metadata_kind(obj_type).map(|kind| kind.directory)
 }
 
 pub(crate) fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
@@ -5627,32 +5808,10 @@ pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
 pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
 
 pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
-    match obj_type {
-        "Catalog" => Some("Catalogs"),
-        "Document" => Some("Documents"),
-        "Enum" => Some("Enums"),
-        "Constant" => Some("Constants"),
-        "InformationRegister" => Some("InformationRegisters"),
-        "AccumulationRegister" => Some("AccumulationRegisters"),
-        "AccountingRegister" => Some("AccountingRegisters"),
-        "CalculationRegister" => Some("CalculationRegisters"),
-        "ChartOfAccounts" => Some("ChartsOfAccounts"),
-        "ChartOfCharacteristicTypes" => Some("ChartsOfCharacteristicTypes"),
-        "ChartOfCalculationTypes" => Some("ChartsOfCalculationTypes"),
-        "BusinessProcess" => Some("BusinessProcesses"),
-        "Task" => Some("Tasks"),
-        "ExchangePlan" => Some("ExchangePlans"),
-        "DocumentJournal" => Some("DocumentJournals"),
-        "Report" => Some("Reports"),
-        "DataProcessor" => Some("DataProcessors"),
-        "CommonModule" => Some("CommonModules"),
-        "ScheduledJob" => Some("ScheduledJobs"),
-        "EventSubscription" => Some("EventSubscriptions"),
-        "HTTPService" => Some("HTTPServices"),
-        "WebService" => Some("WebServices"),
-        "DefinedType" => Some("DefinedTypes"),
-        _ => None,
+    if !META_COMPILE_SUPPORTED_TYPES.contains(&obj_type) {
+        return None;
     }
+    metadata_kind(obj_type).map(|kind| kind.directory)
 }
 
 pub(crate) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
@@ -6323,9 +6482,7 @@ pub(crate) fn emit_meta_catalog_properties(
     obj_name: &str,
     synonym: &str,
 ) {
-    lines.push(format!("{indent}<Name>{}</Name>", escape_xml(obj_name)));
-    emit_meta_mltext(lines, indent, "Synonym", synonym);
-    lines.push(format!("{indent}<Comment/>"));
+    emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
     let hierarchical = defn.get("hierarchical").and_then(Value::as_bool) == Some(true);
     lines.push(format!(
         "{indent}<Hierarchical>{hierarchical}</Hierarchical>"
@@ -9312,65 +9469,21 @@ pub(crate) fn register_compiled_meta_in_configuration(
     child_tag: &str,
     obj_name: &str,
 ) -> Result<Option<String>, String> {
+    metadata_kind(child_tag).ok_or_else(|| format!("Unknown type '{child_tag}'"))?;
     let config_xml_path = output_dir.join("Configuration.xml");
     if !config_xml_path.is_file() {
         return Ok(Some("no-config".to_string()));
     }
     let mut raw_text = read_utf8_sig(&config_xml_path)?;
-    if raw_text.contains(&format!("<{child_tag}>{obj_name}</{child_tag}>")) {
-        return Ok(Some("already".to_string()));
+    if !raw_text.contains("<ChildObjects") {
+        return Ok(Some("no-childobj".to_string()));
     }
-    if raw_text.contains("</ChildObjects>") {
-        raw_text =
-            register_compiled_meta_child_text(&raw_text, child_tag, obj_name).unwrap_or(raw_text);
+    if cf_edit_add_child_object_text(&mut raw_text, child_tag, obj_name)? {
         write_utf8_bom(&config_xml_path, &raw_text)?;
         Ok(Some("added".to_string()))
     } else {
-        Ok(Some("no-childobj".to_string()))
+        Ok(Some("already".to_string()))
     }
-}
-
-fn register_compiled_meta_child_text(
-    xml_text: &str,
-    child_tag: &str,
-    obj_name: &str,
-) -> Option<String> {
-    let close = "</ChildObjects>";
-    let index = xml_text.find(close)?;
-    let line_start = xml_text[..index].rfind('\n').map_or(0, |pos| pos + 1);
-    let before_close_on_line = &xml_text[line_start..index];
-    let closing_indent = if before_close_on_line
-        .chars()
-        .all(|ch| ch == '\t' || ch == ' ')
-    {
-        before_close_on_line
-    } else {
-        let open_index = xml_text[..index].rfind("<ChildObjects")?;
-        let open_line_start = xml_text[..open_index].rfind('\n').map_or(0, |pos| pos + 1);
-        let open_indent = &xml_text[open_line_start..open_index];
-        if open_indent.chars().all(|ch| ch == '\t' || ch == ' ') {
-            open_indent
-        } else {
-            ""
-        }
-    };
-    let insertion = format!("<{child_tag}>{obj_name}</{child_tag}>");
-    let mut result =
-        String::with_capacity(xml_text.len() + 1 + insertion.len() + 1 + closing_indent.len());
-    result.push_str(&xml_text[..index]);
-    if !before_close_on_line
-        .chars()
-        .all(|ch| ch == '\t' || ch == ' ')
-    {
-        result.push('\n');
-        result.push_str(closing_indent);
-    }
-    result.push('\t');
-    result.push_str(&insertion);
-    result.push('\n');
-    result.push_str(closing_indent);
-    result.push_str(&xml_text[index..]);
-    Some(result)
 }
 
 #[derive(Default)]
@@ -9381,7 +9494,7 @@ pub(crate) struct MetaEditCounts {
 }
 
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, usize), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -9398,7 +9511,9 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
         let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
-        let mut xml_text = fs::read_to_string(&object_path)
+        let original_bytes = fs::read(&object_path)
+            .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
+        let mut xml_text = String::from_utf8(original_bytes.clone())
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
         if xml_text.starts_with('\u{feff}') {
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
@@ -9442,21 +9557,33 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
         let serialized_text = meta_edit_lxml_serialized_text(&xml_text);
-        write_utf8_bom(&object_path, &serialized_text)?;
-        info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
+        let mut serialized_bytes = b"\xef\xbb\xbf".to_vec();
+        serialized_bytes.extend_from_slice(serialized_text.as_bytes());
+        let changed = serialized_bytes != original_bytes;
+        if changed {
+            write_utf8_bom(&object_path, &serialized_text)?;
+            info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
+        } else {
+            counts = MetaEditCounts::default();
+            info_lines.push("[INFO] No changes".to_string());
+        }
         let stdout = format!(
             "{}\n\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
             info_lines.join("\n"),
             counts.added, counts.removed, counts.modified
         );
-        Ok((stdout, object_path, counts.modified))
+        Ok((stdout, object_path, changed))
     })();
 
     match edit_result {
-        Ok((stdout, object_path, _modified)) => AdapterOutcome {
+        Ok((stdout, object_path, changed)) => AdapterOutcome {
             ok: true,
             summary: "unica.meta.edit completed with native metadata editor".to_string(),
-            changes: vec![format!("updated {}", object_path.display())],
+            changes: if changed {
+                vec![format!("updated {}", object_path.display())]
+            } else {
+                Vec::new()
+            },
             warnings: Vec::new(),
             errors: Vec::new(),
             artifacts: vec![object_path.display().to_string()],
@@ -10113,12 +10240,31 @@ pub(crate) fn meta_edit_set_scalar_property(
     key: &str,
     raw_value: &str,
 ) -> Result<(), String> {
-    let normalized = normalize_meta_edit_property_value(key, raw_value);
-    if replace_first_xml_element_text(xml_text, key, &normalized) {
-        Ok(())
-    } else {
-        insert_meta_property_before_child_objects(xml_text, key, &normalized)
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("modify-property requires non-empty key".to_string());
     }
+    let normalized = normalize_meta_edit_property_value(key, raw_value);
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error: {err}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let properties = meta_info_child(object, "Properties")
+        .ok_or_else(|| "Object has no Properties".to_string())?;
+    let matching_properties = meta_info_children(properties, key).len();
+    if matching_properties > 1 {
+        return Err(format!(
+            "Properties contains {matching_properties} direct <{key}> elements; expected at most one"
+        ));
+    }
+    let range = properties.range();
+    drop(doc);
+
+    let mut properties_text = xml_text[range.clone()].to_string();
+    let child_indent = meta_edit_property_child_indent(&properties_text);
+    let replacement = format!("{child_indent}<{key}>{}</{key}>", escape_xml(&normalized));
+    meta_edit_replace_or_insert_property(&mut properties_text, key, &replacement, &child_indent)?;
+    xml_text.replace_range(range, &properties_text);
+    Ok(())
 }
 
 pub(crate) fn meta_edit_add_child_value(

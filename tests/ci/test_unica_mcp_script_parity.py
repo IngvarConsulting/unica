@@ -1135,6 +1135,35 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        name="form-edit-valuetable-attribute-columns",
+        tool="unica.form.edit",
+        skill="form-edit",
+        script="form-edit.py",
+        arguments={
+            "FormPath": "forms/Form.xml",
+            "JsonPath": "fixtures/form-edit-valuetable-columns.json",
+        },
+        setup_steps=(
+            SetupStep(
+                skill="form-compile",
+                script="form-compile.py",
+                arguments={
+                    "JsonPath": "fixtures/form-simple.json",
+                    "OutputPath": "forms/Form.xml",
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture("form-simple.json", "fixtures/form-simple.json"),
+            FileFixture(
+                "form-edit/valuetable-columns.json",
+                "fixtures/form-edit-valuetable-columns.json",
+            ),
+        ),
+        expect_ok=True,
+        compare_files=True,
+    ),
+    ParityScenario(
         name="bsp-form-info-real-form-full",
         tool="unica.form.info",
         skill="form-info",
