@@ -22,7 +22,6 @@ const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const BSL_DIAGNOSTICS_WARMUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVICE_SPAWN_LOCK_STALE_SECS: u64 = 30;
 
 static SYSTEM_SERVICE_CONNECTOR: SystemServiceConnector = SystemServiceConnector;
@@ -187,7 +186,6 @@ impl<'a> WorkspaceServiceManager<'a> {
         Ok(WorkspaceServiceBslOutput {
             result_text: response.result_text.unwrap_or_default(),
             stderr: response.stderr.unwrap_or_default(),
-            warnings: response.warnings,
         })
     }
 
@@ -507,7 +505,6 @@ impl WorkspaceServiceState {
                 ok: true,
                 result_text: Some(output.result_text),
                 stderr: Some(output.stderr),
-                warnings: output.warnings,
                 ..ServiceResponse::default()
             },
             Err(error) => {
@@ -660,7 +657,6 @@ impl ServiceResponse {
 pub struct WorkspaceServiceBslOutput {
     pub result_text: String,
     pub stderr: String,
-    pub warnings: Vec<String>,
 }
 
 struct BslMcpSession {
@@ -670,7 +666,6 @@ struct BslMcpSession {
     stdout_reader: Option<thread::JoinHandle<()>>,
     stderr_text: Arc<Mutex<String>>,
     next_id: i64,
-    diagnostics_warmup_attempted: bool,
 }
 
 impl BslMcpSession {
@@ -769,7 +764,6 @@ impl BslMcpSession {
             stdout_reader: Some(stdout_reader),
             stderr_text,
             next_id: 2,
-            diagnostics_warmup_attempted: false,
         })
     }
 
@@ -789,26 +783,12 @@ impl BslMcpSession {
                 "method": "tools/call",
                 "params": {
                     "name": tool_name,
-                    "arguments": tool_args.clone()
+                    "arguments": tool_args
                 }
             }),
         )?;
         let response = read_json_response(&self.rx, id, timeout)?;
         let result_text = mcp_tool_text(&response)?;
-        let mut warnings = Vec::new();
-        if diagnostics_status_needs_warmup(
-            self.diagnostics_warmup_attempted,
-            tool_name,
-            &tool_args,
-            &result_text,
-        ) {
-            self.diagnostics_warmup_attempted = true;
-            self.start_diagnostics_initial_reload()?;
-            warnings.push(
-                "bsl-analyzer diagnostics initial reload has been started; retry status after it completes"
-                    .to_string(),
-            );
-        }
         let stderr = self
             .stderr_text
             .lock()
@@ -817,48 +797,8 @@ impl BslMcpSession {
         Ok(WorkspaceServiceBslOutput {
             result_text,
             stderr,
-            warnings,
         })
     }
-
-    fn start_diagnostics_initial_reload(&mut self) -> Result<(), String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        send_json_line(
-            &mut self.stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "tools/call",
-                "params": {
-                    "name": "diagnostics",
-                    "arguments": { "action": "schema" }
-                }
-            }),
-        )?;
-        let response = read_json_response(&self.rx, id, BSL_DIAGNOSTICS_WARMUP_TIMEOUT)?;
-        mcp_tool_text(&response).map(|_| ())
-    }
-}
-
-fn diagnostics_status_needs_warmup(
-    warmup_attempted: bool,
-    tool_name: &str,
-    tool_args: &Value,
-    result_text: &str,
-) -> bool {
-    if warmup_attempted
-        || tool_name != "diagnostics"
-        || tool_args.get("action").and_then(Value::as_str) != Some("status")
-    {
-        return false;
-    }
-    let Ok(status) = serde_json::from_str::<Value>(result_text) else {
-        return false;
-    };
-    status.get("generation").and_then(Value::as_u64) == Some(0)
-        && status.get("reload").and_then(Value::as_str) == Some("none")
-        && status.get("state").and_then(Value::as_str) == Some("loading")
 }
 
 impl Drop for BslMcpSession {
@@ -1289,31 +1229,6 @@ mod tests {
         let error = mcp_tool_text(&response).unwrap_err();
 
         assert_eq!(error, "schema is unavailable");
-    }
-
-    #[test]
-    fn diagnostics_status_warmup_is_one_shot_for_a_persistent_session() {
-        let status = "{\"generation\":0,\"reload\":\"none\",\"state\":\"loading\"}";
-        let arguments = json!({ "action": "status" });
-
-        assert!(diagnostics_status_needs_warmup(
-            false,
-            "diagnostics",
-            &arguments,
-            status,
-        ));
-        assert!(!diagnostics_status_needs_warmup(
-            true,
-            "diagnostics",
-            &arguments,
-            status,
-        ));
-        assert!(!diagnostics_status_needs_warmup(
-            false,
-            "diagnostics",
-            &json!({ "action": "file" }),
-            status,
-        ));
     }
 
     #[test]
