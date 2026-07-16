@@ -531,17 +531,20 @@ const CODE_PATCH_ARGS: &[&str] = &[
     "methodName",
     "modulePath",
     "operation",
+    "operations",
     "platformSyntax",
     "selector",
     "sourceDir",
     "sourceSet",
 ];
-const CODE_PATCH_REQUIRED_ARGS: &[&str] = &[
-    "modulePath",
-    "selector",
-    "operation",
+const CODE_PATCH_REQUIRED_ARGS: &[&str] = &["modulePath"];
+const CODE_PATCH_OPERATION_ARGS: &[&str] = &[
+    "anchor",
     "content",
     "expectedCount",
+    "methodName",
+    "operation",
+    "selector",
 ];
 const CODE_PATCH_SELECTORS: &[&str] = &["module", "method", "methodDocs", "anchor"];
 const CODE_PATCH_OPERATIONS: &[&str] = &["insertBefore", "insertAfter", "replace"];
@@ -592,6 +595,29 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {
                 "required": ["sourceDir"],
                 "not": {"required": ["sourceSet"]}
+            }
+        ]);
+        schema["allOf"] = json!([
+            {
+                "oneOf": [
+                    {
+                        "required": ["selector", "operation", "content", "expectedCount"],
+                        "not": {"required": ["operations"]}
+                    },
+                    {
+                        "required": ["operations"],
+                        "not": {
+                            "anyOf": [
+                                {"required": ["selector"]},
+                                {"required": ["operation"]},
+                                {"required": ["content"]},
+                                {"required": ["expectedCount"]},
+                                {"required": ["methodName"]},
+                                {"required": ["anchor"]}
+                            ]
+                        }
+                    }
+                ]
             }
         ]);
     }
@@ -835,6 +861,61 @@ fn validate_code_patch_arguments(tool_name: &str, args: &Map<String, Value>) -> 
 
     let module_path = code_patch_required_nonblank_string(tool_name, args, "modulePath")?;
     validate_code_patch_module_path(tool_name, module_path)?;
+    if let Some(operations) = args.get("operations") {
+        for key in CODE_PATCH_OPERATION_ARGS {
+            if args.contains_key(*key) {
+                return Err(format!(
+                    "{tool_name} batch argument `operations` does not allow top-level `{key}`"
+                ));
+            }
+        }
+        let operations = operations
+            .as_array()
+            .ok_or_else(|| format!("{tool_name} argument `operations` must be an array"))?;
+        if operations.len() < 2 {
+            return Err(format!(
+                "{tool_name} argument `operations` must contain at least two edits"
+            ));
+        }
+        for (index, operation) in operations.iter().enumerate() {
+            let operation = operation
+                .as_object()
+                .ok_or_else(|| format!("{tool_name} operations[{index}] must be an object"))?;
+            for key in operation.keys() {
+                if !CODE_PATCH_OPERATION_ARGS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "{tool_name} operations[{index}] does not accept `{key}`"
+                    ));
+                }
+            }
+            validate_code_patch_operation(tool_name, operation, &format!("operations[{index}]"))?;
+        }
+    } else {
+        validate_code_patch_operation(tool_name, args, "patch")?;
+    }
+
+    if let Some(value) = args.get("platformSyntax") {
+        let Some(value) = value.as_str() else {
+            return Err(format!(
+                "{tool_name} argument `platformSyntax` must be string"
+            ));
+        };
+        if !CODE_PATCH_PLATFORM_SYNTAX.contains(&value) {
+            return Err(format!(
+                "{tool_name} argument `platformSyntax` must be one of: {}",
+                CODE_PATCH_PLATFORM_SYNTAX.join(", ")
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_code_patch_operation(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    _scope: &str,
+) -> Result<(), String> {
     let selector = code_patch_required_nonblank_string(tool_name, args, "selector")?;
     if !CODE_PATCH_SELECTORS.contains(&selector) {
         return Err(format!(
@@ -883,20 +964,6 @@ fn validate_code_patch_arguments(tool_name: &str, args: &Map<String, Value>) -> 
             }
         }
         _ => unreachable!("selector enum was validated above"),
-    }
-
-    if let Some(value) = args.get("platformSyntax") {
-        let Some(value) = value.as_str() else {
-            return Err(format!(
-                "{tool_name} argument `platformSyntax` must be string"
-            ));
-        };
-        if !CODE_PATCH_PLATFORM_SYNTAX.contains(&value) {
-            return Err(format!(
-                "{tool_name} argument `platformSyntax` must be one of: {}",
-                CODE_PATCH_PLATFORM_SYNTAX.join(", ")
-            ));
-        }
     }
 
     Ok(())
@@ -1574,6 +1641,25 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     match tool.name {
         "unica.code.patch" => match name {
+            "operations" => {
+                return json!({
+                    "type": "array",
+                    "minItems": 2,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "anchor": {"type": "string"},
+                            "content": {"type": "string"},
+                            "expectedCount": {"type": "integer", "minimum": 1},
+                            "methodName": {"type": "string"},
+                            "operation": {"type": "string", "enum": CODE_PATCH_OPERATIONS},
+                            "selector": {"type": "string", "enum": CODE_PATCH_SELECTORS}
+                        },
+                        "required": ["selector", "operation", "content", "expectedCount"]
+                    }
+                });
+            }
             "selector" => return json!({ "type": "string", "enum": CODE_PATCH_SELECTORS }),
             "operation" => return json!({ "type": "string", "enum": CODE_PATCH_OPERATIONS }),
             "platformSyntax" => {
@@ -2297,6 +2383,7 @@ mod tests {
             "methodName",
             "modulePath",
             "operation",
+            "operations",
             "platformSyntax",
             "selector",
             "sourceDir",
@@ -2307,18 +2394,16 @@ mod tests {
 
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(actual, expected);
-        assert_eq!(
-            schema["required"],
-            json!([
-                "modulePath",
-                "selector",
-                "operation",
-                "content",
-                "expectedCount"
-            ])
-        );
+        assert_eq!(schema["required"], json!(["modulePath"]));
         assert_eq!(schema["oneOf"].as_array().unwrap().len(), 2);
+        assert_eq!(schema["allOf"].as_array().unwrap().len(), 1);
         assert_eq!(properties["expectedCount"]["type"], "integer");
+        assert_eq!(properties["operations"]["type"], "array");
+        assert_eq!(properties["operations"]["minItems"], 2);
+        assert_eq!(
+            properties["operations"]["items"]["properties"]["selector"]["enum"],
+            json!(["module", "method", "methodDocs", "anchor"])
+        );
         assert_eq!(
             properties["selector"]["enum"],
             json!(["module", "method", "methodDocs", "anchor"])
@@ -2333,6 +2418,53 @@ mod tests {
         );
         assert!(properties.get("args").is_none());
         assert!(properties.get("Path").is_none());
+    }
+
+    #[test]
+    fn code_patch_batch_requires_complete_nested_operations_without_single_patch_fields() {
+        let tool = code_patch_tool();
+        let mut args = json!({
+            "sourceDir": "src",
+            "modulePath": "CommonModules/Sample/Ext/Module.bsl",
+            "operations": [
+                {
+                    "selector": "method",
+                    "methodName": "WriteRecord",
+                    "operation": "replace",
+                    "content": "    PrepareRecord();\n",
+                    "expectedCount": 1
+                },
+                {
+                    "selector": "anchor",
+                    "anchor": "EndProcedure",
+                    "operation": "insertBefore",
+                    "content": "    VerifyRecord();\n",
+                    "expectedCount": 1
+                }
+            ],
+            "platformSyntax": "none"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        args.insert("selector".to_string(), json!("method"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("does not allow top-level `selector`"));
+
+        args.remove("selector");
+        args["operations"] = json!([
+            {
+                "selector": "method",
+                "methodName": "WriteRecord",
+                "operation": "replace",
+                "content": "    PrepareRecord();\n",
+                "expectedCount": 1
+            }
+        ]);
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("at least two edits"));
     }
 
     #[test]

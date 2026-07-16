@@ -2486,7 +2486,11 @@ mod tests {
                 .iter()
                 .map(|value| value.as_str().expect("required item is string"))
                 .collect::<Vec<_>>();
-            assert_eq!(required, descriptor.required_args, "{operation}");
+            if operation == "code-patch" {
+                assert_eq!(required, ["modulePath"], "{operation}");
+            } else {
+                assert_eq!(required, descriptor.required_args, "{operation}");
+            }
         }
     }
 

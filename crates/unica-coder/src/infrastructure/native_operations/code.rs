@@ -23,7 +23,7 @@ pub(crate) fn resolve_module_target(
     resolve_target(args, context).map(|resolved| resolved.target)
 }
 
-/// Plan and, unless `dry_run` is set, atomically apply one BSL module patch.
+/// Plan and, unless `dry_run` is set, atomically apply one guarded BSL patch or batch.
 pub(crate) fn patch_code(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -235,8 +235,8 @@ fn execute_patch(
     let resolved = resolve_target(args, context)?;
     let raw = read_stable_target(&resolved.target)?;
     let envelope = SourceEnvelope::parse(&raw)?;
-    let request = PatchRequest::parse(args)?;
-    let plan = plan_patch(envelope.text, &request)?;
+    let request = PatchBatchRequest::parse(args)?;
+    let plan = plan_patch_batch(envelope.text, request.operations())?;
 
     let mut post_raw = Vec::with_capacity(envelope.bom_len + plan.post_text.len());
     if envelope.bom_len != 0 {
@@ -246,7 +246,11 @@ fn execute_patch(
 
     let pre_hash = sha256(&raw);
     let post_hash = sha256(&post_raw);
-    let ranges = changed_ranges(&raw, &post_raw, envelope.bom_len, &plan.edits);
+    let ranges = if request.is_batch() {
+        net_changed_ranges(&raw, &post_raw)
+    } else {
+        changed_ranges(&raw, &post_raw, envelope.bom_len, &plan.edits)
+    };
     let diff = unified_diff(&resolved.artifact, envelope.text, &plan.post_text);
 
     let mut warnings = Vec::new();
@@ -266,13 +270,11 @@ fn execute_patch(
         "status": if syntax_mode == "none" { "notRequested" } else { "notRun" },
         "validatesPatchedSource": false
     });
-    let details = json!({
+    let mut details = json!({
         "target": resolved.artifact,
         "moduleId": resolved.module_id,
         "sourceRoot": resolved.source_root_artifact,
         "sourceSet": resolved.source_set,
-        "selector": request.selector_details(),
-        "matchCount": plan.match_count,
         "preHash": pre_hash,
         "postHash": post_hash,
         "changedRanges": ranges,
@@ -282,6 +284,19 @@ fn execute_patch(
         "noOp": !plan.changed,
         "platformSyntax": platform_syntax
     });
+    if request.is_batch() {
+        details["batch"] = json!({
+            "operationCount": plan.operations.len(),
+            "operations": plan.operations.iter().map(|operation| json!({
+                "selector": operation.selector,
+                "matchCount": operation.match_count,
+                "changed": operation.changed,
+            })).collect::<Vec<_>>(),
+        });
+    } else {
+        details["selector"] = request.single_selector_details();
+        details["matchCount"] = json!(plan.match_count);
+    }
 
     Ok(PatchSuccess {
         target: resolved.artifact,
@@ -720,6 +735,74 @@ struct PatchRequest {
     expected_count: usize,
 }
 
+struct PatchBatchRequest {
+    operations: Vec<PatchRequest>,
+    batch: bool,
+}
+
+impl PatchBatchRequest {
+    fn parse(args: &Map<String, Value>) -> Result<Self, String> {
+        let Some(raw_operations) = args.get("operations") else {
+            return Ok(Self {
+                operations: vec![PatchRequest::parse(args)?],
+                batch: false,
+            });
+        };
+
+        for key in [
+            "selector",
+            "operation",
+            "content",
+            "expectedCount",
+            "methodName",
+            "anchor",
+        ] {
+            if args.contains_key(key) {
+                return Err(format!(
+                    "batch code.patch does not accept top-level `{key}`; put it in `operations`"
+                ));
+            }
+        }
+        let operations = raw_operations
+            .as_array()
+            .ok_or_else(|| "`operations` must be a non-empty array".to_string())?;
+        if operations.len() < 2 {
+            return Err("`operations` must contain at least two edits; use the single-patch contract otherwise".to_string());
+        }
+        let mut parsed = Vec::with_capacity(operations.len());
+        for (index, operation) in operations.iter().enumerate() {
+            let object = operation.as_object().ok_or_else(|| {
+                format!("`operations[{index}]` must be an object with a guarded selector")
+            })?;
+            reject_unknown_patch_fields(object, &format!("operations[{index}]"))?;
+            let request = PatchRequest::parse(object)
+                .map_err(|error| format!("`operations[{index}]`: {error}"))?;
+            if matches!(request.selector, Selector::Module) {
+                return Err(format!(
+                    "`operations[{index}]` uses selector `module`; module selector overlaps every batch edit"
+                ));
+            }
+            parsed.push(request);
+        }
+        Ok(Self {
+            operations: parsed,
+            batch: true,
+        })
+    }
+
+    fn operations(&self) -> &[PatchRequest] {
+        &self.operations
+    }
+
+    fn is_batch(&self) -> bool {
+        self.batch
+    }
+
+    fn single_selector_details(&self) -> Value {
+        self.operations[0].selector_details()
+    }
+}
+
 impl PatchRequest {
     fn parse(args: &Map<String, Value>) -> Result<Self, String> {
         let kind = required_nonempty_string(args, "selector")?;
@@ -802,6 +885,18 @@ impl PatchRequest {
     }
 }
 
+fn reject_unknown_patch_fields(args: &Map<String, Value>, scope: &str) -> Result<(), String> {
+    for key in args.keys() {
+        if !matches!(
+            key.as_str(),
+            "selector" | "operation" | "content" | "expectedCount" | "methodName" | "anchor"
+        ) {
+            return Err(format!("`{scope}` does not accept field `{key}`"));
+        }
+    }
+    Ok(())
+}
+
 fn reject_present(args: &Map<String, Value>, key: &str, selector: &str) -> Result<(), String> {
     if args.contains_key(key) {
         Err(format!(
@@ -842,6 +937,86 @@ struct PatchPlan {
     edits: Vec<Edit>,
     changed: bool,
     match_count: usize,
+}
+
+struct BatchOperationPlan {
+    selector: Value,
+    match_count: usize,
+    changed: bool,
+}
+
+struct BatchPatchPlan {
+    post_text: String,
+    edits: Vec<Edit>,
+    changed: bool,
+    match_count: usize,
+    operations: Vec<BatchOperationPlan>,
+}
+
+fn plan_patch_batch(text: &str, requests: &[PatchRequest]) -> Result<BatchPatchPlan, String> {
+    let mut edits = Vec::new();
+    let mut operations = Vec::with_capacity(requests.len());
+    for request in requests {
+        let plan = plan_patch(text, request)?;
+        operations.push(BatchOperationPlan {
+            selector: request.selector_details(),
+            match_count: plan.match_count,
+            changed: plan.changed,
+        });
+        edits.extend(plan.edits);
+    }
+
+    let changed_count = operations
+        .iter()
+        .filter(|operation| operation.changed)
+        .count();
+    if changed_count != 0 && changed_count != operations.len() {
+        return Err(
+            "mixed batch state: some operations are already applied; batch must be entirely new or entirely applied"
+                .to_string(),
+        );
+    }
+    validate_non_overlapping_edits(&edits)?;
+    let post_text = apply_edits(text, &edits)?;
+    let changed = !edits.is_empty();
+    if changed {
+        let repeated = plan_patch_batch_once(&post_text, requests)?;
+        if repeated.changed || repeated.post_text != post_text {
+            return Err(
+                "batch cannot be applied idempotently on the next call: repeated planning would change bytes"
+                    .to_string(),
+            );
+        }
+    }
+    let match_count = operations
+        .iter()
+        .map(|operation| operation.match_count)
+        .sum();
+    Ok(BatchPatchPlan {
+        post_text,
+        edits,
+        changed,
+        match_count,
+        operations,
+    })
+}
+
+fn plan_patch_batch_once(text: &str, requests: &[PatchRequest]) -> Result<PatchPlan, String> {
+    let mut edits = Vec::new();
+    let mut match_count = 0;
+    for request in requests {
+        let plan = plan_patch(text, request)?;
+        match_count += plan.match_count;
+        edits.extend(plan.edits);
+    }
+    validate_non_overlapping_edits(&edits)?;
+    let post_text = apply_edits(text, &edits)?;
+    Ok(PatchPlan {
+        changed: !edits.is_empty(),
+        post_text,
+        edits,
+        match_count,
+    })
 }
 
 fn plan_patch(text: &str, request: &PatchRequest) -> Result<PatchPlan, String> {
@@ -1648,6 +1823,42 @@ fn changed_ranges(raw_before: &[u8], raw_after: &[u8], bom_len: usize, edits: &[
             })
             .collect(),
     )
+}
+
+fn net_changed_ranges(raw_before: &[u8], raw_after: &[u8]) -> Value {
+    if raw_before == raw_after {
+        return Value::Array(Vec::new());
+    }
+    let mut prefix = 0;
+    while prefix < raw_before.len()
+        && prefix < raw_after.len()
+        && raw_before[prefix] == raw_after[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < raw_before.len() - prefix
+        && suffix < raw_after.len() - prefix
+        && raw_before[raw_before.len() - 1 - suffix] == raw_after[raw_after.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let pre_end = raw_before.len() - suffix;
+    let post_end = raw_after.len() - suffix;
+    Value::Array(vec![json!({
+        "pre": {
+            "byteStart": prefix,
+            "byteEnd": pre_end,
+            "lineStart": line_number(raw_before, prefix),
+            "lineEnd": line_number(raw_before, pre_end)
+        },
+        "post": {
+            "byteStart": prefix,
+            "byteEnd": post_end,
+            "lineStart": line_number(raw_after, prefix),
+            "lineEnd": line_number(raw_after, post_end)
+        }
+    })])
 }
 
 fn line_number(bytes: &[u8], offset: usize) -> usize {
@@ -3357,6 +3568,145 @@ mod tests {
             }
             args
         }
+
+        fn batch_args(&self, operations: Value) -> Map<String, Value> {
+            json!({
+                "sourceSet": "main",
+                "modulePath": "CommonModules/Test/Ext/Module.bsl",
+                "operations": operations,
+                "platformSyntax": "none"
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        }
+    }
+
+    #[test]
+    fn batch_patch_applies_non_overlapping_edits_once_and_repeats_as_noop() {
+        let source = concat!(
+            "Procedure Work()\n",
+            "    First();\n",
+            "EndProcedure\n\n",
+            "Procedure Other()\n",
+            "    Second();\n",
+            "EndProcedure\n"
+        );
+        let fixture = Fixture::new("batch-apply", source.as_bytes());
+        let args = fixture.batch_args(json!([
+            {
+                "selector": "method",
+                "methodName": "Work",
+                "operation": "replace",
+                "content": "    ChangedFirst();\n",
+                "expectedCount": 1
+            },
+            {
+                "selector": "method",
+                "methodName": "Other",
+                "operation": "replace",
+                "content": "    ChangedSecond();\n",
+                "expectedCount": 1
+            }
+        ]));
+
+        let preview = patch_code(&args, &fixture.context, true);
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(fs::read_to_string(&fixture.module).unwrap(), source);
+        let preview_details = details(&preview);
+        assert_eq!(preview_details["batch"]["operationCount"], 2);
+        assert_eq!(preview_details["batch"]["operations"][0]["matchCount"], 1);
+        assert_eq!(
+            preview_details["changedRanges"].as_array().unwrap().len(),
+            1
+        );
+
+        let applied = patch_code(&args, &fixture.context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert!(details(&applied)["applied"].as_bool().unwrap());
+        assert_eq!(
+            fs::read_to_string(&fixture.module).unwrap(),
+            concat!(
+                "Procedure Work()\n",
+                "    ChangedFirst();\n",
+                "EndProcedure\n\n",
+                "Procedure Other()\n",
+                "    ChangedSecond();\n",
+                "EndProcedure\n"
+            )
+        );
+
+        let repeated = patch_code(&args, &fixture.context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert_eq!(details(&repeated)["noOp"], true);
+    }
+
+    #[test]
+    fn batch_patch_rejects_mixed_or_overlapping_state_without_writing() {
+        let source = concat!(
+            "Procedure Work()\n",
+            "    First();\n",
+            "EndProcedure\n\n",
+            "Procedure Other()\n",
+            "    Second();\n",
+            "EndProcedure\n"
+        );
+        let fixture = Fixture::new("batch-reject", source.as_bytes());
+        let single = fixture.args(
+            json!({"kind": "method", "methodName": "Work"}),
+            "replace",
+            "    ChangedFirst();\n",
+            1,
+        );
+        assert!(patch_code(&single, &fixture.context, false).ok);
+        let partial = fs::read(&fixture.module).unwrap();
+        let batch = fixture.batch_args(json!([
+            {
+                "selector": "method",
+                "methodName": "Work",
+                "operation": "replace",
+                "content": "    ChangedFirst();\n",
+                "expectedCount": 1
+            },
+            {
+                "selector": "method",
+                "methodName": "Other",
+                "operation": "replace",
+                "content": "    ChangedSecond();\n",
+                "expectedCount": 1
+            }
+        ]));
+        let mixed = patch_code(&batch, &fixture.context, false);
+        assert!(!mixed.ok);
+        assert!(mixed.errors[0].contains("mixed batch state"));
+        assert_eq!(fs::read(&fixture.module).unwrap(), partial);
+
+        let overlap = fixture.batch_args(json!([
+            {
+                "selector": "method",
+                "methodName": "Work",
+                "operation": "replace",
+                "content": "    FirstAlternative();\n",
+                "expectedCount": 1
+            },
+            {
+                "selector": "method",
+                "methodName": "Work",
+                "operation": "replace",
+                "content": "    SecondAlternative();\n",
+                "expectedCount": 1
+            }
+        ]));
+        let before_overlap = fs::read(&fixture.module).unwrap();
+        let rejected = patch_code(&overlap, &fixture.context, false);
+        assert!(!rejected.ok);
+        assert!(
+            rejected.errors[0].contains("mixed batch state")
+                || rejected.errors[0].contains("overlap"),
+            "{:?}",
+            rejected.errors
+        );
+        assert_eq!(fs::read(&fixture.module).unwrap(), before_overlap);
     }
 
     impl Drop for Fixture {
