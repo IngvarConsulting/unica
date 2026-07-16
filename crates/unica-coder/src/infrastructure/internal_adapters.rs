@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -2059,44 +2060,67 @@ impl ProcessRunner for SystemProcessRunner {
             .spawn()
             .map_err(|err| format!("failed to execute process: {err}"))?;
 
+        // Drain both pipes while the child is running. Waiting for the child
+        // before reading stdout/stderr deadlocks commands such as git grep
+        // when their output fills the OS pipe buffer.
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "failed to capture process stdout".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "failed to capture process stderr".to_string())?;
+        let stdout_reader = std::thread::spawn(move || read_process_pipe(stdout));
+        let stderr_reader = std::thread::spawn(move || read_process_pipe(stderr));
+
         let started = Instant::now();
-        loop {
-            if child
+        let (status, timed_out) = loop {
+            if let Some(status) = child
                 .try_wait()
                 .map_err(|err| format!("failed to poll process: {err}"))?
-                .is_some()
             {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|err| format!("failed to collect process output: {err}"))?;
-                return Ok(ProcessOutput {
-                    status_success: output.status.success(),
-                    status: output.status.to_string(),
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    timed_out: false,
-                });
+                break (status, false);
             }
 
             if let Some(timeout) = command.timeout {
                 if started.elapsed() >= timeout {
                     let _ = child.kill();
-                    let output = child.wait_with_output().map_err(|err| {
-                        format!("failed to collect timed-out process output: {err}")
+                    let status = child.wait().map_err(|err| {
+                        format!("failed to collect timed-out process status: {err}")
                     })?;
-                    return Ok(ProcessOutput {
-                        status_success: false,
-                        status: "timeout".to_string(),
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        timed_out: true,
-                    });
+                    break (status, true);
                 }
             }
 
             std::thread::sleep(Duration::from_millis(25));
-        }
+        };
+
+        let stdout = stdout_reader
+            .join()
+            .map_err(|_| "stdout reader thread panicked".to_string())??;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| "stderr reader thread panicked".to_string())??;
+        Ok(ProcessOutput {
+            status_success: status.success() && !timed_out,
+            status: if timed_out {
+                "timeout".to_string()
+            } else {
+                status.to_string()
+            },
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            timed_out,
+        })
     }
+}
+
+fn read_process_pipe<R: Read>(mut pipe: R) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read process pipe: {err}"))?;
+    Ok(bytes)
 }
 
 impl BslMcpRunner for SystemBslMcpRunner {
@@ -3944,6 +3968,26 @@ mod tests {
             .args
             .contains(&":(exclude)CommonModules/Generated".to_string()));
         cleanup_context(&context);
+    }
+
+    #[test]
+    fn system_process_runner_drains_large_stdout_before_waiting_for_exit() {
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program: PathBuf::from("sh"),
+                args: vec![
+                    "-c".to_string(),
+                    "i=0; while [ \"$i\" -lt 20000 ]; do printf 'line\\n'; i=$((i + 1)); done"
+                        .to_string(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                timeout: Some(Duration::from_secs(3)),
+            })
+            .unwrap();
+
+        assert!(output.status_success);
+        assert!(!output.timed_out);
+        assert!(output.stdout.len() > 64 * 1024);
     }
 
     #[test]
