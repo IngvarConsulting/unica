@@ -411,11 +411,11 @@ impl<'a> CodeSearchAdapter<'a> {
 
     #[cfg(test)]
     pub fn with_runners(
-        analyzer_runner: &'a dyn ProcessRunner,
+        grep_runner: &'a dyn ProcessRunner,
         index_runner: &'a dyn IndexRunner,
     ) -> Self {
         Self {
-            grep_runner: analyzer_runner,
+            grep_runner,
             index_runner,
             use_workspace_service: false,
         }
@@ -3432,29 +3432,10 @@ mod tests {
     }
 
     #[test]
-    fn code_adapter_dry_run_builds_bsl_analyzer_command() {
-        let context = temp_context("code-adapter-dry-run");
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("ОбщийМодуль"));
-
-        let outcome = CliAdapter::new("bsl-analyzer", &["search"], "code analysis")
-            .invoke("unica.code.search", &args, &context, true, false)
-            .unwrap();
-
-        let command = outcome.command.unwrap().join(" ");
-        assert!(command.contains("bin/"));
-        assert!(command.contains("bsl-analyzer"));
-        assert!(!command.contains("run-bsl-analyzer.sh"));
-        assert!(command.contains("search"));
-        assert!(command.contains("--query"));
-        assert!(command.contains("ОбщийМодуль"));
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn code_search_adapter_dry_run_reports_typed_code_search() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
-        let grep = FakeProcessRunner {
+        let grep = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
@@ -3477,6 +3458,7 @@ mod tests {
             "dry run: unica.code.search would use typed code search"
         );
         assert!(outcome.command.is_none());
+        assert!(grep.commands.borrow().is_empty());
     }
 
     #[test]
