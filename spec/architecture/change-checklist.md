@@ -29,6 +29,39 @@ cache behavior, or packaging metadata.
 - [ ] Applied mutations notify live workspace services when analyzer or index
   caches are affected.
 
+## Project Discovery And Discovery Receipts
+
+- [ ] Discovery orchestration still uses typed evidence ports and never parses
+  human-readable adapter output or reads adapter storage directly.
+- [ ] Related artifacts, flow edges, and actionable candidates remain separate;
+  incomplete evidence cannot become a false contradiction or actionable hook.
+- [ ] Stable evidence preserves canonical identity, provenance, coverage,
+  freshness, and content fingerprints; `workspaceEpoch` remains diagnostic.
+- [ ] Every discovery receipt contains atomic grants rather than independent
+  lists that can expand tool, target, mutation class, change kind, destination,
+  parameters, or allowed-artifact scope.
+- [ ] The receipt lease remains held through handler execution, typed-effect and
+  manifest verification, and atomic advancement or revocation.
+- [ ] Dry-run neither acquires nor advances a receipt; partial and out-of-scope
+  writes cannot leave it valid.
+- [ ] Support guard still runs before discovery guard, and guard mode remains
+  server/workspace configuration without a per-call bypass.
+- [ ] Version-1 exchange and report/data-processor variants outside the accepted
+  typed proof boundaries remain `unknown`, not lexically inferred.
+
+## Shadow Observation And Replay
+
+- [ ] The non-authoritative JSONL journal is written after the operation outcome
+  and journal failure cannot change handler, receipt, or rollout decisions.
+- [ ] Observation storage is OS-locked, schema-versioned, bounded, and updates
+  aggregate counters without becoming authoritative state.
+- [ ] Observation and deterministic replay records contain digests and policy
+  predicates but must never contain task text or source text, raw mutation
+  arguments, absolute paths, or unhashed artifact names.
+- [ ] Corrupt and unknown-schema records are reported and excluded.
+- [ ] Audit/replay stays a maintainer-only packaged command and is not added to
+  public MCP tools or discovery skill routing.
+
 ## Adapters
 
 - [ ] Internal adapter errors are summarized in `warnings` or `errors`.

@@ -9,6 +9,8 @@ rules, ADRs, and acceptance.
 - `decisions/README.md`: accepted architecture decisions and their owning ADR files.
 - `architecture/invariants.md`: non-negotiable rules that changes must preserve.
 - `architecture/change-checklist.md`: required sync checklist for MCP, skill, cache, and package changes.
+- `architecture/extension-point-discovery.md`: accepted architecture, public
+  contract, rollout, acceptance, and migration design for Project Discovery.
 - `architecture/arc42/`: detailed architecture map for maintainers and agentic work.
 - `acceptance/unica-mcp-validation.md`: active acceptance and smoke plan for the single MCP contract.
 
