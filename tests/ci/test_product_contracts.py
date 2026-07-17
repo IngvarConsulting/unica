@@ -111,6 +111,9 @@ class ProductContractTests(unittest.TestCase):
         self.assertTrue(adr_path.exists(), "ADR 0008 must record the accepted discovery architecture")
 
         design = design_path.read_text(encoding="utf-8")
+        historical_plan = (
+            repo_root / "docs" / "superpowers" / "plans" / "2026-07-17-project-discovery-receipts.md"
+        ).read_text(encoding="utf-8")
         adr = adr_path.read_text(encoding="utf-8")
         spec_readme = (repo_root / "spec" / "README.md").read_text(encoding="utf-8")
         decisions_readme = (repo_root / "spec" / "decisions" / "README.md").read_text(encoding="utf-8")
@@ -234,6 +237,65 @@ class ProductContractTests(unittest.TestCase):
                 self.assertIn(required, normalized_adr)
 
         self.assertNotIn('"mode": "advisory"', design)
+
+        expected_binding_matrix = {
+            "Structural": (("contains", "defines"), "MetadataCatalogPort"),
+            "EventSubscription": (("subscribes",), "MetadataCatalogPort"),
+            "FormCommand": (("handles",), "FormInspectionPort"),
+            "CommonCommand": (("handles",), "MetadataCatalogPort"),
+            "ScheduledJob": (("handles",), "MetadataCatalogPort"),
+            "HttpRoute": (("handles",), "MetadataCatalogPort"),
+            "ExchangePlan": (("handles",), "MetadataCatalogPort"),
+        }
+        binding_violation = (
+            "Every other `BindingDetails` x `FlowKind` x evidence-port combination "
+            "is a `ProviderContractViolation` and must be rejected before evidence-graph promotion."
+        )
+        runtime_materiality = (
+            "Runtime materiality follows evidence contribution: every runtime port present in "
+            "`connection_ports` for the selected target is material, while other potential runtime "
+            "ports are optional. If no runtime connection is established, a conclusive negative "
+            "requires complete exact coverage from `MetadataCatalogPort`, `CallGraphPort`, and "
+            "`FormInspectionPort`."
+        )
+        for document, text in {
+            "active discovery spec": design,
+            "historical Task 3 plan": historical_plan,
+        }.items():
+            normalized_text = " ".join(text.split())
+            matrix_marker = "The canonical binding compatibility matrix is:"
+            self.assertIn(matrix_marker, text)
+            matrix_section = text.split(matrix_marker, 1)[1]
+            matrix_lines: list[str] = []
+            for line in matrix_section.splitlines():
+                if line.startswith("|"):
+                    matrix_lines.append(line)
+                elif matrix_lines:
+                    break
+            self.assertGreaterEqual(len(matrix_lines), 2)
+            self.assertEqual(
+                matrix_lines[0],
+                "| `BindingDetails` | Accepted `FlowKind` | Supplying evidence port |",
+            )
+            self.assertEqual(matrix_lines[1], "| --- | --- | --- |")
+            actual_binding_matrix: dict[str, tuple[tuple[str, ...], str]] = {}
+            for line in matrix_lines[2:]:
+                cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+                self.assertEqual(len(cells), 3, f"invalid binding-matrix row: {line}")
+                detail = cells[0].removeprefix("`").removesuffix("`")
+                self.assertNotIn(
+                    detail,
+                    actual_binding_matrix,
+                    f"duplicate binding detail in {document}: {detail}",
+                )
+                relations = tuple(re.findall(r"`([^`]+)`", cells[1]))
+                provider = cells[2].removeprefix("`").removesuffix("`")
+                actual_binding_matrix[detail] = (relations, provider)
+            self.assertEqual(actual_binding_matrix, expected_binding_matrix)
+            with self.subTest(document=document, binding_violation=True):
+                self.assertIn(binding_violation, normalized_text)
+            with self.subTest(document=document, runtime_materiality=True):
+                self.assertIn(runtime_materiality, normalized_text)
 
         architecture_requirements = {
             "invariants": (

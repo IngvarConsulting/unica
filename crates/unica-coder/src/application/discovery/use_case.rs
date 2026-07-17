@@ -422,8 +422,8 @@ mod tests {
     use crate::application::discovery::contract::{ArtifactKind, ArtifactRef, DiscoverRequest};
     use crate::application::discovery::model::{
         BindingDetails, Coverage, DiscoveryStatus, EvidencePort, EvidenceProvider, EvidenceRecord,
-        FlowKind, Freshness, ProviderFact, ReceiptEligibility, SourceLocation, SupportState,
-        Verdict,
+        FlowKind, Freshness, PlatformCallbackShape, ProviderFact, ReceiptEligibility,
+        SourceLocation, SupportState, Verdict,
     };
     use crate::application::discovery::ports::*;
     use crate::domain::project_sources::{SourceFormat, SourceSetKind};
@@ -582,6 +582,53 @@ mod tests {
                     state: SupportState::Editable,
                 },
             )],
+        )
+    }
+
+    fn metadata_callback() -> ProviderOutcome<EvidenceRecord> {
+        complete(
+            EvidencePort::MetadataCatalog,
+            vec![
+                record(
+                    EvidencePort::MetadataCatalog,
+                    ProviderFact::MetadataPresent { subject: owner() },
+                ),
+                record(
+                    EvidencePort::MetadataCatalog,
+                    ProviderFact::PlatformCallback {
+                        subject: owner(),
+                        object: target(),
+                        callback: PlatformCallbackShape::new(
+                            "8.3.24",
+                            "CommonModule",
+                            "CommonModule",
+                            "Run",
+                            true,
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    },
+                ),
+            ],
+        )
+    }
+
+    fn form_binding(coverage: Coverage) -> EvidenceRecord {
+        record_with_coverage(
+            EvidencePort::FormInspection,
+            ProviderFact::Binding {
+                subject: artifact(
+                    ArtifactKind::FormCommand,
+                    "Document.Sale.Form.Main.Command.Post",
+                ),
+                object: target(),
+                relation: FlowKind::Handles,
+                details: BindingDetails::FormCommand {
+                    action: "Run".into(),
+                    context: crate::application::discovery::contract::ExecutionContext::Client,
+                },
+            },
+            coverage,
         )
     }
 
@@ -1025,6 +1072,104 @@ mod tests {
         assert_eq!(report.status, DiscoveryStatus::Partial);
         assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
         assert!(report.receipt_eligibility.eligible);
+    }
+
+    #[test]
+    fn metadata_callback_makes_unavailable_form_inspection_optional() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.metadata = metadata_callback();
+        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
+        fixture.ports.forms = ProviderOutcome::unavailable(
+            EvidenceProvider::new(EvidencePort::FormInspection, "fake-forms", "1").unwrap(),
+            "form_index_building",
+            true,
+        )
+        .unwrap();
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
+        assert_eq!(report.status, DiscoveryStatus::Partial);
+        assert!(report.receipt_eligibility.eligible);
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "FormInspectionPort"
+                && check.severity == crate::application::discovery::model::CheckSeverity::Warning
+                && !check
+                    .affects
+                    .iter()
+                    .any(|item| item == "proposal:method-hook")
+        }));
+    }
+
+    #[test]
+    fn metadata_callback_makes_bounded_form_inspection_optional() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.metadata = metadata_callback();
+        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
+        fixture.ports.forms = ProviderOutcome::bounded(
+            EvidenceProvider::new(
+                EvidencePort::FormInspection,
+                &format!("fake-{}", EvidencePort::FormInspection.wire_name()),
+                "1",
+            )
+            .unwrap(),
+            "result_limit",
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
+        assert_eq!(report.status, DiscoveryStatus::Partial);
+        assert!(report.receipt_eligibility.eligible);
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "FormInspectionPort"
+                && check.severity == crate::application::discovery::model::CheckSeverity::Warning
+                && !check
+                    .affects
+                    .iter()
+                    .any(|item| item == "proposal:method-hook")
+        }));
+    }
+
+    #[test]
+    fn every_runtime_port_that_contributes_a_connection_is_material() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.forms = ProviderOutcome::bounded(
+            EvidenceProvider::new(
+                EvidencePort::FormInspection,
+                &format!("fake-{}", EvidencePort::FormInspection.wire_name()),
+                "1",
+            )
+            .unwrap(),
+            "result_limit",
+            false,
+            vec![form_binding(Coverage::Bounded)],
+        )
+        .unwrap();
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
+        assert_eq!(report.status, DiscoveryStatus::Insufficient);
+        assert!(!report.receipt_eligibility.eligible);
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "CallGraphPort"
+                && check
+                    .affects
+                    .iter()
+                    .any(|item| item == "proposal:method-hook")
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "FormInspectionPort"
+                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
+                && check
+                    .affects
+                    .iter()
+                    .any(|item| item == "proposal:method-hook")
+        }));
     }
 
     #[test]

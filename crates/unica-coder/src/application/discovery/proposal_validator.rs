@@ -139,11 +139,7 @@ impl ProposalValidator {
                 BTreeSet::from([EvidencePort::MetadataCatalog, EvidencePort::Definition]);
             if exists == FactAnswer::Yes {
                 if runtime_reachable == FactAnswer::Yes {
-                    if connection_ports.contains(&EvidencePort::CallGraph) {
-                        material.insert(EvidencePort::CallGraph);
-                    } else {
-                        material.insert(EvidencePort::FormInspection);
-                    }
+                    material.extend(connection_ports.iter().copied());
                     material.insert(EvidencePort::SupportState);
                 } else {
                     material.insert(EvidencePort::CallGraph);

@@ -272,6 +272,29 @@ outcomes remain inconclusive. Binding records bind exact mechanism details;
 call records bind resolution, call type, and execution context into the stable
 evidence digest.
 
+The canonical binding compatibility matrix is:
+
+| `BindingDetails` | Accepted `FlowKind` | Supplying evidence port |
+| --- | --- | --- |
+| `Structural` | `contains`, `defines` | `MetadataCatalogPort` |
+| `EventSubscription` | `subscribes` | `MetadataCatalogPort` |
+| `FormCommand` | `handles` | `FormInspectionPort` |
+| `CommonCommand` | `handles` | `MetadataCatalogPort` |
+| `ScheduledJob` | `handles` | `MetadataCatalogPort` |
+| `HttpRoute` | `handles` | `MetadataCatalogPort` |
+| `ExchangePlan` | `handles` | `MetadataCatalogPort` |
+
+Every other `BindingDetails` x `FlowKind` x evidence-port combination is a
+`ProviderContractViolation` and must be rejected before evidence-graph promotion.
+Infrastructure adapters must emit only these combinations and must not guess a
+relation from artifact names, display text, or provider availability.
+
+Runtime materiality follows evidence contribution: every runtime port present
+in `connection_ports` for the selected target is material, while other
+potential runtime ports are optional. If no runtime connection is established,
+a conclusive negative requires complete exact coverage from
+`MetadataCatalogPort`, `CallGraphPort`, and `FormInspectionPort`.
+
 Keep non-evidence orchestration dependencies explicit and separate:
 `ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`.
 Define typed `ResolvedSourceSet`, `SourceSnapshot`, and

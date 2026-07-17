@@ -126,6 +126,23 @@ the mechanism requires them. Call facts carry resolution state, call type, and
 execution context. Validators must not reconstruct any of these values from an
 artifact name or display text.
 
+The canonical binding compatibility matrix is:
+
+| `BindingDetails` | Accepted `FlowKind` | Supplying evidence port |
+| --- | --- | --- |
+| `Structural` | `contains`, `defines` | `MetadataCatalogPort` |
+| `EventSubscription` | `subscribes` | `MetadataCatalogPort` |
+| `FormCommand` | `handles` | `FormInspectionPort` |
+| `CommonCommand` | `handles` | `MetadataCatalogPort` |
+| `ScheduledJob` | `handles` | `MetadataCatalogPort` |
+| `HttpRoute` | `handles` | `MetadataCatalogPort` |
+| `ExchangePlan` | `handles` | `MetadataCatalogPort` |
+
+Every other `BindingDetails` x `FlowKind` x evidence-port combination is a
+`ProviderContractViolation` and must be rejected before evidence-graph promotion.
+Infrastructure adapters must emit only these combinations and must not guess a
+relation from artifact names, display text, or provider availability.
+
 Non-evidence orchestration remains behind separate
 `ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`
 boundaries. The application-owned `SourceSnapshot` contains exactly one
@@ -903,8 +920,15 @@ method generally requires:
 
 - metadata evidence that its owner exists;
 - definition evidence that the method exists;
-- call-graph or form-binding evidence for runtime reachability;
+- a typed metadata callback/binding, call-graph edge, or form binding for
+  runtime reachability;
 - support-state evidence for the intended mutation.
+
+Runtime materiality follows evidence contribution: every runtime port present
+in `connection_ports` for the selected target is material, while other
+potential runtime ports are optional. If no runtime connection is established,
+a conclusive negative requires complete exact coverage from
+`MetadataCatalogPort`, `CallGraphPort`, and `FormInspectionPort`.
 
 If a required provider is unavailable, the affected proposal becomes
 `unknown`, its check is blocking, and no receipt is issued for it. An unrelated
