@@ -238,6 +238,224 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertNotIn('"mode": "advisory"', design)
 
+        def table_after(document: str, marker: str, expected_header: list[str]) -> list[list[str]]:
+            self.assertIn(marker, document)
+            section = document.split(marker, 1)[1]
+            lines: list[str] = []
+            for line in section.splitlines():
+                if line.startswith("|"):
+                    lines.append(line)
+                elif lines:
+                    break
+            self.assertGreaterEqual(len(lines), 3, f"missing table after {marker}")
+            header = [cell.strip() for cell in lines[0].strip().strip("|").split("|")]
+            self.assertEqual(header, expected_header)
+            self.assertEqual(
+                [cell.strip() for cell in lines[1].strip().strip("|").split("|")],
+                ["---"] * len(expected_header),
+            )
+            rows = [
+                [cell.strip() for cell in line.strip().strip("|").split("|")]
+                for line in lines[2:]
+            ]
+            for row in rows:
+                self.assertEqual(len(row), len(expected_header), f"invalid row after {marker}: {row}")
+            return rows
+
+        readiness_rows = table_after(
+            design,
+            "### Source Readiness Matrix",
+            ["Analysis source", "Snapshot contract", "Public discovery outcome", "Receipt"],
+        )
+        readiness = {row[0].replace("`", ""): row[1:] for row in readiness_rows}
+        self.assertEqual(len(readiness_rows), len(readiness), "duplicate source-readiness row")
+        self.assertEqual(
+            set(readiness),
+            {
+                "Platform XML configuration/extension",
+                "EDT configuration with at least one recognized marker",
+                "EDT configuration without a recognized marker",
+                "EDT extension",
+                "unknown format",
+                "invalid mixed format",
+                "external processor/report source kind",
+            },
+        )
+        edt_ready = readiness["EDT configuration with at least one recognized marker"]
+        self.assertIn("diagnostic marker snapshot", edt_ready[0])
+        self.assertIn("`unsupported_source_format` source-readiness check", edt_ready[1])
+        self.assertIn("never eligible", edt_ready[2])
+        for source, reason in {
+            "EDT configuration without a recognized marker": "unsupported_source_format",
+            "EDT extension": "unsupported_source_format",
+            "unknown format": "unknown_source_format",
+            "invalid mixed format": "invalid_source_format",
+            "external processor/report source kind": "unsupported_source_kind",
+        }.items():
+            self.assertEqual(readiness[source][0], "none")
+            self.assertIn(reason, readiness[source][1])
+            self.assertEqual(readiness[source][2], "never")
+
+        role_rows = table_after(
+            design,
+            "Source readiness follows this first-match matrix",
+            ["Role", "Source kind", "Format/layout", "Result"],
+        )
+        self.assertEqual(
+            role_rows,
+            [
+                ["analysis", "external processor/report", "any", "`unsupported_source_kind`"],
+                ["analysis", "configuration/extension", "Platform XML", "allowed authoritative capture"],
+                ["analysis", "configuration", "EDT with at least one v1 marker", "allowed diagnostic capture"],
+                ["analysis", "configuration", "EDT without a v1 marker", "`unsupported_source_format`"],
+                ["analysis", "extension", "EDT", "`unsupported_source_format`"],
+                ["analysis", "configuration/extension", "invalid", "`invalid_source_format`"],
+                ["analysis", "configuration/extension", "unknown", "`unknown_source_format`"],
+                ["destination", "any kind except extension", "any", "`unsupported_destination_kind`"],
+                ["destination", "extension", "Platform XML", "allowed authoritative capture"],
+                ["destination", "extension", "EDT, invalid, or unknown", "`unsupported_destination_format`"],
+            ],
+        )
+
+        manifest_rows = table_after(
+            design,
+            "Manifest entries have two disjoint encodings:",
+            ["Manifest tag", "Canonical fields"],
+        )
+        manifest = {row[0].strip("`"): row[1] for row in manifest_rows}
+        self.assertEqual(len(manifest_rows), len(manifest), "duplicate manifest tag row")
+        self.assertEqual(set(manifest), {"present", "absent_optional"})
+        self.assertIn("byte length actually read", manifest["present"])
+        self.assertIn("file-content SHA-256", manifest["present"])
+        self.assertIn("no fictitious length or digest", manifest["absent_optional"])
+
+        for required in [
+            "ProjectSourceResolverPort::resolve_all",
+            "one map-wide semantic digest shared by every returned identity",
+            "covers only canonical effective topology",
+            "missing or non-directory roots, dangling or live symlink/reparse roots",
+            "same catalog and snapshot-bound verified reader",
+            "`ConfigDumpInfo.xml` neither enters the manifest nor independently proves Platform XML format",
+            "versioned registry of exact configuration/extension root `Ext` artifacts",
+            "Unix walks every component through directory handles with `openat`/`O_NOFOLLOW`",
+            "leaf with `O_NONBLOCK`",
+            "Windows opens each single component relative to the already opened parent directory handle",
+            "leaf-only path open plus final-prefix check is not sufficient",
+            "final pass revalidates both present files and every `absent_optional` tombstone",
+            "bounded by that file's previously captured byte length plus one",
+            "normalizes the captured snapshot and every accepted evidence record",
+            "can never create an identifier collision, change a verdict, or block the operation",
+            "Source snapshot budgets never select prefixes",
+            "DiscoveryError::SourceReadiness",
+            "data.sourceReadiness",
+            "DiscoveryError::SnapshotCapture",
+            "data.snapshotCapture={reasonCode,retryable}",
+        ]:
+            with self.subTest(document="active discovery spec", snapshot_contract=required):
+                self.assertIn(required, normalized_design)
+        self.assertRegex(
+            normalized_design,
+            r"maxFiles=200000.*maxBytes=4GiB.*maxTraversalEntries=1600000.*"
+            r"maxTraversalDepth=64.*maxXmlBytes=64MiB.*maxElapsed=120s",
+        )
+        edt_manifest_match = re.search(
+            r"Its versioned v1\s+manifest contains(.*?); it does not recurse",
+            design,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(edt_manifest_match, "missing bounded EDT v1 manifest clause")
+        edt_manifest_clause = edt_manifest_match.group(1)
+        edt_manifest_paths = re.findall(r"`([^`]+)`", edt_manifest_clause)
+        self.assertEqual(
+            edt_manifest_paths,
+            [
+                ".project",
+                "DT-INF/PROJECT.PMF",
+                "Configuration/Configuration.mdo",
+                "src/Configuration/Configuration.mdo",
+            ],
+        )
+        self.assertEqual(
+            len(edt_manifest_paths),
+            len(set(edt_manifest_paths)),
+            "duplicate EDT v1 marker",
+        )
+        for marker in [
+            "`provider=ProjectSourceResolverPort`",
+            "`code=source_readiness`",
+            "`state=skipped`",
+            "`outcome=inconclusive`",
+            "`coverage=unknown`",
+            "`severity=blocking`",
+            "`reasonCode=unsupported_source_format`",
+            "`retryable=false`",
+            "`proposal:<id>`",
+        ]:
+            self.assertIn(marker, design)
+        self.assertIn(
+            "The sole v1 orchestration check provider is `ProjectSourceResolverPort`",
+            normalized_design,
+        )
+        retry_rows = table_after(
+            design,
+            "Snapshot failure classification is stable and exhaustive for v1:",
+            ["`reasonCode`", "Failure evidence", "Retryable"],
+        )
+        retry_classes = {row[0].strip("`"): row[1:] for row in retry_rows}
+        self.assertEqual(len(retry_rows), len(retry_classes), "duplicate snapshot reasonCode")
+        self.assertEqual(
+            [(row[0].strip("`"), row[2]) for row in retry_rows],
+            [
+                ("source_changed_during_capture", "yes"),
+                ("unsafe_source_topology", "no"),
+                ("source_snapshot_deadline", "yes"),
+                ("source_io_unavailable", "yes"),
+                ("malformed_source_material", "no"),
+                ("unsupported_source_layout", "no"),
+                ("invalid_source_path", "no"),
+                ("source_snapshot_resource_limit", "no"),
+                ("source_snapshot_invariant_violation", "no"),
+            ],
+        )
+        self.assertIn("before/after", retry_classes["source_changed_during_capture"][0])
+        self.assertIn("symlink/reparse", retry_classes["unsafe_source_topology"][0])
+        self.assertIn("XML-byte", retry_classes["source_snapshot_resource_limit"][0])
+        self.assertIn("source_changed_during_capture", design)
+        self.assertIn("unsafe_source_topology", design)
+        root_ext_clause = design.split("`SOURCE_ROOT_EXT_ARTIFACTS_V1`", 1)[1].split(
+            "Unknown root-`Ext` files", 1
+        )[0]
+        root_ext_names = re.findall(r"`([^`]+)`", root_ext_clause)
+        self.assertEqual(
+            root_ext_names,
+            [
+                "ManagedApplicationModule.bsl",
+                "OrdinaryApplicationModule.bsl",
+                "SessionModule.bsl",
+                "ExternalConnectionModule.bsl",
+                "CommandInterface.xml",
+                "ManagedApplicationCommandInterface.xml",
+                "OrdinaryApplicationCommandInterface.xml",
+                "ClientApplicationInterface.xml",
+                "HomePageWorkArea.xml",
+                "Help.xml",
+            ],
+        )
+        self.assertEqual(
+            len(root_ext_names),
+            len(set(root_ext_names)),
+            "duplicate root Ext v1 artifact",
+        )
+        self.assertIn("EDT uses only a bounded diagnostic snapshot", historical_plan)
+        self.assertIn("typed `unknown` / `unsupported_source_format`", historical_plan)
+        self.assertIn(
+            "`data.sourceReadiness={reasonCode,retryable,sourceSet,role}`",
+            historical_plan,
+        )
+        self.assertIn("`OperationData::SourceReadiness(SourceReadinessData)`", historical_plan)
+        self.assertIn("`data.snapshotCapture={reasonCode,retryable}`", historical_plan)
+        self.assertIn("`OperationData::SnapshotCapture(SnapshotCaptureData)`", historical_plan)
+
         expected_binding_matrix = {
             "Structural": (("contains", "defines"), "MetadataCatalogPort"),
             "EventSubscription": (("subscribes",), "MetadataCatalogPort"),

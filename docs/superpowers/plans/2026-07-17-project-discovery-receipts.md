@@ -26,8 +26,10 @@ existing MCP stdio transport, Python 3.12 package/contract tests.
 
 **Non-negotiable delivery boundary:** The public tool is registered only in
 Task 12, after explore, validate, receipt storage, lease, rolling advance, and
-guard tests are green. EDT and unimplemented mechanism variants return typed
-`unknown`; they never fall back to SQLite, display strings, or unbounded scans.
+guard tests are green. EDT uses only a bounded diagnostic snapshot and returns
+typed `unknown` / `unsupported_source_format`; unimplemented mechanism variants
+also return typed `unknown`. Neither path can issue a receipt or fall back to
+SQLite, display strings, or unbounded scans.
 The implementation can ship all four guard modes, but package defaults remain
 `observe`; promotion to `warn` or `deny` requires the live observation volumes
 defined by the accepted spec and is not fabricated by tests.
@@ -37,6 +39,8 @@ defined by the accepted spec and is not fabricated by tests.
 ### Task 1: Commit the accepted design and architecture decision
 
 **Files:**
+- Modify: `Cargo.lock`
+- Modify: `crates/unica-coder/Cargo.toml`
 - Modify: `spec/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/change-checklist.md`
@@ -199,6 +203,11 @@ contract version, composite fingerprint, deterministic limits, and sorted
 provider identity/readiness/coverage/reason/record digests. Evidence IDs bind
 the complete fact, location, provider/version, coverage, and source fingerprint.
 Exclude timestamps, durations, display details, and `workspaceEpoch`.
+Before evidence canonicalization, normalize the captured snapshot and every
+accepted record to the current request's diagnostic epoch. Matching source-set
+identity and content fingerprint remain authoritative; otherwise identical
+records from different epochs deduplicate and never produce an identifier
+collision or change the discovery outcome.
 Reject empty components, traversal-like refs, invalid proposal IDs, and invalid
 limit/cardinality/string ranges. Canonical report ordering sorts every public
 collection and nested ID/reason/blocker list. Collapse only byte-identical facts
@@ -339,12 +348,19 @@ git -c commit.gpgsign=false commit -m "feat: реализовать evidence gra
 ### Task 4: Contained project source resolution and content snapshots
 
 **Files:**
+- Modify: `crates/unica-coder/src/application/discovery/{mod.rs,model.rs,ports.rs,use_case.rs}`
+- Modify: `crates/unica-coder/src/application/{mod.rs,tool_contracts.rs}`
 - Modify: `crates/unica-coder/src/domain/project_sources.rs`
 - Modify: `crates/unica-coder/src/domain/source_snapshot.rs`
-- Modify: `crates/unica-coder/src/domain/mod.rs`
+- Modify: `crates/unica-coder/src/domain/discovery_registry.rs`
+- Create: `crates/unica-coder/src/infrastructure/contained_fs.rs`
+- Create: `crates/unica-coder/src/infrastructure/platform_xml.rs`
+- Create: `crates/unica-coder/src/infrastructure/project_sources.rs`
 - Create: `crates/unica-coder/src/infrastructure/source_snapshot.rs`
 - Modify: `crates/unica-coder/src/infrastructure/mod.rs`
-- Test: both source modules
+- Modify: `spec/architecture/extension-point-discovery.md`
+- Modify: `tests/ci/test_product_contracts.py`
+- Test: source modules, discovery orchestration, and product contracts
 
 - [ ] **Step 1: Write failing containment and fingerprint tests**
 
@@ -354,6 +370,13 @@ mapping/name/kind/format changes; composite configuration+extension snapshot;
 analysis plus sorted/deduplicated multiple destination snapshots; generated and
 ignored-corpus exclusions; file/byte/time bounds; unreadable material file;
 concurrent file mutation during hashing; Unknown/Invalid/EDT format eligibility.
+EDT configuration receives a complete diagnostic snapshot of the four
+versioned marker paths (`.project`, `DT-INF/PROJECT.PMF`, and the two supported
+`Configuration.mdo` locations), with no recursive scan or destinations. It is
+sufficient only for the typed skipped/inconclusive unsupported report;
+markerless EDT, EDT extensions, unknown/invalid layouts, external sources, and
+ineligible destination roles fail with their exact typed source-readiness
+reason before snapshot capture or evidence providers.
 
 ```rust
 #[test]
@@ -381,6 +404,9 @@ Run: `cargo test --locked -p unica-coder source_snapshot -- --nocapture`
 Canonicalize source roots under the workspace, reject duplicate names and
 escapes, and return a typed `ResolvedSourceSet`. Auto-select only one eligible
 set; multiple eligible sets without `sourceSet` are an operation error.
+Reject missing/non-directory configured roots and dangling or live
+symlink/reparse components in the public map as well as discovery resolution;
+do not use `Path::exists()` as an allow-missing security decision.
 
 - [ ] **Step 4: Implement bounded content manifests**
 
@@ -392,18 +418,49 @@ Hash mapping configuration separately. Never read `docs/research`, `docs/its`,
 or follow symlinks/reparse escapes. Use server-owned deterministic file/byte
 budgets `maxFiles=200000` and `maxBytes=4GiB`; `maxElapsed=120s` is a safety
 abort that discards the entire authoritative snapshot rather than selecting a
-timing-dependent prefix. Re-stat/open files around reads; concurrent identity,
-size, or metadata change makes the snapshot unavailable/retryable. Preserve an
-in-memory path-to-hash manifest for exact pre/post diffs. Exclude `.git`,
-`.build`, `target`, and `dist` components inside registered subtrees.
+timing-dependent prefix. Bound enumeration with
+`maxTraversalEntries=1600000` and `maxTraversalDepth=64`, and reject any XML
+document above `maxXmlBytes=64MiB` before DOM parsing. Open authoritative files
+through directory handles (`openat` plus `O_NOFOLLOW`, with `O_NONBLOCK` on the
+leaf, on Unix); on Windows open each single component relative to its already
+opened parent directory handle, reject every reparse handle, retain the chain,
+and verify the final handle's exact contained path and stable volume/file ID
+before and after reading, failing closed when identity is unavailable. Re-observe
+opened files around reads; concurrent identity, size, metadata, path-set, or
+mapping change makes the snapshot unavailable/retryable. Preserve an in-memory
+path-to-hash manifest for exact pre/post diffs. After the final hook, revalidate
+present files and every absence tombstone; bound each final reread to the
+previously captured file length plus one rather than the global byte budget.
+Exclude `.git`, `.build`,
+`target`, and `dist` directories only inside registered subtrees.
 
 - [ ] **Step 5: Re-run and commit**
 
-Run: `cargo test --locked -p unica-coder source_snapshot -- --nocapture`
+Run:
 
 ```bash
-git add crates/unica-coder/src/domain crates/unica-coder/src/infrastructure
+cargo test --locked -p unica-coder source_snapshot -- --nocapture
+cargo test --locked -p unica-coder project_sources -- --nocapture
+cargo test --locked -p unica-coder discovery -- --nocapture
+cargo test --locked -p unica-coder
+cargo fmt --all -- --check
+cargo clippy --locked -p unica-coder --all-targets -- -D warnings
+python3 tests/ci/test_product_contracts.py
+```
+
+```bash
+git add crates/unica-coder/src/application/discovery \
+  crates/unica-coder/src/application/mod.rs \
+  crates/unica-coder/src/application/tool_contracts.rs \
+  crates/unica-coder/src/domain \
+  crates/unica-coder/src/infrastructure \
+  crates/unica-coder/Cargo.toml Cargo.lock
 git -c commit.gpgsign=false commit -m "feat: добавить content source snapshots"
+
+git add spec/architecture/extension-point-discovery.md \
+  docs/superpowers/plans/2026-07-17-project-discovery-receipts.md \
+  tests/ci/test_product_contracts.py
+git -c commit.gpgsign=false commit -m "docs: синхронизировать source snapshot contract"
 ```
 
 ### Task 5: Platform XML catalog, bindings, forms, and support providers
@@ -537,7 +594,9 @@ Build related artifacts from caller concepts/search terms/known artifacts,
 traverse only typed edges to bounded depth, classify actionable hooks, and
 validate exact proposals. Keep canonical stable ordering and retain every
 material provider issue. Unsupported EDT and broad family variants return
-`unsupported_source_format` or `unsupported_mechanism_variant` checks.
+`unsupported_source_format` or `unsupported_mechanism_variant` checks. EDT uses
+the Task 4 diagnostic snapshot, runs no Platform XML/BSL inference provider,
+and can never become receipt-eligible in v1.
 Use a deterministic fake `ReceiptIssuerPort` in mechanism tests to evaluate
 eligibility without claiming persistence; the real issuer is wired only after
 the shared resolver and receipt store exist.
@@ -864,7 +923,15 @@ Assert: exactly one `unica.project.discover`; strict nested schema; only `cwd`
 from common args; explore/validate conditional validation on direct
 `call_tool`; typed top-level `data`; separate `discoveryGuard`; discovery is
 read-only; `discoveryReceipt` accepted only by classified mutations; no
-public/internal analyzer server.
+public/internal analyzer server. Add source-readiness cases proving that
+`DiscoveryError::SourceReadiness` returns a normal `ok=false` operation result,
+not a transport error, with exact typed
+`data.sourceReadiness={reasonCode,retryable,sourceSet,role}` and no discovery
+report; clients never parse `errors[]` for the code.
+Add the parallel snapshot-capture cases proving that
+`DiscoveryError::SnapshotCapture` returns `ok=false` with exact typed
+`data.snapshotCapture={reasonCode,retryable}`, no partial discovery report, and
+no transport error; the display-only detail is not semantic client data.
 Add a stdio test that sends a request line over 4 MiB and proves it is rejected
 before JSON deserialization, while a boundary-sized valid request is still
 handled.
@@ -880,12 +947,22 @@ Run:
 
 Move repeated result assembly into `OperationResult::from_handler`,
 `::discovery`, and `::policy_block`. Add typed optional `data` and
-`discovery_guard` without overloading existing runtime diagnostics.
+`discovery_guard` without overloading existing runtime diagnostics. Define
+`OperationData::Discovery(report)` and
+`OperationData::SourceReadiness(SourceReadinessData)` and
+`OperationData::SnapshotCapture(SnapshotCaptureData)` as disjoint variants;
+`SourceReadinessData` has exactly `reasonCode`, `retryable`, `sourceSet`, and
+`role` (`analysis` or `destination`); `SnapshotCaptureData` has exactly
+`reasonCode` and `retryable`.
 
 - [ ] **Step 4: Register and dispatch `unica.project.discover` directly in application**
 
 Add `ToolHandler::ProjectDiscover`, but do not route it through
-`AdapterOutcome`. The use case returns `OperationData::Discovery(report)`.
+`AdapterOutcome`. A completed analysis returns
+`OperationData::Discovery(report)`; typed source-readiness failure returns
+`ok=false` plus `OperationData::SourceReadiness`, while typed snapshot-capture
+failure returns `ok=false` plus `OperationData::SnapshotCapture`; neither path
+returns a partial report.
 Generate nested JSON schema with `additionalProperties:false` at every level
 and retain `serde`/semantic runtime validation for non-MCP calls.
 

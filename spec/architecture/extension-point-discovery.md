@@ -344,8 +344,90 @@ not agree.
 `sourceSet` is the analysis source-set name returned by
 `unica.project.map`. It may be omitted only when the workspace contains one
 eligible source-set; otherwise discovery rejects the request as ambiguous.
-Unknown, invalid, or unsupported source formats remain explicit provider gaps
-and can never produce a receipt.
+For safe, well-formed project mappings, `unica.project.map` preserves its JSON
+fields and continues to list Platform XML, EDT, unknown, invalid, and
+external-project source-sets. Unsafe paths, duplicate identities, malformed
+YAML, missing or non-directory roots, dangling or live symlink/reparse roots,
+and ambiguous aliases now fail explicitly instead of being normalized or
+followed; that is an intentional containment hardening
+of the existing map operation, not removal of a source kind or format.
+
+### Source Readiness Matrix
+
+| Analysis source | Snapshot contract | Public discovery outcome | Receipt |
+| --- | --- | --- | --- |
+| Platform XML configuration/extension | authoritative registration-aware content snapshot | providers run normally | eligible only after all other validation |
+| EDT configuration with at least one recognized marker | complete diagnostic marker snapshot defined below | normal `insufficient` report with an `unsupported_source_format` source-readiness check | never eligible in v1 |
+| EDT configuration without a recognized marker | none | typed operation error `unsupported_source_format` before providers | never |
+| EDT extension | none | typed operation error `unsupported_source_format` before providers | never |
+| `unknown` format | none | typed operation error `unknown_source_format` before providers | never |
+| `invalid` mixed format | none | typed operation error `invalid_source_format` before providers | never |
+| external processor/report source kind | none | typed operation error `unsupported_source_kind` before providers | never |
+
+The EDT diagnostic snapshot exists only to bind a deterministic unsupported
+report to the observed project state. It is not receipt-grade authority and no
+v1 provider may infer an EDT mechanism from lexical evidence. Its versioned v1
+manifest contains presence/content or declared absence for exactly `.project`,
+`DT-INF/PROJECT.PMF`, `Configuration/Configuration.mdo`, and
+`src/Configuration/Configuration.mdo`; it does not recurse. At least one EDT
+marker is present. Capture is complete or fails wholly under the same global
+file/byte/deadline rules; it never selects a prefix and never includes mutation
+destinations. A format/layout with no unambiguous snapshot never becomes an
+ordinary provider gap.
+
+The EDT report invokes no evidence provider. It has `status=insufficient`, no
+evidence/edges/candidates, and one source-readiness check with
+`code=source_readiness`, `provider=ProjectSourceResolverPort`, `state=skipped`,
+`outcome=inconclusive`, `coverage=unknown`, `severity=blocking`,
+`reasonCode=unsupported_source_format`, `retryable=false`, empty evidence IDs,
+empty `details`, and every requested proposal as a canonically sorted
+`proposal:<id>` entry in `affects`. Validate-mode proposal verdicts and their
+unresolved facts are `unknown`. Receipt eligibility is false with the sole
+mandatory blocker `unsupported_source_format` (additional independent request
+blockers may still be reported).
+
+Source readiness follows this first-match matrix; role is evaluated before kind
+and format, so combined-invalid inputs have one stable reason:
+
+| Role | Source kind | Format/layout | Result |
+| --- | --- | --- | --- |
+| analysis | external processor/report | any | `unsupported_source_kind` |
+| analysis | configuration/extension | Platform XML | allowed authoritative capture |
+| analysis | configuration | EDT with at least one v1 marker | allowed diagnostic capture |
+| analysis | configuration | EDT without a v1 marker | `unsupported_source_format` |
+| analysis | extension | EDT | `unsupported_source_format` |
+| analysis | configuration/extension | invalid | `invalid_source_format` |
+| analysis | configuration/extension | unknown | `unknown_source_format` |
+| destination | any kind except extension | any | `unsupported_destination_kind` |
+| destination | extension | Platform XML | allowed authoritative capture |
+| destination | extension | EDT, invalid, or unknown | `unsupported_destination_format` |
+
+Source-readiness failure is a typed application error, not a string convention:
+`DiscoveryError::SourceReadiness` carries `reasonCode`, `retryable`, source-set,
+and analysis/destination role. When Task 12 registers the public MCP tool, the
+normal operation envelope maps it to `ok=false` with exactly typed
+`data.sourceReadiness={reasonCode,retryable,sourceSet,role}` and no discovery
+report; it is not a transport error. Display text is secondary and consumers
+never parse `errors[]` to recover the code.
+
+Snapshot-capture failure is likewise a typed application error:
+`DiscoveryError::SnapshotCapture` carries a stable `reasonCode`, `retryable`,
+and a display-only detail. Task 12 maps it to the normal operation envelope as
+`ok=false` with exactly typed
+`data.snapshotCapture={reasonCode,retryable}` and no discovery report; it is
+not a transport error. The detail may appear in human diagnostics, but it is
+not semantic data and consumers never parse it to recover retry policy.
+
+`ProjectSourceResolverPort::resolve_all` reads the effective source mapping once
+and returns one `ResolvedSourceSelection`: one analysis identity, a sorted and
+deduplicated destination set, and one map-wide semantic digest shared by every
+returned identity. Snapshot capture rechecks that same digest; it never
+combines identities obtained from different versions of `v8project.yaml`. The
+digest covers only canonical effective topology (name, kind, format, and
+contained effective root). YAML comments/key order and unrelated or secret
+connection settings do not affect it. The sole `.` is the canonical identity
+for a source-set rooted at the workspace; absolute, drive/UNC, embedded `.`,
+`..`, empty, symlink, and reparse-point paths are rejected.
 
 ### Validate Input
 
@@ -507,6 +589,11 @@ The wire shape is exactly `code`, `provider`, `state`, `outcome`, `coverage`,
 at most 32 diagnostic strings of at most 512 UTF-8 bytes each and is excluded
 from evidence and analysis IDs.
 
+Evidence checks name one of the six evidence ports. The sole v1 orchestration
+check provider is `ProjectSourceResolverPort`, used only with
+`code=source_readiness`; it never appears as an evidence-record provider.
+Unknown check providers or any other resolver check code are contract errors.
+
 An unavailable optional check does not automatically make every proposal
 unusable. A blocking check cannot disappear merely because another provider
 returned evidence.
@@ -657,18 +744,112 @@ Unica mutation, the application advances the receipt to the resulting epoch and
 fingerprints. This rolling behavior permits a bounded multi-step change.
 
 The authoritative fingerprint is a SHA-256 digest over a domain-separated,
-canonical serialization of source-set mapping identity, sorted contained file
-paths, and file-content SHA-256 digests. File selection is source-format-aware:
-for Platform XML it starts from the configuration registration and includes
-registered metadata files, their contained module/form/template subtrees, and
-the destination extension equivalents. It does not scan unrelated workspace
-documentation, scripts, `docs/research`, or `docs/its` when a source-set root is
-the workspace root. Mapping configuration is hashed separately. Size,
-timestamp, and the existing
-`workspaceEpoch` are not stale-state authorities. Fingerprinting is bounded by
-server configuration. A bound, symlink/reparse escape, unreadable material
-file, or unsupported source layout makes the snapshot unavailable and prevents
-receipt issue or acceptance.
+versioned canonical serialization of source-set mapping identity and a sorted
+immutable manifest. Manifest entries have two disjoint encodings:
+
+| Manifest tag | Canonical fields |
+| --- | --- |
+| `present` | contained workspace-relative path, byte length actually read, file-content SHA-256 |
+| `absent_optional` | declared optional workspace-relative path and the absence tag; no fictitious length or digest |
+
+Only versioned optional-path registry entries may use `absent_optional`. The
+length in a `present` entry helps validate the canonical bytes but filesystem
+size alone is not a stale-state authority. Source and composite fingerprints
+are computed by smart constructors from their full identities and manifests;
+callers cannot supply an arbitrary digest that merely has valid syntax.
+
+File selection is source-format-aware. For Platform XML it uses one shared
+typed registration catalog and includes `Configuration.xml`, the versioned
+registry of exact configuration/extension root `Ext` artifacts, every
+registered metadata descriptor, and only its registered contained
+module/form/template/command subtrees. Optional
+`Ext/ParentConfigurations.bin` binds both presence/content and absence through
+a verified optional-path tombstone. `ConfigDumpInfo.xml` neither enters the
+manifest nor independently proves Platform XML format. Unregistered decoys,
+unrelated workspace documentation/scripts, `docs/research`, and `docs/its` are
+not authoritative material when the source-set root is the workspace. Snapshot
+selection and evidence providers consume the same catalog and snapshot-bound
+verified reader; a provider may not reinterpret registration or reopen an
+unconstrained live path. Every returned evidence freshness identity/fingerprint
+must match a linked snapshot before graph promotion.
+
+Freshness matching is content-authoritative: source-set identity and content
+fingerprint must match, while `workspaceEpoch` remains diagnostic-only. Before
+canonicalization the application normalizes the captured snapshot and every
+accepted evidence record to the request's current diagnostic epoch. Two
+otherwise identical records observed at different epochs therefore deduplicate
+to one evidence identity and can never create an identifier collision, change
+a verdict, or block the operation.
+
+`SOURCE_ROOT_EXT_ARTIFACTS_V1` contains exactly the optional root files
+`ManagedApplicationModule.bsl`, `OrdinaryApplicationModule.bsl`,
+`SessionModule.bsl`, `ExternalConnectionModule.bsl`, `CommandInterface.xml`,
+`ManagedApplicationCommandInterface.xml`,
+`OrdinaryApplicationCommandInterface.xml`, `ClientApplicationInterface.xml`,
+`HomePageWorkArea.xml`, and `Help.xml`. Unknown root-`Ext` files are not made
+material by location alone. `ParentConfigurations.bin` is deliberately outside
+that list because its present/absent support tombstone is handled separately.
+Once an object/form/template/command is itself registered, however, its
+contained `Ext` subtree is authoritative and all regular files within that
+bounded subtree are included except versioned tool-output directory components
+`.git`, `.build`, `target`, and `dist`. Those exclusions apply below the already
+registered `Ext` root, never to a registered object/form/template/command whose
+name happens to be `target` or `dist`. Nested collection directories are
+reached only through their direct registration. This preserves real
+kind-specific files such as role rights without admitting an unregistered
+form/template/command decoy.
+
+Snapshot capture performs a complete pre-read path-set derivation, a complete
+post-read derivation, and final identity revalidation. Containment is enforced
+at open time, not by a separate check followed by a path open: Unix walks every
+component through directory handles with `openat`/`O_NOFOLLOW` and opens the
+leaf with `O_NONBLOCK` before rejecting non-regular handles. Windows opens each
+single component relative to the already opened parent directory handle,
+rejects every reparse handle, retains the handle chain through validation, and
+validates the final handle's volume/file ID and exact contained path before and
+after reading. Windows fails closed when any of those facts are unavailable; a
+leaf-only path open plus final-prefix check is not sufficient. The
+opened regular-file identity and metadata are checked before and after reading.
+The final pass revalidates both present files and every `absent_optional`
+tombstone after the last capture hook. A final present-file reread is bounded by
+that file's previously captured byte length plus one, never by the larger
+global budget; late appearance or growth is a retryable observed source change.
+Any registration change, concurrent add/remove/replace/write,
+symlink/reparse escape, unreadable or special material file, unsupported
+layout, or fingerprint mismatch makes the whole snapshot unavailable. Source
+manifests remain in memory for exact pre/post diffs and verified reads; they are
+not silently reconstructed from a later filesystem state. Timestamp and the
+existing `workspaceEpoch` remain diagnostic-only.
+
+Snapshot failure classification is stable and exhaustive for v1:
+
+| `reasonCode` | Failure evidence | Retryable |
+| --- | --- | --- |
+| `source_changed_during_capture` | comparable before/after map, path-set, identity, content, or fingerprint observations prove substitution | yes |
+| `unsafe_source_topology` | stable containment escape, symlink/reparse component, non-regular material, or unavailable file identity | no |
+| `source_snapshot_deadline` | the server-owned elapsed-time deadline is reached | yes |
+| `source_io_unavailable` | a transient open/read/stat failure without substitution evidence | yes |
+| `malformed_source_material` | malformed, duplicate, unknown, missing, or identity-mismatched registered XML material | no |
+| `unsupported_source_layout` | a stable source-root/layout shape has no supported snapshot contract | no |
+| `invalid_source_path` | a configured or discovered path violates the canonical contained-path grammar | no |
+| `source_snapshot_resource_limit` | file, byte, traversal-entry, traversal-depth, or XML-byte deterministic bound is reached or overflows | no |
+| `source_snapshot_invariant_violation` | an internal snapshot constructor or validation invariant fails without a more specific classification | no |
+
+Classification uses observed evidence, not guessed cause: when before/after
+identity or topology proves a concurrent substitution it is retryable
+`source_changed_during_capture`; a stable unsafe symlink/reparse topology is
+non-retryable `unsafe_source_topology`.
+
+Server-owned file, byte, traversal, XML-parse, and wall-clock budgets apply once
+to the complete analysis-plus-destinations capture. Reaching any bound aborts
+the whole authoritative snapshot; it never returns a prefix. The v1 defaults
+are `maxFiles=200000`, `maxBytes=4GiB` of unique present-manifest content,
+`maxTraversalEntries=1600000`, `maxTraversalDepth=64`, `maxXmlBytes=64MiB` per
+parsed XML document, and `maxElapsed=120s`, with checked arithmetic. Repeated
+pre/post/final verification reads are bounded but do not count the same
+manifest bytes again. XML is size-checked before DOM parsing and remains part
+of the unique content sum. The elapsed deadline is a safety abort and never
+selects a timing-dependent manifest.
 
 For multiple proposals, the composite baseline contains the analysis
 source-set plus the sorted, deduplicated set of every destination source-set.
@@ -973,10 +1154,13 @@ resource limits, and weaker evidence level remain visible in the report.
 
 ### Bounds And Containment
 
-Providers enforce explicit limits for time, files, bytes, result count, and
-graph depth. Reaching a limit preserves valid evidence already collected and
-adds a `coverage=bounded` check. It blocks a receipt only when the truncated
-scope is material to the selected proposal.
+Evidence providers enforce explicit limits for time, files, bytes, result
+count, and graph depth. Reaching a provider limit preserves valid evidence
+already collected and adds a `coverage=bounded` check. It blocks a receipt only
+when the truncated scope is material to the selected proposal. Authoritative
+source snapshot capture is different: any file, byte, traversal, parse, or
+deadline bound aborts the entire snapshot and no provider runs against a
+prefix.
 
 Evidence rejected because of a symlink escape, containment failure, source
 fingerprint mismatch, or other safety rule is not silently skipped or replaced.
@@ -997,11 +1181,12 @@ reason codes, and a canonical record digest. Timestamps, workspace epoch,
 wall-clock duration, and display-only diagnostics are excluded from stable
 digests.
 
-File, byte, result-count, and graph-depth budgets select deterministic prefixes
-after canonical ordering. A wall-clock deadline is only a safety abort: if it
-fires, the affected provider outcome is unavailable/bounded and its outcome
-digest changes; a timing-dependent partial prefix is never treated as complete
-or as negative proof.
+Evidence-provider file, byte, result-count, and graph-depth budgets may select
+deterministic prefixes after canonical ordering. A provider wall-clock deadline
+is only a safety abort: if it fires, the affected provider outcome is
+unavailable/bounded and its outcome digest changes; a timing-dependent partial
+prefix is never treated as complete or as negative proof. Source snapshot
+budgets never select prefixes and instead abort capture as specified above.
 
 Conflicting provider facts are retained rather than averaged. They create a
 blocking check and prevent receipt issuance until resolved.
@@ -1378,5 +1563,6 @@ The public delivery updates in one coherent change:
 - Use an exclusive receipt lease across handler execution and atomic revision
   advancement.
 - Start enforceable target resolution with `unica.cfe.patch_method`.
-- Keep unsupported EDT layouts and unimplemented mechanism variants explicit as
-  `unknown`; never infer them from lexical evidence.
+- Bind unsupported EDT layouts to a bounded diagnostic snapshot and keep them,
+  plus unimplemented mechanism variants, explicit as `unknown`; never infer
+  them from lexical evidence and never issue an EDT receipt in v1.
