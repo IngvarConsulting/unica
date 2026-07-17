@@ -346,17 +346,23 @@ fn add_edge(
         .entry((from.clone(), to.clone(), kind))
         .or_default()
         .insert(evidence_id.clone());
+    let runtime_connection = is_runtime_connection(kind);
     for artifact in [from, to] {
         let facts = artifacts
             .get_mut(artifact)
             .expect("edge endpoint was inserted");
-        facts.connected = true;
-        facts.reason_codes.insert("runtime_connected".to_string());
         facts.evidence_ids.insert(evidence_id.clone());
-        connection_ports
-            .entry(artifact.clone())
-            .or_default()
-            .insert(port);
+        if runtime_connection {
+            facts.connected = true;
+            facts.reason_codes.insert("runtime_connected".to_string());
+            connection_ports
+                .entry(artifact.clone())
+                .or_default()
+                .insert(port);
+        } else {
+            facts.observed = true;
+            facts.reason_codes.insert("binding_observed".to_string());
+        }
     }
 }
 
@@ -364,11 +370,14 @@ fn has_runtime_connection(
     target: &ArtifactRef,
     edges: &BTreeMap<(ArtifactRef, ArtifactRef, FlowKind), BTreeSet<String>>,
 ) -> bool {
-    edges.keys().any(|(from, to, kind)| {
-        (from == target || to == target)
-            && matches!(
-                kind,
-                FlowKind::Calls | FlowKind::Handles | FlowKind::Subscribes | FlowKind::Uses
-            )
-    })
+    edges
+        .keys()
+        .any(|(from, to, kind)| (from == target || to == target) && is_runtime_connection(*kind))
+}
+
+fn is_runtime_connection(kind: FlowKind) -> bool {
+    matches!(
+        kind,
+        FlowKind::Calls | FlowKind::Handles | FlowKind::Subscribes | FlowKind::Uses
+    )
 }

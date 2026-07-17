@@ -258,6 +258,11 @@ class ProductContractTests(unittest.TestCase):
             "requires complete exact coverage from `MetadataCatalogPort`, `CallGraphPort`, and "
             "`FormInspectionPort`."
         )
+        structural_semantics = (
+            "`contains` and `defines` structural edges remain observed graph evidence; they never "
+            "populate `connection_ports`, establish runtime reachability, or make a candidate "
+            "actionable."
+        )
         for document, text in {
             "active discovery spec": design,
             "historical Task 3 plan": historical_plan,
@@ -296,6 +301,8 @@ class ProductContractTests(unittest.TestCase):
                 self.assertIn(binding_violation, normalized_text)
             with self.subTest(document=document, runtime_materiality=True):
                 self.assertIn(runtime_materiality, normalized_text)
+            with self.subTest(document=document, structural_semantics=True):
+                self.assertIn(structural_semantics, normalized_text)
 
         architecture_requirements = {
             "invariants": (

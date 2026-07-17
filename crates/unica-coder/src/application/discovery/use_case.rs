@@ -421,9 +421,9 @@ mod tests {
     use super::*;
     use crate::application::discovery::contract::{ArtifactKind, ArtifactRef, DiscoverRequest};
     use crate::application::discovery::model::{
-        BindingDetails, Coverage, DiscoveryStatus, EvidencePort, EvidenceProvider, EvidenceRecord,
-        FlowKind, Freshness, PlatformCallbackShape, ProviderFact, ReceiptEligibility,
-        SourceLocation, SupportState, Verdict,
+        BindingDetails, Coverage, DiscoveryStatus, EvidenceLevel, EvidencePort, EvidenceProvider,
+        EvidenceRecord, FactAnswer, FlowKind, Freshness, PlatformCallbackShape, ProviderFact,
+        ReceiptEligibility, SourceLocation, SupportState, Verdict,
     };
     use crate::application::discovery::ports::*;
     use crate::domain::project_sources::{SourceFormat, SourceSetKind};
@@ -629,6 +629,27 @@ mod tests {
                 },
             },
             coverage,
+        )
+    }
+
+    fn structural_metadata(relation: FlowKind) -> ProviderOutcome<EvidenceRecord> {
+        complete(
+            EvidencePort::MetadataCatalog,
+            vec![
+                record(
+                    EvidencePort::MetadataCatalog,
+                    ProviderFact::MetadataPresent { subject: owner() },
+                ),
+                record(
+                    EvidencePort::MetadataCatalog,
+                    ProviderFact::Binding {
+                        subject: owner(),
+                        object: target(),
+                        relation,
+                        details: BindingDetails::Structural,
+                    },
+                ),
+            ],
         )
     }
 
@@ -1170,6 +1191,49 @@ mod tests {
                     .iter()
                     .any(|item| item == "proposal:method-hook")
         }));
+    }
+
+    fn assert_structural_edge_is_not_runtime(relation: FlowKind) {
+        let mut fixture = Fixture::positive();
+        fixture.ports.metadata = structural_metadata(relation);
+        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
+        fixture.ports.forms = complete(EvidencePort::FormInspection, Vec::new());
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Contradicted);
+        assert_eq!(
+            report.proposal_verdicts[0].facts.runtime_reachable,
+            FactAnswer::No
+        );
+        assert!(!report.receipt_eligibility.eligible);
+        assert!(report
+            .flow_edges
+            .iter()
+            .any(|edge| edge.to == target() && edge.kind == relation));
+        assert!(!report
+            .extension_point_candidates
+            .iter()
+            .any(|candidate| candidate.target == target()));
+        let related = report
+            .related_artifacts
+            .iter()
+            .find(|artifact| artifact.artifact == target())
+            .unwrap();
+        assert_eq!(related.evidence_level, EvidenceLevel::Observed);
+        assert!(!related
+            .reason_codes
+            .contains(&"runtime_connected".to_string()));
+    }
+
+    #[test]
+    fn structural_defines_edge_is_observed_but_never_runtime_reachable() {
+        assert_structural_edge_is_not_runtime(FlowKind::Defines);
+    }
+
+    #[test]
+    fn structural_contains_edge_is_observed_but_never_runtime_reachable() {
+        assert_structural_edge_is_not_runtime(FlowKind::Contains);
     }
 
     #[test]

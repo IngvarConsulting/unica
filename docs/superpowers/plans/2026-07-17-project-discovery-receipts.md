@@ -289,6 +289,10 @@ Every other `BindingDetails` x `FlowKind` x evidence-port combination is a
 Infrastructure adapters must emit only these combinations and must not guess a
 relation from artifact names, display text, or provider availability.
 
+`contains` and `defines` structural edges remain observed graph evidence; they
+never populate `connection_ports`, establish runtime reachability, or make a
+candidate actionable.
+
 Runtime materiality follows evidence contribution: every runtime port present
 in `connection_ports` for the selected target is material, while other
 potential runtime ports are optional. If no runtime connection is established,
