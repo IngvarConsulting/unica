@@ -16,6 +16,11 @@ use serde_json::{json, Map, Value};
 use std::env;
 use std::path::{Path, PathBuf};
 
+// The public MCP registration is intentionally deferred until the receipt and
+// guard slices are complete; intermediate discovery types are consumed by the
+// next implementation tasks.
+#[allow(dead_code)]
+pub(crate) mod discovery;
 mod operation_descriptors;
 mod ports;
 mod tool_contracts;

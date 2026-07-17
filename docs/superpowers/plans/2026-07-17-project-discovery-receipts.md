@@ -112,6 +112,9 @@ git -c commit.gpgsign=false commit -m "docs: принять архитектур
 - Create: `crates/unica-coder/src/application/discovery/model.rs`
 - Create: `crates/unica-coder/src/application/discovery/determinism.rs`
 - Modify: `crates/unica-coder/src/application/mod.rs`
+- Create: `crates/unica-coder/src/domain/discovery_registry.rs`
+- Modify: `crates/unica-coder/src/domain/mod.rs`
+- Modify: `crates/unica-coder/src/infrastructure/metadata_kinds.rs`
 - Test: the four new modules
 
 - [ ] **Step 1: Write failing serde and determinism tests**
@@ -178,6 +181,13 @@ Model provider facts as a closed internal enum; the public evidence wire shape
 is the strict subject/factCode/optional-object/provenance/freshness contract
 from the spec, never arbitrary `Value`.
 
+Move the existing metadata-kind registry into the neutral domain registry and
+add the versioned module-kind registry there. Keep
+`infrastructure/metadata_kinds.rs` as a thin compatibility re-export while
+current callers migrate. ArtifactRef validation and future Platform XML
+providers consume this one registry; application code never imports
+infrastructure and no second list is allowed.
+
 - [ ] **Step 4: Implement canonicalization and stable SHA-256 identifiers**
 
 Use a versioned domain-separated streaming canonical encoder with hardcoded
@@ -200,7 +210,7 @@ add domain synonyms or scalar scores.
 Run: `cargo test --locked -p unica-coder application::discovery -- --nocapture`
 
 ```bash
-git add crates/unica-coder/src/application
+git add crates/unica-coder/src/application crates/unica-coder/src/domain crates/unica-coder/src/infrastructure/metadata_kinds.rs docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
 git -c commit.gpgsign=false commit -m "feat: добавить typed discovery contract"
 ```
 

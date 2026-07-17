@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
 use std::path::{Path, PathBuf};
 
@@ -31,7 +31,7 @@ pub enum SourceSetKind {
     ExternalReport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceFormat {
     PlatformXml,
