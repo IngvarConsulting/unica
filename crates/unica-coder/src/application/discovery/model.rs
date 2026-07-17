@@ -1034,8 +1034,42 @@ impl Check {
 
     pub(crate) fn validate(&self) -> Result<(), String> {
         stable_code(&self.code, "check.code")?;
-        if EvidencePort::parse_wire_name(&self.provider).is_none() {
-            return Err("check.provider must name one of the six evidence ports".to_string());
+        let evidence_provider = EvidencePort::parse_wire_name(&self.provider).is_some()
+            && self.code != "source_readiness";
+        let source_readiness_provider =
+            self.provider == "ProjectSourceResolverPort" && self.code == "source_readiness";
+        if !evidence_provider && !source_readiness_provider {
+            return Err(
+                "check.provider must name an evidence port or ProjectSourceResolverPort"
+                    .to_string(),
+            );
+        }
+        if source_readiness_provider {
+            let exact_state = self.state == CheckState::Skipped
+                && self.outcome == CheckOutcome::Inconclusive
+                && self.coverage == Coverage::Unknown
+                && self.severity == CheckSeverity::Blocking
+                && self.reason_code == "unsupported_source_format"
+                && !self.retryable
+                && self.details.is_empty()
+                && self.evidence_ids.is_empty();
+            if !exact_state {
+                return Err(
+                    "source_readiness resolver check must use the canonical skipped tuple"
+                        .to_string(),
+                );
+            }
+            if self
+                .affects
+                .iter()
+                .any(|target| target.strip_prefix("proposal:").is_none_or(str::is_empty))
+                || self.affects.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(
+                    "source_readiness resolver check affects must be canonical proposal ids"
+                        .to_string(),
+                );
+            }
         }
         validate_bounded_list(self.affects.clone(), "check.affects", 128, 256)?;
         stable_code(&self.reason_code, "check.reasonCode")?;

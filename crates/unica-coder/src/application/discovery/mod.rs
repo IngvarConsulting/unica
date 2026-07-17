@@ -1196,10 +1196,24 @@ mod tests {
             vec![],
         )
         .is_err());
+        assert!(Check::new(
+            "source_readiness",
+            "DefinitionPort",
+            CheckState::Skipped,
+            CheckOutcome::Inconclusive,
+            Coverage::Unknown,
+            CheckSeverity::Blocking,
+            vec![],
+            "unsupported_source_format",
+            false,
+            vec![],
+            vec![],
+        )
+        .is_err());
     }
 
     #[test]
-    fn checks_accept_exactly_the_six_evidence_port_names() {
+    fn checks_accept_evidence_ports_and_the_source_resolver_orchestration_port() {
         for port in EvidencePort::ALL {
             let name = port.wire_name();
             assert_eq!(EvidencePort::parse_wire_name(name), Some(port));
@@ -1218,6 +1232,62 @@ mod tests {
             )
             .is_ok());
         }
+        assert!(Check::new(
+            "source_readiness",
+            "ProjectSourceResolverPort",
+            CheckState::Skipped,
+            CheckOutcome::Inconclusive,
+            Coverage::Unknown,
+            CheckSeverity::Blocking,
+            vec![],
+            "unsupported_source_format",
+            false,
+            vec![],
+            vec![],
+        )
+        .is_ok());
+        assert!(Check::new(
+            "provider_contract",
+            "ProjectSourceResolverPort",
+            CheckState::Skipped,
+            CheckOutcome::Inconclusive,
+            Coverage::Unknown,
+            CheckSeverity::Blocking,
+            vec![],
+            "unsupported_source_format",
+            false,
+            vec![],
+            vec![],
+        )
+        .is_err());
+        assert!(Check::new(
+            "source_readiness",
+            "ProjectSourceResolverPort",
+            CheckState::Failed,
+            CheckOutcome::Inconclusive,
+            Coverage::Unknown,
+            CheckSeverity::Blocking,
+            vec!["proposal:p".into()],
+            "unsupported_source_format",
+            false,
+            vec![],
+            vec![],
+        )
+        .is_err());
+        assert!(Check::new(
+            "source_readiness",
+            "ProjectSourceResolverPort",
+            CheckState::Skipped,
+            CheckOutcome::Inconclusive,
+            Coverage::Unknown,
+            CheckSeverity::Blocking,
+            vec!["candidate:not-allowed".into()],
+            "unsupported_source_format",
+            false,
+            vec![],
+            vec![],
+        )
+        .is_err());
         for provider in ["SyntheticProvider", "definitionport", "DefinitionPortTypo"] {
             assert!(Check::new(
                 "provider_contract",

@@ -2,17 +2,20 @@ use super::contract::{DiscoverMode, DiscoverRequest, MutationIntent};
 use super::determinism::{analysis_id, canonicalize_evidence, evidence_id};
 use super::evidence_graph::EvidenceGraph;
 use super::model::{
-    Check, CheckOutcome, CheckSeverity, DiscoveryReport, DiscoverySource, DiscoveryStatus,
-    EvidencePort, LinkedSourceSnapshot, ReceiptEligibility, SourceSnapshotRole, Verdict,
+    Check, CheckOutcome, CheckSeverity, CheckState, Coverage, DiscoveryReport, DiscoverySource,
+    DiscoveryStatus, EvidencePort, FactAnswer, LinkedSourceSnapshot, ProposalFacts,
+    ProposalVerdict, ReceiptEligibility, SourceSnapshotRole, SupportState, Verdict,
 };
 use super::ports::{
     CallGraphPort, CodeSearchPort, CollectedProviderOutcome, DefinitionPort, DiscoveryError,
-    DiscoveryExecutionContext, DiscoveryQueryPlan, FormInspectionPort, MetadataCatalogPort,
-    ProjectSourceResolverPort, ReceiptIssuanceRequest, ReceiptIssuerPort, SourceSnapshotPort,
-    SupportStatePort,
+    DiscoveryExecutionContext, DiscoveryQueryPlan, EvidenceExecutionContext, FormInspectionPort,
+    MetadataCatalogPort, ProjectSourceResolverPort, ReceiptIssuanceRequest, ReceiptIssuerPort,
+    SnapshotCaptureError, SnapshotCaptureReason, SourceReadinessError, SourceReadinessReason,
+    SourceRole, SourceSnapshotPort, SupportStatePort,
 };
 use super::proposal_validator::{ProposalValidation, ProposalValidator};
-use crate::domain::source_snapshot::{ResolvedSourceSet, SourceSnapshot};
+use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::domain::source_snapshot::{ResolvedSourceSelection, ResolvedSourceSet, SourceSnapshot};
 use std::collections::BTreeSet;
 
 const ANALYSIS_CONTRACT_VERSION: &str = "project-discovery-v1";
@@ -65,46 +68,64 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                 "workspace root must not be blank".to_string(),
             ));
         }
-        let analysis_source = self
-            .source_resolver
-            .resolve(&context, request.source_set.as_deref())?;
+        let mutation_names = mutation_source_names(&request);
+        let resolved_sources = self.source_resolver.resolve_all(
+            &context,
+            request.source_set.as_deref(),
+            &mutation_names,
+        )?;
+        validate_resolved_source_roles(&resolved_sources)?;
+        let analysis_source = resolved_sources.analysis;
         analysis_source
             .validate()
             .map_err(DiscoveryError::Operation)?;
-        let mutation_sources = self.resolve_mutation_sources(&context, &request)?;
-        let snapshot = self.snapshot_port.capture(
+        let mutation_sources = resolved_sources.mutations;
+        let captured_mutation_sources = if analysis_source.source_format
+            == crate::domain::project_sources::SourceFormat::PlatformXml
+        {
+            mutation_sources.as_slice()
+        } else {
+            &[]
+        };
+        let mut snapshot = self.snapshot_port.capture(
             &analysis_source,
-            &mutation_sources,
+            captured_mutation_sources,
             context.workspace_epoch,
         )?;
-        snapshot.validate().map_err(DiscoveryError::Operation)?;
-        validate_captured_snapshot(
-            &snapshot,
-            &analysis_source,
-            &mutation_sources,
-            context.workspace_epoch,
-        )?;
+        snapshot.validate().map_err(snapshot_invariant_error)?;
+        validate_captured_snapshot(&snapshot, &analysis_source, captured_mutation_sources)?;
+        snapshot.workspace_epoch = context.workspace_epoch;
 
         let plan = DiscoveryQueryPlan::normalized(&request);
+        if snapshot.analysis.source_set.source_format
+            != crate::domain::project_sources::SourceFormat::PlatformXml
+        {
+            return unsupported_source_format_report(&plan, &snapshot);
+        }
+        let evidence_context = EvidenceExecutionContext {
+            workspace: &context,
+            snapshot: &snapshot,
+            source_reader: self.snapshot_port,
+        };
         let providers = vec![
             self.metadata_catalog
-                .metadata(&plan, &context)
-                .collect(EvidencePort::MetadataCatalog)?,
+                .metadata(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::MetadataCatalog, &snapshot)?,
             self.code_search
-                .search(&plan, &context)
-                .collect(EvidencePort::CodeSearch)?,
+                .search(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::CodeSearch, &snapshot)?,
             self.definitions
-                .definitions(&plan, &context)
-                .collect(EvidencePort::Definition)?,
+                .definitions(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::Definition, &snapshot)?,
             self.call_graph
-                .calls(&plan, &context)
-                .collect(EvidencePort::CallGraph)?,
+                .calls(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::CallGraph, &snapshot)?,
             self.form_inspection
-                .forms(&plan, &context)
-                .collect(EvidencePort::FormInspection)?,
+                .forms(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::FormInspection, &snapshot)?,
             self.support_state
-                .support(&plan, &context)
-                .collect(EvidencePort::SupportState)?,
+                .support(&plan, &evidence_context)
+                .collect_for_snapshot(EvidencePort::SupportState, &snapshot)?,
         ];
         let records = providers
             .iter()
@@ -146,28 +167,6 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
         .map_err(DiscoveryError::Operation)
     }
 
-    fn resolve_mutation_sources(
-        &self,
-        context: &DiscoveryExecutionContext,
-        request: &DiscoverRequest,
-    ) -> Result<Vec<ResolvedSourceSet>, DiscoveryError> {
-        let names = request
-            .proposals
-            .iter()
-            .filter_map(|proposal| proposal.mutation_intent.as_ref())
-            .map(|intent| match intent {
-                MutationIntent::CfePatchMethod {
-                    destination_source_set,
-                    ..
-                } => destination_source_set.clone(),
-            })
-            .collect::<BTreeSet<_>>();
-        names
-            .iter()
-            .map(|name| self.source_resolver.resolve(context, Some(name)))
-            .collect()
-    }
-
     fn receipt_eligibility(
         &self,
         request: &DiscoverRequest,
@@ -175,6 +174,14 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
         validation: &ProposalValidation,
         checks: &[Check],
     ) -> Result<ReceiptEligibility, DiscoveryError> {
+        if snapshot.analysis.source_set.source_format
+            != crate::domain::project_sources::SourceFormat::PlatformXml
+        {
+            return Ok(ReceiptEligibility {
+                eligible: false,
+                blockers: vec!["unsupported_source_format".to_string()],
+            });
+        }
         let all_supported = request.mode == DiscoverMode::Validate
             && !validation.verdicts.is_empty()
             && validation.verdicts.iter().all(|verdict| {
@@ -212,19 +219,152 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
     }
 }
 
+fn validate_resolved_source_roles(
+    selection: &ResolvedSourceSelection,
+) -> Result<(), DiscoveryError> {
+    selection.validate().map_err(DiscoveryError::Operation)?;
+    let analysis = &selection.analysis;
+    if !matches!(
+        analysis.kind,
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) {
+        return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+            SourceReadinessReason::UnsupportedSourceKind,
+            SourceRole::Analysis,
+            &analysis.name,
+        )));
+    }
+    match analysis.source_format {
+        SourceFormat::PlatformXml => {}
+        SourceFormat::Edt if analysis.kind == SourceSetKind::Configuration => {}
+        SourceFormat::Edt => {
+            return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+                SourceReadinessReason::UnsupportedSourceFormat,
+                SourceRole::Analysis,
+                &analysis.name,
+            )));
+        }
+        SourceFormat::Unknown => {
+            return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+                SourceReadinessReason::UnknownSourceFormat,
+                SourceRole::Analysis,
+                &analysis.name,
+            )));
+        }
+        SourceFormat::Invalid => {
+            return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+                SourceReadinessReason::InvalidSourceFormat,
+                SourceRole::Analysis,
+                &analysis.name,
+            )));
+        }
+    }
+    for mutation in &selection.mutations {
+        mutation.validate().map_err(DiscoveryError::Operation)?;
+        if mutation.kind != SourceSetKind::Extension {
+            return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+                SourceReadinessReason::UnsupportedDestinationKind,
+                SourceRole::Destination,
+                &mutation.name,
+            )));
+        }
+        if mutation.source_format != SourceFormat::PlatformXml {
+            return Err(DiscoveryError::SourceReadiness(SourceReadinessError::new(
+                SourceReadinessReason::UnsupportedDestinationFormat,
+                SourceRole::Destination,
+                &mutation.name,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn mutation_source_names(request: &DiscoverRequest) -> Vec<String> {
+    request
+        .proposals
+        .iter()
+        .filter_map(|proposal| proposal.mutation_intent.as_ref())
+        .map(|intent| match intent {
+            MutationIntent::CfePatchMethod {
+                destination_source_set,
+                ..
+            } => destination_source_set.clone(),
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn unsupported_source_format_report(
+    plan: &DiscoveryQueryPlan,
+    snapshot: &SourceSnapshot,
+) -> Result<DiscoveryReport, DiscoveryError> {
+    let source = discovery_source(snapshot);
+    let mut affects = plan
+        .request
+        .proposals
+        .iter()
+        .map(|proposal| format!("proposal:{}", proposal.id))
+        .collect::<Vec<_>>();
+    affects.sort();
+    let checks = vec![Check::new(
+        "source_readiness",
+        "ProjectSourceResolverPort",
+        CheckState::Skipped,
+        CheckOutcome::Inconclusive,
+        Coverage::Unknown,
+        CheckSeverity::Blocking,
+        affects,
+        "unsupported_source_format",
+        false,
+        Vec::new(),
+        Vec::new(),
+    )
+    .map_err(DiscoveryError::Operation)?];
+    let proposal_verdicts = plan
+        .request
+        .proposals
+        .iter()
+        .map(|proposal| ProposalVerdict {
+            proposal_id: proposal.id.clone(),
+            verdict: Verdict::Unknown,
+            facts: ProposalFacts {
+                exists: FactAnswer::Unknown,
+                runtime_reachable: FactAnswer::Unknown,
+                support: SupportState::Unknown,
+            },
+            evidence_ids: Vec::new(),
+            coverage_gaps: vec!["unsupported_source_format".into()],
+            blockers: vec!["unsupported_source_format".into()],
+        })
+        .collect::<Vec<_>>();
+    let analysis_id = analysis_id(&plan.request, ANALYSIS_CONTRACT_VERSION, &source, &[])
+        .map_err(|error| DiscoveryError::Operation(error.to_string()))?;
+    DiscoveryReport::new(
+        DiscoveryStatus::Insufficient,
+        analysis_id,
+        source,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        proposal_verdicts,
+        Vec::new(),
+        checks,
+        ReceiptEligibility {
+            eligible: false,
+            blockers: vec!["unsupported_source_format".into()],
+        },
+    )
+    .map_err(DiscoveryError::Operation)
+}
+
 fn validate_captured_snapshot(
     snapshot: &SourceSnapshot,
     analysis_source: &ResolvedSourceSet,
     mutation_sources: &[ResolvedSourceSet],
-    workspace_epoch: u64,
-) -> Result<(), DiscoveryError> {
-    if snapshot.workspace_epoch != workspace_epoch {
-        return Err(DiscoveryError::Operation(
-            "captured snapshot workspace epoch differs from the requested epoch".to_string(),
-        ));
-    }
+) -> Result<(), SnapshotCaptureError> {
     if snapshot.analysis.source_set != *analysis_source {
-        return Err(DiscoveryError::Operation(
+        return Err(snapshot_invariant_error(
             "captured analysis snapshot identity differs from the resolved source".to_string(),
         ));
     }
@@ -236,11 +376,15 @@ fn validate_captured_snapshot(
                 .any(|actual| actual.source_set == *expected)
         })
     {
-        return Err(DiscoveryError::Operation(
+        return Err(snapshot_invariant_error(
             "captured mutation snapshot identities differ from the resolved sources".to_string(),
         ));
     }
     Ok(())
+}
+
+fn snapshot_invariant_error(detail: String) -> SnapshotCaptureError {
+    SnapshotCaptureError::new(SnapshotCaptureReason::SnapshotInvariantViolation, detail)
 }
 
 fn discovery_source(snapshot: &SourceSnapshot) -> DiscoverySource {
@@ -427,13 +571,51 @@ mod tests {
     };
     use crate::application::discovery::ports::*;
     use crate::domain::project_sources::{SourceFormat, SourceSetKind};
-    use crate::domain::source_snapshot::{ResolvedSourceSet, SourceSetSnapshot, SourceSnapshot};
+    use crate::domain::source_snapshot::{
+        ManifestEntry, MaterialFile, ResolvedSourceSelection, ResolvedSourceSet, SourceManifest,
+        SourceSetSnapshot, SourceSnapshot,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const FINGERPRINT: &str =
-        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-    const COMPOSITE: &str =
-        "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    fn fake_resolved(name: &str, mutation: bool) -> ResolvedSourceSet {
+        ResolvedSourceSet::new(
+            name.into(),
+            if mutation {
+                SourceSetKind::Extension
+            } else {
+                SourceSetKind::Configuration
+            },
+            if mutation {
+                "src-cfe".into()
+            } else {
+                "src".into()
+            },
+            SourceFormat::PlatformXml,
+            format!("sha256:{}", "a".repeat(64)),
+        )
+        .unwrap()
+    }
+
+    fn fake_source_snapshot(source_set: ResolvedSourceSet) -> SourceSetSnapshot {
+        let path = if source_set.relative_root == "." {
+            "Configuration.xml".to_string()
+        } else {
+            format!("{}/Configuration.xml", source_set.relative_root)
+        };
+        SourceSetSnapshot::from_manifest(
+            source_set,
+            SourceManifest::new(BTreeMap::from([(
+                path,
+                ManifestEntry::Present(
+                    MaterialFile::new(1, format!("sha256:{}", "1".repeat(64))).unwrap(),
+                ),
+            )]))
+            .unwrap(),
+        )
+        .unwrap()
+    }
 
     fn artifact(kind: ArtifactKind, canonical_ref: &str) -> ArtifactRef {
         ArtifactRef::parse(kind, canonical_ref).unwrap()
@@ -513,7 +695,12 @@ mod tests {
             Some(SourceLocation::new("src/Flow.bsl", Some(1), Some(1)).unwrap()),
             EvidenceProvider::new(port, &format!("fake-{}", port.wire_name()), "1").unwrap(),
             coverage,
-            Freshness::new("main", FINGERPRINT, 7).unwrap(),
+            Freshness::new(
+                "main",
+                &fake_source_snapshot(fake_resolved("main", false)).source_fingerprint,
+                7,
+            )
+            .unwrap(),
         )
     }
 
@@ -682,7 +869,7 @@ mod tests {
                 fn $method(
                     &self,
                     _plan: &DiscoveryQueryPlan,
-                    _context: &DiscoveryExecutionContext,
+                    _context: &EvidenceExecutionContext<'_>,
                 ) -> ProviderOutcome<EvidenceRecord> {
                     self.$field.clone()
                 }
@@ -700,32 +887,62 @@ mod tests {
     struct FakeSourceResolver;
 
     impl ProjectSourceResolverPort for FakeSourceResolver {
-        fn resolve(
+        fn resolve_all(
             &self,
             _context: &DiscoveryExecutionContext,
-            requested_source_set: Option<&str>,
-        ) -> Result<ResolvedSourceSet, DiscoveryError> {
-            let name = requested_source_set.unwrap_or("main");
-            Ok(ResolvedSourceSet {
-                name: name.into(),
-                kind: if requested_source_set.is_some() {
-                    SourceSetKind::Extension
-                } else {
-                    SourceSetKind::Configuration
-                },
-                relative_root: if requested_source_set.is_some() {
-                    "src-cfe".into()
-                } else {
-                    "src".into()
-                },
-                source_format: SourceFormat::PlatformXml,
-                mapping_digest: if requested_source_set.is_some() {
-                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()
-                } else {
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()
-                },
-            })
+            requested_analysis: Option<&str>,
+            requested_mutations: &[String],
+        ) -> Result<ResolvedSourceSelection, DiscoveryError> {
+            ResolvedSourceSelection::new(
+                fake_resolved(requested_analysis.unwrap_or("main"), false),
+                requested_mutations
+                    .iter()
+                    .map(|name| fake_resolved(name, true))
+                    .collect(),
+            )
+            .map_err(DiscoveryError::Operation)
         }
+    }
+
+    struct FixedSourceResolver(ResolvedSourceSelection);
+
+    impl ProjectSourceResolverPort for FixedSourceResolver {
+        fn resolve_all(
+            &self,
+            _context: &DiscoveryExecutionContext,
+            _requested_analysis: Option<&str>,
+            _requested_mutations: &[String],
+        ) -> Result<ResolvedSourceSelection, DiscoveryError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct PanicSnapshotPort;
+
+    impl SourceSnapshotPort for PanicSnapshotPort {
+        fn capture(
+            &self,
+            _analysis: &ResolvedSourceSet,
+            _mutation_sources: &[ResolvedSourceSet],
+            _workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
+            panic!("invalid resolved source roles must be rejected before capture")
+        }
+    }
+
+    fn source_with_role_shape(
+        name: &str,
+        kind: SourceSetKind,
+        format: SourceFormat,
+    ) -> ResolvedSourceSet {
+        ResolvedSourceSet::new(
+            name.into(),
+            kind,
+            format!("src-{name}"),
+            format,
+            format!("sha256:{}", "a".repeat(64)),
+        )
+        .unwrap()
     }
 
     struct FakeSnapshotPort;
@@ -736,24 +953,17 @@ mod tests {
             analysis: &ResolvedSourceSet,
             mutation_sources: &[ResolvedSourceSet],
             workspace_epoch: u64,
-        ) -> Result<SourceSnapshot, DiscoveryError> {
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
             SourceSnapshot::new(
-                SourceSetSnapshot {
-                    source_set: analysis.clone(),
-                    source_fingerprint: FINGERPRINT.into(),
-                },
+                fake_source_snapshot(analysis.clone()),
                 mutation_sources
                     .iter()
                     .cloned()
-                    .map(|source_set| SourceSetSnapshot {
-                        source_set,
-                        source_fingerprint: FINGERPRINT.into(),
-                    })
+                    .map(fake_source_snapshot)
                     .collect(),
-                COMPOSITE.into(),
                 workspace_epoch,
             )
-            .map_err(DiscoveryError::Operation)
+            .map_err(SnapshotCaptureError::classify)
         }
     }
 
@@ -1386,27 +1596,116 @@ mod tests {
 
     struct AliasedAnalysisSnapshotPort;
 
+    struct ConcurrentCaptureFailure;
+
+    struct CorruptSnapshotPort;
+
+    struct OlderEpochSnapshotPort;
+
+    impl SourceSnapshotPort for OlderEpochSnapshotPort {
+        fn capture(
+            &self,
+            analysis: &ResolvedSourceSet,
+            mutation_sources: &[ResolvedSourceSet],
+            workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
+            FakeSnapshotPort.capture(
+                analysis,
+                mutation_sources,
+                workspace_epoch.saturating_sub(1),
+            )
+        }
+    }
+
+    impl SourceSnapshotPort for CorruptSnapshotPort {
+        fn capture(
+            &self,
+            analysis: &ResolvedSourceSet,
+            mutation_sources: &[ResolvedSourceSet],
+            workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
+            let mut snapshot =
+                FakeSnapshotPort.capture(analysis, mutation_sources, workspace_epoch)?;
+            snapshot.composite_fingerprint = format!("sha256:{}", "f".repeat(64));
+            Ok(snapshot)
+        }
+    }
+
+    impl SourceSnapshotPort for ConcurrentCaptureFailure {
+        fn capture(
+            &self,
+            _analysis: &ResolvedSourceSet,
+            _mutation_sources: &[ResolvedSourceSet],
+            _workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
+            Err(SnapshotCaptureError::source_changed(
+                "test source substitution",
+            ))
+        }
+    }
+
+    #[test]
+    fn snapshot_capture_error_type_survives_port_and_use_case_boundary() {
+        let result =
+            Fixture::positive().execute_with_snapshot(&ConcurrentCaptureFailure, method_proposal());
+
+        let Err(DiscoveryError::SnapshotCapture(error)) = result else {
+            panic!("typed snapshot capture failure was not preserved");
+        };
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SourceChangedDuringCapture
+        );
+        assert_eq!(error.reason_code(), "source_changed_during_capture");
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn invalid_adapter_snapshot_is_a_typed_non_retryable_invariant_failure() {
+        let result =
+            Fixture::positive().execute_with_snapshot(&CorruptSnapshotPort, method_proposal());
+
+        let Err(DiscoveryError::SnapshotCapture(error)) = result else {
+            panic!("invalid adapter snapshot was not a typed snapshot failure");
+        };
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SnapshotInvariantViolation
+        );
+        assert_eq!(error.reason_code(), "source_snapshot_invariant_violation");
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn adapter_snapshot_epoch_is_normalized_as_diagnostic_metadata() {
+        let report = Fixture::positive()
+            .execute_with_snapshot(&OlderEpochSnapshotPort, method_proposal())
+            .unwrap();
+
+        assert_eq!(report.source.workspace_epoch, 7);
+        assert!(report
+            .evidence
+            .iter()
+            .all(|evidence| evidence.freshness.workspace_epoch == 7));
+    }
+
     impl SourceSnapshotPort for AliasedAnalysisSnapshotPort {
         fn capture(
             &self,
             analysis: &ResolvedSourceSet,
             _mutation_sources: &[ResolvedSourceSet],
             workspace_epoch: u64,
-        ) -> Result<SourceSnapshot, DiscoveryError> {
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
             let mut aliased_analysis = analysis.clone();
             aliased_analysis.mapping_digest =
                 "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                     .to_string();
             SourceSnapshot::new(
-                SourceSetSnapshot {
-                    source_set: aliased_analysis,
-                    source_fingerprint: FINGERPRINT.into(),
-                },
+                fake_source_snapshot(aliased_analysis),
                 Vec::new(),
-                COMPOSITE.into(),
                 workspace_epoch,
             )
-            .map_err(DiscoveryError::Operation)
+            .map_err(SnapshotCaptureError::classify)
         }
     }
 
@@ -1415,7 +1714,14 @@ mod tests {
         let result = Fixture::positive()
             .execute_with_snapshot(&AliasedAnalysisSnapshotPort, method_proposal());
 
-        assert!(matches!(result, Err(DiscoveryError::Operation(_))));
+        let Err(DiscoveryError::SnapshotCapture(error)) = result else {
+            panic!("analysis identity mismatch was not a typed snapshot failure");
+        };
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SnapshotInvariantViolation
+        );
+        assert!(!error.retryable());
     }
 
     #[derive(Clone, Copy)]
@@ -1431,40 +1737,35 @@ mod tests {
             analysis: &ResolvedSourceSet,
             mutation_sources: &[ResolvedSourceSet],
             workspace_epoch: u64,
-        ) -> Result<SourceSnapshot, DiscoveryError> {
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
             let mut mutations = mutation_sources
                 .iter()
                 .cloned()
-                .map(|source_set| SourceSetSnapshot {
-                    source_set,
-                    source_fingerprint: FINGERPRINT.into(),
-                })
+                .map(fake_source_snapshot)
                 .collect::<Vec<_>>();
             match self {
                 Self::Omitted => mutations.clear(),
-                Self::Extra => mutations.push(SourceSetSnapshot {
-                    source_set: ResolvedSourceSet {
-                        name: "extra".into(),
-                        kind: SourceSetKind::Extension,
-                        relative_root: "extra-src".into(),
-                        source_format: SourceFormat::PlatformXml,
-                        mapping_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                Self::Extra => mutations.push(fake_source_snapshot(ResolvedSourceSet {
+                    name: "extra".into(),
+                    kind: SourceSetKind::Extension,
+                    relative_root: "extra-src".into(),
+                    source_format: SourceFormat::PlatformXml,
+                    mapping_digest:
+                        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                             .into(),
-                    },
-                    source_fingerprint: FINGERPRINT.into(),
-                }),
-                Self::Aliased => mutations[0].source_set.relative_root = "aliased-src".into(),
+                })),
+                Self::Aliased => {
+                    let mut source = mutations[0].source_set.clone();
+                    source.relative_root = "aliased-src".into();
+                    mutations[0] = fake_source_snapshot(source);
+                }
             }
             SourceSnapshot::new(
-                SourceSetSnapshot {
-                    source_set: analysis.clone(),
-                    source_fingerprint: FINGERPRINT.into(),
-                },
+                fake_source_snapshot(analysis.clone()),
                 mutations,
-                COMPOSITE.into(),
                 workspace_epoch,
             )
-            .map_err(DiscoveryError::Operation)
+            .map_err(SnapshotCaptureError::classify)
         }
     }
 
@@ -1478,7 +1779,14 @@ mod tests {
             let result =
                 Fixture::positive().execute_with_snapshot(&mismatch, mutation_method_proposal());
 
-            assert!(matches!(result, Err(DiscoveryError::Operation(_))));
+            let Err(DiscoveryError::SnapshotCapture(error)) = result else {
+                panic!("mutation identity mismatch was not a typed snapshot failure");
+            };
+            assert_eq!(
+                error.reason,
+                SnapshotCaptureReason::SnapshotInvariantViolation
+            );
+            assert!(!error.retryable());
         }
     }
 
@@ -1528,6 +1836,264 @@ mod tests {
         assert_eq!(
             report.receipt_eligibility.blockers,
             ["receipt_store_not_implemented"]
+        );
+    }
+
+    #[test]
+    fn edt_analysis_is_independently_ineligible_for_receipt() {
+        let mut source = fake_resolved("main", false);
+        source.source_format = SourceFormat::Edt;
+        let snapshot = SourceSnapshot::new(fake_source_snapshot(source), Vec::new(), 7).unwrap();
+        let fixture = Fixture::positive();
+        let request = method_proposal();
+        let validation = ProposalValidation {
+            verdicts: Vec::new(),
+            material_ports: BTreeMap::new(),
+        };
+        let use_case = DiscoverExtensionPointsUseCase::new(
+            &FakeSourceResolver,
+            &FakeSnapshotPort,
+            &fixture.ports,
+            &fixture.ports,
+            &fixture.ports,
+            &fixture.ports,
+            &fixture.ports,
+            &fixture.ports,
+            &AllowReceiptIssuer,
+        );
+
+        let eligibility = use_case
+            .receipt_eligibility(&request, &snapshot, &validation, &[])
+            .unwrap();
+
+        assert!(!eligibility.eligible);
+        assert_eq!(eligibility.blockers, ["unsupported_source_format"]);
+    }
+
+    #[derive(Default)]
+    struct EdtSourceResolver {
+        resolved_mutation_count: AtomicUsize,
+    }
+
+    #[test]
+    fn application_revalidates_resolver_role_kind_and_format_contract() {
+        let valid_analysis = source_with_role_shape(
+            "analysis",
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+        );
+        let cases = [
+            (
+                ResolvedSourceSelection::new(
+                    source_with_role_shape(
+                        "external",
+                        SourceSetKind::ExternalProcessor,
+                        SourceFormat::PlatformXml,
+                    ),
+                    vec![],
+                )
+                .unwrap(),
+                "unsupported_source_kind",
+                SourceRole::Analysis,
+            ),
+            (
+                ResolvedSourceSelection::new(
+                    source_with_role_shape(
+                        "unknown",
+                        SourceSetKind::Configuration,
+                        SourceFormat::Unknown,
+                    ),
+                    vec![],
+                )
+                .unwrap(),
+                "unknown_source_format",
+                SourceRole::Analysis,
+            ),
+            (
+                ResolvedSourceSelection::new(
+                    source_with_role_shape(
+                        "edt-extension",
+                        SourceSetKind::Extension,
+                        SourceFormat::Edt,
+                    ),
+                    vec![],
+                )
+                .unwrap(),
+                "unsupported_source_format",
+                SourceRole::Analysis,
+            ),
+            (
+                ResolvedSourceSelection::new(
+                    valid_analysis.clone(),
+                    vec![source_with_role_shape(
+                        "destination-config",
+                        SourceSetKind::Configuration,
+                        SourceFormat::PlatformXml,
+                    )],
+                )
+                .unwrap(),
+                "unsupported_destination_kind",
+                SourceRole::Destination,
+            ),
+            (
+                ResolvedSourceSelection::new(
+                    valid_analysis,
+                    vec![source_with_role_shape(
+                        "destination-edt",
+                        SourceSetKind::Extension,
+                        SourceFormat::Edt,
+                    )],
+                )
+                .unwrap(),
+                "unsupported_destination_format",
+                SourceRole::Destination,
+            ),
+        ];
+        let providers = FakeEvidencePorts::positive();
+        for (selection, reason, role) in cases {
+            let resolver = FixedSourceResolver(selection);
+            let use_case = DiscoverExtensionPointsUseCase::new(
+                &resolver,
+                &PanicSnapshotPort,
+                &providers,
+                &providers,
+                &providers,
+                &providers,
+                &providers,
+                &providers,
+                &AllowReceiptIssuer,
+            );
+            let error = use_case
+                .execute(
+                    DiscoveryExecutionContext {
+                        workspace_root: "/workspace".into(),
+                        workspace_epoch: 7,
+                    },
+                    explore_request(),
+                )
+                .unwrap_err();
+            let DiscoveryError::SourceReadiness(error) = error else {
+                panic!("expected source-readiness error")
+            };
+            assert_eq!(error.reason_code(), reason);
+            assert_eq!(error.role, role);
+            assert!(!error.retryable());
+        }
+    }
+
+    impl ProjectSourceResolverPort for EdtSourceResolver {
+        fn resolve_all(
+            &self,
+            _context: &DiscoveryExecutionContext,
+            requested_analysis: Option<&str>,
+            requested_mutations: &[String],
+        ) -> Result<ResolvedSourceSelection, DiscoveryError> {
+            let mut source = fake_resolved(requested_analysis.unwrap_or("main"), false);
+            source.source_format = SourceFormat::Edt;
+            self.resolved_mutation_count
+                .store(requested_mutations.len(), Ordering::SeqCst);
+            ResolvedSourceSelection::new(
+                source,
+                requested_mutations
+                    .iter()
+                    .map(|name| fake_resolved(name, true))
+                    .collect(),
+            )
+            .map_err(DiscoveryError::Operation)
+        }
+    }
+
+    struct PanicEvidencePorts;
+
+    #[derive(Default)]
+    struct AnalysisOnlySnapshotPort {
+        mutation_count: AtomicUsize,
+    }
+
+    impl SourceSnapshotPort for AnalysisOnlySnapshotPort {
+        fn capture(
+            &self,
+            analysis: &ResolvedSourceSet,
+            mutation_sources: &[ResolvedSourceSet],
+            workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, SnapshotCaptureError> {
+            self.mutation_count
+                .store(mutation_sources.len(), Ordering::SeqCst);
+            FakeSnapshotPort.capture(analysis, mutation_sources, workspace_epoch)
+        }
+    }
+
+    macro_rules! panic_port {
+        ($trait_name:ident, $method:ident) => {
+            impl $trait_name for PanicEvidencePorts {
+                fn $method(
+                    &self,
+                    _plan: &DiscoveryQueryPlan,
+                    _context: &EvidenceExecutionContext<'_>,
+                ) -> ProviderOutcome<EvidenceRecord> {
+                    panic!("EDT readiness path must not invoke evidence providers")
+                }
+            }
+        };
+    }
+
+    panic_port!(MetadataCatalogPort, metadata);
+    panic_port!(CodeSearchPort, search);
+    panic_port!(DefinitionPort, definitions);
+    panic_port!(CallGraphPort, calls);
+    panic_port!(FormInspectionPort, forms);
+    panic_port!(SupportStatePort, support);
+
+    #[test]
+    fn edt_readiness_skips_providers_and_returns_typed_insufficient_report() {
+        let providers = PanicEvidencePorts;
+        let snapshots = AnalysisOnlySnapshotPort::default();
+        let resolver = EdtSourceResolver::default();
+        let use_case = DiscoverExtensionPointsUseCase::new(
+            &resolver,
+            &snapshots,
+            &providers,
+            &providers,
+            &providers,
+            &providers,
+            &providers,
+            &providers,
+            &AllowReceiptIssuer,
+        );
+
+        let report = use_case
+            .execute(
+                DiscoveryExecutionContext {
+                    workspace_root: "/workspace".into(),
+                    workspace_epoch: 7,
+                },
+                mutation_method_proposal(),
+            )
+            .unwrap();
+
+        assert_eq!(report.status, DiscoveryStatus::Insufficient);
+        assert_eq!(resolver.resolved_mutation_count.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshots.mutation_count.load(Ordering::SeqCst), 0);
+        assert!(report.related_artifacts.is_empty());
+        assert!(report.flow_edges.is_empty());
+        assert!(report.extension_point_candidates.is_empty());
+        assert!(report.evidence.is_empty());
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
+        assert_eq!(report.checks.len(), 1);
+        let check = &report.checks[0];
+        assert_eq!(check.code, "source_readiness");
+        assert_eq!(check.provider, "ProjectSourceResolverPort");
+        assert_eq!(check.state, CheckState::Skipped);
+        assert_eq!(check.outcome, CheckOutcome::Inconclusive);
+        assert_eq!(check.coverage, Coverage::Unknown);
+        assert_eq!(check.severity, CheckSeverity::Blocking);
+        assert_eq!(check.affects, ["proposal:method-hook"]);
+        assert_eq!(check.reason_code, "unsupported_source_format");
+        assert!(!check.retryable);
+        assert!(check.details.is_empty());
+        assert_eq!(
+            report.receipt_eligibility.blockers,
+            ["unsupported_source_format"]
         );
     }
 }

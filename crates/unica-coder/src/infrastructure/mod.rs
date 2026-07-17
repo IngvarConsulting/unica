@@ -1,11 +1,15 @@
 pub(crate) mod bundled_tools;
+pub(crate) mod contained_fs;
 pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
 pub mod native_operations;
 pub mod path_policy;
+pub(crate) mod platform_xml;
 pub mod plugin_runtime;
+pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod runtime_jobs;
+pub(crate) mod source_snapshot;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;

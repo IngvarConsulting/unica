@@ -97,6 +97,28 @@ pub(crate) const MODULE_KIND_TAGS: &[&str] = &[
     "CommandModule",
 ];
 
+/// Exact v1 filesystem artifacts. Snapshot selection and future providers use
+/// these registries instead of independently globbing Ext directories.
+pub(crate) const SOURCE_ROOT_EXT_ARTIFACTS_V1: &[&str] = &[
+    "ManagedApplicationModule.bsl",
+    "OrdinaryApplicationModule.bsl",
+    "SessionModule.bsl",
+    "ExternalConnectionModule.bsl",
+    "CommandInterface.xml",
+    "ManagedApplicationCommandInterface.xml",
+    "OrdinaryApplicationCommandInterface.xml",
+    "ClientApplicationInterface.xml",
+    "HomePageWorkArea.xml",
+    "Help.xml",
+];
+
+pub(crate) const EDT_DIAGNOSTIC_MARKERS_V1: &[&str] = &[
+    ".project",
+    "DT-INF/PROJECT.PMF",
+    "Configuration/Configuration.mdo",
+    "src/Configuration/Configuration.mdo",
+];
+
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
 }

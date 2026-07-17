@@ -1,6 +1,5 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
-use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::RuntimeJobAction;
 use crate::infrastructure::native_operations::common::{
@@ -8,6 +7,7 @@ use crate::infrastructure::native_operations::common::{
     SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::{meta, template};
+use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::AdapterOutcome;
 use operation_descriptors::SupportGuardPolicy;
 use ports::{ApplicationPorts, DefaultApplicationPorts};
