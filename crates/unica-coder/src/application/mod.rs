@@ -5744,6 +5744,9 @@ mod tests {
         ));
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
+        for source_root in ["epf", "erf", "епф"] {
+            std::fs::create_dir_all(workspace.join(source_root)).unwrap();
+        }
         std::fs::write(
             workspace.join("v8project.yaml"),
             concat!(
@@ -5776,21 +5779,21 @@ mod tests {
             .unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.artifacts.len(), 2);
-        assert!(!workspace.join("epf").exists());
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("EPF").exists());
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         args.insert("OutputDir".to_string(), Value::String("ЕПФ".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("ЕПФ").exists());
+        assert!(!workspace.join("епф/Preview.xml").exists());
 
         args.insert(
             "OutputDir".to_string(),
@@ -5800,7 +5803,7 @@ mod tests {
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("source-set root"), "{error}");
-        assert!(!workspace.join("epf").exists());
+        assert!(!workspace.join("epf/nested").exists());
 
         args.insert("OutputDir".to_string(), Value::String("erf".to_string()));
         let error = UnicaApplication::new()
@@ -5808,7 +5811,7 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("source-set `reports`"), "{error}");
         assert!(error.contains("ExternalReport"), "{error}");
-        assert!(!workspace.join("erf").exists());
+        assert!(!workspace.join("erf/Preview.xml").exists());
 
         args.insert(
             "OutputDir".to_string(),
@@ -5873,12 +5876,13 @@ mod tests {
             ),
         )
         .unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
         args.insert("OutputDir".to_string(), Value::String("SRC".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("SRC").exists());
+        assert!(!workspace.join("src/Preview.xml").exists());
 
         std::fs::write(
             workspace.join("v8project.yaml"),

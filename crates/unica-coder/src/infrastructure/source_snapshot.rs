@@ -223,16 +223,51 @@ impl FilesystemSourceSnapshots {
             let read = read_stable_bytes(
                 &self.workspace,
                 &self.workspace.join(relative),
-                self.limits.max_bytes,
+                expected_observation.length,
                 Some(self.hook.as_ref()),
             )
-            .map_err(SnapshotCaptureError::classify)?;
+            .map_err(classify_final_present_revalidation_error)?;
             if &read.observation != expected_observation
                 || &digest_bytes(&read.bytes) != expected_digest
             {
                 return Err(SnapshotCaptureError::source_changed(format!(
                     "material file changed during capture: {relative}"
                 )));
+            }
+        }
+        let final_absent = captured
+            .iter()
+            .flat_map(|(_, manifest, _)| manifest.entries().iter())
+            .filter_map(|(path, entry)| {
+                matches!(entry, ManifestEntry::AbsentOptional(_)).then_some(path.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        for relative in final_absent {
+            budget.check_deadline(self.clock.as_ref())?;
+            let path = self.workspace.join(&relative);
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    return Err(SnapshotCaptureError::source_changed(format!(
+                        "optional material appeared during capture: {relative}"
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    reject_existing_ancestor_links(&self.workspace, &path).map_err(|detail| {
+                        if detail.starts_with("symlink_or_reparse_escape:") {
+                            SnapshotCaptureError::source_changed(format!(
+                                "optional material topology changed during capture: {relative}"
+                            ))
+                        } else {
+                            SnapshotCaptureError::classify(detail)
+                        }
+                    })?;
+                }
+                Err(error) => {
+                    return Err(SnapshotCaptureError::classify(format!(
+                        "material_file_unavailable: {}: {error}",
+                        path.display()
+                    )));
+                }
             }
         }
 
@@ -459,6 +494,14 @@ fn classify_mapping_revalidation_error(detail: String) -> SnapshotCaptureError {
             classified
         }
         _ => SnapshotCaptureError::source_changed(classified.detail),
+    }
+}
+
+fn classify_final_present_revalidation_error(detail: String) -> SnapshotCaptureError {
+    if detail.starts_with("source_snapshot_byte_limit:") {
+        SnapshotCaptureError::source_changed(detail)
+    } else {
+        SnapshotCaptureError::classify(detail)
     }
 }
 
@@ -1650,6 +1693,98 @@ mod tests {
     }
 
     #[test]
+    fn absent_optional_appearance_after_final_scan_discards_snapshot() {
+        let fixture = Fixture::new("snapshot-optional-appears-before-final-validation");
+        let selection = resolve_source_selection(&fixture.root, Some("main"), &[]).unwrap();
+        let service = fixture.controlled_service(
+            SnapshotLimits::default(),
+            Arc::new(FixedClock),
+            Arc::new(FinalValidationMutationHook::new(
+                fixture.root.clone(),
+                FinalValidationMutation::AddParentConfigurations,
+            )),
+        );
+
+        let error = service
+            .capture_authoritative(&selection.analysis, &[], 1)
+            .unwrap_err();
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SourceChangedDuringCapture
+        );
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn edt_absent_marker_appearance_after_final_scan_discards_snapshot() {
+        let root = temp_root("snapshot-edt-marker-appears-before-final-validation");
+        write(
+            &root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n - { name: main, type: CONFIGURATION, path: edt }\n",
+        );
+        write(&root.join("edt/.project"), "project");
+        let selection = resolve_source_selection(&root, Some("main"), &[]).unwrap();
+        let service = FilesystemSourceSnapshots {
+            workspace: canonical_workspace(&root).unwrap(),
+            limits: SnapshotLimits::default(),
+            clock: Arc::new(FixedClock),
+            hook: Arc::new(FinalValidationMutationHook::new(
+                root,
+                FinalValidationMutation::AddEdtProjectPmf,
+            )),
+        };
+
+        let error = service
+            .capture_authoritative(&selection.analysis, &[], 1)
+            .unwrap_err();
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SourceChangedDuringCapture
+        );
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn final_present_reread_is_bounded_by_captured_length() {
+        let fixture = Fixture::new("snapshot-final-reread-bounded");
+        let selection = resolve_source_selection(&fixture.root, Some("main"), &[]).unwrap();
+        let baseline = FilesystemSourceSnapshots::new(&fixture.root)
+            .unwrap()
+            .capture_authoritative(&selection.analysis, &[], 1)
+            .unwrap();
+        let captured_bytes = baseline
+            .analysis
+            .manifest
+            .entries()
+            .values()
+            .filter_map(|entry| match entry {
+                ManifestEntry::Present(material) => Some(material.byte_length),
+                ManifestEntry::AbsentOptional(_) => None,
+            })
+            .sum();
+        let service = fixture.controlled_service(
+            SnapshotLimits {
+                max_bytes: captured_bytes,
+                ..SnapshotLimits::default()
+            },
+            Arc::new(FixedClock),
+            Arc::new(FinalValidationMutationHook::new(
+                fixture.root.clone(),
+                FinalValidationMutation::GrowPresent(captured_bytes + 1),
+            )),
+        );
+
+        let error = service
+            .capture_authoritative(&selection.analysis, &[], 1)
+            .unwrap_err();
+        assert_eq!(
+            error.reason,
+            SnapshotCaptureReason::SourceChangedDuringCapture
+        );
+        assert!(error.retryable());
+    }
+
+    #[test]
     fn malformed_registered_descriptor_is_stable_and_non_retryable() {
         let fixture = Fixture::new("snapshot-malformed-descriptor");
         write(
@@ -2034,6 +2169,52 @@ mod tests {
         MalformedMap,
         #[cfg(unix)]
         SymlinkMap,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum FinalValidationMutation {
+        AddParentConfigurations,
+        AddEdtProjectPmf,
+        GrowPresent(u64),
+    }
+
+    struct FinalValidationMutationHook {
+        root: PathBuf,
+        mutation: FinalValidationMutation,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl FinalValidationMutationHook {
+        fn new(root: PathBuf, mutation: FinalValidationMutation) -> Self {
+            Self {
+                root,
+                mutation,
+                fired: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl CaptureHook for FinalValidationMutationHook {
+        fn on_event(&self, event: &CaptureEvent) {
+            if !matches!(event, CaptureEvent::BeforeFinalIdentityValidation)
+                || self.fired.swap(true, Ordering::SeqCst)
+            {
+                return;
+            }
+            match self.mutation {
+                FinalValidationMutation::AddParentConfigurations => write(
+                    &self.root.join("main/Ext/ParentConfigurations.bin"),
+                    "appeared",
+                ),
+                FinalValidationMutation::AddEdtProjectPmf => {
+                    write(&self.root.join("edt/DT-INF/PROJECT.PMF"), "appeared")
+                }
+                FinalValidationMutation::GrowPresent(length) => write_bytes(
+                    &self.root.join("main/CommonModules/X/Ext/Module.bsl"),
+                    &vec![b'G'; usize::try_from(length).unwrap()],
+                ),
+            }
+        }
     }
 
     struct MappingMutationHook {

@@ -54,7 +54,7 @@ impl ProjectSourceResolverPort for FilesystemProjectSourceResolver {
 }
 
 pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourceMap, String> {
-    let loaded = load_source_map(workspace_root, false)?;
+    let loaded = load_source_map(workspace_root)?;
     Ok(ProjectSourceMap {
         workspace_root: loaded.canonical_workspace.display().to_string(),
         config_path: loaded.config_path.map(|path| path.display().to_string()),
@@ -77,7 +77,7 @@ pub(crate) fn resolve_source_selection_typed(
     requested_analysis: Option<&str>,
     requested_mutations: &[String],
 ) -> Result<ResolvedSourceSelection, DiscoveryError> {
-    let loaded = load_source_map(workspace_root, true).map_err(DiscoveryError::Operation)?;
+    let loaded = load_source_map(workspace_root).map_err(DiscoveryError::Operation)?;
     let eligible = loaded
         .source_sets
         .iter()
@@ -211,10 +211,7 @@ fn resolved(
     )
 }
 
-fn load_source_map(
-    workspace_root: &Path,
-    require_existing_roots: bool,
-) -> Result<LoadedSourceMap, String> {
+fn load_source_map(workspace_root: &Path) -> Result<LoadedSourceMap, String> {
     let canonical_workspace = canonical_workspace(workspace_root)?;
     let config_path = canonical_workspace.join("v8project.yaml");
     let (configured, configured_format_raw, actual_config_path) =
@@ -244,12 +241,10 @@ fn load_source_map(
     } else {
         configured
     };
-    validate_source_set_identities(&canonical_workspace, &configured, require_existing_roots)?;
+    validate_source_set_identities(&canonical_workspace, &configured)?;
     let mut source_sets = configured
         .iter()
-        .map(|source| {
-            detect_source_set_format(&canonical_workspace, source, require_existing_roots)
-        })
+        .map(|source| detect_source_set_format(&canonical_workspace, source))
         .collect::<Result<Vec<_>, _>>()?;
     let mapping_digest = mapping_digest(&source_sets)?;
     // Public map preserves configured order. Identity hashing canonicalizes it.
@@ -380,7 +375,6 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 fn validate_source_set_identities(
     workspace: &Path,
     source_sets: &[ConfiguredSourceSet],
-    require_existing_roots: bool,
 ) -> Result<(), String> {
     let mut names = BTreeSet::new();
     let mut roots = BTreeMap::new();
@@ -388,13 +382,7 @@ fn validate_source_set_identities(
         if !names.insert(source.name.to_lowercase()) {
             return Err(format!("duplicate_source_set_name: {}", source.name));
         }
-        let configured_root = workspace.join(&source.relative_root);
-        let allow_missing = !require_existing_roots && !configured_root.exists();
-        let canonical_root = if allow_missing {
-            configured_root
-        } else {
-            resolve_contained_directory(workspace, &source.relative_root)?
-        };
+        let canonical_root = resolve_contained_directory(workspace, &source.relative_root)?;
         if let Some(previous) = roots.insert(canonical_root.clone(), source.name.clone()) {
             return Err(format!(
                 "duplicate_source_root: {} and {} resolve to {}",
@@ -435,15 +423,8 @@ fn autodetect_source_sets(workspace: &Path) -> Result<Vec<ConfiguredSourceSet>, 
 fn detect_source_set_format(
     workspace: &Path,
     configured: &ConfiguredSourceSet,
-    require_existing_roots: bool,
 ) -> Result<ProjectSourceSet, String> {
-    let configured_root = workspace.join(&configured.relative_root);
-    let allow_missing = !require_existing_roots && !configured_root.exists();
-    let root = if allow_missing {
-        configured_root
-    } else {
-        resolve_contained_directory(workspace, &configured.relative_root)?
-    };
+    let root = resolve_contained_directory(workspace, &configured.relative_root)?;
     let mut platform_evidence = Vec::new();
     let configuration = root.join("Configuration.xml");
     if regular_marker(&configuration)? {
@@ -692,6 +673,13 @@ mod tests {
         let map = discover_project_source_map(&root).unwrap();
         assert_eq!(map.source_sets[0].source_format, SourceFormat::Unknown);
         assert!(map.source_sets[0].format_evidence.is_empty());
+        let error = resolve_source_selection_typed(&root, Some("main"), &[]).unwrap_err();
+        let DiscoveryError::SourceReadiness(error) = error else {
+            panic!("expected typed source readiness error")
+        };
+        assert_eq!(error.reason_code(), "unknown_source_format");
+        assert_eq!(error.role, SourceRole::Analysis);
+        assert!(!error.retryable());
 
         write(&root.join("main/Configuration.xml"), "x");
         let map = discover_project_source_map(&root).unwrap();
@@ -701,6 +689,46 @@ mod tests {
             vec!["main/Configuration.xml"]
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_map_rejects_a_truly_missing_configured_root() {
+        let root = fixture("source-map-missing-root");
+        write(
+            &root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n - { name: main, type: CONFIGURATION, path: missing }\n",
+        );
+
+        let error = discover_project_source_map(&root).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_map_rejects_dangling_leaf_and_ancestor_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        for (name, configured_path, link_path) in [
+            ("leaf", "linked", "linked"),
+            ("ancestor", "linked/main", "linked"),
+        ] {
+            let root = fixture(&format!("source-map-dangling-{name}"));
+            write(
+                &root.join("v8project.yaml"),
+                &format!(
+                    "format: DESIGNER\nsource-set:\n - {{ name: main, type: CONFIGURATION, path: {configured_path} }}\n"
+                ),
+            );
+            symlink(root.join("does-not-exist"), root.join(link_path)).unwrap();
+
+            let error = discover_project_source_map(&root).unwrap_err();
+            assert!(
+                error.contains("symlink") || error.contains("reparse"),
+                "{name}: {error}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
