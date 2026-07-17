@@ -1,6 +1,10 @@
 pub(crate) mod contract;
 pub(crate) mod determinism;
+pub(crate) mod evidence_graph;
 pub(crate) mod model;
+pub(crate) mod ports;
+pub(crate) mod proposal_validator;
+pub(crate) mod use_case;
 
 #[cfg(test)]
 mod tests {
@@ -919,10 +923,14 @@ mod tests {
                 subject: module.clone(),
                 object: method.clone(),
                 relation: FlowKind::Defines,
+                details: BindingDetails::Structural,
             },
             ProviderFact::Call {
                 subject: method.clone(),
                 object: method.clone(),
+                resolution: CallResolution::Resolved,
+                call_type: CallType::Direct,
+                context: ExecutionContext::Server,
             },
             ProviderFact::PlatformCallback {
                 subject: module.clone(),
@@ -976,6 +984,7 @@ mod tests {
                     subject: caller.clone(),
                     object: method.clone(),
                     relation,
+                    details: BindingDetails::Structural,
                 },
                 None,
                 provider.clone(),
@@ -986,6 +995,57 @@ mod tests {
         assert_ne!(
             evidence_record_digest(&make(FlowKind::Calls)).unwrap(),
             evidence_record_digest(&make(FlowKind::Handles)).unwrap()
+        );
+
+        let binding = |url_template: &str| {
+            EvidenceRecord::from_fact(
+                ProviderFact::Binding {
+                    subject: caller.clone(),
+                    object: method.clone(),
+                    relation: FlowKind::Handles,
+                    details: BindingDetails::HttpRoute {
+                        verb: HttpVerb::Post,
+                        url_template: url_template.to_string(),
+                        context: ExecutionContext::Server,
+                    },
+                },
+                None,
+                provider.clone(),
+                Coverage::Complete,
+                freshness.clone(),
+            )
+        };
+        assert_ne!(
+            evidence_record_digest(&binding("/v1/items/{id}")).unwrap(),
+            evidence_record_digest(&binding("/v1/items/{code}")).unwrap()
+        );
+
+        let call = |resolution, context| {
+            EvidenceRecord::from_fact(
+                ProviderFact::Call {
+                    subject: caller.clone(),
+                    object: method.clone(),
+                    resolution,
+                    call_type: CallType::Direct,
+                    context,
+                },
+                None,
+                provider.clone(),
+                Coverage::Complete,
+                freshness.clone(),
+            )
+        };
+        assert_ne!(
+            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Server))
+                .unwrap(),
+            evidence_record_digest(&call(CallResolution::Dynamic, ExecutionContext::Server))
+                .unwrap()
+        );
+        assert_ne!(
+            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Server))
+                .unwrap(),
+            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Client))
+                .unwrap()
         );
 
         let definition_provider =

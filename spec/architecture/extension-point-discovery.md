@@ -97,6 +97,17 @@ Target application ports are:
 - `FormInspectionPort`;
 - `SupportStatePort`.
 
+Each evidence port returns `ProviderOutcome<T>` with exactly five application
+states: `complete`, `bounded`, `unavailable`, `failed`, or
+`contract_violation`. Complete and bounded outcomes carry a typed
+`ProviderBatch<T>`; every record in the batch repeats its canonical identity,
+location, provider name/version, coverage, content source fingerprint, and
+diagnostic workspace epoch. `unavailable` and `failed` are reportable
+degradation, while only `contract_violation` is a fatal evidence-provider
+error. A complete empty batch is negative proof only for the exact typed query
+sent to that port. Bounded, unavailable, and failed outcomes are never negative
+proof.
+
 Ports return typed records containing stable artifact identities, locations,
 provider provenance, and freshness. Infrastructure adapters implement those
 ports. An infrastructure adapter must not call another adapter, select an
@@ -107,6 +118,22 @@ binding catalog keyed by platform script variant, metadata kind, module kind,
 method name, export state, and signature. `MetadataCatalogPort` exposes those
 facts with provider provenance. A method name or call-graph node alone does not
 prove that the 1C platform invokes it.
+
+Binding and call facts preserve mechanism semantics in their typed payload and
+stable evidence digest. Binding facts carry the exact event or action, HTTP
+verb and URL template, scheduled-job enabled state, and execution context when
+the mechanism requires them. Call facts carry resolution state, call type, and
+execution context. Validators must not reconstruct any of these values from an
+artifact name or display text.
+
+Non-evidence orchestration remains behind separate
+`ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`
+boundaries. The application-owned `SourceSnapshot` contains exactly one
+analysis snapshot plus a canonically sorted and deduplicated set of mutation
+snapshots, reuses the domain `SourceFormat`, and binds content fingerprints
+rather than timestamps. Concrete filesystem capture and persistent receipt
+issuance are later infrastructure slices; the interim no-op issuer contributes
+the stable `receipt_store_not_implemented` eligibility blocker.
 
 ### Evidence Graph
 

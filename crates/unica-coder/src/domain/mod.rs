@@ -5,4 +5,5 @@ pub mod cache;
 pub(crate) mod discovery_registry;
 pub mod events;
 pub mod project_sources;
+pub(crate) mod source_snapshot;
 pub mod workspace;

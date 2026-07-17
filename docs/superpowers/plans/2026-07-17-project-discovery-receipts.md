@@ -265,12 +265,23 @@ Every fact carries canonical identity, `SourceLocation`, provider name/version,
 coverage, source fingerprint, and workspace epoch. Only contract violations are
 fatal `Err`.
 
+The application outcome algebra is exactly `complete`, `bounded`,
+`unavailable`, `failed`, and `contract_violation`. A complete empty batch is
+negative proof only for the exact typed query. Bounded, unavailable, and failed
+outcomes remain inconclusive. Binding records bind exact mechanism details;
+call records bind resolution, call type, and execution context into the stable
+evidence digest.
+
 Keep non-evidence orchestration dependencies explicit and separate:
 `ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`.
 Define typed `ResolvedSourceSet`, `SourceSnapshot`, and
 `DiscoveryExecutionContext` in the domain/application boundary now so this
 slice compiles before concrete filesystem adapters exist. Fake implementations
 prove that application code imports no infrastructure module.
+
+`SourceSnapshot` reuses the domain `SourceFormat` and models exactly one
+analysis snapshot plus canonically sorted/deduplicated mutation snapshots.
+Content capture remains behind `SourceSnapshotPort` until Task 4.
 
 - [ ] **Step 4: Implement evidence graph and proposal validator**
 
@@ -292,7 +303,9 @@ eligibility blocker until the receipt-store task.
 Run: `cargo test --locked -p unica-coder discovery -- --nocapture`
 
 ```bash
-git add crates/unica-coder/src/application/discovery
+git add crates/unica-coder/src/application/discovery crates/unica-coder/src/domain \
+  spec/architecture/extension-point-discovery.md \
+  docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
 git -c commit.gpgsign=false commit -m "feat: реализовать evidence graph и validation"
 ```
 

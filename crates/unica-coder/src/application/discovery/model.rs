@@ -122,7 +122,7 @@ impl StableTag for CheckSeverity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SupportState {
     Editable,
@@ -176,7 +176,7 @@ impl StableTag for EvidenceType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum EvidencePort {
     #[serde(rename = "MetadataCatalogPort")]
     MetadataCatalog,
@@ -258,6 +258,115 @@ pub(crate) enum FlowKind {
     Handles,
     Subscribes,
     Uses,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallResolution {
+    Resolved,
+    Dynamic,
+    Ambiguous,
+    Unresolved,
+}
+
+impl StableTag for CallResolution {
+    fn stable_tag(self) -> u16 {
+        match self {
+            Self::Resolved => 1,
+            Self::Dynamic => 2,
+            Self::Ambiguous => 3,
+            Self::Unresolved => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallType {
+    Direct,
+    Method,
+    Callback,
+    Dynamic,
+}
+
+impl StableTag for CallType {
+    fn stable_tag(self) -> u16 {
+        match self {
+            Self::Direct => 1,
+            Self::Method => 2,
+            Self::Callback => 3,
+            Self::Dynamic => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HttpVerb {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+}
+
+impl StableTag for HttpVerb {
+    fn stable_tag(self) -> u16 {
+        match self {
+            Self::Get => 1,
+            Self::Post => 2,
+            Self::Put => 3,
+            Self::Patch => 4,
+            Self::Delete => 5,
+            Self::Head => 6,
+            Self::Options => 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BindingDetails {
+    Structural,
+    EventSubscription {
+        event: String,
+        context: super::contract::ExecutionContext,
+    },
+    FormCommand {
+        action: String,
+        context: super::contract::ExecutionContext,
+    },
+    CommonCommand {
+        action: String,
+        context: super::contract::ExecutionContext,
+    },
+    ScheduledJob {
+        enabled: bool,
+        context: super::contract::ExecutionContext,
+    },
+    HttpRoute {
+        verb: HttpVerb,
+        url_template: String,
+        context: super::contract::ExecutionContext,
+    },
+    ExchangePlan {
+        event: String,
+        context: super::contract::ExecutionContext,
+    },
+}
+
+impl BindingDetails {
+    pub(crate) const VARIANT_STABLE_TAGS: [u16; 7] = [1, 2, 3, 4, 5, 6, 7];
+
+    pub(crate) fn stable_tag(&self) -> u16 {
+        match self {
+            Self::Structural => 1,
+            Self::EventSubscription { .. } => 2,
+            Self::FormCommand { .. } => 3,
+            Self::CommonCommand { .. } => 4,
+            Self::ScheduledJob { .. } => 5,
+            Self::HttpRoute { .. } => 6,
+            Self::ExchangePlan { .. } => 7,
+        }
+    }
 }
 
 impl StableTag for FlowKind {
@@ -594,10 +703,14 @@ pub(crate) enum ProviderFact {
         subject: ArtifactRef,
         object: ArtifactRef,
         relation: FlowKind,
+        details: BindingDetails,
     },
     Call {
         subject: ArtifactRef,
         object: ArtifactRef,
+        resolution: CallResolution,
+        call_type: CallType,
+        context: super::contract::ExecutionContext,
     },
     PlatformCallback {
         subject: ArtifactRef,

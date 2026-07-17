@@ -2,8 +2,8 @@ use super::contract::{
     ArtifactRef, CfePatchMethodArguments, DiscoverRequest, MutationIntent, Proposal, StableTag,
 };
 use super::model::{
-    Check, DefinitionParameter, DefinitionShape, DiscoveryReport, DiscoverySource, Evidence,
-    EvidenceRecord, LinkedSourceSnapshot, PlatformCallbackShape, ProviderFact,
+    BindingDetails, Check, DefinitionParameter, DefinitionShape, DiscoveryReport, DiscoverySource,
+    Evidence, EvidenceRecord, LinkedSourceSnapshot, PlatformCallbackShape, ProviderFact,
     ProviderOutcomeSnapshot, ProviderReadiness,
 };
 use crate::domain::project_sources::SourceFormat;
@@ -457,14 +457,25 @@ fn encode_provider_fact(
             subject,
             object,
             relation,
+            details,
         } => {
             encode_artifact(encoder, subject)?;
             encode_artifact(encoder, object)?;
             encoder.write_u16(relation.stable_tag());
+            encode_binding_details(encoder, details)?;
         }
-        ProviderFact::Call { subject, object } => {
+        ProviderFact::Call {
+            subject,
+            object,
+            resolution,
+            call_type,
+            context,
+        } => {
             encode_artifact(encoder, subject)?;
             encode_artifact(encoder, object)?;
+            encoder.write_u16(resolution.stable_tag());
+            encoder.write_u16(call_type.stable_tag());
+            encoder.write_u16(context.stable_tag());
         }
         ProviderFact::PlatformCallback {
             subject,
@@ -481,6 +492,59 @@ fn encode_provider_fact(
         }
     }
     Ok(())
+}
+
+fn encode_binding_details(
+    encoder: &mut CanonicalEncoder,
+    details: &BindingDetails,
+) -> Result<(), DeterminismError> {
+    encoder.write_u16(details.stable_tag());
+    match details {
+        BindingDetails::Structural => {}
+        BindingDetails::EventSubscription { event, context } => {
+            encode_binding_component(encoder, event, "event")?;
+            encoder.write_u16(context.stable_tag());
+        }
+        BindingDetails::FormCommand { action, context } => {
+            encode_binding_component(encoder, action, "action")?;
+            encoder.write_u16(context.stable_tag());
+        }
+        BindingDetails::CommonCommand { action, context } => {
+            encode_binding_component(encoder, action, "action")?;
+            encoder.write_u16(context.stable_tag());
+        }
+        BindingDetails::ScheduledJob { enabled, context } => {
+            encoder.write_bool(*enabled);
+            encoder.write_u16(context.stable_tag());
+        }
+        BindingDetails::HttpRoute {
+            verb,
+            url_template,
+            context,
+        } => {
+            encoder.write_u16(verb.stable_tag());
+            encode_binding_component(encoder, url_template, "url template")?;
+            encoder.write_u16(context.stable_tag());
+        }
+        BindingDetails::ExchangePlan { event, context } => {
+            encode_binding_component(encoder, event, "event")?;
+            encoder.write_u16(context.stable_tag());
+        }
+    }
+    Ok(())
+}
+
+fn encode_binding_component(
+    encoder: &mut CanonicalEncoder,
+    value: &str,
+    field: &str,
+) -> Result<(), DeterminismError> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        return Err(DeterminismError::InvalidComponent(format!(
+            "binding {field} must not be blank"
+        )));
+    }
+    encoder.write_string(value)
 }
 
 fn evidence_record_hex(record: &EvidenceRecord) -> Result<String, DeterminismError> {
@@ -614,28 +678,41 @@ fn provider_facts_are_byte_identical(left: &ProviderFact, right: &ProviderFact) 
                 subject: left_subject,
                 object: left_object,
                 relation: left_relation,
+                details: left_details,
             },
             ProviderFact::Binding {
                 subject: right_subject,
                 object: right_object,
                 relation: right_relation,
+                details: right_details,
             },
         ) => {
             exact_artifact(left_subject, right_subject)
                 && exact_artifact(left_object, right_object)
                 && left_relation == right_relation
+                && left_details == right_details
         }
         (
             ProviderFact::Call {
                 subject: left_subject,
                 object: left_object,
+                resolution: left_resolution,
+                call_type: left_call_type,
+                context: left_context,
             },
             ProviderFact::Call {
                 subject: right_subject,
                 object: right_object,
+                resolution: right_resolution,
+                call_type: right_call_type,
+                context: right_context,
             },
         ) => {
-            exact_artifact(left_subject, right_subject) && exact_artifact(left_object, right_object)
+            exact_artifact(left_subject, right_subject)
+                && exact_artifact(left_object, right_object)
+                && left_resolution == right_resolution
+                && left_call_type == right_call_type
+                && left_context == right_context
         }
         (
             ProviderFact::PlatformCallback {
@@ -994,6 +1071,28 @@ pub(crate) fn assert_unique_stable_tags() {
         super::model::FlowKind::Uses.stable_tag(),
     ]);
     unique(&[
+        super::model::CallResolution::Resolved.stable_tag(),
+        super::model::CallResolution::Dynamic.stable_tag(),
+        super::model::CallResolution::Ambiguous.stable_tag(),
+        super::model::CallResolution::Unresolved.stable_tag(),
+    ]);
+    unique(&[
+        super::model::CallType::Direct.stable_tag(),
+        super::model::CallType::Method.stable_tag(),
+        super::model::CallType::Callback.stable_tag(),
+        super::model::CallType::Dynamic.stable_tag(),
+    ]);
+    unique(&[
+        super::model::HttpVerb::Get.stable_tag(),
+        super::model::HttpVerb::Post.stable_tag(),
+        super::model::HttpVerb::Put.stable_tag(),
+        super::model::HttpVerb::Patch.stable_tag(),
+        super::model::HttpVerb::Delete.stable_tag(),
+        super::model::HttpVerb::Head.stable_tag(),
+        super::model::HttpVerb::Options.stable_tag(),
+    ]);
+    unique(&super::model::BindingDetails::VARIANT_STABLE_TAGS);
+    unique(&[
         super::model::DiscoveryStatus::Complete.stable_tag(),
         super::model::DiscoveryStatus::Partial.stable_tag(),
         super::model::DiscoveryStatus::Insufficient.stable_tag(),
@@ -1141,6 +1240,40 @@ pub(crate) fn assert_unique_stable_tags() {
             super::model::FlowKind::Uses.stable_tag(),
         ],
         [1, 2, 3, 4, 5, 6]
+    );
+    assert_eq!(
+        [
+            super::model::CallResolution::Resolved.stable_tag(),
+            super::model::CallResolution::Dynamic.stable_tag(),
+            super::model::CallResolution::Ambiguous.stable_tag(),
+            super::model::CallResolution::Unresolved.stable_tag(),
+        ],
+        [1, 2, 3, 4]
+    );
+    assert_eq!(
+        [
+            super::model::CallType::Direct.stable_tag(),
+            super::model::CallType::Method.stable_tag(),
+            super::model::CallType::Callback.stable_tag(),
+            super::model::CallType::Dynamic.stable_tag(),
+        ],
+        [1, 2, 3, 4]
+    );
+    assert_eq!(
+        [
+            super::model::HttpVerb::Get.stable_tag(),
+            super::model::HttpVerb::Post.stable_tag(),
+            super::model::HttpVerb::Put.stable_tag(),
+            super::model::HttpVerb::Patch.stable_tag(),
+            super::model::HttpVerb::Delete.stable_tag(),
+            super::model::HttpVerb::Head.stable_tag(),
+            super::model::HttpVerb::Options.stable_tag(),
+        ],
+        [1, 2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(
+        super::model::BindingDetails::VARIANT_STABLE_TAGS,
+        [1, 2, 3, 4, 5, 6, 7]
     );
     assert_eq!(
         [
