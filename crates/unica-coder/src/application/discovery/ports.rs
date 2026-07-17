@@ -271,20 +271,16 @@ fn validate_expected_batch(
         ));
     }
     for record in &batch.records {
-        if !fact_allowed_for_port(expected_port, &record.fact) {
-            return Err(contract_error(
-                expected_port,
-                "provider returned a fact variant owned by another port".to_string(),
-            ));
-        }
+        validate_fact_for_port(expected_port, &record.fact)
+            .map_err(|reason| contract_error(expected_port, reason))?;
         evidence_record_digest(record)
             .map_err(|error| contract_error(expected_port, error.to_string()))?;
     }
     Ok(())
 }
 
-fn fact_allowed_for_port(port: EvidencePort, fact: &ProviderFact) -> bool {
-    match port {
+fn validate_fact_for_port(port: EvidencePort, fact: &ProviderFact) -> Result<(), String> {
+    let allowed = match port {
         EvidencePort::MetadataCatalog => matches!(
             fact,
             ProviderFact::MetadataPresent { .. }
@@ -300,6 +296,48 @@ fn fact_allowed_for_port(port: EvidencePort, fact: &ProviderFact) -> bool {
         EvidencePort::CallGraph => matches!(fact, ProviderFact::Call { .. }),
         EvidencePort::FormInspection => matches!(fact, ProviderFact::Binding { .. }),
         EvidencePort::SupportState => matches!(fact, ProviderFact::Support { .. }),
+    };
+    if !allowed {
+        return Err("provider returned a fact variant owned by another port".to_string());
+    }
+    if let ProviderFact::Binding {
+        relation, details, ..
+    } = fact
+    {
+        validate_binding_contract(port, *relation, details)?;
+    }
+    Ok(())
+}
+
+fn validate_binding_contract(
+    port: EvidencePort,
+    relation: super::model::FlowKind,
+    details: &super::model::BindingDetails,
+) -> Result<(), String> {
+    use super::model::{BindingDetails, FlowKind};
+
+    let valid = match details {
+        BindingDetails::Structural => {
+            port == EvidencePort::MetadataCatalog
+                && matches!(relation, FlowKind::Contains | FlowKind::Defines)
+        }
+        BindingDetails::EventSubscription { .. } => {
+            port == EvidencePort::MetadataCatalog && relation == FlowKind::Subscribes
+        }
+        BindingDetails::FormCommand { .. } => {
+            port == EvidencePort::FormInspection && relation == FlowKind::Handles
+        }
+        BindingDetails::CommonCommand { .. }
+        | BindingDetails::ScheduledJob { .. }
+        | BindingDetails::HttpRoute { .. }
+        | BindingDetails::ExchangePlan { .. } => {
+            port == EvidencePort::MetadataCatalog && relation == FlowKind::Handles
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("binding details, relation, and supplying port are incompatible".to_string())
     }
 }
 
@@ -381,5 +419,156 @@ impl ReceiptIssuerPort for NoopReceiptIssuer {
             eligible: false,
             blockers: vec!["receipt_store_not_implemented".to_string()],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::discovery::contract::{ArtifactKind, ArtifactRef, ExecutionContext};
+    use crate::application::discovery::model::{
+        BindingDetails, FlowKind, Freshness, HttpVerb, ProviderFact,
+    };
+
+    const FINGERPRINT: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn binding_outcome(
+        port: EvidencePort,
+        relation: FlowKind,
+        details: BindingDetails,
+    ) -> ProviderOutcome<EvidenceRecord> {
+        let provider =
+            EvidenceProvider::new(port, &format!("test-{}", port.wire_name()), "1").unwrap();
+        let subject = ArtifactRef::parse(ArtifactKind::Module, "CommonModule.Entry").unwrap();
+        let object = ArtifactRef::parse(ArtifactKind::Method, "CommonModule.Flow.Run").unwrap();
+        ProviderOutcome::complete(
+            provider.clone(),
+            vec![EvidenceRecord::from_fact(
+                ProviderFact::Binding {
+                    subject,
+                    object,
+                    relation,
+                    details,
+                },
+                None,
+                provider,
+                Coverage::Complete,
+                Freshness::new("main", FINGERPRINT, 1).unwrap(),
+            )],
+        )
+        .unwrap()
+    }
+
+    fn binding_cases() -> Vec<(BindingDetails, Vec<(EvidencePort, FlowKind)>)> {
+        vec![
+            (
+                BindingDetails::Structural,
+                vec![
+                    (EvidencePort::MetadataCatalog, FlowKind::Contains),
+                    (EvidencePort::MetadataCatalog, FlowKind::Defines),
+                ],
+            ),
+            (
+                BindingDetails::EventSubscription {
+                    event: "BeforeWrite".into(),
+                    context: ExecutionContext::Server,
+                },
+                vec![(EvidencePort::MetadataCatalog, FlowKind::Subscribes)],
+            ),
+            (
+                BindingDetails::FormCommand {
+                    action: "Run".into(),
+                    context: ExecutionContext::Client,
+                },
+                vec![(EvidencePort::FormInspection, FlowKind::Handles)],
+            ),
+            (
+                BindingDetails::CommonCommand {
+                    action: "Run".into(),
+                    context: ExecutionContext::Client,
+                },
+                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
+            ),
+            (
+                BindingDetails::ScheduledJob {
+                    enabled: true,
+                    context: ExecutionContext::Server,
+                },
+                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
+            ),
+            (
+                BindingDetails::HttpRoute {
+                    verb: HttpVerb::Post,
+                    url_template: "/flow".into(),
+                    context: ExecutionContext::Server,
+                },
+                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
+            ),
+            (
+                BindingDetails::ExchangePlan {
+                    event: "OnReceive".into(),
+                    context: ExecutionContext::Server,
+                },
+                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
+            ),
+        ]
+    }
+
+    #[test]
+    fn binding_contract_accepts_every_canonical_detail_relation_and_port() {
+        for (details, allowed) in binding_cases() {
+            for (port, relation) in allowed {
+                binding_outcome(port, relation, details.clone())
+                    .collect(port)
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn binding_contract_rejects_every_incompatible_relation_or_supplying_port() {
+        let ports = [
+            EvidencePort::MetadataCatalog,
+            EvidencePort::CodeSearch,
+            EvidencePort::Definition,
+            EvidencePort::CallGraph,
+            EvidencePort::FormInspection,
+            EvidencePort::SupportState,
+        ];
+        let relations = [
+            FlowKind::Contains,
+            FlowKind::Defines,
+            FlowKind::Calls,
+            FlowKind::Handles,
+            FlowKind::Subscribes,
+            FlowKind::Uses,
+        ];
+        for (details, allowed) in binding_cases() {
+            for port in ports {
+                for relation in relations {
+                    if allowed.contains(&(port, relation)) {
+                        continue;
+                    }
+                    assert!(matches!(
+                        binding_outcome(port, relation, details.clone()).collect(port),
+                        Err(DiscoveryError::ProviderContractViolation { .. })
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn form_inspection_calls_structural_is_rejected_before_graph_promotion() {
+        assert!(matches!(
+            binding_outcome(
+                EvidencePort::FormInspection,
+                FlowKind::Calls,
+                BindingDetails::Structural,
+            )
+            .collect(EvidencePort::FormInspection),
+            Err(DiscoveryError::ProviderContractViolation { .. })
+        ));
     }
 }

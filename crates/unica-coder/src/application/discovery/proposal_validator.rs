@@ -71,6 +71,7 @@ impl ProposalValidator {
                 FactAnswer::Yes
             } else if call_graph.coverage == Coverage::Complete
                 && forms.coverage == Coverage::Complete
+                && metadata.coverage == Coverage::Complete
             {
                 FactAnswer::No
             } else {

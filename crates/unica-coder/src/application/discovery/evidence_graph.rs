@@ -1,8 +1,8 @@
 use super::contract::ArtifactRef;
 use super::determinism::evidence_id;
 use super::model::{
-    BindingDetails, CallResolution, Candidate, EvidenceLevel, EvidencePort, EvidenceRecord,
-    FlowEdge, FlowKind, ProviderFact, RelatedArtifact, SupportState,
+    BindingDetails, CallResolution, Candidate, DefinitionShape, EvidenceLevel, EvidencePort,
+    EvidenceRecord, FlowEdge, FlowKind, ProviderFact, RelatedArtifact, SupportState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,6 +48,8 @@ impl EvidenceGraph {
             BTreeMap::new();
         let mut presence: BTreeMap<(EvidencePort, ArtifactRef), PresenceAccumulator> =
             BTreeMap::new();
+        let mut definition_shapes: BTreeMap<ArtifactRef, Vec<(DefinitionShape, BTreeSet<String>)>> =
+            BTreeMap::new();
         let mut support_evidence: BTreeMap<ArtifactRef, BTreeSet<String>> = BTreeMap::new();
         let mut connection_ports: BTreeMap<ArtifactRef, BTreeSet<EvidencePort>> = BTreeMap::new();
 
@@ -65,7 +67,7 @@ impl EvidenceGraph {
                     artifact.lexical = true;
                     artifact.reason_codes.insert("lexical_match".to_string());
                 }
-                ProviderFact::MetadataPresent { .. } | ProviderFact::DefinitionPresent { .. } => {
+                ProviderFact::MetadataPresent { .. } => {
                     let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
                     artifact.observed = true;
                     artifact.positive_existence = true;
@@ -77,6 +79,27 @@ impl EvidenceGraph {
                         .or_default();
                     fact.positive = true;
                     fact.evidence_ids.insert(id);
+                }
+                ProviderFact::DefinitionPresent { definition, .. } => {
+                    let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
+                    artifact.observed = true;
+                    artifact.positive_existence = true;
+                    artifact
+                        .reason_codes
+                        .insert("artifact_observed".to_string());
+                    let fact = presence
+                        .entry((record.provider.port, subject.clone()))
+                        .or_default();
+                    fact.positive = true;
+                    fact.evidence_ids.insert(id.clone());
+                    let shapes = definition_shapes.entry(subject).or_default();
+                    if let Some((_, evidence_ids)) =
+                        shapes.iter_mut().find(|(shape, _)| shape == definition)
+                    {
+                        evidence_ids.insert(id);
+                    } else {
+                        shapes.push((definition.clone(), BTreeSet::from([id])));
+                    }
                 }
                 ProviderFact::MetadataAbsent { .. } | ProviderFact::DefinitionAbsent { .. } => {
                     let fact = presence
@@ -158,6 +181,19 @@ impl EvidenceGraph {
                 });
             }
         }
+        for (artifact, shapes) in definition_shapes {
+            if shapes.len() > 1 {
+                conflicts.push(EvidenceConflict {
+                    port: EvidencePort::Definition,
+                    artifact,
+                    code: "conflicting_definition_shapes".to_string(),
+                    evidence_ids: shapes
+                        .into_iter()
+                        .flat_map(|(_, evidence_ids)| evidence_ids)
+                        .collect(),
+                });
+            }
+        }
         for (artifact, accumulator) in &artifacts {
             if accumulator.support_states.len() > 1 {
                 conflicts.push(EvidenceConflict {
@@ -205,6 +241,8 @@ impl EvidenceGraph {
                 .unwrap_or_default();
             let evidence_level = if support_state == SupportState::Unknown {
                 blockers.insert("support_state_unknown".to_string());
+                EvidenceLevel::Connected
+            } else if !blockers.is_empty() {
                 EvidenceLevel::Connected
             } else {
                 artifact

@@ -78,6 +78,12 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             context.workspace_epoch,
         )?;
         snapshot.validate().map_err(DiscoveryError::Operation)?;
+        validate_captured_snapshot(
+            &snapshot,
+            &analysis_source,
+            &mutation_sources,
+            context.workspace_epoch,
+        )?;
 
         let plan = DiscoveryQueryPlan::normalized(&request);
         let providers = vec![
@@ -204,6 +210,37 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             snapshot,
         })
     }
+}
+
+fn validate_captured_snapshot(
+    snapshot: &SourceSnapshot,
+    analysis_source: &ResolvedSourceSet,
+    mutation_sources: &[ResolvedSourceSet],
+    workspace_epoch: u64,
+) -> Result<(), DiscoveryError> {
+    if snapshot.workspace_epoch != workspace_epoch {
+        return Err(DiscoveryError::Operation(
+            "captured snapshot workspace epoch differs from the requested epoch".to_string(),
+        ));
+    }
+    if snapshot.analysis.source_set != *analysis_source {
+        return Err(DiscoveryError::Operation(
+            "captured analysis snapshot identity differs from the resolved source".to_string(),
+        ));
+    }
+    if snapshot.mutations.len() != mutation_sources.len()
+        || mutation_sources.iter().any(|expected| {
+            !snapshot
+                .mutations
+                .iter()
+                .any(|actual| actual.source_set == *expected)
+        })
+    {
+        return Err(DiscoveryError::Operation(
+            "captured mutation snapshot identities differ from the resolved sources".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn discovery_source(snapshot: &SourceSnapshot) -> DiscoverySource {
@@ -348,6 +385,13 @@ fn report_status(
     validation: &ProposalValidation,
     checks: &[Check],
 ) -> DiscoveryStatus {
+    let blocking_unresolved = checks.iter().any(|check| {
+        check.severity == CheckSeverity::Blocking
+            && !matches!(
+                check.outcome,
+                CheckOutcome::Satisfied | CheckOutcome::NotApplicable
+            )
+    });
     let conclusive = match mode {
         DiscoverMode::Explore => graph
             .candidates
@@ -361,7 +405,7 @@ fn report_status(
                     .all(|verdict| verdict.verdict != Verdict::Unknown)
         }
     };
-    if !conclusive {
+    if blocking_unresolved || !conclusive {
         DiscoveryStatus::Insufficient
     } else if checks.iter().any(|check| {
         check.severity == CheckSeverity::Warning && check.outcome == CheckOutcome::Inconclusive
@@ -421,6 +465,30 @@ mod tests {
         .unwrap()
     }
 
+    fn mutation_method_proposal() -> DiscoverRequest {
+        serde_json::from_value(json!({
+            "mode": "validate",
+            "task": "validate mutation hook",
+            "concepts": ["write"],
+            "proposals": [{
+                "id": "method-hook",
+                "target": {"kind": "method", "ref": "CommonModule.Flow.Run"},
+                "intent": "run before write",
+                "mutationIntent": {
+                    "tool": "unica.cfe.patch_method",
+                    "destinationSourceSet": "extension",
+                    "arguments": {
+                        "ExtensionPath": "src-cfe",
+                        "ModulePath": "CommonModules.Flow.Module",
+                        "MethodName": "Run",
+                        "InterceptorType": "Before"
+                    }
+                }
+            }]
+        }))
+        .unwrap()
+    }
+
     fn explore_request() -> DiscoverRequest {
         serde_json::from_value(json!({
             "mode": "explore",
@@ -432,11 +500,19 @@ mod tests {
     }
 
     fn record(port: EvidencePort, fact: ProviderFact) -> EvidenceRecord {
+        record_with_coverage(port, fact, Coverage::Complete)
+    }
+
+    fn record_with_coverage(
+        port: EvidencePort,
+        fact: ProviderFact,
+        coverage: Coverage,
+    ) -> EvidenceRecord {
         EvidenceRecord::from_fact(
             fact,
             Some(SourceLocation::new("src/Flow.bsl", Some(1), Some(1)).unwrap()),
             EvidenceProvider::new(port, &format!("fake-{}", port.wire_name()), "1").unwrap(),
-            Coverage::Complete,
+            coverage,
             Freshness::new("main", FINGERPRINT, 7).unwrap(),
         )
     }
@@ -559,13 +635,27 @@ mod tests {
         fn resolve(
             &self,
             _context: &DiscoveryExecutionContext,
-            _requested_source_set: Option<&str>,
+            requested_source_set: Option<&str>,
         ) -> Result<ResolvedSourceSet, DiscoveryError> {
+            let name = requested_source_set.unwrap_or("main");
             Ok(ResolvedSourceSet {
-                name: "main".into(),
-                kind: SourceSetKind::Configuration,
-                relative_root: "src".into(),
+                name: name.into(),
+                kind: if requested_source_set.is_some() {
+                    SourceSetKind::Extension
+                } else {
+                    SourceSetKind::Configuration
+                },
+                relative_root: if requested_source_set.is_some() {
+                    "src-cfe".into()
+                } else {
+                    "src".into()
+                },
                 source_format: SourceFormat::PlatformXml,
+                mapping_digest: if requested_source_set.is_some() {
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()
+                } else {
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()
+                },
             })
         }
     }
@@ -576,7 +666,7 @@ mod tests {
         fn capture(
             &self,
             analysis: &ResolvedSourceSet,
-            _mutation_sources: &[ResolvedSourceSet],
+            mutation_sources: &[ResolvedSourceSet],
             workspace_epoch: u64,
         ) -> Result<SourceSnapshot, DiscoveryError> {
             SourceSnapshot::new(
@@ -584,7 +674,14 @@ mod tests {
                     source_set: analysis.clone(),
                     source_fingerprint: FINGERPRINT.into(),
                 },
-                Vec::new(),
+                mutation_sources
+                    .iter()
+                    .cloned()
+                    .map(|source_set| SourceSetSnapshot {
+                        source_set,
+                        source_fingerprint: FINGERPRINT.into(),
+                    })
+                    .collect(),
                 COMPOSITE.into(),
                 workspace_epoch,
             )
@@ -621,9 +718,17 @@ mod tests {
             &self,
             request: DiscoverRequest,
         ) -> Result<crate::application::discovery::model::DiscoveryReport, DiscoveryError> {
+            self.execute_with_snapshot(&FakeSnapshotPort, request)
+        }
+
+        fn execute_with_snapshot(
+            &self,
+            snapshot_port: &dyn SourceSnapshotPort,
+            request: DiscoverRequest,
+        ) -> Result<crate::application::discovery::model::DiscoveryReport, DiscoveryError> {
             let use_case = DiscoverExtensionPointsUseCase::new(
                 &FakeSourceResolver,
-                &FakeSnapshotPort,
+                snapshot_port,
                 &self.ports,
                 &self.ports,
                 &self.ports,
@@ -685,6 +790,60 @@ mod tests {
 
         assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
         assert!(!report.receipt_eligibility.eligible);
+    }
+
+    #[test]
+    fn unavailable_metadata_prevents_exact_negative_runtime_reachability() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.metadata = ProviderOutcome::unavailable(
+            EvidenceProvider::new(EvidencePort::MetadataCatalog, "fake-metadata", "1").unwrap(),
+            "catalog_building",
+            true,
+        )
+        .unwrap();
+        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
+        fixture.ports.forms = complete(EvidencePort::FormInspection, Vec::new());
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(
+            report.proposal_verdicts[0].facts.runtime_reachable,
+            crate::application::discovery::model::FactAnswer::Unknown
+        );
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
+        assert_eq!(report.status, DiscoveryStatus::Insufficient);
+    }
+
+    #[test]
+    fn bounded_metadata_prevents_exact_negative_runtime_reachability() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.metadata = ProviderOutcome::bounded(
+            EvidenceProvider::new(
+                EvidencePort::MetadataCatalog,
+                &format!("fake-{}", EvidencePort::MetadataCatalog.wire_name()),
+                "1",
+            )
+            .unwrap(),
+            "result_limit",
+            false,
+            vec![record_with_coverage(
+                EvidencePort::MetadataCatalog,
+                ProviderFact::MetadataPresent { subject: owner() },
+                Coverage::Bounded,
+            )],
+        )
+        .unwrap();
+        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
+        fixture.ports.forms = complete(EvidencePort::FormInspection, Vec::new());
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(
+            report.proposal_verdicts[0].facts.runtime_reachable,
+            crate::application::discovery::model::FactAnswer::Unknown
+        );
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
+        assert_eq!(report.status, DiscoveryStatus::Insufficient);
     }
 
     #[test]
@@ -910,6 +1069,208 @@ mod tests {
             .any(|check| check.outcome
                 == crate::application::discovery::model::CheckOutcome::Conflict));
         assert!(!report.receipt_eligibility.eligible);
+    }
+
+    #[test]
+    fn conflicting_definition_shapes_are_retained_and_block_receipt() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.definitions = complete(
+            EvidencePort::Definition,
+            vec![
+                record(
+                    EvidencePort::Definition,
+                    ProviderFact::DefinitionPresent {
+                        subject: target(),
+                        definition: crate::application::discovery::model::DefinitionShape::new(
+                            false,
+                            true,
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    },
+                ),
+                record(
+                    EvidencePort::Definition,
+                    ProviderFact::DefinitionPresent {
+                        subject: target(),
+                        definition: crate::application::discovery::model::DefinitionShape::new(
+                            true,
+                            false,
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    },
+                ),
+            ],
+        );
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(
+            report
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.subject == target()
+                    && evidence.fact_code == "definition_present")
+                .count(),
+            2
+        );
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
+        assert!(report.proposal_verdicts[0]
+            .blockers
+            .contains(&"conflicting_definition_shapes".to_string()));
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "DefinitionPort"
+                && check.outcome == crate::application::discovery::model::CheckOutcome::Conflict
+                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
+                && check
+                    .affects
+                    .iter()
+                    .any(|affect| affect == "proposal:method-hook")
+                && check
+                    .affects
+                    .iter()
+                    .any(|affect| affect.starts_with("candidate:"))
+        }));
+        assert!(!report.receipt_eligibility.eligible);
+    }
+
+    #[test]
+    fn bounded_material_records_keep_supported_verdict_but_status_insufficient() {
+        let mut fixture = Fixture::positive();
+        fixture.ports.definitions = ProviderOutcome::bounded(
+            EvidenceProvider::new(
+                EvidencePort::Definition,
+                &format!("fake-{}", EvidencePort::Definition.wire_name()),
+                "1",
+            )
+            .unwrap(),
+            "result_limit",
+            false,
+            vec![record_with_coverage(
+                EvidencePort::Definition,
+                ProviderFact::DefinitionPresent {
+                    subject: target(),
+                    definition: crate::application::discovery::model::DefinitionShape::new(
+                        false,
+                        true,
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                },
+                Coverage::Bounded,
+            )],
+        )
+        .unwrap();
+
+        let report = fixture.execute(method_proposal()).unwrap();
+
+        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
+        assert!(report.checks.iter().any(|check| {
+            check.provider == "DefinitionPort"
+                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
+                && check.outcome == crate::application::discovery::model::CheckOutcome::Inconclusive
+        }));
+        assert_eq!(report.status, DiscoveryStatus::Insufficient);
+        assert!(!report.receipt_eligibility.eligible);
+    }
+
+    struct AliasedAnalysisSnapshotPort;
+
+    impl SourceSnapshotPort for AliasedAnalysisSnapshotPort {
+        fn capture(
+            &self,
+            analysis: &ResolvedSourceSet,
+            _mutation_sources: &[ResolvedSourceSet],
+            workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, DiscoveryError> {
+            let mut aliased_analysis = analysis.clone();
+            aliased_analysis.mapping_digest =
+                "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    .to_string();
+            SourceSnapshot::new(
+                SourceSetSnapshot {
+                    source_set: aliased_analysis,
+                    source_fingerprint: FINGERPRINT.into(),
+                },
+                Vec::new(),
+                COMPOSITE.into(),
+                workspace_epoch,
+            )
+            .map_err(DiscoveryError::Operation)
+        }
+    }
+
+    #[test]
+    fn captured_analysis_snapshot_must_match_resolved_source_identity() {
+        let result = Fixture::positive()
+            .execute_with_snapshot(&AliasedAnalysisSnapshotPort, method_proposal());
+
+        assert!(matches!(result, Err(DiscoveryError::Operation(_))));
+    }
+
+    #[derive(Clone, Copy)]
+    enum MutationSnapshotMismatch {
+        Omitted,
+        Extra,
+        Aliased,
+    }
+
+    impl SourceSnapshotPort for MutationSnapshotMismatch {
+        fn capture(
+            &self,
+            analysis: &ResolvedSourceSet,
+            mutation_sources: &[ResolvedSourceSet],
+            workspace_epoch: u64,
+        ) -> Result<SourceSnapshot, DiscoveryError> {
+            let mut mutations = mutation_sources
+                .iter()
+                .cloned()
+                .map(|source_set| SourceSetSnapshot {
+                    source_set,
+                    source_fingerprint: FINGERPRINT.into(),
+                })
+                .collect::<Vec<_>>();
+            match self {
+                Self::Omitted => mutations.clear(),
+                Self::Extra => mutations.push(SourceSetSnapshot {
+                    source_set: ResolvedSourceSet {
+                        name: "extra".into(),
+                        kind: SourceSetKind::Extension,
+                        relative_root: "extra-src".into(),
+                        source_format: SourceFormat::PlatformXml,
+                        mapping_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                            .into(),
+                    },
+                    source_fingerprint: FINGERPRINT.into(),
+                }),
+                Self::Aliased => mutations[0].source_set.relative_root = "aliased-src".into(),
+            }
+            SourceSnapshot::new(
+                SourceSetSnapshot {
+                    source_set: analysis.clone(),
+                    source_fingerprint: FINGERPRINT.into(),
+                },
+                mutations,
+                COMPOSITE.into(),
+                workspace_epoch,
+            )
+            .map_err(DiscoveryError::Operation)
+        }
+    }
+
+    #[test]
+    fn captured_mutation_snapshots_must_match_resolved_sources_exactly() {
+        for mismatch in [
+            MutationSnapshotMismatch::Omitted,
+            MutationSnapshotMismatch::Extra,
+            MutationSnapshotMismatch::Aliased,
+        ] {
+            let result =
+                Fixture::positive().execute_with_snapshot(&mismatch, mutation_method_proposal());
+
+            assert!(matches!(result, Err(DiscoveryError::Operation(_))));
+        }
     }
 
     #[test]

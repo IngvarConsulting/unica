@@ -7,12 +7,14 @@ pub(crate) struct ResolvedSourceSet {
     pub(crate) kind: SourceSetKind,
     pub(crate) relative_root: String,
     pub(crate) source_format: SourceFormat,
+    pub(crate) mapping_digest: String,
 }
 
 impl ResolvedSourceSet {
     pub(crate) fn validate(&self) -> Result<(), String> {
         stable_component(&self.name, "source-set name", 1024)?;
         contained_relative_path(&self.relative_root)?;
+        validate_fingerprint(&self.mapping_digest)?;
         Ok(())
     }
 }
@@ -53,10 +55,8 @@ impl SourceSnapshot {
             mutation.validate()?;
         }
         mutations.sort_by(|left, right| {
-            left.source_set
-                .name
-                .cmp(&right.source_set.name)
-                .then_with(|| left.source_fingerprint.cmp(&right.source_fingerprint))
+            snapshot_key(SnapshotRoleKey::Mutation, left)
+                .cmp(&snapshot_key(SnapshotRoleKey::Mutation, right))
         });
         mutations.dedup();
         validate_fingerprint(&composite_fingerprint)?;
@@ -73,25 +73,33 @@ impl SourceSnapshot {
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.analysis.validate()?;
         validate_fingerprint(&self.composite_fingerprint)?;
-        let mut fingerprints = BTreeMap::new();
-        fingerprints.insert(
-            self.analysis.source_set.name.as_str(),
-            self.analysis.source_fingerprint.as_str(),
+        let mut role_identities = BTreeMap::new();
+        role_identities.insert(
+            (
+                SnapshotRoleKey::Analysis,
+                self.analysis.source_set.name.as_str(),
+            ),
+            &self.analysis,
         );
         let mut previous = None;
         for mutation in &self.mutations {
             mutation.validate()?;
             if let Some(previous_snapshot) = previous {
-                if snapshot_key(previous_snapshot) > snapshot_key(mutation) {
+                if snapshot_key(SnapshotRoleKey::Mutation, previous_snapshot)
+                    > snapshot_key(SnapshotRoleKey::Mutation, mutation)
+                {
                     return Err("mutation source snapshots must be canonically sorted".to_string());
                 }
             }
-            if let Some(existing) = fingerprints.insert(
-                mutation.source_set.name.as_str(),
-                mutation.source_fingerprint.as_str(),
+            if let Some(existing) = role_identities.insert(
+                (SnapshotRoleKey::Mutation, mutation.source_set.name.as_str()),
+                mutation,
             ) {
-                if existing != mutation.source_fingerprint {
-                    return Err("one source-set cannot have conflicting fingerprints".to_string());
+                if existing != mutation {
+                    return Err(
+                        "one source-set role cannot have conflicting snapshot identities"
+                            .to_string(),
+                    );
                 }
             }
             previous = Some(mutation);
@@ -103,11 +111,43 @@ impl SourceSnapshot {
     }
 }
 
-fn snapshot_key(snapshot: &SourceSetSnapshot) -> (&str, &str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SnapshotRoleKey {
+    Analysis,
+    Mutation,
+}
+
+fn snapshot_key(
+    role: SnapshotRoleKey,
+    snapshot: &SourceSetSnapshot,
+) -> (SnapshotRoleKey, &str, u8, u8, &str, &str, &str) {
     (
+        role,
         snapshot.source_set.name.as_str(),
+        source_set_kind_tag(snapshot.source_set.kind),
+        source_format_tag(snapshot.source_set.source_format),
+        snapshot.source_set.relative_root.as_str(),
+        snapshot.source_set.mapping_digest.as_str(),
         snapshot.source_fingerprint.as_str(),
     )
+}
+
+fn source_set_kind_tag(kind: SourceSetKind) -> u8 {
+    match kind {
+        SourceSetKind::Configuration => 1,
+        SourceSetKind::Extension => 2,
+        SourceSetKind::ExternalProcessor => 3,
+        SourceSetKind::ExternalReport => 4,
+    }
+}
+
+fn source_format_tag(format: SourceFormat) -> u8 {
+    match format {
+        SourceFormat::PlatformXml => 1,
+        SourceFormat::Edt => 2,
+        SourceFormat::Unknown => 3,
+        SourceFormat::Invalid => 4,
+    }
 }
 
 fn stable_component(value: &str, field: &str, maximum: usize) -> Result<(), String> {
@@ -158,6 +198,7 @@ mod tests {
             kind: SourceSetKind::Extension,
             relative_root: format!("src/{name}"),
             source_format,
+            mapping_digest: format!("sha256:{}", "a".repeat(64)),
         }
     }
 
@@ -186,5 +227,88 @@ mod tests {
         assert_eq!(result.analysis.source_set.source_format, SourceFormat::Edt);
         assert_eq!(result.mutations, [mutation_a, snapshot("b", '3')]);
         assert_eq!(result.workspace_epoch, 9);
+    }
+
+    #[test]
+    fn source_snapshot_identity_is_permutation_invariant() {
+        let analysis = SourceSetSnapshot {
+            source_set: resolved("main", SourceFormat::Edt),
+            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
+        };
+        let mutation_a = snapshot("a", '2');
+        let mutation_b = snapshot("b", '3');
+
+        let first = SourceSnapshot::new(
+            analysis.clone(),
+            vec![mutation_b.clone(), mutation_a.clone()],
+            format!("sha256:{}", "4".repeat(64)),
+            9,
+        )
+        .unwrap();
+        let second = SourceSnapshot::new(
+            analysis,
+            vec![mutation_a, mutation_b],
+            format!("sha256:{}", "4".repeat(64)),
+            9,
+        )
+        .unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn same_name_and_role_with_conflicting_mapping_identity_is_rejected() {
+        let analysis = SourceSetSnapshot {
+            source_set: resolved("main", SourceFormat::Edt),
+            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
+        };
+        let first = snapshot("extension", '2');
+        let mut variants = Vec::new();
+        let mut kind = first.clone();
+        kind.source_set.kind = SourceSetKind::Configuration;
+        variants.push(kind);
+        let mut format = first.clone();
+        format.source_set.source_format = SourceFormat::Edt;
+        variants.push(format);
+        let mut root = first.clone();
+        root.source_set.relative_root = "different/extension".to_string();
+        variants.push(root);
+        let mut mapping = first.clone();
+        mapping.source_set.mapping_digest = format!("sha256:{}", "b".repeat(64));
+        variants.push(mapping);
+        let mut content = first.clone();
+        content.source_fingerprint = format!("sha256:{}", "3".repeat(64));
+        variants.push(content);
+
+        for conflicting in variants {
+            let result = SourceSnapshot::new(
+                analysis.clone(),
+                vec![first.clone(), conflicting],
+                format!("sha256:{}", "4".repeat(64)),
+                9,
+            );
+
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn same_name_with_different_roles_keeps_distinct_identities() {
+        let analysis = SourceSetSnapshot {
+            source_set: resolved("shared", SourceFormat::Edt),
+            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
+        };
+        let mutation = snapshot("shared", '2');
+
+        let result = SourceSnapshot::new(
+            analysis.clone(),
+            vec![mutation.clone()],
+            format!("sha256:{}", "4".repeat(64)),
+            9,
+        )
+        .unwrap();
+
+        assert_eq!(result.analysis, analysis);
+        assert_eq!(result.mutations, [mutation]);
     }
 }
