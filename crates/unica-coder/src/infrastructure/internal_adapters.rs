@@ -26,6 +26,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
+pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
 #[derive(Debug, Clone)]
 pub struct ProcessCommand {
@@ -82,6 +84,8 @@ pub struct CliAdapter<'a> {
     default_command: &'static [&'static str],
     label: &'static str,
     runner: &'a dyn ProcessRunner,
+    process_timeout: Duration,
+    report_timeout_seconds: bool,
 }
 
 pub struct RuntimeAdapter<'a> {
@@ -119,6 +123,7 @@ pub struct CodeNavigationAdapter<'a> {
 
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
+    process_runner: &'a dyn ProcessRunner,
 }
 
 struct SearchBackendResult {
@@ -139,11 +144,12 @@ impl<'a> CliAdapter<'a> {
             default_command,
             label,
             runner: &SYSTEM_PROCESS_RUNNER,
+            process_timeout: DEFAULT_PROCESS_TIMEOUT,
+            report_timeout_seconds: false,
         }
     }
 
-    #[cfg(test)]
-    pub fn with_runner(
+    fn with_runner(
         tool_name: &'static str,
         default_command: &'static [&'static str],
         label: &'static str,
@@ -154,7 +160,15 @@ impl<'a> CliAdapter<'a> {
             default_command,
             label,
             runner,
+            process_timeout: DEFAULT_PROCESS_TIMEOUT,
+            report_timeout_seconds: false,
         }
+    }
+
+    fn with_process_timeout(mut self, timeout: Duration) -> Self {
+        self.process_timeout = timeout;
+        self.report_timeout_seconds = true;
+        self
     }
 
     #[allow(dead_code)]
@@ -227,7 +241,7 @@ impl<'a> CliAdapter<'a> {
             .map(|part| (*part).to_string())
             .collect::<Vec<_>>();
         process_args.extend(execution_args);
-        let process_timeout = Some(DEFAULT_PROCESS_TIMEOUT);
+        let process_timeout = Some(self.process_timeout);
         let output = self.runner.run(&ProcessCommand {
             program: bundled_tool.program.clone(),
             args: process_args,
@@ -262,7 +276,11 @@ impl<'a> CliAdapter<'a> {
             warnings: if ok {
                 Vec::new()
             } else if output.timed_out {
-                vec![format!("internal {} adapter timed out", self.label)]
+                vec![if self.report_timeout_seconds {
+                    process_timeout_error(self.label, process_timeout)
+                } else {
+                    format!("internal {} adapter timed out", self.label)
+                }]
             } else {
                 vec![format!(
                     "internal {} adapter exited with status {}",
@@ -271,6 +289,12 @@ impl<'a> CliAdapter<'a> {
             },
             errors: if ok {
                 Vec::new()
+            } else if output.timed_out && self.report_timeout_seconds {
+                let mut errors = vec![process_timeout_error(self.label, process_timeout)];
+                if !output.stderr.trim().is_empty() {
+                    errors.push(output.stderr.trim().to_string());
+                }
+                errors
             } else if output.stderr.trim().is_empty() && output.timed_out {
                 vec![process_timeout_error(self.label, process_timeout)]
             } else {
@@ -1391,12 +1415,24 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
     pub fn new() -> Self {
         Self {
             runner: &SYSTEM_BSL_MCP_RUNNER,
+            process_runner: &SYSTEM_PROCESS_RUNNER,
         }
     }
 
     #[cfg(test)]
     pub fn with_runner(runner: &'a dyn BslMcpRunner) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            process_runner: &SYSTEM_PROCESS_RUNNER,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_process_runner(process_runner: &'a dyn ProcessRunner) -> Self {
+        Self {
+            runner: &SYSTEM_BSL_MCP_RUNNER,
+            process_runner,
+        }
     }
 
     #[allow(dead_code)]
@@ -1425,8 +1461,22 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         }
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
             let cli_args = diagnostics_analyze_args(args);
-            return CliAdapter::new("bsl-analyzer", &["analyze"], "code analysis")
-                .invoke_cancellable(tool_name, &cli_args, context, dry_run, false, cancellation);
+            let process_timeout = diagnostics_analyze_timeout(args)?;
+            return CliAdapter::with_runner(
+                "bsl-analyzer",
+                &["analyze"],
+                "code analysis",
+                self.process_runner,
+            )
+            .with_process_timeout(process_timeout)
+            .invoke_cancellable(
+                tool_name,
+                &cli_args,
+                context,
+                dry_run,
+                false,
+                cancellation,
+            );
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -2308,6 +2358,24 @@ fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
         }
     }
     filtered
+}
+
+fn diagnostics_analyze_timeout(args: &Map<String, Value>) -> Result<Duration, String> {
+    let Some(value) = args.get("timeoutSeconds") else {
+        return Ok(DEFAULT_PROCESS_TIMEOUT);
+    };
+    let Some(seconds) = value.as_u64() else {
+        return Err("unica.code.diagnostics argument `timeoutSeconds` must be integer".to_string());
+    };
+    if !(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS..=DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+        .contains(&seconds)
+    {
+        return Err(format!(
+            "unica.code.diagnostics argument `timeoutSeconds` must be between {} and {}",
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 fn bsl_mcp_command(
@@ -4441,6 +4509,111 @@ source-set:
     }
 
     #[test]
+    fn diagnostics_analyze_uses_custom_timeout_without_forwarding_cli_argument() {
+        let context = temp_context("diagnostics-custom-timeout");
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("timeoutSeconds".to_string(), json!(900));
+
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].timeout, Some(Duration::from_secs(900)));
+        assert!(commands[0].args.iter().all(|arg| arg != "900"));
+        assert!(commands[0]
+            .args
+            .iter()
+            .all(|arg| arg != "--timeout-seconds"));
+        assert!(outcome
+            .command
+            .unwrap()
+            .iter()
+            .all(|arg| arg != "900" && arg != "--timeout-seconds"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_analyze_keeps_default_timeout() {
+        let context = temp_context("diagnostics-default-timeout");
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+            },
+        };
+
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_eq!(
+            runner.commands.borrow()[0].timeout,
+            Some(DEFAULT_PROCESS_TIMEOUT)
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_analyze_timeout_reports_budget_and_preserves_stderr() {
+        let context = temp_context("diagnostics-timeout-report");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "timeout".to_string(),
+                stdout: String::new(),
+                stderr: "partial analyzer diagnostics".to_string(),
+                timed_out: true,
+                cancelled: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("timeoutSeconds".to_string(), json!(900));
+
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("timed out after 900 seconds")));
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("timed out after 900 seconds")));
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error == "partial analyzer diagnostics"));
+        assert_eq!(
+            outcome.stderr.as_deref(),
+            Some("partial analyzer diagnostics")
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn bsl_graph_adapter_maps_typed_args_to_allowlisted_mcp_call() {
         let context = temp_context("graph-mcp");
         let runner = RecordingBslMcpRunner {
@@ -4853,6 +5026,32 @@ source-set:
             .errors
             .iter()
             .any(|error| error.contains("timed out after")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn unrelated_cli_timeout_with_stderr_keeps_existing_reporting() {
+        let context = temp_context("cli-timeout-existing-reporting");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "timeout".to_string(),
+                stdout: String::new(),
+                stderr: "runtime timeout details".to_string(),
+                timed_out: true,
+                cancelled: false,
+            },
+        };
+
+        let outcome = CliAdapter::with_runner("v8-runner", &["build"], "build/runtime", &runner)
+            .invoke("unica.build.load", &Map::new(), &context, false, true)
+            .unwrap();
+
+        assert_eq!(
+            outcome.warnings,
+            vec!["internal build/runtime adapter timed out"]
+        );
+        assert_eq!(outcome.errors, vec!["runtime timeout details"]);
         cleanup_context(&context);
     }
 

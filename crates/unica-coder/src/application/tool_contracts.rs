@@ -2,6 +2,9 @@ use super::operation_descriptors::native_operation_descriptor;
 use super::{ToolHandler, ToolSpec};
 use crate::domain::project_sources::{discover_project_source_map, SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::internal_adapters::{
+    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -526,6 +529,7 @@ const CODE_DIAGNOSTICS_ARGS: &[&str] = &[
     "rangeEnd",
     "rangeStart",
     "sourceDir",
+    "timeoutSeconds",
 ];
 const CODE_DIAGNOSTIC_MODES: &[&str] = &["analyze", "status", "catalog", "file", "workspace"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
@@ -572,6 +576,22 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["JsonPath"]},
             {"required": ["jsonPath"]},
             {"required": ["definition"]}
+        ]);
+    }
+    if tool.name == "unica.code.diagnostics" {
+        schema["oneOf"] = json!([
+            {
+                "properties": {
+                    "mode": {"enum": ["analyze"]}
+                }
+            },
+            {
+                "required": ["mode"],
+                "properties": {
+                    "mode": {"enum": ["status", "catalog", "file", "workspace"]}
+                },
+                "not": {"required": ["timeoutSeconds"]}
+            }
         ]);
     }
     schema
@@ -833,6 +853,25 @@ fn validate_code_arguments(
             validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
             validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
             validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
+            if args.contains_key("timeoutSeconds") {
+                let mode = args
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("analyze");
+                if mode != "analyze" {
+                    return Err(format!(
+                        "{} argument `timeoutSeconds` is only supported for mode `analyze`",
+                        tool.name
+                    ));
+                }
+                validate_integer_bound(
+                    tool.name,
+                    args,
+                    "timeoutSeconds",
+                    DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+                    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+                )?;
+            }
             if !dry_run
                 && args
                     .get("mode")
@@ -976,15 +1015,15 @@ fn validate_runtime_job_arguments(
     Uuid::parse_str(job_id).map_err(|_| format!("{tool_name} argument `jobId` must be a UUID"))?;
 
     if action == RuntimeJobAction::Wait {
-        validate_runtime_job_bound(tool_name, args, "timeoutSeconds", 1, 60)?;
+        validate_integer_bound(tool_name, args, "timeoutSeconds", 1, 60)?;
     }
     if action == RuntimeJobAction::Logs {
-        validate_runtime_job_bound(tool_name, args, "tailChars", 1, 32_768)?;
+        validate_integer_bound(tool_name, args, "tailChars", 1, 32_768)?;
     }
     Ok(())
 }
 
-fn validate_runtime_job_bound(
+fn validate_integer_bound(
     tool_name: &str,
     args: &Map<String, Value>,
     key: &str,
@@ -1748,6 +1787,14 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         },
         "unica.code.diagnostics" => match name {
             "mode" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_MODES }),
+            "timeoutSeconds" => {
+                return json!({
+                    "type": "integer",
+                    "minimum": DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+                    "maximum": DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+                    "description": "Only supported for mode analyze. Defaults to 120 seconds."
+                });
+            }
             "minSeverity" => {
                 return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES });
             }
@@ -2590,6 +2637,10 @@ mod tests {
         assert_eq!(schema["properties"]["codes"]["type"], "array");
         assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
         assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
+        assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
+        assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
+        assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
+        assert_eq!(schema["oneOf"][1]["not"]["required"][0], "timeoutSeconds");
         assert!(schema["properties"]["mode"]["enum"]
             .as_array()
             .unwrap()
@@ -2607,5 +2658,28 @@ mod tests {
 
         let args = Map::new();
         validate_tool_arguments(diagnostics, &args, false).unwrap();
+
+        for timeout in [30, 900, 3600] {
+            let mut args = Map::new();
+            args.insert("timeoutSeconds".to_string(), json!(timeout));
+            validate_tool_arguments(diagnostics, &args, false).unwrap();
+        }
+
+        for mode in ["status", "catalog", "file", "workspace"] {
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!(mode));
+            args.insert("timeoutSeconds".to_string(), json!(900));
+            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            assert!(
+                error.contains("only supported for mode `analyze`"),
+                "{mode}: {error}"
+            );
+        }
+
+        for timeout in [json!("900"), json!(29), json!(3601), json!(-1), json!(30.5)] {
+            let mut args = Map::new();
+            args.insert("timeoutSeconds".to_string(), timeout);
+            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
+        }
     }
 }

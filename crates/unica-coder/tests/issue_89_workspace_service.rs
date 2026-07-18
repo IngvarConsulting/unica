@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,6 +19,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(10);
+static FIXTURE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
@@ -366,12 +368,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let nonce = SystemTime::now()
+        let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("unica-issue-89-{}-{nonce}", std::process::id()));
+        let nonce = FIXTURE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "unica-issue-89-{}-{timestamp}-{nonce}",
+            std::process::id()
+        ));
         let workspace = root.join("workspace");
         let plugin_root = root.join("plugin");
         let cache = root.join("cache");
