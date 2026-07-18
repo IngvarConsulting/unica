@@ -1,5 +1,10 @@
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::source_roots::{normalize_path_identity, resolve_source_root};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::managed_child::{
+    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
+};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -8,7 +13,6 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -71,6 +75,7 @@ pub struct IndexCommand {
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     pub timeout: Duration,
+    pub cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +85,7 @@ pub struct IndexOutput {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+    pub cancelled: bool,
     pub duration_ms: u64,
 }
 
@@ -139,23 +145,41 @@ impl<'a> WorkspaceIndexService<'a> {
         Self { runner }
     }
 
+    #[allow(dead_code)]
     pub fn start_for_workspace(
         &self,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
         dry_run: bool,
     ) -> IndexStartReport {
+        self.start_for_workspace_cancellable(context, args, dry_run, &CancellationToken::new())
+    }
+
+    pub fn start_for_workspace_cancellable(
+        &self,
+        context: &WorkspaceContext,
+        args: &Map<String, Value>,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> IndexStartReport {
         if dry_run {
             return IndexStartReport::default();
         }
+        if cancellation.is_cancelled() {
+            return IndexStartReport {
+                warnings: vec![cancelled_error("rlm index operation stopped before work")],
+            };
+        }
 
-        let Some(source_root) = resolve_source_root(context, args) else {
-            let _ = write_status(
-                context,
-                BslIndexStatus::unavailable("could not resolve 1C source root", None),
-            );
-            return IndexStartReport::default();
-        };
+        let source_root =
+            match resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str)) {
+                Ok(resolved) => resolved.path,
+                Err(error) => {
+                    let _ =
+                        write_status(context, BslIndexStatus::unavailable(error.as_str(), None));
+                    return IndexStartReport::default();
+                }
+            };
 
         if active_lock(context, &source_root) {
             return IndexStartReport {
@@ -163,7 +187,7 @@ impl<'a> WorkspaceIndexService<'a> {
             };
         }
 
-        let commands = match self.commands(context, &source_root) {
+        let commands = match self.commands(context, &source_root, cancellation) {
             Ok(commands) => commands,
             Err(error) => {
                 let _ = write_status(
@@ -223,20 +247,37 @@ impl<'a> WorkspaceIndexService<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn ready_index(
         &self,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
     ) -> IndexReadiness {
-        let Some(source_root) = resolve_source_root(context, args) else {
-            return IndexReadiness::Unavailable("could not resolve 1C source root".to_string());
-        };
+        self.ready_index_cancellable(context, args, &CancellationToken::new())
+    }
+
+    pub fn ready_index_cancellable(
+        &self,
+        context: &WorkspaceContext,
+        args: &Map<String, Value>,
+        cancellation: &CancellationToken,
+    ) -> IndexReadiness {
+        if cancellation.is_cancelled() {
+            return IndexReadiness::Unavailable(cancelled_error(
+                "rlm index operation stopped before work",
+            ));
+        }
+        let source_root =
+            match resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str)) {
+                Ok(resolved) => resolved.path,
+                Err(error) => return IndexReadiness::Unavailable(error),
+            };
 
         if active_lock(context, &source_root) {
             return IndexReadiness::Building;
         }
 
-        let commands = match self.commands(context, &source_root) {
+        let commands = match self.commands(context, &source_root, cancellation) {
             Ok(commands) => commands,
             Err(error) => return IndexReadiness::Unavailable(error),
         };
@@ -262,6 +303,7 @@ impl<'a> WorkspaceIndexService<'a> {
         &self,
         context: &WorkspaceContext,
         source_root: &Path,
+        cancellation: &CancellationToken,
     ) -> Result<IndexCommands, String> {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal RLM index adapter lookup".to_string()
@@ -283,6 +325,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: INDEX_TIMEOUT,
+                cancellation: cancellation.clone(),
             },
             build: IndexCommand {
                 program: program.clone(),
@@ -290,6 +333,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: Duration::from_secs(24 * 60 * 60),
+                cancellation: cancellation.clone(),
             },
             update: IndexCommand {
                 program,
@@ -297,6 +341,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 cwd: context.cwd.clone(),
                 env,
                 timeout: Duration::from_secs(24 * 60 * 60),
+                cancellation: cancellation.clone(),
             },
         })
     }
@@ -613,7 +658,7 @@ fn run_background_job(mut job: IndexBackgroundJob) {
     let result = run_index_command_with_heartbeat(&job.primary, Some(&mut job.lock_lease));
     let finished_at = now_secs();
     match result {
-        Ok(output) if output.status_success => {
+        Ok(output) if output.status_success && !output.cancelled && !output.timed_out => {
             let metrics =
                 BslIndexRunMetrics::from_output(&job.action, started_at, finished_at, &output);
             match run_index_command(&job.info) {
@@ -649,7 +694,9 @@ fn run_background_job(mut job: IndexBackgroundJob) {
         Ok(output) => {
             let metrics =
                 BslIndexRunMetrics::from_output(&job.action, started_at, finished_at, &output);
-            let message = if output.timed_out {
+            let message = if output.cancelled {
+                cancelled_error(format!("rlm index {} stopped", job.action))
+            } else if output.timed_out {
                 format!("rlm index {} timed out", job.action)
             } else {
                 format!(
@@ -682,66 +729,55 @@ fn run_index_command_with_heartbeat(
     command: &IndexCommand,
     mut heartbeat: Option<&mut IndexLockLease>,
 ) -> Result<IndexOutput, String> {
-    let mut child = Command::new(&command.program)
-        .args(&command.args)
-        .current_dir(&command.cwd)
-        .envs(command.env.iter().map(|(key, value)| (key, value)))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to execute RLM index process: {error}"))?;
-
     let started = Instant::now();
+    let mut child = ManagedChild::spawn(ManagedCommand {
+        program: command.program.clone(),
+        args: command.args.clone(),
+        cwd: command.cwd.clone(),
+        env: command
+            .env
+            .iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect(),
+        timeout: Some(command.timeout),
+        cancellation: command.cancellation.clone(),
+    })
+    .map_err(|error| format!("failed to execute RLM index process: {error}"))?;
+    let child_pid = child.id();
     let mut last_heartbeat = Instant::now();
     if let Some(lease) = heartbeat.as_mut() {
-        (*lease).refresh(child.id());
+        (*lease).refresh(child_pid);
     }
-    loop {
-        if child
-            .try_wait()
-            .map_err(|error| format!("failed to poll RLM index process: {error}"))?
-            .is_some()
-        {
-            let output = child
-                .wait_with_output()
-                .map_err(|error| format!("failed to collect RLM index output: {error}"))?;
-            return Ok(IndexOutput {
-                status_success: output.status.success(),
-                status: output.status.to_string(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                timed_out: false,
-                duration_ms: duration_ms(started.elapsed()),
-            });
-        }
-
-        if let Some(lease) = heartbeat.as_mut() {
-            if last_heartbeat.elapsed() >= LOCK_HEARTBEAT_INTERVAL {
-                (*lease).refresh(child.id());
-                last_heartbeat = Instant::now();
+    let output = child
+        .wait_for_output_with_poll(Duration::from_millis(50), || {
+            if let Some(lease) = heartbeat.as_mut() {
+                if last_heartbeat.elapsed() >= LOCK_HEARTBEAT_INTERVAL {
+                    (*lease).refresh(child_pid);
+                    last_heartbeat = Instant::now();
+                }
             }
-        }
+        })
+        .map_err(|error| format!("failed to collect RLM index output: {error}"))?;
+    Ok(map_managed_output(output, started.elapsed()))
+}
 
-        if started.elapsed() >= command.timeout {
-            let _ = child.kill();
-            let output = child.wait_with_output().map_err(|error| {
-                format!("failed to collect timed-out RLM index output: {error}")
-            })?;
-            return Ok(IndexOutput {
-                status_success: false,
-                status: "timeout".to_string(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                timed_out: true,
-                duration_ms: duration_ms(started.elapsed()),
-            });
-        }
-
-        thread::sleep(Duration::from_millis(50));
+fn map_managed_output(mut output: ManagedOutput, elapsed: Duration) -> IndexOutput {
+    ensure_truncation_diagnostics(&mut output);
+    IndexOutput {
+        status_success: output.status_success && !output.cancelled && !output.timed_out,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        timed_out: output.timed_out,
+        cancelled: output.cancelled,
+        duration_ms: duration_ms(elapsed),
     }
 }
 
 fn readiness_from_info(output: &IndexOutput) -> IndexReadiness {
+    if output.cancelled {
+        return IndexReadiness::Unavailable(cancelled_error("rlm index info stopped"));
+    }
     if !output.status_success {
         return IndexReadiness::Unavailable(output.stderr.trim().to_string());
     }
@@ -1058,11 +1094,9 @@ fn ready_status_preserving_last_run(
     db_path: &Path,
 ) -> BslIndexStatus {
     let mut status = BslIndexStatus::ready(source_root, db_path);
-    let source_root_display = source_root.display().to_string();
-    let db_path_display = db_path.display().to_string();
     status.last_run = read_bsl_index_status(context).and_then(|existing| {
-        let same_index = existing.source_root.as_deref() == Some(source_root_display.as_str())
-            && existing.db_path.as_deref() == Some(db_path_display.as_str());
+        let same_index = stored_path_matches(existing.source_root.as_deref(), source_root)
+            && stored_path_matches(existing.db_path.as_deref(), db_path);
         if same_index {
             existing.last_run
         } else {
@@ -1070,6 +1104,19 @@ fn ready_status_preserving_last_run(
         }
     });
     status
+}
+
+fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    match (
+        normalize_path_identity(Path::new(stored)),
+        normalize_path_identity(current),
+    ) {
+        (Ok(stored), Ok(current)) => stored == current,
+        _ => false,
+    }
 }
 
 fn write_status_path(path: &Path, status: BslIndexStatus) -> Result<(), String> {
@@ -1080,51 +1127,6 @@ fn write_status_path(path: &Path, status: BslIndexStatus) -> Result<(), String> 
     let text = serde_json::to_string_pretty(&status).map_err(|error| error.to_string())?;
     fs::write(path, text + "\n")
         .map_err(|error| format!("failed to write RLM index status: {error}"))
-}
-
-fn resolve_source_root(context: &WorkspaceContext, args: &Map<String, Value>) -> Option<PathBuf> {
-    for key in ["sourceDir", "path"] {
-        if let Some(value) = args.get(key).and_then(Value::as_str) {
-            let candidate = resolve_path(&context.cwd, value);
-            if looks_like_1c_source_root(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-
-    [
-        context.workspace_root.join("src"),
-        context.workspace_root.join("src").join("cf"),
-        context.workspace_root.clone(),
-    ]
-    .into_iter()
-    .find(|candidate| looks_like_1c_source_root(candidate))
-}
-
-fn resolve_path(cwd: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
-    }
-}
-
-fn looks_like_1c_source_root(path: &Path) -> bool {
-    if !path.is_dir() {
-        return false;
-    }
-    let source_dirs = [
-        "CommonModules",
-        "Catalogs",
-        "Documents",
-        "DataProcessors",
-        "Reports",
-        "InformationRegisters",
-        "AccumulationRegisters",
-    ];
-    path.join("Configuration.xml").is_file()
-        || source_dirs.iter().any(|name| path.join(name).is_dir())
 }
 
 fn now_secs() -> u64 {
@@ -1148,6 +1150,7 @@ fn new_lock_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cancellation::CancellationToken;
     use std::cell::RefCell;
 
     #[test]
@@ -1162,6 +1165,79 @@ mod tests {
         assert!(report.warnings.is_empty());
         assert!(runner.commands.borrow().is_empty());
         assert!(!status_path(&context).exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_for_pre_cancelled_index_requests() {
+        let context = test_context("pre-cancelled-prefix");
+        let runner = RecordingIndexRunner::default();
+        let service = WorkspaceIndexService::with_runner(&runner);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let report =
+            service.start_for_workspace_cancellable(&context, &Map::new(), false, &cancellation);
+        let readiness = service.ready_index_cancellable(&context, &Map::new(), &cancellation);
+
+        assert!(report.warnings[0].starts_with("cancelled:"));
+        assert!(matches!(
+            readiness,
+            IndexReadiness::Unavailable(error) if error.starts_with("cancelled:")
+        ));
+        assert!(runner.commands.borrow().is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_for_cancelled_index_output() {
+        let readiness = readiness_from_info(&IndexOutput {
+            status_success: false,
+            status: "cancelled".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: true,
+            duration_ms: 0,
+        });
+
+        assert!(matches!(
+            readiness,
+            IndexReadiness::Unavailable(error) if error.starts_with("cancelled:")
+        ));
+    }
+
+    #[test]
+    fn multi_source_set_uses_main_configuration_root_for_rlm_commands() {
+        let context = test_context("multi-source-set");
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src/cf
+  - name: TESTS
+    type: EXTENSION
+    path: exts/TESTS
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(context.workspace_root.join("src/cf")).unwrap();
+        fs::write(
+            context.workspace_root.join("src/cf/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner::default();
+        let service = WorkspaceIndexService::with_runner(&runner);
+
+        service.start_for_workspace(&context, &Map::new(), false);
+
+        assert_eq!(
+            PathBuf::from(&runner.commands.borrow()[0].args[2]),
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -1392,6 +1468,20 @@ mod tests {
         cleanup(&context);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn path_normalization_failures_do_not_match_index_identity() {
+        use std::os::unix::fs::symlink;
+
+        let context = test_context("invalid-path-identity");
+        let dangling = context.workspace_root.join("dangling");
+        symlink(context.workspace_root.join("missing"), &dangling).unwrap();
+        let dangling_text = dangling.display().to_string();
+
+        assert!(!stored_path_matches(Some(&dangling_text), &dangling));
+        cleanup(&context);
+    }
+
     #[test]
     fn stale_index_starts_background_update() {
         let context = test_context("stale");
@@ -1440,6 +1530,7 @@ mod tests {
                     "  Methods:  617".to_string(),
                     "  DB size:  1.3 MB".to_string(),
                 ],
+                CancellationToken::new(),
             ),
             info: print_lines_command(
                 &context.workspace_root,
@@ -1448,6 +1539,7 @@ mod tests {
                     format!("Index: {}", db_path.display()),
                     "  Status:   fresh".to_string(),
                 ],
+                CancellationToken::new(),
             ),
             status_path: status.clone(),
             lock_path: lock.clone(),
@@ -1471,6 +1563,155 @@ mod tests {
         assert_eq!(metrics["db_size"], "1.3 MB");
         let current = read_lock_path(&lock).expect("completed job should leave a marker");
         assert_eq!(current.state, "released");
+        assert!(current.child_pid.is_some());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cancelled_index_info_returns_promptly() {
+        let context = test_context("cancelled-info");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let command = print_lines_command(
+            &context.workspace_root,
+            true,
+            &["Index: /tmp/bsl_index.db".to_string()],
+            cancellation,
+        );
+
+        let started = Instant::now();
+        let output = run_index_command(&command).expect("cancelled command should return output");
+
+        assert!(output.cancelled);
+        assert!(!output.status_success);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn timed_out_index_info_returns_promptly_without_cancellation() {
+        let context = test_context("timed-out-info");
+        let mut command = print_lines_command(
+            &context.workspace_root,
+            true,
+            &["Index: /tmp/bsl_index.db".to_string()],
+            CancellationToken::new(),
+        );
+        command.timeout = Duration::ZERO;
+
+        let started = Instant::now();
+        let output = run_index_command(&command).expect("timed-out command should return output");
+
+        assert!(output.timed_out);
+        assert!(!output.cancelled);
+        assert!(!output.status_success);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn managed_cancelled_output_never_maps_to_success() {
+        let output = map_managed_output(
+            crate::infrastructure::managed_child::ManagedOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
+            Duration::from_millis(1),
+        );
+
+        assert!(!output.status_success);
+        assert!(output.cancelled);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn managed_timed_out_output_never_maps_to_success() {
+        let output = map_managed_output(
+            crate::infrastructure::managed_child::ManagedOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: true,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
+            Duration::from_millis(1),
+        );
+
+        assert!(!output.status_success);
+        assert!(output.timed_out);
+        assert!(!output.cancelled);
+    }
+
+    #[test]
+    fn managed_truncation_is_visible_at_index_boundary() {
+        let output = map_managed_output(
+            crate::infrastructure::managed_child::ManagedOutput {
+                status_success: false,
+                status: "exit status: 0".into(),
+                stdout: "tail".into(),
+                stderr: "diagnostic tail".into(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: true,
+                stderr_truncated: true,
+            },
+            Duration::from_millis(1),
+        );
+        assert!(output.stderr.contains("stdout capture truncated"));
+        assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
+    }
+
+    #[test]
+    fn cancelled_background_job_records_failure_and_releases_lock() {
+        let context = test_context("cancelled-background");
+        let status = status_path(&context);
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let lock_lease = acquire_index_lock(&lock, "build", &context.workspace_root.join("src"))
+            .unwrap()
+            .expect("lock should be acquired for background job");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        run_background_job(IndexBackgroundJob {
+            action: "build".to_string(),
+            source_root: context.workspace_root.join("src"),
+            primary: print_lines_command(
+                &context.workspace_root,
+                true,
+                &["Index built".to_string()],
+                cancellation,
+            ),
+            info: print_lines_command(
+                &context.workspace_root,
+                false,
+                &["Index not found: /tmp/bsl_index.db".to_string()],
+                CancellationToken::new(),
+            ),
+            status_path: status.clone(),
+            lock_path: lock.clone(),
+            lock_lease,
+        });
+
+        let current_status: BslIndexStatus =
+            serde_json::from_str(&fs::read_to_string(&status).unwrap()).unwrap();
+        assert_eq!(current_status.status, "failed");
+        assert!(current_status
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("cancelled:")));
+        assert!(current_status.last_run.is_some());
+        let current_lock = read_lock_path(&lock).expect("cancelled job should leave a marker");
+        assert_eq!(current_lock.state, "released");
         cleanup(&context);
     }
 
@@ -1647,12 +1888,18 @@ mod tests {
                 stdout: stdout.into(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
                 duration_ms: 0,
             }
         }
     }
 
-    fn print_lines_command(cwd: &Path, sleep_first: bool, lines: &[String]) -> IndexCommand {
+    fn print_lines_command(
+        cwd: &Path,
+        sleep_first: bool,
+        lines: &[String],
+        cancellation: CancellationToken,
+    ) -> IndexCommand {
         #[cfg(windows)]
         {
             let mut script = String::new();
@@ -1670,6 +1917,7 @@ mod tests {
                 cwd: cwd.to_path_buf(),
                 env: Vec::new(),
                 timeout: Duration::from_secs(5),
+                cancellation,
             }
         }
 
@@ -1691,6 +1939,7 @@ mod tests {
                 cwd: cwd.to_path_buf(),
                 env: Vec::new(),
                 timeout: Duration::from_secs(5),
+                cancellation,
             }
         }
     }
@@ -1748,6 +1997,11 @@ mod tests {
     fn test_context(name: &str) -> WorkspaceContext {
         let root = std::env::temp_dir().join(format!("unica-index-{name}-{}", now_nanos()));
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
         create_fake_plugin_root(&root);
         WorkspaceContext {
             cwd: root.clone(),

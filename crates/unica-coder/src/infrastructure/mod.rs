@@ -1,5 +1,7 @@
 pub(crate) mod bundled_tools;
 pub mod internal_adapters;
+#[allow(dead_code)]
+pub mod managed_child;
 pub(crate) mod metadata_kinds;
 pub mod native_operations;
 pub mod path_policy;
@@ -10,6 +12,7 @@ pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;
 
+use crate::domain::cancellation::cancelled_error;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +39,21 @@ impl AdapterOutcome {
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        }
+    }
+
+    pub fn cancelled(detail: impl AsRef<str>) -> Self {
+        let error = cancelled_error(detail);
+        Self {
+            ok: false,
+            summary: error.clone(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![error],
             artifacts: Vec::new(),
             stdout: None,
             stderr: None,

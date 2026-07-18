@@ -928,6 +928,10 @@ fn prepare_file_for_removal(_path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "on Windows this only clears the FILE_ATTRIBUTE_READONLY flag"
+)]
 fn prepare_file_for_removal(path: &Path) -> std::io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,

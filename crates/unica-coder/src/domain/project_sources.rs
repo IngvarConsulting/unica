@@ -1,3 +1,4 @@
+use crate::domain::source_roots::{normalize_contained_source_root, select_default_source_set};
 use serde::Serialize;
 use serde_yaml::Value as YamlValue;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,12 @@ pub struct ProjectSourceMap {
     pub workspace_root: String,
     pub config_path: Option<String>,
     pub source_sets: Vec<ProjectSourceSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_set: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_selection_error: Option<String>,
     #[serde(skip_serializing)]
     pub(crate) configured_format_raw: Option<String>,
 }
@@ -64,11 +71,28 @@ pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourc
         .into_iter()
         .map(|source_set| detect_source_set_format(workspace_root, source_set))
         .collect::<Vec<_>>();
+    let (effective_source_set, effective_source_root, source_selection_error) =
+        match select_default_source_set(&project_source_sets) {
+            Ok(source_set) => {
+                match normalize_contained_source_root(workspace_root, &source_set.path) {
+                    Ok(root) => (
+                        Some(source_set.name.clone()),
+                        Some(root.display().to_string()),
+                        None,
+                    ),
+                    Err(error) => (None, None, Some(format!("invalid_source_root: {error}"))),
+                }
+            }
+            Err(error) => (None, None, Some(format!("invalid_source_root: {error}"))),
+        };
 
     Ok(ProjectSourceMap {
         workspace_root: workspace_root.display().to_string(),
         config_path: config_path.map(|path| path.display().to_string()),
         source_sets: project_source_sets,
+        effective_source_set,
+        effective_source_root,
+        source_selection_error,
         configured_format_raw,
     })
 }
@@ -328,6 +352,8 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::source_roots::resolve_source_root;
+    use crate::domain::workspace::WorkspaceContext;
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -519,6 +545,85 @@ source-set:
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_source_root_rejects_relative_workspace_escape() {
+        let root = temp_workspace("unica-source-map-relative-escape");
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: ../outside\n",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert!(map.effective_source_set.is_none());
+        assert!(map.effective_source_root.is_none());
+        assert!(map
+            .source_selection_error
+            .as_deref()
+            .is_some_and(
+                |error| error.starts_with("invalid_source_root:") && error.contains("workspace")
+            ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_source_root_rejects_absolute_workspace_escape() {
+        let root = temp_workspace("unica-source-map-absolute-escape");
+        let outside = temp_workspace("unica-source-map-outside");
+        write(
+            &root.join("v8project.yaml"),
+            &format!(
+                "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: {}\n",
+                outside.display()
+            ),
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert!(map.effective_source_root.is_none());
+        assert!(map
+            .source_selection_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("invalid_source_root:")));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn effective_source_root_uses_resolver_path_identity() {
+        let root = temp_workspace("unica-source-map-normalized");
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src/../src/cf\n",
+        );
+        fs::create_dir_all(root.join("src/cf")).unwrap();
+        let context = WorkspaceContext::discover(root.clone()).unwrap();
+
+        let map = discover_project_source_map(&root).unwrap();
+        let resolved = resolve_source_root(&context, None).unwrap();
+
+        assert_eq!(map.effective_source_set.as_deref(), Some("main"));
+        assert_eq!(
+            map.effective_source_root.as_deref(),
+            Some(resolved.path.to_string_lossy().as_ref())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selection_errors_use_the_stable_invalid_source_root_prefix() {
+        let ambiguous = temp_workspace("unica-source-map-ambiguous-prefix");
+        write(&ambiguous.join("v8project.yaml"), "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: app\n  - name: tests\n    type: CONFIGURATION\n    path: tests\n");
+        let map = discover_project_source_map(&ambiguous).unwrap();
+        assert_eq!(map.source_selection_error.as_deref(), Some("invalid_source_root: sourceDir is required because configuration source sets are ambiguous: app, tests"));
+
+        let missing = temp_workspace("unica-source-map-missing-prefix");
+        let map = discover_project_source_map(&missing).unwrap();
+        assert_eq!(map.source_selection_error.as_deref(), Some("invalid_source_root: sourceDir is required because no configuration source set was found"));
+        fs::remove_dir_all(ambiguous).unwrap();
+        fs::remove_dir_all(missing).unwrap();
     }
 
     fn assert_source_set(

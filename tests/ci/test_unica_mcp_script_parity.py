@@ -4,10 +4,13 @@ import dataclasses
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -4187,6 +4190,11 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             temp_root = Path(temp)
             workspace = temp_root / "workspace"
             workspace.mkdir()
+            (workspace / "src" / "cf").mkdir(parents=True)
+            (workspace / "v8project.yaml").write_text(
+                "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
+                encoding="utf-8",
+            )
             for example in examples:
                 if example.skill != "form-edit":
                     continue
@@ -4397,23 +4405,73 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        result = subprocess.run(
-            [str(self.unica_bin)],
-            input=json.dumps(message, ensure_ascii=False) + "\n",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=REPO_ROOT,
-            env=env,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        response_lines = [line for line in result.stdout.splitlines() if line.strip()]
-        self.assertEqual(len(response_lines), 1, result.stdout)
-        response = json.loads(response_lines[0])
+        responses = self.run_mcp_messages([message], env)
+        self.assertEqual(len(responses), 1, responses)
+        response = responses[0]
         if "error" in response:
             raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
         return json.loads(response["result"]["content"][0]["text"])
+
+    def run_mcp_messages(
+        self,
+        messages: list[dict[str, Any]],
+        env: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        process = subprocess.Popen(
+            [str(self.unica_bin)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=REPO_ROOT,
+            env=env,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        lines: queue.Queue[str] = queue.Queue()
+
+        def read_stdout() -> None:
+            while True:
+                line = process.stdout.readline()
+                lines.put(line)
+                if not line:
+                    return
+
+        threading.Thread(target=read_stdout, daemon=True).start()
+        deadline = time.monotonic() + 30
+        try:
+            for message in messages:
+                process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+
+            responses = []
+            for _ in messages:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.fail("timed out waiting for MCP response")
+                try:
+                    line = lines.get(timeout=remaining)
+                except queue.Empty:
+                    self.fail("timed out waiting for MCP response")
+                if not line:
+                    self.fail("MCP process exited before all responses arrived")
+                responses.append(json.loads(line))
+
+            process.stdin.close()
+            return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            stderr = process.stderr.read()
+            self.assertEqual(return_code, 0, stderr)
+            return responses
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
 
     def call_mcp_messages(
         self,
@@ -4423,18 +4481,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        result = subprocess.run(
-            [str(self.unica_bin)],
-            input="\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=REPO_ROOT,
-            env=env,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        responses = []
+        for start in range(0, len(messages), 32):
+            batch = messages[start : start + 32]
+            responses.extend(self.run_mcp_messages(batch, env))
         return {response["id"]: response for response in responses}
 
 
@@ -4446,14 +4496,14 @@ def run_python_script(
     *,
     skills_root: Path = REFERENCE_SKILLS_ROOT,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = subprocess.run(
         command_for_script(skill, script, arguments, skills_root=skills_root),
         cwd=workspace,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         check=False,
     )
+    return decoded_completed_process(result)
 
 
 def run_cc_python_script(
@@ -4715,13 +4765,29 @@ def run_reference_skill_raw(
 ) -> subprocess.CompletedProcess[str]:
     skill, script = cc_script_skill_and_script(script_rel)
     script_path = REFERENCE_SKILLS_ROOT / skill / "scripts" / script
-    return subprocess.run(
+    result = subprocess.run(
         ["python3", str(script_path), *args],
         cwd=workspace,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         check=False,
+    )
+    return decoded_completed_process(result)
+
+
+def decoded_completed_process(
+    result: subprocess.CompletedProcess[bytes],
+) -> subprocess.CompletedProcess[str]:
+    def decode(data: bytes) -> str:
+        if os.name == "nt":
+            data = data.replace(b"\r\r\n", b"\r\n")
+        return data.decode("utf-8")
+
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        stdout=decode(result.stdout),
+        stderr=decode(result.stderr),
     )
 
 
@@ -4895,10 +4961,31 @@ def normalize_command(command: list[str], workspace: Path) -> list[str]:
 
 
 def normalize_text(text: str, workspace: Path) -> str:
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = text.replace("\r\r\n", "\r\n").replace("\r\n", "\n").replace("\r", "\n")
     normalized = normalized.replace(str(workspace.resolve()), "<WORKSPACE>")
     normalized = normalized.replace(str(workspace), "<WORKSPACE>")
     normalized = normalized.replace(str(REPO_ROOT), "<REPO>")
+    if os.name == "nt":
+        normalized = normalized.replace(str(workspace.resolve()).replace("\\", "/"), "<WORKSPACE>")
+        normalized = normalized.replace(str(workspace).replace("\\", "/"), "<WORKSPACE>")
+        normalized = normalized.replace(str(REPO_ROOT).replace("\\", "/"), "<REPO>")
+        normalized = normalized.replace(r"\\?\<WORKSPACE>", "<WORKSPACE>")
+        normalized = normalized.replace(r"\\?\<REPO>", "<REPO>")
+        normalized = re.sub(
+            r"<(?:WORKSPACE|REPO)>[^\s\"']*",
+            lambda match: match.group(0).replace("\\", "/"),
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?<![\w.-])(?:src(?:-cfe)?|exts|[.]build)\\[^\s\"'<>]+",
+            lambda match: match.group(0).replace("\\", "/"),
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?m)^(?P<label>[ \t]*(?:File|Module|Output|Path|Config|Configuration):[ \t]+)(?P<path>[^\r\n]+)$",
+            lambda match: match.group("label") + match.group("path").replace("\\", "/"),
+            normalized,
+        )
     normalized = re.sub(
         r"<REPO>/tests/fixtures/unica_mcp_script_parity/reference_skills/([^/\s\"']+)/scripts/([^/\s\"']+)",
         r"<REPO>/<SKILL_SCRIPT>/\1/\2",
@@ -4914,14 +5001,54 @@ def normalize_text(text: str, workspace: Path) -> str:
 
 
 def normalize_snapshot_text(text: str, workspace: Path) -> str:
-    normalized = normalize_text(text, workspace)
-    normalized = normalized.replace("&#13;\n", "\n")
+    normalized = normalize_text(
+        text.replace("&#13;\r\n", "\r\n").replace("&#13;\n", "\n"),
+        workspace,
+    )
     return re.sub(
         r'(<\?xml\s+version="1\.0"\s+encoding=")utf-8(")',
         r"\1UTF-8\2",
         normalized,
         count=1,
     )
+
+
+class WindowsParityNormalizationTests(unittest.TestCase):
+    def test_non_path_backslashes_remain_significant(self) -> None:
+        workspace = Path("C:/parity-workspace")
+
+        self.assertNotEqual(normalize_text(r"a\b", workspace), normalize_text("a/b", workspace))
+
+    def test_blank_lines_remain_significant(self) -> None:
+        workspace = Path("C:/parity-workspace")
+
+        self.assertNotEqual(normalize_text("first\n\nsecond\n", workspace), normalize_text("first\nsecond\n", workspace))
+
+    @unittest.skipUnless(os.name == "nt", "Windows text-mode newline artifact")
+    def test_subprocess_decode_removes_only_doubled_carriage_return(self) -> None:
+        doubled = subprocess.CompletedProcess([], 0, stdout=b"first\r\r\nsecond", stderr=b"")
+        real_blank = subprocess.CompletedProcess([], 0, stdout=b"first\r\n\r\nsecond", stderr=b"")
+
+        self.assertEqual(decoded_completed_process(doubled).stdout, "first\r\nsecond")
+        self.assertEqual(decoded_completed_process(real_blank).stdout, "first\r\n\r\nsecond")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path separator equivalence")
+    def test_known_workspace_paths_normalize_separators(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="unica-normalize-path-") as tmp:
+            workspace = Path(tmp)
+            windows_path = f"output={workspace}\\src\\Template.xml"
+            slash_path = f"output={workspace.as_posix()}/src/Template.xml"
+
+            self.assertEqual(normalize_text(windows_path, workspace), normalize_text(slash_path, workspace))
+
+    @unittest.skipUnless(os.name == "nt", "Windows path field equivalence")
+    def test_documented_path_fields_normalize_separators(self) -> None:
+        workspace = Path("C:/parity-workspace")
+
+        self.assertEqual(
+            normalize_text("     File: .\\Catalogs\\Item.xml\n", workspace),
+            normalize_text("     File: ./Catalogs/Item.xml\n", workspace),
+        )
 
 
 def snapshot_workspace(workspace: Path) -> dict[str, str]:

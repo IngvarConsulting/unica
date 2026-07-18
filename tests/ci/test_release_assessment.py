@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import tarfile
 import tempfile
@@ -97,7 +98,7 @@ for raw in sys.stdin:
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            fake_mcp = root / "run-unica"
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
             self.write_fake_mcp(fake_mcp)
             bsp_root = root / "bsp"
             (bsp_root / "src" / "cf").mkdir(parents=True)

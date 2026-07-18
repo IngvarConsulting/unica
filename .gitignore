@@ -1,6 +1,7 @@
 research/
 its/
 .build/
+.worktrees/
 target/
 dist/
 .DS_Store

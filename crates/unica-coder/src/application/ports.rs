@@ -1,5 +1,6 @@
 use super::{project_map, project_status, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
@@ -24,7 +25,7 @@ impl HandlerOutcome {
     }
 }
 
-pub(crate) trait ApplicationPorts {
+pub(crate) trait ApplicationPorts: Send + Sync {
     fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String>;
 
     fn invoke_handler(
@@ -33,6 +34,7 @@ pub(crate) trait ApplicationPorts {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
+        cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String>;
 
     fn cache_report(
@@ -59,7 +61,14 @@ impl ApplicationPorts for DefaultApplicationPorts {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
+        cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(format!(
+                "{} stopped before adapter execution",
+                spec.name
+            ))));
+        }
         match spec.handler {
             ToolHandler::NativeOperation { operation, .. } => NativeOperationAdapter::invoke(
                 operation,
@@ -74,11 +83,25 @@ impl ApplicationPorts for DefaultApplicationPorts {
             ToolHandler::ProjectMap => Ok(HandlerOutcome::plain(project_map(context))),
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
-                    .invoke(spec.name, args, context, dry_run, spec.mutating)
+                    .invoke_cancellable(
+                        spec.name,
+                        args,
+                        context,
+                        dry_run,
+                        spec.mutating,
+                        cancellation,
+                    )
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
-                .invoke(spec.name, args, context, dry_run, spec.mutating)
+                .invoke_cancellable(
+                    spec.name,
+                    args,
+                    context,
+                    dry_run,
+                    spec.mutating,
+                    cancellation,
+                )
                 .map(HandlerOutcome::plain),
             ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke(
                 action, spec.name, args, context, dry_run,
@@ -89,22 +112,29 @@ impl ApplicationPorts for DefaultApplicationPorts {
             }),
             ToolHandler::CodeAdapter { command } if command == ["search"] => {
                 CodeSearchAdapter::new()
-                    .invoke(spec.name, args, context, dry_run)
+                    .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::CodeAdapter {
                 command: ["definition"] | ["outline"] | ["grep"] | ["meta-profile"],
             } => CodeNavigationAdapter::new()
-                .invoke(spec.name, args, context, dry_run)
+                .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
                 .map(HandlerOutcome::plain),
             ToolHandler::CodeAdapter {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()
-                .invoke(spec.name, args, context, dry_run)
+                .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
                 .map(HandlerOutcome::plain),
             ToolHandler::CodeAdapter { command } => {
                 CliAdapter::new("bsl-analyzer", command, "code analysis")
-                    .invoke(spec.name, args, context, dry_run, spec.mutating)
+                    .invoke_cancellable(
+                        spec.name,
+                        args,
+                        context,
+                        dry_run,
+                        spec.mutating,
+                        cancellation,
+                    )
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::StandardsAdapter { operation } => Ok(HandlerOutcome::plain(

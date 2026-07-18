@@ -25,6 +25,9 @@ Expected:
 - Old adapter names are not public MCP registrations.
 - Hidden workspace analyzer services are internal implementation details and do
   not add keys under `mcpServers`.
+- Bundled-tool versions come from `plugins/unica/third-party/tools.lock.json`.
+  Contract tests must load the locked entry and validate the corresponding
+  artifact/interface; they must not hardcode a second `bsl-analyzer` version.
 - Skill-local operation files are not a target execution path. The target path is
   MCP `unica`; runtime shell/PowerShell wrappers are not shipped.
 
@@ -148,3 +151,64 @@ provided by the plugin, not stale cached MCP registrations.
   service record.
 - Another workspace or source root must use another service key.
 - Stale or version-mismatched `service.json` records must be replaced.
+- With no `sourceDir`, a source set named `main` is the effective source root;
+  otherwise the sole `CONFIGURATION` source set is used. Multiple configuration
+  source sets without `main` must fail with `invalid_source_root:`. An explicit
+  `sourceDir` is resolved relative to request `cwd`, normalized, and rejected if
+  it escapes the workspace.
+- `project.status` and `project.map`, analyzer commands, RLM commands, and the
+  workspace-service identity must agree on that effective source root.
+- Analyzer and RLM work requests carry unique internal operation IDs. A public
+  `notifications/cancelled` request must propagate to the matching operation and
+  return JSON-RPC error `-32800` exactly once.
+- EOF gives accepted MCP workers 250 ms to publish, then cancels them and waits
+  at most 2 seconds more. After that bounded deadline the publication-admission
+  gate closes without waiting for generic writer I/O. A response not already
+  admitted cannot begin I/O; an admitted arbitrary `Write` may complete after
+  the injectable handler returns. The real stdio process then exits and closes
+  stdout. Verify with `cargo test -p unica-coder mcp_dispatcher_close`.
+- Public MCP JSONL lines are limited to 8 MiB and at most 32 `tools/call`
+  workers are admitted. Oversized lines return `-32700`; excess calls return
+  `-32603` with `overloaded` without delaying `ping` or cancellation.
+- `ping`, cancellation, and shutdown must remain responsive while analyzer or
+  RLM work is active. Cancelling one request must not require restarting the
+  service before a later request succeeds.
+- Internal request/response lines are limited to 8 MiB. At most 64 general
+  handlers, 8 reserved control handlers, and 8 work workers may run. A bounded
+  64-socket control classifier uses a 500 ms aggregate lifetime and a 64 KiB
+  classification prefix when general handlers are full. Classified work then
+  returns `workspace service overloaded: general connection handlers are
+  saturated`; unclassified overflow is closed. A complete `ping`, `cancel`, or
+  `shutdown` must still complete through the reserved path.
+- Request-header parsing has one 5-second aggregate deadline from accept. Reads
+  poll in at most 100 ms slices and slow-drip bytes do not renew that deadline.
+- Work and ordinary `Ping`, `Invalidate`, and `Shutdown` requests have one
+  120-second overall deadline starting before connect. Control kinds have a
+  500 ms connect cap; connect, write, flush, and read consume the remaining
+  overall budget.
+  Reads poll at 100 ms intervals, and cancellation takes precedence over timeout,
+  EOF, protocol, and successful process-exit races. A best-effort `Cancel` has a
+  separate 500 ms aggregate budget for connect, write, and flush and does not
+  read a response.
+  Verify with `cargo test -p unica-coder cancellable_connector`.
+- Shutdown and client disconnect cancel owned operations and boundedly clean up
+  their child process trees. On Windows this guarantee is implemented by
+  suspended start followed by Job Object assignment; on Unix by a dedicated
+  process group. Other targets guarantee only immediate-child termination.
+
+The issue-89 end-to-end regression exercises a workspace with `main` and
+`TESTS` source sets, concurrent analyzer/RLM calls, cancellation, ping, a
+subsequent successful request, and descendant cleanup:
+
+```sh
+cargo test -p unica-coder --test issue_89_workspace_service -- --nocapture
+```
+
+Run it three consecutive times. Each run must finish within its test deadlines,
+all recorded backend roots must end in `src/cf`, and no PID created by the
+fixture may survive. On Windows, additionally inspect without terminating any
+pre-existing user process:
+
+```powershell
+Get-Process rlm-bsl-index,bsl-analyzer -ErrorAction SilentlyContinue
+```

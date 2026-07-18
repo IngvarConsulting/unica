@@ -34,6 +34,60 @@ Unica may start hidden internal services scoped by workspace and source root.
 7. Applied successful mutations notify live workspace services with domain
    events so analyzer state and index readiness can be invalidated without LLM
    coordination.
+8. Analyzer and RLM work requests carry an internal UUID `operation_id`. The
+   service registers a cancellation token for each active operation; a
+   `cancel` message uses a separate localhost connection and addresses that
+   operation ID.
+9. The public stdio dispatcher may execute `tools/call` requests concurrently.
+   MCP `notifications/cancelled` flips the same request token that is propagated
+   through the application and internal service connector. A cancelled public
+   request completes once with JSON-RPC error `-32800` (`request cancelled`).
+   Public JSONL input is limited to 8 MiB per line and at most 32 tool workers
+   are admitted. An oversized line returns parse error `-32700`; excess work
+   returns deterministic JSON-RPC error `-32603` containing `overloaded`.
+10. The service accepts each connection independently. `ping`, `cancel`, and
+    `shutdown` do not wait for analyzer or RLM work. RLM jobs may run
+    independently, while access to the single warm analyzer session remains
+    serialized. Disconnecting a work client cancels its operation.
+    It admits at most 64 general connection handlers and 8 work workers. When
+    general handlers are saturated, a bounded 64-connection classifier with a
+    500 ms aggregate lifetime and a 64 KiB classification prefix preserves a
+    separate capacity of 8 control handlers. Complete work received through
+    that path is rejected with `workspace service overloaded: general connection
+    handlers are saturated`; unclassified overflow is closed. The classifier
+    is processed before each new accept and evicts its oldest pending socket at
+    capacity, so idle clients cannot create an unbounded queue or starve a
+    complete control line.
+11. `shutdown` rejects new work, cancels every registered operation, removes
+    the owned `service.json`, and exits after bounded handler cleanup.
+12. Analyzer and RLM child processes are owned as process trees. On Windows a
+    child is created suspended, assigned to a kill-on-close Job Object, and only
+    then resumed. On Unix it runs in a dedicated process group. Cancellation,
+    timeout, shutdown, or session failure terminates that tree with bounded
+    waits. Other platforms retain the immediate-child fallback and therefore do
+    not provide the descendant-cleanup guarantee.
+13. Source selection is deterministic. A non-empty `sourceDir` is resolved
+    relative to the request working directory; otherwise a source set named
+    `main` wins, followed by the sole `CONFIGURATION` source set. Missing or
+    ambiguous configuration roots fail with `invalid_source_root:`. Resolved
+    paths are normalized, must stay inside the workspace, and the same effective
+    root is used for analyzer, RLM, service identity, `project.status`, and
+    `project.map`.
+14. `plugins/unica/third-party/tools.lock.json` is the sole bundled-tool version
+    authority. Package and executable-interface contract tests read the selected
+    version from that lock; they do not duplicate a `bsl-analyzer` version
+    literal in CI assertions.
+15. Work and ordinary `Ping`, `Invalidate`, and `Shutdown` requests have one
+    120-second overall deadline starting before connect. Control kinds have a
+    500 ms connect cap; connect, write, flush, and read consume the remaining
+    overall budget.
+    Reads poll every 100 ms, and cancellation takes precedence over timeout, EOF,
+    protocol, and successful process-exit races. A best-effort `Cancel` has a
+    separate 500 ms aggregate budget for connect, write, and flush and does not
+    read a response.
+16. Public and internal request lines are limited to 8 MiB. Workspace-service
+    request headers have one 5-second aggregate deadline beginning at accept;
+    100 ms read slices do not reset it when a peer drips bytes.
 
 ## Неграницы
 
@@ -55,6 +109,9 @@ Unica may start hidden internal services scoped by workspace and source root.
    when `UNICA_PLUGIN_ROOT` is absent.
 5. Tests must continue proving that `.mcp.json` exposes only `unica` and that
    cheap read-only operations such as `unica.code.grep` do not start services.
+6. Cancellation is cooperative until it reaches a managed process boundary;
+   bounded cleanup is guaranteed, but a cancelled operation is not reported as
+   a successful partial result.
 
 ## Верификация
 
@@ -62,3 +119,6 @@ Unica may start hidden internal services scoped by workspace and source root.
 - [x] ADR defines workspace service ownership and volatile state location.
 - [x] ADR distinguishes persistent RLM index coordination from a long-running
       RLM process.
+- [x] ADR defines operation-scoped cancellation and an independent control path.
+- [x] ADR defines deterministic source-root selection and process-tree ownership.
+- [x] ADR names `tools.lock.json` as the bundled-tool version authority.

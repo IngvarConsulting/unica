@@ -88,11 +88,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_build_tools_waits_for_source_verification_and_sets_up_rust(self) -> None:
         text = self.workflow_text()
         self.assertIn("build-tools:", text)
-        self.assertIn("needs:\n      - verify-source\n      - verify-windows-installer\n      - classify-changes", text)
+        self.assertIn("needs:\n      - verify-source\n      - test-rust-platforms\n      - verify-windows-installer\n      - classify-changes", text)
         self.assertIn("uses: dtolnay/rust-toolchain@stable", text)
         self.assertIn("python scripts/ci/build-unica-tools.py", text)
         self.assertIn("python scripts/ci/check-tool-contracts.py", text)
         self.assertIn('--tools-dir ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}"', text)
+
+    def test_rust_tests_cover_supported_host_platforms(self) -> None:
+        text = self.workflow_text()
+
+        self.assertIn("test-rust-platforms:", text)
+        self.assertIn("name: Rust tests (${{ matrix.runner }})", text)
+        self.assertIn("runner: [windows-latest, macos-14]", text)
+        self.assertIn("cargo test --workspace -- --test-threads=1", text)
 
     def test_windows_installer_is_smoked_on_windows_powershell(self) -> None:
         text = self.workflow_text()
