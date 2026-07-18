@@ -1,7 +1,8 @@
 # Project Discovery And Discovery Receipts Implementation Plan
 
-> Historical execution context after completion. Current source of truth is
-> code/tests/package metadata, then `spec/`, not this plan.
+> Historical execution context for staged implementation. This document and
+> its checkboxes are not evidence that delivery is complete. Current source of
+> truth is code/tests/package metadata, then `spec/`, not this plan.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` to implement this plan task by task.

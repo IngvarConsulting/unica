@@ -1,0 +1,3664 @@
+# Review package: 66611b3..abbc041
+
+## Commits
+abbc041 fix: усилить discovery evidence validation
+f4ddc91 feat: реализовать evidence graph и validation
+
+## Files changed
+ .../src/application/discovery/determinism.rs       |  141 ++-
+ .../src/application/discovery/evidence_graph.rs    |  374 ++++++
+ .../unica-coder/src/application/discovery/mod.rs   |   60 +
+ .../unica-coder/src/application/discovery/model.rs |  117 +-
+ .../unica-coder/src/application/discovery/ports.rs |  574 +++++++++
+ .../application/discovery/proposal_validator.rs    |  248 ++++
+ .../src/application/discovery/use_case.rs          | 1324 ++++++++++++++++++++
+ crates/unica-coder/src/domain/mod.rs               |    1 +
+ crates/unica-coder/src/domain/source_snapshot.rs   |  314 +++++
+ .../plans/2026-07-17-project-discovery-receipts.md |   15 +-
+ spec/architecture/extension-point-discovery.md     |   27 +
+ 11 files changed, 3188 insertions(+), 7 deletions(-)
+
+## Diff
+diff --git a/crates/unica-coder/src/application/discovery/determinism.rs b/crates/unica-coder/src/application/discovery/determinism.rs
+index 809591c..7547f45 100644
+--- a/crates/unica-coder/src/application/discovery/determinism.rs
++++ b/crates/unica-coder/src/application/discovery/determinism.rs
+@@ -1,16 +1,16 @@
+ use super::contract::{
+     ArtifactRef, CfePatchMethodArguments, DiscoverRequest, MutationIntent, Proposal, StableTag,
+ };
+ use super::model::{
+-    Check, DefinitionParameter, DefinitionShape, DiscoveryReport, DiscoverySource, Evidence,
+-    EvidenceRecord, LinkedSourceSnapshot, PlatformCallbackShape, ProviderFact,
++    BindingDetails, Check, DefinitionParameter, DefinitionShape, DiscoveryReport, DiscoverySource,
++    Evidence, EvidenceRecord, LinkedSourceSnapshot, PlatformCallbackShape, ProviderFact,
+     ProviderOutcomeSnapshot, ProviderReadiness,
+ };
+ use crate::domain::project_sources::SourceFormat;
+ use sha2::{Digest, Sha256};
+ use std::cmp::Ordering;
+ use std::collections::BTreeMap;
+ #[cfg(test)]
+ use std::collections::BTreeSet;
+ use std::fmt;
+ 
+@@ -450,46 +450,110 @@ fn encode_provider_fact(
+             encode_artifact(encoder, subject)?;
+             encode_definition_shape(encoder, definition)?;
+         }
+         ProviderFact::DefinitionAbsent { subject } => {
+             encode_artifact(encoder, subject)?;
+         }
+         ProviderFact::Binding {
+             subject,
+             object,
+             relation,
++            details,
+         } => {
+             encode_artifact(encoder, subject)?;
+             encode_artifact(encoder, object)?;
+             encoder.write_u16(relation.stable_tag());
++            encode_binding_details(encoder, details)?;
+         }
+-        ProviderFact::Call { subject, object } => {
++        ProviderFact::Call {
++            subject,
++            object,
++            resolution,
++            call_type,
++            context,
++        } => {
+             encode_artifact(encoder, subject)?;
+             encode_artifact(encoder, object)?;
++            encoder.write_u16(resolution.stable_tag());
++            encoder.write_u16(call_type.stable_tag());
++            encoder.write_u16(context.stable_tag());
+         }
+         ProviderFact::PlatformCallback {
+             subject,
+             object,
+             callback,
+         } => {
+             encode_artifact(encoder, subject)?;
+             encode_artifact(encoder, object)?;
+             encode_callback_shape(encoder, callback)?;
+         }
+         ProviderFact::Support { subject, state } => {
+             encode_artifact(encoder, subject)?;
+             encoder.write_u16(state.stable_tag());
+         }
+     }
+     Ok(())
+ }
+ 
++fn encode_binding_details(
++    encoder: &mut CanonicalEncoder,
++    details: &BindingDetails,
++) -> Result<(), DeterminismError> {
++    encoder.write_u16(details.stable_tag());
++    match details {
++        BindingDetails::Structural => {}
++        BindingDetails::EventSubscription { event, context } => {
++            encode_binding_component(encoder, event, "event")?;
++            encoder.write_u16(context.stable_tag());
++        }
++        BindingDetails::FormCommand { action, context } => {
++            encode_binding_component(encoder, action, "action")?;
++            encoder.write_u16(context.stable_tag());
++        }
++        BindingDetails::CommonCommand { action, context } => {
++            encode_binding_component(encoder, action, "action")?;
++            encoder.write_u16(context.stable_tag());
++        }
++        BindingDetails::ScheduledJob { enabled, context } => {
++            encoder.write_bool(*enabled);
++            encoder.write_u16(context.stable_tag());
++        }
++        BindingDetails::HttpRoute {
++            verb,
++            url_template,
++            context,
++        } => {
++            encoder.write_u16(verb.stable_tag());
++            encode_binding_component(encoder, url_template, "url template")?;
++            encoder.write_u16(context.stable_tag());
++        }
++        BindingDetails::ExchangePlan { event, context } => {
++            encode_binding_component(encoder, event, "event")?;
++            encoder.write_u16(context.stable_tag());
++        }
++    }
++    Ok(())
++}
++
++fn encode_binding_component(
++    encoder: &mut CanonicalEncoder,
++    value: &str,
++    field: &str,
++) -> Result<(), DeterminismError> {
++    if value.trim().is_empty() || value.chars().any(char::is_control) {
++        return Err(DeterminismError::InvalidComponent(format!(
++            "binding {field} must not be blank"
++        )));
++    }
++    encoder.write_string(value)
++}
++
+ fn evidence_record_hex(record: &EvidenceRecord) -> Result<String, DeterminismError> {
+     let mut encoder = CanonicalEncoder::new("evidence-record")?;
+     encode_evidence_record(&mut encoder, record)?;
+     Ok(encoder.finish())
+ }
+ 
+ pub(crate) fn evidence_record_digest(record: &EvidenceRecord) -> Result<String, DeterminismError> {
+     Ok(format!("sha256:{}", evidence_record_hex(record)?))
+ }
+ 
+@@ -607,42 +671,55 @@ fn provider_facts_are_byte_identical(left: &ProviderFact, right: &ProviderFact)
+             ProviderFact::DefinitionPresent {
+                 subject: right_subject,
+                 definition: right_definition,
+             },
+         ) => exact_artifact(left_subject, right_subject) && left_definition == right_definition,
+         (
+             ProviderFact::Binding {
+                 subject: left_subject,
+                 object: left_object,
+                 relation: left_relation,
++                details: left_details,
+             },
+             ProviderFact::Binding {
+                 subject: right_subject,
+                 object: right_object,
+                 relation: right_relation,
++                details: right_details,
+             },
+         ) => {
+             exact_artifact(left_subject, right_subject)
+                 && exact_artifact(left_object, right_object)
+                 && left_relation == right_relation
++                && left_details == right_details
+         }
+         (
+             ProviderFact::Call {
+                 subject: left_subject,
+                 object: left_object,
++                resolution: left_resolution,
++                call_type: left_call_type,
++                context: left_context,
+             },
+             ProviderFact::Call {
+                 subject: right_subject,
+                 object: right_object,
++                resolution: right_resolution,
++                call_type: right_call_type,
++                context: right_context,
+             },
+         ) => {
+-            exact_artifact(left_subject, right_subject) && exact_artifact(left_object, right_object)
++            exact_artifact(left_subject, right_subject)
++                && exact_artifact(left_object, right_object)
++                && left_resolution == right_resolution
++                && left_call_type == right_call_type
++                && left_context == right_context
+         }
+         (
+             ProviderFact::PlatformCallback {
+                 subject: left_subject,
+                 object: left_object,
+                 callback: left_callback,
+             },
+             ProviderFact::PlatformCallback {
+                 subject: right_subject,
+                 object: right_object,
+@@ -986,20 +1063,42 @@ pub(crate) fn assert_unique_stable_tags() {
+         super::model::CheckSeverity::Blocking.stable_tag(),
+     ]);
+     unique(&[
+         super::model::FlowKind::Contains.stable_tag(),
+         super::model::FlowKind::Defines.stable_tag(),
+         super::model::FlowKind::Calls.stable_tag(),
+         super::model::FlowKind::Handles.stable_tag(),
+         super::model::FlowKind::Subscribes.stable_tag(),
+         super::model::FlowKind::Uses.stable_tag(),
+     ]);
++    unique(&[
++        super::model::CallResolution::Resolved.stable_tag(),
++        super::model::CallResolution::Dynamic.stable_tag(),
++        super::model::CallResolution::Ambiguous.stable_tag(),
++        super::model::CallResolution::Unresolved.stable_tag(),
++    ]);
++    unique(&[
++        super::model::CallType::Direct.stable_tag(),
++        super::model::CallType::Method.stable_tag(),
++        super::model::CallType::Callback.stable_tag(),
++        super::model::CallType::Dynamic.stable_tag(),
++    ]);
++    unique(&[
++        super::model::HttpVerb::Get.stable_tag(),
++        super::model::HttpVerb::Post.stable_tag(),
++        super::model::HttpVerb::Put.stable_tag(),
++        super::model::HttpVerb::Patch.stable_tag(),
++        super::model::HttpVerb::Delete.stable_tag(),
++        super::model::HttpVerb::Head.stable_tag(),
++        super::model::HttpVerb::Options.stable_tag(),
++    ]);
++    unique(&super::model::BindingDetails::VARIANT_STABLE_TAGS);
+     unique(&[
+         super::model::DiscoveryStatus::Complete.stable_tag(),
+         super::model::DiscoveryStatus::Partial.stable_tag(),
+         super::model::DiscoveryStatus::Insufficient.stable_tag(),
+     ]);
+     unique(&[
+         super::model::EvidenceLevel::Lexical.stable_tag(),
+         super::model::EvidenceLevel::Observed.stable_tag(),
+         super::model::EvidenceLevel::Connected.stable_tag(),
+         super::model::EvidenceLevel::Actionable.stable_tag(),
+@@ -1135,20 +1234,54 @@ pub(crate) fn assert_unique_stable_tags() {
+         [
+             super::model::FlowKind::Contains.stable_tag(),
+             super::model::FlowKind::Defines.stable_tag(),
+             super::model::FlowKind::Calls.stable_tag(),
+             super::model::FlowKind::Handles.stable_tag(),
+             super::model::FlowKind::Subscribes.stable_tag(),
+             super::model::FlowKind::Uses.stable_tag(),
+         ],
+         [1, 2, 3, 4, 5, 6]
+     );
++    assert_eq!(
++        [
++            super::model::CallResolution::Resolved.stable_tag(),
++            super::model::CallResolution::Dynamic.stable_tag(),
++            super::model::CallResolution::Ambiguous.stable_tag(),
++            super::model::CallResolution::Unresolved.stable_tag(),
++        ],
++        [1, 2, 3, 4]
++    );
++    assert_eq!(
++        [
++            super::model::CallType::Direct.stable_tag(),
++            super::model::CallType::Method.stable_tag(),
++            super::model::CallType::Callback.stable_tag(),
++            super::model::CallType::Dynamic.stable_tag(),
++        ],
++        [1, 2, 3, 4]
++    );
++    assert_eq!(
++        [
++            super::model::HttpVerb::Get.stable_tag(),
++            super::model::HttpVerb::Post.stable_tag(),
++            super::model::HttpVerb::Put.stable_tag(),
++            super::model::HttpVerb::Patch.stable_tag(),
++            super::model::HttpVerb::Delete.stable_tag(),
++            super::model::HttpVerb::Head.stable_tag(),
++            super::model::HttpVerb::Options.stable_tag(),
++        ],
++        [1, 2, 3, 4, 5, 6, 7]
++    );
++    assert_eq!(
++        super::model::BindingDetails::VARIANT_STABLE_TAGS,
++        [1, 2, 3, 4, 5, 6, 7]
++    );
+     assert_eq!(
+         [
+             super::model::DiscoveryStatus::Complete.stable_tag(),
+             super::model::DiscoveryStatus::Partial.stable_tag(),
+             super::model::DiscoveryStatus::Insufficient.stable_tag(),
+         ],
+         [1, 2, 3]
+     );
+     assert_eq!(
+         [
+diff --git a/crates/unica-coder/src/application/discovery/evidence_graph.rs b/crates/unica-coder/src/application/discovery/evidence_graph.rs
+new file mode 100644
+index 0000000..98fbf76
+--- /dev/null
++++ b/crates/unica-coder/src/application/discovery/evidence_graph.rs
+@@ -0,0 +1,374 @@
++use super::contract::ArtifactRef;
++use super::determinism::evidence_id;
++use super::model::{
++    BindingDetails, CallResolution, Candidate, DefinitionShape, EvidenceLevel, EvidencePort,
++    EvidenceRecord, FlowEdge, FlowKind, ProviderFact, RelatedArtifact, SupportState,
++};
++use std::collections::{BTreeMap, BTreeSet};
++
++#[derive(Debug, Clone)]
++pub(crate) struct EvidenceConflict {
++    pub(crate) port: EvidencePort,
++    pub(crate) artifact: ArtifactRef,
++    pub(crate) code: String,
++    pub(crate) evidence_ids: Vec<String>,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct EvidenceGraph {
++    pub(crate) related_artifacts: Vec<RelatedArtifact>,
++    pub(crate) flow_edges: Vec<FlowEdge>,
++    pub(crate) candidates: Vec<Candidate>,
++    pub(crate) conflicts: Vec<EvidenceConflict>,
++    pub(crate) connection_ports: BTreeMap<ArtifactRef, BTreeSet<EvidencePort>>,
++}
++
++#[derive(Default)]
++struct ArtifactAccumulator {
++    evidence_ids: BTreeSet<String>,
++    reason_codes: BTreeSet<String>,
++    lexical: bool,
++    observed: bool,
++    connected: bool,
++    positive_existence: bool,
++    support_states: BTreeSet<SupportState>,
++}
++
++#[derive(Default)]
++struct PresenceAccumulator {
++    positive: bool,
++    negative: bool,
++    evidence_ids: BTreeSet<String>,
++}
++
++impl EvidenceGraph {
++    pub(crate) fn build(records: &[EvidenceRecord]) -> Result<Self, String> {
++        let mut artifacts: BTreeMap<ArtifactRef, ArtifactAccumulator> = BTreeMap::new();
++        let mut edges: BTreeMap<(ArtifactRef, ArtifactRef, FlowKind), BTreeSet<String>> =
++            BTreeMap::new();
++        let mut presence: BTreeMap<(EvidencePort, ArtifactRef), PresenceAccumulator> =
++            BTreeMap::new();
++        let mut definition_shapes: BTreeMap<ArtifactRef, Vec<(DefinitionShape, BTreeSet<String>)>> =
++            BTreeMap::new();
++        let mut support_evidence: BTreeMap<ArtifactRef, BTreeSet<String>> = BTreeMap::new();
++        let mut connection_ports: BTreeMap<ArtifactRef, BTreeSet<EvidencePort>> = BTreeMap::new();
++
++        for record in records {
++            let id = evidence_id(record).map_err(|error| error.to_string())?;
++            let subject = record.fact.subject().clone();
++            touch(&mut artifacts, &subject, &id);
++            if let Some(object) = record.fact.object() {
++                touch(&mut artifacts, object, &id);
++            }
++
++            match &record.fact {
++                ProviderFact::CodeOccurrence { .. } => {
++                    let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
++                    artifact.lexical = true;
++                    artifact.reason_codes.insert("lexical_match".to_string());
++                }
++                ProviderFact::MetadataPresent { .. } => {
++                    let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
++                    artifact.observed = true;
++                    artifact.positive_existence = true;
++                    artifact
++                        .reason_codes
++                        .insert("artifact_observed".to_string());
++                    let fact = presence
++                        .entry((record.provider.port, subject.clone()))
++                        .or_default();
++                    fact.positive = true;
++                    fact.evidence_ids.insert(id);
++                }
++                ProviderFact::DefinitionPresent { definition, .. } => {
++                    let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
++                    artifact.observed = true;
++                    artifact.positive_existence = true;
++                    artifact
++                        .reason_codes
++                        .insert("artifact_observed".to_string());
++                    let fact = presence
++                        .entry((record.provider.port, subject.clone()))
++                        .or_default();
++                    fact.positive = true;
++                    fact.evidence_ids.insert(id.clone());
++                    let shapes = definition_shapes.entry(subject).or_default();
++                    if let Some((_, evidence_ids)) =
++                        shapes.iter_mut().find(|(shape, _)| shape == definition)
++                    {
++                        evidence_ids.insert(id);
++                    } else {
++                        shapes.push((definition.clone(), BTreeSet::from([id])));
++                    }
++                }
++                ProviderFact::MetadataAbsent { .. } | ProviderFact::DefinitionAbsent { .. } => {
++                    let fact = presence
++                        .entry((record.provider.port, subject.clone()))
++                        .or_default();
++                    fact.negative = true;
++                    fact.evidence_ids.insert(id);
++                }
++                ProviderFact::Binding {
++                    object,
++                    relation,
++                    details,
++                    ..
++                } => {
++                    if matches!(details, BindingDetails::ScheduledJob { enabled: false, .. }) {
++                        observe_binding(&mut artifacts, &subject, object, &id);
++                    } else {
++                        add_edge(
++                            &mut artifacts,
++                            &mut edges,
++                            &mut connection_ports,
++                            &subject,
++                            object,
++                            *relation,
++                            record.provider.port,
++                            id,
++                        );
++                    }
++                }
++                ProviderFact::Call {
++                    object,
++                    resolution: CallResolution::Resolved,
++                    ..
++                } => {
++                    add_edge(
++                        &mut artifacts,
++                        &mut edges,
++                        &mut connection_ports,
++                        &subject,
++                        object,
++                        FlowKind::Calls,
++                        record.provider.port,
++                        id,
++                    );
++                }
++                ProviderFact::Call { .. } => {}
++                ProviderFact::PlatformCallback { object, .. } => {
++                    add_edge(
++                        &mut artifacts,
++                        &mut edges,
++                        &mut connection_ports,
++                        &subject,
++                        object,
++                        FlowKind::Handles,
++                        record.provider.port,
++                        id,
++                    );
++                }
++                ProviderFact::Support { state, .. } => {
++                    let artifact = artifacts.get_mut(&subject).expect("subject was inserted");
++                    artifact.observed = true;
++                    artifact.support_states.insert(*state);
++                    artifact
++                        .reason_codes
++                        .insert("support_state_observed".to_string());
++                    support_evidence.entry(subject).or_default().insert(id);
++                }
++            }
++        }
++
++        let mut conflicts = Vec::new();
++        for ((port, artifact), facts) in presence {
++            if facts.positive && facts.negative {
++                conflicts.push(EvidenceConflict {
++                    port,
++                    artifact,
++                    code: "conflicting_existence_facts".to_string(),
++                    evidence_ids: facts.evidence_ids.into_iter().collect(),
++                });
++            }
++        }
++        for (artifact, shapes) in definition_shapes {
++            if shapes.len() > 1 {
++                conflicts.push(EvidenceConflict {
++                    port: EvidencePort::Definition,
++                    artifact,
++                    code: "conflicting_definition_shapes".to_string(),
++                    evidence_ids: shapes
++                        .into_iter()
++                        .flat_map(|(_, evidence_ids)| evidence_ids)
++                        .collect(),
++                });
++            }
++        }
++        for (artifact, accumulator) in &artifacts {
++            if accumulator.support_states.len() > 1 {
++                conflicts.push(EvidenceConflict {
++                    port: EvidencePort::SupportState,
++                    artifact: artifact.clone(),
++                    code: "conflicting_support_facts".to_string(),
++                    evidence_ids: support_evidence
++                        .get(artifact)
++                        .cloned()
++                        .unwrap_or_default()
++                        .into_iter()
++                        .collect(),
++                });
++            }
++        }
++
++        let conflict_by_artifact: BTreeMap<_, BTreeSet<_>> =
++            conflicts
++                .iter()
++                .fold(BTreeMap::new(), |mut by_artifact, conflict| {
++                    by_artifact
++                        .entry(conflict.artifact.clone())
++                        .or_insert_with(BTreeSet::new)
++                        .insert(conflict.code.clone());
++                    by_artifact
++                });
++
++        let mut candidates = Vec::new();
++        for (target, artifact) in &mut artifacts {
++            if !artifact.positive_existence || !has_runtime_connection(target, &edges) {
++                continue;
++            }
++            let support_state = if artifact.support_states.len() == 1 {
++                *artifact
++                    .support_states
++                    .iter()
++                    .next()
++                    .expect("one support state")
++            } else {
++                SupportState::Unknown
++            };
++            let mut blockers = conflict_by_artifact
++                .get(target)
++                .cloned()
++                .unwrap_or_default();
++            let evidence_level = if support_state == SupportState::Unknown {
++                blockers.insert("support_state_unknown".to_string());
++                EvidenceLevel::Connected
++            } else if !blockers.is_empty() {
++                EvidenceLevel::Connected
++            } else {
++                artifact
++                    .reason_codes
++                    .insert("actionable_extension_point".to_string());
++                EvidenceLevel::Actionable
++            };
++            candidates.push(Candidate {
++                target: target.clone(),
++                evidence_level,
++                support_state,
++                reason_codes: artifact.reason_codes.iter().cloned().collect(),
++                evidence_ids: artifact.evidence_ids.iter().cloned().collect(),
++                blockers: blockers.into_iter().collect(),
++            });
++        }
++
++        let related_artifacts = artifacts
++            .into_iter()
++            .map(|(artifact, facts)| {
++                let evidence_level = if candidates.iter().any(|candidate| {
++                    candidate.target == artifact
++                        && candidate.evidence_level == EvidenceLevel::Actionable
++                }) {
++                    EvidenceLevel::Actionable
++                } else if facts.connected {
++                    EvidenceLevel::Connected
++                } else if facts.observed {
++                    EvidenceLevel::Observed
++                } else {
++                    EvidenceLevel::Lexical
++                };
++                RelatedArtifact {
++                    artifact,
++                    evidence_level,
++                    reason_codes: facts.reason_codes.into_iter().collect(),
++                    evidence_ids: facts.evidence_ids.into_iter().collect(),
++                }
++            })
++            .collect();
++        let flow_edges = edges
++            .into_iter()
++            .map(|((from, to, kind), evidence_ids)| FlowEdge {
++                from,
++                to,
++                kind,
++                evidence_ids: evidence_ids.into_iter().collect(),
++            })
++            .collect();
++
++        Ok(Self {
++            related_artifacts,
++            flow_edges,
++            candidates,
++            conflicts,
++            connection_ports,
++        })
++    }
++}
++
++fn touch(
++    artifacts: &mut BTreeMap<ArtifactRef, ArtifactAccumulator>,
++    artifact: &ArtifactRef,
++    evidence_id: &str,
++) {
++    artifacts
++        .entry(artifact.clone())
++        .or_default()
++        .evidence_ids
++        .insert(evidence_id.to_string());
++}
++
++fn observe_binding(
++    artifacts: &mut BTreeMap<ArtifactRef, ArtifactAccumulator>,
++    from: &ArtifactRef,
++    to: &ArtifactRef,
++    evidence_id: &str,
++) {
++    for artifact in [from, to] {
++        let facts = artifacts
++            .get_mut(artifact)
++            .expect("binding endpoint was inserted");
++        facts.observed = true;
++        facts.reason_codes.insert("binding_observed".to_string());
++        facts.evidence_ids.insert(evidence_id.to_string());
++    }
++}
++
++#[allow(clippy::too_many_arguments)]
++fn add_edge(
++    artifacts: &mut BTreeMap<ArtifactRef, ArtifactAccumulator>,
++    edges: &mut BTreeMap<(ArtifactRef, ArtifactRef, FlowKind), BTreeSet<String>>,
++    connection_ports: &mut BTreeMap<ArtifactRef, BTreeSet<EvidencePort>>,
++    from: &ArtifactRef,
++    to: &ArtifactRef,
++    kind: FlowKind,
++    port: EvidencePort,
++    evidence_id: String,
++) {
++    edges
++        .entry((from.clone(), to.clone(), kind))
++        .or_default()
++        .insert(evidence_id.clone());
++    for artifact in [from, to] {
++        let facts = artifacts
++            .get_mut(artifact)
++            .expect("edge endpoint was inserted");
++        facts.connected = true;
++        facts.reason_codes.insert("runtime_connected".to_string());
++        facts.evidence_ids.insert(evidence_id.clone());
++        connection_ports
++            .entry(artifact.clone())
++            .or_default()
++            .insert(port);
++    }
++}
++
++fn has_runtime_connection(
++    target: &ArtifactRef,
++    edges: &BTreeMap<(ArtifactRef, ArtifactRef, FlowKind), BTreeSet<String>>,
++) -> bool {
++    edges.keys().any(|(from, to, kind)| {
++        (from == target || to == target)
++            && matches!(
++                kind,
++                FlowKind::Calls | FlowKind::Handles | FlowKind::Subscribes | FlowKind::Uses
++            )
++    })
++}
+diff --git a/crates/unica-coder/src/application/discovery/mod.rs b/crates/unica-coder/src/application/discovery/mod.rs
+index f57e55c..b028bf3 100644
+--- a/crates/unica-coder/src/application/discovery/mod.rs
++++ b/crates/unica-coder/src/application/discovery/mod.rs
+@@ -1,13 +1,17 @@
+ pub(crate) mod contract;
+ pub(crate) mod determinism;
++pub(crate) mod evidence_graph;
+ pub(crate) mod model;
++pub(crate) mod ports;
++pub(crate) mod proposal_validator;
++pub(crate) mod use_case;
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::contract::*;
+     use super::determinism::*;
+     use super::model::*;
+     use crate::domain::discovery_registry::{metadata_kind, METADATA_KIND_TAGS, MODULE_KIND_TAGS};
+     use crate::domain::project_sources::SourceFormat;
+     use serde_json::json;
+ 
+@@ -912,24 +916,28 @@ mod tests {
+                 subject: method.clone(),
+                 definition,
+             },
+             ProviderFact::DefinitionAbsent {
+                 subject: method.clone(),
+             },
+             ProviderFact::Binding {
+                 subject: module.clone(),
+                 object: method.clone(),
+                 relation: FlowKind::Defines,
++                details: BindingDetails::Structural,
+             },
+             ProviderFact::Call {
+                 subject: method.clone(),
+                 object: method.clone(),
++                resolution: CallResolution::Resolved,
++                call_type: CallType::Direct,
++                context: ExecutionContext::Server,
+             },
+             ProviderFact::PlatformCallback {
+                 subject: module.clone(),
+                 object: method.clone(),
+                 callback,
+             },
+             ProviderFact::Support {
+                 subject: method,
+                 state: SupportState::Editable,
+             },
+@@ -969,32 +977,84 @@ mod tests {
+         let method = ArtifactRef::parse(ArtifactKind::Method, "CommonModule.Flow.Run").unwrap();
+         let caller = ArtifactRef::parse(ArtifactKind::Method, "CommonModule.Flow.Start").unwrap();
+         let provider = EvidenceProvider::new(EvidencePort::CallGraph, "graph", "1").unwrap();
+         let freshness = Freshness::new("main", &format!("sha256:{}", "1".repeat(64)), 1).unwrap();
+         let make = |relation| {
+             EvidenceRecord::from_fact(
+                 ProviderFact::Binding {
+                     subject: caller.clone(),
+                     object: method.clone(),
+                     relation,
++                    details: BindingDetails::Structural,
+                 },
+                 None,
+                 provider.clone(),
+                 Coverage::Complete,
+                 freshness.clone(),
+             )
+         };
+         assert_ne!(
+             evidence_record_digest(&make(FlowKind::Calls)).unwrap(),
+             evidence_record_digest(&make(FlowKind::Handles)).unwrap()
+         );
+ 
++        let binding = |url_template: &str| {
++            EvidenceRecord::from_fact(
++                ProviderFact::Binding {
++                    subject: caller.clone(),
++                    object: method.clone(),
++                    relation: FlowKind::Handles,
++                    details: BindingDetails::HttpRoute {
++                        verb: HttpVerb::Post,
++                        url_template: url_template.to_string(),
++                        context: ExecutionContext::Server,
++                    },
++                },
++                None,
++                provider.clone(),
++                Coverage::Complete,
++                freshness.clone(),
++            )
++        };
++        assert_ne!(
++            evidence_record_digest(&binding("/v1/items/{id}")).unwrap(),
++            evidence_record_digest(&binding("/v1/items/{code}")).unwrap()
++        );
++
++        let call = |resolution, context| {
++            EvidenceRecord::from_fact(
++                ProviderFact::Call {
++                    subject: caller.clone(),
++                    object: method.clone(),
++                    resolution,
++                    call_type: CallType::Direct,
++                    context,
++                },
++                None,
++                provider.clone(),
++                Coverage::Complete,
++                freshness.clone(),
++            )
++        };
++        assert_ne!(
++            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Server))
++                .unwrap(),
++            evidence_record_digest(&call(CallResolution::Dynamic, ExecutionContext::Server))
++                .unwrap()
++        );
++        assert_ne!(
++            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Server))
++                .unwrap(),
++            evidence_record_digest(&call(CallResolution::Resolved, ExecutionContext::Client))
++                .unwrap()
++        );
++
+         let definition_provider =
+             EvidenceProvider::new(EvidencePort::Definition, "defs", "1").unwrap();
+         let definition = |exported| {
+             EvidenceRecord::from_fact(
+                 ProviderFact::DefinitionPresent {
+                     subject: method.clone(),
+                     definition: DefinitionShape::new(
+                         false,
+                         exported,
+                         vec![DefinitionParameter::new("Value", true, false).unwrap()],
+diff --git a/crates/unica-coder/src/application/discovery/model.rs b/crates/unica-coder/src/application/discovery/model.rs
+index 080c98b..04c5793 100644
+--- a/crates/unica-coder/src/application/discovery/model.rs
++++ b/crates/unica-coder/src/application/discovery/model.rs
+@@ -115,21 +115,21 @@ pub(crate) enum CheckSeverity {
+ impl StableTag for CheckSeverity {
+     fn stable_tag(self) -> u16 {
+         match self {
+             Self::Info => 1,
+             Self::Warning => 2,
+             Self::Blocking => 3,
+         }
+     }
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub(crate) enum SupportState {
+     Editable,
+     Locked,
+     ConfigurationReadOnly,
+     Removed,
+     NotUnderSupport,
+     ExtensionOwned,
+     ExtensionRequired,
+     Unknown,
+@@ -169,21 +169,21 @@ impl StableTag for EvidenceType {
+             Self::CodeOccurrence => 2,
+             Self::Definition => 3,
+             Self::Binding => 4,
+             Self::Call => 5,
+             Self::PlatformCallback => 6,
+             Self::Support => 7,
+         }
+     }
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+ pub(crate) enum EvidencePort {
+     #[serde(rename = "MetadataCatalogPort")]
+     MetadataCatalog,
+     #[serde(rename = "CodeSearchPort")]
+     CodeSearch,
+     #[serde(rename = "DefinitionPort")]
+     Definition,
+     #[serde(rename = "CallGraphPort")]
+     CallGraph,
+     #[serde(rename = "FormInspectionPort")]
+@@ -253,20 +253,129 @@ impl StableTag for ProviderReadiness {
+ #[serde(rename_all = "snake_case")]
+ pub(crate) enum FlowKind {
+     Contains,
+     Defines,
+     Calls,
+     Handles,
+     Subscribes,
+     Uses,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CallResolution {
++    Resolved,
++    Dynamic,
++    Ambiguous,
++    Unresolved,
++}
++
++impl StableTag for CallResolution {
++    fn stable_tag(self) -> u16 {
++        match self {
++            Self::Resolved => 1,
++            Self::Dynamic => 2,
++            Self::Ambiguous => 3,
++            Self::Unresolved => 4,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CallType {
++    Direct,
++    Method,
++    Callback,
++    Dynamic,
++}
++
++impl StableTag for CallType {
++    fn stable_tag(self) -> u16 {
++        match self {
++            Self::Direct => 1,
++            Self::Method => 2,
++            Self::Callback => 3,
++            Self::Dynamic => 4,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum HttpVerb {
++    Get,
++    Post,
++    Put,
++    Patch,
++    Delete,
++    Head,
++    Options,
++}
++
++impl StableTag for HttpVerb {
++    fn stable_tag(self) -> u16 {
++        match self {
++            Self::Get => 1,
++            Self::Post => 2,
++            Self::Put => 3,
++            Self::Patch => 4,
++            Self::Delete => 5,
++            Self::Head => 6,
++            Self::Options => 7,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum BindingDetails {
++    Structural,
++    EventSubscription {
++        event: String,
++        context: super::contract::ExecutionContext,
++    },
++    FormCommand {
++        action: String,
++        context: super::contract::ExecutionContext,
++    },
++    CommonCommand {
++        action: String,
++        context: super::contract::ExecutionContext,
++    },
++    ScheduledJob {
++        enabled: bool,
++        context: super::contract::ExecutionContext,
++    },
++    HttpRoute {
++        verb: HttpVerb,
++        url_template: String,
++        context: super::contract::ExecutionContext,
++    },
++    ExchangePlan {
++        event: String,
++        context: super::contract::ExecutionContext,
++    },
++}
++
++impl BindingDetails {
++    pub(crate) const VARIANT_STABLE_TAGS: [u16; 7] = [1, 2, 3, 4, 5, 6, 7];
++
++    pub(crate) fn stable_tag(&self) -> u16 {
++        match self {
++            Self::Structural => 1,
++            Self::EventSubscription { .. } => 2,
++            Self::FormCommand { .. } => 3,
++            Self::CommonCommand { .. } => 4,
++            Self::ScheduledJob { .. } => 5,
++            Self::HttpRoute { .. } => 6,
++            Self::ExchangePlan { .. } => 7,
++        }
++    }
++}
++
+ impl StableTag for FlowKind {
+     fn stable_tag(self) -> u16 {
+         match self {
+             Self::Contains => 1,
+             Self::Defines => 2,
+             Self::Calls => 3,
+             Self::Handles => 4,
+             Self::Subscribes => 5,
+             Self::Uses => 6,
+         }
+@@ -587,24 +696,28 @@ pub(crate) enum ProviderFact {
+         subject: ArtifactRef,
+         definition: DefinitionShape,
+     },
+     DefinitionAbsent {
+         subject: ArtifactRef,
+     },
+     Binding {
+         subject: ArtifactRef,
+         object: ArtifactRef,
+         relation: FlowKind,
++        details: BindingDetails,
+     },
+     Call {
+         subject: ArtifactRef,
+         object: ArtifactRef,
++        resolution: CallResolution,
++        call_type: CallType,
++        context: super::contract::ExecutionContext,
+     },
+     PlatformCallback {
+         subject: ArtifactRef,
+         object: ArtifactRef,
+         callback: PlatformCallbackShape,
+     },
+     Support {
+         subject: ArtifactRef,
+         state: SupportState,
+     },
+diff --git a/crates/unica-coder/src/application/discovery/ports.rs b/crates/unica-coder/src/application/discovery/ports.rs
+new file mode 100644
+index 0000000..0b60e9f
+--- /dev/null
++++ b/crates/unica-coder/src/application/discovery/ports.rs
+@@ -0,0 +1,574 @@
++use super::contract::{DiscoverRequest, Proposal};
++use super::determinism::evidence_record_digest;
++use super::model::{
++    CheckState, Coverage, EvidencePort, EvidenceProvider, EvidenceRecord, ProviderFact,
++    ProviderOutcomeSnapshot, ProviderReadiness, ReceiptEligibility,
++};
++use crate::domain::source_snapshot::{ResolvedSourceSet, SourceSnapshot};
++use std::fmt;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum DiscoveryError {
++    Operation(String),
++    ProviderContractViolation { provider: String, reason: String },
++}
++
++impl fmt::Display for DiscoveryError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Operation(message) => formatter.write_str(message),
++            Self::ProviderContractViolation { provider, reason } => {
++                write!(formatter, "{provider} contract violation: {reason}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for DiscoveryError {}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct DiscoveryExecutionContext {
++    pub(crate) workspace_root: String,
++    pub(crate) workspace_epoch: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct DiscoveryQueryPlan {
++    pub(crate) request: DiscoverRequest,
++}
++
++impl DiscoveryQueryPlan {
++    pub(crate) fn normalized(request: &DiscoverRequest) -> Self {
++        let mut request = request.clone();
++        request.concepts.sort();
++        request.search_terms.sort();
++        request.known_artifacts.sort();
++        request
++            .proposals
++            .sort_by(|left, right| left.id.cmp(&right.id));
++        Self { request }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ProviderBatch<T> {
++    pub(crate) provider: EvidenceProvider,
++    pub(crate) records: Vec<T>,
++    pub(crate) coverage: Coverage,
++    pub(crate) reason_code: Option<String>,
++    pub(crate) retryable: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ProviderIssue {
++    pub(crate) provider: EvidenceProvider,
++    pub(crate) coverage: Coverage,
++    pub(crate) reason_code: String,
++    pub(crate) retryable: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum ProviderOutcome<T> {
++    Complete(ProviderBatch<T>),
++    Bounded(ProviderBatch<T>),
++    Unavailable(ProviderIssue),
++    Failed(ProviderIssue),
++    ContractViolation(String),
++}
++
++impl ProviderOutcome<EvidenceRecord> {
++    pub(crate) fn complete(
++        provider: EvidenceProvider,
++        records: Vec<EvidenceRecord>,
++    ) -> Result<Self, String> {
++        let batch = ProviderBatch {
++            provider,
++            records,
++            coverage: Coverage::Complete,
++            reason_code: None,
++            retryable: false,
++        };
++        validate_batch(&batch)?;
++        Ok(Self::Complete(batch))
++    }
++
++    pub(crate) fn bounded(
++        provider: EvidenceProvider,
++        reason_code: &str,
++        retryable: bool,
++        records: Vec<EvidenceRecord>,
++    ) -> Result<Self, String> {
++        let batch = ProviderBatch {
++            provider,
++            records,
++            coverage: Coverage::Bounded,
++            reason_code: Some(stable_reason(reason_code)?),
++            retryable,
++        };
++        validate_batch(&batch)?;
++        Ok(Self::Bounded(batch))
++    }
++
++    pub(crate) fn unavailable(
++        provider: EvidenceProvider,
++        reason_code: &str,
++        retryable: bool,
++    ) -> Result<Self, String> {
++        Ok(Self::Unavailable(ProviderIssue {
++            provider,
++            coverage: Coverage::Unknown,
++            reason_code: stable_reason(reason_code)?,
++            retryable,
++        }))
++    }
++
++    pub(crate) fn failed(
++        provider: EvidenceProvider,
++        reason_code: &str,
++        retryable: bool,
++    ) -> Result<Self, String> {
++        Ok(Self::Failed(ProviderIssue {
++            provider,
++            coverage: Coverage::Unknown,
++            reason_code: stable_reason(reason_code)?,
++            retryable,
++        }))
++    }
++
++    pub(crate) fn contract_violation(reason: &str) -> Self {
++        Self::ContractViolation(reason.to_string())
++    }
++
++    pub(crate) fn collect(
++        self,
++        expected_port: EvidencePort,
++    ) -> Result<CollectedProviderOutcome, DiscoveryError> {
++        match self {
++            Self::Complete(batch) => collect_ready(expected_port, batch, CheckState::Passed),
++            Self::Bounded(batch) => collect_ready(expected_port, batch, CheckState::Passed),
++            Self::Unavailable(issue) => collect_issue(
++                expected_port,
++                issue,
++                CheckState::Unavailable,
++                ProviderReadiness::Unavailable,
++            ),
++            Self::Failed(issue) => collect_issue(
++                expected_port,
++                issue,
++                CheckState::Failed,
++                ProviderReadiness::Failed,
++            ),
++            Self::ContractViolation(reason) => Err(contract_error(expected_port, reason)),
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct CollectedProviderOutcome {
++    pub(crate) port: EvidencePort,
++    pub(crate) provider: EvidenceProvider,
++    pub(crate) records: Vec<EvidenceRecord>,
++    pub(crate) state: CheckState,
++    pub(crate) coverage: Coverage,
++    pub(crate) reason_code: Option<String>,
++    pub(crate) retryable: bool,
++    pub(crate) snapshot: ProviderOutcomeSnapshot,
++}
++
++impl CollectedProviderOutcome {
++    pub(crate) fn is_degraded(&self) -> bool {
++        self.coverage != Coverage::Complete || self.state != CheckState::Passed
++    }
++}
++
++fn collect_ready(
++    expected_port: EvidencePort,
++    batch: ProviderBatch<EvidenceRecord>,
++    state: CheckState,
++) -> Result<CollectedProviderOutcome, DiscoveryError> {
++    validate_expected_batch(expected_port, &batch)?;
++    let snapshot = ProviderOutcomeSnapshot::from_records(
++        expected_port,
++        &batch.provider.name,
++        &batch.provider.version,
++        batch.coverage,
++        batch.reason_code.clone(),
++        &batch.records,
++    )
++    .map_err(|reason| contract_error(expected_port, reason))?;
++    Ok(CollectedProviderOutcome {
++        port: expected_port,
++        provider: batch.provider,
++        records: batch.records,
++        state,
++        coverage: batch.coverage,
++        reason_code: batch.reason_code,
++        retryable: batch.retryable,
++        snapshot,
++    })
++}
++
++fn collect_issue(
++    expected_port: EvidencePort,
++    issue: ProviderIssue,
++    state: CheckState,
++    readiness: ProviderReadiness,
++) -> Result<CollectedProviderOutcome, DiscoveryError> {
++    if issue.provider.port != expected_port {
++        return Err(contract_error(
++            expected_port,
++            "provider identity names the wrong evidence port".to_string(),
++        ));
++    }
++    let snapshot = ProviderOutcomeSnapshot::new(
++        expected_port,
++        &issue.provider.name,
++        &issue.provider.version,
++        readiness,
++        issue.coverage,
++        Some(issue.reason_code.clone()),
++        Vec::new(),
++    )
++    .map_err(|reason| contract_error(expected_port, reason))?;
++    Ok(CollectedProviderOutcome {
++        port: expected_port,
++        provider: issue.provider,
++        records: Vec::new(),
++        state,
++        coverage: issue.coverage,
++        reason_code: Some(issue.reason_code),
++        retryable: issue.retryable,
++        snapshot,
++    })
++}
++
++fn validate_batch(batch: &ProviderBatch<EvidenceRecord>) -> Result<(), String> {
++    batch.provider.validate()?;
++    for record in &batch.records {
++        if record.provider != batch.provider {
++            return Err("every fact must carry the batch provider identity".to_string());
++        }
++        if record.coverage != batch.coverage {
++            return Err("every fact must carry the batch coverage".to_string());
++        }
++        record.freshness.validate()?;
++        if let Some(location) = &record.location {
++            location.validate()?;
++        }
++    }
++    Ok(())
++}
++
++fn validate_expected_batch(
++    expected_port: EvidencePort,
++    batch: &ProviderBatch<EvidenceRecord>,
++) -> Result<(), DiscoveryError> {
++    validate_batch(batch).map_err(|reason| contract_error(expected_port, reason))?;
++    if batch.provider.port != expected_port {
++        return Err(contract_error(
++            expected_port,
++            "provider identity names the wrong evidence port".to_string(),
++        ));
++    }
++    for record in &batch.records {
++        validate_fact_for_port(expected_port, &record.fact)
++            .map_err(|reason| contract_error(expected_port, reason))?;
++        evidence_record_digest(record)
++            .map_err(|error| contract_error(expected_port, error.to_string()))?;
++    }
++    Ok(())
++}
++
++fn validate_fact_for_port(port: EvidencePort, fact: &ProviderFact) -> Result<(), String> {
++    let allowed = match port {
++        EvidencePort::MetadataCatalog => matches!(
++            fact,
++            ProviderFact::MetadataPresent { .. }
++                | ProviderFact::MetadataAbsent { .. }
++                | ProviderFact::PlatformCallback { .. }
++                | ProviderFact::Binding { .. }
++        ),
++        EvidencePort::CodeSearch => matches!(fact, ProviderFact::CodeOccurrence { .. }),
++        EvidencePort::Definition => matches!(
++            fact,
++            ProviderFact::DefinitionPresent { .. } | ProviderFact::DefinitionAbsent { .. }
++        ),
++        EvidencePort::CallGraph => matches!(fact, ProviderFact::Call { .. }),
++        EvidencePort::FormInspection => matches!(fact, ProviderFact::Binding { .. }),
++        EvidencePort::SupportState => matches!(fact, ProviderFact::Support { .. }),
++    };
++    if !allowed {
++        return Err("provider returned a fact variant owned by another port".to_string());
++    }
++    if let ProviderFact::Binding {
++        relation, details, ..
++    } = fact
++    {
++        validate_binding_contract(port, *relation, details)?;
++    }
++    Ok(())
++}
++
++fn validate_binding_contract(
++    port: EvidencePort,
++    relation: super::model::FlowKind,
++    details: &super::model::BindingDetails,
++) -> Result<(), String> {
++    use super::model::{BindingDetails, FlowKind};
++
++    let valid = match details {
++        BindingDetails::Structural => {
++            port == EvidencePort::MetadataCatalog
++                && matches!(relation, FlowKind::Contains | FlowKind::Defines)
++        }
++        BindingDetails::EventSubscription { .. } => {
++            port == EvidencePort::MetadataCatalog && relation == FlowKind::Subscribes
++        }
++        BindingDetails::FormCommand { .. } => {
++            port == EvidencePort::FormInspection && relation == FlowKind::Handles
++        }
++        BindingDetails::CommonCommand { .. }
++        | BindingDetails::ScheduledJob { .. }
++        | BindingDetails::HttpRoute { .. }
++        | BindingDetails::ExchangePlan { .. } => {
++            port == EvidencePort::MetadataCatalog && relation == FlowKind::Handles
++        }
++    };
++    if valid {
++        Ok(())
++    } else {
++        Err("binding details, relation, and supplying port are incompatible".to_string())
++    }
++}
++
++fn stable_reason(reason: &str) -> Result<String, String> {
++    if reason.is_empty()
++        || reason.len() > 128
++        || !reason
++            .bytes()
++            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
++    {
++        return Err("reason code must be lowercase snake_case".to_string());
++    }
++    Ok(reason.to_string())
++}
++
++fn contract_error(port: EvidencePort, reason: String) -> DiscoveryError {
++    DiscoveryError::ProviderContractViolation {
++        provider: port.wire_name().to_string(),
++        reason,
++    }
++}
++
++macro_rules! evidence_port {
++    ($name:ident, $method:ident) => {
++        pub(crate) trait $name {
++            fn $method(
++                &self,
++                plan: &DiscoveryQueryPlan,
++                context: &DiscoveryExecutionContext,
++            ) -> ProviderOutcome<EvidenceRecord>;
++        }
++    };
++}
++
++evidence_port!(MetadataCatalogPort, metadata);
++evidence_port!(CodeSearchPort, search);
++evidence_port!(DefinitionPort, definitions);
++evidence_port!(CallGraphPort, calls);
++evidence_port!(FormInspectionPort, forms);
++evidence_port!(SupportStatePort, support);
++
++pub(crate) trait ProjectSourceResolverPort {
++    fn resolve(
++        &self,
++        context: &DiscoveryExecutionContext,
++        requested_source_set: Option<&str>,
++    ) -> Result<ResolvedSourceSet, DiscoveryError>;
++}
++
++pub(crate) trait SourceSnapshotPort {
++    fn capture(
++        &self,
++        analysis: &ResolvedSourceSet,
++        mutation_sources: &[ResolvedSourceSet],
++        workspace_epoch: u64,
++    ) -> Result<SourceSnapshot, DiscoveryError>;
++}
++
++pub(crate) struct ReceiptIssuanceRequest<'a> {
++    pub(crate) proposals: &'a [Proposal],
++    pub(crate) snapshot: &'a SourceSnapshot,
++}
++
++pub(crate) trait ReceiptIssuerPort {
++    fn assess(
++        &self,
++        request: &ReceiptIssuanceRequest<'_>,
++    ) -> Result<ReceiptEligibility, DiscoveryError>;
++}
++
++pub(crate) struct NoopReceiptIssuer;
++
++impl ReceiptIssuerPort for NoopReceiptIssuer {
++    fn assess(
++        &self,
++        _request: &ReceiptIssuanceRequest<'_>,
++    ) -> Result<ReceiptEligibility, DiscoveryError> {
++        Ok(ReceiptEligibility {
++            eligible: false,
++            blockers: vec!["receipt_store_not_implemented".to_string()],
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::application::discovery::contract::{ArtifactKind, ArtifactRef, ExecutionContext};
++    use crate::application::discovery::model::{
++        BindingDetails, FlowKind, Freshness, HttpVerb, ProviderFact,
++    };
++
++    const FINGERPRINT: &str =
++        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
++
++    fn binding_outcome(
++        port: EvidencePort,
++        relation: FlowKind,
++        details: BindingDetails,
++    ) -> ProviderOutcome<EvidenceRecord> {
++        let provider =
++            EvidenceProvider::new(port, &format!("test-{}", port.wire_name()), "1").unwrap();
++        let subject = ArtifactRef::parse(ArtifactKind::Module, "CommonModule.Entry").unwrap();
++        let object = ArtifactRef::parse(ArtifactKind::Method, "CommonModule.Flow.Run").unwrap();
++        ProviderOutcome::complete(
++            provider.clone(),
++            vec![EvidenceRecord::from_fact(
++                ProviderFact::Binding {
++                    subject,
++                    object,
++                    relation,
++                    details,
++                },
++                None,
++                provider,
++                Coverage::Complete,
++                Freshness::new("main", FINGERPRINT, 1).unwrap(),
++            )],
++        )
++        .unwrap()
++    }
++
++    fn binding_cases() -> Vec<(BindingDetails, Vec<(EvidencePort, FlowKind)>)> {
++        vec![
++            (
++                BindingDetails::Structural,
++                vec![
++                    (EvidencePort::MetadataCatalog, FlowKind::Contains),
++                    (EvidencePort::MetadataCatalog, FlowKind::Defines),
++                ],
++            ),
++            (
++                BindingDetails::EventSubscription {
++                    event: "BeforeWrite".into(),
++                    context: ExecutionContext::Server,
++                },
++                vec![(EvidencePort::MetadataCatalog, FlowKind::Subscribes)],
++            ),
++            (
++                BindingDetails::FormCommand {
++                    action: "Run".into(),
++                    context: ExecutionContext::Client,
++                },
++                vec![(EvidencePort::FormInspection, FlowKind::Handles)],
++            ),
++            (
++                BindingDetails::CommonCommand {
++                    action: "Run".into(),
++                    context: ExecutionContext::Client,
++                },
++                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
++            ),
++            (
++                BindingDetails::ScheduledJob {
++                    enabled: true,
++                    context: ExecutionContext::Server,
++                },
++                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
++            ),
++            (
++                BindingDetails::HttpRoute {
++                    verb: HttpVerb::Post,
++                    url_template: "/flow".into(),
++                    context: ExecutionContext::Server,
++                },
++                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
++            ),
++            (
++                BindingDetails::ExchangePlan {
++                    event: "OnReceive".into(),
++                    context: ExecutionContext::Server,
++                },
++                vec![(EvidencePort::MetadataCatalog, FlowKind::Handles)],
++            ),
++        ]
++    }
++
++    #[test]
++    fn binding_contract_accepts_every_canonical_detail_relation_and_port() {
++        for (details, allowed) in binding_cases() {
++            for (port, relation) in allowed {
++                binding_outcome(port, relation, details.clone())
++                    .collect(port)
++                    .unwrap();
++            }
++        }
++    }
++
++    #[test]
++    fn binding_contract_rejects_every_incompatible_relation_or_supplying_port() {
++        let ports = [
++            EvidencePort::MetadataCatalog,
++            EvidencePort::CodeSearch,
++            EvidencePort::Definition,
++            EvidencePort::CallGraph,
++            EvidencePort::FormInspection,
++            EvidencePort::SupportState,
++        ];
++        let relations = [
++            FlowKind::Contains,
++            FlowKind::Defines,
++            FlowKind::Calls,
++            FlowKind::Handles,
++            FlowKind::Subscribes,
++            FlowKind::Uses,
++        ];
++        for (details, allowed) in binding_cases() {
++            for port in ports {
++                for relation in relations {
++                    if allowed.contains(&(port, relation)) {
++                        continue;
++                    }
++                    assert!(matches!(
++                        binding_outcome(port, relation, details.clone()).collect(port),
++                        Err(DiscoveryError::ProviderContractViolation { .. })
++                    ));
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn form_inspection_calls_structural_is_rejected_before_graph_promotion() {
++        assert!(matches!(
++            binding_outcome(
++                EvidencePort::FormInspection,
++                FlowKind::Calls,
++                BindingDetails::Structural,
++            )
++            .collect(EvidencePort::FormInspection),
++            Err(DiscoveryError::ProviderContractViolation { .. })
++        ));
++    }
++}
+diff --git a/crates/unica-coder/src/application/discovery/proposal_validator.rs b/crates/unica-coder/src/application/discovery/proposal_validator.rs
+new file mode 100644
+index 0000000..7f47618
+--- /dev/null
++++ b/crates/unica-coder/src/application/discovery/proposal_validator.rs
+@@ -0,0 +1,248 @@
++use super::contract::{ArtifactKind, ArtifactRef, Proposal};
++use super::determinism::evidence_id;
++use super::evidence_graph::EvidenceGraph;
++use super::model::{
++    Coverage, EvidencePort, FactAnswer, FlowKind, ProposalFacts, ProposalVerdict, ProviderFact,
++    SupportState, Verdict,
++};
++use super::ports::CollectedProviderOutcome;
++use std::collections::{BTreeMap, BTreeSet};
++
++pub(crate) struct ProposalValidation {
++    pub(crate) verdicts: Vec<ProposalVerdict>,
++    pub(crate) material_ports: BTreeMap<String, BTreeSet<EvidencePort>>,
++}
++
++pub(crate) struct ProposalValidator;
++
++impl ProposalValidator {
++    pub(crate) fn validate(
++        proposals: &[Proposal],
++        graph: &EvidenceGraph,
++        providers: &[CollectedProviderOutcome],
++    ) -> Result<ProposalValidation, String> {
++        let mut verdicts = Vec::with_capacity(proposals.len());
++        let mut material_ports = BTreeMap::new();
++        for proposal in proposals {
++            let owner = owner_for(&proposal.target);
++            let conflicts = graph.conflicts.iter().filter(|conflict| {
++                conflict.artifact == proposal.target
++                    || owner
++                        .as_ref()
++                        .is_some_and(|owner| conflict.artifact == *owner)
++            });
++            let conflict_codes: BTreeSet<_> = conflicts.map(|item| item.code.clone()).collect();
++
++            let definition = provider(providers, EvidencePort::Definition)?;
++            let metadata = provider(providers, EvidencePort::MetadataCatalog)?;
++            let support_provider = provider(providers, EvidencePort::SupportState)?;
++            let call_graph = provider(providers, EvidencePort::CallGraph)?;
++            let forms = provider(providers, EvidencePort::FormInspection)?;
++
++            let definition_answer = existence_answer(
++                definition,
++                &proposal.target,
++                |fact| matches!(fact, ProviderFact::DefinitionPresent { .. }),
++                |fact| matches!(fact, ProviderFact::DefinitionAbsent { .. }),
++            );
++            let owner_answer = owner.as_ref().map_or(FactAnswer::Yes, |owner| {
++                existence_answer(
++                    metadata,
++                    owner,
++                    |fact| matches!(fact, ProviderFact::MetadataPresent { .. }),
++                    |fact| matches!(fact, ProviderFact::MetadataAbsent { .. }),
++                )
++            });
++            let exists = if !conflict_codes.is_empty() {
++                FactAnswer::Unknown
++            } else {
++                combine_existence(definition_answer, owner_answer)
++            };
++
++            let connection_ports = graph
++                .connection_ports
++                .get(&proposal.target)
++                .cloned()
++                .unwrap_or_default();
++            let runtime_reachable = if connection_ports.contains(&EvidencePort::CallGraph)
++                || connection_ports.contains(&EvidencePort::FormInspection)
++                || connection_ports.contains(&EvidencePort::MetadataCatalog)
++            {
++                FactAnswer::Yes
++            } else if call_graph.coverage == Coverage::Complete
++                && forms.coverage == Coverage::Complete
++                && metadata.coverage == Coverage::Complete
++            {
++                FactAnswer::No
++            } else {
++                FactAnswer::Unknown
++            };
++
++            let support_states: BTreeSet<_> = support_provider
++                .records
++                .iter()
++                .filter_map(|record| match &record.fact {
++                    ProviderFact::Support { subject, state } if subject == &proposal.target => {
++                        Some(*state)
++                    }
++                    _ => None,
++                })
++                .collect();
++            let support = if support_states.len() == 1 {
++                *support_states.iter().next().expect("one support state")
++            } else {
++                SupportState::Unknown
++            };
++
++            let mut coverage_gaps = BTreeSet::new();
++            let mut blockers = conflict_codes;
++            if exists == FactAnswer::Unknown {
++                coverage_gaps.insert("existence_inconclusive".to_string());
++            }
++            if runtime_reachable == FactAnswer::Unknown {
++                coverage_gaps.insert("runtime_reachability_inconclusive".to_string());
++            }
++            if support == SupportState::Unknown {
++                coverage_gaps.insert("support_state_inconclusive".to_string());
++            }
++            if support_states.len() > 1 {
++                blockers.insert("conflicting_support_facts".to_string());
++            }
++
++            let verdict = if !blockers.is_empty() {
++                Verdict::Unknown
++            } else if exists == FactAnswer::No || runtime_reachable == FactAnswer::No {
++                Verdict::Contradicted
++            } else if exists == FactAnswer::Yes
++                && runtime_reachable == FactAnswer::Yes
++                && support != SupportState::Unknown
++            {
++                Verdict::Supported
++            } else {
++                Verdict::Unknown
++            };
++            let evidence_ids = relevant_evidence_ids(providers, &proposal.target, owner.as_ref())?;
++            verdicts.push(ProposalVerdict {
++                proposal_id: proposal.id.clone(),
++                verdict,
++                facts: ProposalFacts {
++                    exists,
++                    runtime_reachable,
++                    support,
++                },
++                evidence_ids,
++                coverage_gaps: coverage_gaps.into_iter().collect(),
++                blockers: blockers.into_iter().collect(),
++            });
++
++            let mut material =
++                BTreeSet::from([EvidencePort::MetadataCatalog, EvidencePort::Definition]);
++            if exists == FactAnswer::Yes {
++                if runtime_reachable == FactAnswer::Yes {
++                    if connection_ports.contains(&EvidencePort::CallGraph) {
++                        material.insert(EvidencePort::CallGraph);
++                    } else {
++                        material.insert(EvidencePort::FormInspection);
++                    }
++                    material.insert(EvidencePort::SupportState);
++                } else {
++                    material.insert(EvidencePort::CallGraph);
++                    material.insert(EvidencePort::FormInspection);
++                }
++            }
++            material_ports.insert(proposal.id.clone(), material);
++        }
++        Ok(ProposalValidation {
++            verdicts,
++            material_ports,
++        })
++    }
++}
++
++fn provider(
++    providers: &[CollectedProviderOutcome],
++    port: EvidencePort,
++) -> Result<&CollectedProviderOutcome, String> {
++    providers
++        .iter()
++        .find(|provider| provider.port == port)
++        .ok_or_else(|| format!("missing {} outcome", port.wire_name()))
++}
++
++fn existence_answer(
++    provider: &CollectedProviderOutcome,
++    target: &ArtifactRef,
++    positive: impl Fn(&ProviderFact) -> bool,
++    negative: impl Fn(&ProviderFact) -> bool,
++) -> FactAnswer {
++    let relevant: Vec<_> = provider
++        .records
++        .iter()
++        .filter(|record| record.fact.subject() == target)
++        .collect();
++    let has_positive = relevant.iter().any(|record| positive(&record.fact));
++    let has_negative = relevant.iter().any(|record| negative(&record.fact));
++    match (has_positive, has_negative, provider.coverage) {
++        (true, false, _) => FactAnswer::Yes,
++        (false, true, Coverage::Complete) => FactAnswer::No,
++        (false, false, Coverage::Complete) => FactAnswer::No,
++        _ => FactAnswer::Unknown,
++    }
++}
++
++fn combine_existence(definition: FactAnswer, owner: FactAnswer) -> FactAnswer {
++    if definition == FactAnswer::No || owner == FactAnswer::No {
++        FactAnswer::No
++    } else if definition == FactAnswer::Yes && owner == FactAnswer::Yes {
++        FactAnswer::Yes
++    } else {
++        FactAnswer::Unknown
++    }
++}
++
++fn owner_for(target: &ArtifactRef) -> Option<ArtifactRef> {
++    if target.kind != ArtifactKind::Method {
++        return Some(target.clone());
++    }
++    let segments: Vec<_> = target.canonical_ref.split('.').collect();
++    if segments.first() == Some(&"CommonModule") && segments.len() >= 3 {
++        ArtifactRef::parse(
++            ArtifactKind::Module,
++            &format!("{}.{}", segments[0], segments[1]),
++        )
++        .ok()
++    } else if segments.len() >= 2 {
++        ArtifactRef::parse(
++            ArtifactKind::MetadataObject,
++            &format!("{}.{}", segments[0], segments[1]),
++        )
++        .ok()
++    } else {
++        None
++    }
++}
++
++fn relevant_evidence_ids(
++    providers: &[CollectedProviderOutcome],
++    target: &ArtifactRef,
++    owner: Option<&ArtifactRef>,
++) -> Result<Vec<String>, String> {
++    let mut ids = BTreeSet::new();
++    for record in providers.iter().flat_map(|provider| &provider.records) {
++        let relevant = record.fact.subject() == target
++            || record.fact.object() == Some(target)
++            || owner.is_some_and(|owner| record.fact.subject() == owner);
++        if relevant {
++            ids.insert(evidence_id(record).map_err(|error| error.to_string())?);
++        }
++    }
++    Ok(ids.into_iter().collect())
++}
++
++#[allow(dead_code)]
++fn _runtime_edge_kind_is_typed(kind: FlowKind) -> bool {
++    matches!(
++        kind,
++        FlowKind::Calls | FlowKind::Handles | FlowKind::Subscribes | FlowKind::Uses
++    )
++}
+diff --git a/crates/unica-coder/src/application/discovery/use_case.rs b/crates/unica-coder/src/application/discovery/use_case.rs
+new file mode 100644
+index 0000000..d78f7d3
+--- /dev/null
++++ b/crates/unica-coder/src/application/discovery/use_case.rs
+@@ -0,0 +1,1324 @@
++use super::contract::{DiscoverMode, DiscoverRequest, MutationIntent};
++use super::determinism::{analysis_id, canonicalize_evidence, evidence_id};
++use super::evidence_graph::EvidenceGraph;
++use super::model::{
++    Check, CheckOutcome, CheckSeverity, DiscoveryReport, DiscoverySource, DiscoveryStatus,
++    EvidencePort, LinkedSourceSnapshot, ReceiptEligibility, SourceSnapshotRole, Verdict,
++};
++use super::ports::{
++    CallGraphPort, CodeSearchPort, CollectedProviderOutcome, DefinitionPort, DiscoveryError,
++    DiscoveryExecutionContext, DiscoveryQueryPlan, FormInspectionPort, MetadataCatalogPort,
++    ProjectSourceResolverPort, ReceiptIssuanceRequest, ReceiptIssuerPort, SourceSnapshotPort,
++    SupportStatePort,
++};
++use super::proposal_validator::{ProposalValidation, ProposalValidator};
++use crate::domain::source_snapshot::{ResolvedSourceSet, SourceSnapshot};
++use std::collections::BTreeSet;
++
++const ANALYSIS_CONTRACT_VERSION: &str = "project-discovery-v1";
++
++pub(crate) struct DiscoverExtensionPointsUseCase<'a> {
++    source_resolver: &'a dyn ProjectSourceResolverPort,
++    snapshot_port: &'a dyn SourceSnapshotPort,
++    metadata_catalog: &'a dyn MetadataCatalogPort,
++    code_search: &'a dyn CodeSearchPort,
++    definitions: &'a dyn DefinitionPort,
++    call_graph: &'a dyn CallGraphPort,
++    form_inspection: &'a dyn FormInspectionPort,
++    support_state: &'a dyn SupportStatePort,
++    receipt_issuer: &'a dyn ReceiptIssuerPort,
++}
++
++impl<'a> DiscoverExtensionPointsUseCase<'a> {
++    #[allow(clippy::too_many_arguments)]
++    pub(crate) fn new(
++        source_resolver: &'a dyn ProjectSourceResolverPort,
++        snapshot_port: &'a dyn SourceSnapshotPort,
++        metadata_catalog: &'a dyn MetadataCatalogPort,
++        code_search: &'a dyn CodeSearchPort,
++        definitions: &'a dyn DefinitionPort,
++        call_graph: &'a dyn CallGraphPort,
++        form_inspection: &'a dyn FormInspectionPort,
++        support_state: &'a dyn SupportStatePort,
++        receipt_issuer: &'a dyn ReceiptIssuerPort,
++    ) -> Self {
++        Self {
++            source_resolver,
++            snapshot_port,
++            metadata_catalog,
++            code_search,
++            definitions,
++            call_graph,
++            form_inspection,
++            support_state,
++            receipt_issuer,
++        }
++    }
++
++    pub(crate) fn execute(
++        &self,
++        context: DiscoveryExecutionContext,
++        request: DiscoverRequest,
++    ) -> Result<DiscoveryReport, DiscoveryError> {
++        if context.workspace_root.trim().is_empty() {
++            return Err(DiscoveryError::Operation(
++                "workspace root must not be blank".to_string(),
++            ));
++        }
++        let analysis_source = self
++            .source_resolver
++            .resolve(&context, request.source_set.as_deref())?;
++        analysis_source
++            .validate()
++            .map_err(DiscoveryError::Operation)?;
++        let mutation_sources = self.resolve_mutation_sources(&context, &request)?;
++        let snapshot = self.snapshot_port.capture(
++            &analysis_source,
++            &mutation_sources,
++            context.workspace_epoch,
++        )?;
++        snapshot.validate().map_err(DiscoveryError::Operation)?;
++        validate_captured_snapshot(
++            &snapshot,
++            &analysis_source,
++            &mutation_sources,
++            context.workspace_epoch,
++        )?;
++
++        let plan = DiscoveryQueryPlan::normalized(&request);
++        let providers = vec![
++            self.metadata_catalog
++                .metadata(&plan, &context)
++                .collect(EvidencePort::MetadataCatalog)?,
++            self.code_search
++                .search(&plan, &context)
++                .collect(EvidencePort::CodeSearch)?,
++            self.definitions
++                .definitions(&plan, &context)
++                .collect(EvidencePort::Definition)?,
++            self.call_graph
++                .calls(&plan, &context)
++                .collect(EvidencePort::CallGraph)?,
++            self.form_inspection
++                .forms(&plan, &context)
++                .collect(EvidencePort::FormInspection)?,
++            self.support_state
++                .support(&plan, &context)
++                .collect(EvidencePort::SupportState)?,
++        ];
++        let records = providers
++            .iter()
++            .flat_map(|provider| provider.records.iter().cloned())
++            .collect::<Vec<_>>();
++        let graph = EvidenceGraph::build(&records).map_err(DiscoveryError::Operation)?;
++        let validation = ProposalValidator::validate(&plan.request.proposals, &graph, &providers)
++            .map_err(DiscoveryError::Operation)?;
++        let checks = build_checks(&providers, &graph, &validation)?;
++        let status = report_status(plan.request.mode, &graph, &validation, &checks);
++        let receipt_eligibility =
++            self.receipt_eligibility(&plan.request, &snapshot, &validation, &checks)?;
++        let source = discovery_source(&snapshot);
++        let snapshots = providers
++            .iter()
++            .map(|provider| provider.snapshot.clone())
++            .collect::<Vec<_>>();
++        let analysis_id = analysis_id(
++            &plan.request,
++            ANALYSIS_CONTRACT_VERSION,
++            &source,
++            &snapshots,
++        )
++        .map_err(|error| DiscoveryError::Operation(error.to_string()))?;
++        let evidence = canonicalize_evidence(records)
++            .map_err(|error| DiscoveryError::Operation(error.to_string()))?;
++        DiscoveryReport::new(
++            status,
++            analysis_id,
++            source,
++            graph.related_artifacts,
++            graph.flow_edges,
++            graph.candidates,
++            validation.verdicts,
++            evidence,
++            checks,
++            receipt_eligibility,
++        )
++        .map_err(DiscoveryError::Operation)
++    }
++
++    fn resolve_mutation_sources(
++        &self,
++        context: &DiscoveryExecutionContext,
++        request: &DiscoverRequest,
++    ) -> Result<Vec<ResolvedSourceSet>, DiscoveryError> {
++        let names = request
++            .proposals
++            .iter()
++            .filter_map(|proposal| proposal.mutation_intent.as_ref())
++            .map(|intent| match intent {
++                MutationIntent::CfePatchMethod {
++                    destination_source_set,
++                    ..
++                } => destination_source_set.clone(),
++            })
++            .collect::<BTreeSet<_>>();
++        names
++            .iter()
++            .map(|name| self.source_resolver.resolve(context, Some(name)))
++            .collect()
++    }
++
++    fn receipt_eligibility(
++        &self,
++        request: &DiscoverRequest,
++        snapshot: &SourceSnapshot,
++        validation: &ProposalValidation,
++        checks: &[Check],
++    ) -> Result<ReceiptEligibility, DiscoveryError> {
++        let all_supported = request.mode == DiscoverMode::Validate
++            && !validation.verdicts.is_empty()
++            && validation.verdicts.iter().all(|verdict| {
++                verdict.verdict == Verdict::Supported
++                    && verdict.coverage_gaps.is_empty()
++                    && verdict.blockers.is_empty()
++            });
++        let material_blocker = checks.iter().any(|check| {
++            check.severity == CheckSeverity::Blocking
++                && !matches!(
++                    check.outcome,
++                    CheckOutcome::Satisfied | CheckOutcome::NotApplicable
++                )
++        });
++        if !all_supported || material_blocker {
++            let mut blockers = BTreeSet::new();
++            if request.mode != DiscoverMode::Validate {
++                blockers.insert("validate_mode_required".to_string());
++            }
++            if !all_supported {
++                blockers.insert("proposal_not_supported".to_string());
++            }
++            if material_blocker {
++                blockers.insert("material_check_incomplete".to_string());
++            }
++            return Ok(ReceiptEligibility {
++                eligible: false,
++                blockers: blockers.into_iter().collect(),
++            });
++        }
++        self.receipt_issuer.assess(&ReceiptIssuanceRequest {
++            proposals: &request.proposals,
++            snapshot,
++        })
++    }
++}
++
++fn validate_captured_snapshot(
++    snapshot: &SourceSnapshot,
++    analysis_source: &ResolvedSourceSet,
++    mutation_sources: &[ResolvedSourceSet],
++    workspace_epoch: u64,
++) -> Result<(), DiscoveryError> {
++    if snapshot.workspace_epoch != workspace_epoch {
++        return Err(DiscoveryError::Operation(
++            "captured snapshot workspace epoch differs from the requested epoch".to_string(),
++        ));
++    }
++    if snapshot.analysis.source_set != *analysis_source {
++        return Err(DiscoveryError::Operation(
++            "captured analysis snapshot identity differs from the resolved source".to_string(),
++        ));
++    }
++    if snapshot.mutations.len() != mutation_sources.len()
++        || mutation_sources.iter().any(|expected| {
++            !snapshot
++                .mutations
++                .iter()
++                .any(|actual| actual.source_set == *expected)
++        })
++    {
++        return Err(DiscoveryError::Operation(
++            "captured mutation snapshot identities differ from the resolved sources".to_string(),
++        ));
++    }
++    Ok(())
++}
++
++fn discovery_source(snapshot: &SourceSnapshot) -> DiscoverySource {
++    let mut linked_source_snapshots = vec![LinkedSourceSnapshot {
++        source_set: snapshot.analysis.source_set.name.clone(),
++        role: SourceSnapshotRole::Analysis,
++        source_fingerprint: snapshot.analysis.source_fingerprint.clone(),
++    }];
++    linked_source_snapshots.extend(snapshot.mutations.iter().map(|mutation| {
++        LinkedSourceSnapshot {
++            source_set: mutation.source_set.name.clone(),
++            role: SourceSnapshotRole::Mutation,
++            source_fingerprint: mutation.source_fingerprint.clone(),
++        }
++    }));
++    DiscoverySource {
++        analysis_source_set: snapshot.analysis.source_set.name.clone(),
++        source_format: snapshot.analysis.source_set.source_format,
++        workspace_epoch: snapshot.workspace_epoch,
++        linked_source_snapshots,
++        composite_source_fingerprint: snapshot.composite_fingerprint.clone(),
++    }
++}
++
++fn build_checks(
++    providers: &[CollectedProviderOutcome],
++    graph: &EvidenceGraph,
++    validation: &ProposalValidation,
++) -> Result<Vec<Check>, DiscoveryError> {
++    providers
++        .iter()
++        .map(|provider| {
++            let conflicts = graph
++                .conflicts
++                .iter()
++                .filter(|conflict| conflict.port == provider.port)
++                .collect::<Vec<_>>();
++            let provider_evidence_ids = provider
++                .records
++                .iter()
++                .map(evidence_id)
++                .collect::<Result<BTreeSet<_>, _>>()
++                .map_err(|error| DiscoveryError::Operation(error.to_string()))?;
++            let mut affects = validation
++                .material_ports
++                .iter()
++                .filter(|(_, ports)| ports.contains(&provider.port))
++                .map(|(proposal_id, _)| proposal_id)
++                .map(|proposal_id| format!("proposal:{proposal_id}"))
++                .collect::<Vec<_>>();
++            affects.extend(
++                graph
++                    .candidates
++                    .iter()
++                    .filter(|candidate| {
++                        candidate
++                            .evidence_ids
++                            .iter()
++                            .any(|id| provider_evidence_ids.contains(id))
++                    })
++                    .map(|candidate| format!("candidate:{}", candidate.target.canonical_ref)),
++            );
++            affects.sort();
++            affects.dedup();
++            let is_material = affects.iter().any(|affect| affect.starts_with("proposal:"));
++            let (outcome, reason_code, severity) = if !conflicts.is_empty() {
++                (
++                    CheckOutcome::Conflict,
++                    "conflicting_evidence".to_string(),
++                    if affects.is_empty() {
++                        CheckSeverity::Warning
++                    } else {
++                        CheckSeverity::Blocking
++                    },
++                )
++            } else if provider.is_degraded() {
++                (
++                    CheckOutcome::Inconclusive,
++                    provider
++                        .reason_code
++                        .clone()
++                        .unwrap_or_else(|| "provider_inconclusive".to_string()),
++                    if is_material {
++                        CheckSeverity::Blocking
++                    } else {
++                        CheckSeverity::Warning
++                    },
++                )
++            } else if provider.records.is_empty() {
++                (
++                    CheckOutcome::NoMatch,
++                    "no_match".to_string(),
++                    CheckSeverity::Info,
++                )
++            } else {
++                (
++                    CheckOutcome::Satisfied,
++                    "complete".to_string(),
++                    CheckSeverity::Info,
++                )
++            };
++            let mut evidence_ids = provider_evidence_ids.into_iter().collect::<Vec<_>>();
++            evidence_ids.extend(
++                conflicts
++                    .iter()
++                    .flat_map(|conflict| conflict.evidence_ids.iter().cloned()),
++            );
++            evidence_ids.sort();
++            evidence_ids.dedup();
++            Check::new(
++                check_code(provider.port),
++                provider.port.wire_name(),
++                provider.state,
++                outcome,
++                provider.coverage,
++                severity,
++                affects,
++                &reason_code,
++                provider.retryable,
++                Vec::new(),
++                evidence_ids,
++            )
++            .map_err(DiscoveryError::Operation)
++        })
++        .collect()
++}
++
++fn check_code(port: EvidencePort) -> &'static str {
++    match port {
++        EvidencePort::MetadataCatalog => "metadata_catalog",
++        EvidencePort::CodeSearch => "code_search",
++        EvidencePort::Definition => "definition",
++        EvidencePort::CallGraph => "call_graph",
++        EvidencePort::FormInspection => "form_inspection",
++        EvidencePort::SupportState => "support_state",
++    }
++}
++
++fn report_status(
++    mode: DiscoverMode,
++    graph: &EvidenceGraph,
++    validation: &ProposalValidation,
++    checks: &[Check],
++) -> DiscoveryStatus {
++    let blocking_unresolved = checks.iter().any(|check| {
++        check.severity == CheckSeverity::Blocking
++            && !matches!(
++                check.outcome,
++                CheckOutcome::Satisfied | CheckOutcome::NotApplicable
++            )
++    });
++    let conclusive = match mode {
++        DiscoverMode::Explore => graph
++            .candidates
++            .iter()
++            .any(|candidate| candidate.evidence_level == super::model::EvidenceLevel::Actionable),
++        DiscoverMode::Validate => {
++            !validation.verdicts.is_empty()
++                && validation
++                    .verdicts
++                    .iter()
++                    .all(|verdict| verdict.verdict != Verdict::Unknown)
++        }
++    };
++    if blocking_unresolved || !conclusive {
++        DiscoveryStatus::Insufficient
++    } else if checks.iter().any(|check| {
++        check.severity == CheckSeverity::Warning && check.outcome == CheckOutcome::Inconclusive
++    }) {
++        DiscoveryStatus::Partial
++    } else {
++        DiscoveryStatus::Complete
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::application::discovery::contract::{ArtifactKind, ArtifactRef, DiscoverRequest};
++    use crate::application::discovery::model::{
++        BindingDetails, Coverage, DiscoveryStatus, EvidencePort, EvidenceProvider, EvidenceRecord,
++        FlowKind, Freshness, ProviderFact, ReceiptEligibility, SourceLocation, SupportState,
++        Verdict,
++    };
++    use crate::application::discovery::ports::*;
++    use crate::domain::project_sources::{SourceFormat, SourceSetKind};
++    use crate::domain::source_snapshot::{ResolvedSourceSet, SourceSetSnapshot, SourceSnapshot};
++    use serde_json::json;
++
++    const FINGERPRINT: &str =
++        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
++    const COMPOSITE: &str =
++        "sha256:2222222222222222222222222222222222222222222222222222222222222222";
++
++    fn artifact(kind: ArtifactKind, canonical_ref: &str) -> ArtifactRef {
++        ArtifactRef::parse(kind, canonical_ref).unwrap()
++    }
++
++    fn target() -> ArtifactRef {
++        artifact(ArtifactKind::Method, "CommonModule.Flow.Run")
++    }
++
++    fn owner() -> ArtifactRef {
++        artifact(ArtifactKind::Module, "CommonModule.Flow")
++    }
++
++    fn caller() -> ArtifactRef {
++        artifact(ArtifactKind::Method, "CommonModule.Entry.Start")
++    }
++
++    fn method_proposal() -> DiscoverRequest {
++        serde_json::from_value(json!({
++            "mode": "validate",
++            "task": "validate hook",
++            "concepts": ["write"],
++            "proposals": [{
++                "id": "method-hook",
++                "target": {"kind": "method", "ref": "CommonModule.Flow.Run"},
++                "intent": "run before write"
++            }]
++        }))
++        .unwrap()
++    }
++
++    fn mutation_method_proposal() -> DiscoverRequest {
++        serde_json::from_value(json!({
++            "mode": "validate",
++            "task": "validate mutation hook",
++            "concepts": ["write"],
++            "proposals": [{
++                "id": "method-hook",
++                "target": {"kind": "method", "ref": "CommonModule.Flow.Run"},
++                "intent": "run before write",
++                "mutationIntent": {
++                    "tool": "unica.cfe.patch_method",
++                    "destinationSourceSet": "extension",
++                    "arguments": {
++                        "ExtensionPath": "src-cfe",
++                        "ModulePath": "CommonModules.Flow.Module",
++                        "MethodName": "Run",
++                        "InterceptorType": "Before"
++                    }
++                }
++            }]
++        }))
++        .unwrap()
++    }
++
++    fn explore_request() -> DiscoverRequest {
++        serde_json::from_value(json!({
++            "mode": "explore",
++            "task": "find hook",
++            "concepts": ["write"],
++            "searchTerms": ["Run"]
++        }))
++        .unwrap()
++    }
++
++    fn record(port: EvidencePort, fact: ProviderFact) -> EvidenceRecord {
++        record_with_coverage(port, fact, Coverage::Complete)
++    }
++
++    fn record_with_coverage(
++        port: EvidencePort,
++        fact: ProviderFact,
++        coverage: Coverage,
++    ) -> EvidenceRecord {
++        EvidenceRecord::from_fact(
++            fact,
++            Some(SourceLocation::new("src/Flow.bsl", Some(1), Some(1)).unwrap()),
++            EvidenceProvider::new(port, &format!("fake-{}", port.wire_name()), "1").unwrap(),
++            coverage,
++            Freshness::new("main", FINGERPRINT, 7).unwrap(),
++        )
++    }
++
++    fn complete(
++        port: EvidencePort,
++        records: Vec<EvidenceRecord>,
++    ) -> ProviderOutcome<EvidenceRecord> {
++        ProviderOutcome::complete(
++            EvidenceProvider::new(port, &format!("fake-{}", port.wire_name()), "1").unwrap(),
++            records,
++        )
++        .unwrap()
++    }
++
++    fn positive_metadata() -> ProviderOutcome<EvidenceRecord> {
++        complete(
++            EvidencePort::MetadataCatalog,
++            vec![record(
++                EvidencePort::MetadataCatalog,
++                ProviderFact::MetadataPresent { subject: owner() },
++            )],
++        )
++    }
++
++    fn positive_definition() -> ProviderOutcome<EvidenceRecord> {
++        complete(
++            EvidencePort::Definition,
++            vec![record(
++                EvidencePort::Definition,
++                ProviderFact::DefinitionPresent {
++                    subject: target(),
++                    definition: crate::application::discovery::model::DefinitionShape::new(
++                        false,
++                        true,
++                        Vec::new(),
++                    )
++                    .unwrap(),
++                },
++            )],
++        )
++    }
++
++    fn positive_call() -> ProviderOutcome<EvidenceRecord> {
++        complete(
++            EvidencePort::CallGraph,
++            vec![record(
++                EvidencePort::CallGraph,
++                ProviderFact::Call {
++                    subject: caller(),
++                    object: target(),
++                    resolution: crate::application::discovery::model::CallResolution::Resolved,
++                    call_type: crate::application::discovery::model::CallType::Direct,
++                    context: crate::application::discovery::contract::ExecutionContext::Server,
++                },
++            )],
++        )
++    }
++
++    fn positive_support() -> ProviderOutcome<EvidenceRecord> {
++        complete(
++            EvidencePort::SupportState,
++            vec![record(
++                EvidencePort::SupportState,
++                ProviderFact::Support {
++                    subject: target(),
++                    state: SupportState::Editable,
++                },
++            )],
++        )
++    }
++
++    #[derive(Clone)]
++    struct FakeEvidencePorts {
++        metadata: ProviderOutcome<EvidenceRecord>,
++        code: ProviderOutcome<EvidenceRecord>,
++        definitions: ProviderOutcome<EvidenceRecord>,
++        calls: ProviderOutcome<EvidenceRecord>,
++        forms: ProviderOutcome<EvidenceRecord>,
++        support: ProviderOutcome<EvidenceRecord>,
++    }
++
++    impl FakeEvidencePorts {
++        fn positive() -> Self {
++            Self {
++                metadata: positive_metadata(),
++                code: complete(EvidencePort::CodeSearch, Vec::new()),
++                definitions: positive_definition(),
++                calls: positive_call(),
++                forms: complete(EvidencePort::FormInspection, Vec::new()),
++                support: positive_support(),
++            }
++        }
++    }
++
++    macro_rules! fake_port {
++        ($trait_name:ident, $method:ident, $field:ident) => {
++            impl $trait_name for FakeEvidencePorts {
++                fn $method(
++                    &self,
++                    _plan: &DiscoveryQueryPlan,
++                    _context: &DiscoveryExecutionContext,
++                ) -> ProviderOutcome<EvidenceRecord> {
++                    self.$field.clone()
++                }
++            }
++        };
++    }
++
++    fake_port!(MetadataCatalogPort, metadata, metadata);
++    fake_port!(CodeSearchPort, search, code);
++    fake_port!(DefinitionPort, definitions, definitions);
++    fake_port!(CallGraphPort, calls, calls);
++    fake_port!(FormInspectionPort, forms, forms);
++    fake_port!(SupportStatePort, support, support);
++
++    struct FakeSourceResolver;
++
++    impl ProjectSourceResolverPort for FakeSourceResolver {
++        fn resolve(
++            &self,
++            _context: &DiscoveryExecutionContext,
++            requested_source_set: Option<&str>,
++        ) -> Result<ResolvedSourceSet, DiscoveryError> {
++            let name = requested_source_set.unwrap_or("main");
++            Ok(ResolvedSourceSet {
++                name: name.into(),
++                kind: if requested_source_set.is_some() {
++                    SourceSetKind::Extension
++                } else {
++                    SourceSetKind::Configuration
++                },
++                relative_root: if requested_source_set.is_some() {
++                    "src-cfe".into()
++                } else {
++                    "src".into()
++                },
++                source_format: SourceFormat::PlatformXml,
++                mapping_digest: if requested_source_set.is_some() {
++                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()
++                } else {
++                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()
++                },
++            })
++        }
++    }
++
++    struct FakeSnapshotPort;
++
++    impl SourceSnapshotPort for FakeSnapshotPort {
++        fn capture(
++            &self,
++            analysis: &ResolvedSourceSet,
++            mutation_sources: &[ResolvedSourceSet],
++            workspace_epoch: u64,
++        ) -> Result<SourceSnapshot, DiscoveryError> {
++            SourceSnapshot::new(
++                SourceSetSnapshot {
++                    source_set: analysis.clone(),
++                    source_fingerprint: FINGERPRINT.into(),
++                },
++                mutation_sources
++                    .iter()
++                    .cloned()
++                    .map(|source_set| SourceSetSnapshot {
++                        source_set,
++                        source_fingerprint: FINGERPRINT.into(),
++                    })
++                    .collect(),
++                COMPOSITE.into(),
++                workspace_epoch,
++            )
++            .map_err(DiscoveryError::Operation)
++        }
++    }
++
++    struct AllowReceiptIssuer;
++
++    impl ReceiptIssuerPort for AllowReceiptIssuer {
++        fn assess(
++            &self,
++            _request: &ReceiptIssuanceRequest<'_>,
++        ) -> Result<ReceiptEligibility, DiscoveryError> {
++            Ok(ReceiptEligibility {
++                eligible: true,
++                blockers: Vec::new(),
++            })
++        }
++    }
++
++    struct Fixture {
++        ports: FakeEvidencePorts,
++    }
++
++    impl Fixture {
++        fn positive() -> Self {
++            Self {
++                ports: FakeEvidencePorts::positive(),
++            }
++        }
++
++        fn execute(
++            &self,
++            request: DiscoverRequest,
++        ) -> Result<crate::application::discovery::model::DiscoveryReport, DiscoveryError> {
++            self.execute_with_snapshot(&FakeSnapshotPort, request)
++        }
++
++        fn execute_with_snapshot(
++            &self,
++            snapshot_port: &dyn SourceSnapshotPort,
++            request: DiscoverRequest,
++        ) -> Result<crate::application::discovery::model::DiscoveryReport, DiscoveryError> {
++            let use_case = DiscoverExtensionPointsUseCase::new(
++                &FakeSourceResolver,
++                snapshot_port,
++                &self.ports,
++                &self.ports,
++                &self.ports,
++                &self.ports,
++                &self.ports,
++                &self.ports,
++                &AllowReceiptIssuer,
++            );
++            use_case.execute(
++                DiscoveryExecutionContext {
++                    workspace_root: "/workspace".into(),
++                    workspace_epoch: 7,
++                },
++                request,
++            )
++        }
++    }
++
++    #[test]
++    fn complete_empty_definition_batch_can_contradict_exact_proposal() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = complete(EvidencePort::Definition, Vec::new());
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Contradicted);
++        assert_eq!(report.status, DiscoveryStatus::Complete);
++        assert!(!report.receipt_eligibility.eligible);
++    }
++
++    #[test]
++    fn bounded_definition_is_unknown_not_contradicted() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::bounded(
++            EvidenceProvider::new(EvidencePort::Definition, "fake-definition", "1").unwrap(),
++            "result_limit",
++            false,
++            Vec::new(),
++        )
++        .unwrap();
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++    }
++
++    #[test]
++    fn unavailable_definition_is_unknown_not_contradicted() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::unavailable(
++            EvidenceProvider::new(EvidencePort::Definition, "fake-definition", "1").unwrap(),
++            "index_building",
++            true,
++        )
++        .unwrap();
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert!(!report.receipt_eligibility.eligible);
++    }
++
++    #[test]
++    fn unavailable_metadata_prevents_exact_negative_runtime_reachability() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.metadata = ProviderOutcome::unavailable(
++            EvidenceProvider::new(EvidencePort::MetadataCatalog, "fake-metadata", "1").unwrap(),
++            "catalog_building",
++            true,
++        )
++        .unwrap();
++        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
++        fixture.ports.forms = complete(EvidencePort::FormInspection, Vec::new());
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(
++            report.proposal_verdicts[0].facts.runtime_reachable,
++            crate::application::discovery::model::FactAnswer::Unknown
++        );
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++    }
++
++    #[test]
++    fn bounded_metadata_prevents_exact_negative_runtime_reachability() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.metadata = ProviderOutcome::bounded(
++            EvidenceProvider::new(
++                EvidencePort::MetadataCatalog,
++                &format!("fake-{}", EvidencePort::MetadataCatalog.wire_name()),
++                "1",
++            )
++            .unwrap(),
++            "result_limit",
++            false,
++            vec![record_with_coverage(
++                EvidencePort::MetadataCatalog,
++                ProviderFact::MetadataPresent { subject: owner() },
++                Coverage::Bounded,
++            )],
++        )
++        .unwrap();
++        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
++        fixture.ports.forms = complete(EvidencePort::FormInspection, Vec::new());
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(
++            report.proposal_verdicts[0].facts.runtime_reachable,
++            crate::application::discovery::model::FactAnswer::Unknown
++        );
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++    }
++
++    #[test]
++    fn failed_definition_is_nonfatal_but_unknown() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::failed(
++            EvidenceProvider::new(EvidencePort::Definition, "fake-definition", "1").unwrap(),
++            "provider_crashed",
++            true,
++        )
++        .unwrap();
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert!(report.checks.iter().any(|check| {
++            check.provider == "DefinitionPort"
++                && check.state == crate::application::discovery::model::CheckState::Failed
++        }));
++    }
++
++    #[test]
++    fn provider_contract_violation_is_the_only_fatal_evidence_outcome() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::contract_violation("wrong_fact_variant");
++
++        assert!(matches!(
++            fixture.execute(method_proposal()),
++            Err(DiscoveryError::ProviderContractViolation { .. })
++        ));
++    }
++
++    #[test]
++    fn lexical_evidence_alone_never_yields_actionable_candidate() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.metadata = complete(EvidencePort::MetadataCatalog, Vec::new());
++        fixture.ports.definitions = complete(EvidencePort::Definition, Vec::new());
++        fixture.ports.calls = complete(EvidencePort::CallGraph, Vec::new());
++        fixture.ports.support = complete(EvidencePort::SupportState, Vec::new());
++        fixture.ports.code = complete(
++            EvidencePort::CodeSearch,
++            vec![record(
++                EvidencePort::CodeSearch,
++                ProviderFact::CodeOccurrence {
++                    subject: target(),
++                    search_term: "Run".into(),
++                },
++            )],
++        );
++
++        let report = fixture.execute(explore_request()).unwrap();
++
++        assert!(report.extension_point_candidates.is_empty());
++        assert_eq!(
++            report.related_artifacts[0].evidence_level,
++            crate::application::discovery::model::EvidenceLevel::Lexical
++        );
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++    }
++
++    #[test]
++    fn connected_target_plus_known_support_is_actionable() {
++        let report = Fixture::positive().execute(method_proposal()).unwrap();
++
++        let candidate = report
++            .extension_point_candidates
++            .iter()
++            .find(|candidate| candidate.target == target())
++            .unwrap();
++        assert_eq!(
++            candidate.evidence_level,
++            crate::application::discovery::model::EvidenceLevel::Actionable
++        );
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
++    }
++
++    #[test]
++    fn disabled_scheduled_job_binding_is_observed_but_not_actionable() {
++        let job = artifact(ArtifactKind::ScheduledJob, "ScheduledJob.Nightly");
++        let mut fixture = Fixture::positive();
++        fixture.ports.metadata = complete(
++            EvidencePort::MetadataCatalog,
++            vec![
++                record(
++                    EvidencePort::MetadataCatalog,
++                    ProviderFact::MetadataPresent {
++                        subject: job.clone(),
++                    },
++                ),
++                record(
++                    EvidencePort::MetadataCatalog,
++                    ProviderFact::Binding {
++                        subject: job.clone(),
++                        object: target(),
++                        relation: FlowKind::Handles,
++                        details: BindingDetails::ScheduledJob {
++                            enabled: false,
++                            context:
++                                crate::application::discovery::contract::ExecutionContext::Server,
++                        },
++                    },
++                ),
++            ],
++        );
++        fixture.ports.support = complete(
++            EvidencePort::SupportState,
++            vec![
++                record(
++                    EvidencePort::SupportState,
++                    ProviderFact::Support {
++                        subject: target(),
++                        state: SupportState::Editable,
++                    },
++                ),
++                record(
++                    EvidencePort::SupportState,
++                    ProviderFact::Support {
++                        subject: job.clone(),
++                        state: SupportState::Editable,
++                    },
++                ),
++            ],
++        );
++
++        let report = fixture.execute(explore_request()).unwrap();
++
++        assert!(report
++            .related_artifacts
++            .iter()
++            .any(|artifact| artifact.artifact == job));
++        assert!(!report
++            .extension_point_candidates
++            .iter()
++            .any(|candidate| candidate.target == job));
++    }
++
++    #[test]
++    fn material_blocker_survives_unrelated_provider_success() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::unavailable(
++            EvidenceProvider::new(EvidencePort::Definition, "fake-definition", "1").unwrap(),
++            "index_building",
++            true,
++        )
++        .unwrap();
++        fixture.ports.code = complete(
++            EvidencePort::CodeSearch,
++            vec![record(
++                EvidencePort::CodeSearch,
++                ProviderFact::CodeOccurrence {
++                    subject: target(),
++                    search_term: "Run".into(),
++                },
++            )],
++        );
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert!(report.checks.iter().any(|check| {
++            check.provider == "DefinitionPort"
++                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
++                && check.affects == ["proposal:method-hook"]
++        }));
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++    }
++
++    #[test]
++    fn non_material_optional_degradation_is_partial_and_may_keep_eligibility() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.code = ProviderOutcome::unavailable(
++            EvidenceProvider::new(EvidencePort::CodeSearch, "fake-search", "1").unwrap(),
++            "index_building",
++            true,
++        )
++        .unwrap();
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.status, DiscoveryStatus::Partial);
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
++        assert!(report.receipt_eligibility.eligible);
++    }
++
++    #[test]
++    fn conflicting_facts_are_retained_and_block_receipt() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = complete(
++            EvidencePort::Definition,
++            vec![
++                record(
++                    EvidencePort::Definition,
++                    ProviderFact::DefinitionPresent {
++                        subject: target(),
++                        definition: crate::application::discovery::model::DefinitionShape::new(
++                            false,
++                            true,
++                            Vec::new(),
++                        )
++                        .unwrap(),
++                    },
++                ),
++                record(
++                    EvidencePort::Definition,
++                    ProviderFact::DefinitionAbsent { subject: target() },
++                ),
++            ],
++        );
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        let definition_codes = report
++            .evidence
++            .iter()
++            .filter(|evidence| evidence.subject == target())
++            .map(|evidence| evidence.fact_code.as_str())
++            .collect::<BTreeSet<_>>();
++        assert!(definition_codes.contains("definition_present"));
++        assert!(definition_codes.contains("definition_absent"));
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert!(report
++            .checks
++            .iter()
++            .any(|check| check.outcome
++                == crate::application::discovery::model::CheckOutcome::Conflict));
++        assert!(!report.receipt_eligibility.eligible);
++    }
++
++    #[test]
++    fn conflicting_definition_shapes_are_retained_and_block_receipt() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = complete(
++            EvidencePort::Definition,
++            vec![
++                record(
++                    EvidencePort::Definition,
++                    ProviderFact::DefinitionPresent {
++                        subject: target(),
++                        definition: crate::application::discovery::model::DefinitionShape::new(
++                            false,
++                            true,
++                            Vec::new(),
++                        )
++                        .unwrap(),
++                    },
++                ),
++                record(
++                    EvidencePort::Definition,
++                    ProviderFact::DefinitionPresent {
++                        subject: target(),
++                        definition: crate::application::discovery::model::DefinitionShape::new(
++                            true,
++                            false,
++                            Vec::new(),
++                        )
++                        .unwrap(),
++                    },
++                ),
++            ],
++        );
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(
++            report
++                .evidence
++                .iter()
++                .filter(|evidence| evidence.subject == target()
++                    && evidence.fact_code == "definition_present")
++                .count(),
++            2
++        );
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Unknown);
++        assert!(report.proposal_verdicts[0]
++            .blockers
++            .contains(&"conflicting_definition_shapes".to_string()));
++        assert!(report.checks.iter().any(|check| {
++            check.provider == "DefinitionPort"
++                && check.outcome == crate::application::discovery::model::CheckOutcome::Conflict
++                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
++                && check
++                    .affects
++                    .iter()
++                    .any(|affect| affect == "proposal:method-hook")
++                && check
++                    .affects
++                    .iter()
++                    .any(|affect| affect.starts_with("candidate:"))
++        }));
++        assert!(!report.receipt_eligibility.eligible);
++    }
++
++    #[test]
++    fn bounded_material_records_keep_supported_verdict_but_status_insufficient() {
++        let mut fixture = Fixture::positive();
++        fixture.ports.definitions = ProviderOutcome::bounded(
++            EvidenceProvider::new(
++                EvidencePort::Definition,
++                &format!("fake-{}", EvidencePort::Definition.wire_name()),
++                "1",
++            )
++            .unwrap(),
++            "result_limit",
++            false,
++            vec![record_with_coverage(
++                EvidencePort::Definition,
++                ProviderFact::DefinitionPresent {
++                    subject: target(),
++                    definition: crate::application::discovery::model::DefinitionShape::new(
++                        false,
++                        true,
++                        Vec::new(),
++                    )
++                    .unwrap(),
++                },
++                Coverage::Bounded,
++            )],
++        )
++        .unwrap();
++
++        let report = fixture.execute(method_proposal()).unwrap();
++
++        assert_eq!(report.proposal_verdicts[0].verdict, Verdict::Supported);
++        assert!(report.checks.iter().any(|check| {
++            check.provider == "DefinitionPort"
++                && check.severity == crate::application::discovery::model::CheckSeverity::Blocking
++                && check.outcome == crate::application::discovery::model::CheckOutcome::Inconclusive
++        }));
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++        assert!(!report.receipt_eligibility.eligible);
++    }
++
++    struct AliasedAnalysisSnapshotPort;
++
++    impl SourceSnapshotPort for AliasedAnalysisSnapshotPort {
++        fn capture(
++            &self,
++            analysis: &ResolvedSourceSet,
++            _mutation_sources: &[ResolvedSourceSet],
++            workspace_epoch: u64,
++        ) -> Result<SourceSnapshot, DiscoveryError> {
++            let mut aliased_analysis = analysis.clone();
++            aliased_analysis.mapping_digest =
++                "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
++                    .to_string();
++            SourceSnapshot::new(
++                SourceSetSnapshot {
++                    source_set: aliased_analysis,
++                    source_fingerprint: FINGERPRINT.into(),
++                },
++                Vec::new(),
++                COMPOSITE.into(),
++                workspace_epoch,
++            )
++            .map_err(DiscoveryError::Operation)
++        }
++    }
++
++    #[test]
++    fn captured_analysis_snapshot_must_match_resolved_source_identity() {
++        let result = Fixture::positive()
++            .execute_with_snapshot(&AliasedAnalysisSnapshotPort, method_proposal());
++
++        assert!(matches!(result, Err(DiscoveryError::Operation(_))));
++    }
++
++    #[derive(Clone, Copy)]
++    enum MutationSnapshotMismatch {
++        Omitted,
++        Extra,
++        Aliased,
++    }
++
++    impl SourceSnapshotPort for MutationSnapshotMismatch {
++        fn capture(
++            &self,
++            analysis: &ResolvedSourceSet,
++            mutation_sources: &[ResolvedSourceSet],
++            workspace_epoch: u64,
++        ) -> Result<SourceSnapshot, DiscoveryError> {
++            let mut mutations = mutation_sources
++                .iter()
++                .cloned()
++                .map(|source_set| SourceSetSnapshot {
++                    source_set,
++                    source_fingerprint: FINGERPRINT.into(),
++                })
++                .collect::<Vec<_>>();
++            match self {
++                Self::Omitted => mutations.clear(),
++                Self::Extra => mutations.push(SourceSetSnapshot {
++                    source_set: ResolvedSourceSet {
++                        name: "extra".into(),
++                        kind: SourceSetKind::Extension,
++                        relative_root: "extra-src".into(),
++                        source_format: SourceFormat::PlatformXml,
++                        mapping_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
++                            .into(),
++                    },
++                    source_fingerprint: FINGERPRINT.into(),
++                }),
++                Self::Aliased => mutations[0].source_set.relative_root = "aliased-src".into(),
++            }
++            SourceSnapshot::new(
++                SourceSetSnapshot {
++                    source_set: analysis.clone(),
++                    source_fingerprint: FINGERPRINT.into(),
++                },
++                mutations,
++                COMPOSITE.into(),
++                workspace_epoch,
++            )
++            .map_err(DiscoveryError::Operation)
++        }
++    }
++
++    #[test]
++    fn captured_mutation_snapshots_must_match_resolved_sources_exactly() {
++        for mismatch in [
++            MutationSnapshotMismatch::Omitted,
++            MutationSnapshotMismatch::Extra,
++            MutationSnapshotMismatch::Aliased,
++        ] {
++            let result =
++                Fixture::positive().execute_with_snapshot(&mismatch, mutation_method_proposal());
++
++            assert!(matches!(result, Err(DiscoveryError::Operation(_))));
++        }
++    }
++
++    #[test]
++    fn no_actionable_result_is_insufficient_not_operation_error() {
++        let ports = FakeEvidencePorts {
++            metadata: complete(EvidencePort::MetadataCatalog, Vec::new()),
++            code: complete(EvidencePort::CodeSearch, Vec::new()),
++            definitions: complete(EvidencePort::Definition, Vec::new()),
++            calls: complete(EvidencePort::CallGraph, Vec::new()),
++            forms: complete(EvidencePort::FormInspection, Vec::new()),
++            support: complete(EvidencePort::SupportState, Vec::new()),
++        };
++
++        let report = Fixture { ports }.execute(explore_request()).unwrap();
++
++        assert_eq!(report.status, DiscoveryStatus::Insufficient);
++        assert!(report.extension_point_candidates.is_empty());
++    }
++
++    #[test]
++    fn noop_receipt_issuer_adds_stable_explicit_blocker() {
++        let fixture = Fixture::positive();
++        let use_case = DiscoverExtensionPointsUseCase::new(
++            &FakeSourceResolver,
++            &FakeSnapshotPort,
++            &fixture.ports,
++            &fixture.ports,
++            &fixture.ports,
++            &fixture.ports,
++            &fixture.ports,
++            &fixture.ports,
++            &NoopReceiptIssuer,
++        );
++
++        let report = use_case
++            .execute(
++                DiscoveryExecutionContext {
++                    workspace_root: "/workspace".into(),
++                    workspace_epoch: 7,
++                },
++                method_proposal(),
++            )
++            .unwrap();
++
++        assert!(!report.receipt_eligibility.eligible);
++        assert_eq!(
++            report.receipt_eligibility.blockers,
++            ["receipt_store_not_implemented"]
++        );
++    }
++}
+diff --git a/crates/unica-coder/src/domain/mod.rs b/crates/unica-coder/src/domain/mod.rs
+index e745888..4ba5bed 100644
+--- a/crates/unica-coder/src/domain/mod.rs
++++ b/crates/unica-coder/src/domain/mod.rs
+@@ -1,8 +1,9 @@
+ pub mod cache;
+ // Module-kind entries are consumed by the staged discovery providers before
+ // every registry API has a non-test caller.
+ #[allow(dead_code)]
+ pub(crate) mod discovery_registry;
+ pub mod events;
+ pub mod project_sources;
++pub(crate) mod source_snapshot;
+ pub mod workspace;
+diff --git a/crates/unica-coder/src/domain/source_snapshot.rs b/crates/unica-coder/src/domain/source_snapshot.rs
+new file mode 100644
+index 0000000..cecdcbe
+--- /dev/null
++++ b/crates/unica-coder/src/domain/source_snapshot.rs
+@@ -0,0 +1,314 @@
++use super::project_sources::{SourceFormat, SourceSetKind};
++use std::collections::BTreeMap;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ResolvedSourceSet {
++    pub(crate) name: String,
++    pub(crate) kind: SourceSetKind,
++    pub(crate) relative_root: String,
++    pub(crate) source_format: SourceFormat,
++    pub(crate) mapping_digest: String,
++}
++
++impl ResolvedSourceSet {
++    pub(crate) fn validate(&self) -> Result<(), String> {
++        stable_component(&self.name, "source-set name", 1024)?;
++        contained_relative_path(&self.relative_root)?;
++        validate_fingerprint(&self.mapping_digest)?;
++        Ok(())
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct SourceSetSnapshot {
++    pub(crate) source_set: ResolvedSourceSet,
++    pub(crate) source_fingerprint: String,
++}
++
++impl SourceSetSnapshot {
++    pub(crate) fn validate(&self) -> Result<(), String> {
++        self.source_set.validate()?;
++        validate_fingerprint(&self.source_fingerprint)
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct SourceSnapshot {
++    pub(crate) analysis: SourceSetSnapshot,
++    pub(crate) mutations: Vec<SourceSetSnapshot>,
++    pub(crate) composite_fingerprint: String,
++    pub(crate) workspace_epoch: u64,
++}
++
++impl SourceSnapshot {
++    // Concrete filesystem capture is delivered in Task 4; fakes and that
++    // adapter construct snapshots through this invariant-preserving boundary.
++    #[allow(dead_code)]
++    pub(crate) fn new(
++        analysis: SourceSetSnapshot,
++        mut mutations: Vec<SourceSetSnapshot>,
++        composite_fingerprint: String,
++        workspace_epoch: u64,
++    ) -> Result<Self, String> {
++        analysis.validate()?;
++        for mutation in &mutations {
++            mutation.validate()?;
++        }
++        mutations.sort_by(|left, right| {
++            snapshot_key(SnapshotRoleKey::Mutation, left)
++                .cmp(&snapshot_key(SnapshotRoleKey::Mutation, right))
++        });
++        mutations.dedup();
++        validate_fingerprint(&composite_fingerprint)?;
++        let snapshot = Self {
++            analysis,
++            mutations,
++            composite_fingerprint,
++            workspace_epoch,
++        };
++        snapshot.validate()?;
++        Ok(snapshot)
++    }
++
++    pub(crate) fn validate(&self) -> Result<(), String> {
++        self.analysis.validate()?;
++        validate_fingerprint(&self.composite_fingerprint)?;
++        let mut role_identities = BTreeMap::new();
++        role_identities.insert(
++            (
++                SnapshotRoleKey::Analysis,
++                self.analysis.source_set.name.as_str(),
++            ),
++            &self.analysis,
++        );
++        let mut previous = None;
++        for mutation in &self.mutations {
++            mutation.validate()?;
++            if let Some(previous_snapshot) = previous {
++                if snapshot_key(SnapshotRoleKey::Mutation, previous_snapshot)
++                    > snapshot_key(SnapshotRoleKey::Mutation, mutation)
++                {
++                    return Err("mutation source snapshots must be canonically sorted".to_string());
++                }
++            }
++            if let Some(existing) = role_identities.insert(
++                (SnapshotRoleKey::Mutation, mutation.source_set.name.as_str()),
++                mutation,
++            ) {
++                if existing != mutation {
++                    return Err(
++                        "one source-set role cannot have conflicting snapshot identities"
++                            .to_string(),
++                    );
++                }
++            }
++            previous = Some(mutation);
++        }
++        if self.mutations.windows(2).any(|pair| pair[0] == pair[1]) {
++            return Err("mutation source snapshots must be deduplicated".to_string());
++        }
++        Ok(())
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++enum SnapshotRoleKey {
++    Analysis,
++    Mutation,
++}
++
++fn snapshot_key(
++    role: SnapshotRoleKey,
++    snapshot: &SourceSetSnapshot,
++) -> (SnapshotRoleKey, &str, u8, u8, &str, &str, &str) {
++    (
++        role,
++        snapshot.source_set.name.as_str(),
++        source_set_kind_tag(snapshot.source_set.kind),
++        source_format_tag(snapshot.source_set.source_format),
++        snapshot.source_set.relative_root.as_str(),
++        snapshot.source_set.mapping_digest.as_str(),
++        snapshot.source_fingerprint.as_str(),
++    )
++}
++
++fn source_set_kind_tag(kind: SourceSetKind) -> u8 {
++    match kind {
++        SourceSetKind::Configuration => 1,
++        SourceSetKind::Extension => 2,
++        SourceSetKind::ExternalProcessor => 3,
++        SourceSetKind::ExternalReport => 4,
++    }
++}
++
++fn source_format_tag(format: SourceFormat) -> u8 {
++    match format {
++        SourceFormat::PlatformXml => 1,
++        SourceFormat::Edt => 2,
++        SourceFormat::Unknown => 3,
++        SourceFormat::Invalid => 4,
++    }
++}
++
++fn stable_component(value: &str, field: &str, maximum: usize) -> Result<(), String> {
++    if value.trim().is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
++        return Err(format!("{field} must contain 1..={maximum} stable bytes"));
++    }
++    Ok(())
++}
++
++fn contained_relative_path(path: &str) -> Result<(), String> {
++    if path.is_empty()
++        || path.len() > 4096
++        || path.starts_with('/')
++        || path.starts_with('\\')
++        || path.contains('\\')
++        || path.contains(':')
++        || path.chars().any(char::is_control)
++        || path
++            .split('/')
++            .any(|component| component.is_empty() || matches!(component, "." | ".."))
++    {
++        return Err("source root must be a contained workspace-relative slash path".to_string());
++    }
++    Ok(())
++}
++
++fn validate_fingerprint(value: &str) -> Result<(), String> {
++    let Some(digest) = value.strip_prefix("sha256:") else {
++        return Err("fingerprint must start with sha256:".to_string());
++    };
++    if digest.len() != 64
++        || !digest
++            .bytes()
++            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
++    {
++        return Err("fingerprint must contain 64 lowercase hexadecimal characters".to_string());
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn resolved(name: &str, source_format: SourceFormat) -> ResolvedSourceSet {
++        ResolvedSourceSet {
++            name: name.to_string(),
++            kind: SourceSetKind::Extension,
++            relative_root: format!("src/{name}"),
++            source_format,
++            mapping_digest: format!("sha256:{}", "a".repeat(64)),
++        }
++    }
++
++    fn snapshot(name: &str, digit: char) -> SourceSetSnapshot {
++        SourceSetSnapshot {
++            source_set: resolved(name, SourceFormat::PlatformXml),
++            source_fingerprint: format!("sha256:{}", digit.to_string().repeat(64)),
++        }
++    }
++
++    #[test]
++    fn source_snapshot_keeps_one_analysis_and_sorts_deduplicates_mutations() {
++        let mutation_a = snapshot("a", '2');
++        let mutation_b = snapshot("b", '3');
++        let result = SourceSnapshot::new(
++            SourceSetSnapshot {
++                source_set: resolved("main", SourceFormat::Edt),
++                source_fingerprint: format!("sha256:{}", "1".repeat(64)),
++            },
++            vec![mutation_b.clone(), mutation_a.clone(), mutation_b],
++            format!("sha256:{}", "4".repeat(64)),
++            9,
++        )
++        .unwrap();
++
++        assert_eq!(result.analysis.source_set.source_format, SourceFormat::Edt);
++        assert_eq!(result.mutations, [mutation_a, snapshot("b", '3')]);
++        assert_eq!(result.workspace_epoch, 9);
++    }
++
++    #[test]
++    fn source_snapshot_identity_is_permutation_invariant() {
++        let analysis = SourceSetSnapshot {
++            source_set: resolved("main", SourceFormat::Edt),
++            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
++        };
++        let mutation_a = snapshot("a", '2');
++        let mutation_b = snapshot("b", '3');
++
++        let first = SourceSnapshot::new(
++            analysis.clone(),
++            vec![mutation_b.clone(), mutation_a.clone()],
++            format!("sha256:{}", "4".repeat(64)),
++            9,
++        )
++        .unwrap();
++        let second = SourceSnapshot::new(
++            analysis,
++            vec![mutation_a, mutation_b],
++            format!("sha256:{}", "4".repeat(64)),
++            9,
++        )
++        .unwrap();
++
++        assert_eq!(first, second);
++    }
++
++    #[test]
++    fn same_name_and_role_with_conflicting_mapping_identity_is_rejected() {
++        let analysis = SourceSetSnapshot {
++            source_set: resolved("main", SourceFormat::Edt),
++            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
++        };
++        let first = snapshot("extension", '2');
++        let mut variants = Vec::new();
++        let mut kind = first.clone();
++        kind.source_set.kind = SourceSetKind::Configuration;
++        variants.push(kind);
++        let mut format = first.clone();
++        format.source_set.source_format = SourceFormat::Edt;
++        variants.push(format);
++        let mut root = first.clone();
++        root.source_set.relative_root = "different/extension".to_string();
++        variants.push(root);
++        let mut mapping = first.clone();
++        mapping.source_set.mapping_digest = format!("sha256:{}", "b".repeat(64));
++        variants.push(mapping);
++        let mut content = first.clone();
++        content.source_fingerprint = format!("sha256:{}", "3".repeat(64));
++        variants.push(content);
++
++        for conflicting in variants {
++            let result = SourceSnapshot::new(
++                analysis.clone(),
++                vec![first.clone(), conflicting],
++                format!("sha256:{}", "4".repeat(64)),
++                9,
++            );
++
++            assert!(result.is_err());
++        }
++    }
++
++    #[test]
++    fn same_name_with_different_roles_keeps_distinct_identities() {
++        let analysis = SourceSetSnapshot {
++            source_set: resolved("shared", SourceFormat::Edt),
++            source_fingerprint: format!("sha256:{}", "1".repeat(64)),
++        };
++        let mutation = snapshot("shared", '2');
++
++        let result = SourceSnapshot::new(
++            analysis.clone(),
++            vec![mutation.clone()],
++            format!("sha256:{}", "4".repeat(64)),
++            9,
++        )
++        .unwrap();
++
++        assert_eq!(result.analysis, analysis);
++        assert_eq!(result.mutations, [mutation]);
++    }
++}
+diff --git a/docs/superpowers/plans/2026-07-17-project-discovery-receipts.md b/docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
+index b17a8cb..f82ce48 100644
+--- a/docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
++++ b/docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
+@@ -258,48 +258,61 @@ Run: `cargo test --locked -p unica-coder discovery::use_case -- --nocapture`
+ 
+ - [ ] **Step 3: Define exactly six named evidence ports**
+ 
+ Add `MetadataCatalogPort`, `CodeSearchPort`, `DefinitionPort`, `CallGraphPort`,
+ `FormInspectionPort`, and `SupportStatePort`. Each returns typed
+ `ProviderBatch<T>` or an explicit unavailable/failed/contract-violation state.
+ Every fact carries canonical identity, `SourceLocation`, provider name/version,
+ coverage, source fingerprint, and workspace epoch. Only contract violations are
+ fatal `Err`.
+ 
++The application outcome algebra is exactly `complete`, `bounded`,
++`unavailable`, `failed`, and `contract_violation`. A complete empty batch is
++negative proof only for the exact typed query. Bounded, unavailable, and failed
++outcomes remain inconclusive. Binding records bind exact mechanism details;
++call records bind resolution, call type, and execution context into the stable
++evidence digest.
++
+ Keep non-evidence orchestration dependencies explicit and separate:
+ `ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`.
+ Define typed `ResolvedSourceSet`, `SourceSnapshot`, and
+ `DiscoveryExecutionContext` in the domain/application boundary now so this
+ slice compiles before concrete filesystem adapters exist. Fake implementations
+ prove that application code imports no infrastructure module.
+ 
++`SourceSnapshot` reuses the domain `SourceFormat` and models exactly one
++analysis snapshot plus canonically sorted/deduplicated mutation snapshots.
++Content capture remains behind `SourceSnapshotPort` until Task 4.
++
+ - [ ] **Step 4: Implement evidence graph and proposal validator**
+ 
+ Retain conflicting facts. Build only typed `contains`, `defines`, `calls`,
+ `handles`, `subscribes`, and `uses` edges. Compute evidence levels from facts,
+ not ordering. Attach checks per affected candidate/proposal and apply the
+ specified status precedence.
+ 
+ - [ ] **Step 5: Implement use-case orchestration with injected providers**
+ 
+ `DiscoverExtensionPointsUseCase::execute` selects the analysis source-set,
+ normalizes the query plan, obtains one source snapshot, invokes ports, builds
+ the graph, validates proposals, and returns a typed report. It does not issue a
+ persisted receipt yet; inject a `NoopReceiptIssuer` returning an explicit
+ eligibility blocker until the receipt-store task.
+ 
+ - [ ] **Step 6: Re-run and commit**
+ 
+ Run: `cargo test --locked -p unica-coder discovery -- --nocapture`
+ 
+ ```bash
+-git add crates/unica-coder/src/application/discovery
++git add crates/unica-coder/src/application/discovery crates/unica-coder/src/domain \
++  spec/architecture/extension-point-discovery.md \
++  docs/superpowers/plans/2026-07-17-project-discovery-receipts.md
+ git -c commit.gpgsign=false commit -m "feat: реализовать evidence graph и validation"
+ ```
+ 
+ ### Task 4: Contained project source resolution and content snapshots
+ 
+ **Files:**
+ - Modify: `crates/unica-coder/src/domain/project_sources.rs`
+ - Modify: `crates/unica-coder/src/domain/source_snapshot.rs`
+ - Modify: `crates/unica-coder/src/domain/mod.rs`
+ - Create: `crates/unica-coder/src/infrastructure/source_snapshot.rs`
+diff --git a/spec/architecture/extension-point-discovery.md b/spec/architecture/extension-point-discovery.md
+index 6d6ff77..d16baf9 100644
+--- a/spec/architecture/extension-point-discovery.md
++++ b/spec/architecture/extension-point-discovery.md
+@@ -90,31 +90,58 @@ creates the report. It does not parse human-readable adapter output.
+ 
+ Target application ports are:
+ 
+ - `MetadataCatalogPort`;
+ - `CodeSearchPort`;
+ - `DefinitionPort`;
+ - `CallGraphPort`;
+ - `FormInspectionPort`;
+ - `SupportStatePort`.
+ 
++Each evidence port returns `ProviderOutcome<T>` with exactly five application
++states: `complete`, `bounded`, `unavailable`, `failed`, or
++`contract_violation`. Complete and bounded outcomes carry a typed
++`ProviderBatch<T>`; every record in the batch repeats its canonical identity,
++location, provider name/version, coverage, content source fingerprint, and
++diagnostic workspace epoch. `unavailable` and `failed` are reportable
++degradation, while only `contract_violation` is a fatal evidence-provider
++error. A complete empty batch is negative proof only for the exact typed query
++sent to that port. Bounded, unavailable, and failed outcomes are never negative
++proof.
++
+ Ports return typed records containing stable artifact identities, locations,
+ provider provenance, and freshness. Infrastructure adapters implement those
+ ports. An infrastructure adapter must not call another adapter, select an
+ architecture, or convert a non-empty result into a confidence claim.
+ 
+ Platform-owned callbacks are represented by a versioned, domain-neutral
+ binding catalog keyed by platform script variant, metadata kind, module kind,
+ method name, export state, and signature. `MetadataCatalogPort` exposes those
+ facts with provider provenance. A method name or call-graph node alone does not
+ prove that the 1C platform invokes it.
+ 
++Binding and call facts preserve mechanism semantics in their typed payload and
++stable evidence digest. Binding facts carry the exact event or action, HTTP
++verb and URL template, scheduled-job enabled state, and execution context when
++the mechanism requires them. Call facts carry resolution state, call type, and
++execution context. Validators must not reconstruct any of these values from an
++artifact name or display text.
++
++Non-evidence orchestration remains behind separate
++`ProjectSourceResolverPort`, `SourceSnapshotPort`, and `ReceiptIssuerPort`
++boundaries. The application-owned `SourceSnapshot` contains exactly one
++analysis snapshot plus a canonically sorted and deduplicated set of mutation
++snapshots, reuses the domain `SourceFormat`, and binds content fingerprints
++rather than timestamps. Concrete filesystem capture and persistent receipt
++issuance are later infrastructure slices; the interim no-op issuer contributes
++the stable `receipt_store_not_implemented` eligibility blocker.
++
+ ### Evidence Graph
+ 
+ The graph represents metadata objects, modules, methods, forms, commands,
+ handlers, subscriptions, and scheduled jobs. Typed edges include `contains`,
+ `defines`, `calls`, `handles`, `subscribes`, and `uses`.
+ 
+ Every report conclusion references evidence identifiers. A lexical match or a
+ single definition is not proof of runtime reachability.
+ 
+ ### Result Domains
