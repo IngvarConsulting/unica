@@ -4993,7 +4993,7 @@ source-set:
     fn system_process_runner_large_stderr_helper() {
         let chunk = [b'e'; 64 * 1024];
         let mut stderr = std::io::stderr().lock();
-        for _ in 0..8 {
+        for _ in 0..64 {
             stderr.write_all(&chunk).unwrap();
         }
         stderr.flush().unwrap();
