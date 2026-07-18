@@ -3904,6 +3904,58 @@ mod tests {
     }
 
     #[test]
+    fn meta_validate_accepts_platform_hierarchy_of_items() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-hierarchy-of-items-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        let definition_path = fixtures.join("items.json");
+        std::fs::write(
+            &definition_path,
+            r#"{
+  "type": "Catalog",
+  "name": "Items",
+  "synonym": "Items",
+  "hierarchical": true,
+  "hierarchyType": "HierarchyOfItems"
+}"#,
+        )
+        .unwrap();
+        let compile = call_meta_compile(&workspace, &definition_path);
+        assert!(compile.ok, "{:?}", compile.errors);
+        let catalog_path = src.join("Catalogs").join("Items.xml");
+        assert!(std::fs::read_to_string(&catalog_path)
+            .unwrap()
+            .contains("<HierarchyType>HierarchyOfItems</HierarchyType>"));
+
+        let result = call_meta_validate(&workspace, "src/Catalogs/Items.xml");
+
+        assert!(
+            result.ok,
+            "platform-valid HierarchyOfItems was rejected: {:?}\n{}",
+            result.errors,
+            result.stdout.unwrap_or_default()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
         let root = temp_meta_compile_workspace("unica-role-compile-canonical-registration");
         let workspace = root.join("workspace");

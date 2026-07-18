@@ -832,7 +832,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 ```xml
 <Hierarchical>true</Hierarchical>
-<HierarchyType>HierarchyFoldersAndItems</HierarchyType>  <!-- HierarchyFoldersAndItems | HierarchyItemsOnly -->
+<HierarchyType>HierarchyFoldersAndItems</HierarchyType>  <!-- HierarchyFoldersAndItems | HierarchyOfItems -->
 <LimitLevelCount>true</LimitLevelCount>
 <LevelCount>3</LevelCount>
 <FoldersOnTop>true</FoldersOnTop>

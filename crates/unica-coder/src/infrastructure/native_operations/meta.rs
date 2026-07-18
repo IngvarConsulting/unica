@@ -39,6 +39,19 @@ mod uuid_tests {
 }
 
 #[cfg(test)]
+mod enum_contract_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_hierarchy_items_only_normalizes_to_platform_value() {
+        assert_eq!(
+            normalize_meta_enum_value("HierarchyItemsOnly"),
+            "HierarchyOfItems"
+        );
+    }
+}
+
+#[cfg(test)]
 mod registration_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3382,7 +3395,7 @@ pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'stat
         ("DefaultPresentation", &["AsDescription", "AsCode"]),
         (
             "HierarchyType",
-            &["HierarchyFoldersAndItems", "HierarchyItemsOnly"],
+            &["HierarchyFoldersAndItems", "HierarchyOfItems"],
         ),
         ("EditType", &["InDialog", "InList", "BothWays"]),
         ("WriteMode", &["Independent", "RecorderSubordinate"]),
@@ -8739,6 +8752,8 @@ pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, defaul
 
 pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
     match value {
+        // Keep old DSL requests readable while emitting only the platform enum value.
+        "HierarchyItemsOnly" => "HierarchyOfItems",
         "Balances" => "Balance",
         "Остатки" => "Balance",
         "Обороты" => "Turnovers",
