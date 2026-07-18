@@ -1336,7 +1336,7 @@ fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
     matches!(
         tool.handler,
         ToolHandler::NativeOperation {
-            operation: "meta-compile" | "role-compile" | "subsystem-compile",
+            operation: "form-compile" | "meta-compile" | "role-compile" | "subsystem-compile",
             ..
         }
     )

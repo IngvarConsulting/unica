@@ -5930,6 +5930,37 @@ mod tests {
     }
 
     #[test]
+    fn form_compile_dry_run_rejects_output_escape_like_apply() {
+        let root = test_workspace_root("unica-form-compile-preview-path-policy");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let json_path = workspace.join("form.json");
+        std::fs::write(&json_path, "{}").unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert(
+            "OutputPath".to_string(),
+            Value::String("../outside.xml".to_string()),
+        );
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.form.compile", &args)
+            .expect_err("form preview must enforce the same output path policy as apply");
+
+        assert!(error.contains("outside workspace root"), "{error}");
+        assert!(!root.join("outside.xml").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn detailed_compile_dry_run_rejects_edt_source_set_like_apply() {
         let root = test_workspace_root("unica-compile-preview-edt-guard");
         let workspace = root.join("workspace");
@@ -5969,6 +6000,49 @@ mod tests {
 
         assert!(error.contains("sourceFormat=edt"), "{error}");
         assert!(error.contains("platform_xml"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn form_compile_dry_run_rejects_edt_source_set_like_apply() {
+        let root = test_workspace_root("unica-form-compile-preview-edt-guard");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src/Configuration")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let json_path = workspace.join("form.json");
+        std::fs::write(&json_path, "{}").unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert(
+            "OutputPath".to_string(),
+            Value::String("src/Form.xml".to_string()),
+        );
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.form.compile", &args)
+            .expect_err("form preview must enforce the same source-format guard as apply");
+
+        assert!(error.contains("sourceFormat=edt"), "{error}");
+        assert!(error.contains("platform_xml"), "{error}");
+        assert!(!workspace.join("src/Form.xml").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
