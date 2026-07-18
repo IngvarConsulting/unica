@@ -3905,40 +3905,9 @@ mod tests {
 
     #[test]
     fn meta_validate_accepts_platform_hierarchy_of_items() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-hierarchy-of-items-{}",
-            std::process::id()
-        ));
+        let (root, catalog_path) =
+            compile_test_catalog_with_hierarchy_type("validate-platform", "HierarchyOfItems");
         let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let fixtures = workspace.join("fixtures");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::create_dir_all(&fixtures).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        let definition_path = fixtures.join("items.json");
-        std::fs::write(
-            &definition_path,
-            r#"{
-  "type": "Catalog",
-  "name": "Items",
-  "synonym": "Items",
-  "hierarchical": true,
-  "hierarchyType": "HierarchyOfItems"
-}"#,
-        )
-        .unwrap();
-        let compile = call_meta_compile(&workspace, &definition_path);
-        assert!(compile.ok, "{:?}", compile.errors);
-        let catalog_path = src.join("Catalogs").join("Items.xml");
         assert!(std::fs::read_to_string(&catalog_path)
             .unwrap()
             .contains("<HierarchyType>HierarchyOfItems</HierarchyType>"));
@@ -3951,6 +3920,54 @@ mod tests {
             result.errors,
             result.stdout.unwrap_or_default()
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_compile_normalizes_legacy_hierarchy_items_only() {
+        let (root, catalog_path) =
+            compile_test_catalog_with_hierarchy_type("compile-legacy", "HierarchyItemsOnly");
+
+        let catalog_xml = std::fs::read_to_string(catalog_path).unwrap();
+        assert!(catalog_xml.contains("<HierarchyType>HierarchyOfItems</HierarchyType>"));
+        assert!(!catalog_xml.contains("HierarchyItemsOnly"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_edit_normalizes_legacy_hierarchy_items_only() {
+        let (root, catalog_path) =
+            compile_test_catalog_with_hierarchy_type("edit-legacy", "HierarchyFoldersAndItems");
+        let workspace = root.join("workspace");
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("HierarchyType=HierarchyItemsOnly".to_string()),
+        );
+
+        let edit = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(edit.ok, "{:?}", edit.errors);
+        let catalog_xml = std::fs::read_to_string(catalog_path).unwrap();
+        assert!(catalog_xml.contains("<HierarchyType>HierarchyOfItems</HierarchyType>"));
+        assert!(!catalog_xml.contains("HierarchyItemsOnly"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5048,6 +5065,49 @@ mod tests {
   ]
 }}"#
         )
+    }
+
+    fn compile_test_catalog_with_hierarchy_type(
+        prefix: &str,
+        hierarchy_type: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-hierarchy-{prefix}-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        let definition_path = fixtures.join("items.json");
+        std::fs::write(
+            &definition_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "type": "Catalog",
+                "name": "Items",
+                "synonym": "Items",
+                "hierarchical": true,
+                "hierarchyType": hierarchy_type,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let compile = call_meta_compile(&workspace, &definition_path);
+        assert!(compile.ok, "{:?}", compile.errors);
+
+        let catalog_path = src.join("Catalogs").join("Items.xml");
+        (root, catalog_path)
     }
 
     struct FixedOutcomePorts {
