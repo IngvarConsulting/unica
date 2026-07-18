@@ -1657,14 +1657,14 @@ mod tests {
 
     #[test]
     fn concurrent_add_remove_write_and_replace_fail_the_whole_snapshot() {
-        let mut actions = vec![
+        let actions = [
             RaceAction::Add,
             RaceAction::Remove,
             RaceAction::Write,
             RaceAction::Replace,
+            #[cfg(unix)]
+            RaceAction::ParentSymlinkSwap,
         ];
-        #[cfg(unix)]
-        actions.push(RaceAction::ParentSymlinkSwap);
         for action in actions {
             assert_retryable_race(action);
         }
@@ -1847,13 +1847,13 @@ mod tests {
         assert_eq!(io.reason, SnapshotCaptureReason::TransientSourceIo);
         assert!(io.retryable());
 
-        let mut actions = vec![
+        let actions = [
             MappingMutation::RenameSource,
             MappingMutation::DeleteMap,
             MappingMutation::MalformedMap,
+            #[cfg(unix)]
+            MappingMutation::SymlinkMap,
         ];
-        #[cfg(unix)]
-        actions.push(MappingMutation::SymlinkMap);
         for action in actions {
             let fixture = Fixture::new(&format!("snapshot-mapping-race-{action:?}"));
             let selection = resolve_source_selection(&fixture.root, Some("main"), &[]).unwrap();

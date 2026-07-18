@@ -353,7 +353,7 @@ fn open_windows_component(
         SecurityDescriptor: std::ptr::null(),
         SecurityQualityOfService: std::ptr::null(),
     };
-    let mut raw: HANDLE = 0;
+    let mut raw: HANDLE = std::ptr::null_mut();
     let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     let desired_access = FILE_READ_ATTRIBUTES
         | SYNCHRONIZE
@@ -384,7 +384,7 @@ fn open_windows_component(
             0,
         )
     };
-    if status < 0 || raw == 0 {
+    if status < 0 || raw.is_null() {
         return Err(format!(
             "material_file_unreadable: NtCreateFile failed with NTSTATUS 0x{:08x}",
             status as u32

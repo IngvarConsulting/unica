@@ -1157,7 +1157,17 @@ test and rerun the relevant focused and full suites.
 
 - [ ] **Step 7: Audit scope and history**
 
-Run: `git diff --check`
+The recovered investigation payload is byte-exact historical evidence and has
+its own manifest gate. Do not normalize it to satisfy a whitespace check.
+
+Run from `docs/superpowers/investigations/project-discovery/`:
+`shasum -a 256 -c RECOVERY-MANIFEST.sha256`
+
+Run from the repository root for live code and specs:
+`git diff --check origin/main...HEAD -- . ':(exclude,glob)docs/superpowers/investigations/project-discovery/**'`
+
+Run for the archive control files, which are excluded from the payload manifest:
+`git diff --check origin/main...HEAD -- docs/superpowers/investigations/project-discovery/README.md docs/superpowers/investigations/project-discovery/RECOVERY-MANIFEST.sha256`
 
 Run: `git status --short`
 

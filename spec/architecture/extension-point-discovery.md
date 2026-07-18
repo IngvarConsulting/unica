@@ -1374,7 +1374,7 @@ only the affected descriptor back to `warn` and resets its observation window.
 ## Migration From PR #83
 
 PR #83 is superseded by this design. It must not be merged and none of its
-four commits should be cherry-picked wholesale. The main feature commit combines
+commits should be cherry-picked wholesale. The main feature commit combines
 the wrong discovery model with unrelated infrastructure, while the later WIP
 security commits introduce unresolved SQLite, WAL, path-canonicalization, and
 Windows sharing risks.

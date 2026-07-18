@@ -23,10 +23,11 @@ make a later continuation possible while this branch remains a Draft/WIP.
 - The old `.superpowers/sdd/.gitignore` contained only `*` and was deliberately
   excluded: it is control metadata, not research, and would hide this archive
   from Git.
-- References to `.superpowers/sdd/<name>` inside recovered documents resolve to
-  `<name>` in this directory. Absolute `/private/tmp/...` paths are historical
-  evidence from the deleted temporary worktree and must not be reused as live
-  paths.
+- References to a recovered `.superpowers/sdd/<name>` resolve to `<name>` in
+  this directory. References to artifacts that were planned but never created
+  are inventoried below; they do not resolve locally. Absolute `/private/tmp/...`
+  paths are historical evidence from the deleted temporary worktree and must
+  not be reused as live paths.
 
 The deleted temporary worktree also contained a large uncommitted production
 prototype. That code is not included here and must not be reconstructed or
@@ -50,11 +51,11 @@ The branch currently commits the Task 1-4 foundation:
   no-op receipt eligibility seam;
 - contained project source resolution and content-based source snapshots.
 
-It does not yet deliver Tasks 5-14: production Platform XML/BSL evidence,
+It does not yet deliver Tasks 5-15: production Platform XML/BSL evidence,
 concrete mechanism orchestration, the shared mutation resolver, durable receipt
 store and leases, discovery guard, observation/replay, public MCP registration,
-gold corpus, or package/skill rollout. In particular, no public
-`unica.project.discover` tool is registered by this archive.
+gold corpus, package/skill rollout, or final delivery proof. In particular, no
+public `unica.project.discover` tool is registered by this archive.
 
 ## Continuation map
 
@@ -69,12 +70,41 @@ gold corpus, or package/skill rollout. In particular, no public
 | Associations and mechanisms | `task-7-v7-addendum.md` | Open owner contract; not accepted |
 | Shared mutation resolver and writer seam | `task-8-v6-design.md` | Open downstream design; prerequisites unresolved |
 | Receipts, guard, MCP, corpus, packaging | `roadmap-6-14-audit.md`, then Tasks 9-14 in the historical plan | Research backlog only |
+| Full verification and delivery | Task 15 in the historical plan | Not started; impossible until Tasks 5-14 are delivered |
 
 Earlier `task-5a-*`, `task-5b-*`, `task-5c-*`, `task-6-*`, `task-7-*`, and
 `task-8-*` versions are preserved as lineage, rejected alternatives, reviews,
 and contradiction evidence. They are not independent implementation authority.
-The four `review-*.diff` files and `task-4-review-package.md` are reproducible
-review inputs for the committed foundation.
+The four `review-*.diff` files and `task-4-review-package.md` preserve the exact
+captured review inputs for the committed foundation. Their original Git diff
+options were not recovered, so the manifest verifies their bytes but the four
+diffs cannot be independently regenerated from their filename ranges alone.
+
+## Referenced but not recovered
+
+No absent reference is claimed as recovered. The old `.gitignore` was excluded
+deliberately, and the following 16 research paths were referenced but did not
+exist as completed artifacts at the handoff point:
+
+- missing acceptance authority: `task-4-7-v7-design-package-acceptance.md`;
+- future implementation reports: `task-5-report.md`, `task-5b-report.md`, and
+  `task-5c-report.md`;
+- future audits and reviews: `task-5c-v2-self-audit.md`,
+  `task-5b-v7-independent-review.md`,
+  `task-5c-evidence-v2-independent-review.md`, and
+  `task-6-v2-v7-independent-review.md`;
+- pending Task 5C mutation successors: `task-5c-mutation-v2-addendum.md`,
+  `task-5c-mutation-v2-self-audit.md`, and
+  `task-5c-mutation-v2-independent-review.md`;
+- pending Task 7 successors: `task-7-v6-v7-addendum.md`,
+  `task-7-v6-v7-self-audit.md`, and
+  `task-7-v6-v7-independent-review.md`;
+- future receipt/guard addenda: `task-9-v6-addendum.md` and
+  `task-10-v6-addendum.md`.
+
+`task-8-v6-design.md` explicitly calls the latter successor documents pending.
+Its `task-7-v6-v7-*` names also drift from the recovered `task-7-v7-*` names;
+do not silently equate them without a new owner review.
 
 ## Known stop condition
 
@@ -89,6 +119,25 @@ Some older reports also use words such as “accepted” or “complete” for s
 that lived only in the deleted uncommitted prototype. Those claims are
 superseded by the live branch state and must not be used as delivery evidence.
 
+## Integrity and whitespace gates
+
+Some recovered review packages contain historical trailing whitespace. Those
+bytes are covered by the recovery manifest and must not be normalized merely to
+make an unscoped `git diff --check` pass. Future final verification has two
+separate gates:
+
+1. verify all recovered payloads with
+   `shasum -a 256 -c RECOVERY-MANIFEST.sha256` from this directory;
+2. run `git diff --check <base>...HEAD -- .
+   ':(exclude,glob)docs/superpowers/investigations/project-discovery/**'` from
+   the repository root for live code and specs, then run `git diff --check
+   <base>...HEAD -- docs/superpowers/investigations/project-discovery/README.md
+   docs/superpowers/investigations/project-discovery/RECOVERY-MANIFEST.sha256`
+   for the two archive control files.
+
+The scoped whitespace command passes for the current handoff. The intentionally
+preserved payload is governed by its hashes instead.
+
 ## Safe continuation procedure
 
 1. Verify the archive from this directory with
@@ -99,5 +148,7 @@ superseded by the live branch state and must not be used as delivery evidence.
 4. Promote accepted conclusions into the active spec/ADR before implementation.
 5. Resume from Task 5 with fresh RED tests and commit each independently
    reviewable slice; do not revive the deleted prototype wholesale.
-6. Keep the PR in Draft until the public MCP, receipts, guard, corpus, package,
-   and rollout gates are all current and green.
+6. Apply the two-part integrity and whitespace gate above; never normalize the
+   recovered payload as a cleanup step.
+7. Keep the PR in Draft until the public MCP, receipts, guard, corpus, package,
+   rollout, and Task 15 delivery gates are all current and green.

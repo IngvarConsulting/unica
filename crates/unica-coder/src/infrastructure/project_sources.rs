@@ -1,7 +1,9 @@
+#[cfg(unix)]
+use super::contained_fs::observe_regular_file;
 use super::contained_fs::{
     canonical_workspace, metadata_is_link_or_reparse_point, normalize_relative, observe_open_file,
-    observe_regular_file, open_no_follow, reject_link_components, resolve_contained_directory,
-    slash_relative, validate_configured_relative_path,
+    open_no_follow, reject_link_components, resolve_contained_directory, slash_relative,
+    validate_configured_relative_path,
 };
 use super::source_roots::{normalize_contained_source_root, select_default_source_set};
 use crate::application::discovery::ports::{
