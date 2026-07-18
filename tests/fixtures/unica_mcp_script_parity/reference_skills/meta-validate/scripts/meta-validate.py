@@ -260,7 +260,7 @@ valid_property_values = {
     "DataLockControlMode":          ["Automatic", "Managed"],
     "FullTextSearch":               ["Use", "DontUse"],
     "DefaultPresentation":          ["AsDescription", "AsCode"],
-    "HierarchyType":                ["HierarchyFoldersAndItems", "HierarchyItemsOnly"],
+    "HierarchyType":                ["HierarchyFoldersAndItems", "HierarchyOfItems"],
     "EditType":                     ["InDialog", "InList", "BothWays"],
     "WriteMode":                    ["Independent", "RecorderSubordinate"],
     "InformationRegisterPeriodicity": ["Nonperiodical", "Second", "Day", "Month", "Quarter", "Year", "RecorderPosition"],

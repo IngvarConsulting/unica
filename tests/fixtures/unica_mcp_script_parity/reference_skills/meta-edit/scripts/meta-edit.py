@@ -132,7 +132,7 @@ valid_enum_values = {
     'Posting': ['Allow', 'Deny'],
     'RealTimePosting': ['Allow', 'Deny'],
     'EditType': ['InDialog', 'InList', 'BothWays'],
-    'HierarchyType': ['HierarchyFoldersAndItems', 'HierarchyItemsOnly'],
+    'HierarchyType': ['HierarchyFoldersAndItems', 'HierarchyOfItems'],
     'CodeType': ['String', 'Number'],
     'CodeAllowedLength': ['Variable', 'Fixed'],
     'NumberType': ['String', 'Number'],

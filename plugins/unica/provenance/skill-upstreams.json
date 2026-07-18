@@ -583,7 +583,7 @@
         {
           "skill": "meta-compile",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model uses platform-canonical HierarchyOfItems instead of the donor spelling HierarchyItemsOnly; native compile normalizes the legacy spelling before emitting XML.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
             "docs/meta-guide.md",
@@ -606,7 +606,7 @@
         {
           "skill": "meta-edit",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model uses platform-canonical HierarchyOfItems instead of the donor spelling HierarchyItemsOnly; native edit normalizes the legacy spelling before emitting XML.",
           "upstreamPaths": [
             ".claude/skills/meta-edit/**",
             "docs/meta-guide.md",
@@ -675,7 +675,7 @@
         {
           "skill": "meta-validate",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor meta-validate batch recursion fix through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe and ported the behavior into native unica.meta.validate: pipe-separated ObjectPath values are validated in-process, with per-object output and batch summary behind the typed MCP boundary. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed donor meta-validate batch recursion fix through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe and ported the behavior into native unica.meta.validate: pipe-separated ObjectPath values are validated in-process, with per-object output and batch summary behind the typed MCP boundary. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model and native validator use the platform-canonical HierarchyOfItems value instead of the donor spelling HierarchyItemsOnly.",
           "upstreamPaths": [
             ".claude/skills/meta-validate/**",
             "docs/meta-guide.md",
