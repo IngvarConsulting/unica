@@ -52,6 +52,50 @@ mod enum_contract_tests {
 }
 
 #[cfg(test)]
+mod fill_value_contract_tests {
+    use super::*;
+
+    #[test]
+    fn fill_value_literals_use_documented_xsi_types() {
+        let cases = [
+            ("nil", "<FillValue xsi:nil=\"true\"/>"),
+            (
+                "Catalog.Items.EmptyRef",
+                "<FillValue xsi:type=\"xr:DesignTimeRef\">Catalog.Items.EmptyRef</FillValue>",
+            ),
+            (
+                "TRUE",
+                "<FillValue xsi:type=\"xs:boolean\">true</FillValue>",
+            ),
+            (
+                "-12.50",
+                "<FillValue xsi:type=\"xs:decimal\">-12.50</FillValue>",
+            ),
+            (
+                "2026-07-19T10:20:30",
+                "<FillValue xsi:type=\"xs:dateTime\">2026-07-19T10:20:30</FillValue>",
+            ),
+            (
+                "2026-99-99T99:99:99",
+                "<FillValue xsi:type=\"xs:string\">2026-99-99T99:99:99</FillValue>",
+            ),
+            (
+                "2025-02-29T10:20:30",
+                "<FillValue xsi:type=\"xs:string\">2025-02-29T10:20:30</FillValue>",
+            ),
+            (
+                "A&B",
+                "<FillValue xsi:type=\"xs:string\">A&amp;B</FillValue>",
+            ),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(meta_edit_fill_value_xml("", value), expected, "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod registration_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -303,6 +347,37 @@ mod edit_tests {
         )
     }
 
+    fn sample_object_with_tabular_fill_value(object_type: &str) -> String {
+        sample_meta_object_xml(
+            object_type,
+            "SampleObject",
+            "",
+            "\t\t<ChildObjects>
+\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>SampleItems</Name>
+\t\t\t\t\t<Synonym/>
+\t\t\t\t\t<Comment/>
+\t\t\t\t</Properties>
+\t\t\t\t<ChildObjects>
+\t\t\t\t\t<Attribute uuid=\"33333333-3333-4333-8333-333333333333\">
+\t\t\t\t\t\t<Properties>
+\t\t\t\t\t\t\t<Name>Status</Name>
+\t\t\t\t\t\t\t<Synonym/>
+\t\t\t\t\t\t\t<Comment/>
+\t\t\t\t\t\t\t<Type>
+\t\t\t\t\t\t\t\t<v8:Type>cfg:EnumRef.SampleStatus</v8:Type>
+\t\t\t\t\t\t\t</Type>
+\t\t\t\t\t\t\t<FillValue xsi:type=\"xr:DesignTimeRef\">Enum.SampleStatus.EnumValue.Default</FillValue>
+\t\t\t\t\t\t\t<FillChecking>DontCheck</FillChecking>
+\t\t\t\t\t\t</Properties>
+\t\t\t\t\t</Attribute>
+\t\t\t\t</ChildObjects>
+\t\t\t</TabularSection>
+\t\t</ChildObjects>",
+        )
+    }
+
     fn register_record_args(object_path: &Path) -> Map<String, Value> {
         let mut args = Map::new();
         args.insert(
@@ -418,9 +493,7 @@ mod edit_tests {
     fn edit_meta_modify_property_same_comment_is_byte_identical_noop() {
         let context = temp_context("modify-property-comment-noop");
         let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
-        let xml = meta_edit_lxml_serialized_text(
-            &sample_catalog_xml().replace("<Comment/>", "<Comment>TEST-COMMENT</Comment>"),
-        );
+        let xml = sample_catalog_xml().replace("<Comment/>", "<Comment>TEST-COMMENT</Comment>");
         fs::create_dir_all(object_path.parent().unwrap()).unwrap();
         write_utf8_bom(&object_path, &xml).unwrap();
         let before = fs::read(&object_path).unwrap();
@@ -1346,6 +1419,166 @@ mod edit_tests {
         assert!(updated.contains("<FillValue xsi:type=\"xs:decimal\">0</FillValue>"));
         assert!(!updated.contains("<FillValue xsi:type=\"xs:string\"/>"));
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_sets_enum_fill_value() {
+        let context = temp_context("modify-attribute-enum-fill-value");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let xml = format!(
+            "\u{feff}{}",
+            sample_document_with_child_objects(&sample_attribute(
+                "Status",
+                "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>cfg:EnumRef.SampleStatus</v8:Type>\n\t\t\t\t\t</Type>",
+                "\t\t\t\t\t<FillValue xsi:nil=\"true\"/>",
+            ))
+            .replace("<Synonym/>", "<Synonym />")
+            .trim_end_matches('\n')
+            .replace('\n', "\r\n")
+        );
+        let mut patched = xml.clone();
+        let modified = meta_edit_modify_top_attribute_properties(
+            &mut patched,
+            "Status",
+            "fillValue=Enum.SampleStatus.EnumValue.Default",
+        )
+        .unwrap();
+        let expected = xml.replace(
+            "<FillValue xsi:nil=\"true\"/>",
+            "<FillValue xsi:type=\"xr:DesignTimeRef\">Enum.SampleStatus.EnumValue.Default</FillValue>",
+        );
+        assert_eq!(modified, 1);
+        assert_eq!(patched, expected);
+        write_file(&object_path, &xml);
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "modify-attribute",
+                "Status: fillValue=Enum.SampleStatus.EnumValue.Default",
+            ),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert_eq!(updated, expected);
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_resets_tabular_attribute_fill_value() {
+        let context = temp_context("modify-tabular-attribute-reset-fill-value");
+        let object_path = context
+            .cwd
+            .join("DataProcessors")
+            .join("SampleProcessor.xml");
+        let xml = sample_object_with_tabular_fill_value("DataProcessor");
+        write_file(&object_path, &xml);
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "modify-ts-attribute",
+                "SampleItems.Status: fillValue=nil",
+            ),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(!updated.starts_with('\u{feff}'));
+        assert!(updated.contains("<FillValue xsi:nil=\"true\"/>"));
+        assert!(updated.contains("<FillChecking>DontCheck</FillChecking>"));
+        assert!(!updated.contains("Enum.SampleStatus.EnumValue.Default"));
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_fill_value_for_stored_object_tabular_attribute() {
+        let context = temp_context("reject-stored-tabular-fill-value");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_object_with_tabular_fill_value("Document");
+        write_file(&object_path, &original);
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "modify-ts-attribute",
+                "SampleItems.Status: fillValue=nil",
+            ),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{:?}", outcome.stdout);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("Unsupported modify property key 'fillValue'")));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_fill_value_when_property_is_absent() {
+        let context = temp_context("modify-attribute-missing-fill-value-property");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_document_with_child_objects(&sample_attribute(
+            "Status",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>cfg:EnumRef.SampleStatus</v8:Type>\n\t\t\t\t\t</Type>",
+            "",
+        ));
+        write_file(&object_path, &original);
+
+        let outcome = edit_meta(
+            &meta_edit_args(
+                &object_path,
+                "modify-attribute",
+                "Status: fillValue=Enum.SampleStatus.EnumValue.Default",
+            ),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{:?}", outcome.stdout);
+        assert!(outcome.errors.iter().any(
+            |error| error.contains("Property 'FillValue' is not available for this attribute")
+        ));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_fill_value_dry_run_does_not_write_file() {
+        let context = temp_context("modify-attribute-fill-value-dry-run");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_document_with_child_objects(&sample_attribute(
+            "Status",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>cfg:EnumRef.SampleStatus</v8:Type>\n\t\t\t\t\t</Type>",
+            "\t\t\t\t\t<FillValue xsi:nil=\"true\"/>",
+        ));
+        write_file(&object_path, &original);
+        let mut args = meta_edit_args(
+            &object_path,
+            "modify-attribute",
+            "Status: fillValue=Enum.SampleStatus.EnumValue.Default",
+        );
+        args.insert("dryRun".to_string(), json!(true));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        assert!(result.summary.contains("dry run"));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -9566,6 +9799,19 @@ pub(crate) struct MetaEditCounts {
     pub(crate) removed: usize,
 }
 
+#[derive(Clone, Copy)]
+enum MetaEditEol {
+    Lf,
+    CrLf,
+    Cr,
+}
+
+#[derive(Clone, Copy)]
+struct MetaEditSourceFormat {
+    has_bom: bool,
+    eol: MetaEditEol,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -9588,6 +9834,10 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
         let mut xml_text = String::from_utf8(original_bytes.clone())
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
+        let source_format = MetaEditSourceFormat {
+            has_bom: original_bytes.starts_with(b"\xef\xbb\xbf"),
+            eol: meta_edit_source_eol(&xml_text),
+        };
         if xml_text.starts_with('\u{feff}') {
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
         }
@@ -9629,12 +9879,11 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
-        let serialized_text = meta_edit_lxml_serialized_text(&xml_text);
-        let mut serialized_bytes = b"\xef\xbb\xbf".to_vec();
-        serialized_bytes.extend_from_slice(serialized_text.as_bytes());
+        let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
         let changed = serialized_bytes != original_bytes;
         if changed {
-            write_utf8_bom(&object_path, &serialized_text)?;
+            fs::write(&object_path, &serialized_bytes)
+                .map_err(|err| format!("failed to write {}: {err}", object_path.display()))?;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else {
             counts = MetaEditCounts::default();
@@ -9678,23 +9927,38 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
     }
 }
 
-pub(crate) fn meta_edit_lxml_serialized_text(text: &str) -> String {
-    let mut output = text
+fn meta_edit_source_eol(text: &str) -> MetaEditEol {
+    let bytes = text.as_bytes();
+    if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
+        return if index > 0 && bytes[index - 1] == b'\r' {
+            MetaEditEol::CrLf
+        } else {
+            MetaEditEol::Lf
+        };
+    }
+    if bytes.contains(&b'\r') {
+        MetaEditEol::Cr
+    } else {
+        MetaEditEol::Lf
+    }
+}
+
+fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) -> Vec<u8> {
+    let normalized = text
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    if output.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>") {
-        output = output.replacen(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
-            1,
-        );
+    let serialized = match format.eol {
+        MetaEditEol::Lf => normalized,
+        MetaEditEol::CrLf => normalized.replace('\n', "\r\n"),
+        MetaEditEol::Cr => normalized.replace('\n', "\r"),
+    };
+    let mut bytes = Vec::with_capacity(serialized.len() + usize::from(format.has_bom) * 3);
+    if format.has_bom {
+        bytes.extend_from_slice(b"\xef\xbb\xbf");
     }
-    output = output.replace(" />", "/>");
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
+    bytes.extend_from_slice(serialized.as_bytes());
+    bytes
 }
 
 pub(crate) fn resolve_meta_edit_object_path(raw: &Path, cwd: &Path) -> Result<PathBuf, String> {
@@ -10471,7 +10735,12 @@ pub(crate) fn meta_edit_modify_top_child(
     let tag = meta_edit_child_xml_tag(child_type)
         .ok_or_else(|| format!("Unsupported modify child type: {child_type}"))?;
     let target = match child_type {
-        "attributes" => MetaEditModifyTarget::Attribute,
+        "attributes" => {
+            let (object_type, _) = meta_edit_object_identity(xml_text)?;
+            MetaEditModifyTarget::Attribute {
+                fill_value_allowed: !matches!(object_type.as_str(), "DataProcessor" | "Report"),
+            }
+        }
         "dimensions" | "resources" => MetaEditModifyTarget::RegisterField,
         "enumValues" => MetaEditModifyTarget::EnumValue,
         "columns" => MetaEditModifyTarget::Column,
@@ -11434,14 +11703,16 @@ pub(crate) fn meta_edit_modify_top_attribute_properties(
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
+    let target_kind = MetaEditModifyTarget::Attribute {
+        fill_value_allowed: !matches!(object.tag_name().name(), "DataProcessor" | "Report"),
+    };
     let child_objects = meta_info_child(object, "ChildObjects")
         .ok_or_else(|| format!("Attribute '{attr_name}' not found"))?;
     let target = meta_info_children(child_objects, "Attribute")
         .into_iter()
         .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(attr_name))
         .ok_or_else(|| format!("Attribute '{attr_name}' not found"))?;
-    if let Some(new_name) = meta_edit_requested_name(raw_changes, MetaEditModifyTarget::Attribute)?
-    {
+    if let Some(new_name) = meta_edit_requested_name(raw_changes, target_kind)? {
         meta_edit_ensure_sibling_name_free(
             child_objects,
             "Attribute",
@@ -11454,12 +11725,7 @@ pub(crate) fn meta_edit_modify_top_attribute_properties(
         .ok_or_else(|| format!("Attribute '{attr_name}' has no Properties"))?;
     let range = props.range();
     drop(doc);
-    meta_edit_modify_properties_range(
-        xml_text,
-        range,
-        raw_changes,
-        MetaEditModifyTarget::Attribute,
-    )
+    meta_edit_modify_properties_range(xml_text, range, raw_changes, target_kind)
 }
 
 pub(crate) fn meta_edit_modify_top_child_properties(
@@ -11534,6 +11800,9 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
+    let target_kind = MetaEditModifyTarget::Attribute {
+        fill_value_allowed: matches!(object.tag_name().name(), "DataProcessor" | "Report"),
+    };
     let section = meta_edit_find_tabular_section(object, section_name)
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
     let child_objects = meta_info_child(section, "ChildObjects")
@@ -11542,8 +11811,7 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
         .into_iter()
         .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(attr_name))
         .ok_or_else(|| format!("Attribute '{section_name}.{attr_name}' not found"))?;
-    if let Some(new_name) = meta_edit_requested_name(raw_changes, MetaEditModifyTarget::Attribute)?
-    {
+    if let Some(new_name) = meta_edit_requested_name(raw_changes, target_kind)? {
         meta_edit_ensure_sibling_name_free(
             child_objects,
             "Attribute",
@@ -11556,17 +11824,12 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
         .ok_or_else(|| format!("Attribute '{section_name}.{attr_name}' has no Properties"))?;
     let range = props.range();
     drop(doc);
-    meta_edit_modify_properties_range(
-        xml_text,
-        range,
-        raw_changes,
-        MetaEditModifyTarget::Attribute,
-    )
+    meta_edit_modify_properties_range(xml_text, range, raw_changes, target_kind)
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetaEditModifyTarget {
-    Attribute,
+    Attribute { fill_value_allowed: bool },
     RegisterField,
     EnumValue,
     Column,
@@ -11647,6 +11910,20 @@ pub(crate) fn meta_edit_modify_properties_range(
                     )?;
                 }
             }
+            "FillValue" => {
+                if !meta_edit_property_exists(&properties, "FillValue")? {
+                    return Err(
+                        "Property 'FillValue' is not available for this attribute".to_string()
+                    );
+                }
+                let replacement = meta_edit_fill_value_xml(&child_indent, value);
+                meta_edit_replace_or_insert_property(
+                    &mut properties,
+                    "FillValue",
+                    &replacement,
+                    &child_indent,
+                )?;
+            }
             "v8:AllowedSign" => {
                 meta_edit_replace_or_insert_nested_v8_property(
                     &mut properties,
@@ -11688,7 +11965,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         "fillchecking" | "fill_checking" | "fill-checking"
             if matches!(
                 target,
-                MetaEditModifyTarget::Attribute
+                MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
                     | MetaEditModifyTarget::TabularSection
             ) =>
@@ -11698,7 +11975,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         "use" | "использование"
             if matches!(
                 target,
-                MetaEditModifyTarget::Attribute
+                MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
                     | MetaEditModifyTarget::TabularSection
             ) =>
@@ -11708,15 +11985,25 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         "type" | "тип"
             if matches!(
                 target,
-                MetaEditModifyTarget::Attribute | MetaEditModifyTarget::RegisterField
+                MetaEditModifyTarget::Attribute { .. } | MetaEditModifyTarget::RegisterField
             ) =>
         {
             Ok("Type".to_string())
         }
+        "fillvalue" | "fill_value" | "fill-value" | "значениезаполнения"
+            if matches!(
+                target,
+                MetaEditModifyTarget::Attribute {
+                    fill_value_allowed: true
+                }
+            ) =>
+        {
+            Ok("FillValue".to_string())
+        }
         "indexing" | "индексирование"
             if matches!(
                 target,
-                MetaEditModifyTarget::Attribute
+                MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
                     | MetaEditModifyTarget::Column
             ) =>
@@ -11726,7 +12013,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         "allowedsign" | "allowed_sign" | "allowed-sign" | "v8:allowedsign"
             if matches!(
                 target,
-                MetaEditModifyTarget::Attribute | MetaEditModifyTarget::RegisterField
+                MetaEditModifyTarget::Attribute { .. } | MetaEditModifyTarget::RegisterField
             ) =>
         {
             Ok("v8:AllowedSign".to_string())
@@ -11734,6 +12021,112 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         _ => Err(format!("Unsupported modify property key '{trimmed}'")),
     }?;
     Ok(canonical)
+}
+
+fn meta_edit_fill_value_xml(indent: &str, raw_value: &str) -> String {
+    let value = raw_value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("nil") {
+        return format!("{indent}<FillValue xsi:nil=\"true\"/>");
+    }
+
+    let value_type = if meta_edit_is_design_time_ref(value) {
+        "xr:DesignTimeRef"
+    } else if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false") {
+        "xs:boolean"
+    } else if meta_edit_is_decimal_literal(value) {
+        "xs:decimal"
+    } else if meta_edit_is_date_time_literal(value) {
+        "xs:dateTime"
+    } else {
+        "xs:string"
+    };
+    let normalized_value = if value_type == "xs:boolean" {
+        value.to_ascii_lowercase()
+    } else {
+        value.to_string()
+    };
+    format!(
+        "{indent}<FillValue xsi:type=\"{value_type}\">{}</FillValue>",
+        escape_xml(&normalized_value)
+    )
+}
+
+fn meta_edit_is_design_time_ref(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    matches!(parts.as_slice(), ["Enum", name, "EnumValue", item] if !name.is_empty() && !item.is_empty())
+        || matches!(
+            parts.as_slice(),
+            [kind, name, "EmptyRef"]
+                if !name.is_empty()
+                    && matches!(
+                        *kind,
+                        "Catalog"
+                            | "Document"
+                            | "ExchangePlan"
+                            | "ChartOfAccounts"
+                            | "ChartOfCharacteristicTypes"
+                            | "ChartOfCalculationTypes"
+                            | "BusinessProcess"
+                            | "Task"
+                    )
+        )
+}
+
+fn meta_edit_is_decimal_literal(value: &str) -> bool {
+    let unsigned = value
+        .strip_prefix('-')
+        .or_else(|| value.strip_prefix('+'))
+        .unwrap_or(value);
+    let mut parts = unsigned.split('.');
+    let integer = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    let has_digit = !integer.is_empty() || fraction.is_some_and(|part| !part.is_empty());
+    has_digit
+        && integer.chars().all(|ch| ch.is_ascii_digit())
+        && fraction.is_none_or(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+fn meta_edit_is_date_time_literal(value: &str) -> bool {
+    if value.len() != 19 || !value.is_ascii() {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| !matches!(index, 4 | 7 | 10 | 13 | 16) && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+
+    let parse = |start: usize, end: usize| value[start..end].parse::<u32>().ok();
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        parse(0, 4),
+        parse(5, 7),
+        parse(8, 10),
+        parse(11, 13),
+        parse(14, 16),
+        parse(17, 19),
+    ) else {
+        return false;
+    };
+    if year == 0 || !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        2 if leap_year => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=max_day).contains(&day)
 }
 
 pub(crate) fn meta_edit_requested_name(

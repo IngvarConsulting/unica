@@ -3973,6 +3973,79 @@ mod tests {
     }
 
     #[test]
+    fn meta_edit_sets_enum_fill_value_through_public_tool() {
+        let root = temp_meta_compile_workspace("unica-meta-edit-enum-fill-value");
+        let workspace = root.join("workspace");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+
+        let enum_definition = fixtures.join("status-enum.json");
+        std::fs::write(
+            &enum_definition,
+            r#"{
+  "type": "Enum",
+  "name": "SampleStatus",
+  "values": ["Default"]
+}"#,
+        )
+        .unwrap();
+        let enum_compile = call_meta_compile(&workspace, &enum_definition);
+        assert!(enum_compile.ok, "{:?}", enum_compile.errors);
+
+        let catalog_definition = fixtures.join("items-catalog.json");
+        std::fs::write(
+            &catalog_definition,
+            r#"{
+  "type": "Catalog",
+  "name": "Items",
+  "attributes": [
+    { "name": "Status", "type": "EnumRef.SampleStatus" }
+  ]
+}"#,
+        )
+        .unwrap();
+        let catalog_compile = call_meta_compile(&workspace, &catalog_definition);
+        assert!(catalog_compile.ok, "{:?}", catalog_compile.errors);
+        let catalog_path = workspace.join("src/Catalogs/Items.xml");
+        let catalog_before = std::fs::read_to_string(&catalog_path).unwrap();
+        let catalog_expected = catalog_before.replacen(
+            "<FillValue xsi:nil=\"true\"/>",
+            "<FillValue xsi:type=\"xr:DesignTimeRef\">Enum.SampleStatus.EnumValue.Default</FillValue>",
+            1,
+        );
+        assert_ne!(catalog_expected, catalog_before);
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-attribute".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Status: fillValue=Enum.SampleStatus.EnumValue.Default".to_string()),
+        );
+
+        let edit = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(edit.ok, "{:?}", edit.errors);
+        let catalog_after = std::fs::read_to_string(catalog_path).unwrap();
+        assert_eq!(catalog_after, catalog_expected);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
         let root = temp_meta_compile_workspace("unica-role-compile-canonical-registration");
         let workspace = root.join("workspace");
