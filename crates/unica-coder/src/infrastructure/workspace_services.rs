@@ -280,6 +280,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                 Ok(response) => response,
                 Err(error)
                     if !retried_transport
+                        && is_retry_safe_bsl_mcp_tool(tool_name)
                         && is_retryable_workspace_service_transport_error(&error) =>
                 {
                     retried_transport = true;
@@ -435,6 +436,10 @@ impl<'a> WorkspaceServiceManager<'a> {
 
 fn service_response_is_alive(response: &ServiceResponse) -> bool {
     response.ok && !response.shutdown && response.status.as_deref() == Some("alive")
+}
+
+fn is_retry_safe_bsl_mcp_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "diagnostics" | "graph")
 }
 
 fn is_retryable_workspace_service_transport_error(error: &str) -> bool {
@@ -5603,6 +5608,36 @@ fn main() {
     }
 
     #[test]
+    fn manager_does_not_retry_unknown_bsl_tool_after_ambiguous_reset() {
+        let context = test_context("unknown-bsl-tool-no-retry");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = ResetBslConnector::default();
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        let error = manager
+            .call_bsl_mcp(
+                &context,
+                &source_root,
+                "future_mutation",
+                json!({}),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+
+        assert!(error.starts_with("failed to read workspace service response:"));
+        assert_eq!(*connector.pings.borrow(), 1);
+        assert_eq!(*connector.bsl_calls.borrow(), 1);
+        assert_eq!(*spawner.spawns.borrow(), 0);
+        cleanup(&context);
+    }
+
+    #[test]
     fn manager_does_not_retry_typed_bsl_failure() {
         let context = test_context("typed-bsl-failure-no-retry");
         let source_root = context.workspace_root.join("src");
@@ -5634,6 +5669,9 @@ fn main() {
 
     #[test]
     fn transport_retry_classifier_excludes_terminal_errors() {
+        assert!(is_retry_safe_bsl_mcp_tool("diagnostics"));
+        assert!(is_retry_safe_bsl_mcp_tool("graph"));
+        assert!(!is_retry_safe_bsl_mcp_tool("future_mutation"));
         for error in [
             "failed to connect workspace service: refused",
             "failed to set workspace service read timeout: invalid argument",

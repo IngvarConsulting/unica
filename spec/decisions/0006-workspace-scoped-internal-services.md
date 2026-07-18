@@ -88,12 +88,13 @@ Unica may start hidden internal services scoped by workspace and source root.
 16. Public and internal request lines are limited to 8 MiB. Workspace-service
     request headers have one 5-second aggregate deadline beginning at accept;
     100 ms read slices do not reset it when a peer drips bytes.
-17. A BSL MCP client request is retried at most once after a connector-level
-    connect, write, flush, read, or premature-disconnect failure. Before the
-    retry, the manager re-runs service discovery so the new request uses the
-    current port and token. Typed service failures (`ok: false`), cancellation,
+17. A read-only BSL MCP `diagnostics` or `graph` request is retried at most once
+    after a connector-level connect, write, flush, read, or
+    premature-disconnect failure. Before the retry, the manager re-runs service
+    discovery so the new request uses the current port and token. Unknown or
+    future BSL tools, typed service failures (`ok: false`), cancellation,
     deadline exhaustion, and invalid protocol responses are terminal and are
-    never retried.
+    never retried. A future mutating BSL tool must not enter the retry allowlist.
 
 ## Неграницы
 
