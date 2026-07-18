@@ -4006,6 +4006,14 @@ mod tests {
         .unwrap();
         let catalog_compile = call_meta_compile(&workspace, &catalog_definition);
         assert!(catalog_compile.ok, "{:?}", catalog_compile.errors);
+        let catalog_path = workspace.join("src/Catalogs/Items.xml");
+        let catalog_before = std::fs::read_to_string(&catalog_path).unwrap();
+        let catalog_expected = catalog_before.replacen(
+            "<FillValue xsi:nil=\"true\"/>",
+            "<FillValue xsi:type=\"xr:DesignTimeRef\">Enum.SampleStatus.EnumValue.Default</FillValue>",
+            1,
+        );
+        assert_ne!(catalog_expected, catalog_before);
 
         let mut args = Map::new();
         args.insert(
@@ -4031,11 +4039,8 @@ mod tests {
             .unwrap();
 
         assert!(edit.ok, "{:?}", edit.errors);
-        let catalog_xml =
-            std::fs::read_to_string(workspace.join("src/Catalogs/Items.xml")).unwrap();
-        assert!(catalog_xml.contains(
-            "<FillValue xsi:type=\"xr:DesignTimeRef\">Enum.SampleStatus.EnumValue.Default</FillValue>"
-        ));
+        let catalog_after = std::fs::read_to_string(catalog_path).unwrap();
+        assert_eq!(catalog_after, catalog_expected);
 
         let _ = std::fs::remove_dir_all(root);
     }

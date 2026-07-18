@@ -5005,15 +5005,28 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
         text.replace("&#13;\r\n", "\r\n").replace("&#13;\n", "\n"),
         workspace,
     )
-    return re.sub(
+    normalized = re.sub(
         r'(<\?xml\s+version="1\.0"\s+encoding=")utf-8(")',
         r"\1UTF-8\2",
         normalized,
         count=1,
     )
+    return normalized.removesuffix("\n")
 
 
 class WindowsParityNormalizationTests(unittest.TestCase):
+    def test_snapshot_ignores_one_optional_terminal_newline(self) -> None:
+        workspace = Path("/parity-workspace")
+
+        self.assertEqual(
+            normalize_snapshot_text("first\n", workspace),
+            normalize_snapshot_text("first", workspace),
+        )
+        self.assertNotEqual(
+            normalize_snapshot_text("first\n\n", workspace),
+            normalize_snapshot_text("first", workspace),
+        )
+
     def test_non_path_backslashes_remain_significant(self) -> None:
         workspace = Path("C:/parity-workspace")
 
