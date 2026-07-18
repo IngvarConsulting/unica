@@ -3350,6 +3350,7 @@ mod tests {
     use serde_json::json;
     use std::cell::RefCell;
     use std::fs;
+    use std::io::Write;
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4985,6 +4986,55 @@ source-set:
             .unwrap()
             .contains("token-secret"));
         cleanup_context(&context);
+    }
+
+    #[test]
+    #[ignore = "helper process invoked by system_process_runner_drains_large_stderr_while_running"]
+    fn system_process_runner_large_stderr_helper() {
+        let chunk = [b'e'; 64 * 1024];
+        let mut stderr = std::io::stderr().lock();
+        for _ in 0..8 {
+            stderr.write_all(&chunk).unwrap();
+        }
+        stderr.flush().unwrap();
+        print!("large-stderr-complete");
+        std::io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    fn system_process_runner_drains_large_stderr_while_running() {
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--ignored".to_string(),
+                    "--exact".to_string(),
+                    "infrastructure::internal_adapters::tests::system_process_runner_large_stderr_helper"
+                        .to_string(),
+                    "--nocapture".to_string(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+
+        assert!(
+            !output.timed_out,
+            "runner timed out after capturing {} stderr bytes",
+            output.stderr.len()
+        );
+        assert!(output.status_success, "status was {}", output.status);
+        assert!(
+            output.stdout.contains("large-stderr-complete"),
+            "{}",
+            output.stdout
+        );
+        assert!(
+            output.stderr.contains("earlier stderr diagnostics omitted"),
+            "expected bounded stderr diagnostic, got {} bytes",
+            output.stderr.len()
+        );
     }
 
     #[test]
