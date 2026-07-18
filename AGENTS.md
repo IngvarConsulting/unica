@@ -8,6 +8,9 @@ When changing Unica, resolve conflicts in this order:
 2. `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`, and `plugins/unica/third-party/tools.lock.json` are package-contract sources, not background notes.
 3. `spec/` is the active architecture layer unless it contradicts live code, tests, or package metadata.
 4. `docs/superpowers/plans/` is historical execution context. Do not treat old plan text as current requirements without checking code and tests.
+5. `docs/superpowers/investigations/` is a non-normative evidence archive. It
+   preserves research, rejected alternatives, and handoff material, but never
+   overrides code, tests, package metadata, active `spec/`, or accepted ADRs.
 
 ## Search Hygiene
 
@@ -20,6 +23,9 @@ Do not scan local ignored corpora as part of normal repo understanding:
 - `dist`
 
 Use `rg`/`git ls-files` first. For packaging questions, prefer tracked files plus generated package artifacts over raw filesystem walks.
+For archived investigations, open the nearest `README.md` first and then read
+only the documents named by its continuation map; do not recursively ingest the
+whole archive during normal repository understanding.
 
 ## Development Rules
 

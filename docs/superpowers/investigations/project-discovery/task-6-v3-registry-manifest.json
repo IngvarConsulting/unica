@@ -1,0 +1,18 @@
+{
+  "schema": "unica.task6-query-v3-registry-manifest/v1",
+  "evidencePort": {
+    "CallGraph": 4,
+    "CodeSearch": 2,
+    "Definition": 3
+  },
+  "sourceKind": {
+    "Configuration": 1
+  },
+  "sourceFormat": {
+    "PlatformXml": 1
+  },
+  "artifactKind": {
+    "Method": 6
+  },
+  "registeredFormCatalogContractVersion": 1
+}

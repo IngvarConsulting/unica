@@ -1,10 +1,10 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::DomainEvent;
-use crate::domain::source_roots::normalize_path_identity;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::managed_child::ManagedChild;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};

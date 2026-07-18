@@ -1,7 +1,4 @@
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
-#[cfg(test)]
-use crate::domain::source_roots::normalize_path_identity;
-use crate::domain::source_roots::resolve_source_root;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::managed_child::{
@@ -13,6 +10,9 @@ use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
+#[cfg(test)]
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
@@ -4400,6 +4400,7 @@ source-set:
         )
         .unwrap();
         fs::create_dir_all(context.workspace_root.join("src/cf")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("exts/TESTS")).unwrap();
         fs::write(
             context.workspace_root.join("src/cf/Configuration.xml"),
             "<MetaDataObject/>",

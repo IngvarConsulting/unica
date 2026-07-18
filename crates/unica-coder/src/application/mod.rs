@@ -1,7 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
-use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::RuntimeJobAction;
 use crate::infrastructure::native_operations::common::{
@@ -9,6 +8,7 @@ use crate::infrastructure::native_operations::common::{
     SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::{meta, template};
+use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::AdapterOutcome;
 use operation_descriptors::SupportGuardPolicy;
 use ports::{ApplicationPorts, DefaultApplicationPorts};
@@ -18,6 +18,11 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// The public MCP registration is intentionally deferred until the receipt and
+// guard slices are complete; intermediate discovery types are consumed by the
+// next implementation tasks.
+#[allow(dead_code)]
+pub(crate) mod discovery;
 mod operation_descriptors;
 mod ports;
 mod tool_contracts;
@@ -2002,6 +2007,56 @@ mod tests {
         assert!(stdout.contains(r#""name": "tests""#));
         assert!(stdout.contains(r#""sourceSelectionError""#));
         assert!(stdout.contains("sourceDir"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_rejects_unsafe_or_missing_configured_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-map-invalid-roots-{}",
+            std::process::id()
+        ));
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let cases = [
+            ("traversal", "../outside".to_string(), "path_traversal"),
+            (
+                "absolute",
+                outside.display().to_string(),
+                "absolute_source_root",
+            ),
+            ("missing", "missing".to_string(), "path_unavailable"),
+        ];
+
+        for (case, configured_path, reason_code) in cases {
+            let workspace = root.join(case);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                format!(
+                    "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {configured_path}\n"
+                ),
+            )
+            .unwrap();
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.project.map", &args)
+                .unwrap();
+
+            assert!(!result.ok, "{case} must fail closed");
+            assert!(
+                result.errors.join("\n").contains(reason_code),
+                "{case} must report {reason_code}: {:?}",
+                result.errors
+            );
+            assert!(result.stdout.is_none());
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5998,6 +6053,9 @@ mod tests {
         ));
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
+        for source_root in ["epf", "erf", "епф"] {
+            std::fs::create_dir_all(workspace.join(source_root)).unwrap();
+        }
         std::fs::write(
             workspace.join("v8project.yaml"),
             concat!(
@@ -6030,21 +6088,21 @@ mod tests {
             .unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.artifacts.len(), 2);
-        assert!(!workspace.join("epf").exists());
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("EPF").exists());
+        assert!(!workspace.join("epf/Preview.xml").exists());
 
         args.insert("OutputDir".to_string(), Value::String("ЕПФ".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("ЕПФ").exists());
+        assert!(!workspace.join("епф/Preview.xml").exists());
 
         args.insert(
             "OutputDir".to_string(),
@@ -6054,7 +6112,7 @@ mod tests {
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("source-set root"), "{error}");
-        assert!(!workspace.join("epf").exists());
+        assert!(!workspace.join("epf/nested").exists());
 
         args.insert("OutputDir".to_string(), Value::String("erf".to_string()));
         let error = UnicaApplication::new()
@@ -6062,7 +6120,7 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("source-set `reports`"), "{error}");
         assert!(error.contains("ExternalReport"), "{error}");
-        assert!(!workspace.join("erf").exists());
+        assert!(!workspace.join("erf/Preview.xml").exists());
 
         args.insert(
             "OutputDir".to_string(),
@@ -6127,12 +6185,13 @@ mod tests {
             ),
         )
         .unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
         args.insert("OutputDir".to_string(), Value::String("SRC".to_string()));
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
         assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("SRC").exists());
+        assert!(!workspace.join("src/Preview.xml").exists());
 
         std::fs::write(
             workspace.join("v8project.yaml"),

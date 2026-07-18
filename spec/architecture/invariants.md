@@ -58,6 +58,58 @@ Unica. Если изменение нарушает инвариант, снач
 4. Native platform XML metadata operations must select a platform XML source-set
    before editing XML files.
 
+## Project Discovery
+
+1. `DiscoverExtensionPointsUseCase` owns discovery orchestration through six
+   typed evidence ports; it must not parse display output, read adapter storage,
+   or silently replace an unavailable provider with an unbounded scan.
+2. Related artifacts, runtime flow edges, and actionable extension-point
+   candidates are separate result domains. Lexical evidence alone is never
+   actionable.
+3. A negative proposal verdict requires complete, fresh evidence. Bounded,
+   stale, unavailable, unsupported, or conflicting evidence produces
+   `unknown`, never a fabricated contradiction.
+4. Every conclusion keeps canonical identity, location, provider provenance,
+   coverage, freshness, source fingerprint, and material checks. Stable output
+   has no scalar confidence or domain-specific synonym dictionary.
+5. `workspaceEpoch` is diagnostic-only. Receipt validity uses content
+   fingerprints for every linked analysis and destination source-set and their
+   composite.
+
+## Discovery Receipts And Guard
+
+1. A discovery receipt is server-owned investigation evidence, not user
+   authorization; `dryRun: false` remains an independent requirement.
+2. Receipt scope consists of atomic grants. Each grant binds the tool, exact
+   target, mutation class, change kind, normalized output-affecting parameters,
+   destination source-set, and exact allowed artifacts without cross-product
+   expansion.
+3. When an enforceable applied mutation presents a valid receipt, its exclusive
+   receipt lease is acquired before the handler and remains held as a lease
+   through handler execution, effect verification, and atomic receipt
+   advancement or revocation. An observe/warn call allowed without a receipt
+   has no receipt transition.
+4. Dry-run never acquires or advances a receipt. Failed or out-of-scope writes
+   cannot advance a receipt as if the planned mutation succeeded.
+5. Discovery requirement and rollout mode are independent. Mode is server or
+   workspace configuration; no mutation call can supply a bypass argument.
+6. Support policy is evaluated before discovery policy, and dry-run remains
+   available in every guard mode.
+
+## Shadow Observations
+
+1. A non-authoritative shadow observation is written only after the operation
+   outcome is known. Journal failure cannot change the handler outcome, receipt
+   decision, or configured rollout mode.
+2. The store is an OS-locked, schema-versioned JSONL journal with bounded
+   rollover, aggregate counters, and deterministic replay inputs.
+3. Observation and replay records contain digests and policy predicates but
+   must never contain task text or source text, raw mutation arguments,
+   absolute paths, or unhashed artifact names.
+4. Corrupt and unknown-schema records are reported and excluded rather than
+   silently rewritten. Audit/replay is maintainer-only and is not a public MCP
+   tool.
+
 ## Packaging
 
 1. Generated binaries are not committed.

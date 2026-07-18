@@ -1,8 +1,9 @@
 use super::operation_descriptors::native_operation_descriptor;
 use super::{ToolHandler, ToolSpec};
-use crate::domain::project_sources::{discover_project_source_map, SourceFormat, SourceSetKind};
+use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
+use crate::infrastructure::project_sources::discover_project_source_map;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};

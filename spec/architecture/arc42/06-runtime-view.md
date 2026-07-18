@@ -48,16 +48,92 @@
 ## Applied Mutation
 
 1. Caller explicitly passes `dryRun: false`.
-2. Native MCP handler executes the operation.
-3. Successful mutation emits domain events.
-4. `WorkspaceStateRepository` marks affected caches stale and records eager
-   refreshes.
-5. Result returns `{ ok, summary, changes, warnings, errors, artifacts, cache }`.
+2. Application validates arguments, workspace/source-set/path containment, and
+   support policy.
+3. For a discovery-sensitive descriptor, application resolves exact targets and
+   evaluates the configured discovery guard mode.
+4. An allowed enforceable call with a valid receipt obtains an exclusive receipt
+   lease before invoking the native handler. An `observe` or `warn` call allowed
+   without a receipt has no receipt transition.
+5. Application performs handler invocation. When a lease exists, the native MCP
+   handler executes while it remains held.
+6. Application captures typed mutation effects.
+7. Application captures the post-mutation source snapshot.
+8. It uses both to advance or revoke the presented receipt while the same
+   exclusive receipt lease remains held.
+9. Application must release the current receipt lease before touching any other
+   receipt lock.
+10. Successful mutation proceeds with domain event emission.
+11. `WorkspaceStateRepository` performs cache invalidation and updates the cache
+    report.
+12. Application performs other-receipt reconciliation in deterministic
+    receipt-id order.
+13. Affected live analyzers receive workspace-service invalidation.
+14. After the outcome is known, a non-authoritative shadow observation is
+    appended. Recording failure adds operator diagnostics but never changes the
+    handler or receipt decision.
+15. The final result construction returns `{ ok, summary, changes, warnings,
+    errors, artifacts, cache, discoveryGuard }`.
+
+Steps 8 and 9 have no receipt transition when `observe` or `warn` permits an
+applied call without a receipt. Receipt advancement/revocation cannot be moved
+after domain events or cache effects, and other-receipt reconciliation cannot be
+moved before the current lease is released.
 
 ## Read Operation
 
 Read tools do not emit mutation events by default. They may inspect current cache
 state and, in future slices, trigger lazy refresh if a required cache is stale.
+
+## Project Discovery Explore
+
+1. MCP validates the strict `unica.project.discover` request in `explore` mode
+   and resolves the requested analysis source-set.
+2. A bounded source-format-aware snapshot produces content fingerprints;
+   `workspaceEpoch` remains diagnostic-only.
+3. `DiscoverExtensionPointsUseCase` invokes six typed evidence ports, retaining
+   coverage, provenance, freshness, stable failure codes, and conflicts.
+4. The use case builds a deterministic evidence graph and separates related
+   artifacts, connected flows, and actionable candidates.
+5. The response reports `complete`, `partial`, or `insufficient`. Explore never
+   creates a receipt.
+
+## Project Discovery Validate
+
+1. Validate repeats discovery against the current content snapshot rather than
+   trusting an earlier explore response.
+2. Each explicit proposal becomes `supported`, `contradicted`, or `unknown`.
+   Missing positive evidence is contradictory only under complete fresh
+   coverage.
+3. Receipt eligibility is evaluated per selected proposal and its material
+   checks; unrelated optional degradation can keep a report useful.
+4. Fully supported unambiguous typed mutation intents produce server-owned
+   atomic grants and a rolling receipt bound to the content-based composite
+   fingerprint.
+
+## Receipt Failure Paths
+
+- Dry-run reports the guard decision but acquires no lease and advances no
+  receipt.
+- A failed handler with an unchanged manifest leaves the revision unchanged.
+- Partial writes or an out-of-scope effect revoke the receipt.
+- A competing caller receives `receipt_busy` or `stale_receipt_revision` before
+  its handler runs.
+- Other receipts linked to changed source-sets are reconciled only after the
+  current lease is released.
+
+## Shadow Observation And Replay
+
+1. Once handler outcome and receipt transition are known, guard evaluation
+   builds a sanitized observation from stable names, reason codes, counters,
+   revisions, policy predicates, and digests.
+2. The workspace-keyed store appends it to an OS-locked,
+   schema-versioned JSONL journal and updates bounded aggregate counters.
+3. The journal is non-authoritative; I/O failure cannot alter the operation,
+   receipt, or rollout mode.
+4. Maintainer-only audit validates schemas and counters. Deterministic replay
+   evaluates stored policy predicates. Journal and replay records must never
+   contain task text or source text.
 
 ## Workspace Analyzer Service
 

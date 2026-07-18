@@ -1,11 +1,11 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::source_roots::{normalize_path_identity, resolve_source_root};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::managed_child::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1224,6 +1224,7 @@ source-set:
         )
         .unwrap();
         fs::create_dir_all(context.workspace_root.join("src/cf")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("exts/TESTS")).unwrap();
         fs::write(
             context.workspace_root.join("src/cf/Configuration.xml"),
             "<MetaDataObject/>",

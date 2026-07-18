@@ -185,6 +185,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
     def test_external_init_creates_epf_and_erf_fixture_scenarios(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            (tmp_path / "epf").mkdir()
+            (tmp_path / "erf").mkdir()
             (tmp_path / "v8project.yaml").write_text(
                 "format: DESIGNER\n"
                 "source-set:\n"
