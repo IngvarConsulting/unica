@@ -1,5 +1,5 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::source_roots::resolve_source_root;
+use crate::domain::source_roots::{normalize_path_identity, resolve_source_root};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::managed_child::{
@@ -1094,11 +1094,9 @@ fn ready_status_preserving_last_run(
     db_path: &Path,
 ) -> BslIndexStatus {
     let mut status = BslIndexStatus::ready(source_root, db_path);
-    let source_root_display = source_root.display().to_string();
-    let db_path_display = db_path.display().to_string();
     status.last_run = read_bsl_index_status(context).and_then(|existing| {
-        let same_index = existing.source_root.as_deref() == Some(source_root_display.as_str())
-            && existing.db_path.as_deref() == Some(db_path_display.as_str());
+        let same_index = stored_path_matches(existing.source_root.as_deref(), source_root)
+            && stored_path_matches(existing.db_path.as_deref(), db_path);
         if same_index {
             existing.last_run
         } else {
@@ -1106,6 +1104,19 @@ fn ready_status_preserving_last_run(
         }
     });
     status
+}
+
+fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    match (
+        normalize_path_identity(Path::new(stored)),
+        normalize_path_identity(current),
+    ) {
+        (Ok(stored), Ok(current)) => stored == current,
+        _ => false,
+    }
 }
 
 fn write_status_path(path: &Path, status: BslIndexStatus) -> Result<(), String> {
@@ -1225,7 +1236,7 @@ source-set:
 
         assert_eq!(
             PathBuf::from(&runner.commands.borrow()[0].args[2]),
-            context.workspace_root.join("src").join("cf")
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
         );
         cleanup(&context);
     }
@@ -1454,6 +1465,20 @@ source-set:
         assert_eq!(metrics.action, "build");
         assert_eq!(metrics.duration_ms, 1234);
         assert_eq!(metrics.index_version.as_deref(), Some("v14"));
+        cleanup(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_normalization_failures_do_not_match_index_identity() {
+        use std::os::unix::fs::symlink;
+
+        let context = test_context("invalid-path-identity");
+        let dangling = context.workspace_root.join("dangling");
+        symlink(context.workspace_root.join("missing"), &dangling).unwrap();
+        let dangling_text = dangling.display().to_string();
+
+        assert!(!stored_path_matches(Some(&dangling_text), &dangling));
         cleanup(&context);
     }
 

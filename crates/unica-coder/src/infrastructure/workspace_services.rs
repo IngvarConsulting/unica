@@ -2891,46 +2891,51 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
+    struct BlockingWorkspaceState {
+        started: Vec<String>,
+        cancelled: Vec<String>,
+        release_cancelled: bool,
+    }
+
+    #[derive(Default)]
     struct BlockingWorkspaceExecutor {
-        started: Mutex<Vec<String>>,
-        cancelled: Mutex<Vec<String>>,
-        release_cancelled: Mutex<bool>,
+        state: Mutex<BlockingWorkspaceState>,
         wake: std::sync::Condvar,
     }
 
     impl BlockingWorkspaceExecutor {
         fn wait_started(&self, expected: usize) {
             let deadline = Instant::now() + Duration::from_secs(2);
-            let mut started = self.started.lock().unwrap();
-            while started.len() < expected {
+            let mut state = self.state.lock().unwrap();
+            while state.started.len() < expected {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 assert!(
                     !remaining.is_zero(),
                     "work did not start before test deadline"
                 );
-                let (next, timeout) = self.wake.wait_timeout(started, remaining).unwrap();
-                started = next;
-                assert!(!timeout.timed_out() || started.len() >= expected);
+                let (next, timeout) = self.wake.wait_timeout(state, remaining).unwrap();
+                state = next;
+                assert!(!timeout.timed_out() || state.started.len() >= expected);
             }
         }
 
         fn wait_cancelled(&self, expected: usize) {
             let deadline = Instant::now() + Duration::from_secs(2);
-            let mut cancelled = self.cancelled.lock().unwrap();
-            while cancelled.len() < expected {
+            let mut state = self.state.lock().unwrap();
+            while state.cancelled.len() < expected {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 assert!(
                     !remaining.is_zero(),
                     "operation was not cancelled before test deadline"
                 );
-                let (next, timeout) = self.wake.wait_timeout(cancelled, remaining).unwrap();
-                cancelled = next;
-                assert!(!timeout.timed_out() || cancelled.len() >= expected);
+                let (next, timeout) = self.wake.wait_timeout(state, remaining).unwrap();
+                state = next;
+                assert!(!timeout.timed_out() || state.cancelled.len() >= expected);
             }
         }
 
         fn release_cancelled(&self) {
-            *self.release_cancelled.lock().unwrap() = true;
+            self.state.lock().unwrap().release_cancelled = true;
             self.wake.notify_all();
         }
     }
@@ -2947,8 +2952,8 @@ mod tests {
                 panic!("intentional workspace worker panic");
             }
             {
-                let mut started = self.started.lock().unwrap();
-                started.push(operation_id.clone());
+                let mut state = self.state.lock().unwrap();
+                state.started.push(operation_id.clone());
                 self.wake.notify_all();
             }
             if operation_id.starts_with("success") {
@@ -2963,12 +2968,12 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
             if cancellation.is_cancelled() {
-                self.cancelled.lock().unwrap().push(operation_id.clone());
+                let mut state = self.state.lock().unwrap();
+                state.cancelled.push(operation_id.clone());
                 self.wake.notify_all();
                 if operation_id.starts_with("held-after-cancel") {
-                    let mut released = self.release_cancelled.lock().unwrap();
-                    while !*released {
-                        released = self.wake.wait(released).unwrap();
+                    while !state.release_cancelled {
+                        state = self.wake.wait(state).unwrap();
                     }
                 }
                 ServiceResponse::error(cancelled_error("workspace operation stopped"))
@@ -3396,7 +3401,7 @@ mod tests {
         drop(disconnected);
         executor.wait_cancelled(1);
         assert_eq!(
-            executor.cancelled.lock().unwrap().as_slice(),
+            executor.state.lock().unwrap().cancelled.as_slice(),
             &["blocked-disconnected".to_string()]
         );
 

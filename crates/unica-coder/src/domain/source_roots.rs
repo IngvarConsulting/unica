@@ -62,9 +62,40 @@ pub fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
             .map_err(|err| format!("failed to determine current directory: {err}"))?
             .join(path)
     };
-    let normalized = normalize_lexically(&strip_windows_extended_length_prefix(&absolute));
-    let canonical = fs::canonicalize(&normalized).unwrap_or(normalized);
+    let prepared = strip_windows_extended_length_prefix(&absolute);
+    let canonical = canonicalize_existing_ancestor(&prepared)?;
     Ok(strip_windows_extended_length_prefix(&canonical))
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let canonical = fs::canonicalize(ancestor).map_err(|err| {
+                    format!(
+                        "failed to resolve existing path ancestor {}: {err}",
+                        ancestor.display()
+                    )
+                })?;
+                let remainder = path.strip_prefix(ancestor).map_err(|err| {
+                    format!(
+                        "failed to preserve path suffix for {}: {err}",
+                        path.display()
+                    )
+                })?;
+                return Ok(normalize_lexically(&canonical.join(remainder)));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect path ancestor {}: {error}",
+                    ancestor.display()
+                ));
+            }
+        }
+    }
+
+    Ok(normalize_lexically(path))
 }
 
 #[cfg(windows)]
@@ -172,9 +203,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
-    use super::normalize_path_identity;
-    use super::resolve_source_root;
+    use super::{normalize_path_identity, resolve_source_root};
     use crate::domain::workspace::WorkspaceContext;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -186,7 +215,10 @@ mod tests {
         let selected = resolve_source_root(&context, Some("src/cf")).unwrap();
 
         assert_eq!(selected.source_set.as_deref(), Some("main"));
-        assert_eq!(selected.path, context.workspace_root.join("src/cf"));
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -199,7 +231,10 @@ mod tests {
         let selected = resolve_source_root(&context, None).unwrap();
 
         assert_eq!(selected.source_set.as_deref(), Some("main"));
-        assert_eq!(selected.path, context.workspace_root.join("src/cf"));
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -214,7 +249,7 @@ mod tests {
         assert_eq!(selected.source_set.as_deref(), Some("main"));
         assert_eq!(
             selected.path,
-            context.workspace_root.join("extensions/main")
+            normalize_path_identity(&context.workspace_root.join("extensions/main")).unwrap()
         );
         cleanup(&context);
     }
@@ -228,7 +263,10 @@ mod tests {
         let selected = resolve_source_root(&context, None).unwrap();
 
         assert_eq!(selected.source_set.as_deref(), Some("app"));
-        assert_eq!(selected.path, context.workspace_root.join("app"));
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("app")).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -255,6 +293,57 @@ mod tests {
         assert!(error.starts_with("invalid_source_root:"));
         assert!(error.contains("workspace"));
         cleanup(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nonexistent_source_dir_through_symlink_outside_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let context = fixture(&[("main", "CONFIGURATION", "src/cf")]);
+        let outside = temp_workspace("unica-source-roots-outside");
+        symlink(&outside, context.workspace_root.join("external")).unwrap();
+
+        let escaped = fs::canonicalize(&context.workspace_root)
+            .unwrap()
+            .join("external/new-source");
+        let error = resolve_source_root(&context, escaped.to_str()).unwrap_err();
+
+        assert!(error.starts_with("invalid_source_root:"));
+        assert!(error.contains("workspace"));
+        cleanup(&context);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_parent_traversal_after_symlink_outside_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let context = fixture(&[("main", "CONFIGURATION", "src/cf")]);
+        let outside = temp_workspace("unica-source-roots-parent-outside");
+        symlink(&outside, context.workspace_root.join("external")).unwrap();
+        let escaped = fs::canonicalize(&context.workspace_root)
+            .unwrap()
+            .join("external/../escaped-new");
+
+        let error = resolve_source_root(&context, escaped.to_str()).unwrap_err();
+
+        assert!(error.starts_with("invalid_source_root:"));
+        assert!(error.contains("workspace"));
+        cleanup(&context);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn nonexistent_path_uses_canonical_identity_of_existing_parent() {
+        let root = temp_workspace("unica-source-roots-nonexistent");
+        let expected = fs::canonicalize(&root).unwrap().join("new/source");
+
+        let actual = normalize_path_identity(&root.join("new/source")).unwrap();
+
+        assert_eq!(actual, expected);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

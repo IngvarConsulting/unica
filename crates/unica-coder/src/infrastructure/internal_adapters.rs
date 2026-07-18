@@ -1,4 +1,6 @@
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+#[cfg(test)]
+use crate::domain::source_roots::normalize_path_identity;
 use crate::domain::source_roots::resolve_source_root;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -4406,7 +4408,10 @@ source-set:
 
         let selected = resolve_source_dir(&context, &Map::new()).unwrap();
 
-        assert_eq!(selected, context.workspace_root.join("src/cf"));
+        assert_eq!(
+            selected,
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
+        );
         cleanup_context(&context);
     }
 
@@ -4471,9 +4476,12 @@ source-set:
         assert_eq!(commands[0].tool_args["max_nodes"], 25);
         assert!(commands[0].args.contains(&"mcp".to_string()));
         assert!(commands[0].args.contains(&"stdio".to_string()));
-        assert!(commands[0]
-            .args
-            .contains(&context.cwd.display().to_string()));
+        assert!(commands[0].args.contains(
+            &normalize_path_identity(&context.cwd)
+                .unwrap()
+                .display()
+                .to_string()
+        ));
         cleanup_context(&context);
     }
 
