@@ -88,6 +88,28 @@ Unica may start hidden internal services scoped by workspace and source root.
 16. Public and internal request lines are limited to 8 MiB. Workspace-service
     request headers have one 5-second aggregate deadline beginning at accept;
     100 ms read slices do not reset it when a peer drips bytes.
+17. A read-only BSL MCP `diagnostics` or `graph` request is retried at most once
+    after a connector-level connect, write, flush, read, or
+    premature-disconnect failure. Before the retry, the manager re-runs service
+    discovery so the new request uses the current port and token. Unknown or
+    future BSL tools, typed service failures (`ok: false`), cancellation,
+    deadline exhaustion, and invalid protocol responses are terminal and are
+    never retried. Both attempts, including repeated discovery, share the one
+    120-second overall budget from item 15; the retried analyzer request receives
+    only the remaining timeout. If repeated discovery spawns a service but its
+    readiness handshake fails, the startup child is terminated and reaped before
+    releasing the spawn lock; its record is removed only when PID and token still
+    identify that child. Service discovery is serialized by a persistent
+    OS-advisory spawn lock, which the OS releases on process death. While a peer
+    owns that lock, callers do not reuse even a live published record; they wait
+    within the shared request deadline, then reacquire the lock and revalidate the
+    record. This prevents analyzer or RLM work from escaping startup cleanup before
+    the spawning client completes its handshake. The readiness check accepts only
+    the child PID and token created by that spawner. During the handshake, the
+    spawner also contains the startup process in a process group on Unix or a Job
+    Object on Windows. Failed readiness terminates and reaps it; successful
+    readiness explicitly detaches it before releasing the lock. A future mutating
+    BSL tool must not enter the retry allowlist.
 
 ## Неграницы
 

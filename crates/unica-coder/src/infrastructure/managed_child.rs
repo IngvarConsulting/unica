@@ -43,6 +43,14 @@ pub struct ManagedChild {
     cancellation: CancellationToken,
 }
 
+/// Owns a freshly spawned long-lived process tree until its readiness handshake
+/// succeeds. Dropping this guard terminates the tree; `detach` is the only path
+/// that intentionally leaves the process running.
+pub(crate) struct ManagedStartupChild {
+    child: Option<Child>,
+    process_tree: ProcessTree,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildState {
     Running,
@@ -237,6 +245,103 @@ impl Drop for ManagedChild {
     }
 }
 
+impl ManagedStartupChild {
+    pub(crate) fn spawn_configured(mut process: Command) -> Result<Self, String> {
+        let process_tree = ProcessTree::prepare_detachable(&mut process).map_err(process_error)?;
+        let child = process.spawn().map_err(process_error)?;
+        let mut managed = Self {
+            child: Some(child),
+            process_tree,
+        };
+        if let Err(error) = managed
+            .process_tree
+            .attach(managed.child.as_ref().expect("startup child exists"))
+        {
+            let cleanup = managed.terminate_bounded(TERMINATION_WAIT_LIMIT);
+            return match cleanup {
+                Ok(()) => Err(process_error(error)),
+                Err(cleanup_error) => Err(format!("{}; {cleanup_error}", process_error(error))),
+            };
+        }
+        Ok(managed)
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.child.as_ref().expect("startup child exists").id()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_running(&mut self) -> Result<bool, String> {
+        self.child
+            .as_mut()
+            .expect("startup child exists")
+            .try_wait()
+            .map(|status| status.is_none())
+            .map_err(process_error)
+    }
+
+    pub(crate) fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        if child.try_wait().map_err(process_error)?.is_some() {
+            self.process_tree.cleanup_after_leader_exit(child);
+            self.child.take();
+            return Ok(());
+        }
+
+        let tree_error = self.process_tree.terminate(child).err();
+        // Also target the leader directly. This is required when Windows Job Object
+        // attachment itself failed, and is harmless after a successful tree kill.
+        let child_error = child.kill().err();
+        let started = Instant::now();
+        while started.elapsed() < wait_limit {
+            let child = self.child.as_mut().expect("startup child exists");
+            if child.try_wait().map_err(process_error)?.is_some() {
+                self.process_tree.cleanup_after_leader_exit(child);
+                self.child.take();
+                return Ok(());
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+
+        let pid = self.id();
+        let errors = [tree_error, child_error]
+            .into_iter()
+            .flatten()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Err(format!(
+                "process tree rooted at {pid} did not exit within {} ms",
+                wait_limit.as_millis()
+            ))
+        } else {
+            Err(format!(
+                "failed to terminate process tree rooted at {pid}: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    pub(crate) fn detach(&mut self) -> Result<(), String> {
+        let child = self.child.as_mut().expect("startup child exists");
+        if child.try_wait().map_err(process_error)?.is_some() {
+            self.process_tree.cleanup_after_leader_exit(child);
+            return Err("process_failed: startup process exited before detach".to_string());
+        }
+        self.process_tree.detach().map_err(process_error)?;
+        self.child.take();
+        Ok(())
+    }
+}
+
+impl Drop for ManagedStartupChild {
+    fn drop(&mut self) {
+        let _ = self.terminate_bounded(TERMINATION_WAIT_LIMIT);
+    }
+}
+
 #[cfg(unix)]
 struct ProcessTree {
     process_group: Option<i32>,
@@ -261,6 +366,10 @@ impl ProcessTree {
             process_group: None,
             kill_sent: false,
         })
+    }
+
+    fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
+        Self::prepare(command)
     }
 
     fn attach(&mut self, child: &Child) -> io::Result<()> {
@@ -310,6 +419,11 @@ impl ProcessTree {
             thread::sleep(PROCESS_POLL_INTERVAL);
         }
     }
+
+    fn detach(&mut self) -> io::Result<()> {
+        self.process_group = None;
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -328,6 +442,14 @@ unsafe impl Sync for ProcessTree {}
 #[cfg(windows)]
 impl ProcessTree {
     fn prepare(command: &mut Command) -> io::Result<Self> {
+        Self::prepare_with_policy(command, true)
+    }
+
+    fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
+        Self::prepare_with_policy(command, false)
+    }
+
+    fn prepare_with_policy(command: &mut Command, kill_on_close: bool) -> io::Result<Self> {
         use std::mem::{size_of, zeroed};
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::JobObjects::{
@@ -344,25 +466,27 @@ impl ProcessTree {
             return Err(io::Error::last_os_error());
         }
 
-        // SAFETY: this Windows POD structure is valid when zero-initialized.
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        // SAFETY: `limits` points to the structure and size required by the information class.
-        let configured = unsafe {
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const _,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        if configured == 0 {
-            let error = io::Error::last_os_error();
-            // SAFETY: `job` is a live handle created above and is not used after closing.
-            unsafe {
-                windows_sys::Win32::Foundation::CloseHandle(job);
+        if kill_on_close {
+            // SAFETY: this Windows POD structure is valid when zero-initialized.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `limits` points to the structure and size required by the information class.
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const _,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if configured == 0 {
+                let error = io::Error::last_os_error();
+                // SAFETY: `job` is a live handle created above and is not used after closing.
+                unsafe {
+                    windows_sys::Win32::Foundation::CloseHandle(job);
+                }
+                return Err(error);
             }
-            return Err(error);
         }
 
         Ok(Self { job })
@@ -403,6 +527,20 @@ impl ProcessTree {
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let _ = self.terminate(child);
+    }
+
+    fn detach(&mut self) -> io::Result<()> {
+        if self.job.is_null() {
+            return Ok(());
+        }
+        // The detachable startup Job Object has no KILL_ON_JOB_CLOSE policy. Closing
+        // its last handle releases ownership without terminating the ready service.
+        // SAFETY: `self.job` is owned here and nulled only after a successful close.
+        if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.job = std::ptr::null_mut();
+        Ok(())
     }
 }
 
@@ -470,6 +608,9 @@ fn open_primary_thread(process_id: u32) -> io::Result<ScopedWindowsHandle> {
 #[cfg(windows)]
 impl Drop for ProcessTree {
     fn drop(&mut self) {
+        if self.job.is_null() {
+            return;
+        }
         // SAFETY: `self.job` is owned by this value and closed exactly once here.
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.job);
@@ -486,6 +627,10 @@ impl ProcessTree {
         Ok(Self)
     }
 
+    fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
     fn attach(&mut self, _child: &Child) -> io::Result<()> {
         Ok(())
     }
@@ -496,6 +641,10 @@ impl ProcessTree {
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let _ = self.terminate(child);
+    }
+
+    fn detach(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -607,7 +756,7 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 mod tests {
     #[cfg(windows)]
     use super::ProcessTree;
-    use super::{ChildState, ManagedChild, ManagedCommand, ManagedOutput};
+    use super::{ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild};
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
     use std::io::Read;
@@ -1139,6 +1288,63 @@ mod tests {
         assert!(wait_until_dead(parent_pid, Duration::from_secs(2)));
         assert!(wait_until_dead(child_pid, Duration::from_secs(2)));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn startup_child_cleanup_kills_descendants() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "unica-startup-child-pids-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "process_tree_immediate_parent")
+            .env(HELPER_PID_FILE_ENV, &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(pids.clone());
+
+        startup.terminate_bounded(Duration::from_secs(2)).unwrap();
+
+        assert!(wait_until_dead(pids[0], Duration::from_secs(2)));
+        assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn startup_child_detach_leaves_process_running() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "sleep")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        let pid = startup.id();
+        let _cleanup = ProcessCleanupGuard(vec![pid]);
+
+        startup.detach().unwrap();
+
+        thread::sleep(Duration::from_millis(75));
+        assert!(process_test_support::is_alive(pid));
     }
 
     #[test]
