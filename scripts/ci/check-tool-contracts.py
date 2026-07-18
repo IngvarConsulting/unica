@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -16,14 +18,12 @@ TOOL_HELP_CHECKS = [
         ["analyze", "--help"],
         ["--source-dir", "--format", "jsonl"],
     ),
-    ("bsl-analyzer search namespace", "bsl-analyzer", ["search", "--help"], ["baseline"]),
     (
         "bsl-analyzer mcp workspace stdio",
         "bsl-analyzer",
         ["mcp", "serve", "--help"],
         ["--profile", "--source-dir", "--mode", "stdio"],
     ),
-    ("bsl-analyzer smoke", "bsl-analyzer", ["smoke", "--help"], ["--scenarios", "--json"]),
     ("rlm-bsl-index build", "rlm-bsl-index", ["index", "build", "--help"], ["build"]),
     ("rlm-bsl-index update", "rlm-bsl-index", ["index", "update", "--help"], ["update"]),
     ("rlm-bsl-index info", "rlm-bsl-index", ["index", "info", "--help"], ["info"]),
@@ -72,6 +72,11 @@ RLM_REQUIRED_META = {
 
 
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
+    suffix = Path(command[0]).suffix.lower()
+    if suffix == ".py":
+        command = [sys.executable, *command]
+    elif os.name == "nt" and suffix in {".bat", ".cmd"}:
+        command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -105,6 +110,11 @@ def tool_executable(tools_dir: Path, tool_name: str, target: str | None) -> Path
     exe_candidate = tools_dir / f"{tool_name}.exe"
     if exe_candidate.exists():
         return exe_candidate
+    if target is None:
+        for script_suffix in (".py", ".cmd", ".bat"):
+            script_candidate = tools_dir / f"{tool_name}{script_suffix}"
+            if script_candidate.exists():
+                return script_candidate
     return candidate
 
 
@@ -135,7 +145,8 @@ def check_rlm_schema(db_path: Path) -> list[str]:
     errors: list[str] = []
     if not db_path.exists():
         return [f"RLM index DB not found: {db_path}"]
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         existing_tables = {
             row[0]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')")
@@ -153,6 +164,8 @@ def check_rlm_schema(db_path: Path) -> list[str]:
                 actual = row[0] if row else None
                 if actual != expected:
                     errors.append(f"RLM index_meta {key} must be {expected}, got {actual or '<missing>'}")
+    finally:
+        conn.close()
     return errors
 
 

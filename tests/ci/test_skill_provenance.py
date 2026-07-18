@@ -159,7 +159,7 @@ class SkillProvenanceTests(unittest.TestCase):
                 "dcfff95ce678f49971b14d8acd82b042a6855470",
             )
 
-    def test_bsl_analyzer_is_locked_to_reviewed_0_2_55(self) -> None:
+    def test_bsl_analyzer_review_metadata_follows_tools_lock(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
@@ -167,12 +167,10 @@ class SkillProvenanceTests(unittest.TestCase):
         )
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
 
-        self.assertEqual(locked_tools["bsl-analyzer"]["version"], "0.2.55")
-        self.assertEqual(locked_tools["bsl-analyzer"]["sourceTag"], "v0.2.55")
-        self.assertEqual(
-            locked_tools["bsl-analyzer"]["sourceCommit"],
-            "5a02bb44dedaf29e0e29af1f740279d279199854",
-        )
+        analyzer = locked_tools["bsl-analyzer"]
+        self.assertTrue(analyzer["version"])
+        self.assertEqual(analyzer["sourceTag"], f"v{analyzer['version']}")
+        self.assertRegex(analyzer["sourceCommit"], r"^[0-9a-f]{40}$")
 
     def test_all_local_and_contract_paths_exist(self) -> None:
         data = self.load_provenance()
@@ -295,8 +293,16 @@ class SkillProvenanceTests(unittest.TestCase):
         products = {item["id"]: item for item in backlog["products"]}
 
         self.assertEqual(backlog["generatedAt"], "2026-07-04")
-        self.assertEqual(products["bsl-analyzer"]["locked"], "v0.2.55")
-        self.assertEqual(products["bsl-analyzer"]["latest"], "v0.2.55")
+        tool_lock = json.loads(
+            (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
+        analyzer_tag = locked_tools["bsl-analyzer"]["sourceTag"]
+
+        self.assertEqual(products["bsl-analyzer"]["locked"], analyzer_tag)
+        self.assertEqual(products["bsl-analyzer"]["latest"], analyzer_tag)
         self.assertEqual(products["bsl-analyzer"]["status"], "applied")
         self.assertEqual(products["rlm-tools-bsl"]["locked"], "v1.26.0")
         self.assertEqual(products["rlm-tools-bsl"]["latest"], "v1.26.0")

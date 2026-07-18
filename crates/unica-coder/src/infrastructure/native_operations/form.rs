@@ -9606,8 +9606,9 @@ mod tests {
         const ELEMENTS_START: &str = "### Элементы (ключ определяет тип)\n\n";
         const START: &str = "<!-- form-event-registry:start -->";
         const END: &str = "<!-- form-event-registry:end -->";
+        let skill = SKILL.replace("\r\n", "\n");
 
-        let element_table = SKILL
+        let element_table = skill
             .split_once(ELEMENTS_START)
             .and_then(|(_, tail)| tail.split_once("\n\n### ").map(|(table, _)| table))
             .expect("form-compile element table must remain present for contract checks");
@@ -9625,7 +9626,7 @@ mod tests {
             );
         }
 
-        let section = SKILL
+        let section = skill
             .split_once(START)
             .and_then(|(_, tail)| tail.split_once(END).map(|(section, _)| section))
             .expect("form-compile event table must be delimited for contract checks");

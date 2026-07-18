@@ -6,6 +6,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -54,6 +55,15 @@ def parse_fenced_json_blocks(markdown: str) -> tuple[list[str], int]:
 
 
 class ProductContractTests(unittest.TestCase):
+    BSL_ANALYZER_HELP = (
+        "#!/usr/bin/env sh\n"
+        "case \"$*\" in\n"
+        "  'analyze --help') printf '%s\\n' '--source-dir --format jsonl' ;;\n"
+        "  'mcp serve --help') printf '%s\\n' '--profile --source-dir --mode stdio' ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+
     def test_json_fence_parser_rejects_malformed_and_unclosed_fences(self) -> None:
         blocks, opener_count = parse_fenced_json_blocks("before\n```json\n{}\n```\nafter")
         self.assertEqual(blocks, ["{}"])
@@ -713,8 +723,38 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
-        path = tools_dir / name
-        path.write_text(body, encoding="utf-8")
+        commands = {
+            "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],
+            "rlm-bsl-index": [
+                ("index", "build", "--help"),
+                ("index", "update", "--help"),
+                ("index", "info", "--help"),
+            ],
+            "rlm-tools-bsl": [("--help",)],
+            "v8-runner": [("--version",), ("build", "--help")],
+        }[name]
+        routed_outputs = {
+            tuple(route.split()): output
+            for route, output in re.findall(
+                r"'([^']+)'\) printf '%s\\n' '([^']*)'",
+                body,
+            )
+        }
+        fallback_outputs = re.findall(r"printf '%s\\n' '([^']*)'", body)
+        fallback = fallback_outputs[0] if fallback_outputs else ""
+        routes = {" ".join(command): routed_outputs.get(command, fallback) for command in commands}
+        path = tools_dir / f"{name}.py"
+        path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import sys\n"
+            f"ROUTES = json.loads({json.dumps(json.dumps(routes))})\n"
+            "key = ' '.join(sys.argv[1:])\n"
+            "if key not in ROUTES:\n"
+            "    raise SystemExit(1)\n"
+            "print(ROUTES[key])\n",
+            encoding="utf-8",
+        )
         path.chmod(path.stat().st_mode | 0o755)
 
     def test_tool_help_contracts_pass_with_expected_cli_surface(self) -> None:
@@ -725,9 +765,7 @@ class ProductContractTests(unittest.TestCase):
             self.write_executable(
                 tools_dir,
                 "bsl-analyzer",
-                "#!/usr/bin/env sh\n"
-                "printf '%s\\n' '--source-dir --format jsonl baseline --profile workspace reference "
-                "--mode stdio --scenarios --json mcp serve analyze search smoke'\n",
+                self.BSL_ANALYZER_HELP,
             )
             self.write_executable(
                 tools_dir,
@@ -757,9 +795,7 @@ class ProductContractTests(unittest.TestCase):
             self.write_executable(
                 tools_dir,
                 "bsl-analyzer",
-                "#!/usr/bin/env sh\n"
-                "printf '%s\\n' '--source-dir --format jsonl baseline --profile workspace reference "
-                "--mode stdio --scenarios --json mcp serve analyze search smoke'\n",
+                self.BSL_ANALYZER_HELP,
             )
             self.write_executable(
                 tools_dir,
@@ -799,7 +835,7 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertTrue(any("--source-dir" in error for error in errors), errors)
 
-    def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
+    def test_analyze_help_cannot_borrow_tokens_from_mcp_serve_help(self) -> None:
         module = load_contract_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -808,8 +844,68 @@ class ProductContractTests(unittest.TestCase):
                 tools_dir,
                 "bsl-analyzer",
                 "#!/usr/bin/env sh\n"
-                "printf '%s\\n' '--source-dir --format jsonl baseline --profile workspace reference "
-                "--mode stdio --scenarios --json mcp serve analyze search smoke'\n",
+                "case \"$*\" in\n"
+                "  'analyze --help') printf '%s\\n' '--format jsonl' ;;\n"
+                "  'mcp serve --help') printf '%s\\n' '--profile --source-dir --mode stdio' ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n",
+            )
+            self.write_executable(
+                tools_dir,
+                "rlm-bsl-index",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
+            )
+            self.write_executable(
+                tools_dir,
+                "rlm-tools-bsl",
+                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
+            )
+            self.write_executable(
+                tools_dir,
+                "v8-runner",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n",
+            )
+
+            errors = module.check_tool_contracts(tools_dir)
+
+        self.assertTrue(
+            any("bsl-analyzer analyze" in error and "--source-dir" in error for error in errors),
+            errors,
+        )
+
+    def test_runtime_docs_define_workspace_service_deadlines_exactly(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        runtime = (repo_root / "spec" / "architecture" / "arc42" / "06-runtime-view.md").read_text(
+            encoding="utf-8"
+        )
+        acceptance = (repo_root / "spec" / "acceptance" / "unica-mcp-validation.md").read_text(
+            encoding="utf-8"
+        )
+        adr = (repo_root / "spec" / "decisions" / "0006-workspace-scoped-internal-services.md").read_text(
+            encoding="utf-8"
+        )
+
+        for text in (runtime, acceptance, adr):
+            normalized = " ".join(text.split())
+            self.assertIn("120-second overall deadline", normalized)
+            self.assertIn("500 ms connect cap", normalized)
+            self.assertIn("remaining overall budget", normalized)
+            self.assertIn("best-effort `Cancel`", normalized)
+            self.assertIn("separate 500 ms aggregate budget", normalized)
+            self.assertIn("connect, write, flush, and read", normalized)
+            self.assertIn("does not read a response", normalized)
+            self.assertIn("cancellation takes precedence", normalized)
+            self.assertIn("100 ms", normalized)
+
+    def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            self.write_executable(
+                tools_dir,
+                "bsl-analyzer",
+                self.BSL_ANALYZER_HELP,
             )
             self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
             self.write_executable(tools_dir, "rlm-tools-bsl", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
@@ -824,7 +920,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute(
@@ -872,7 +968,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute("CREATE TABLE modules (id INTEGER, rel_path TEXT)")
@@ -893,7 +989,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '14')")
                 conn.execute(
@@ -922,7 +1018,7 @@ class ProductContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bsl_index.db"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO index_meta (key, value) VALUES ('builder_version', '12')")
                 conn.execute(

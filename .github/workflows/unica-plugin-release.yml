@@ -101,6 +101,22 @@ jobs:
       - name: Run Rust tests
         run: cargo test --package unica-coder
 
+  test-rust-platforms:
+    name: Rust tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust tests
+        run: cargo test --workspace -- --test-threads=1
+
   verify-windows-installer:
     name: Verify Windows installer URL
     runs-on: windows-latest
@@ -125,6 +141,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     needs:
       - verify-source
+      - test-rust-platforms
       - verify-windows-installer
       - classify-changes
     if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}

@@ -160,8 +160,9 @@ def call_mcp(
     env["UNICA_CACHE_DIR"] = str(cache_dir)
     started = time.perf_counter()
     try:
+        command = [sys.executable, str(run_unica)] if run_unica.suffix == ".py" else [str(run_unica)]
         result = subprocess.run(
-            [str(run_unica)],
+            command,
             input=payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

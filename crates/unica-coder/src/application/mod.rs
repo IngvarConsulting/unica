@@ -1,4 +1,5 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::RuntimeJobAction;
@@ -15,6 +16,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // The public MCP registration is intentionally deferred until the receipt and
 // guard slices are complete; intermediate discovery types are consumed by the
@@ -81,18 +83,18 @@ pub struct OperationResult {
 }
 
 pub struct UnicaApplication {
-    ports: Box<dyn ApplicationPorts>,
+    ports: Arc<dyn ApplicationPorts + Send + Sync>,
 }
 
 impl UnicaApplication {
     pub fn new() -> Self {
         Self {
-            ports: Box::new(DefaultApplicationPorts),
+            ports: Arc::new(DefaultApplicationPorts),
         }
     }
 
     #[cfg(test)]
-    fn with_ports(ports: Box<dyn ApplicationPorts>) -> Self {
+    fn with_ports(ports: Arc<dyn ApplicationPorts + Send + Sync>) -> Self {
         Self { ports }
     }
 
@@ -105,11 +107,20 @@ impl UnicaApplication {
         name: &str,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {
+        self.call_tool_cancellable(name, args, CancellationToken::new())
+    }
+
+    pub fn call_tool_cancellable(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+    ) -> Result<OperationResult, String> {
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
             .ok_or_else(|| format!("unknown unica tool: {name}"))?;
-        call_tool(spec, args, self.ports.as_ref())
+        call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
 
@@ -361,6 +372,7 @@ fn call_tool(
     spec: ToolSpec,
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
 ) -> Result<OperationResult, String> {
     let dry_run = args
         .get("dryRun")
@@ -405,7 +417,7 @@ fn call_tool(
         None
     };
 
-    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run)?;
+    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
     let mut outcome = handler_outcome.adapter;
     if is_successful_detailed_compile_preview(spec, dry_run, &outcome) {
         match support_guard_check(spec, args, &context)? {
@@ -896,6 +908,9 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
                 "project map discovered {} source set(s)",
                 source_map.source_sets.len()
             ));
+            if let Some(error) = &source_map.source_selection_error {
+                outcome.warnings.push(error.clone());
+            }
             outcome.stdout =
                 Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
             outcome
@@ -1954,6 +1969,94 @@ mod tests {
         assert!(stdout.contains("\"sourceSets\""));
         assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
         assert!(stdout.contains("\"kind\": \"configuration\""));
+        assert!(stdout.contains(r#""effectiveSourceSet": "main""#));
+        assert!(stdout.contains(r#""effectiveSourceRoot""#));
+        assert!(!stdout.contains("sourceSelectionError"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_reports_ambiguous_configuration_source_sets_without_failing() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-map-ambiguous-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("app")).unwrap();
+        std::fs::create_dir_all(workspace.join("tests")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: app\n  - name: tests\n    type: CONFIGURATION\n    path: tests\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result.warnings.join("\n").contains("sourceDir"));
+        let stdout = result.stdout.unwrap();
+        assert!(stdout.contains(r#""name": "app""#));
+        assert!(stdout.contains(r#""name": "tests""#));
+        assert!(stdout.contains(r#""sourceSelectionError""#));
+        assert!(stdout.contains("sourceDir"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_rejects_unsafe_or_missing_configured_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-map-invalid-roots-{}",
+            std::process::id()
+        ));
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let cases = [
+            ("traversal", "../outside".to_string(), "path_traversal"),
+            (
+                "absolute",
+                outside.display().to_string(),
+                "absolute_source_root",
+            ),
+            ("missing", "missing".to_string(), "path_unavailable"),
+        ];
+
+        for (case, configured_path, reason_code) in cases {
+            let workspace = root.join(case);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                format!(
+                    "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {configured_path}\n"
+                ),
+            )
+            .unwrap();
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.project.map", &args)
+                .unwrap();
+
+            assert!(!result.ok, "{case} must fail closed");
+            assert!(
+                result.errors.join("\n").contains(reason_code),
+                "{case} must report {reason_code}: {:?}",
+                result.errors
+            );
+            assert!(result.stdout.is_none());
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2337,6 +2440,7 @@ mod tests {
         include_str!(
             "../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Configuration.xml"
         )
+        .replace("\r\n", "\n")
         .replace("\t\t\t<Language>Русский</Language>", children)
     }
 
@@ -2853,21 +2957,108 @@ mod tests {
     }
 
     #[test]
+    fn call_tool_cancellable_propagates_cancelled_token_to_ports() {
+        use crate::domain::cancellation::CancellationToken;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CancellationRecordingPorts {
+            observed_cancelled: Mutex<Option<bool>>,
+        }
+
+        impl ports::ApplicationPorts for CancellationRecordingPorts {
+            fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build").join("unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _dry_run: bool,
+                cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
+                if cancellation.is_cancelled() {
+                    return Ok(ports::HandlerOutcome::plain(AdapterOutcome::cancelled(
+                        "recording port stopped",
+                    )));
+                }
+                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
+                    "recording port completed",
+                )))
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _dry_run: bool,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                Ok(CacheReport {
+                    mode: "read".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let ports = Arc::new(CancellationRecordingPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = app
+            .call_tool_cancellable("unica.code.search", &Map::new(), token)
+            .unwrap();
+
+        assert_eq!(*ports.observed_cancelled.lock().unwrap(), Some(true));
+        assert!(result.errors[0].starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn call_tool_cancellable_default_ports_uses_stable_cancellation_prefix() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = UnicaApplication::new()
+            .call_tool_cancellable("unica.project.status", &Map::new(), token)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.errors[0].starts_with("cancelled:"));
+    }
+
+    #[test]
     fn application_dispatches_workspace_cache_and_handlers_through_ports() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
 
         #[derive(Default)]
         struct RecordingPorts {
-            discovered: RefCell<Vec<PathBuf>>,
-            invoked: RefCell<Vec<&'static str>>,
-            reported: RefCell<Vec<&'static str>>,
-            invalidated: RefCell<Vec<String>>,
+            discovered: Mutex<Vec<PathBuf>>,
+            invoked: Mutex<Vec<&'static str>>,
+            reported: Mutex<Vec<&'static str>>,
+            invalidated: Mutex<Vec<String>>,
         }
 
-        impl ports::ApplicationPorts for Rc<RecordingPorts> {
+        impl ports::ApplicationPorts for RecordingPorts {
             fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
-                self.discovered.borrow_mut().push(cwd.clone());
+                self.discovered.lock().unwrap().push(cwd.clone());
                 WorkspaceContext::discover(cwd)
             }
 
@@ -2877,8 +3068,9 @@ mod tests {
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _dry_run: bool,
+                _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                self.invoked.borrow_mut().push(spec.name);
+                self.invoked.lock().unwrap().push(spec.name);
                 Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
                     "fake port outcome",
                 )))
@@ -2891,7 +3083,7 @@ mod tests {
                 dry_run: bool,
                 cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
-                self.reported.borrow_mut().extend(cache_access.writes);
+                self.reported.lock().unwrap().extend(cache_access.writes);
                 Ok(CacheReport {
                     mode: if dry_run { "dry-run" } else { "write" }.to_string(),
                     root: context.cache_root.display().to_string(),
@@ -2914,7 +3106,8 @@ mod tests {
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, events: &[DomainEvent]) {
                 self.invalidated
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .extend(events.iter().map(|event| format!("{:?}", event.kind)));
             }
         }
@@ -2923,19 +3116,22 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut args = Map::new();
         args.insert("cwd".to_string(), Value::String(root.display().to_string()));
-        let ports = Rc::new(RecordingPorts::default());
-        let app = UnicaApplication::with_ports(Box::new(ports.clone()));
+        let ports = Arc::new(RecordingPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
 
         let result = app.call_tool("unica.build.load", &args).unwrap();
 
         assert!(result.ok);
-        assert_eq!(ports.invoked.borrow().as_slice(), ["unica.build.load"]);
         assert_eq!(
-            ports.reported.borrow().as_slice(),
+            ports.invoked.lock().unwrap().as_slice(),
+            ["unica.build.load"]
+        );
+        assert_eq!(
+            ports.reported.lock().unwrap().as_slice(),
             ["workspace_graph", "metadata_graph"]
         );
-        assert!(ports.invalidated.borrow().is_empty());
-        assert_eq!(ports.discovered.borrow().len(), 1);
+        assert!(ports.invalidated.lock().unwrap().is_empty());
+        assert_eq!(ports.discovered.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4877,6 +5073,7 @@ mod tests {
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _dry_run: bool,
+            _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             Ok(ports::HandlerOutcome::plain(self.outcome.clone()))
         }
@@ -4934,7 +5131,7 @@ mod tests {
                 Value::String("build/config.cf".to_string()),
             );
         }
-        UnicaApplication::with_ports(Box::new(FixedOutcomePorts { outcome }))
+        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts { outcome }))
             .call_tool("unica.runtime.execute", &args)
             .unwrap()
     }

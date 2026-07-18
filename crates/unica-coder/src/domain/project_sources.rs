@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+// Preserve the public Rust path while keeping filesystem/YAML behavior in the
+// infrastructure implementation.
+pub use crate::infrastructure::project_sources::discover_project_source_map;
+
 /// Transport-facing view of the project source topology. Filesystem and YAML
 /// discovery deliberately live in infrastructure.
 #[derive(Debug, Clone, Serialize)]
@@ -8,6 +12,12 @@ pub struct ProjectSourceMap {
     pub workspace_root: String,
     pub config_path: Option<String>,
     pub source_sets: Vec<ProjectSourceSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_set: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_selection_error: Option<String>,
     #[serde(skip_serializing)]
     pub(crate) configured_format_raw: Option<String>,
 }

@@ -1,11 +1,18 @@
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::managed_child::{
+    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
+};
 use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
+#[cfg(test)]
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
@@ -16,8 +23,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::env;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -27,6 +33,7 @@ pub struct ProcessCommand {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub timeout: Option<Duration>,
+    pub cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +43,7 @@ pub struct ProcessOutput {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+    pub cancelled: bool,
 }
 
 pub trait ProcessRunner {
@@ -50,6 +58,7 @@ pub struct BslMcpCommand {
     pub timeout: Duration,
     pub tool_name: &'static str,
     pub tool_args: Value,
+    pub cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +106,6 @@ pub struct RuntimeJobAdapterOutcome {
 pub struct RuntimeJobAdapter;
 
 pub struct CodeSearchAdapter<'a> {
-    bsl_runner: &'a dyn ProcessRunner,
     grep_runner: &'a dyn ProcessRunner,
     index_runner: &'a dyn IndexRunner,
     use_workspace_service: bool,
@@ -149,6 +157,7 @@ impl<'a> CliAdapter<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn invoke(
         &self,
         tool_name: &str,
@@ -157,6 +166,30 @@ impl<'a> CliAdapter<'a> {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
+        self.invoke_cancellable(
+            tool_name,
+            args,
+            context,
+            dry_run,
+            mutating,
+            &CancellationToken::new(),
+        )
+    }
+
+    pub fn invoke_cancellable(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        mutating: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<AdapterOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(AdapterOutcome::cancelled(format!(
+                "{tool_name} cancelled before adapter work"
+            )));
+        }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
@@ -200,7 +233,16 @@ impl<'a> CliAdapter<'a> {
             args: process_args,
             cwd: context.cwd.clone(),
             timeout: process_timeout,
+            cancellation: cancellation.clone(),
         })?;
+        if output.cancelled {
+            return Ok(cancelled_process_outcome(
+                tool_name,
+                output.stdout,
+                output.stderr,
+                Some(command),
+            ));
+        }
         let ok = output.status_success;
         Ok(AdapterOutcome {
             ok,
@@ -254,6 +296,7 @@ impl<'a> RuntimeAdapter<'a> {
         Self { runner }
     }
 
+    #[allow(dead_code)]
     pub fn invoke(
         &self,
         tool_name: &str,
@@ -262,6 +305,30 @@ impl<'a> RuntimeAdapter<'a> {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
+        self.invoke_cancellable(
+            tool_name,
+            args,
+            context,
+            dry_run,
+            mutating,
+            &CancellationToken::new(),
+        )
+    }
+
+    pub fn invoke_cancellable(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        mutating: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<AdapterOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(AdapterOutcome::cancelled(format!(
+                "{tool_name} cancelled before adapter work"
+            )));
+        }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
@@ -297,6 +364,7 @@ impl<'a> RuntimeAdapter<'a> {
             args: execution_args,
             cwd: context.cwd.clone(),
             timeout: process_timeout,
+            cancellation: cancellation.clone(),
         };
         let output = match self.runner.run(&process_command) {
             Ok(output) => output,
@@ -322,6 +390,14 @@ impl<'a> RuntimeAdapter<'a> {
         let ok = output.status_success;
         let stdout = redactor(&output.stdout);
         let stderr = redactor(&output.stderr);
+        if output.cancelled {
+            return Ok(cancelled_process_outcome(
+                tool_name,
+                stdout,
+                stderr,
+                Some(command),
+            ));
+        }
         Ok(AdapterOutcome {
             ok,
             summary: if ok {
@@ -668,7 +744,6 @@ fn runtime_job_snapshot_value(snapshot: &runtime_jobs::RuntimeJobSnapshot) -> Va
 impl<'a> CodeSearchAdapter<'a> {
     pub fn new() -> Self {
         Self {
-            bsl_runner: &SYSTEM_PROCESS_RUNNER,
             grep_runner: &SYSTEM_PROCESS_RUNNER,
             index_runner: &SYSTEM_INDEX_RUNNER,
             use_workspace_service: true,
@@ -677,31 +752,17 @@ impl<'a> CodeSearchAdapter<'a> {
 
     #[cfg(test)]
     pub fn with_runners(
-        analyzer_runner: &'a dyn ProcessRunner,
-        index_runner: &'a dyn IndexRunner,
-    ) -> Self {
-        Self {
-            bsl_runner: analyzer_runner,
-            grep_runner: analyzer_runner,
-            index_runner,
-            use_workspace_service: false,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_backend_runners(
-        bsl_runner: &'a dyn ProcessRunner,
         grep_runner: &'a dyn ProcessRunner,
         index_runner: &'a dyn IndexRunner,
     ) -> Self {
         Self {
-            bsl_runner,
             grep_runner,
             index_runner,
             use_workspace_service: false,
         }
     }
 
+    #[allow(dead_code)]
     pub fn invoke(
         &self,
         tool_name: &str,
@@ -709,6 +770,22 @@ impl<'a> CodeSearchAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<AdapterOutcome, String> {
+        self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
+    }
+
+    pub fn invoke_cancellable(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<AdapterOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(AdapterOutcome::cancelled(format!(
+                "{tool_name} cancelled before adapter work"
+            )));
+        }
         if dry_run {
             return Ok(AdapterOutcome {
                 ok: true,
@@ -724,9 +801,8 @@ impl<'a> CodeSearchAdapter<'a> {
         }
 
         let sections = [
-            self.bsl_search(context, args),
-            self.rlm_search(context, args),
-            self.git_grep_search(tool_name, args, context),
+            self.rlm_search(context, args, cancellation),
+            self.git_grep_search(tool_name, args, context, cancellation),
         ];
         let ok = sections.iter().any(|section| section.ok);
         let warnings = sections
@@ -743,6 +819,16 @@ impl<'a> CodeSearchAdapter<'a> {
             .map(|section| section.section.clone())
             .collect::<Vec<_>>()
             .join("\n\n");
+        if let Some(error) = warnings
+            .iter()
+            .find(|error| error.starts_with(CANCELLED_PREFIX))
+        {
+            let mut outcome = AdapterOutcome::cancelled(
+                error.strip_prefix(CANCELLED_PREFIX).unwrap_or(error).trim(),
+            );
+            outcome.stdout = Some(stdout);
+            return Ok(outcome);
+        }
         Ok(AdapterOutcome {
             ok,
             summary: if ok {
@@ -760,53 +846,13 @@ impl<'a> CodeSearchAdapter<'a> {
         })
     }
 
-    fn bsl_search(
-        &self,
-        context: &WorkspaceContext,
-        args: &Map<String, Value>,
-    ) -> SearchBackendResult {
-        let plugin_root = match find_plugin_root(&context.cwd) {
-            Some(plugin_root) => plugin_root,
-            None => {
-                return unavailable_backend(
-                    "bsl-analyzer",
-                    "could not locate Unica plugin root for bsl-analyzer search",
-                )
-            }
-        };
-        let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", true) {
-            Ok(bundled_tool) => bundled_tool,
-            Err(error) => return unavailable_backend("bsl-analyzer", error),
-        };
-        let mut process_args = vec!["search".to_string()];
-        match cli_args(args, false) {
-            Ok(args) => process_args.extend(args),
-            Err(error) => return failed_backend("bsl-analyzer", error),
-        }
-        match self.bsl_runner.run(&ProcessCommand {
-            program: bundled_tool.program,
-            args: process_args,
-            cwd: context.cwd.clone(),
-            timeout: Some(DEFAULT_PROCESS_TIMEOUT),
-        }) {
-            Ok(output) if output.status_success => {
-                let body = non_empty_body(&output.stdout, "No bsl-analyzer matches.");
-                successful_backend("bsl-analyzer", body, Vec::new())
-            }
-            Ok(output) => {
-                let reason = failed_process_reason("bsl-analyzer search", &output);
-                failed_backend("bsl-analyzer", reason)
-            }
-            Err(error) => unavailable_backend("bsl-analyzer", error),
-        }
-    }
-
     fn rlm_search(
         &self,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
+        cancellation: &CancellationToken,
     ) -> SearchBackendResult {
-        match self.rlm_readiness(context, args) {
+        match self.rlm_readiness(context, args, cancellation) {
             IndexReadiness::Ready { db_path } => match search_rlm_index(&db_path, args) {
                 Ok(Some(rlm_stdout)) => {
                     successful_backend("rlm", rlm_stdout, vec![db_path.display().to_string()])
@@ -823,13 +869,14 @@ impl<'a> CodeSearchAdapter<'a> {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> SearchBackendResult {
         let grep_adapter = CodeNavigationAdapter {
             index_runner: self.index_runner,
             grep_runner: self.grep_runner,
             use_workspace_service: self.use_workspace_service,
         };
-        match grep_adapter.grep(tool_name, args, context) {
+        match grep_adapter.grep(tool_name, args, context, cancellation) {
             Ok(grep) if grep.ok => {
                 let body = grep
                     .stdout
@@ -857,16 +904,26 @@ impl<'a> CodeSearchAdapter<'a> {
         &self,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
+        cancellation: &CancellationToken,
     ) -> IndexReadiness {
         if self.use_workspace_service {
             match resolve_source_dir(context, args).and_then(|source_dir| {
-                WorkspaceServiceManager::new().rlm_readiness(context, &source_dir, args)
+                WorkspaceServiceManager::new().rlm_readiness_cancellable(
+                    context,
+                    &source_dir,
+                    args,
+                    cancellation,
+                )
             }) {
                 Ok(readiness) => readiness,
                 Err(error) => IndexReadiness::Unavailable(error),
             }
         } else {
-            WorkspaceIndexService::with_runner(self.index_runner).ready_index(context, args)
+            WorkspaceIndexService::with_runner(self.index_runner).ready_index_cancellable(
+                context,
+                args,
+                cancellation,
+            )
         }
     }
 }
@@ -886,6 +943,19 @@ fn format_section(name: &str, text: &str) -> String {
     }
 }
 
+fn cancelled_process_outcome(
+    tool_name: &str,
+    stdout: String,
+    stderr: String,
+    command: Option<Vec<String>>,
+) -> AdapterOutcome {
+    let mut outcome = AdapterOutcome::cancelled(format!("{tool_name} process stopped"));
+    outcome.stdout = Some(stdout);
+    outcome.stderr = Some(stderr);
+    outcome.command = command;
+    outcome
+}
+
 fn successful_backend(
     name: &'static str,
     body: impl Into<String>,
@@ -901,30 +971,31 @@ fn successful_backend(
 
 fn unavailable_backend(name: &'static str, reason: impl Into<String>) -> SearchBackendResult {
     let reason = reason.into();
+    let diagnostics = if reason.starts_with(CANCELLED_PREFIX) {
+        vec![reason.clone()]
+    } else {
+        vec![format!("{name} unavailable: {reason}")]
+    };
     SearchBackendResult {
         section: format_section(name, &format!("unavailable: {reason}")),
         ok: false,
-        diagnostics: vec![format!("{name} unavailable: {reason}")],
+        diagnostics,
         artifacts: Vec::new(),
     }
 }
 
 fn failed_backend(name: &'static str, reason: impl Into<String>) -> SearchBackendResult {
     let reason = reason.into();
+    let diagnostics = if reason.starts_with(CANCELLED_PREFIX) {
+        vec![reason.clone()]
+    } else {
+        vec![format!("{name} failed: {reason}")]
+    };
     SearchBackendResult {
         section: format_section(name, &format!("failed: {reason}")),
         ok: false,
-        diagnostics: vec![format!("{name} failed: {reason}")],
+        diagnostics,
         artifacts: Vec::new(),
-    }
-}
-
-fn non_empty_body(stdout: &str, empty_message: &'static str) -> String {
-    let body = stdout.trim();
-    if body.is_empty() {
-        empty_message.to_string()
-    } else {
-        body.to_string()
     }
 }
 
@@ -936,18 +1007,6 @@ fn section_body(stdout: &str, section_name: &str) -> String {
         .filter(|body| !body.is_empty())
         .unwrap_or(text)
         .to_string()
-}
-
-fn failed_process_reason(label: &str, output: &ProcessOutput) -> String {
-    if output.timed_out {
-        return process_timeout_error(label, Some(DEFAULT_PROCESS_TIMEOUT));
-    }
-    let stderr = output.stderr.trim();
-    if stderr.is_empty() {
-        format!("{label} exited with status {}", output.status)
-    } else {
-        stderr.to_string()
-    }
 }
 
 fn process_exit_code_is(status: &str, code: i32) -> bool {
@@ -1047,6 +1106,7 @@ impl<'a> CodeNavigationAdapter<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn invoke(
         &self,
         tool_name: &str,
@@ -1054,6 +1114,22 @@ impl<'a> CodeNavigationAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<AdapterOutcome, String> {
+        self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
+    }
+
+    pub fn invoke_cancellable(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<AdapterOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(AdapterOutcome::cancelled(format!(
+                "{tool_name} cancelled before adapter work"
+            )));
+        }
         if dry_run {
             return Ok(AdapterOutcome {
                 ok: true,
@@ -1069,10 +1145,10 @@ impl<'a> CodeNavigationAdapter<'a> {
         }
 
         match tool_name {
-            "unica.code.definition" => self.definition(tool_name, args, context),
-            "unica.code.outline" => self.outline(tool_name, args, context),
-            "unica.code.grep" => self.grep(tool_name, args, context),
-            "unica.meta.profile" => self.meta_profile(tool_name, args, context),
+            "unica.code.definition" => self.definition(tool_name, args, context, cancellation),
+            "unica.code.outline" => self.outline(tool_name, args, context, cancellation),
+            "unica.code.grep" => self.grep(tool_name, args, context, cancellation),
+            "unica.meta.profile" => self.meta_profile(tool_name, args, context, cancellation),
             _ => Err(format!("unsupported code navigation tool: {tool_name}")),
         }
     }
@@ -1082,8 +1158,9 @@ impl<'a> CodeNavigationAdapter<'a> {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
-        let readiness = self.rlm_readiness(context, args);
+        let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
@@ -1107,9 +1184,10 @@ impl<'a> CodeNavigationAdapter<'a> {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
         let candidates = index_path_candidates(context, args, "path")?;
-        let readiness = self.rlm_readiness(context, args);
+        let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
@@ -1137,6 +1215,7 @@ impl<'a> CodeNavigationAdapter<'a> {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
         let query = required_string(args, "query")?;
         let mode = args.get("mode").and_then(Value::as_str).unwrap_or("lines");
@@ -1179,7 +1258,17 @@ impl<'a> CodeNavigationAdapter<'a> {
             args: git_args.clone(),
             cwd: context.workspace_root.clone(),
             timeout: Some(DEFAULT_PROCESS_TIMEOUT),
+            cancellation: cancellation.clone(),
         })?;
+        if output.cancelled {
+            let body = grep_body(&output.stdout, mode, limit);
+            return Ok(cancelled_process_outcome(
+                tool_name,
+                format_section("git-grep", &body),
+                output.stderr,
+                Some(std::iter::once("git".to_string()).chain(git_args).collect()),
+            ));
+        }
         let body = grep_body(&output.stdout, mode, limit);
         let no_matches = body.is_empty()
             && !output.status_success
@@ -1238,8 +1327,9 @@ impl<'a> CodeNavigationAdapter<'a> {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
-        let readiness = self.rlm_readiness(context, args);
+        let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
@@ -1267,16 +1357,26 @@ impl<'a> CodeNavigationAdapter<'a> {
         &self,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
+        cancellation: &CancellationToken,
     ) -> IndexReadiness {
         if self.use_workspace_service {
             match resolve_source_dir(context, args).and_then(|source_dir| {
-                WorkspaceServiceManager::new().rlm_readiness(context, &source_dir, args)
+                WorkspaceServiceManager::new().rlm_readiness_cancellable(
+                    context,
+                    &source_dir,
+                    args,
+                    cancellation,
+                )
             }) {
                 Ok(readiness) => readiness,
                 Err(error) => IndexReadiness::Unavailable(error),
             }
         } else {
-            WorkspaceIndexService::with_runner(self.index_runner).ready_index(context, args)
+            WorkspaceIndexService::with_runner(self.index_runner).ready_index_cancellable(
+                context,
+                args,
+                cancellation,
+            )
         }
     }
 }
@@ -1299,6 +1399,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         Self { runner }
     }
 
+    #[allow(dead_code)]
     pub fn invoke(
         &self,
         tool_name: &str,
@@ -1306,10 +1407,26 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<AdapterOutcome, String> {
+        self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
+    }
+
+    pub fn invoke_cancellable(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<AdapterOutcome, String> {
+        if cancellation.is_cancelled() {
+            return Ok(AdapterOutcome::cancelled(format!(
+                "{tool_name} cancelled before adapter work"
+            )));
+        }
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
             let cli_args = diagnostics_analyze_args(args);
             return CliAdapter::new("bsl-analyzer", &["analyze"], "code analysis")
-                .invoke(tool_name, &cli_args, context, dry_run, false);
+                .invoke_cancellable(tool_name, &cli_args, context, dry_run, false, cancellation);
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -1318,7 +1435,13 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         let source_dir = resolve_source_dir(context, args)?;
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
-        let command = bsl_mcp_command(&source_dir, context, remote_tool, tool_args);
+        let command = bsl_mcp_command(
+            &source_dir,
+            context,
+            remote_tool,
+            tool_args,
+            cancellation.clone(),
+        );
         let mut reported_command = vec![bundled_tool.program.display().to_string()];
         reported_command.extend(command.args.clone());
 
@@ -1983,11 +2106,20 @@ fn metadata_profile_unavailable_outcome(
 }
 
 fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> AdapterOutcome {
+    let warning = readiness_warning(readiness);
+    if warning.starts_with(CANCELLED_PREFIX) {
+        return AdapterOutcome::cancelled(
+            warning
+                .strip_prefix(CANCELLED_PREFIX)
+                .unwrap_or(&warning)
+                .trim(),
+        );
+    }
     AdapterOutcome {
         ok: true,
         summary: format!("{tool_name} could not read RLM index"),
         changes: Vec::new(),
-        warnings: vec![readiness_warning(readiness)],
+        warnings: vec![warning],
         errors: Vec::new(),
         artifacts: Vec::new(),
         stdout: None,
@@ -2001,6 +2133,11 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
         IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
         IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
         IndexReadiness::Stale | IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
+            if error.starts_with(CANCELLED_PREFIX) =>
+        {
+            error
+        }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
             format!("rlm index unavailable: {error}")
         }
@@ -2178,6 +2315,7 @@ fn bsl_mcp_command(
     context: &WorkspaceContext,
     remote_tool: &'static str,
     tool_args: Value,
+    cancellation: CancellationToken,
 ) -> BslMcpCommand {
     BslMcpCommand {
         args: vec![
@@ -2195,6 +2333,7 @@ fn bsl_mcp_command(
         timeout: DEFAULT_PROCESS_TIMEOUT,
         tool_name: remote_tool,
         tool_args,
+        cancellation,
     }
 }
 
@@ -2250,13 +2389,8 @@ fn resolve_source_dir(
     context: &WorkspaceContext,
     args: &Map<String, Value>,
 ) -> Result<PathBuf, String> {
-    match args.get("sourceDir").and_then(Value::as_str) {
-        Some(raw) => {
-            let rel = safe_workspace_rel(context, raw)?;
-            Ok(context.workspace_root.join(rel))
-        }
-        None => Ok(context.cwd.clone()),
-    }
+    resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))
+        .map(|resolved| resolved.path)
 }
 
 fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
@@ -2343,63 +2477,42 @@ fn join_rel(base: &str, rel: &str) -> String {
 
 impl ProcessRunner for SystemProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-        let mut child = Command::new(&command.program)
-            .args(&command.args)
-            .current_dir(&command.cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|err| format!("failed to execute process: {err}"))?;
-
-        let started = Instant::now();
-        loop {
-            if child
-                .try_wait()
-                .map_err(|err| format!("failed to poll process: {err}"))?
-                .is_some()
-            {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|err| format!("failed to collect process output: {err}"))?;
-                return Ok(ProcessOutput {
-                    status_success: output.status.success(),
-                    status: output.status.to_string(),
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    timed_out: false,
-                });
-            }
-
-            if let Some(timeout) = command.timeout {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let output = child.wait_with_output().map_err(|err| {
-                        format!("failed to collect timed-out process output: {err}")
-                    })?;
-                    return Ok(ProcessOutput {
-                        status_success: false,
-                        status: "timeout".to_string(),
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        timed_out: true,
-                    });
-                }
-            }
-
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        let output = ManagedChild::run(ManagedCommand {
+            program: command.program.clone(),
+            args: command.args.clone(),
+            cwd: command.cwd.clone(),
+            env: Vec::new(),
+            timeout: command.timeout,
+            cancellation: command.cancellation.clone(),
+        })?;
+        Ok(map_managed_process_output(output))
     }
+}
+
+fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
+    ensure_truncation_diagnostics(&mut output);
+    let output = ProcessOutput {
+        status_success: output.status_success,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        timed_out: output.timed_out,
+        cancelled: output.cancelled,
+    };
+    debug_assert!(!(output.timed_out && output.cancelled));
+    output
 }
 
 impl BslMcpRunner for SystemBslMcpRunner {
     fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String> {
         let context = WorkspaceContext::discover(command.cwd.clone())?;
-        let output = WorkspaceServiceManager::new().call_bsl_mcp(
+        let output = WorkspaceServiceManager::new().call_bsl_mcp_cancellable(
             &context,
             &command.source_dir,
             command.tool_name,
             command.tool_args.clone(),
             command.timeout,
+            &command.cancellation,
         )?;
         Ok(BslMcpOutput {
             result_text: output.result_text,
@@ -3364,6 +3477,7 @@ mod tests {
                 stdout: "ok".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -3402,6 +3516,7 @@ mod tests {
                 stdout: "Designer build completed after 240 seconds".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -3697,26 +3812,6 @@ mod tests {
     }
 
     #[test]
-    fn code_adapter_dry_run_builds_bsl_analyzer_command() {
-        let context = temp_context("code-adapter-dry-run");
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("ОбщийМодуль"));
-
-        let outcome = CliAdapter::new("bsl-analyzer", &["search"], "code analysis")
-            .invoke("unica.code.search", &args, &context, true, false)
-            .unwrap();
-
-        let command = outcome.command.unwrap().join(" ");
-        assert!(command.contains("bin/"));
-        assert!(command.contains("bsl-analyzer"));
-        assert!(!command.contains("run-bsl-analyzer.sh"));
-        assert!(command.contains("search"));
-        assert!(command.contains("--query"));
-        assert!(command.contains("ОбщийМодуль"));
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn code_search_adapter_dry_run_reports_typed_code_search() {
         let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
         let grep = FakeProcessRunner {
@@ -3726,6 +3821,7 @@ mod tests {
                 stdout: "ignored".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner::default();
@@ -3756,6 +3852,7 @@ mod tests {
                     .to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -3782,18 +3879,20 @@ mod tests {
     }
 
     #[test]
-    fn code_search_adapter_returns_three_backend_sections_in_order() {
+    fn code_search_adapter_returns_rlm_then_git_grep_without_analyzer_search() {
         let context = temp_context("search-three-backends");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
         let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
         create_rlm_search_db(&db_path);
-        let runner = FakeProcessRunner {
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
                 stdout: "CommonModules/Проведение.bsl:42:ОбработкаПроведения\n".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -3814,11 +3913,8 @@ mod tests {
         assert!(outcome.ok);
         assert!(outcome.command.is_none());
         let stdout = outcome.stdout.unwrap();
-        let bsl_pos = stdout.find("=== bsl-analyzer ===").unwrap();
-        let rlm_pos = stdout.find("=== rlm ===").unwrap();
-        let grep_pos = stdout.find("=== git grep ===").unwrap();
-        assert!(bsl_pos < rlm_pos);
-        assert!(rlm_pos < grep_pos);
+        assert!(!stdout.contains("=== bsl-analyzer ==="));
+        assert!(stdout.find("=== rlm ===").unwrap() < stdout.find("=== git grep ===").unwrap());
         assert!(stdout.contains("=== rlm ==="));
         assert!(stdout.contains("=== git grep ==="));
         assert!(stdout.contains("CommonModules/Проведение.bsl:42"));
@@ -3828,76 +3924,8 @@ mod tests {
     }
 
     #[test]
-    fn code_search_adapter_runs_bsl_analyzer_search_natively() {
-        let context = temp_context("search-bsl-command");
-        let bsl = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: "bsl result\n".to_string(),
-                stderr: String::new(),
-                timed_out: false,
-            },
-        };
-        let grep = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: "CommonModules/Проведение.bsl:42:ОбработкаПроведения\n".to_string(),
-                stderr: String::new(),
-                timed_out: false,
-            },
-        };
-        let index = FakeIndexRunner {
-            outputs: RefCell::new(vec![index_success("Index not found: /tmp/bsl_index.db")]),
-            ..Default::default()
-        };
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("ОбработкаПроведения"));
-
-        let outcome = CodeSearchAdapter::with_backend_runners(&bsl, &grep, &index)
-            .invoke("unica.code.search", &args, &context, false)
-            .unwrap();
-
-        assert!(outcome.ok);
-        assert!(outcome.command.is_none());
-        let bsl_commands = bsl.commands.borrow();
-        assert_eq!(bsl_commands.len(), 1);
-        assert!(bsl_commands[0].program.to_string_lossy().contains("bin/"));
-        assert!(!bsl_commands[0]
-            .program
-            .to_string_lossy()
-            .contains("run-bsl-analyzer.sh"));
-        assert_eq!(bsl_commands[0].args[0], "search");
-        assert!(bsl_commands[0].args.contains(&"--query".to_string()));
-        let grep_commands = grep.commands.borrow();
-        assert_eq!(grep_commands[0].program, PathBuf::from("git"));
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn code_search_adapter_keeps_unavailable_sections_when_git_grep_succeeds() {
         let context = temp_context("search-unavailable");
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/darwin-arm64/bsl-analyzer"),
-        )
-        .ok();
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/linux-x64/bsl-analyzer"),
-        )
-        .ok();
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/win-x64/bsl-analyzer.exe"),
-        )
-        .ok();
         let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: true,
@@ -3906,6 +3934,7 @@ mod tests {
                     .to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -3921,7 +3950,7 @@ mod tests {
 
         assert!(outcome.ok);
         let stdout = outcome.stdout.unwrap();
-        assert!(stdout.contains("=== bsl-analyzer ===\nunavailable:"));
+        assert!(!stdout.contains("=== bsl-analyzer ==="));
         assert!(stdout.contains("=== rlm ===\nunavailable: rlm index unavailable"));
         assert!(stdout.contains("=== git grep ==="));
         assert!(stdout.contains("CommonModules/SmokeModule/Ext/Module.bsl:2"));
@@ -3929,26 +3958,8 @@ mod tests {
     }
 
     #[test]
-    fn code_search_adapter_returns_three_failed_sections_when_no_backend_runs() {
+    fn code_search_adapter_returns_two_failed_sections_when_no_backend_runs() {
         let context = temp_context("search-all-failed");
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/darwin-arm64/bsl-analyzer"),
-        )
-        .ok();
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/linux-x64/bsl-analyzer"),
-        )
-        .ok();
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/bin/win-x64/bsl-analyzer.exe"),
-        )
-        .ok();
         let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -3957,6 +3968,7 @@ mod tests {
                 stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
                     .to_string(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -3972,7 +3984,7 @@ mod tests {
 
         assert!(!outcome.ok);
         let stdout = outcome.stdout.unwrap();
-        assert!(stdout.contains("=== bsl-analyzer ===\nunavailable:"));
+        assert!(!stdout.contains("=== bsl-analyzer ==="));
         assert!(stdout.contains("=== rlm ===\nunavailable: rlm index unavailable"));
         assert!(stdout.contains("=== git grep ===\nfailed: fatal: not a git repository"));
         cleanup_context(&context);
@@ -3990,6 +4002,7 @@ mod tests {
                 stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
                     .to_string(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -4029,6 +4042,7 @@ mod tests {
                 stdout: "CommonModules/Проведение.bsl:42:ОбработкаПроведения\n".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let index = FakeIndexRunner {
@@ -4074,6 +4088,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4112,6 +4127,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4153,6 +4169,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4212,6 +4229,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4245,6 +4263,7 @@ mod tests {
                 stdout: "CommonModules/SmokeModule/Ext/Module.bsl:2:SmokeProcedure\n".to_string(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4293,6 +4312,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4321,6 +4341,7 @@ mod tests {
                 stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
                     .to_string(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4359,6 +4380,39 @@ mod tests {
         assert!(!command.contains("run-bsl-analyzer.sh"));
         assert!(command.contains("analyze"));
         assert!(command.contains("--source-dir src"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn multi_source_set_resolve_source_dir_selects_main_configuration_root() {
+        let context = temp_context("multi-source-set");
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src/cf
+  - name: TESTS
+    type: EXTENSION
+    path: exts/TESTS
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(context.workspace_root.join("src/cf")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("exts/TESTS")).unwrap();
+        fs::write(
+            context.workspace_root.join("src/cf/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+
+        let selected = resolve_source_dir(&context, &Map::new()).unwrap();
+
+        assert_eq!(
+            selected,
+            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
+        );
         cleanup_context(&context);
     }
 
@@ -4423,9 +4477,12 @@ mod tests {
         assert_eq!(commands[0].tool_args["max_nodes"], 25);
         assert!(commands[0].args.contains(&"mcp".to_string()));
         assert!(commands[0].args.contains(&"stdio".to_string()));
-        assert!(commands[0]
-            .args
-            .contains(&context.cwd.display().to_string()));
+        assert!(commands[0].args.contains(
+            &normalize_path_identity(&context.cwd)
+                .unwrap()
+                .display()
+                .to_string()
+        ));
         cleanup_context(&context);
     }
 
@@ -4554,6 +4611,7 @@ mod tests {
                 stdout: "partial stdout".to_string(),
                 stderr: "failure stderr".to_string(),
                 timed_out: false,
+                cancelled: false,
             },
         };
 
@@ -4573,6 +4631,171 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_prefix_is_stable_for_pre_cancelled_adapter_call() {
+        let context = temp_context("cli-pre-cancelled");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+            },
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let outcome = CliAdapter::with_runner("v8-runner", &["build"], "build/runtime", &runner)
+            .invoke_cancellable(
+                "unica.build.load",
+                &Map::new(),
+                &context,
+                false,
+                true,
+                &cancellation,
+            )
+            .unwrap();
+
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_for_cancelled_cli_output() {
+        let context = temp_context("cli-cancelled-output");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+            },
+        };
+
+        let outcome = CliAdapter::with_runner("v8-runner", &["build"], "build/runtime", &runner)
+            .invoke("unica.build.load", &Map::new(), &context, false, true)
+            .unwrap();
+
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_for_cancelled_runtime_output() {
+        let context = temp_context("runtime-cancelled-output");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_for_cancelled_git_grep_output() {
+        let context = temp_context("grep-cancelled-output");
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.grep", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_when_code_search_backend_is_cancelled() {
+        let context = temp_context("search-cancelled-output");
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("SmokeProcedure"));
+
+        let outcome = CodeSearchAdapter::with_runners(&grep, &index)
+            .invoke("unica.code.search", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn cancellation_prefix_is_stable_when_navigation_index_is_cancelled() {
+        let context = temp_context("navigation-index-cancelled");
+        let index = FakeIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                duration_ms: 0,
+            }]),
+            ..Default::default()
+        };
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("name".to_string(), json!("SmokeProcedure"));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.definition", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn cli_adapter_records_default_process_timeout() {
         let context = temp_context("cli-timeout-record");
         let runner = RecordingProcessRunner {
@@ -4583,6 +4806,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
             },
         };
 
@@ -4612,6 +4836,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: true,
+                cancelled: false,
             },
         };
 
@@ -4641,6 +4866,7 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: true,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4671,6 +4897,7 @@ mod tests {
                         .to_string(),
                 stderr: "failed to load configuration: Pwd=stderr-secret\n".to_string(),
                 timed_out: false,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4710,6 +4937,7 @@ mod tests {
                 stdout: "started loading configuration...\n".to_string(),
                 stderr: String::new(),
                 timed_out: true,
+                cancelled: false,
             },
         };
         let mut args = Map::new();
@@ -4783,11 +5011,45 @@ mod tests {
                 args,
                 cwd: std::env::current_dir().unwrap(),
                 timeout: None,
+                cancellation: CancellationToken::new(),
             })
             .unwrap();
 
         assert!(output.status_success);
         assert_eq!(output.stdout, "ok");
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn cancelled_runner_stops_process_without_reporting_timeout() {
+        #[cfg(windows)]
+        let (program, args) = (
+            PathBuf::from("powershell"),
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 10".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            PathBuf::from("sh"),
+            vec!["-c".to_string(), "sleep 10".to_string()],
+        );
+        let token = crate::domain::cancellation::CancellationToken::new();
+        token.cancel();
+
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program,
+                args,
+                cwd: std::env::current_dir().unwrap(),
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: token,
+            })
+            .unwrap();
+
+        assert!(output.cancelled);
         assert!(!output.timed_out);
     }
 
@@ -4934,6 +5196,7 @@ mod tests {
             stdout: stdout.into(),
             stderr: String::new(),
             timed_out: false,
+            cancelled: false,
             duration_ms: 0,
         }
     }
@@ -4945,6 +5208,11 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("unica-code-search-{name}-{nanos}"));
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
         create_fake_plugin_root(&root);
         WorkspaceContext {
             cwd: root.clone(),
@@ -5289,4 +5557,19 @@ mod tests {
             Ok(self.response.clone())
         }
     }
+}
+#[test]
+fn managed_truncation_is_visible_at_process_adapter_boundary() {
+    let output = map_managed_process_output(ManagedOutput {
+        status_success: false,
+        status: "exit status: 0".into(),
+        stdout: "tail".into(),
+        stderr: "diagnostic tail".into(),
+        timed_out: false,
+        cancelled: false,
+        stdout_truncated: true,
+        stderr_truncated: true,
+    });
+    assert!(output.stderr.contains("stdout capture truncated"));
+    assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
 }

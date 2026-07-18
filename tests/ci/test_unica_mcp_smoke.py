@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -16,18 +19,76 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
-        payload = "\n".join(json.dumps(message) for message in messages) + "\n"
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["cargo", "run", "--quiet", "--bin", "unica", "--"],
-            input=payload,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True,
             cwd=self.repo_root(),
             env=env,
         )
-        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        deadline = time.monotonic() + 30
+        lines: queue.Queue[str] = queue.Queue()
+
+        def read_stdout() -> None:
+            while True:
+                line = process.stdout.readline()
+                lines.put(line)
+                if not line:
+                    return
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+        try:
+            for message in messages:
+                process.stdin.write(json.dumps(message) + "\n")
+            process.stdin.flush()
+
+            expected_responses = sum("id" in message for message in messages)
+            responses = []
+            for _ in range(expected_responses):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.fail("timed out waiting for MCP response")
+                try:
+                    line = lines.get(timeout=remaining)
+                except queue.Empty:
+                    self.fail("timed out waiting for MCP response")
+                if not line:
+                    self.fail("MCP process exited before all responses arrived")
+                responses.append(json.loads(line))
+
+            process.stdin.close()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.fail("timed out waiting for MCP stdout EOF")
+                try:
+                    trailing = lines.get(timeout=remaining)
+                except queue.Empty:
+                    self.fail("timed out waiting for MCP stdout EOF")
+                if not trailing:
+                    break
+                self.fail(f"unexpected MCP response after expected ids: {trailing.strip()}")
+            return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            stderr = process.stderr.read()
+            self.assertEqual(return_code, 0, stderr)
+            return responses
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            process.stdout.close()
+            process.stderr.close()
 
     def test_initialize_lists_single_unica_server(self) -> None:
         responses = self.call_mcp(
@@ -47,6 +108,22 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
+
+    def test_notifications_do_not_count_as_responses(self) -> None:
+        responses = self.call_mcp(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": "already-complete", "reason": "smoke"},
+                },
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            ]
+        )
+
+        self.assertEqual([response["id"] for response in responses], [1, 2])
 
     def test_mutating_dry_run_reports_cache_impact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +177,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["cache"]["mode"], "dry-run")
         self.assertIn("SourceSetChanged", payload["cache"]["events"])
-        command = " ".join(payload["command"])
+        command = " ".join(payload["command"]).replace("\\", "/")
         self.assertIn("bin/", command)
         self.assertIn("v8-runner", command)
         self.assertNotIn("run-v8-runner.sh", command)
@@ -164,14 +241,14 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 cache_dir=tmp_path / "cache",
             )
 
-            payloads = [
-                json.loads(response["result"]["content"][0]["text"])
+            payloads = {
+                response["id"]: json.loads(response["result"]["content"][0]["text"])
                 for response in responses
-            ]
-            self.assertTrue(payloads[0]["ok"], payloads[0])
+            }
             self.assertTrue(payloads[1]["ok"], payloads[1])
-            self.assertEqual(len(payloads[0]["artifacts"]), 5)
-            self.assertEqual(len(payloads[1]["artifacts"]), 2)
+            self.assertTrue(payloads[2]["ok"], payloads[2])
+            self.assertEqual(len(payloads[1]["artifacts"]), 5)
+            self.assertEqual(len(payloads[2]["artifacts"]), 2)
 
             epf_descriptor = (tmp_path / "epf/Import.xml").read_text(encoding="utf-8-sig")
             erf_descriptor = (tmp_path / "erf/Balances.xml").read_text(encoding="utf-8-sig")
@@ -185,7 +262,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             self.assertTrue((tmp_path / "erf/Balances/Ext/ObjectModule.bsl").is_file())
             source_sets = {
                 source_set["name"]: source_set
-                for source_set in json.loads(payloads[2]["stdout"])["sourceSets"]
+                for source_set in json.loads(payloads[3]["stdout"])["sourceSets"]
             }
             self.assertEqual(source_sets["external-processors"]["kind"], "external_processor")
             self.assertEqual(source_sets["external-processors"]["sourceFormat"], "platform_xml")

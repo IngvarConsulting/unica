@@ -3,6 +3,7 @@ use super::contained_fs::{
     observe_regular_file, open_no_follow, reject_link_components, resolve_contained_directory,
     slash_relative, validate_configured_relative_path,
 };
+use super::source_roots::{normalize_contained_source_root, select_default_source_set};
 use crate::application::discovery::ports::{
     DiscoveryError, DiscoveryExecutionContext, ProjectSourceResolverPort, SourceReadinessError,
     SourceReadinessReason, SourceRole,
@@ -55,10 +56,28 @@ impl ProjectSourceResolverPort for FilesystemProjectSourceResolver {
 
 pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourceMap, String> {
     let loaded = load_source_map(workspace_root)?;
+    let (effective_source_set, effective_source_root, source_selection_error) =
+        match select_default_source_set(&loaded.source_sets) {
+            Ok(source_set) => {
+                match normalize_contained_source_root(&loaded.canonical_workspace, &source_set.path)
+                {
+                    Ok(root) => (
+                        Some(source_set.name.clone()),
+                        Some(root.display().to_string()),
+                        None,
+                    ),
+                    Err(error) => (None, None, Some(format!("invalid_source_root: {error}"))),
+                }
+            }
+            Err(error) => (None, None, Some(format!("invalid_source_root: {error}"))),
+        };
     Ok(ProjectSourceMap {
         workspace_root: loaded.canonical_workspace.display().to_string(),
         config_path: loaded.config_path.map(|path| path.display().to_string()),
         source_sets: loaded.source_sets,
+        effective_source_set,
+        effective_source_root,
+        source_selection_error,
         configured_format_raw: loaded.configured_format_raw,
     })
 }
@@ -820,6 +839,9 @@ mod tests {
             write(&root.join(dir).join("Configuration.xml"), "x");
         }
         write(&root.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n - { name: main, type: CONFIGURATION, path: main }\n - { name: ext, type: EXTENSION, path: ext }\n");
+        let public_map = discover_project_source_map(&root).unwrap();
+        assert_eq!(public_map.effective_source_set.as_deref(), Some("main"));
+        assert!(public_map.source_selection_error.is_none());
         assert!(resolve_source_selection(&root, None, &[])
             .unwrap_err()
             .contains("ambiguous_source_set"));

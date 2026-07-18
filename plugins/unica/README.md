@@ -180,7 +180,7 @@ from the package target directory:
 ```sh
 TARGET=darwin-arm64
 plugins/unica/bin/$TARGET/bsl-analyzer --version
-plugins/unica/bin/$TARGET/bsl-analyzer search --help
+plugins/unica/bin/$TARGET/bsl-analyzer analyze --help
 plugins/unica/bin/$TARGET/v8-runner config init --help
 plugins/unica/bin/$TARGET/rlm-tools-bsl --version
 plugins/unica/bin/$TARGET/rlm-bsl-index --version
