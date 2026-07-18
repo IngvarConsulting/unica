@@ -1321,8 +1321,8 @@ mod tests {
                 .as_nanos()
         ));
         let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
-        let started = Instant::now();
-        let output = ManagedChild::run(ManagedCommand {
+        let cancellation = CancellationToken::new();
+        let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
@@ -1341,11 +1341,15 @@ mod tests {
                 ),
             ],
             timeout: Some(Duration::from_millis(200)),
-            cancellation: CancellationToken::new(),
+            cancellation: cancellation.clone(),
         })
         .unwrap();
+        let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation);
         let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
         let mut cleanup = ProcessCleanupGuard(pids.clone());
+        let started = Instant::now();
+        let output = managed_cleanup.managed_mut().wait_for_output().unwrap();
+        managed_cleanup.disarm();
 
         assert!(output.timed_out);
         assert!(
