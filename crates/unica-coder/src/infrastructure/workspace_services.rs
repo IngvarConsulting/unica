@@ -260,30 +260,43 @@ impl<'a> WorkspaceServiceManager<'a> {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceBslOutput, String> {
-        let record = self.ensure_service_cancellable(context, source_root, cancellation)?;
-        cancellation_error(cancellation)?;
-        let response = self.connector.send(
-            &record,
-            ServiceRequest {
-                token: record.token.clone(),
-                kind: ServiceRequestKind::BslMcp {
-                    operation_id: Uuid::new_v4().to_string(),
-                    tool_name: tool_name.to_string(),
-                    tool_args,
-                    timeout_secs: timeout.as_secs().max(1),
+        let mut retried_transport = false;
+        loop {
+            let record = self.ensure_service_cancellable(context, source_root, cancellation)?;
+            cancellation_error(cancellation)?;
+            let response = match self.connector.send(
+                &record,
+                ServiceRequest {
+                    token: record.token.clone(),
+                    kind: ServiceRequestKind::BslMcp {
+                        operation_id: Uuid::new_v4().to_string(),
+                        tool_name: tool_name.to_string(),
+                        tool_args: tool_args.clone(),
+                        timeout_secs: timeout.as_secs().max(1),
+                    },
                 },
-            },
-            cancellation,
-        )?;
-        if !response.ok {
-            return Err(response
-                .error
-                .unwrap_or_else(|| "workspace service bsl request failed".to_string()));
+                cancellation,
+            ) {
+                Ok(response) => response,
+                Err(error)
+                    if !retried_transport
+                        && is_retryable_workspace_service_transport_error(&error) =>
+                {
+                    retried_transport = true;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if !response.ok {
+                return Err(response
+                    .error
+                    .unwrap_or_else(|| "workspace service bsl request failed".to_string()));
+            }
+            return Ok(WorkspaceServiceBslOutput {
+                result_text: response.result_text.unwrap_or_default(),
+                stderr: response.stderr.unwrap_or_default(),
+            });
         }
-        Ok(WorkspaceServiceBslOutput {
-            result_text: response.result_text.unwrap_or_default(),
-            stderr: response.stderr.unwrap_or_default(),
-        })
     }
 
     #[allow(dead_code)]
@@ -422,6 +435,20 @@ impl<'a> WorkspaceServiceManager<'a> {
 
 fn service_response_is_alive(response: &ServiceResponse) -> bool {
     response.ok && !response.shutdown && response.status.as_deref() == Some("alive")
+}
+
+fn is_retryable_workspace_service_transport_error(error: &str) -> bool {
+    [
+        "failed to connect workspace service:",
+        "failed to set workspace service read timeout:",
+        "failed to set workspace service write timeout:",
+        "failed to write workspace service request:",
+        "failed to flush workspace service request:",
+        "workspace service disconnected before responding",
+        "failed to read workspace service response:",
+    ]
+    .iter()
+    .any(|prefix| error.starts_with(prefix))
 }
 
 fn cancellation_error(cancellation: &CancellationToken) -> Result<(), String> {
@@ -5506,6 +5533,132 @@ fn main() {
         cleanup(&context);
     }
 
+    #[test]
+    fn manager_retries_bsl_request_once_after_transport_reset() {
+        let context = test_context("bsl-transport-reset-retry");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = ResetBslConnector {
+            recover: true,
+            ..ResetBslConnector::default()
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        let output = manager
+            .call_bsl_mcp(
+                &context,
+                &source_root,
+                "diagnostics",
+                json!({"mode": "file", "path": "CommonModules/Example/Module.bsl"}),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+
+        assert_eq!(output.result_text, "recovered");
+        assert_eq!(*connector.pings.borrow(), 2);
+        assert_eq!(*connector.bsl_calls.borrow(), 2);
+        let operation_ids = connector.operation_ids.borrow();
+        assert_eq!(operation_ids.len(), 2);
+        assert_ne!(operation_ids[0], operation_ids[1]);
+        assert_eq!(*spawner.spawns.borrow(), 0);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn manager_stops_after_one_transport_retry() {
+        let context = test_context("bsl-transport-reset-twice");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = ResetBslConnector::default();
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        let error = manager
+            .call_bsl_mcp(
+                &context,
+                &source_root,
+                "diagnostics",
+                json!({"mode": "file"}),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "failed to read workspace service response: Connection reset by peer (os error 54)"
+        );
+        assert_eq!(*connector.pings.borrow(), 2);
+        assert_eq!(*connector.bsl_calls.borrow(), 2);
+        assert_eq!(*spawner.spawns.borrow(), 0);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn manager_does_not_retry_typed_bsl_failure() {
+        let context = test_context("typed-bsl-failure-no-retry");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = TypedFailureBslConnector::default();
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        let error = manager
+            .call_bsl_mcp(
+                &context,
+                &source_root,
+                "diagnostics",
+                json!({"mode": "file"}),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, "typed analyzer failure");
+        assert_eq!(*connector.pings.borrow(), 1);
+        assert_eq!(*connector.bsl_calls.borrow(), 1);
+        assert_eq!(*spawner.spawns.borrow(), 0);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn transport_retry_classifier_excludes_terminal_errors() {
+        for error in [
+            "failed to connect workspace service: refused",
+            "failed to set workspace service read timeout: invalid argument",
+            "failed to set workspace service write timeout: invalid argument",
+            "failed to write workspace service request: broken pipe",
+            "failed to flush workspace service request: broken pipe",
+            "workspace service disconnected before responding",
+            "failed to read workspace service response: connection reset",
+        ] {
+            assert!(
+                is_retryable_workspace_service_transport_error(error),
+                "{error}"
+            );
+        }
+        assert!(!is_retryable_workspace_service_transport_error(
+            "timeout: workspace service request exceeded 60 seconds"
+        ));
+        assert!(!is_retryable_workspace_service_transport_error(
+            "cancelled: workspace service operation stopped"
+        ));
+        assert!(!is_retryable_workspace_service_transport_error(
+            "invalid workspace service response: expected value"
+        ));
+    }
+
     fn test_context(name: &str) -> WorkspaceContext {
         let root = std::env::temp_dir().join(format!(
             "unica-workspace-service-{name}-{}",
@@ -5560,6 +5713,83 @@ fn main() {
         ping_ok: bool,
         pings: std::cell::RefCell<u32>,
         requests: std::cell::RefCell<Vec<ServiceRequestKind>>,
+    }
+
+    #[derive(Default)]
+    struct ResetBslConnector {
+        recover: bool,
+        pings: std::cell::RefCell<u32>,
+        bsl_calls: std::cell::RefCell<u32>,
+        operation_ids: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl ServiceConnector for ResetBslConnector {
+        fn send(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ServiceResponse, String> {
+            match request.kind {
+                ServiceRequestKind::Ping => {
+                    *self.pings.borrow_mut() += 1;
+                    Ok(ServiceResponse {
+                        ok: true,
+                        status: Some("alive".to_string()),
+                        ..ServiceResponse::default()
+                    })
+                }
+                ServiceRequestKind::BslMcp { operation_id, .. } => {
+                    self.operation_ids.borrow_mut().push(operation_id);
+                    let mut calls = self.bsl_calls.borrow_mut();
+                    *calls += 1;
+                    if *calls > 1 && self.recover {
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("recovered".to_string()),
+                            ..ServiceResponse::default()
+                        })
+                    } else {
+                        Err(
+                            "failed to read workspace service response: Connection reset by peer (os error 54)"
+                                .to_string(),
+                        )
+                    }
+                }
+                _ => panic!("unexpected request kind"),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct TypedFailureBslConnector {
+        pings: std::cell::RefCell<u32>,
+        bsl_calls: std::cell::RefCell<u32>,
+    }
+
+    impl ServiceConnector for TypedFailureBslConnector {
+        fn send(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<ServiceResponse, String> {
+            match request.kind {
+                ServiceRequestKind::Ping => {
+                    *self.pings.borrow_mut() += 1;
+                    Ok(ServiceResponse {
+                        ok: true,
+                        status: Some("alive".to_string()),
+                        ..ServiceResponse::default()
+                    })
+                }
+                ServiceRequestKind::BslMcp { .. } => {
+                    *self.bsl_calls.borrow_mut() += 1;
+                    Ok(ServiceResponse::error("typed analyzer failure"))
+                }
+                _ => panic!("unexpected request kind"),
+            }
+        }
     }
 
     impl ServiceConnector for RecordingConnector {
