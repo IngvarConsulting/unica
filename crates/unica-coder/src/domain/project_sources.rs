@@ -357,7 +357,10 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn detects_edt_configuration_and_platform_external_processor_source_sets() {
@@ -652,11 +655,15 @@ source-set:
     }
 
     fn temp_workspace(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
+        let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        let nonce = TEMP_WORKSPACE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{timestamp}-{nonce}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         root
     }
