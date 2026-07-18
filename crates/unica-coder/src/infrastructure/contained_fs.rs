@@ -18,8 +18,7 @@ pub(crate) fn validate_configured_relative_path(raw: &str, field: &str) -> Resul
             "empty_configured_path: `{field}` must not be empty"
         ));
     }
-    let path = Path::new(raw);
-    if path.is_absolute() || looks_like_windows_absolute(raw) {
+    if raw.starts_with('/') || looks_like_windows_absolute(raw) {
         return Err(format!("absolute_source_root: `{field}` must be relative"));
     }
     if raw.contains('\\') || raw.chars().any(char::is_control) {
