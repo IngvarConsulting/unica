@@ -6,6 +6,7 @@ on:
     paths:
       - ".agents/plugins/marketplace.json"
       - ".github/workflows/unica-plugin-release.yml"
+      - ".github/workflows/unica-legacy-migration.yml"
       - ".github/workflows/publish-unica-marketplace.yml"
       - "AGENTS.md"
       - "Cargo.toml"
@@ -247,6 +248,47 @@ jobs:
           --target "${{ matrix.target }}"
           --expect-download-failure
 
+  legacy-migration-preflight:
+    name: Preflight legacy Unica migration on pinned Codex
+    runs-on: windows-2022
+    needs: package-thin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-thin-marketplace
+          path: .build/thin
+      - name: Download pinned Codex and previous stable Unica
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .build\downloads, .build\codex, .build\legacy | Out-Null
+          gh release download rust-v0.145.0-alpha.18 --repo openai/codex --pattern codex-x86_64-pc-windows-msvc.exe.zip --dir .build\downloads
+          gh release download v0.6.1 --repo IngvarConsulting/unica --pattern unica-codex-marketplace-win-x64.zip --dir .build\downloads
+          $codexHash = (Get-FileHash -Algorithm SHA256 .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip).Hash.ToLowerInvariant()
+          $legacyHash = (Get-FileHash -Algorithm SHA256 .build\downloads\unica-codex-marketplace-win-x64.zip).Hash.ToLowerInvariant()
+          if ($codexHash -ne "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a") { throw "pinned Codex archive checksum mismatch" }
+          if ($legacyHash -ne "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499") { throw "legacy Unica archive checksum mismatch" }
+          Expand-Archive -LiteralPath .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip -DestinationPath .build\codex
+          Expand-Archive -LiteralPath .build\downloads\unica-codex-marketplace-win-x64.zip -DestinationPath .build\legacy
+          Copy-Item -LiteralPath .build\codex\codex-x86_64-pc-windows-msvc.exe -Destination .build\codex\codex.exe
+      - name: Classify the previous stable installation with the candidate bootstrap
+        shell: powershell
+        run: >
+          .\scripts\ci\test-unica-upgrade.ps1
+          -CodexPath .build\codex\codex.exe
+          -LegacyMarketplaceRoot .build\legacy\unica-codex-marketplace-win-x64
+          -CandidatePluginRoot .build\thin\plugins\unica
+          -ReportPath .build\reports\legacy-migration-preflight.json
+          -Mode Preflight
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unica-legacy-migration-preflight
+          path: .build/reports/legacy-migration-preflight.json
+          if-no-files-found: warn
+
   installer:
     name: Package installer shims
     runs-on: ubuntu-latest
@@ -297,6 +339,7 @@ jobs:
     needs:
       - package-runtime
       - installer
+      - legacy-migration-preflight
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

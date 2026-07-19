@@ -22,12 +22,13 @@ pub struct MarketplaceRecord {
     pub name: String,
     #[serde(default)]
     pub root: Option<String>,
+    #[serde(default)]
     pub marketplace_source: MarketplaceSource,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketplaceSource {
     pub source_type: String,

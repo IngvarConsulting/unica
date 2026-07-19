@@ -1,0 +1,19 @@
+{
+  "codexVersion": "codex-cli 0.145.0-alpha.18",
+  "commands": [
+    "codex plugin marketplace list --json",
+    "codex plugin list --available --json"
+  ],
+  "captureKind": "minimized-from-real-output",
+  "officialRelease": {
+    "repository": "openai/codex",
+    "tag": "rust-v0.145.0-alpha.18",
+    "windowsAsset": "codex-x86_64-pc-windows-msvc.exe.zip",
+    "windowsAssetSha256": "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a"
+  },
+  "platformsObserved": [
+    "darwin-arm64",
+    "win-x64"
+  ],
+  "sanitizedRoot": "${CODEX_HOME}"
+}

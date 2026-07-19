@@ -72,6 +72,37 @@ fn parses_current_empty_codex_json_contract() {
 }
 
 #[test]
+fn parses_codex_0_145_contract_when_unrelated_marketplace_omits_source() {
+    let codex_home = temp_root("codex-0-145-contract");
+    let home = codex_home.to_string_lossy();
+    let metadata: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/codex-0.145.0-alpha.18/metadata.json"
+    ))
+    .unwrap();
+    let marketplaces_json = include_str!("fixtures/codex-0.145.0-alpha.18/marketplaces-local.json")
+        .replace("${CODEX_HOME}", &home);
+    let plugins_json = include_str!("fixtures/codex-0.145.0-alpha.18/plugins-installed.json")
+        .replace("${CODEX_HOME}", &home);
+
+    let discovery = CodexDiscovery {
+        marketplaces: serde_json::from_str(&marketplaces_json).unwrap(),
+        plugins: serde_json::from_str(&plugins_json).unwrap(),
+    };
+    let plan = classify_discovery(discovery, &codex_home).unwrap();
+
+    assert_eq!(metadata["codexVersion"], "codex-cli 0.145.0-alpha.18");
+    assert_eq!(metadata["captureKind"], "minimized-from-real-output");
+    assert_eq!(
+        metadata["officialRelease"]["windowsAssetSha256"],
+        "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a"
+    );
+    assert_eq!(plan.remove_plugin_ids, vec!["unica@unica"]);
+    assert_eq!(plan.remove_marketplaces, vec!["unica"]);
+    assert!(plan.add_canonical_marketplace);
+    assert!(plan.install_canonical_plugin);
+}
+
+#[test]
 fn classifies_local_and_unica_local_duplicates_as_one_legacy_migration() {
     let codex_home = temp_root("legacy-duplicates");
     let legacy_root = codex_home.join("marketplaces/unica-local");
@@ -374,6 +405,23 @@ fn unknown_owner_of_reserved_unica_name_fails_before_mutation() {
     assert!(error
         .to_string()
         .contains("reserved marketplace name unica"));
+}
+
+#[test]
+fn reserved_unica_without_source_is_rejected_as_missing_identity() {
+    let marketplaces: MarketplaceList =
+        serde_json::from_str(r#"{"marketplaces":[{"name":"unica","root":"/unknown"}]}"#).unwrap();
+    let discovery = CodexDiscovery {
+        marketplaces,
+        plugins: PluginList::default(),
+    };
+
+    let error = classify_discovery(discovery, Path::new("/codex-home")).unwrap_err();
+
+    assert!(
+        error.to_string().contains("missing source identity"),
+        "{error}"
+    );
 }
 
 #[test]

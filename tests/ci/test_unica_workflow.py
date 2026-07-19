@@ -7,6 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
+LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
 
 
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
@@ -15,6 +16,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def publish_text(self) -> str:
         return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def legacy_text(self) -> str:
+        return LEGACY_WORKFLOW.read_text(encoding="utf-8")
 
     def test_source_gate_covers_both_rust_packages_and_full_workspace(self) -> None:
         text = self.release_text()
@@ -56,6 +60,43 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs: [package-thin, publish-release-assets]", text)
         self.assertIn("--expect-download-failure", text)
 
+    def test_legacy_windows_migration_uses_pinned_real_cli_for_candidate_and_stable(self) -> None:
+        release = self.release_text()
+        stable = self.legacy_text()
+        preflight = release[
+            release.index("  legacy-migration-preflight:") : release.index("  installer:")
+        ]
+
+        for section in (preflight, stable):
+            self.assertIn("rust-v0.145.0-alpha.18", section)
+            self.assertIn("codex-x86_64-pc-windows-msvc.exe.zip", section)
+            self.assertIn("unica-codex-marketplace-win-x64.zip", section)
+            self.assertIn("test-unica-upgrade.ps1", section)
+            self.assertIn("Get-FileHash", section)
+            self.assertIn(
+                "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a",
+                section,
+            )
+            self.assertIn(
+                "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499",
+                section,
+            )
+        self.assertIn("name: unica-thin-marketplace", preflight)
+        self.assertIn("-Mode Preflight", preflight)
+        self.assertIn("needs: package-thin", preflight)
+        self.assertIn("schedule:", stable)
+        self.assertIn("workflow_dispatch:", stable)
+        self.assertIn("-Mode Full", stable)
+        self.assertIn("IngvarConsulting/unica-marketplace", stable)
+        self.assertIn("marketplace.json", stable)
+        self.assertIn("checkout --detach", stable)
+        self.assertNotIn("legacy-migration-full", release)
+
+        publish = release[
+            release.index("  publish-release-assets:") : release.index("  smoke-thin-plugin:")
+        ]
+        self.assertIn("- legacy-migration-preflight", publish)
+
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         text = self.release_text()
         publish = text[text.index("  publish-release-assets:") : text.index("  verify-published-assets:")]
@@ -63,6 +104,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertNotIn("publish-assessment-pages", publish)
         self.assertIn("needs:\n      - package-runtime\n      - installer", publish)
+        self.assertIn("- legacy-migration-preflight", publish)
         self.assertIn("softprops/action-gh-release@v2", publish)
         self.assertIn("unica-runtime-*.tar.gz", publish)
         self.assertIn("unica-runtime-*.json", publish)

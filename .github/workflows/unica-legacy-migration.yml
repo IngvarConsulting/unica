@@ -1,0 +1,74 @@
+name: Verify Stable Unica Legacy Migration
+
+on:
+  schedule:
+    - cron: "31 2 * * *"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional stable marketplace tag expected in the canonical catalog
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-stable-legacy-migration
+  cancel-in-progress: false
+
+jobs:
+  upgrade-legacy-windows:
+    name: Upgrade Unica v0.6.1 on Codex 0.145.0-alpha.18
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the promoted stable marketplace package
+        shell: powershell
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .build | Out-Null
+          git clone --depth 1 https://github.com/IngvarConsulting/unica-marketplace.git .build\marketplace
+          $catalog = Get-Content -LiteralPath .build\marketplace\.agents\plugins\marketplace.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $stableRef = [string]$catalog.plugins[0].source.ref
+          if ($stableRef -notmatch '^v[0-9A-Za-z._-]+$') {
+            throw "canonical marketplace catalog has no immutable stable ref"
+          }
+          if ($env:REQUESTED_RELEASE_TAG -and $env:REQUESTED_RELEASE_TAG -ne $stableRef) {
+            throw "requested $($env:REQUESTED_RELEASE_TAG), canonical stable ref is $stableRef"
+          }
+          git -C .build\marketplace fetch --depth 1 origin "refs/tags/$stableRef`:refs/tags/$stableRef"
+          git -C .build\marketplace checkout --detach $stableRef
+          if ($LASTEXITCODE -ne 0) { throw "failed to checkout stable marketplace ref $stableRef" }
+          "STABLE_REF=$stableRef" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Download pinned Codex and previous stable Unica
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .build\downloads, .build\codex, .build\legacy | Out-Null
+          gh release download rust-v0.145.0-alpha.18 --repo openai/codex --pattern codex-x86_64-pc-windows-msvc.exe.zip --dir .build\downloads
+          gh release download v0.6.1 --repo IngvarConsulting/unica --pattern unica-codex-marketplace-win-x64.zip --dir .build\downloads
+          $codexHash = (Get-FileHash -Algorithm SHA256 .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip).Hash.ToLowerInvariant()
+          $legacyHash = (Get-FileHash -Algorithm SHA256 .build\downloads\unica-codex-marketplace-win-x64.zip).Hash.ToLowerInvariant()
+          if ($codexHash -ne "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a") { throw "pinned Codex archive checksum mismatch" }
+          if ($legacyHash -ne "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499") { throw "legacy Unica archive checksum mismatch" }
+          Expand-Archive -LiteralPath .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip -DestinationPath .build\codex
+          Expand-Archive -LiteralPath .build\downloads\unica-codex-marketplace-win-x64.zip -DestinationPath .build\legacy
+          Copy-Item -LiteralPath .build\codex\codex-x86_64-pc-windows-msvc.exe -Destination .build\codex\codex.exe
+      - name: Upgrade and verify the previous stable installation
+        shell: powershell
+        run: >
+          .\scripts\ci\test-unica-upgrade.ps1
+          -CodexPath .build\codex\codex.exe
+          -LegacyMarketplaceRoot .build\legacy\unica-codex-marketplace-win-x64
+          -CandidatePluginRoot .build\marketplace\plugins\unica
+          -ReportPath .build\reports\legacy-migration-full.json
+          -Mode Full
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unica-legacy-migration-${{ env.STABLE_REF }}
+          path: .build/reports/legacy-migration-full.json
+          if-no-files-found: warn

@@ -68,6 +68,15 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
     let mut canonical_marketplace = None;
     let mut legacy_marketplaces = BTreeMap::new();
     for marketplace in &discovery.marketplaces.marketplaces {
+        if matches!(marketplace.name.as_str(), "unica" | "unica-local")
+            && (marketplace.marketplace_source.source_type.trim().is_empty()
+                || marketplace.marketplace_source.source.trim().is_empty())
+        {
+            return Err(BootstrapError::new(format!(
+                "reserved marketplace name {} is missing source identity",
+                marketplace.name
+            )));
+        }
         match marketplace.name.as_str() {
             "unica" if is_canonical(marketplace) => {
                 canonical_marketplace = Some(marketplace.clone())

@@ -41,6 +41,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/build-unica-tools.py",
             "scripts/ci/package-unica-plugin.py",
             "scripts/ci/package-unica-runtime.py",
+            "scripts/ci/test-unica-upgrade.ps1",
             "scripts/ci/verify-release-assets.py",
             "scripts/install-unica.sh",
             "scripts/install-unica.ps1",

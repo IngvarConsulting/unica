@@ -1,0 +1,23 @@
+{
+  "installed": [
+    {
+      "pluginId": "unica@unica",
+      "name": "unica",
+      "marketplaceName": "unica",
+      "version": "0.6.1",
+      "installed": true,
+      "enabled": true,
+      "source": {
+        "source": "local",
+        "path": "${CODEX_HOME}/marketplaces/unica-local/plugins/unica"
+      },
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "${CODEX_HOME}/marketplaces/unica-local"
+      },
+      "installPolicy": "INSTALLED_BY_DEFAULT",
+      "authPolicy": "ON_INSTALL"
+    }
+  ],
+  "available": []
+}
