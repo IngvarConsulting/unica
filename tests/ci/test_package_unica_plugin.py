@@ -634,7 +634,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                             "schemaVersion": 1,
                             "target": target,
                             "targetTriple": target_triple,
-                            "pluginVersion": "0.7.0",
+                            "pluginVersion": "0.7.1",
                             "asset": {
                                 "name": f"unica-runtime-{target}.tar.gz",
                                 "mediaType": "application/gzip",
@@ -663,7 +663,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 "--bootstrap-root",
                 str(bootstrap_root),
                 "--release-tag",
-                "v0.7.0",
+                "v0.7.1",
                 "--source-commit",
                 "a" * 40,
                 "--out-dir",
@@ -690,13 +690,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertFalse(runtime_manifest["development"])
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
-            self.assertEqual(runtime_manifest["release"]["tag"], "v0.7.0")
+            self.assertEqual(runtime_manifest["release"]["tag"], "v0.7.1")
             self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
             for target, target_data in runtime_manifest["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"
-                    f"v0.7.0/unica-runtime-{target}.tar.gz",
+                    f"v0.7.1/unica-runtime-{target}.tar.gz",
                 )
 
             catalog = json.loads(
@@ -706,7 +706,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             source = catalog["plugins"][0]["source"]
             self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], "v0.7.0")
+            self.assertEqual(source["ref"], "v0.7.1")
             self.assertEqual(source["path"], "./plugins/unica")
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])

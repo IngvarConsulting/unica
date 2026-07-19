@@ -36,6 +36,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("scripts/ci/build-unica-tools.py", text)
         self.assertIn("scripts/ci/package-unica-runtime.py", text)
         self.assertIn("scripts/ci/package-unica-plugin.py", text)
+        self.assertIn("scripts/ci/smoke-unica-mcp.py", text)
         self.assertIn("--runtime-metadata-root", text)
         self.assertIn("--bootstrap-root", text)
         self.assertIn("name: unica-thin-marketplace", text)
