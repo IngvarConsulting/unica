@@ -61,37 +61,20 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs: [package-thin, publish-release-assets]", text)
         self.assertIn("--expect-download-failure", text)
 
-    def test_source_release_preflight_covers_both_historical_managed_roots(self) -> None:
+    def test_v080_source_release_has_no_executable_legacy_migration_jobs(self) -> None:
         release = self.release_text()
-        preflight = release[
-            release.index("  legacy-migration-preflight:") : release.index("  installer:")
-        ]
 
-        self.assertIn("rust-v0.145.0-alpha.18", preflight)
-        self.assertIn("codex-x86_64-pc-windows-msvc.exe.zip", preflight)
-        self.assertIn("unica-codex-marketplace-win-x64.zip", preflight)
-        self.assertIn("test-unica-upgrade.ps1", preflight)
-        self.assertIn("Get-FileHash", preflight)
-        self.assertIn(
-            "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a",
-            preflight,
-        )
-        self.assertIn(
-            "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499",
-            preflight,
-        )
-        self.assertIn("name: unica-thin-marketplace", preflight)
-        self.assertIn("-Mode Preflight", preflight)
-        self.assertIn("legacy_managed_name: [unica-local, unica]", preflight)
-        self.assertIn("-LegacyManagedName", preflight)
-        self.assertIn("needs: package-thin", preflight)
-        self.assertNotIn("legacy-migration-full", release)
-        self.assertNotIn("-Mode Full", preflight)
-
-        publish = release[
-            release.index("  publish-release-assets:") : release.index("  smoke-thin-plugin:")
-        ]
-        self.assertIn("- legacy-migration-preflight", publish)
+        for marker in (
+            "legacy-migration-preflight:",
+            "test-unica-upgrade.ps1",
+            "verify-installers:",
+            "  installer:",
+            "unica-installer",
+            "install-unica.sh",
+            "install-unica.ps1",
+        ):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, release)
 
     def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
         release = self.release_text()
@@ -128,11 +111,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         verify = text[text.index("  verify-published-assets:") :]
 
         self.assertNotIn("publish-assessment-pages", publish)
-        self.assertIn("needs:\n      - package-runtime\n      - installer", publish)
-        self.assertIn("- legacy-migration-preflight", publish)
+        self.assertIn("needs: package-runtime", publish)
         self.assertIn("softprops/action-gh-release@v2", publish)
         self.assertIn("unica-runtime-*.tar.gz", publish)
         self.assertIn("unica-runtime-*.json", publish)
+        self.assertNotIn("install-unica", publish)
         self.assertIn("gh release download", verify)
         self.assertIn("verify-release-assets.py", verify)
 

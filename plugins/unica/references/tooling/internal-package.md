@@ -40,16 +40,17 @@ The Rust bundled-tool resolver then reads the runtime's generated
 `third-party/manifest.json` and re-checks each internal binary before execution.
 Runtime stdout is JSON-RPC only.
 
-## Migration
+## Frozen migration bridge
 
-The shared native migration engine discovers marketplaces and plugins through
-Codex JSON commands. Preflight rejects an unknown source that owns the reserved
-`unica` name. Apply stores an exact config snapshot, journals every successful
-Codex mutation, installs canonical `unica@unica`, proves discovery, installs the
-checksum-pinned runtime, and requires MCP initialize plus the public tool set
-before deleting exact legacy paths. It rolls back inverse commands, config, and
-backed-up legacy paths on failure. Transition shell scripts only obtain the
-stable Git package and invoke this engine.
+The immutable `v0.7.8` release is the only supported entry point for local,
+duplicated, or otherwise legacy installations. Its published transition assets
+retain the native transaction engine, rollback behavior, and exact historical
+contracts used to produce a canonical marketplace installation.
+
+The current `v0.8.0` source and thin package do not ship that engine, transition
+scripts, legacy discovery models, or migration commands. Once `v0.7.8` has made
+the installation canonical, later versions use the ordinary marketplace update
+path.
 
 ## Publication
 

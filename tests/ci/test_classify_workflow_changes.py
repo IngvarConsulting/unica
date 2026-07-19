@@ -42,10 +42,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/package-unica-plugin.py",
             "scripts/ci/package-unica-runtime.py",
             "scripts/ci/smoke-unica-bootstrap.py",
-            "scripts/ci/test-unica-upgrade.ps1",
             "scripts/ci/verify-release-assets.py",
-            "scripts/install-unica.sh",
-            "scripts/install-unica.ps1",
         ]
 
         for path in release_paths:
@@ -69,7 +66,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         module = load_classifier_module()
 
         with tempfile.TemporaryFile("w+", encoding="utf-8") as stdin:
-            stdin.write("tests/ci/test_unica_workflow.py\nscripts/install-unica.ps1\n")
+            stdin.write("tests/ci/test_unica_workflow.py\ncrates/unica-bootstrap/src/main.rs\n")
             stdin.seek(0)
 
             self.assertEqual(module.classify_stdin(stdin), "true")

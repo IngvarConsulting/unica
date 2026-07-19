@@ -84,6 +84,9 @@ codex plugin add unica@unica
 
 Если скрипт завершился ошибкой, предыдущая установка уже восстановлена.
 
+Начиная с `v0.8.0`, текущий пакет не содержит исполняемого кода legacy-миграции:
+для старых установок поддерживается только замороженный bridge `v0.7.8` выше.
+
 ## Удаление
 
 ```sh
@@ -114,7 +117,7 @@ scripts/dev/install-local-unica.sh
 
 - `plugins/unica/skills/` — прикладные навыки 1С;
 - `crates/unica-coder/` — единый MCP runtime `unica`;
-- `crates/unica-bootstrap/` — загрузка, проверка, запуск и миграция;
+- `crates/unica-bootstrap/` — загрузка, проверка и запуск runtime;
 - `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов;
 - `.github/workflows/unica-plugin-release.yml` — runtime-релиз;
 - `.github/workflows/publish-unica-marketplace.yml` — staging и promotion

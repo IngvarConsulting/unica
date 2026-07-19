@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unica_bootstrap::{
-    launch_runtime, verify_mcp_runtime, CommandRunner, CommandSpec, HostTarget, HttpDownloader,
-    MigrationEngine, Result, RuntimeInstaller, RuntimeManifest, SystemCommandRunner,
+    launch_runtime, verify_mcp_runtime, HostTarget, HttpDownloader, Result, RuntimeInstaller,
+    RuntimeManifest,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -47,20 +47,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         println!("unica-bootstrap {VERSION}");
         return Ok(0);
     }
-    let (command, plugin_root, marketplace_ref) = parse_command(&args)?;
-    if matches!(command, Command::Migrate | Command::MigratePreflight) {
-        let engine = MigrationEngine::new(codex_home_root()?, SystemCommandRunner)
-            .with_marketplace_ref(marketplace_ref.expect("migration ref was validated"));
-        let plan = engine.preflight()?;
-        if command == Command::MigratePreflight {
-            println!("{}", serde_json::to_string_pretty(&plan)?);
-        } else {
-            let report = engine.apply(plan, install_and_verify_migration)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        return Ok(0);
-    }
-
+    let (command, plugin_root) = parse_command(&args)?;
     match command {
         Command::Run => {
             let installed = install_runtime(&plugin_root)?;
@@ -69,9 +56,6 @@ fn run(args: Vec<String>) -> Result<i32> {
         Command::Verify => {
             install_and_verify_runtime(&plugin_root)?;
             Ok(0)
-        }
-        Command::Migrate | Command::MigratePreflight => {
-            unreachable!("migration commands return before runtime installation")
         }
     }
 }
@@ -96,16 +80,6 @@ fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
         "verified Unica {} package, runtime, and MCP tools at {}",
         VERSION,
         installed.root.display()
-    );
-    Ok(())
-}
-
-fn install_and_verify_migration(plugin_root: &Path) -> Result<()> {
-    install_and_verify_runtime(plugin_root)?;
-    verify_fresh_prompt_input(plugin_root)?;
-    eprintln!(
-        "verified Unica {} prompt-visible skills through fresh Codex prompt-input",
-        VERSION
     );
     Ok(())
 }
@@ -159,117 +133,28 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_fresh_prompt_input(plugin_root: &Path) -> Result<()> {
-    let codex_home = codex_home_root()?;
-    let output = SystemCommandRunner.run(&CommandSpec::codex(
-        &codex_home,
-        &["debug", "prompt-input", "Проверь доступность Unica skills"],
-    ))?;
-    let proof: serde_json::Value = serde_json::from_str(&output).map_err(|error| {
-        unica_bootstrap::BootstrapError::new(format!(
-            "invalid codex debug prompt-input JSON: {error}"
-        ))
-    })?;
-    for required in [
-        "unica:code-search",
-        "unica:platform-help",
-        "unica:release-support",
-        "unica:v8-runner",
-    ] {
-        if !json_contains_text(&proof, required) {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "fresh Codex prompt-input does not expose installed skill {required}"
-            )));
-        }
-    }
-    let expected_root = format!("plugins/cache/unica/unica/{VERSION}/skills");
-    if !json_contains_normalized_path(&proof, &expected_root) {
-        return Err(unica_bootstrap::BootstrapError::new(format!(
-            "fresh Codex prompt-input does not reference installed Unica skill root: {}",
-            plugin_root.join("skills").display()
-        )));
-    }
-    Ok(())
-}
-
-fn json_contains_text(value: &serde_json::Value, needle: &str) -> bool {
-    match value {
-        serde_json::Value::String(text) => text.contains(needle),
-        serde_json::Value::Array(items) => {
-            items.iter().any(|item| json_contains_text(item, needle))
-        }
-        serde_json::Value::Object(fields) => fields
-            .values()
-            .any(|field| json_contains_text(field, needle)),
-        _ => false,
-    }
-}
-
-fn json_contains_normalized_path(value: &serde_json::Value, needle: &str) -> bool {
-    match value {
-        serde_json::Value::String(text) => text
-            .replace('\\', "/")
-            .to_ascii_lowercase()
-            .contains(needle),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .any(|item| json_contains_normalized_path(item, needle)),
-        serde_json::Value::Object(fields) => fields
-            .values()
-            .any(|field| json_contains_normalized_path(field, needle)),
-        _ => false,
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Run,
     Verify,
-    Migrate,
-    MigratePreflight,
 }
 
-fn parse_command(args: &[String]) -> Result<(Command, PathBuf, Option<String>)> {
-    let usage = "usage: unica-bootstrap <run|verify> --plugin-root <path> | \
-                 unica-bootstrap <migrate|migrate-preflight> --plugin-root <path> \
-                 --marketplace-ref <vX.Y.Z>";
-    if args.len() < 3 || args[1] != "--plugin-root" {
-        return Err(unica_bootstrap::BootstrapError::new(usage));
+fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
+    if args.len() != 3 || args[1] != "--plugin-root" {
+        return Err(unica_bootstrap::BootstrapError::new(
+            "usage: unica-bootstrap <run|verify> --plugin-root <path>",
+        ));
     }
     let command = match args[0].as_str() {
         "run" => Command::Run,
         "verify" => Command::Verify,
-        "migrate" => Command::Migrate,
-        "migrate-preflight" => Command::MigratePreflight,
         command => {
             return Err(unica_bootstrap::BootstrapError::new(format!(
                 "unknown bootstrap command: {command}"
             )))
         }
     };
-    let marketplace_ref = if matches!(command, Command::Migrate | Command::MigratePreflight) {
-        if args.len() != 5 || args[3] != "--marketplace-ref" {
-            return Err(unica_bootstrap::BootstrapError::new(usage));
-        }
-        let marketplace_ref = &args[4];
-        let valid = marketplace_ref.starts_with('v')
-            && marketplace_ref.len() > 1
-            && marketplace_ref.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-            });
-        if !valid {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "migration marketplace ref must be an immutable version tag: {marketplace_ref}"
-            )));
-        }
-        Some(marketplace_ref.clone())
-    } else {
-        if args.len() != 3 {
-            return Err(unica_bootstrap::BootstrapError::new(usage));
-        }
-        None
-    };
-    Ok((command, Path::new(&args[2]).to_path_buf(), marketplace_ref))
+    Ok((command, Path::new(&args[2]).to_path_buf()))
 }
 
 fn runtime_cache_root() -> Result<PathBuf> {
@@ -309,37 +194,5 @@ mod tests {
     fn source_plugin_exposes_required_prompt_visible_skills() {
         let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
         verify_installed_skill_package(&plugin_root).unwrap();
-    }
-
-    #[test]
-    fn prompt_proof_searches_nested_skill_names_and_normalized_paths() {
-        let proof = serde_json::json!({
-            "content": [{
-                "text": r"- unica:code-search (file: C:\Codex\plugins\cache\unica\unica\0.7.5\skills\code-search\SKILL.md)"
-            }]
-        });
-
-        assert!(json_contains_text(&proof, "unica:code-search"));
-        assert!(json_contains_normalized_path(
-            &proof,
-            "c:/codex/plugins/cache/unica/unica/0.7.5/skills"
-        ));
-    }
-
-    #[test]
-    fn migration_command_keeps_explicit_marketplace_ref() {
-        let args = [
-            "migrate".to_string(),
-            "--plugin-root".to_string(),
-            "/tmp/unica".to_string(),
-            "--marketplace-ref".to_string(),
-            "v0.7.8".to_string(),
-        ];
-
-        let (command, plugin_root, marketplace_ref) = parse_command(&args).unwrap();
-
-        assert_eq!(command, Command::Migrate);
-        assert_eq!(plugin_root, PathBuf::from("/tmp/unica"));
-        assert_eq!(marketplace_ref.as_deref(), Some("v0.7.8"));
     }
 }

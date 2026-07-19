@@ -15,8 +15,6 @@ on:
       - "crates/unica-coder/**"
       - "plugins/unica/**"
       - "scripts/ci/**"
-      - "scripts/install-unica.sh"
-      - "scripts/install-unica.ps1"
       - "tests/ci/**"
       - "tests/fixtures/**"
       - "docs/releases/**"
@@ -84,29 +82,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace -- --test-threads=1
 
-  verify-installers:
-    name: Verify installer shim (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-latest
-          - runner: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify POSIX shim
-        if: runner.os != 'Windows'
-        shell: bash
-        run: ./scripts/install-unica.sh --help
-      - name: Verify PowerShell shim
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: .\scripts\install-unica.ps1 -Help
-
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    needs: [classify-changes, verify-source, test-rust-platforms, verify-installers]
+    needs: [classify-changes, verify-source, test-rust-platforms]
     if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}
     strategy:
       fail-fast: false
@@ -185,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: package-runtime
     env:
-      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.7.8' }}
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.8.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -247,66 +226,6 @@ jobs:
           --target "${{ matrix.target }}"
           --expect-download-failure
 
-  legacy-migration-preflight:
-    name: Preflight legacy Unica migration (${{ matrix.legacy_managed_name }})
-    runs-on: windows-2022
-    needs: package-thin
-    strategy:
-      fail-fast: false
-      matrix:
-        legacy_managed_name: [unica-local, unica]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: unica-thin-marketplace
-          path: .build/thin
-      - name: Download pinned Codex and previous stable Unica
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          New-Item -ItemType Directory -Force -Path .build\downloads, .build\codex, .build\legacy | Out-Null
-          gh release download rust-v0.145.0-alpha.18 --repo openai/codex --pattern codex-x86_64-pc-windows-msvc.exe.zip --dir .build\downloads
-          gh release download v0.6.1 --repo IngvarConsulting/unica --pattern unica-codex-marketplace-win-x64.zip --dir .build\downloads
-          $codexHash = (Get-FileHash -Algorithm SHA256 .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip).Hash.ToLowerInvariant()
-          $legacyHash = (Get-FileHash -Algorithm SHA256 .build\downloads\unica-codex-marketplace-win-x64.zip).Hash.ToLowerInvariant()
-          if ($codexHash -ne "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a") { throw "pinned Codex archive checksum mismatch" }
-          if ($legacyHash -ne "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499") { throw "legacy Unica archive checksum mismatch" }
-          Expand-Archive -LiteralPath .build\downloads\codex-x86_64-pc-windows-msvc.exe.zip -DestinationPath .build\codex
-          Expand-Archive -LiteralPath .build\downloads\unica-codex-marketplace-win-x64.zip -DestinationPath .build\legacy
-          Copy-Item -LiteralPath .build\codex\codex-x86_64-pc-windows-msvc.exe -Destination .build\codex\codex.exe
-      - name: Classify the previous stable installation with the candidate bootstrap
-        shell: powershell
-        run: >
-          .\scripts\ci\test-unica-upgrade.ps1
-          -CodexPath .build\codex\codex.exe
-          -LegacyMarketplaceRoot .build\legacy\unica-codex-marketplace-win-x64
-          -CandidatePluginRoot .build\thin\plugins\unica
-          -ReportPath .build\reports\legacy-migration-preflight.json
-          -LegacyManagedName "${{ matrix.legacy_managed_name }}"
-          -Mode Preflight
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: unica-legacy-migration-preflight-${{ matrix.legacy_managed_name }}
-          path: .build/reports/legacy-migration-preflight.json
-          if-no-files-found: warn
-
-  installer:
-    name: Package installer shims
-    runs-on: ubuntu-latest
-    needs: verify-installers
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
-        with:
-          name: unica-installer
-          path: |
-            scripts/install-unica.sh
-            scripts/install-unica.ps1
-          if-no-files-found: error
-
   release-assessment:
     name: Assess Linux runtime on BSP
     runs-on: ubuntu-latest
@@ -338,12 +257,9 @@ jobs:
           if-no-files-found: warn
 
   publish-release-assets:
-    name: Publish runtime and transition assets
+    name: Publish runtime assets
     runs-on: ubuntu-latest
-    needs:
-      - package-runtime
-      - installer
-      - legacy-migration-preflight
+    needs: package-runtime
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -354,18 +270,12 @@ jobs:
           pattern: unica-runtime-*
           path: dist/runtime
           merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: unica-installer
-          path: dist/installer
       - uses: softprops/action-gh-release@v2
         with:
           body_path: docs/releases/${{ github.ref_name }}.md
           files: |
             dist/runtime/unica-runtime-*.tar.gz
             dist/runtime/unica-runtime-*.json
-            dist/installer/install-unica.sh
-            dist/installer/install-unica.ps1
 
   smoke-thin-plugin:
     name: Smoke published thin plugin (${{ matrix.target }})

@@ -576,15 +576,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(data["name"], "unica-local")
             self.assertEqual(data["plugins"][0]["name"], "unica")
 
-    def test_transition_installer_delegates_to_transactional_bootstrap(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        installer = (repo_root / "scripts" / "install-unica.sh").read_text(encoding="utf-8")
-
-        self.assertIn("migrate-preflight", installer)
-        self.assertIn("migrate --plugin-root", installer)
-        self.assertNotIn("plugins/cache", installer)
-        self.assertNotIn("config.toml", installer)
-
     @unittest.skipIf(os.name == "nt", "POSIX executable bits are validated on POSIX CI")
     def test_copy_binary_tree_marks_files_executable(self) -> None:
         module = load_package_module()
@@ -634,7 +625,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                             "schemaVersion": 1,
                             "target": target,
                             "targetTriple": target_triple,
-                            "pluginVersion": "0.7.8",
+                            "pluginVersion": "0.8.0",
                             "asset": {
                                 "name": f"unica-runtime-{target}.tar.gz",
                                 "mediaType": "application/gzip",
@@ -663,7 +654,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 "--bootstrap-root",
                 str(bootstrap_root),
                 "--release-tag",
-                "v0.7.8",
+                "v0.8.0",
                 "--source-commit",
                 "a" * 40,
                 "--out-dir",
@@ -690,13 +681,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertFalse(runtime_manifest["development"])
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
-            self.assertEqual(runtime_manifest["release"]["tag"], "v0.7.8")
+            self.assertEqual(runtime_manifest["release"]["tag"], "v0.8.0")
             self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
             for target, target_data in runtime_manifest["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"
-                    f"v0.7.8/unica-runtime-{target}.tar.gz",
+                    f"v0.8.0/unica-runtime-{target}.tar.gz",
                 )
 
             catalog = json.loads(
@@ -706,7 +697,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             source = catalog["plugins"][0]["source"]
             self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], "v0.7.8")
+            self.assertEqual(source["ref"], "v0.8.0")
             self.assertEqual(source["path"], "./plugins/unica")
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
