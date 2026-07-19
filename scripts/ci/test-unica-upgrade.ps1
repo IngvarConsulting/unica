@@ -65,7 +65,8 @@ $codexCommand = $resolvedCodex
 $legacyParent = Join-Path $codexHome "marketplaces"
 $legacyManagedRoot = Join-Path $legacyParent $LegacyManagedName
 $legacyManagedPathContract = "marketplaces/$LegacyManagedName"
-$legacyPluginSelector = "unica@$LegacyManagedName"
+$legacyMarketplaceName = "unica"
+$legacyPluginSelector = "unica@$legacyMarketplaceName"
 $originalCodexHome = $env:CODEX_HOME
 $originalPath = $env:PATH
 
@@ -103,7 +104,7 @@ try {
         )
     )
     if (@($preflight.removePluginIds) -notcontains $legacyPluginSelector -or
-        @($preflight.removeMarketplaces) -notcontains $LegacyManagedName -or
+        @($preflight.removeMarketplaces) -notcontains $legacyMarketplaceName -or
         -not [bool]$preflight.addCanonicalMarketplace -or
         -not [bool]$preflight.installCanonicalPlugin) {
         throw "candidate preflight did not classify the legacy Unica installation"
@@ -156,6 +157,8 @@ try {
         legacyVersion = $ExpectedLegacyVersion
         legacyManagedName = $LegacyManagedName
         legacyManagedPathContract = $legacyManagedPathContract
+        legacyMarketplaceName = $legacyMarketplaceName
+        legacyPluginSelector = $legacyPluginSelector
         candidateVersion = $candidateVersion
         preflightClassified = $true
         changed = $migrated

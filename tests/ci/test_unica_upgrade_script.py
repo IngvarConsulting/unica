@@ -36,11 +36,12 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
 
         self.assertIn('codex-cli 0.145.0-alpha.18', text)
         self.assertIn('"plugin", "marketplace", "add"', text)
-        self.assertIn('$legacyPluginSelector = "unica@$LegacyManagedName"', text)
+        self.assertIn('$legacyMarketplaceName = "unica"', text)
+        self.assertIn('$legacyPluginSelector = "unica@$legacyMarketplaceName"', text)
         self.assertIn('"plugin", "add", $legacyPluginSelector', text)
         self.assertIn('$_.pluginId -eq $legacyPluginSelector', text)
         self.assertIn('-notcontains $legacyPluginSelector', text)
-        self.assertIn('-notcontains $LegacyManagedName', text)
+        self.assertIn('-notcontains $legacyMarketplaceName', text)
         self.assertIn('"migrate-preflight"', text)
         self.assertIn('"migrate"', text)
         self.assertIn('"plugin", "list", "--available", "--json"', text)
@@ -52,6 +53,8 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
         self.assertIn("legacyManagedName", text)
         self.assertIn('$legacyManagedPathContract = "marketplaces/$LegacyManagedName"', text)
         self.assertIn("legacyManagedPathContract", text)
+        self.assertIn("legacyMarketplaceName", text)
+        self.assertIn("legacyPluginSelector", text)
 
 
 if __name__ == "__main__":
