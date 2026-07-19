@@ -16,11 +16,11 @@ on:
         required: true
         type: string
       release_tag:
-        description: Existing immutable marketplace tag, for example v0.7.6
+        description: Marketplace version tag, for example v0.7.8
         required: true
         type: string
       staging_merge_sha:
-        description: Merge commit that the immutable marketplace tag must resolve to
+        description: Staging merge commit containing the verified plugin payload
         required: false
         type: string
 
@@ -83,13 +83,10 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       STAGING_MERGE_SHA: ${{ inputs.staging_merge_sha }}
     steps:
-      - name: Require existing immutable tag and credential
+      - name: Require staging identity and credential
         run: |
           test -n "$GH_TOKEN"
           test -n "$STAGING_MERGE_SHA"
-          tag_commit="$(git ls-remote --exit-code --tags https://github.com/IngvarConsulting/unica-marketplace.git \
-            "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
-          test "$tag_commit" = "$STAGING_MERGE_SHA"
       - name: Configure Git credentials
         run: gh auth setup-git
       - name: Download catalog candidate
@@ -100,6 +97,10 @@ jobs:
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
+          git -C marketplace fetch origin "$STAGING_MERGE_SHA"
+          git -C marketplace merge-base --is-ancestor "$STAGING_MERGE_SHA" "origin/main"
+          test "$(git -C marketplace rev-parse "$STAGING_MERGE_SHA:plugins/unica")" = \
+            "$(git -C marketplace rev-parse "origin/main:plugins/unica")"
           branch="codex/promote-${RELEASE_TAG}-${SOURCE_RUN_ID}"
           git -C marketplace switch -c "$branch"
           mkdir -p marketplace/.agents/plugins
@@ -107,7 +108,8 @@ jobs:
           git -C marketplace add .agents/plugins/marketplace.json
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "promote: Unica ${RELEASE_TAG}"
+          promotion_sha="$(git -C marketplace rev-parse HEAD)"
           git -C marketplace push -u origin "$branch"
           gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
             --title "Promote Unica ${RELEASE_TAG}" \
-            --body "Points the stable catalog at the existing immutable ${RELEASE_TAG} tag."
+            --body "Points the stable catalog at ${RELEASE_TAG}. Create the signed ${RELEASE_TAG} tag at commit ${promotion_sha} before merging this PR."

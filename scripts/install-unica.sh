@@ -10,7 +10,7 @@ Git and the native transactional bootstrap. The bootstrap reports and retains
 the migration backup used for automatic rollback.
 
 Options:
-  --ref REF         Marketplace branch containing the stable catalog (default: main)
+  --ref REF         Frozen marketplace snapshot used for migration (default: v0.7.8)
   --target TARGET   Override host target: darwin-arm64 or linux-x64
   --codex-home DIR  Codex home directory (default: $CODEX_HOME or ~/.codex)
   -h, --help        Show this help
@@ -18,7 +18,7 @@ EOF
 }
 
 MARKETPLACE_REPOSITORY="https://github.com/IngvarConsulting/unica-marketplace.git"
-MARKETPLACE_REF="${UNICA_MARKETPLACE_REF:-main}"
+MARKETPLACE_REF="${UNICA_MARKETPLACE_REF:-v0.7.8}"
 TARGET="${UNICA_TARGET:-}"
 CODEX_HOME_DIR="${CODEX_HOME:-}"
 
@@ -134,9 +134,9 @@ if [ ! -x "$BOOTSTRAP" ]; then
 fi
 
 echo "==> Preflight Unica migration from $PINNED_REF"
-"$BOOTSTRAP" migrate-preflight --plugin-root "$PLUGIN_ROOT"
+"$BOOTSTRAP" migrate-preflight --plugin-root "$PLUGIN_ROOT" --marketplace-ref "$MARKETPLACE_REF"
 echo "==> Apply transactional Unica migration"
-MIGRATION_OUTPUT="$("$BOOTSTRAP" migrate --plugin-root "$PLUGIN_ROOT")"
+MIGRATION_OUTPUT="$("$BOOTSTRAP" migrate --plugin-root "$PLUGIN_ROOT" --marketplace-ref "$MARKETPLACE_REF")"
 printf '%s\n' "$MIGRATION_OUTPUT"
 BACKUP_DIR="$(printf '%s\n' "$MIGRATION_OUTPUT" | sed -n 's/.*"backupDir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 if [ -n "$BACKUP_DIR" ]; then

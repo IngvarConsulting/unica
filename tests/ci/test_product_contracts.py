@@ -60,7 +60,7 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, readme)
 
-    def test_readme_documents_the_stable_v077_migration_guide(self) -> None:
+    def test_readme_documents_the_stable_v078_migration_guide(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")
         section = readme.split("## Переход со старой установки и откат", 1)[1].split(
@@ -72,10 +72,10 @@ class ProductContractTests(unittest.TestCase):
             "| Ваша версия | Что делать |",
             "`0.3.0`–`0.7.4`",
             "`0.7.5` и новее",
-            "releases/download/v0.7.7/install-unica.sh",
-            "releases/download/v0.7.7/install-unica.ps1",
-            "--ref migration-v0.7.7",
-            "-Ref migration-v0.7.7",
+            "releases/download/v0.7.8/install-unica.sh",
+            "releases/download/v0.7.8/install-unica.ps1",
+            "--ref v0.7.8",
+            "-Ref v0.7.8",
             "codex plugin marketplace upgrade unica",
             "предыдущая установка уже восстановлена",
         )
@@ -95,13 +95,20 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, section.lower())
 
-    def test_v077_release_note_declares_the_legacy_boundary(self) -> None:
+    def test_v076_v077_are_technical_and_v078_is_the_bridge(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        note = (repo_root / "docs/releases/v0.7.7.md").read_text(encoding="utf-8")
+        notes = {
+            version: (repo_root / f"docs/releases/v{version}.md").read_text(encoding="utf-8")
+            for version in ("0.7.6", "0.7.7", "0.7.8")
+        }
 
-        for value in ("#90", "unica-local", "v0.7.7", "v0.8.0", "manual"):
+        for version in ("0.7.6", "0.7.7"):
+            with self.subTest(version=version):
+                self.assertIn("техническ", notes[version].lower())
+                self.assertIn("v0.7.8", notes[version])
+        for value in ("#90", "v0.7.8", "ручн"):
             with self.subTest(value=value):
-                self.assertIn(value, note)
+                self.assertIn(value, notes["0.7.8"].lower())
 
     def test_active_consumer_docs_do_not_describe_fat_local_delivery(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -127,6 +134,7 @@ class ProductContractTests(unittest.TestCase):
             repo_root / "docs/releases/v0.7.5.md",
             repo_root / "docs/releases/v0.7.6.md",
             repo_root / "docs/releases/v0.7.7.md",
+            repo_root / "docs/releases/v0.7.8.md",
         ]
         fat_archive_mentions = [
             str(path.relative_to(repo_root))

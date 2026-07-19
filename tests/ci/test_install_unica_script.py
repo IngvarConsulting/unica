@@ -61,18 +61,22 @@ class InstallUnicaScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = log.read_text(encoding="utf-8").splitlines()
             self.assertIn(
-                "git clone --depth 1 --branch main "
+                "git clone --depth 1 --branch v0.7.8 "
                 "https://github.com/IngvarConsulting/unica-marketplace.git",
                 calls[1],
             )
-            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.7" in line for line in calls))
+            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.8" in line for line in calls))
             bootstrap_calls = [line for line in calls if line.startswith("bootstrap ")]
-            self.assertEqual(
-                bootstrap_calls,
-                [
-                    f"bootstrap migrate-preflight CODEX_HOME={codex_home}",
-                    f"bootstrap migrate CODEX_HOME={codex_home}",
-                ],
+            self.assertEqual(len(bootstrap_calls), 2)
+            self.assertRegex(
+                bootstrap_calls[0],
+                rf"^bootstrap migrate-preflight --plugin-root .+ "
+                rf"--marketplace-ref v0\.7\.8 CODEX_HOME={codex_home}$",
+            )
+            self.assertRegex(
+                bootstrap_calls[1],
+                rf"^bootstrap migrate --plugin-root .+ "
+                rf"--marketplace-ref v0\.7\.8 CODEX_HOME={codex_home}$",
             )
             self.assertIn("Migration backup", result.stdout)
             self.assertIn("Open a new Codex task or restart the client", result.stdout)
@@ -91,7 +95,8 @@ class InstallUnicaScriptTests(unittest.TestCase):
             "python",
         ):
             self.assertNotIn(forbidden, text.lower())
-        self.assertIn('MARKETPLACE_REF="${UNICA_MARKETPLACE_REF:-main}"', text)
+        self.assertIn('MARKETPLACE_REF="${UNICA_MARKETPLACE_REF:-v0.7.8}"', text)
+        self.assertIn('--marketplace-ref "$MARKETPLACE_REF"', text)
         self.assertIn("migrate-preflight", text)
         self.assertIn("migrate", text)
         self.assertIn("Open a new Codex task or restart the client", text)
@@ -105,10 +110,10 @@ if [ "$1" = "clone" ]; then
   eval "destination=\${$#}"
   mkdir -p "$destination/.agents/plugins"
   mkdir -p "$destination/plugins/unica/bootstrap/bin/linux-x64"
-  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.7"}}]}' > "$destination/.agents/plugins/marketplace.json"
+  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.8"}}]}' > "$destination/.agents/plugins/marketplace.json"
   cat > "$destination/plugins/unica/bootstrap/bin/linux-x64/unica-bootstrap" <<'BOOTSTRAP'
 #!/bin/sh
-printf 'bootstrap %s CODEX_HOME=%s\n' "$1" "$CODEX_HOME" >> "$UNICA_TEST_LOG"
+printf 'bootstrap %s CODEX_HOME=%s\n' "$*" "$CODEX_HOME" >> "$UNICA_TEST_LOG"
 if [ "$1" = "migrate-preflight" ]; then
   printf '%s\n' '{"addCanonicalMarketplace":true}'
 else
@@ -125,7 +130,6 @@ exit 0
         path.write_text(text, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-
 class InstallUnicaPowerShellScriptTests(unittest.TestCase):
     def test_windows_shim_is_powershell_51_git_only_and_transactional(self) -> None:
         text = PS_SCRIPT.read_text(encoding="utf-8")
@@ -137,6 +141,8 @@ class InstallUnicaPowerShellScriptTests(unittest.TestCase):
         self.assertIn("unica-bootstrap.exe", text)
         self.assertIn('"migrate-preflight"', text)
         self.assertIn('"migrate"', text)
+        self.assertIn('"--marketplace-ref", $Ref', text)
+        self.assertIn('[string]$Ref = "v0.7.8"', text)
         self.assertIn("Open a new Codex task or restart the client", text)
         self.assertNotIn("pwsh", lower)
         self.assertNotIn("bash", lower)

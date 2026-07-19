@@ -47,9 +47,10 @@ fn run(args: Vec<String>) -> Result<i32> {
         println!("unica-bootstrap {VERSION}");
         return Ok(0);
     }
-    let (command, plugin_root) = parse_command(&args)?;
+    let (command, plugin_root, marketplace_ref) = parse_command(&args)?;
     if matches!(command, Command::Migrate | Command::MigratePreflight) {
-        let engine = MigrationEngine::new(codex_home_root()?, SystemCommandRunner);
+        let engine = MigrationEngine::new(codex_home_root()?, SystemCommandRunner)
+            .with_marketplace_ref(marketplace_ref.expect("migration ref was validated"));
         let plan = engine.preflight()?;
         if command == Command::MigratePreflight {
             println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -228,11 +229,12 @@ enum Command {
     MigratePreflight,
 }
 
-fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
-    if args.len() != 3 || args[1] != "--plugin-root" {
-        return Err(unica_bootstrap::BootstrapError::new(
-            "usage: unica-bootstrap <run|verify|migrate|migrate-preflight> --plugin-root <path>",
-        ));
+fn parse_command(args: &[String]) -> Result<(Command, PathBuf, Option<String>)> {
+    let usage = "usage: unica-bootstrap <run|verify> --plugin-root <path> | \
+                 unica-bootstrap <migrate|migrate-preflight> --plugin-root <path> \
+                 --marketplace-ref <vX.Y.Z>";
+    if args.len() < 3 || args[1] != "--plugin-root" {
+        return Err(unica_bootstrap::BootstrapError::new(usage));
     }
     let command = match args[0].as_str() {
         "run" => Command::Run,
@@ -245,7 +247,29 @@ fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
             )))
         }
     };
-    Ok((command, Path::new(&args[2]).to_path_buf()))
+    let marketplace_ref = if matches!(command, Command::Migrate | Command::MigratePreflight) {
+        if args.len() != 5 || args[3] != "--marketplace-ref" {
+            return Err(unica_bootstrap::BootstrapError::new(usage));
+        }
+        let marketplace_ref = &args[4];
+        let valid = marketplace_ref.starts_with('v')
+            && marketplace_ref.len() > 1
+            && marketplace_ref.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+            });
+        if !valid {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "migration marketplace ref must be an immutable version tag: {marketplace_ref}"
+            )));
+        }
+        Some(marketplace_ref.clone())
+    } else {
+        if args.len() != 3 {
+            return Err(unica_bootstrap::BootstrapError::new(usage));
+        }
+        None
+    };
+    Ok((command, Path::new(&args[2]).to_path_buf(), marketplace_ref))
 }
 
 fn runtime_cache_root() -> Result<PathBuf> {
@@ -300,5 +324,22 @@ mod tests {
             &proof,
             "c:/codex/plugins/cache/unica/unica/0.7.5/skills"
         ));
+    }
+
+    #[test]
+    fn migration_command_keeps_explicit_marketplace_ref() {
+        let args = [
+            "migrate".to_string(),
+            "--plugin-root".to_string(),
+            "/tmp/unica".to_string(),
+            "--marketplace-ref".to_string(),
+            "v0.7.8".to_string(),
+        ];
+
+        let (command, plugin_root, marketplace_ref) = parse_command(&args).unwrap();
+
+        assert_eq!(command, Command::Migrate);
+        assert_eq!(plugin_root, PathBuf::from("/tmp/unica"));
+        assert_eq!(marketplace_ref.as_deref(), Some("v0.7.8"));
     }
 }

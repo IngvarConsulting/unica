@@ -44,6 +44,8 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
         self.assertIn('-notcontains $legacyMarketplaceName', text)
         self.assertIn('"migrate-preflight"', text)
         self.assertIn('"migrate"', text)
+        self.assertIn('$candidateRef = "v$candidateVersion"', text)
+        self.assertGreaterEqual(text.count('"--marketplace-ref", $candidateRef'), 3)
         self.assertIn('"plugin", "list", "--available", "--json"', text)
         self.assertIn("removePluginIds", text)
         self.assertIn("addCanonicalMarketplace", text)

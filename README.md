@@ -63,15 +63,15 @@ codex plugin list
 Для версий `0.3.0`–`0.7.4` на macOS и Linux:
 
 ```sh
-curl -fLO https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.sh
-sh install-unica.sh --ref migration-v0.7.7
+curl -fLO https://github.com/IngvarConsulting/unica/releases/download/v0.7.8/install-unica.sh
+sh install-unica.sh --ref v0.7.8
 ```
 
 Для версий `0.3.0`–`0.7.4` в Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.ps1 -OutFile install-unica.ps1
-.\install-unica.ps1 -Ref migration-v0.7.7
+Invoke-WebRequest https://github.com/IngvarConsulting/unica/releases/download/v0.7.8/install-unica.ps1 -OutFile install-unica.ps1
+.\install-unica.ps1 -Ref v0.7.8
 ```
 
 Для версий `0.7.5` и новее:

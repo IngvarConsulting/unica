@@ -1,5 +1,5 @@
 param(
-    [string]$Ref = "main",
+    [string]$Ref = "v0.7.8",
     [ValidateSet("win-x64")]
     [string]$Target = "win-x64",
     [string]$CodexHome = "",
@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 $MarketplaceRepository = "https://github.com/IngvarConsulting/unica-marketplace.git"
 
-if ($env:UNICA_MARKETPLACE_REF -and $Ref -eq "main") {
+if ($env:UNICA_MARKETPLACE_REF -and $Ref -eq "v0.7.8") {
     $Ref = $env:UNICA_MARKETPLACE_REF
 }
 if ($env:CODEX_HOME -and [string]::IsNullOrWhiteSpace($CodexHome)) {
@@ -93,9 +93,9 @@ try {
     }
 
     Write-Output "==> Preflight Unica migration from $pinnedRef"
-    Invoke-Checked -Program $bootstrap -Arguments @("migrate-preflight", "--plugin-root", $pluginRoot) | Write-Output
+    Invoke-Checked -Program $bootstrap -Arguments @("migrate-preflight", "--plugin-root", $pluginRoot, "--marketplace-ref", $Ref) | Write-Output
     Write-Output "==> Apply transactional Unica migration"
-    $migrationOutput = (Invoke-Checked -Program $bootstrap -Arguments @("migrate", "--plugin-root", $pluginRoot)) -join [Environment]::NewLine
+    $migrationOutput = (Invoke-Checked -Program $bootstrap -Arguments @("migrate", "--plugin-root", $pluginRoot, "--marketplace-ref", $Ref)) -join [Environment]::NewLine
     Write-Output $migrationOutput
     $report = $migrationOutput | ConvertFrom-Json
     if ($report.backupDir) {

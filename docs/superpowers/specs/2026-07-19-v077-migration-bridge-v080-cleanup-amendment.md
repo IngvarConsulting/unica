@@ -1,8 +1,9 @@
-# Unica v0.7.7 Migration Bridge Amendment
+# Unica v0.7.7 Technical Migration Amendment
 
 ## Status
 
-Accepted correction to the `v0.7.6` bridge design.
+Superseded by the stable `v0.7.8` bridge. This document records why `v0.7.7`
+was created, but `v0.7.7` is now classified as a technical release.
 
 ## Barrier finding
 
@@ -12,9 +13,9 @@ a legacy package below `plugins/cache/unica/unica`, which is also the parent of
 the newly installed canonical package. The original transaction verified the
 new package and then removed the captured parent path, deleting its own result.
 
-Because the signed `v0.7.6` tag and release assets are immutable, this defect is
-corrected only in patch release `v0.7.7`. `v0.7.6` is not a supported legacy
-bridge.
+Because the signed `v0.7.6` tag and release assets are immutable, the overlap
+defect was corrected in patch release `v0.7.7`. The later tag/catalog and ref
+propagation defects mean that neither version is a supported legacy bridge.
 
 ## Corrected transaction boundary
 
@@ -24,12 +25,12 @@ package. Non-overlapping legacy paths remain until the installed package,
 runtime, MCP tool list, and prompt-visible skills have been verified. The
 existing transaction backup owns rollback for both groups.
 
-The canonical migration entry points are the immutable `v0.7.7` assets:
+The supported migration entry points are the immutable `v0.7.8` assets:
 
-- `https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.sh`
-- `https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.ps1`
+- `https://github.com/IngvarConsulting/unica/releases/download/v0.7.8/install-unica.sh`
+- `https://github.com/IngvarConsulting/unica/releases/download/v0.7.8/install-unica.ps1`
 
 Issue #90 may close only after the marketplace dispatch-only `bridge` profile
-succeeds against published and promoted `v0.7.7` bytes on macOS, Linux, and
+succeeds against published and promoted `v0.7.8` bytes on macOS, Linux, and
 Windows, including the injected rollback jobs. `v0.8.0` may remove legacy code
 only after that proof exists.

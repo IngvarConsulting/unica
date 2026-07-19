@@ -55,6 +55,7 @@ $candidateVersion = [string]$candidateManifest.version
 if ([string]::IsNullOrWhiteSpace($candidateVersion)) {
     throw "candidate plugin manifest has no version"
 }
+$candidateRef = "v$candidateVersion"
 $bootstrap = Join-Path $candidateRoot "bootstrap\bin\win-x64\unica-bootstrap.exe"
 $bootstrap = Resolve-RequiredPath -Path $bootstrap -Label "candidate Windows bootstrap"
 
@@ -100,7 +101,7 @@ try {
 
     $preflight = Read-JsonOutput -Label "candidate migration preflight" -Output (
         Invoke-Checked -Program $bootstrap -Arguments @(
-            "migrate-preflight", "--plugin-root", $candidateRoot
+            "migrate-preflight", "--plugin-root", $candidateRoot, "--marketplace-ref", $candidateRef
         )
     )
     if (@($preflight.removePluginIds) -notcontains $legacyPluginSelector -or
@@ -115,7 +116,7 @@ try {
     if ($Mode -eq "Full") {
         $migration = Read-JsonOutput -Label "candidate migration" -Output (
             Invoke-Checked -Program $bootstrap -Arguments @(
-                "migrate", "--plugin-root", $candidateRoot
+                "migrate", "--plugin-root", $candidateRoot, "--marketplace-ref", $candidateRef
             )
         )
         if (-not [bool]$migration.changed) {
@@ -137,7 +138,7 @@ try {
 
         $secondPreflight = Read-JsonOutput -Label "idempotent migration preflight" -Output (
             Invoke-Checked -Program $bootstrap -Arguments @(
-                "migrate-preflight", "--plugin-root", $candidateRoot
+                "migrate-preflight", "--plugin-root", $candidateRoot, "--marketplace-ref", $candidateRef
             )
         )
         $idempotent = @($secondPreflight.removePluginIds).Count -eq 0 -and

@@ -19,7 +19,7 @@ def load_module():
 
 
 class VersionContractTests(unittest.TestCase):
-    def test_repository_versions_are_exactly_0_7_7(self) -> None:
+    def test_repository_versions_are_exactly_0_7_8(self) -> None:
         module = load_module()
 
         values = module.read_version_contract(REPO_ROOT)
@@ -27,9 +27,9 @@ class VersionContractTests(unittest.TestCase):
         self.assertEqual(
             values,
             {
-                "workspace": "0.7.7",
-                "plugin": "0.7.7",
-                "tools-lock-unica": "0.7.7",
+                "workspace": "0.7.8",
+                "plugin": "0.7.8",
+                "tools-lock-unica": "0.7.8",
             },
         )
 

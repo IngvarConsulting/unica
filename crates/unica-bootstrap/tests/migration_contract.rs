@@ -883,7 +883,7 @@ fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_direct_canonic
     let runner = NativeCodexMutationRunner::for_issue_90(codex_home.clone());
     let marketplaces = runner.marketplaces();
     let commands = runner.commands();
-    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let engine = MigrationEngine::new(codex_home.clone(), runner).with_marketplace_ref("v0.7.8");
     let plan = classify_discovery(issue_90_duplicate_discovery(&codex_home), &codex_home).unwrap();
 
     engine.apply(plan, |_| Ok(())).unwrap();
@@ -896,6 +896,7 @@ fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_direct_canonic
     );
     assert_alias_plugin_table_is_absent(&codex_home);
     assert_canonical_direct_user_setting(&codex_home);
+    assert_main_registration_wraps_frozen_migration(&commands, &codex_home);
 }
 
 #[test]
@@ -1279,6 +1280,62 @@ fn assert_canonical_marketplace_removals(
     );
 }
 
+fn assert_main_registration_wraps_frozen_migration(
+    commands: &Arc<Mutex<Vec<CommandSpec>>>,
+    codex_home: &Path,
+) {
+    let commands = commands.lock().unwrap();
+    let main = [
+        "plugin",
+        "marketplace",
+        "add",
+        "IngvarConsulting/unica-marketplace",
+        "--ref",
+        "main",
+        "--json",
+    ];
+    let marketplace_root = codex_home.join(".tmp/marketplaces/unica");
+    let marketplace_root = marketplace_root.to_string_lossy();
+    let checkout = [
+        "-C",
+        marketplace_root.as_ref(),
+        "checkout",
+        "--detach",
+        "v0.7.8",
+    ];
+    let plugin_add = ["plugin", "add", "unica@unica", "--json"];
+    let main_upgrade = ["plugin", "marketplace", "upgrade", "unica", "--json"];
+    let main_index = commands
+        .iter()
+        .position(|command| command.args.iter().map(String::as_str).eq(main))
+        .expect("migration must register the canonical marketplace at main");
+    let checkout_index = commands
+        .iter()
+        .position(|command| command.args.iter().map(String::as_str).eq(checkout))
+        .expect("migration must temporarily check out the frozen promotion snapshot");
+    let plugin_index = commands
+        .iter()
+        .position(|command| command.args.iter().map(String::as_str).eq(plugin_add))
+        .expect("migration must install the frozen plugin through Codex CLI");
+    let upgrade_index = commands
+        .iter()
+        .rposition(|command| command.args.iter().map(String::as_str).eq(main_upgrade))
+        .expect("migration must return the canonical marketplace to main");
+
+    assert!(
+        main_index < checkout_index,
+        "frozen checkout happened before main registration"
+    );
+    assert!(
+        checkout_index < plugin_index,
+        "plugin was installed before frozen checkout"
+    );
+    assert!(
+        plugin_index < upgrade_index,
+        "marketplace returned to main before the frozen migration completed"
+    );
+}
+
 fn orphaned_legacy_home(name: &str) -> PathBuf {
     let codex_home = temp_root(name);
     fs::write(
@@ -1554,7 +1611,15 @@ impl NativeCodexMutationRunner {
                 .iter()
                 .map(|name| {
                     if name == "unica" {
-                        canonical_discovery().marketplaces.marketplaces.remove(0)
+                        let mut marketplace =
+                            canonical_discovery().marketplaces.marketplaces.remove(0);
+                        marketplace.root = Some(
+                            self.codex_home
+                                .join(".tmp/marketplaces/unica")
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                        marketplace
                     } else {
                         marketplace(
                             name,

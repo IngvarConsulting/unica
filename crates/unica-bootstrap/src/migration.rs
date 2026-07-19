@@ -536,11 +536,21 @@ fn discovery_signature(discovery: &CodexDiscovery) -> (BTreeSet<String>, BTreeSe
 pub struct MigrationEngine<R> {
     codex_home: PathBuf,
     runner: R,
+    marketplace_ref: String,
 }
 
 impl<R: CommandRunner> MigrationEngine<R> {
     pub fn new(codex_home: PathBuf, runner: R) -> Self {
-        Self { codex_home, runner }
+        Self {
+            codex_home,
+            runner,
+            marketplace_ref: CANONICAL_REF.to_string(),
+        }
+    }
+
+    pub fn with_marketplace_ref(mut self, marketplace_ref: impl Into<String>) -> Self {
+        self.marketplace_ref = marketplace_ref.into();
+        self
     }
 
     pub fn preflight(&self) -> Result<MigrationPlan> {
@@ -554,7 +564,7 @@ impl<R: CommandRunner> MigrationEngine<R> {
 
     pub fn apply<F>(&self, plan: MigrationPlan, verify: F) -> Result<MigrationReport>
     where
-        F: FnOnce(&Path) -> Result<()>,
+        F: Fn(&Path) -> Result<()>,
     {
         if plan.is_noop() {
             let current = discover(&self.runner, &self.codex_home)?;
@@ -611,7 +621,8 @@ impl<R: CommandRunner> MigrationEngine<R> {
             removed_plugins: plan.remove_plugin_ids,
             removed_marketplaces: plan.remove_marketplaces,
             removed_legacy_paths: plan.remove_legacy_paths,
-            upgraded_canonical_marketplace: plan.upgrade_canonical_marketplace,
+            upgraded_canonical_marketplace: plan.upgrade_canonical_marketplace
+                || self.marketplace_ref != CANONICAL_REF,
             installed_plugin: "unica@unica".to_string(),
         })
     }
@@ -624,7 +635,7 @@ impl<R: CommandRunner> MigrationEngine<R> {
         verify: F,
     ) -> Result<()>
     where
-        F: FnOnce(&Path) -> Result<()>,
+        F: Fn(&Path) -> Result<()>,
     {
         let mut plugin_config_mutated = false;
         for plugin_id in &plan.remove_plugin_ids {
@@ -672,6 +683,12 @@ impl<R: CommandRunner> MigrationEngine<R> {
                 "--json",
             ])?;
         }
+        if plan.install_canonical_plugin && self.marketplace_ref != CANONICAL_REF {
+            let discovery = discover(&self.runner, &self.codex_home)?;
+            let marketplace_root =
+                canonical_marketplace_checkout_root(&discovery, &self.codex_home)?;
+            self.checkout_marketplace_ref(&marketplace_root)?;
+        }
         if plan.install_canonical_plugin {
             journal.push(JournalEntry::AddedCanonicalPlugin);
             self.run_codex(&["plugin", "add", "unica@unica", "--json"])?;
@@ -693,6 +710,23 @@ impl<R: CommandRunner> MigrationEngine<R> {
             .filter(|path| !plan.canonical_plugin_root.starts_with(path))
         {
             remove_managed_path(&self.codex_home, path)?;
+        }
+
+        if self.marketplace_ref != CANONICAL_REF {
+            journal.push(JournalEntry::UpgradedCanonicalMarketplace);
+            self.run_codex(&[
+                "plugin",
+                "marketplace",
+                "upgrade",
+                CANONICAL_MARKETPLACE,
+                "--json",
+            ])?;
+            if let Some(settings) = canonical_user_settings {
+                restore_canonical_user_settings(&self.codex_home, settings)?;
+            }
+            let current = discover(&self.runner, &self.codex_home)?;
+            let plugin_root = prove_current_canonical(current, &self.codex_home)?;
+            verify(&plugin_root)?;
         }
 
         let final_state = discover(&self.runner, &self.codex_home)?;
@@ -788,6 +822,56 @@ impl<R: CommandRunner> MigrationEngine<R> {
     fn run_codex(&self, args: &[&str]) -> Result<String> {
         self.runner.run(&CommandSpec::codex(&self.codex_home, args))
     }
+
+    fn checkout_marketplace_ref(&self, marketplace_root: &Path) -> Result<()> {
+        let root = marketplace_root.to_string_lossy().into_owned();
+        let tag_ref = format!("refs/tags/{0}:refs/tags/{0}", self.marketplace_ref);
+        self.runner.run(&CommandSpec::git(&[
+            "-C", &root, "fetch", "--depth", "1", "origin", &tag_ref,
+        ]))?;
+        self.runner.run(&CommandSpec::git(&[
+            "-C",
+            &root,
+            "checkout",
+            "--detach",
+            &self.marketplace_ref,
+        ]))?;
+        Ok(())
+    }
+}
+
+fn canonical_marketplace_checkout_root(
+    discovery: &CodexDiscovery,
+    codex_home: &Path,
+) -> Result<PathBuf> {
+    let matches = discovery
+        .marketplaces
+        .marketplaces
+        .iter()
+        .filter(|marketplace| {
+            marketplace.name == CANONICAL_MARKETPLACE && is_canonical(marketplace)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(BootstrapError::new(
+            "Codex discovery did not expose exactly one canonical marketplace checkout",
+        ));
+    }
+    let root = matches[0]
+        .root
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| BootstrapError::new("canonical marketplace checkout has no managed root"))?;
+    let relative = managed_relative_path(codex_home, &root)?;
+    if relative != Path::new(".tmp/marketplaces/unica")
+        && relative != Path::new("marketplaces/unica")
+    {
+        return Err(BootstrapError::new(format!(
+            "canonical marketplace checkout is outside the supported Codex-managed roots: {}",
+            root.display()
+        )));
+    }
+    Ok(root)
 }
 
 #[derive(Clone, Debug)]
