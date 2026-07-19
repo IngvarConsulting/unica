@@ -78,7 +78,10 @@ def smoke(
             f"packaged bootstrap exited with {result.returncode}: "
             f"{detail or 'no process output'}"
         )
-    if "verified Unica runtime" not in result.stderr:
+    if not (
+        "verified Unica " in result.stderr
+        and " package, runtime, and MCP tools at " in result.stderr
+    ):
         raise SystemExit("packaged bootstrap did not report successful MCP verification")
 
 

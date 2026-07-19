@@ -65,7 +65,7 @@ class InstallUnicaScriptTests(unittest.TestCase):
                 "https://github.com/IngvarConsulting/unica-marketplace.git",
                 calls[1],
             )
-            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.4" in line for line in calls))
+            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.5" in line for line in calls))
             bootstrap_calls = [line for line in calls if line.startswith("bootstrap ")]
             self.assertEqual(
                 bootstrap_calls,
@@ -105,7 +105,7 @@ if [ "$1" = "clone" ]; then
   eval "destination=\${$#}"
   mkdir -p "$destination/.agents/plugins"
   mkdir -p "$destination/plugins/unica/bootstrap/bin/linux-x64"
-  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.4"}}]}' > "$destination/.agents/plugins/marketplace.json"
+  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.5"}}]}' > "$destination/.agents/plugins/marketplace.json"
   cat > "$destination/plugins/unica/bootstrap/bin/linux-x64/unica-bootstrap" <<'BOOTSTRAP'
 #!/bin/sh
 printf 'bootstrap %s CODEX_HOME=%s\n' "$1" "$CODEX_HOME" >> "$UNICA_TEST_LOG"

@@ -76,7 +76,10 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                 args=[],
                 returncode=0,
                 stdout="",
-                stderr="verified Unica runtime 0.7.4 and MCP tools",
+                stderr=(
+                    "verified Unica 0.7.5 package, runtime, and MCP tools at "
+                    "/tmp/unica/runtimes/0.7.5/linux-x64"
+                ),
             )
 
             with patch.object(module.subprocess, "run", return_value=result):

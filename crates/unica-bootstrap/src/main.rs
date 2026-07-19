@@ -291,14 +291,14 @@ mod tests {
     fn prompt_proof_searches_nested_skill_names_and_normalized_paths() {
         let proof = serde_json::json!({
             "content": [{
-                "text": r"- unica:code-search (file: C:\Codex\plugins\cache\unica\unica\0.7.4\skills\code-search\SKILL.md)"
+                "text": r"- unica:code-search (file: C:\Codex\plugins\cache\unica\unica\0.7.5\skills\code-search\SKILL.md)"
             }]
         });
 
         assert!(json_contains_text(&proof, "unica:code-search"));
         assert!(json_contains_normalized_path(
             &proof,
-            "c:/codex/plugins/cache/unica/unica/0.7.4/skills"
+            "c:/codex/plugins/cache/unica/unica/0.7.5/skills"
         ));
     }
 }
