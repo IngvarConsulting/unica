@@ -45,9 +45,11 @@ Runtime stdout is JSON-RPC only.
 The shared native migration engine discovers marketplaces and plugins through
 Codex JSON commands. Preflight rejects an unknown source that owns the reserved
 `unica` name. Apply stores an exact config snapshot, journals every successful
-Codex mutation, installs canonical `unica@unica`, proves discovery, and rolls
-back inverse commands plus the config snapshot on failure. Transition shell
-scripts only obtain the stable Git package and invoke this engine.
+Codex mutation, installs canonical `unica@unica`, proves discovery, installs the
+checksum-pinned runtime, and requires MCP initialize plus the public tool set
+before deleting exact legacy paths. It rolls back inverse commands, config, and
+backed-up legacy paths on failure. Transition shell scripts only obtain the
+stable Git package and invoke this engine.
 
 ## Publication
 

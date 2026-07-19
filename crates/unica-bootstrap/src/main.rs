@@ -54,37 +54,48 @@ fn run(args: Vec<String>) -> Result<i32> {
         if command == Command::MigratePreflight {
             println!("{}", serde_json::to_string_pretty(&plan)?);
         } else {
-            let report = engine.apply(plan)?;
+            let report = engine.apply(plan, || install_and_verify_runtime(&plugin_root))?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         return Ok(0);
     }
 
-    let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
-    let host = HostTarget::current()?;
-    let cache_root = runtime_cache_root()?;
-    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
-    let installed = installer.ensure(&manifest, host)?;
-
     match command {
-        Command::Run => launch_runtime(&installed.entrypoint, &[]),
+        Command::Run => {
+            let installed = install_runtime(&plugin_root)?;
+            launch_runtime(&installed.entrypoint, &[])
+        }
         Command::Verify => {
-            verify_mcp_runtime(
-                &installed.entrypoint,
-                &installed.root,
-                Duration::from_secs(20),
-            )?;
-            eprintln!(
-                "verified Unica runtime {} and MCP tools at {}",
-                VERSION,
-                installed.root.display()
-            );
+            install_and_verify_runtime(&plugin_root)?;
             Ok(0)
         }
         Command::Migrate | Command::MigratePreflight => {
             unreachable!("migration commands return before runtime installation")
         }
     }
+}
+
+fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstallation> {
+    let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
+    let host = HostTarget::current()?;
+    let cache_root = runtime_cache_root()?;
+    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
+    installer.ensure(&manifest, host)
+}
+
+fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
+    let installed = install_runtime(plugin_root)?;
+    verify_mcp_runtime(
+        &installed.entrypoint,
+        &installed.root,
+        Duration::from_secs(20),
+    )?;
+    eprintln!(
+        "verified Unica runtime {} and MCP tools at {}",
+        VERSION,
+        installed.root.display()
+    );
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

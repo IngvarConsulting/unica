@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       release_tag:
-        description: Existing immutable marketplace tag, for example v0.7.2
+        description: Existing immutable marketplace tag, for example v0.7.3
         required: true
         type: string
       staging_merge_sha:

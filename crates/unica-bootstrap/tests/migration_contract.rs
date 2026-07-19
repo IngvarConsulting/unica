@@ -81,25 +81,122 @@ fn classifies_local_and_unica_local_duplicates_as_one_legacy_migration() {
 
 #[test]
 fn canonical_git_marketplace_and_installed_plugin_are_idempotent() {
-    let discovery = CodexDiscovery {
-        marketplaces: MarketplaceList {
-            marketplaces: vec![marketplace(
-                "unica",
-                "git",
-                "https://github.com/IngvarConsulting/unica-marketplace.git",
-            )],
-            ..Default::default()
-        },
-        plugins: PluginList {
-            installed: vec![plugin("unica@unica", "unica", true)],
-            available: vec![],
-            ..Default::default()
-        },
-    };
+    let discovery = canonical_discovery();
 
     let plan = classify_discovery(discovery, Path::new("/codex-home")).unwrap();
 
     assert!(plan.is_noop());
+}
+
+#[test]
+fn canonical_discovery_still_classifies_orphaned_legacy_config_and_paths() {
+    let codex_home = temp_root("orphaned-preflight");
+    fs::write(
+        codex_home.join("config.toml"),
+        b"[plugins.\"unica@unica-local\"]\nenabled = true\n\n[plugins.\"unica@unica\"]\nenabled = true\n",
+    )
+    .unwrap();
+    let marketplace = codex_home.join("marketplaces/unica-local");
+    let cache = codex_home.join("plugins/cache/unica-local");
+    fs::create_dir_all(&marketplace).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+
+    assert_eq!(plan.remove_plugin_ids, vec!["unica@unica-local"]);
+    assert!(plan.remove_marketplaces.is_empty());
+    assert!(!plan.add_canonical_marketplace);
+    assert!(!plan.install_canonical_plugin);
+    assert_eq!(plan.remove_legacy_paths, vec![marketplace, cache]);
+}
+
+#[test]
+fn successful_orphan_cleanup_retains_exact_backup_and_becomes_idempotent() {
+    let codex_home = orphaned_legacy_home("orphaned-success");
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), false);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+
+    let verify_home = codex_home.clone();
+    let report = engine
+        .apply(plan, || {
+            assert!(verify_home.join("marketplaces/unica-local").exists());
+            assert!(verify_home.join("plugins/cache/unica-local").exists());
+            Ok(())
+        })
+        .unwrap();
+
+    let backup = report.backup_dir.unwrap();
+    assert!(!codex_home.join("marketplaces/unica-local").exists());
+    assert!(!codex_home.join("plugins/cache/unica-local").exists());
+    assert_eq!(
+        fs::read_to_string(codex_home.join("config.toml")).unwrap(),
+        canonical_config()
+    );
+    assert_eq!(
+        fs::read_to_string(backup.join("legacy-paths/marketplaces/unica-local/marker")).unwrap(),
+        "marketplace"
+    );
+    assert_eq!(
+        fs::read_to_string(backup.join("legacy-paths/plugins/cache/unica-local/marker")).unwrap(),
+        "cache"
+    );
+    assert!(engine.preflight().unwrap().is_noop());
+}
+
+#[test]
+fn failed_post_cleanup_proof_restores_config_and_exact_legacy_paths() {
+    let codex_home = orphaned_legacy_home("orphaned-rollback");
+    let original_config = fs::read(codex_home.join("config.toml")).unwrap();
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), true);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+
+    let error = engine.apply(plan, || Ok(())).unwrap_err();
+
+    assert!(error.to_string().contains("rolled back"), "{error}");
+    assert_eq!(
+        fs::read(codex_home.join("config.toml")).unwrap(),
+        original_config
+    );
+    assert_eq!(
+        fs::read_to_string(codex_home.join("marketplaces/unica-local/marker")).unwrap(),
+        "marketplace"
+    );
+    assert_eq!(
+        fs::read_to_string(codex_home.join("plugins/cache/unica-local/marker")).unwrap(),
+        "cache"
+    );
+}
+
+#[test]
+fn failed_runtime_verification_rolls_back_before_legacy_cleanup() {
+    let codex_home = orphaned_legacy_home("verification-rollback");
+    let original_config = fs::read(codex_home.join("config.toml")).unwrap();
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), false);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+
+    let error = engine
+        .apply(plan, || {
+            Err(BootstrapError::new("injected MCP verification failure"))
+        })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("rolled back"), "{error}");
+    assert!(error.to_string().contains("MCP verification"), "{error}");
+    assert_eq!(
+        fs::read(codex_home.join("config.toml")).unwrap(),
+        original_config
+    );
+    assert_eq!(
+        fs::read_to_string(codex_home.join("marketplaces/unica-local/marker")).unwrap(),
+        "marketplace"
+    );
+    assert_eq!(
+        fs::read_to_string(codex_home.join("plugins/cache/unica-local/marker")).unwrap(),
+        "cache"
+    );
 }
 
 #[test]
@@ -153,7 +250,7 @@ fn each_mutation_failure_restores_exact_config_and_keeps_backup() {
         let engine = MigrationEngine::new(codex_home.clone(), runner);
         let plan = classify_discovery(legacy_discovery(), &codex_home).unwrap();
 
-        let error = engine.apply(plan).unwrap_err();
+        let error = engine.apply(plan, || Ok(())).unwrap_err();
 
         assert!(error.to_string().contains("rolled back"), "{error}");
         assert_eq!(fs::read(codex_home.join("config.toml")).unwrap(), original);
@@ -176,6 +273,99 @@ fn legacy_discovery() -> CodexDiscovery {
             installed: vec![plugin("unica@unica-local", "unica-local", true)],
             ..Default::default()
         },
+    }
+}
+
+fn canonical_discovery() -> CodexDiscovery {
+    CodexDiscovery {
+        marketplaces: MarketplaceList {
+            marketplaces: vec![marketplace(
+                "unica",
+                "git",
+                "https://github.com/IngvarConsulting/unica-marketplace.git",
+            )],
+            ..Default::default()
+        },
+        plugins: PluginList {
+            installed: vec![plugin("unica@unica", "unica", true)],
+            available: vec![],
+            ..Default::default()
+        },
+    }
+}
+
+fn canonical_config() -> &'static str {
+    "[plugins.\"unica@unica\"]\nenabled = true\n"
+}
+
+fn orphaned_legacy_home(name: &str) -> PathBuf {
+    let codex_home = temp_root(name);
+    fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            "[plugins.\"unica@unica-local\"]\nenabled = true\n\n{}",
+            canonical_config()
+        ),
+    )
+    .unwrap();
+    let marketplace = codex_home.join("marketplaces/unica-local");
+    let cache = codex_home.join("plugins/cache/unica-local");
+    fs::create_dir_all(&marketplace).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(marketplace.join("marker"), "marketplace").unwrap();
+    fs::write(cache.join("marker"), "cache").unwrap();
+    codex_home
+}
+
+struct OrphanCleanupRunner {
+    codex_home: PathBuf,
+    fail_final_plugin_discovery: bool,
+    plugin_discoveries: Mutex<usize>,
+}
+
+impl OrphanCleanupRunner {
+    fn new(codex_home: PathBuf, fail_final_plugin_discovery: bool) -> Self {
+        Self {
+            codex_home,
+            fail_final_plugin_discovery,
+            plugin_discoveries: Mutex::new(0),
+        }
+    }
+}
+
+impl CommandRunner for OrphanCleanupRunner {
+    fn run(&self, command: &CommandSpec) -> Result<String> {
+        if command.program == "git" {
+            return Ok(String::new());
+        }
+        if command
+            .args
+            .ends_with(&["marketplace".into(), "list".into(), "--json".into()])
+        {
+            return Ok(serde_json::to_string(&canonical_discovery().marketplaces).unwrap());
+        }
+        if command
+            .args
+            .ends_with(&["list".into(), "--available".into(), "--json".into()])
+        {
+            let mut discoveries = self.plugin_discoveries.lock().unwrap();
+            *discoveries += 1;
+            if self.fail_final_plugin_discovery && *discoveries == 2 {
+                return Ok(serde_json::to_string(&PluginList::default()).unwrap());
+            }
+            return Ok(serde_json::to_string(&canonical_discovery().plugins).unwrap());
+        }
+        if command.args
+            == [
+                "plugin".to_string(),
+                "remove".to_string(),
+                "unica@unica-local".to_string(),
+                "--json".to_string(),
+            ]
+        {
+            fs::write(self.codex_home.join("config.toml"), canonical_config()).unwrap();
+        }
+        Ok("{}".to_string())
     }
 }
 
