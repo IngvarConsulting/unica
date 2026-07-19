@@ -216,30 +216,26 @@ def write_manifest(plugin_dir: Path, grouped_tools: dict[str, dict], lock_file: 
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def write_packaged_mcp_launcher(plugin_dir: Path, grouped_tools: dict[str, dict]) -> None:
-    unica = grouped_tools.get("unica")
-    if not unica:
-        raise SystemExit("packaged Unica plugin requires a bundled unica binary")
-    binaries = unica.get("binaries", {})
-    if len(binaries) != 1:
-        raise SystemExit(
-            "packaged Unica launcher requires exactly one target-specific unica binary; "
-            f"got {len(binaries)} targets: {', '.join(sorted(binaries))}"
-        )
-
-    _target, binary = next(iter(binaries.items()))
-    binary_path = binary["binaryPath"]
+def write_packaged_mcp_launcher(
+    plugin_dir: Path, _grouped_tools: dict[str, dict] | None = None
+) -> None:
     mcp_path = plugin_dir / ".mcp.json"
     mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["unica"]
-    server["command"] = f"./{binary_path}"
-    server["args"] = []
+    server["command"] = "git"
+    server["args"] = [
+        "-c",
+        (
+            'alias.unica-bootstrap=!f() { root="$PWD/${GIT_PREFIX:-}"; '
+            'exec sh "${root}bootstrap/launch.sh" "$root"; }; f'
+        ),
+        "unica-bootstrap",
+    ]
     server["cwd"] = "."
     server["note"] = (
-        "Single public Unica stdio MCP orchestrator. Packaged archives launch "
-        "the bundled unica binary directly; it owns workspace/cache coordination "
-        "and resolves bundled build, code-analysis, standards, and XML/JSON DSL "
-        "adapters internally."
+        "Single public Unica stdio MCP orchestrator. The public Git package enters "
+        "through a command-scoped Git shell alias, selects a native bootstrap for "
+        "the host, verifies the pinned runtime, and transparently launches unica."
     )
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
