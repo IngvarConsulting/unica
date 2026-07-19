@@ -1099,7 +1099,7 @@ fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
         )
     };
     if replaced != 0 {
-        let _ = fs::remove_file(&backup);
+        remove_windows_replace_backup(&backup)?;
         return Ok(());
     }
 
@@ -1128,7 +1128,7 @@ fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
                     backup.display()
                 )));
             }
-            let _ = fs::remove_file(&backup);
+            remove_windows_replace_backup(&backup)?;
             Ok(())
         }
         WindowsReplaceFailureState::OtherNamesUnchanged => Err(BootstrapError::new(format!(
@@ -1164,6 +1164,18 @@ fn windows_replace_failure_state(error_code: Option<i32>) -> WindowsReplaceFailu
             WindowsReplaceFailureState::DestinationMovedToBackup
         }
         _ => WindowsReplaceFailureState::OtherNamesUnchanged,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn remove_windows_replace_backup(backup: &Path) -> Result<()> {
+    match fs::remove_file(backup) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(BootstrapError::new(format!(
+            "atomic config replacement succeeded but failed to delete retained recovery artifact {}: {error}",
+            backup.display()
+        ))),
     }
 }
 
@@ -1355,7 +1367,10 @@ fn remove_managed_path(codex_home: &Path, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod windows_replace_failure_tests {
-    use super::{windows_replace_failure_state, WindowsReplaceFailureState};
+    use super::{
+        remove_windows_replace_backup, windows_replace_failure_state, WindowsReplaceFailureState,
+    };
+    use std::fs;
 
     #[test]
     fn documented_unchanged_name_failures_do_not_request_recovery_move() {
@@ -1385,5 +1400,33 @@ mod windows_replace_failure_tests {
             windows_replace_failure_state(None),
             WindowsReplaceFailureState::OtherNamesUnchanged
         );
+    }
+
+    #[test]
+    fn backup_cleanup_failure_reports_the_retained_artifact_path() {
+        let backup = std::env::temp_dir().join(format!(
+            ".config.toml.replace-backup-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&backup).unwrap();
+
+        let error = remove_windows_replace_backup(&backup).unwrap_err();
+
+        assert!(error.to_string().contains("retained recovery artifact"));
+        assert!(error
+            .to_string()
+            .contains(&backup.to_string_lossy().to_string()));
+        assert!(backup.is_dir());
+        fs::remove_dir(backup).unwrap();
+    }
+
+    #[test]
+    fn backup_cleanup_accepts_an_already_absent_artifact() {
+        let backup = std::env::temp_dir().join(format!(
+            ".config.toml.replace-backup-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+
+        remove_windows_replace_backup(&backup).unwrap();
     }
 }

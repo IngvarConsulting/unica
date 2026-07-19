@@ -850,6 +850,14 @@ fn windows_atomic_replace_source_uses_supported_flags_and_partial_failure_states
             "Windows replacement must handle {documented_error} explicitly"
         );
     }
+    assert!(
+        !source.contains("let _ = fs::remove_file(&backup)"),
+        "successful Windows replacement must not hide backup cleanup failures"
+    );
+    assert!(
+        source.contains("retained recovery artifact"),
+        "backup cleanup errors must identify the retained recovery artifact"
+    );
 }
 
 #[test]
