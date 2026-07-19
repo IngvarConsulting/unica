@@ -3,11 +3,14 @@
 ## Initialize
 
 1. Source checkout `.mcp.json` starts `cargo run --manifest-path ../../Cargo.toml --bin unica` from the plugin root.
-2. Packaged `.mcp.json` starts `./bin/<target>/unica` directly with `cwd` set
-   to the plugin root.
-3. The Rust runtime resolver starts internal bundled tools directly from
-   `bin/<target>/<tool>`.
-4. MCP `initialize` returns `serverInfo.name = "unica"`.
+2. Packaged `.mcp.json` invokes a command-scoped Git shell alias. The portable
+   selector starts one native `unica-bootstrap` for the current host.
+3. Bootstrap validates the pinned release manifest, obtains or reuses an atomic
+   runtime cache, then replaces itself with or supervises `unica` while
+   preserving stdio.
+4. The Rust runtime resolver starts internal bundled tools directly from the
+   cached `bin/<target>/<tool>` after SHA-256 verification.
+5. MCP `initialize` returns `serverInfo.name = "unica"`.
 
 ## Tool List
 
@@ -122,3 +125,18 @@ Bundled executable versions and assets are selected from
 `plugins/unica/third-party/tools.lock.json`. CI validates the CLI/MCP surface of
 the artifact selected by that lock rather than embedding a second analyzer
 version constant.
+
+## Bootstrap Cache Publication
+
+1. The manifest must identify the exact source commit, `v<plugin-version>` tag,
+   approved GitHub release origin, and all three supported targets.
+2. A per-version/target lock serializes population under
+   `$CODEX_HOME/unica/runtimes`.
+3. Download and extraction occur in a UUID transaction directory on the same
+   filesystem as the final cache.
+4. Archive membership and SHA-256 hashes must exactly match the manifest.
+5. `.ready.json` is written only after verification; the transaction is renamed
+   atomically. Invalid prior state is quarantined and removed by the owning
+   transaction.
+6. `verify` performs MCP `initialize` and `tools/list` and requires the stable
+   project/status and standards tools before reporting success.

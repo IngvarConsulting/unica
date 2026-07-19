@@ -23,9 +23,12 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         release_paths = [
             ".agents/plugins/marketplace.json",
             ".github/workflows/unica-plugin-release.yml",
+            ".github/workflows/publish-unica-marketplace.yml",
             "Cargo.toml",
             "Cargo.lock",
             "crates/unica-coder/Cargo.toml",
+            "crates/unica-bootstrap/Cargo.toml",
+            "crates/unica-bootstrap/src/main.rs",
             "crates/unica-coder/build.rs",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
@@ -37,6 +40,8 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/release-assessment.py",
             "scripts/ci/build-unica-tools.py",
             "scripts/ci/package-unica-plugin.py",
+            "scripts/ci/package-unica-runtime.py",
+            "scripts/ci/verify-release-assets.py",
             "scripts/install-unica.sh",
             "scripts/install-unica.ps1",
         ]

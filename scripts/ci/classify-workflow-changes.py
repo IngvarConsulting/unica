@@ -11,9 +11,11 @@ from typing import TextIO
 RELEASE_ARTIFACT_PATHS = {
     ".agents/plugins/marketplace.json",
     ".github/workflows/unica-plugin-release.yml",
+    ".github/workflows/publish-unica-marketplace.yml",
     "Cargo.toml",
     "Cargo.lock",
     "crates/unica-coder/Cargo.toml",
+    "crates/unica-bootstrap/Cargo.toml",
     "plugins/unica/.codex-plugin/plugin.json",
     "plugins/unica/.mcp.json",
     "plugins/unica/third-party/tools.lock.json",
@@ -22,11 +24,14 @@ RELEASE_ARTIFACT_PATHS = {
     "scripts/ci/check-tool-contracts.py",
     "scripts/ci/release-assessment.py",
     "scripts/ci/package-unica-plugin.py",
+    "scripts/ci/package-unica-runtime.py",
+    "scripts/ci/verify-release-assets.py",
     "scripts/install-unica.sh",
     "scripts/install-unica.ps1",
 }
 
 RELEASE_ARTIFACT_PREFIXES = (
+    "crates/unica-bootstrap/",
     "crates/unica-coder/",
 )
 

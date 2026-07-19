@@ -460,6 +460,29 @@ for raw in sys.stdin:
             self.assertEqual(module.plugin_root_for(extracted).name, "unica")
             self.assertTrue(extracted.is_file())
 
+    def test_extract_unica_binary_from_thin_delivery_runtime_archive(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime_root = root / "runtime"
+            binary = runtime_root / "bin" / "linux-x64" / "unica"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+            (runtime_root / "third-party").mkdir()
+            (runtime_root / "third-party" / "manifest.json").write_text("{}", encoding="utf-8")
+            archive = root / "unica-runtime-linux-x64.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                tf.add(binary, arcname="bin/linux-x64/unica")
+                tf.add(
+                    runtime_root / "third-party" / "manifest.json",
+                    arcname="third-party/manifest.json",
+                )
+
+            extracted = module.extract_marketplace_archive(archive, root / "extract")
+
+            self.assertEqual(extracted.relative_to(module.plugin_root_for(extracted)).as_posix(), "bin/linux-x64/unica")
+
 
 if __name__ == "__main__":
     unittest.main()

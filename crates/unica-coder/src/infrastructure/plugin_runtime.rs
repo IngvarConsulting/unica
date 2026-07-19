@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub fn find_plugin_root(cwd: &Path) -> Option<PathBuf> {
     if let Ok(root) = env::var("UNICA_PLUGIN_ROOT") {
         let root = PathBuf::from(root);
-        if root.join("skills").is_dir() {
+        if is_plugin_runtime_root(&root) {
             return Some(root);
         }
     }
@@ -40,11 +40,16 @@ fn find_plugin_root_with_exe(cwd: &Path, current_exe: Option<&Path>) -> Option<P
 
 fn plugin_root_containing_exe(exe: &Path) -> Option<PathBuf> {
     for base in exe.ancestors() {
-        if base.join("skills").is_dir() && base.join(".mcp.json").is_file() {
+        if is_plugin_runtime_root(base) {
             return Some(base.to_path_buf());
         }
     }
     None
+}
+
+fn is_plugin_runtime_root(base: &Path) -> bool {
+    (base.join("skills").is_dir() && base.join(".mcp.json").is_file())
+        || base.join("third-party").join("manifest.json").is_file()
 }
 
 fn plugin_root_from_base(base: &Path) -> Option<PathBuf> {
@@ -107,6 +112,21 @@ mod tests {
         assert_eq!(
             find_plugin_root_with_exe(&cwd, Some(&exe)),
             Some(plugin_root)
+        );
+    }
+
+    #[test]
+    fn downloaded_runtime_root_is_discovered_from_its_tool_manifest() {
+        let root = temp_root("runtime-cache-root");
+        let runtime_root = root.join("runtimes/0.7.0/linux-x64");
+        fs::create_dir_all(runtime_root.join("third-party")).unwrap();
+        fs::write(runtime_root.join("third-party/manifest.json"), "{}").unwrap();
+        let exe = runtime_root.join("bin/linux-x64/unica");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+        assert_eq!(
+            find_plugin_root_with_exe(&root.join("workspace"), Some(&exe)),
+            Some(runtime_root)
         );
     }
 

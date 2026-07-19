@@ -41,12 +41,43 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(ignored=ignored):
                 self.assertIn(ignored, text)
 
-    def test_readme_describes_checked_in_source_manifest_placeholder(self) -> None:
+    def test_readme_documents_public_marketplace_lifecycle(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("checked-in placeholder `third-party/manifest.json`", readme)
-        self.assertIn("generated marketplace archives overwrite", readme)
+        required = (
+            "codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main",
+            "codex plugin add unica@unica",
+            "codex plugin marketplace upgrade unica",
+            "codex plugin remove unica@unica",
+            "codex plugin marketplace remove unica",
+            "Git",
+            "new Codex task",
+            "SHA-256",
+            "$CODEX_HOME/unica/runtimes",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, readme)
+
+    def test_active_consumer_docs_do_not_describe_fat_local_delivery(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        paths = [
+            repo_root / "README.md",
+            repo_root / "plugins/unica/README.md",
+            repo_root / "docs/releases/v0.7.0.md",
+            repo_root / "spec/acceptance/unica-mcp-validation.md",
+            repo_root / "spec/architecture/arc42/06-runtime-view.md",
+            repo_root / "spec/architecture/arc42/07-deployment-view.md",
+        ]
+        forbidden = ("unica-local", "unica-codex-marketplace-")
+        matches = [
+            f"{path.relative_to(repo_root)}:{needle}"
+            for path in paths
+            for needle in forbidden
+            if needle in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(matches, [])
 
     def test_superpowers_plans_are_marked_historical(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
