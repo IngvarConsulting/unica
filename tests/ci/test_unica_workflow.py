@@ -5,9 +5,13 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
+HISTORICAL_PLAN = (
+    REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-19-cross-repo-upgrade-regression.md"
+)
 
 
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
@@ -91,9 +95,28 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
         release = self.release_text()
+        violations: dict[str, list[str]] = {}
+
+        for workflow in sorted(WORKFLOWS_DIR.glob("*.yml")):
+            text = workflow.read_text(encoding="utf-8")
+            markers = [
+                marker
+                for marker in ("-Mode Full", "legacy-migration-full")
+                if marker in text
+            ]
+            if markers:
+                violations[workflow.name] = markers
 
         self.assertFalse(LEGACY_WORKFLOW.exists())
         self.assertNotIn("unica-legacy-migration.yml", release)
+        self.assertEqual({}, violations, f"source workflows own full migration policy: {violations}")
+
+    def test_historical_plan_references_the_actual_workflow_test_module(self) -> None:
+        text = HISTORICAL_PLAN.read_text(encoding="utf-8")
+
+        self.assertIn("tests/ci/test_unica_workflow.py", text)
+        self.assertIn("tests.ci.test_unica_workflow -v", text)
+        self.assertNotIn("test_unica_workflows", text)
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         text = self.release_text()

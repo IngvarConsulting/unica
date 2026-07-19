@@ -85,7 +85,7 @@ Expected: all focused tests pass; existing exact-byte rollback assertions remain
 - Modify: `.github/workflows/unica-plugin-release.yml`
 - Modify: `scripts/ci/test-unica-upgrade.ps1`
 - Modify: `tests/ci/test_unica_upgrade_script.py`
-- Modify: `tests/ci/test_unica_workflows.py`
+- Modify: `tests/ci/test_unica_workflow.py`
 
 **Step 1: Remove the duplicate stable workflow from the source repo**
 
@@ -100,7 +100,7 @@ Retain the two managed-root matrix entries (`unica-local`, `unica`) and make the
 Require the release preflight matrix for both managed roots and forbid the deleted stable workflow. Run:
 
 ```bash
-python3.12 -m unittest tests.ci.test_unica_upgrade_script tests.ci.test_unica_workflows -v
+python3.12 -m unittest tests.ci.test_unica_upgrade_script tests.ci.test_unica_workflow -v
 ```
 
 ### Task 4: Make marketplace full regression manually reproducible
