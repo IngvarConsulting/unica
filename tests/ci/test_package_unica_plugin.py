@@ -541,14 +541,10 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(bin_roots, [darwin_bundle / "bin"])
         self.assertEqual(sorted(grouped["v8-runner"]["binaries"]), ["darwin-arm64"])
 
-    def test_archive_base_name_is_platform_specific_for_release_packages(self) -> None:
+    def test_archive_base_name_is_not_used_for_thin_marketplace(self) -> None:
         module = load_package_module()
 
-        self.assertEqual(
-            module.archive_base_name("0.3.3", target="darwin-arm64"),
-            "unica-codex-marketplace-darwin-arm64",
-        )
-        self.assertEqual(module.archive_base_name("0.3.3", target=None), "unica-codex-marketplace-0.3.3")
+        self.assertFalse(hasattr(module, "archive_base_name"))
 
     def test_write_marketplace_can_use_local_debug_name(self) -> None:
         module = load_package_module()
@@ -609,114 +605,120 @@ class PackageUnicaPluginTests(unittest.TestCase):
             copied_mode = (dest / "v8-runner").stat().st_mode
             self.assertTrue(copied_mode & stat.S_IXUSR)
 
-    @unittest.skipIf(os.name == "nt", "generated native binary smoke is POSIX-only")
-    def test_generated_marketplace_runs_packaged_unica_help_natively(self) -> None:
+    def test_generated_marketplace_is_thin_pinned_and_target_neutral(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
-        target = "darwin-arm64" if os.uname().sysname == "Darwin" else "linux-x64"
-        target_triple = {
+        target_triples = {
             "darwin-arm64": "aarch64-apple-darwin",
             "linux-x64": "x86_64-unknown-linux-gnu",
-        }[target]
+            "win-x64": "x86_64-pc-windows-msvc",
+        }
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            tools_root = root / "tools"
-            bundle = tools_root / f"unica-tools-{target}"
-            bin_dir = bundle / "bin" / target
-            bin_dir.mkdir(parents=True)
-            binary = bin_dir / "unica"
-            binary.write_text(
-                "#!/usr/bin/env sh\n"
-                "if [ \"$1\" = \"--help\" ]; then\n"
-                "  echo 'unica 0.7.0'\n"
-                "  echo 'stdio MCP orchestrator for Unica workflows'\n"
-                "  exit 0\n"
-                "fi\n"
-                "exit 64\n",
-                encoding="utf-8",
-            )
-            binary.chmod(0o755)
-            (bundle / "tools.json").write_text(
-                json.dumps(
-                    {
-                        "target": target,
-                        "targetTriple": target_triple,
-                        "tools": [
-                            {
-                                "name": "unica",
-                                "version": "0.7.0",
-                                "repository": "https://github.com/IngvarConsulting/unica",
-                                "upstreamUrl": "https://github.com/IngvarConsulting/unica/releases/tag/workspace",
-                                "sourceTag": "workspace",
-                                "sourceCommit": "workspace",
-                                "license": "LGPL-3.0-or-later",
-                                "targetTriple": target_triple,
-                                "binaryPath": f"bin/{target}/unica",
-                                "sha256": module.sha256(binary),
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            lock_file = root / "tools.lock.json"
-            lock_file.write_text(
-                json.dumps(
-                    {
-                        "schemaVersion": 1,
-                        "targets": {target: {"targetTriple": target_triple}},
-                        "tools": [
-                            {
-                                "name": "unica",
-                                "version": "0.7.0",
-                                "repository": "https://github.com/IngvarConsulting/unica",
-                                "sourceTag": "workspace",
-                                "sourceCommit": "workspace",
-                                "license": "LGPL-3.0-or-later",
-                                "assets": {target: {"assetName": "unica"}},
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            metadata_root = root / "metadata"
+            bootstrap_root = root / "bootstraps"
+            metadata_root.mkdir()
+            for target, target_triple in target_triples.items():
+                exe = ".exe" if target == "win-x64" else ""
+                bootstrap = (
+                    bootstrap_root
+                    / "bootstrap"
+                    / "bin"
+                    / target
+                    / f"unica-bootstrap{exe}"
+                )
+                bootstrap.parent.mkdir(parents=True)
+                bootstrap.write_bytes(f"bootstrap {target}".encode())
+                (metadata_root / f"unica-runtime-{target}.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "target": target,
+                            "targetTriple": target_triple,
+                            "pluginVersion": "0.7.0",
+                            "asset": {
+                                "name": f"unica-runtime-{target}.tar.gz",
+                                "mediaType": "application/gzip",
+                                "sha256": "1" * 64,
+                            },
+                            "files": [
+                                {
+                                    "path": f"bin/{target}/unica{exe}",
+                                    "sha256": "2" * 64,
+                                    "executable": True,
+                                }
+                            ],
+                            "entrypoint": f"bin/{target}/unica{exe}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
             out_dir = root / "out"
 
             argv = [
                 "package-unica-plugin.py",
                 "--repo-root",
                 str(repo_root),
-                "--tools-root",
-                str(tools_root),
-                "--lock-file",
-                str(lock_file),
+                "--runtime-metadata-root",
+                str(metadata_root),
+                "--bootstrap-root",
+                str(bootstrap_root),
+                "--release-tag",
+                "v0.7.0",
+                "--source-commit",
+                "a" * 40,
                 "--out-dir",
                 str(out_dir),
-                "--target",
-                target,
-                "--allow-partial-targets",
-                "--no-archives",
             ]
             with patch("sys.argv", argv):
                 module.main()
 
+            plugin = out_dir / "marketplace" / "plugins" / "unica"
             packaged_mcp = json.loads(
-                (out_dir / "marketplace" / "plugins" / "unica" / ".mcp.json").read_text(
-                    encoding="utf-8"
-                )
+                (plugin / ".mcp.json").read_text(encoding="utf-8")
             )
             self.assertEqual(sorted(packaged_mcp["mcpServers"]), ["unica"])
             self.assertEqual(packaged_mcp["mcpServers"]["unica"]["command"], "git")
             self.assertEqual(packaged_mcp["mcpServers"]["unica"]["args"][2], "unica-bootstrap")
-            provenance = out_dir / "marketplace" / "plugins" / "unica" / "provenance" / "skill-upstreams.json"
+            self.assertFalse((plugin / "bin").exists())
+            for target in target_triples:
+                exe = ".exe" if target == "win-x64" else ""
+                self.assertTrue(
+                    (plugin / "bootstrap" / "bin" / target / f"unica-bootstrap{exe}").is_file()
+                )
+            runtime_manifest = json.loads(
+                (plugin / "runtime-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(runtime_manifest["development"])
+            self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
+            self.assertEqual(runtime_manifest["release"]["tag"], "v0.7.0")
+            self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
+            for target, target_data in runtime_manifest["targets"].items():
+                self.assertEqual(
+                    target_data["asset"]["url"],
+                    "https://github.com/IngvarConsulting/unica/releases/download/"
+                    f"v0.7.0/unica-runtime-{target}.tar.gz",
+                )
+
+            catalog = json.loads(
+                (out_dir / "marketplace" / ".agents" / "plugins" / "marketplace.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            source = catalog["plugins"][0]["source"]
+            self.assertEqual(source["source"], "git-subdir")
+            self.assertEqual(source["ref"], "v0.7.0")
+            self.assertEqual(source["path"], "./plugins/unica")
+            self.assertNotIn("source\": \"local", json.dumps(catalog))
+            self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
+            self.assertEqual(list(out_dir.glob("*.zip")), [])
+
+            provenance = plugin / "provenance" / "skill-upstreams.json"
             self.assertTrue(provenance.is_file())
             self.assertIn("v8-runner-rust", provenance.read_text(encoding="utf-8"))
             upstream_review = (
-                out_dir
-                / "marketplace"
-                / "plugins"
-                / "unica"
+                plugin
                 / "provenance"
                 / "reviews"
                 / "2026-06-15-upstream-review.json"
@@ -731,37 +733,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(decisions["api-design"]["primarySource"], "unica")
             self.assertEqual(decisions["api-design"]["decision"], "ignored-with-reason")
             product_backlog = (
-                out_dir
-                / "marketplace"
-                / "plugins"
-                / "unica"
+                plugin
                 / "provenance"
                 / "reviews"
                 / "2026-06-18-product-update-backlog.json"
             )
             self.assertTrue(product_backlog.is_file())
             self.assertIn("bsl-analyzer", product_backlog.read_text(encoding="utf-8"))
-
-            result = subprocess.run(
-                [
-                    str(
-                        out_dir
-                        / "marketplace"
-                        / "plugins"
-                        / "unica"
-                        / "bin"
-                        / target
-                        / "unica"
-                    ),
-                    "--help",
-                ],
-                cwd=out_dir / "marketplace",
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True,
-            )
-            self.assertIn("unica 0.7.0", result.stdout)
 
 
 if __name__ == "__main__":

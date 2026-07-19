@@ -329,6 +329,41 @@ def build_cargo_workspace_tool(
     return dest
 
 
+def build_bootstrap(
+    *,
+    repo_root: Path,
+    target_dir: Path,
+    bundle_root: Path,
+    target: str,
+    exe: str,
+) -> Path:
+    """Build package infrastructure without exposing it as a runtime tool."""
+    run(
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--package",
+            "unica-bootstrap",
+            "--bin",
+            "unica-bootstrap",
+            "--target-dir",
+            str(target_dir),
+        ],
+        cwd=repo_root,
+    )
+    produced = target_dir / "release" / f"unica-bootstrap{exe}"
+    if not produced.exists():
+        raise SystemExit(f"cargo build output not found: {produced}")
+
+    destination = bundle_root / "bootstrap" / "bin" / target / f"unica-bootstrap{exe}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(produced, destination)
+    if not destination.name.endswith(".exe"):
+        destination.chmod(destination.stat().st_mode | 0o755)
+    return destination
+
+
 def tool_entry(
     *,
     target: str,
@@ -457,6 +492,14 @@ def main() -> None:
         )
         for tool in lock["tools"]
     ]
+
+    build_bootstrap(
+        repo_root=args.repo_root.resolve(),
+        target_dir=args.work_dir / args.target / "bootstrap-cargo-target",
+        bundle_root=args.out_dir,
+        target=args.target,
+        exe=exe,
+    )
 
     (args.out_dir / "tools.json").write_text(
         json.dumps(

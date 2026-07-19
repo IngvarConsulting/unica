@@ -8,8 +8,6 @@ import hashlib
 import json
 import shutil
 import subprocess
-import tarfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +16,11 @@ PLUGIN_ID = "unica"
 DISPLAY_NAME = "Unica"
 SOURCE_PACKAGE_IGNORES = {"bin", ".DS_Store", "__pycache__", ".pytest_cache"}
 DISALLOWED_ARCHIVE_PARTS = {".build", "dist", "__pycache__", ".pytest_cache"}
+SUPPORTED_TARGETS = {
+    "darwin-arm64": ("aarch64-apple-darwin", "unica-bootstrap"),
+    "linux-x64": ("x86_64-unknown-linux-gnu", "unica-bootstrap"),
+    "win-x64": ("x86_64-pc-windows-msvc", "unica-bootstrap.exe"),
+}
 
 
 def copytree(src: Path, dst: Path, *, ignore: set[str] | None = None) -> None:
@@ -259,6 +262,158 @@ def write_official_marketplace(source_path: Path, dest_path: Path, *, marketplac
     dest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_public_marketplace(source_path: Path, dest_path: Path, *, release_tag: str) -> None:
+    data = json.loads(source_path.read_text(encoding="utf-8"))
+    data["name"] = PLUGIN_ID
+    data.setdefault("interface", {})["displayName"] = DISPLAY_NAME
+    if len(data.get("plugins", [])) != 1:
+        raise SystemExit("Unica marketplace metadata must contain exactly one plugin")
+
+    plugin = data["plugins"][0]
+    plugin["name"] = PLUGIN_ID
+    plugin["source"] = {
+        "source": "git-subdir",
+        "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+        "path": "./plugins/unica",
+        "ref": release_tag,
+    }
+    plugin.setdefault("policy", {})["installation"] = "AVAILABLE"
+    plugin["category"] = plugin.get("category", "Coding")
+    dest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _lower_hex(value: str, length: int) -> bool:
+    return len(value) == length and all(ch in "0123456789abcdef" for ch in value)
+
+
+def load_runtime_metadata(metadata_root: Path, *, plugin_version: str) -> dict[str, dict]:
+    manifests = sorted(metadata_root.rglob("unica-runtime-*.json"))
+    if not manifests:
+        raise SystemExit(f"no runtime metadata found under {metadata_root}")
+    targets: dict[str, dict] = {}
+    for path in manifests:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        target = data.get("target")
+        if target not in SUPPORTED_TARGETS:
+            raise SystemExit(f"unsupported runtime metadata target: {target}")
+        if target in targets:
+            raise SystemExit(f"duplicate runtime metadata target: {target}")
+        target_triple, executable = SUPPORTED_TARGETS[target]
+        if data.get("schemaVersion") != 1:
+            raise SystemExit(f"unsupported runtime metadata schema for {target}")
+        if data.get("pluginVersion") != plugin_version:
+            raise SystemExit(
+                f"runtime metadata version for {target} differs from plugin: "
+                f"{data.get('pluginVersion')} != {plugin_version}"
+            )
+        if data.get("targetTriple") != target_triple:
+            raise SystemExit(f"runtime target triple mismatch for {target}")
+        asset = data.get("asset", {})
+        expected_asset = f"unica-runtime-{target}.tar.gz"
+        if asset.get("name") != expected_asset or asset.get("mediaType") != "application/gzip":
+            raise SystemExit(f"runtime asset identity mismatch for {target}")
+        if not _lower_hex(asset.get("sha256", ""), 64):
+            raise SystemExit(f"invalid runtime asset checksum for {target}")
+        expected_entrypoint = f"bin/{target}/{'unica.exe' if executable.endswith('.exe') else 'unica'}"
+        if data.get("entrypoint") != expected_entrypoint:
+            raise SystemExit(f"runtime entrypoint mismatch for {target}")
+        files = data.get("files")
+        if not isinstance(files, list) or not files:
+            raise SystemExit(f"runtime file list is empty for {target}")
+        paths: set[str] = set()
+        for runtime_file in files:
+            relative = runtime_file.get("path", "")
+            rel_path = Path(relative)
+            if (
+                not relative
+                or "\\" in relative
+                or rel_path.is_absolute()
+                or ".." in rel_path.parts
+                or relative in paths
+            ):
+                raise SystemExit(f"unsafe or duplicate runtime file for {target}: {relative}")
+            paths.add(relative)
+            if not _lower_hex(runtime_file.get("sha256", ""), 64):
+                raise SystemExit(f"invalid runtime file checksum for {target}: {relative}")
+        if expected_entrypoint not in paths:
+            raise SystemExit(f"runtime entrypoint is not declared for {target}")
+        targets[target] = data
+
+    if set(targets) != set(SUPPORTED_TARGETS):
+        raise SystemExit(
+            f"runtime metadata targets {sorted(targets)} != {sorted(SUPPORTED_TARGETS)}"
+        )
+    return targets
+
+
+def copy_bootstrap_matrix(bootstrap_root: Path, plugin_dir: Path) -> None:
+    for target, (_triple, executable) in SUPPORTED_TARGETS.items():
+        candidates = [
+            path
+            for path in bootstrap_root.rglob(executable)
+            if path.parts[-4:] == ("bootstrap", "bin", target, executable)
+        ]
+        if len(candidates) != 1:
+            raise SystemExit(
+                f"expected exactly one bootstrap for {target} under {bootstrap_root}; "
+                f"found {len(candidates)}"
+            )
+        source = candidates[0]
+        if source.is_symlink() or not source.is_file():
+            raise SystemExit(f"bootstrap must be a regular file: {source}")
+        destination = plugin_dir / "bootstrap" / "bin" / target / executable
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        if not destination.name.endswith(".exe"):
+            destination.chmod(destination.stat().st_mode | 0o755)
+
+
+def write_release_runtime_manifest(
+    plugin_dir: Path,
+    metadata: dict[str, dict],
+    *,
+    plugin_version: str,
+    release_tag: str,
+    source_commit: str,
+) -> None:
+    expected_tag = f"v{plugin_version}"
+    if release_tag != expected_tag:
+        raise SystemExit(f"release tag {release_tag} != {expected_tag}")
+    if not _lower_hex(source_commit, 40):
+        raise SystemExit("source commit must be 40 lowercase hexadecimal characters")
+
+    targets = {}
+    for target in sorted(metadata):
+        item = metadata[target]
+        asset = dict(item["asset"])
+        asset["url"] = (
+            "https://github.com/IngvarConsulting/unica/releases/download/"
+            f"{release_tag}/{asset['name']}"
+        )
+        targets[target] = {
+            "asset": asset,
+            "files": item["files"],
+            "entrypoint": item["entrypoint"],
+        }
+    manifest = {
+        "schemaVersion": 1,
+        "pluginVersion": plugin_version,
+        "development": False,
+        "source": {
+            "repository": "https://github.com/IngvarConsulting/unica",
+            "commit": source_commit,
+        },
+        "release": {
+            "repository": "https://github.com/IngvarConsulting/unica",
+            "tag": release_tag,
+        },
+        "targets": targets,
+    }
+    (plugin_dir / "runtime-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def assert_archive_clean(marketplace_dir: Path) -> None:
     for path in marketplace_dir.rglob("*"):
         rel = path.relative_to(marketplace_dir)
@@ -271,39 +426,17 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
             raise SystemExit(f"archive contains nested package artifact: {rel}")
 
 
-def archive_base_name(version: str, *, target: str | None = None) -> str:
-    if target:
-        return f"unica-codex-marketplace-{target}"
-    return f"unica-codex-marketplace-{version}"
-
-
-def make_archives(marketplace_dir: Path, out_dir: Path, version: str, *, target: str | None = None) -> None:
-    base_name = archive_base_name(version, target=target)
-    tar_path = out_dir / f"{base_name}.tar.gz"
-    zip_path = out_dir / f"{base_name}.zip"
-
-    with tarfile.open(tar_path, "w:gz") as tf:
-        tf.add(marketplace_dir, arcname=base_name)
-
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for path in sorted(marketplace_dir.rglob("*")):
-            zf.write(path, Path(base_name) / path.relative_to(marketplace_dir))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path("."))
-    parser.add_argument("--tools-root", type=Path, required=True)
-    parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
+    parser.add_argument("--runtime-metadata-root", type=Path, required=True)
+    parser.add_argument("--bootstrap-root", type=Path, required=True)
+    parser.add_argument("--release-tag", required=True)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--marketplace-name", default=PLUGIN_ID)
-    parser.add_argument("--allow-partial-targets", action="store_true")
-    parser.add_argument("--no-archives", action="store_true")
-    parser.add_argument("--target")
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    lock_file = (repo_root / args.lock_file).resolve() if not args.lock_file.is_absolute() else args.lock_file.resolve()
     plugin_src = repo_root / "plugins" / "unica"
     marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
     if not plugin_src.exists():
@@ -313,6 +446,7 @@ def main() -> None:
 
     plugin_json = json.loads((plugin_src / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     version = plugin_json["version"]
+    metadata = load_runtime_metadata(args.runtime_metadata_root.resolve(), plugin_version=version)
 
     marketplace_dir = args.out_dir / "marketplace"
     shutil.rmtree(marketplace_dir, ignore_errors=True)
@@ -322,38 +456,29 @@ def main() -> None:
 
     marketplace_dst = marketplace_dir / ".agents" / "plugins"
     marketplace_dst.mkdir(parents=True, exist_ok=True)
-    write_official_marketplace(
+    write_public_marketplace(
         marketplace_src,
         marketplace_dst / "marketplace.json",
-        marketplace_name=args.marketplace_name,
+        release_tag=args.release_tag,
     )
 
-    lock = load_lock(lock_file)
-    grouped_tools, bin_roots = load_tool_bundles(
-        args.tools_root.resolve(),
-        lock,
-        allow_partial_targets=args.allow_partial_targets,
-        target=args.target,
+    copy_bootstrap_matrix(args.bootstrap_root.resolve(), plugin_dst)
+    write_release_runtime_manifest(
+        plugin_dst,
+        metadata,
+        plugin_version=version,
+        release_tag=args.release_tag,
+        source_commit=args.source_commit,
     )
-    for bin_root in bin_roots:
-        for target_dir in bin_root.iterdir():
-            if target_dir.is_dir():
-                if args.target is not None and target_dir.name != args.target:
-                    continue
-                copy_binary_tree(target_dir, plugin_dst / "bin" / target_dir.name)
-
-    write_manifest(plugin_dst, grouped_tools, lock_file)
-    write_packaged_mcp_launcher(plugin_dst, grouped_tools)
+    write_packaged_mcp_launcher(plugin_dst)
 
     json.loads((plugin_dst / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / ".mcp.json").read_text(encoding="utf-8"))
-    json.loads((plugin_dst / "third-party" / "manifest.json").read_text(encoding="utf-8"))
+    json.loads((plugin_dst / "runtime-manifest.json").read_text(encoding="utf-8"))
     json.loads((marketplace_dst / "marketplace.json").read_text(encoding="utf-8"))
     assert_archive_clean(marketplace_dir)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    if not args.no_archives:
-        make_archives(marketplace_dir, args.out_dir, version, target=args.target)
 
 
 if __name__ == "__main__":

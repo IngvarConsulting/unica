@@ -152,6 +152,37 @@ class BuildPythonEntrypointTests(unittest.TestCase):
                 ],
             )
 
+    def test_bootstrap_build_is_staged_outside_the_runtime_tool_manifest(self) -> None:
+        module = load_build_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            bundle_root = root / "bundle"
+            target_dir = root / "cargo-target"
+            produced = target_dir / "release" / "unica-bootstrap.exe"
+            produced.parent.mkdir(parents=True)
+            produced.write_bytes(b"native bootstrap")
+            calls = []
+
+            with patch.object(module, "run", side_effect=lambda args, cwd=None: calls.append((args, cwd))):
+                destination = module.build_bootstrap(
+                    repo_root=repo_root,
+                    target_dir=target_dir,
+                    bundle_root=bundle_root,
+                    target="win-x64",
+                    exe=".exe",
+                )
+
+            self.assertEqual(
+                destination,
+                bundle_root / "bootstrap" / "bin" / "win-x64" / "unica-bootstrap.exe",
+            )
+            self.assertEqual(destination.read_bytes(), b"native bootstrap")
+            self.assertEqual(calls[0][1], repo_root)
+            self.assertIn("unica-bootstrap", calls[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
