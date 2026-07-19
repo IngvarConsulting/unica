@@ -782,6 +782,19 @@ fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_nested_canonic
 }
 
 #[test]
+#[should_panic(expected = "canonical Codex enable flag must stay true")]
+fn setting_assertions_reject_a_disabled_canonical_plugin() {
+    let codex_home = temp_root("disabled-canonical-setting");
+    fs::write(
+        codex_home.join("config.toml"),
+        canonical_config_with_user_owned_settings().replace("enabled = true", "enabled = false"),
+    )
+    .unwrap();
+
+    assert_canonical_direct_user_setting(&codex_home);
+}
+
+#[test]
 fn previous_canonical_version_is_restored_when_installed_runtime_verification_fails() {
     let codex_home = previous_canonical_home("update-rollback");
     let original_config = fs::read(codex_home.join("config.toml")).unwrap();
@@ -1024,9 +1037,19 @@ fn plugin_table<'a>(config: &'a DocumentMut, plugin_id: &str) -> &'a dyn TableLi
         .unwrap_or_else(|| panic!("missing [plugins.\"{plugin_id}\"] table in {config}"))
 }
 
+fn canonical_plugin_table(config: &DocumentMut) -> &dyn TableLike {
+    let canonical = plugin_table(config, "unica@unica");
+    assert_eq!(
+        canonical.get("enabled").and_then(Item::as_bool),
+        Some(true),
+        "canonical Codex enable flag must stay true at plugins.\"unica@unica\".enabled"
+    );
+    canonical
+}
+
 fn assert_canonical_direct_user_setting(codex_home: &Path) {
     let config = parsed_config(codex_home);
-    let canonical = plugin_table(&config, "unica@unica");
+    let canonical = canonical_plugin_table(&config);
 
     assert_eq!(
         canonical.get("direct_user_setting").and_then(Item::as_str),
@@ -1037,7 +1060,7 @@ fn assert_canonical_direct_user_setting(codex_home: &Path) {
 
 fn assert_canonical_nested_user_owned_server(codex_home: &Path) {
     let config = parsed_config(codex_home);
-    let canonical = plugin_table(&config, "unica@unica");
+    let canonical = canonical_plugin_table(&config);
     let mcp_servers = canonical
         .get("mcp_servers")
         .and_then(Item::as_table_like)
