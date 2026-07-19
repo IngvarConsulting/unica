@@ -66,6 +66,7 @@ class ProductContractTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
             repo_root / "docs/releases/v0.7.1.md",
+            repo_root / "docs/releases/v0.7.2.md",
             repo_root / "spec/acceptance/unica-mcp-validation.md",
             repo_root / "spec/architecture/arc42/06-runtime-view.md",
             repo_root / "spec/architecture/arc42/07-deployment-view.md",

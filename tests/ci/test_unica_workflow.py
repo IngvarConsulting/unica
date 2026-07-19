@@ -44,6 +44,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("include-hidden-files: true", thin_upload)
         self.assertNotIn("unica-codex-marketplace-${{ matrix.target }}", text)
 
+    def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
+        text = self.release_text()
+
+        self.assertIn("smoke-thin-plugin:", text)
+        self.assertIn("Smoke packaged bootstrap and downloaded runtime", text)
+        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", text)
+        self.assertIn("needs: package-thin", text)
+
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         text = self.release_text()
         publish = text[text.index("  publish-release-assets:") : text.index("  verify-published-assets:")]
