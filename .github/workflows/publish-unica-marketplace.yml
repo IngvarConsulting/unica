@@ -1,0 +1,101 @@
+name: Publish Unica Marketplace
+
+on:
+  workflow_run:
+    workflows: ["Build Unica Codex Plugin"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: stage or promote
+        required: true
+        type: choice
+        options: [stage, promote]
+      source_run_id:
+        description: Successful source release workflow run ID
+        required: true
+        type: string
+      release_tag:
+        description: Existing immutable marketplace tag, for example v0.7.0
+        required: true
+        type: string
+      staging_merge_sha:
+        description: Merge commit that the immutable marketplace tag must resolve to
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'stage')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Require explicit cross-repository credential
+        run: test -n "$GH_TOKEN"
+      - uses: actions/checkout@v4
+      - name: Download verified thin payload
+        run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+      - name: Read the pinned release identity
+        run: |
+          release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
+          case "$release_tag" in v[0-9A-Za-z._-]*) ;; *) exit 65 ;; esac
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+      - name: Open staging PR without changing stable catalog
+        run: |
+          set -euo pipefail
+          gh repo clone IngvarConsulting/unica-marketplace marketplace
+          branch="codex/stage-${RELEASE_TAG}-${SOURCE_RUN_ID}"
+          git -C marketplace switch -c "$branch"
+          rm -rf marketplace/plugins/unica
+          mkdir -p marketplace/plugins
+          cp -R payload/plugins/unica marketplace/plugins/unica
+          git -C marketplace add plugins/unica
+          git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
+            commit -m "stage: Unica ${RELEASE_TAG}"
+          git -C marketplace push -u origin "$branch"
+          gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
+            --title "Stage Unica ${RELEASE_TAG}" \
+            --body "Stages the verified thin payload from IngvarConsulting/unica run ${SOURCE_RUN_ID}. The stable catalog is unchanged."
+
+  promote:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      STAGING_MERGE_SHA: ${{ inputs.staging_merge_sha }}
+    steps:
+      - name: Require existing immutable tag and credential
+        run: |
+          test -n "$GH_TOKEN"
+          test -n "$STAGING_MERGE_SHA"
+          tag_commit="$(git ls-remote --exit-code --tags https://github.com/IngvarConsulting/unica-marketplace.git \
+            "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
+          test "$tag_commit" = "$STAGING_MERGE_SHA"
+      - name: Download catalog candidate
+        run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+      - name: Open catalog-only promotion PR
+        run: |
+          set -euo pipefail
+          gh repo clone IngvarConsulting/unica-marketplace marketplace
+          branch="codex/promote-${RELEASE_TAG}-${SOURCE_RUN_ID}"
+          git -C marketplace switch -c "$branch"
+          mkdir -p marketplace/.agents/plugins
+          cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
+          git -C marketplace add .agents/plugins/marketplace.json
+          git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
+            commit -m "promote: Unica ${RELEASE_TAG}"
+          git -C marketplace push -u origin "$branch"
+          gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
+            --title "Promote Unica ${RELEASE_TAG}" \
+            --body "Points the stable catalog at the existing immutable ${RELEASE_TAG} tag."

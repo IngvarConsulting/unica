@@ -124,7 +124,12 @@ def extract_marketplace_archive(archive: Path, extract_dir: Path) -> Path:
 
     candidates = sorted(
         path
-        for pattern in ("plugins/unica/bin/*/unica", "plugins/unica/bin/*/unica.exe")
+        for pattern in (
+            "plugins/unica/bin/*/unica",
+            "plugins/unica/bin/*/unica.exe",
+            "bin/*/unica",
+            "bin/*/unica.exe",
+        )
         for path in extract_dir.rglob(pattern)
     )
     if not candidates:
@@ -136,7 +141,9 @@ def extract_marketplace_archive(archive: Path, extract_dir: Path) -> Path:
 
 def plugin_root_for(run_unica: Path) -> Path:
     for parent in run_unica.parents:
-        if (parent / ".codex-plugin" / "plugin.json").is_file():
+        if (parent / ".codex-plugin" / "plugin.json").is_file() or (
+            parent / "third-party" / "manifest.json"
+        ).is_file():
             return parent
     return run_unica.parent
 
