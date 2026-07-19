@@ -31,6 +31,41 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def write_eof_sensitive_mcp(self, path: Path) -> None:
+        path.write_text(
+            """#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+
+cancelled = threading.Event()
+workers = []
+
+def respond(message):
+    time.sleep(0.2)
+    response = {"jsonrpc": "2.0", "id": message.get("id")}
+    if cancelled.is_set():
+        response["error"] = {"code": -32800, "message": "request cancelled"}
+    else:
+        response["result"] = {"content": [{"type": "text", "text": "ok"}]}
+    print(json.dumps(response), flush=True)
+
+for raw in sys.stdin:
+    worker = threading.Thread(target=respond, args=(json.loads(raw),))
+    worker.start()
+    workers.append(worker)
+
+cancelled.set()
+for worker in workers:
+    worker.join()
+""",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
     def write_fake_mcp(self, path: Path) -> None:
         path.write_text(
             """#!/usr/bin/env python3
@@ -134,6 +169,26 @@ for raw in sys.stdin:
             self.assertEqual(len(lines), len(report["scenarios"]))
             self.assertTrue((out_dir / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>"))
             self.assertIn("v9.9.9", (out_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_mcp_client_keeps_stdin_open_until_delayed_response(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            self.write_eof_sensitive_mcp(fake_mcp)
+
+            responses, _duration_ms, _stdout, stderr, returncode = module.call_mcp(
+                fake_mcp,
+                [module.tool_call_message(1, "unica.cf.info", {})],
+                cwd=root,
+                cache_dir=root / "cache",
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(returncode, 0, stderr)
+            self.assertEqual(len(responses), 1)
+            self.assertNotIn("error", responses[0])
 
     def test_report_rendering_escapes_failure_text(self) -> None:
         module = load_assessment_module()

@@ -9,11 +9,13 @@ import html
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import zipfile
 from datetime import datetime, timezone
@@ -166,33 +168,107 @@ def call_mcp(
     env = os.environ.copy()
     env["UNICA_CACHE_DIR"] = str(cache_dir)
     started = time.perf_counter()
+    command = [sys.executable, str(run_unica)] if run_unica.suffix == ".py" else [str(run_unica)]
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        bufsize=1,
+    )
+    stdout_queue: queue.Queue[str | None] = queue.Queue()
+    stderr_parts: list[str] = []
+
+    def read_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_queue.put(line)
+        stdout_queue.put(None)
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        stderr_parts.append(process.stderr.read())
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    write_error = ""
     try:
-        command = [sys.executable, str(run_unica)] if run_unica.suffix == ".py" else [str(run_unica)]
-        result = subprocess.run(
-            command,
-            input=payload,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=env,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        duration_ms = int((time.perf_counter() - started) * 1000)
-    except subprocess.TimeoutExpired as error:
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        return [], duration_ms, error.stdout or "", error.stderr or f"timed out after {timeout_seconds}s", 124
+        assert process.stdin is not None
+        process.stdin.write(payload)
+        process.stdin.flush()
+    except (BrokenPipeError, OSError) as error:
+        write_error = f"failed to write MCP request: {error}"
+
+    expected_responses = sum("id" in message for message in messages)
+    stdout_lines: list[str] = []
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    received_responses = 0
+    while received_responses < expected_responses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            line = stdout_queue.get(timeout=min(remaining, 0.05))
+        except queue.Empty:
+            if process.poll() is not None and not stdout_thread.is_alive():
+                break
+            continue
+        if line is None:
+            break
+        stdout_lines.append(line)
+        if line.strip():
+            received_responses += 1
+
+    if process.stdin is not None and not process.stdin.closed:
+        process.stdin.close()
+
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        process.wait()
+
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    while True:
+        try:
+            line = stdout_queue.get_nowait()
+        except queue.Empty:
+            break
+        if line is not None:
+            stdout_lines.append(line)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    stdout = "".join(stdout_lines)
+    stderr = "".join(stderr_parts)
+    if write_error:
+        stderr = f"{write_error}\n{stderr}".strip()
+    if timed_out:
+        return [], duration_ms, stdout, stderr or f"timed out after {timeout_seconds}s", 124
 
     responses: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if not line.strip():
             continue
         try:
             responses.append(json.loads(line))
         except json.JSONDecodeError:
             responses.append({"error": {"message": f"invalid JSON-RPC line: {line}"}})
-    return responses, duration_ms, result.stdout, result.stderr, result.returncode
+    return responses, duration_ms, stdout, stderr, process.returncode
 
 
 def tool_call_message(message_id: int, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
