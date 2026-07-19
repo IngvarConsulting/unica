@@ -30,6 +30,27 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
+    def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin = json.loads(
+            (repo_root / "plugins/unica/.codex-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(
+            plugin["interface"]["websiteURL"],
+            "https://ingvar.pro/products/unica/en",
+        )
+        self.assertEqual(
+            plugin["interface"]["privacyPolicyURL"],
+            "https://ingvar.pro/products/unica/privacy/en",
+        )
+        self.assertEqual(
+            plugin["interface"]["termsOfServiceURL"],
+            "https://ingvar.pro/products/unica/terms/en",
+        )
+
     def test_ai_entrypoints_document_source_of_truth_and_ignored_corpus(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         entrypoint = repo_root / "AGENTS.md"

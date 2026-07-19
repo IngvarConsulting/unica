@@ -1,6 +1,6 @@
 {
   "name": "unica",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Practical 1C:Enterprise development workflows for Codex.",
   "author": {
     "name": "Ingvar Consulting, LLC",
@@ -38,9 +38,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://ingvar.pro",
-    "privacyPolicyURL": "https://ingvar.pro/privacy",
-    "termsOfServiceURL": "https://ingvar.pro/terms",
+    "websiteURL": "https://ingvar.pro/products/unica/en",
+    "privacyPolicyURL": "https://ingvar.pro/products/unica/privacy/en",
+    "termsOfServiceURL": "https://ingvar.pro/products/unica/terms/en",
     "defaultPrompt": [
       "Создай внешнюю обработку 1С и собери EPF",
       "Добавь объект метаданных и форму в конфигурацию 1С",

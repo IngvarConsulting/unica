@@ -3,7 +3,7 @@ members = ["crates/unica-bootstrap", "crates/unica-coder"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"

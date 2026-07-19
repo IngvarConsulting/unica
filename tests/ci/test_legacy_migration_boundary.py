@@ -70,7 +70,7 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, release)
 
-    def test_v080_metadata_and_docs_keep_only_the_frozen_v078_bridge(self) -> None:
+    def test_v08x_metadata_and_docs_keep_only_the_frozen_v078_bridge(self) -> None:
         metadata = json.loads(
             (REPO_ROOT / "plugins/unica/.codex-plugin/plugin.json").read_text(
                 encoding="utf-8"
@@ -88,7 +88,7 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         release_note = REPO_ROOT / "docs/releases/v0.8.0.md"
 
-        self.assertEqual("0.8.0", metadata["version"])
+        self.assertRegex(metadata["version"], r"^0\.8\.\d+$")
         for filename in ("install-unica.sh", "install-unica.ps1"):
             frozen_url = f"releases/download/v0.7.8/{filename}"
             obsolete_url = f"releases/download/v0.7.7/{filename}"
