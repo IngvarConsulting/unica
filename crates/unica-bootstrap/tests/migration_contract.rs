@@ -110,6 +110,22 @@ fn canonical_discovery_still_classifies_orphaned_legacy_config_and_paths() {
     assert_eq!(plan.remove_legacy_paths, vec![marketplace, cache]);
 }
 
+#[cfg(unix)]
+#[test]
+fn preflight_rejects_symlink_inside_exact_legacy_path() {
+    use std::os::unix::fs::symlink;
+
+    let codex_home = temp_root("legacy-symlink");
+    let marketplace = codex_home.join("marketplaces/unica-local");
+    fs::create_dir_all(&marketplace).unwrap();
+    symlink(codex_home.join("config.toml"), marketplace.join("escape")).unwrap();
+
+    let error = classify_discovery(canonical_discovery(), &codex_home).unwrap_err();
+
+    assert!(error.to_string().contains("unsupported symlink"), "{error}");
+    assert!(marketplace.join("escape").exists() || marketplace.join("escape").is_symlink());
+}
+
 #[test]
 fn successful_orphan_cleanup_retains_exact_backup_and_becomes_idempotent() {
     let codex_home = orphaned_legacy_home("orphaned-success");

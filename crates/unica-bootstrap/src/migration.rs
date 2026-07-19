@@ -129,11 +129,27 @@ fn existing_legacy_paths(codex_home: &Path) -> Result<Vec<PathBuf>> {
     candidates
         .into_iter()
         .filter_map(|path| match fs::symlink_metadata(&path) {
-            Ok(_) => Some(Ok(path)),
+            Ok(_) => Some(validate_legacy_path_tree(&path).map(|()| path)),
             Err(error) if error.kind() == ErrorKind::NotFound => None,
             Err(error) => Some(Err(error.into())),
         })
         .collect()
+}
+
+fn validate_legacy_path_tree(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(BootstrapError::new(format!(
+            "legacy path contains unsupported symlink: {}",
+            path.display()
+        )));
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            validate_legacy_path_tree(&entry?.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn is_canonical(marketplace: &MarketplaceRecord) -> bool {
