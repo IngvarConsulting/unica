@@ -76,6 +76,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}", publish)
         self.assertNotIn("pull-requests: write", publish)
 
+    def test_cross_repository_push_configures_git_credentials(self) -> None:
+        publish = self.publish_text()
+
+        self.assertGreaterEqual(publish.count("gh auth setup-git"), 2)
+
     def test_staging_and_promotion_are_explicit_separate_jobs(self) -> None:
         text = self.publish_text()
 

@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: Require explicit cross-repository credential
         run: test -n "$GH_TOKEN"
+      - name: Configure Git credentials
+        run: gh auth setup-git
       - uses: actions/checkout@v4
       - name: Download verified thin payload
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
@@ -88,6 +90,8 @@ jobs:
           tag_commit="$(git ls-remote --exit-code --tags https://github.com/IngvarConsulting/unica-marketplace.git \
             "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
           test "$tag_commit" = "$STAGING_MERGE_SHA"
+      - name: Configure Git credentials
+        run: gh auth setup-git
       - name: Download catalog candidate
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
       - name: Require stable catalog candidate
