@@ -141,8 +141,8 @@ fn codex_contract_fixture_materializes_a_windows_root_as_json_data() {
     let parsed: MarketplaceList = serde_json::from_value(marketplaces).unwrap();
 
     assert_eq!(
-        parsed.marketplaces[1].marketplace_source.source,
-        r"D:\a\unica\codex-home/marketplaces/unica-local"
+        parsed.marketplaces[1].root.as_deref(),
+        Some(r"D:\a\unica\codex-home/marketplaces/unica-local")
     );
 }
 
@@ -461,6 +461,69 @@ fn reserved_unica_without_source_is_rejected_as_missing_identity() {
     };
 
     let error = classify_discovery(discovery, Path::new("/codex-home")).unwrap_err();
+
+    assert!(
+        error.to_string().contains("missing source identity"),
+        "{error}"
+    );
+}
+
+#[test]
+fn source_less_unica_root_is_owned_only_with_the_official_v061_contract() {
+    let codex_home = temp_root("source-less-unica-v061");
+    let legacy_root = codex_home.join("marketplaces/unica");
+    let manifest_dir = legacy_root.join("plugins/unica/.codex-plugin");
+    let legacy_cache = codex_home.join("plugins/cache/unica/unica");
+    fs::create_dir_all(&manifest_dir).unwrap();
+    fs::create_dir_all(&legacy_cache).unwrap();
+    fs::write(
+        manifest_dir.join("plugin.json"),
+        r#"{
+          "name": "unica",
+          "version": "0.6.1",
+          "repository": "https://github.com/IngvarConsulting/unica"
+        }"#,
+    )
+    .unwrap();
+    let discovery = CodexDiscovery {
+        marketplaces: MarketplaceList {
+            marketplaces: vec![MarketplaceRecord {
+                name: "unica".to_string(),
+                root: Some(legacy_root.to_string_lossy().into_owned()),
+                marketplace_source: MarketplaceSource::default(),
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        },
+        plugins: PluginList::default(),
+    };
+
+    let plan = classify_discovery(discovery, &codex_home).unwrap();
+
+    assert_eq!(plan.remove_marketplaces, vec!["unica"]);
+    assert!(plan.remove_legacy_paths.contains(&legacy_root));
+    assert!(plan.remove_legacy_paths.contains(&legacy_cache));
+}
+
+#[test]
+fn source_less_unica_root_with_an_unknown_package_contract_is_rejected() {
+    let codex_home = temp_root("source-less-unica-unknown");
+    let legacy_root = codex_home.join("marketplaces/unica");
+    fs::create_dir_all(&legacy_root).unwrap();
+    let discovery = CodexDiscovery {
+        marketplaces: MarketplaceList {
+            marketplaces: vec![MarketplaceRecord {
+                name: "unica".to_string(),
+                root: Some(legacy_root.to_string_lossy().into_owned()),
+                marketplace_source: MarketplaceSource::default(),
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        },
+        plugins: PluginList::default(),
+    };
+
+    let error = classify_discovery(discovery, &codex_home).unwrap_err();
 
     assert!(
         error.to_string().contains("missing source identity"),

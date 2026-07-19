@@ -249,9 +249,13 @@ jobs:
           --expect-download-failure
 
   legacy-migration-preflight:
-    name: Preflight legacy Unica migration on pinned Codex
+    name: Preflight legacy Unica migration (${{ matrix.legacy_managed_name }})
     runs-on: windows-2022
     needs: package-thin
+    strategy:
+      fail-fast: false
+      matrix:
+        legacy_managed_name: [unica-local, unica]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -281,11 +285,12 @@ jobs:
           -LegacyMarketplaceRoot .build\legacy\unica-codex-marketplace-win-x64
           -CandidatePluginRoot .build\thin\plugins\unica
           -ReportPath .build\reports\legacy-migration-preflight.json
+          -LegacyManagedName "${{ matrix.legacy_managed_name }}"
           -Mode Preflight
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unica-legacy-migration-preflight
+          name: unica-legacy-migration-preflight-${{ matrix.legacy_managed_name }}
           path: .build/reports/legacy-migration-preflight.json
           if-no-files-found: warn
 

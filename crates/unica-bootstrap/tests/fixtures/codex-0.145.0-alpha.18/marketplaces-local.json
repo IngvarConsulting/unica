@@ -6,11 +6,7 @@
     },
     {
       "name": "unica",
-      "root": "${CODEX_HOME}/marketplaces/unica-local",
-      "marketplaceSource": {
-        "sourceType": "local",
-        "source": "${CODEX_HOME}/marketplaces/unica-local"
-      }
+      "root": "${CODEX_HOME}/marketplaces/unica-local"
     }
   ]
 }

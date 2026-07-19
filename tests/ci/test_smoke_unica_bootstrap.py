@@ -48,6 +48,28 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                     expect_download_failure=True,
                 )
 
+    def test_probe_accepts_checksum_mismatch_for_an_already_published_tag(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self.plugin(Path(directory))
+            result = subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "unica-bootstrap: runtime archive sha256 actual "
+                    "!= expected candidate"
+                ),
+            )
+
+            with patch.object(module.subprocess, "run", return_value=result):
+                module.smoke(
+                    plugin,
+                    "linux-x64",
+                    2,
+                    expect_download_failure=True,
+                )
+
     def test_probe_rejects_stack_overflow_before_download_error(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

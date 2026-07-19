@@ -5,9 +5,10 @@ This directory preserves the migration-relevant shape observed from the real
 Absolute profile paths are replaced with `${CODEX_HOME}`.
 
 The raw output was minimized deterministically for review: unrelated plugin
-records were removed, while the unrelated `openai-curated` marketplace without
-`marketplaceSource` was retained because that legacy shape caused the complete
-marketplace list to fail deserialization. The installed Unica record preserves
+records were removed. The unrelated `openai-curated` marketplace and the local
+Windows `unica` marketplace retain the source-less shape observed from this CLI;
+the latter is attributable only because its root is exactly
+`${CODEX_HOME}/marketplaces/unica-local`. The installed Unica record preserves
 the v0.6.1 local-marketplace shape used by the migration classifier.
 
 To capture another version, create an isolated profile containing the legacy

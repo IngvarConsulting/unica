@@ -7,6 +7,8 @@ param(
     [string]$CandidatePluginRoot,
     [Parameter(Mandatory = $true)]
     [string]$ReportPath,
+    [ValidateSet("unica-local", "unica")]
+    [string]$LegacyManagedName = "unica-local",
     [ValidateSet("Preflight", "Full")]
     [string]$Mode = "Preflight"
 )
@@ -61,7 +63,7 @@ $codexHome = Join-Path $testRoot "codex-home"
 $codexBinRoot = Split-Path -Parent $resolvedCodex
 $codexCommand = $resolvedCodex
 $legacyParent = Join-Path $codexHome "marketplaces"
-$legacyManagedRoot = Join-Path $legacyParent "unica-local"
+$legacyManagedRoot = Join-Path $legacyParent $LegacyManagedName
 $originalCodexHome = $env:CODEX_HOME
 $originalPath = $env:PATH
 
@@ -150,6 +152,7 @@ try {
         mode = $Mode
         codexVersion = $ExpectedCodexVersion
         legacyVersion = $ExpectedLegacyVersion
+        legacyManagedName = $LegacyManagedName
         candidateVersion = $candidateVersion
         preflightClassified = $true
         changed = $migrated

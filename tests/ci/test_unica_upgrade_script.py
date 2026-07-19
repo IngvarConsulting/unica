@@ -20,9 +20,11 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
             "$LegacyMarketplaceRoot",
             "$CandidatePluginRoot",
             "$ReportPath",
+            "$LegacyManagedName",
         ):
             self.assertIn(parameter, text)
         self.assertIn('[ValidateSet("Preflight", "Full")]', text)
+        self.assertIn('[ValidateSet("unica-local", "unica")]', text)
         self.assertIn("[System.IO.Path]::GetTempPath()", text)
         self.assertIn('$env:CODEX_HOME = $codexHome', text)
         self.assertIn("Copy-Item", text)
@@ -43,6 +45,7 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
         self.assertIn("changed", text)
         self.assertIn("idempotent", text)
         self.assertIn("ConvertTo-Json", text)
+        self.assertIn("legacyManagedName", text)
 
 
 if __name__ == "__main__":

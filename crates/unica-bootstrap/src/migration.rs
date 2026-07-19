@@ -19,6 +19,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CANONICAL_HTTPS_SOURCE: &str = "https://github.com/ingvarconsulting/unica-marketplace";
 const LEGACY_PLUGIN_SELECTOR: &str = "unica@unica-local";
 const LEGACY_PLUGIN_CONFIG_TABLE: &str = "[plugins.\"unica@unica-local\"]";
+const LEGACY_V061_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,22 +68,12 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
     let original_discovery = discovery.clone();
     let mut canonical_marketplace = None;
     let mut legacy_marketplaces = BTreeMap::new();
-    for marketplace in &discovery.marketplaces.marketplaces {
-        if matches!(marketplace.name.as_str(), "unica" | "unica-local")
-            && (marketplace.marketplace_source.source_type.trim().is_empty()
-                || marketplace.marketplace_source.source.trim().is_empty())
-        {
-            return Err(BootstrapError::new(format!(
-                "reserved marketplace name {} is missing source identity",
-                marketplace.name
-            )));
-        }
+    for discovered_marketplace in &discovery.marketplaces.marketplaces {
+        let marketplace = normalize_marketplace_identity(discovered_marketplace, codex_home)?;
         match marketplace.name.as_str() {
-            "unica" if is_canonical(marketplace) => {
-                canonical_marketplace = Some(marketplace.clone())
-            }
-            "unica" if is_known_legacy_local(marketplace, codex_home)? => {
-                legacy_marketplaces.insert(marketplace.name.clone(), marketplace.clone());
+            "unica" if is_canonical(&marketplace) => canonical_marketplace = Some(marketplace),
+            "unica" if is_known_legacy_local(&marketplace, codex_home)? => {
+                legacy_marketplaces.insert(marketplace.name.clone(), marketplace);
             }
             "unica" => {
                 return Err(BootstrapError::new(format!(
@@ -90,8 +81,8 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
                     marketplace.marketplace_source.source
                 )));
             }
-            "unica-local" if is_known_legacy_local(marketplace, codex_home)? => {
-                legacy_marketplaces.insert(marketplace.name.clone(), marketplace.clone());
+            "unica-local" if is_known_legacy_local(&marketplace, codex_home)? => {
+                legacy_marketplaces.insert(marketplace.name.clone(), marketplace);
             }
             "unica-local" => {
                 return Err(BootstrapError::new(format!(
@@ -157,7 +148,7 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
         add_canonical_marketplace,
         upgrade_canonical_marketplace,
         install_canonical_plugin,
-        remove_legacy_paths: existing_legacy_paths(codex_home)?,
+        remove_legacy_paths: existing_legacy_paths(codex_home, &legacy_marketplaces)?,
         preserve_on_rollback_paths,
         canonical_plugin_root: canonical_plugin_root(codex_home),
         legacy_marketplaces,
@@ -195,11 +186,33 @@ fn config_has_legacy_plugin(codex_home: &Path) -> Result<bool> {
         .any(|line| line.trim() == LEGACY_PLUGIN_CONFIG_TABLE))
 }
 
-fn existing_legacy_paths(codex_home: &Path) -> Result<Vec<PathBuf>> {
-    let candidates = [
+fn existing_legacy_paths(
+    codex_home: &Path,
+    legacy_marketplaces: &BTreeMap<String, MarketplaceRecord>,
+) -> Result<Vec<PathBuf>> {
+    let mut candidates = vec![
         codex_home.join("marketplaces").join("unica-local"),
         codex_home.join("plugins").join("cache").join("unica-local"),
     ];
+    candidates.extend(
+        legacy_marketplaces
+            .values()
+            .map(|marketplace| PathBuf::from(&marketplace.marketplace_source.source)),
+    );
+    if legacy_marketplaces.contains_key("unica-local") {
+        candidates.push(codex_home.join("plugins").join("cache").join("unica-local"));
+    }
+    if legacy_marketplaces.contains_key("unica") {
+        candidates.push(
+            codex_home
+                .join("plugins")
+                .join("cache")
+                .join("unica")
+                .join("unica"),
+        );
+    }
+    candidates.sort();
+    candidates.dedup();
     candidates
         .into_iter()
         .filter_map(|path| match fs::symlink_metadata(&path) {
@@ -271,6 +284,39 @@ fn is_canonical(marketplace: &MarketplaceRecord) -> bool {
         && is_canonical_source(&marketplace.marketplace_source.source)
 }
 
+fn normalize_marketplace_identity(
+    marketplace: &MarketplaceRecord,
+    codex_home: &Path,
+) -> Result<MarketplaceRecord> {
+    let mut normalized = marketplace.clone();
+    if !matches!(normalized.name.as_str(), "unica" | "unica-local") {
+        return Ok(normalized);
+    }
+
+    let source_type_missing = normalized.marketplace_source.source_type.trim().is_empty();
+    let source_missing = normalized.marketplace_source.source.trim().is_empty();
+    if !source_type_missing && !source_missing {
+        return Ok(normalized);
+    }
+
+    if source_type_missing && source_missing {
+        if let Some(root) = normalized.root.as_deref().map(Path::new) {
+            let exact_known_root = root == codex_home.join("marketplaces").join("unica-local")
+                || root == codex_home.join("marketplaces").join("unica");
+            if exact_known_root && is_owned_legacy_root(codex_home, root)? {
+                normalized.marketplace_source.source_type = "local".to_string();
+                normalized.marketplace_source.source = root.to_string_lossy().into_owned();
+                return Ok(normalized);
+            }
+        }
+    }
+
+    Err(BootstrapError::new(format!(
+        "reserved marketplace name {} is missing source identity",
+        normalized.name
+    )))
+}
+
 fn is_canonical_source(source: &str) -> bool {
     let normalized = source
         .trim()
@@ -287,11 +333,38 @@ fn is_known_legacy_local(marketplace: &MarketplaceRecord, codex_home: &Path) -> 
     if marketplace.marketplace_source.source_type != "local" {
         return Ok(false);
     }
-    let relative = managed_relative_path(
+    is_owned_legacy_root(
         codex_home,
         Path::new(&marketplace.marketplace_source.source),
-    )?;
-    Ok(relative == Path::new("marketplaces").join("unica-local"))
+    )
+}
+
+fn is_owned_legacy_root(codex_home: &Path, root: &Path) -> Result<bool> {
+    let relative = managed_relative_path(codex_home, root)?;
+    if relative == Path::new("marketplaces").join("unica-local") {
+        return Ok(true);
+    }
+    if relative != Path::new("marketplaces").join("unica") {
+        return Ok(false);
+    }
+
+    let manifest_path = root.join("plugins/unica/.codex-plugin/plugin.json");
+    let manifest = match fs::read_to_string(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let manifest: Value = serde_json::from_str(&manifest).map_err(|error| {
+        BootstrapError::new(format!(
+            "invalid legacy Unica manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    Ok(
+        manifest.get("name").and_then(Value::as_str) == Some("unica")
+            && manifest.get("version").and_then(Value::as_str) == Some("0.6.1")
+            && manifest.get("repository").and_then(Value::as_str) == Some(LEGACY_V061_REPOSITORY),
+    )
 }
 
 fn is_owned_canonical_plugin(plugin: &crate::codex::PluginRecord) -> bool {

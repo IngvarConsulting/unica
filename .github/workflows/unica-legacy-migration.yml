@@ -19,8 +19,12 @@ concurrency:
 
 jobs:
   upgrade-legacy-windows:
-    name: Upgrade Unica v0.6.1 on Codex 0.145.0-alpha.18
+    name: Upgrade Unica v0.6.1 (${{ matrix.legacy_managed_name }})
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        legacy_managed_name: [unica-local, unica]
     steps:
       - uses: actions/checkout@v4
       - name: Resolve the promoted stable marketplace package
@@ -65,10 +69,11 @@ jobs:
           -LegacyMarketplaceRoot .build\legacy\unica-codex-marketplace-win-x64
           -CandidatePluginRoot .build\marketplace\plugins\unica
           -ReportPath .build\reports\legacy-migration-full.json
+          -LegacyManagedName "${{ matrix.legacy_managed_name }}"
           -Mode Full
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unica-legacy-migration-${{ env.STABLE_REF }}
+          name: unica-legacy-migration-${{ env.STABLE_REF }}-${{ matrix.legacy_managed_name }}
           path: .build/reports/legacy-migration-full.json
           if-no-files-found: warn

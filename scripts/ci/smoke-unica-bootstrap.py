@@ -67,7 +67,11 @@ def smoke(
     if expect_download_failure:
         if result.returncode == 0:
             raise SystemExit("packaged bootstrap unexpectedly downloaded an unpublished runtime")
-        if "failed to download" not in detail:
+        controlled_failure = any(
+            marker in detail
+            for marker in ("failed to download", "runtime archive sha256")
+        )
+        if not controlled_failure:
             raise SystemExit(
                 "packaged bootstrap did not reach the expected controlled download failure: "
                 f"{detail or 'no process output'}"
