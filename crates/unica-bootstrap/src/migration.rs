@@ -626,12 +626,14 @@ impl<R: CommandRunner> MigrationEngine<R> {
     where
         F: FnOnce(&Path) -> Result<()>,
     {
+        let mut plugin_config_mutated = false;
         for plugin_id in &plan.remove_plugin_ids {
             journal.push(JournalEntry::RemovedPlugin {
                 id: plugin_id.clone(),
                 restore_via_cli: plan.discovered_legacy_plugins.contains(plugin_id),
             });
             self.run_codex(&["plugin", "remove", plugin_id, "--json"])?;
+            plugin_config_mutated = true;
         }
         for marketplace in &plan.remove_marketplaces {
             journal.push(JournalEntry::RemovedMarketplace(marketplace.clone()));
@@ -662,6 +664,9 @@ impl<R: CommandRunner> MigrationEngine<R> {
         if plan.install_canonical_plugin {
             journal.push(JournalEntry::AddedCanonicalPlugin);
             self.run_codex(&["plugin", "add", "unica@unica", "--json"])?;
+            plugin_config_mutated = true;
+        }
+        if plugin_config_mutated {
             if let Some(settings) = canonical_user_settings {
                 restore_canonical_user_settings(&self.codex_home, settings)?;
             }
@@ -937,48 +942,24 @@ fn restore_canonical_user_settings(codex_home: &Path, captured: &Item) -> Result
     let config = fs::read_to_string(&config_path)?;
     let mut config = parse_codex_config(&config_path, &config)?;
 
-    let (canonical_key, enabled_key, enabled) = {
-        let plugins = config
-            .as_table()
-            .get("plugins")
-            .and_then(Item::as_table_like)
-            .ok_or_else(|| {
-                BootstrapError::new(format!(
-                    "failed to preserve canonical Unica settings in {}: plugins must be a table",
-                    config_path.display()
-                ))
-            })?;
-        let (canonical_key, canonical) =
-            plugins.get_key_value("unica@unica").ok_or_else(|| {
-                BootstrapError::new(format!(
-                    "failed to preserve canonical Unica settings in {}: plugin add did not create plugins.\"unica@unica\"",
-                    config_path.display()
-                ))
-            })?;
-        let canonical = canonical.as_table_like().ok_or_else(|| {
-            BootstrapError::new(format!(
-                "failed to preserve canonical Unica settings in {}: plugins.\"unica@unica\" must be a table",
-                config_path.display()
-            ))
-        })?;
-        let (enabled_key, enabled) = canonical.get_key_value("enabled").ok_or_else(|| {
-            BootstrapError::new(format!(
-                "failed to preserve canonical Unica settings in {}: plugin add did not create enabled",
-                config_path.display()
-            ))
-        })?;
-        (canonical_key.clone(), enabled_key.clone(), enabled.clone())
-    };
-
-    let mut restored = captured.clone();
-    let restored_table = restored.as_table_like_mut().ok_or_else(|| {
+    let captured_table = captured.as_table_like().ok_or_else(|| {
         BootstrapError::new(
             "failed to preserve canonical Unica settings: captured subtree is not a table",
         )
     })?;
-    *restored_table
-        .entry_format(&enabled_key)
-        .or_insert(Item::None) = enabled;
+    let captured_entries = captured_table
+        .iter()
+        .filter(|(name, _)| *name != "enabled")
+        .map(|(name, item)| {
+            (
+                captured_table
+                    .key(name)
+                    .expect("iterated TOML table key must exist")
+                    .clone(),
+                item.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
 
     let plugins = config
         .as_table_mut()
@@ -990,7 +971,30 @@ fn restore_canonical_user_settings(codex_home: &Path, captured: &Item) -> Result
                 config_path.display()
             ))
         })?;
-    *plugins.entry_format(&canonical_key).or_insert(Item::None) = restored;
+    let canonical = plugins
+        .get_mut("unica@unica")
+        .ok_or_else(|| {
+            BootstrapError::new(format!(
+                "failed to preserve canonical Unica settings in {}: plugin mutation did not retain plugins.\"unica@unica\"",
+                config_path.display()
+            ))
+        })?
+        .as_table_like_mut()
+        .ok_or_else(|| {
+            BootstrapError::new(format!(
+                "failed to preserve canonical Unica settings in {}: plugins.\"unica@unica\" must be a table",
+                config_path.display()
+            ))
+        })?;
+    if !canonical.contains_key("enabled") {
+        return Err(BootstrapError::new(format!(
+            "failed to preserve canonical Unica settings in {}: plugin mutation did not retain enabled",
+            config_path.display()
+        )));
+    }
+    for (key, item) in captured_entries {
+        *canonical.entry_format(&key).or_insert(Item::None) = item;
+    }
 
     atomic_write_config(
         &config_path,
@@ -1013,13 +1017,15 @@ fn atomic_write_config(
         ))
     })?;
     let temporary = parent.join(format!(".config.toml.{purpose}-{}", Uuid::new_v4()));
-    let result = (|| {
-        write_private_file(&temporary, bytes)?;
-        if let Some(permissions) = permissions {
-            fs::set_permissions(&temporary, permissions.clone())?;
+    write_private_file(&temporary, bytes)?;
+    if let Some(permissions) = permissions {
+        if let Err(error) = fs::set_permissions(&temporary, permissions.clone()) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
         }
-        replace_config_file(&temporary, destination)
-    })();
+    }
+    let result = replace_config_file(&temporary, destination);
+    #[cfg(not(windows))]
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
@@ -1039,38 +1045,125 @@ fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
 
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        REPLACEFILE_WRITE_THROUGH,
     };
 
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
 
-    let destination_exists = fs::symlink_metadata(destination).is_ok();
-    let source = wide(source);
-    let destination = wide(destination);
-    let replaced = unsafe {
-        if destination_exists {
-            ReplaceFileW(
-                destination.as_ptr(),
-                source.as_ptr(),
-                ptr::null(),
-                REPLACEFILE_WRITE_THROUGH,
-                ptr::null(),
-                ptr::null(),
-            )
-        } else {
+    let destination_exists = match fs::symlink_metadata(destination) {
+        Ok(_) => true,
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if !destination_exists {
+        let moved = unsafe {
             MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
+                wide(source).as_ptr(),
+                wide(destination).as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             )
-        }
+        };
+        return if moved == 0 {
+            Err(BootstrapError::new(format!(
+                "failed to move replacement {} to {}: {}; replacement retained for recovery",
+                source.display(),
+                destination.display(),
+                std::io::Error::last_os_error()
+            )))
+        } else {
+            Ok(())
+        };
+    }
+
+    // All three paths are siblings so ReplaceFileW stays on one volume. Supplying a
+    // backup name makes its documented partial failures recoverable: in particular,
+    // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 moves the old destination to `backup` while
+    // leaving the replacement at `source`. The unsupported WRITE_THROUGH replacement
+    // flag is deliberately not used; the replacement file itself was sync_all'ed.
+    let parent = destination.parent().ok_or_else(|| {
+        BootstrapError::new(format!(
+            "Codex config has no parent directory: {}",
+            destination.display()
+        ))
+    })?;
+    let backup = parent.join(format!(".config.toml.replace-backup-{}", Uuid::new_v4()));
+    let replaced = unsafe {
+        ReplaceFileW(
+            wide(destination).as_ptr(),
+            wide(source).as_ptr(),
+            wide(&backup).as_ptr(),
+            0,
+            ptr::null(),
+            ptr::null(),
+        )
     };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error().into())
-    } else {
-        Ok(())
+    if replaced != 0 {
+        let _ = fs::remove_file(&backup);
+        return Ok(());
+    }
+
+    let replace_error = std::io::Error::last_os_error();
+    match windows_replace_failure_state(replace_error.raw_os_error()) {
+        WindowsReplaceFailureState::NamesUnchanged => Err(BootstrapError::new(format!(
+            "failed to atomically replace {} with {}: {replace_error}; destination and replacement retained for recovery",
+            destination.display(),
+            source.display()
+        ))),
+        WindowsReplaceFailureState::DestinationMovedToBackup => {
+            let completed = unsafe {
+                MoveFileExW(
+                    wide(source).as_ptr(),
+                    wide(destination).as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if completed == 0 {
+                return Err(BootstrapError::new(format!(
+                    "failed to atomically replace {} with {}: {replace_error}; completion also failed: {}; replacement {} and original backup {} retained for recovery",
+                    destination.display(),
+                    source.display(),
+                    std::io::Error::last_os_error(),
+                    source.display(),
+                    backup.display()
+                )));
+            }
+            let _ = fs::remove_file(&backup);
+            Ok(())
+        }
+        WindowsReplaceFailureState::OtherNamesUnchanged => Err(BootstrapError::new(format!(
+            "failed to atomically replace {} with {}: {replace_error}; replacement retained for recovery",
+            destination.display(),
+            source.display()
+        ))),
+    }
+}
+
+#[cfg(any(windows, test))]
+const ERROR_UNABLE_TO_REMOVE_REPLACED: i32 = 1175;
+#[cfg(any(windows, test))]
+const ERROR_UNABLE_TO_MOVE_REPLACEMENT: i32 = 1176;
+#[cfg(any(windows, test))]
+const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1177;
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsReplaceFailureState {
+    NamesUnchanged,
+    DestinationMovedToBackup,
+    OtherNamesUnchanged,
+}
+
+#[cfg(any(windows, test))]
+fn windows_replace_failure_state(error_code: Option<i32>) -> WindowsReplaceFailureState {
+    match error_code {
+        Some(ERROR_UNABLE_TO_REMOVE_REPLACED | ERROR_UNABLE_TO_MOVE_REPLACEMENT) => {
+            WindowsReplaceFailureState::NamesUnchanged
+        }
+        Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) => {
+            WindowsReplaceFailureState::DestinationMovedToBackup
+        }
+        _ => WindowsReplaceFailureState::OtherNamesUnchanged,
     }
 }
 
@@ -1258,4 +1351,39 @@ fn remove_exact_path(path: &Path) -> Result<()> {
 fn remove_managed_path(codex_home: &Path, path: &Path) -> Result<()> {
     ensure_path_within_codex_home(codex_home, path)?;
     remove_exact_path(path)
+}
+
+#[cfg(test)]
+mod windows_replace_failure_tests {
+    use super::{windows_replace_failure_state, WindowsReplaceFailureState};
+
+    #[test]
+    fn documented_unchanged_name_failures_do_not_request_recovery_move() {
+        for error_code in [1175, 1176] {
+            assert_eq!(
+                windows_replace_failure_state(Some(error_code)),
+                WindowsReplaceFailureState::NamesUnchanged
+            );
+        }
+    }
+
+    #[test]
+    fn documented_moved_destination_failure_requests_completion_from_replacement() {
+        assert_eq!(
+            windows_replace_failure_state(Some(1177)),
+            WindowsReplaceFailureState::DestinationMovedToBackup
+        );
+    }
+
+    #[test]
+    fn all_other_failures_keep_the_replacement_as_a_recovery_artifact() {
+        assert_eq!(
+            windows_replace_failure_state(Some(87)),
+            WindowsReplaceFailureState::OtherNamesUnchanged
+        );
+        assert_eq!(
+            windows_replace_failure_state(None),
+            WindowsReplaceFailureState::OtherNamesUnchanged
+        );
+    }
 }

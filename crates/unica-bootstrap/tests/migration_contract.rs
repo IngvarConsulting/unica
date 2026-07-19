@@ -720,6 +720,139 @@ fn canonical_update_preserves_nested_canonical_plugin_setting() {
 }
 
 #[test]
+fn orphan_alias_removal_without_install_preserves_direct_canonical_setting() {
+    let codex_home = orphaned_legacy_home("orphan-preserves-settings");
+    fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            "[plugins.\"unica@unica-local\"]\nenabled = true\n\n{}",
+            canonical_config_with_user_owned_settings()
+        ),
+    )
+    .unwrap();
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), false);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+    assert!(!plan.install_canonical_plugin);
+
+    engine.apply(plan, |_| Ok(())).unwrap();
+
+    assert_alias_plugin_table_is_absent(&codex_home);
+    assert_canonical_direct_user_setting(&codex_home);
+}
+
+#[test]
+fn orphan_alias_removal_without_install_preserves_nested_canonical_setting() {
+    let codex_home = orphaned_legacy_home("orphan-preserves-nested-setting");
+    fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            "[plugins.\"unica@unica-local\"]\nenabled = true\n\n{}",
+            canonical_config_with_user_owned_settings()
+        ),
+    )
+    .unwrap();
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), false);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+    assert!(!plan.install_canonical_plugin);
+
+    engine.apply(plan, |_| Ok(())).unwrap();
+
+    assert_alias_plugin_table_is_absent(&codex_home);
+    assert_canonical_nested_user_owned_server(&codex_home);
+}
+
+#[test]
+fn migration_without_plugin_mutation_does_not_rewrite_config() {
+    let codex_home = temp_root("path-only-keeps-config-bytes");
+    let original =
+        b"# keep exact formatting\n[plugins.\"unica@unica\"]\nenabled=true # keep spacing\n";
+    fs::write(codex_home.join("config.toml"), original).unwrap();
+    fs::create_dir_all(codex_home.join("marketplaces/unica-local")).unwrap();
+    fs::create_dir_all(codex_home.join("plugins/cache/unica-local")).unwrap();
+    write_current_plugin_package(&codex_home);
+    let runner = OrphanCleanupRunner::new(codex_home.clone(), false);
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(canonical_discovery(), &codex_home).unwrap();
+    assert!(plan.remove_plugin_ids.is_empty());
+    assert!(!plan.install_canonical_plugin);
+    assert!(!plan.remove_legacy_paths.is_empty());
+
+    engine.apply(plan, |_| Ok(())).unwrap();
+
+    assert_eq!(fs::read(codex_home.join("config.toml")).unwrap(), original);
+}
+
+#[test]
+fn canonical_update_overlays_user_values_onto_fresh_table_and_preserves_decorations() {
+    let codex_home = previous_canonical_home("update-merges-fresh-and-user-settings");
+    fs::write(
+        codex_home.join("config.toml"),
+        "[plugins.\"unica@unica\"]\n\
+         enabled = false # stale installer value\n\
+         inline_user = { mode = \"fast\", tags = [\"one\", \"two\"] } # keep inline comment\n\
+         user_array = [\n\
+           \"alpha\", # keep array comment\n\
+           \"beta\",\n\
+         ]\n",
+    )
+    .unwrap();
+    let runner = NativeCodexMutationRunner::new(codex_home.clone());
+    let engine = MigrationEngine::new(codex_home.clone(), runner);
+    let plan = classify_discovery(previous_canonical_discovery(&codex_home), &codex_home).unwrap();
+
+    engine.apply(plan, |_| Ok(())).unwrap();
+
+    let rendered = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    let config: DocumentMut = rendered.parse().unwrap();
+    let canonical = canonical_plugin_table(&config);
+    assert_eq!(
+        canonical.get("fresh_metadata").and_then(Item::as_str),
+        Some("generated-by-codex")
+    );
+    assert_eq!(
+        canonical
+            .get("inline_user")
+            .and_then(Item::as_inline_table)
+            .and_then(|table| table.get("mode"))
+            .and_then(|value| value.as_str()),
+        Some("fast")
+    );
+    assert_eq!(
+        canonical
+            .get("user_array")
+            .and_then(Item::as_array)
+            .map(|array| array.len()),
+        Some(2)
+    );
+    assert!(rendered.contains("# fresh Codex metadata"), "{rendered}");
+    assert!(rendered.contains("# keep inline comment"), "{rendered}");
+    assert!(rendered.contains("# keep array comment"), "{rendered}");
+    assert!(!rendered.contains("# stale installer value"), "{rendered}");
+}
+
+#[test]
+fn windows_atomic_replace_source_uses_supported_flags_and_partial_failure_states() {
+    let source = include_str!("../src/migration.rs");
+
+    assert!(
+        !source.contains("REPLACEFILE_WRITE_THROUGH"),
+        "ReplaceFileW documents REPLACEFILE_WRITE_THROUGH as unsupported"
+    );
+    for documented_error in [
+        "ERROR_UNABLE_TO_REMOVE_REPLACED",
+        "ERROR_UNABLE_TO_MOVE_REPLACEMENT",
+        "ERROR_UNABLE_TO_MOVE_REPLACEMENT_2",
+    ] {
+        assert!(
+            source.contains(documented_error),
+            "Windows replacement must handle {documented_error} explicitly"
+        );
+    }
+}
+
+#[test]
 fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_direct_canonical_setting() {
     let codex_home = temp_root("issue-90-preserves-settings");
     fs::write(
@@ -1449,6 +1582,12 @@ impl NativeCodexMutationRunner {
             .expect("native Codex plugin installation requires [plugins]");
         let mut canonical = toml_edit::Table::new();
         canonical["enabled"] = toml_edit::value(true);
+        canonical["fresh_metadata"] = toml_edit::value("generated-by-codex");
+        canonical["fresh_metadata"]
+            .as_value_mut()
+            .unwrap()
+            .decor_mut()
+            .set_suffix(" # fresh Codex metadata");
         plugins.insert("unica@unica", Item::Table(canonical));
 
         fs::write(config_path, config.to_string()).unwrap();
