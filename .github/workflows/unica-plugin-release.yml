@@ -216,10 +216,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-  smoke-thin-plugin:
-    name: Smoke thin plugin (${{ matrix.target }})
+  probe-thin-bootstrap:
+    name: Probe thin bootstrap (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     needs: package-thin
+    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -239,16 +240,12 @@ jobs:
         with:
           name: unica-thin-marketplace
           path: .build/thin
-      - uses: actions/download-artifact@v4
-        with:
-          name: unica-runtime-${{ matrix.target }}
-          path: .build/runtime
-      - name: Smoke packaged bootstrap and downloaded runtime
+      - name: Probe packaged bootstrap through the downloader
         run: >
           python scripts/ci/smoke-unica-bootstrap.py
           --plugin-root .build/thin/plugins/unica
-          --runtime-archive .build/runtime/unica-runtime-${{ matrix.target }}.tar.gz
           --target "${{ matrix.target }}"
+          --expect-download-failure
 
   installer:
     name: Package installer shims
@@ -300,7 +297,6 @@ jobs:
     needs:
       - package-runtime
       - installer
-      - smoke-thin-plugin
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -323,6 +319,36 @@ jobs:
             dist/runtime/unica-runtime-*.json
             dist/installer/install-unica.sh
             dist/installer/install-unica.ps1
+
+  smoke-thin-plugin:
+    name: Smoke published thin plugin (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    needs: [package-thin, publish-release-assets]
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: win-x64
+            runner: windows-2022
+          - target: darwin-arm64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: unica-thin-marketplace
+          path: .build/thin
+      - name: Smoke packaged bootstrap against published runtime
+        run: >
+          python scripts/ci/smoke-unica-bootstrap.py
+          --plugin-root .build/thin/plugins/unica
+          --target "${{ matrix.target }}"
 
   verify-published-assets:
     name: Re-download and verify published bytes

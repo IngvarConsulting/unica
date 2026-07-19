@@ -47,10 +47,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
         text = self.release_text()
 
+        self.assertIn("probe-thin-bootstrap:", text)
         self.assertIn("smoke-thin-plugin:", text)
-        self.assertIn("Smoke packaged bootstrap and downloaded runtime", text)
+        self.assertIn("Probe packaged bootstrap through the downloader", text)
+        self.assertIn("Smoke packaged bootstrap against published runtime", text)
         self.assertIn("scripts/ci/smoke-unica-bootstrap.py", text)
         self.assertIn("needs: package-thin", text)
+        self.assertIn("needs: [package-thin, publish-release-assets]", text)
+        self.assertIn("--expect-download-failure", text)
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         text = self.release_text()
