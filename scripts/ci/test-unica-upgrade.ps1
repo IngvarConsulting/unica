@@ -65,6 +65,7 @@ $codexCommand = $resolvedCodex
 $legacyParent = Join-Path $codexHome "marketplaces"
 $legacyManagedRoot = Join-Path $legacyParent $LegacyManagedName
 $legacyManagedPathContract = "marketplaces/$LegacyManagedName"
+$legacyPluginSelector = "unica@$LegacyManagedName"
 $originalCodexHome = $env:CODEX_HOME
 $originalPath = $env:PATH
 
@@ -83,7 +84,7 @@ try {
         "plugin", "marketplace", "add", $legacyManagedRoot, "--json"
     ) | Out-Null
     Invoke-Checked -Program $codexCommand -Arguments @(
-        "plugin", "add", "unica@unica", "--json"
+        "plugin", "add", $legacyPluginSelector, "--json"
     ) | Out-Null
 
     $legacyPlugins = Read-JsonOutput -Label "legacy plugin discovery" -Output (
@@ -91,7 +92,7 @@ try {
             "plugin", "list", "--available", "--json"
         )
     )
-    $legacyPlugin = @($legacyPlugins.installed | Where-Object { $_.pluginId -eq "unica@unica" })
+    $legacyPlugin = @($legacyPlugins.installed | Where-Object { $_.pluginId -eq $legacyPluginSelector })
     if ($legacyPlugin.Count -ne 1 -or [string]$legacyPlugin[0].version -ne $ExpectedLegacyVersion) {
         throw "failed to seed exactly one installed Unica $ExpectedLegacyVersion"
     }
@@ -101,8 +102,8 @@ try {
             "migrate-preflight", "--plugin-root", $candidateRoot
         )
     )
-    if (@($preflight.removePluginIds) -notcontains "unica@unica" -or
-        @($preflight.removeMarketplaces) -notcontains "unica" -or
+    if (@($preflight.removePluginIds) -notcontains $legacyPluginSelector -or
+        @($preflight.removeMarketplaces) -notcontains $LegacyManagedName -or
         -not [bool]$preflight.addCanonicalMarketplace -or
         -not [bool]$preflight.installCanonicalPlugin) {
         throw "candidate preflight did not classify the legacy Unica installation"
