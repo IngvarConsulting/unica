@@ -22,7 +22,7 @@ pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -44,14 +44,14 @@ pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
             "failed to create Windows Job Object for Unica runtime",
         ));
     }
-    let mut information: JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
     information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     let configured = unsafe {
         SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
             &information as *const _ as *const _,
-            size_of::<JOB_OBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     };
     let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) };
