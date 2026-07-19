@@ -78,7 +78,9 @@ def test_manual_regression_is_the_v076_bridge_and_has_no_receipt(self):
 Run:
 
 ```bash
-python3 -m unittest tests.test_regression_policy tests.test_detect_promotion tests.test_verify_marketplace -v
+PYTHONPATH=. python3 tests/test_regression_policy.py -v
+PYTHONPATH=. python3 tests/test_detect_promotion.py -v
+PYTHONPATH=. python3 tests/test_verify_marketplace.py -v
 ```
 
 Expected: failures name the old `barrier` profile, `barrier_required`, and receipt expectations.
@@ -120,7 +122,7 @@ Run:
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile scripts/*.py tests/*.py
-actionlint .github/workflows/*.yml .github/actions/setup-locked-codex/action.yml
+actionlint .github/workflows/*.yml
 git diff --check
 ```
 

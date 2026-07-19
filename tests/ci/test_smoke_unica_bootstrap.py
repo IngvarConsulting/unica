@@ -99,8 +99,8 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                 returncode=0,
                 stdout="",
                 stderr=(
-                    "verified Unica 0.7.5 package, runtime, and MCP tools at "
-                    "/tmp/unica/runtimes/0.7.5/linux-x64"
+                    "verified Unica 0.7.6 package, runtime, and MCP tools at "
+                    "/tmp/unica/runtimes/0.7.6/linux-x64"
                 ),
             )
 

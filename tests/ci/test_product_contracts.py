@@ -60,14 +60,36 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, readme)
 
+    def test_readme_documents_the_frozen_v076_bridge(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        readme = (repo_root / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("| Исходное состояние |", readme)
+        self.assertIn(
+            "releases/download/v0.7.6/install-unica.sh",
+            readme,
+        )
+        self.assertIn(
+            "releases/download/v0.7.6/install-unica.ps1",
+            readme,
+        )
+        self.assertIn("v0.7.5", readme)
+        self.assertIn("техническ", readme.lower())
+        self.assertIn("v0.8.0", readme)
+
+    def test_v076_release_note_declares_the_legacy_boundary(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        note = (repo_root / "docs/releases/v0.7.6.md").read_text(encoding="utf-8")
+
+        for value in ("#90", "unica-local", "v0.7.6", "v0.8.0", "manual"):
+            with self.subTest(value=value):
+                self.assertIn(value, note)
+
     def test_active_consumer_docs_do_not_describe_fat_local_delivery(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         paths = [
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
-            repo_root / "docs/releases/v0.7.1.md",
-            repo_root / "docs/releases/v0.7.2.md",
-            repo_root / "docs/releases/v0.7.5.md",
             repo_root / "spec/acceptance/unica-mcp-validation.md",
             repo_root / "spec/architecture/arc42/06-runtime-view.md",
             repo_root / "spec/architecture/arc42/07-deployment-view.md",
@@ -80,6 +102,19 @@ class ProductContractTests(unittest.TestCase):
             if needle in path.read_text(encoding="utf-8")
         ]
         self.assertEqual(matches, [])
+
+        release_notes = [
+            repo_root / "docs/releases/v0.7.1.md",
+            repo_root / "docs/releases/v0.7.2.md",
+            repo_root / "docs/releases/v0.7.5.md",
+            repo_root / "docs/releases/v0.7.6.md",
+        ]
+        fat_archive_mentions = [
+            str(path.relative_to(repo_root))
+            for path in release_notes
+            if "unica-codex-marketplace-" in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(fat_archive_mentions, [])
 
     def test_superpowers_plans_are_marked_historical(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
