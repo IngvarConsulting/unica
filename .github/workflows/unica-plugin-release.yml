@@ -91,13 +91,17 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
-            command: ./scripts/install-unica.sh --help
           - runner: windows-latest
-            command: .\scripts\install-unica.ps1 -Help
     steps:
       - uses: actions/checkout@v4
-      - shell: ${{ startsWith(matrix.runner, 'windows') && 'powershell' || 'bash' }}
-        run: ${{ matrix.command }}
+      - name: Verify POSIX shim
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/install-unica.sh --help
+      - name: Verify PowerShell shim
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\install-unica.ps1 -Help
 
   build-tools:
     name: Build tools (${{ matrix.target }})
