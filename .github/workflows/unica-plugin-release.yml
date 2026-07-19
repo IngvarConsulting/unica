@@ -205,6 +205,7 @@ jobs:
         with:
           name: unica-thin-marketplace
           path: dist/thin/marketplace
+          include-hidden-files: true
           if-no-files-found: error
 
   installer:

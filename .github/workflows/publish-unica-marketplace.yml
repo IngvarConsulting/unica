@@ -44,6 +44,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Download verified thin payload
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+      - name: Require package contract files
+        run: |
+          test -f payload/plugins/unica/.codex-plugin/plugin.json
+          test -f payload/plugins/unica/.mcp.json
+          test -f payload/plugins/unica/runtime-manifest.json
+          test -f payload/.agents/plugins/marketplace.json
       - name: Read the pinned release identity
         run: |
           release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
@@ -84,6 +90,8 @@ jobs:
           test "$tag_commit" = "$STAGING_MERGE_SHA"
       - name: Download catalog candidate
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+      - name: Require stable catalog candidate
+        run: test -f payload/.agents/plugins/marketplace.json
       - name: Open catalog-only promotion PR
         run: |
           set -euo pipefail

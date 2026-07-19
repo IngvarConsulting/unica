@@ -39,6 +39,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("--runtime-metadata-root", text)
         self.assertIn("--bootstrap-root", text)
         self.assertIn("name: unica-thin-marketplace", text)
+        thin_upload = text[text.index("name: unica-thin-marketplace") :]
+        self.assertIn("include-hidden-files: true", thin_upload)
         self.assertNotIn("unica-codex-marketplace-${{ matrix.target }}", text)
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
@@ -86,6 +88,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("codex/promote-", text)
         self.assertIn("git ls-remote", text)
         self.assertIn("refs/tags/", text)
+        self.assertIn("payload/plugins/unica/.codex-plugin/plugin.json", text)
+        self.assertIn("payload/plugins/unica/.mcp.json", text)
+        self.assertIn("payload/.agents/plugins/marketplace.json", text)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
 
