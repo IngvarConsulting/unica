@@ -26,6 +26,8 @@ pub struct MigrationPlan {
     pub remove_legacy_paths: Vec<PathBuf>,
     #[serde(skip)]
     legacy_marketplaces: BTreeMap<String, MarketplaceRecord>,
+    #[serde(skip)]
+    discovered_legacy_plugins: BTreeSet<String>,
 }
 
 impl MigrationPlan {
@@ -79,6 +81,7 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
 
     let mut canonical_installed = false;
     let mut remove_plugin_ids = BTreeSet::new();
+    let mut discovered_legacy_plugins = BTreeSet::new();
     for plugin in discovery.plugins.installed {
         if plugin.name != "unica" {
             continue;
@@ -86,6 +89,7 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
         if plugin.marketplace_name == CANONICAL_MARKETPLACE && canonical_marketplace {
             canonical_installed = true;
         } else if matches!(plugin.marketplace_name.as_str(), "unica" | "unica-local") {
+            discovered_legacy_plugins.insert(plugin.plugin_id.clone());
             remove_plugin_ids.insert(plugin.plugin_id);
         }
     }
@@ -101,6 +105,7 @@ pub fn classify_discovery(discovery: CodexDiscovery, codex_home: &Path) -> Resul
         install_canonical_plugin: !canonical_installed,
         remove_legacy_paths: existing_legacy_paths(codex_home)?,
         legacy_marketplaces,
+        discovered_legacy_plugins,
     })
 }
 
@@ -213,7 +218,10 @@ impl<R: CommandRunner> MigrationEngine<R> {
     {
         for plugin_id in &plan.remove_plugin_ids {
             self.run_codex(&["plugin", "remove", plugin_id, "--json"])?;
-            journal.push(JournalEntry::RemovedPlugin(plugin_id.clone()));
+            journal.push(JournalEntry::RemovedPlugin {
+                id: plugin_id.clone(),
+                restore_via_cli: plan.discovered_legacy_plugins.contains(plugin_id),
+            });
         }
         for marketplace in &plan.remove_marketplaces {
             self.run_codex(&["plugin", "marketplace", "remove", marketplace, "--json"])?;
@@ -290,9 +298,14 @@ impl<R: CommandRunner> MigrationEngine<R> {
                     self.run_codex(&["plugin", "marketplace", "add", source, "--json"])
                         .map(|_| ())
                 }
-                JournalEntry::RemovedPlugin(id) => {
-                    self.run_codex(&["plugin", "add", id, "--json"]).map(|_| ())
-                }
+                JournalEntry::RemovedPlugin {
+                    id,
+                    restore_via_cli: true,
+                } => self.run_codex(&["plugin", "add", id, "--json"]).map(|_| ()),
+                JournalEntry::RemovedPlugin {
+                    restore_via_cli: false,
+                    ..
+                } => Ok(()),
                 JournalEntry::RemovedLegacyPath(path) => {
                     backup.restore_legacy_path(&self.codex_home, path)
                 }
@@ -318,7 +331,7 @@ impl<R: CommandRunner> MigrationEngine<R> {
 
 #[derive(Clone, Debug)]
 enum JournalEntry {
-    RemovedPlugin(String),
+    RemovedPlugin { id: String, restore_via_cli: bool },
     RemovedMarketplace(String),
     AddedCanonicalMarketplace,
     AddedCanonicalPlugin,

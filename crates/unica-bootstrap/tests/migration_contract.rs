@@ -365,6 +365,18 @@ impl CommandRunner for OrphanCleanupRunner {
         {
             fs::write(self.codex_home.join("config.toml"), canonical_config()).unwrap();
         }
+        if command.args
+            == [
+                "plugin".to_string(),
+                "add".to_string(),
+                "unica@unica-local".to_string(),
+                "--json".to_string(),
+            ]
+        {
+            return Err(BootstrapError::new(
+                "config-only orphan cannot be reinstalled through Codex CLI",
+            ));
+        }
         Ok("{}".to_string())
     }
 }
