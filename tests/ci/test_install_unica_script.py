@@ -65,7 +65,7 @@ class InstallUnicaScriptTests(unittest.TestCase):
                 "https://github.com/IngvarConsulting/unica-marketplace.git",
                 calls[1],
             )
-            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.2" in line for line in calls))
+            self.assertTrue(any("fetch --depth 1 origin refs/tags/v0.7.3" in line for line in calls))
             bootstrap_calls = [line for line in calls if line.startswith("bootstrap ")]
             self.assertEqual(
                 bootstrap_calls,
@@ -75,6 +75,7 @@ class InstallUnicaScriptTests(unittest.TestCase):
                 ],
             )
             self.assertIn("Migration backup", result.stdout)
+            self.assertIn("Open a new Codex task or restart the client", result.stdout)
 
     def test_shim_contains_no_legacy_archive_or_manual_config_mutation(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
@@ -93,6 +94,7 @@ class InstallUnicaScriptTests(unittest.TestCase):
         self.assertIn('MARKETPLACE_REF="${UNICA_MARKETPLACE_REF:-main}"', text)
         self.assertIn("migrate-preflight", text)
         self.assertIn("migrate", text)
+        self.assertIn("Open a new Codex task or restart the client", text)
 
     def write_fake_git(self, path: Path) -> None:
         self.write_executable(
@@ -103,7 +105,7 @@ if [ "$1" = "clone" ]; then
   eval "destination=\${$#}"
   mkdir -p "$destination/.agents/plugins"
   mkdir -p "$destination/plugins/unica/bootstrap/bin/linux-x64"
-  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.2"}}]}' > "$destination/.agents/plugins/marketplace.json"
+  printf '%s\n' '{"name":"unica","plugins":[{"name":"unica","source":{"source":"git-subdir","url":"https://github.com/IngvarConsulting/unica-marketplace.git","path":"./plugins/unica","ref":"v0.7.3"}}]}' > "$destination/.agents/plugins/marketplace.json"
   cat > "$destination/plugins/unica/bootstrap/bin/linux-x64/unica-bootstrap" <<'BOOTSTRAP'
 #!/bin/sh
 printf 'bootstrap %s CODEX_HOME=%s\n' "$1" "$CODEX_HOME" >> "$UNICA_TEST_LOG"
@@ -135,6 +137,7 @@ class InstallUnicaPowerShellScriptTests(unittest.TestCase):
         self.assertIn("unica-bootstrap.exe", text)
         self.assertIn('"migrate-preflight"', text)
         self.assertIn('"migrate"', text)
+        self.assertIn("Open a new Codex task or restart the client", text)
         self.assertNotIn("pwsh", lower)
         self.assertNotIn("bash", lower)
         self.assertNotIn("invoke-webrequest", lower)

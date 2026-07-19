@@ -103,6 +103,7 @@ try {
     } else {
         Write-Output "==> Migration backup: not required (already canonical)"
     }
+    Write-Output "==> Open a new Codex task or restart the client to use Unica $pinnedRef"
 } finally {
     if (Test-Path -LiteralPath $tmpRoot) {
         Remove-Item -LiteralPath $tmpRoot -Recurse -Force

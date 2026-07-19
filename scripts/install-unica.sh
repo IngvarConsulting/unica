@@ -144,3 +144,4 @@ if [ -n "$BACKUP_DIR" ]; then
 else
   echo "==> Migration backup: not required (already canonical)"
 fi
+echo "==> Open a new Codex task or restart the client to use Unica $PINNED_REF"

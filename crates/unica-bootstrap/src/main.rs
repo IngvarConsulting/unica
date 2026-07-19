@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unica_bootstrap::{
-    launch_runtime, verify_mcp_runtime, HostTarget, HttpDownloader, MigrationEngine, Result,
-    RuntimeInstaller, RuntimeManifest, SystemCommandRunner,
+    launch_runtime, verify_mcp_runtime, CommandRunner, CommandSpec, HostTarget, HttpDownloader,
+    MigrationEngine, Result, RuntimeInstaller, RuntimeManifest, SystemCommandRunner,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -54,36 +54,169 @@ fn run(args: Vec<String>) -> Result<i32> {
         if command == Command::MigratePreflight {
             println!("{}", serde_json::to_string_pretty(&plan)?);
         } else {
-            let report = engine.apply(plan)?;
+            let report = engine.apply(plan, install_and_verify_migration)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         return Ok(0);
     }
 
-    let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
-    let host = HostTarget::current()?;
-    let cache_root = runtime_cache_root()?;
-    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
-    let installed = installer.ensure(&manifest, host)?;
-
     match command {
-        Command::Run => launch_runtime(&installed.entrypoint, &[]),
+        Command::Run => {
+            let installed = install_runtime(&plugin_root)?;
+            launch_runtime(&installed.entrypoint, &[])
+        }
         Command::Verify => {
-            verify_mcp_runtime(
-                &installed.entrypoint,
-                &installed.root,
-                Duration::from_secs(20),
-            )?;
-            eprintln!(
-                "verified Unica runtime {} and MCP tools at {}",
-                VERSION,
-                installed.root.display()
-            );
+            install_and_verify_runtime(&plugin_root)?;
             Ok(0)
         }
         Command::Migrate | Command::MigratePreflight => {
             unreachable!("migration commands return before runtime installation")
         }
+    }
+}
+
+fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstallation> {
+    let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
+    let host = HostTarget::current()?;
+    let cache_root = runtime_cache_root()?;
+    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
+    installer.ensure(&manifest, host)
+}
+
+fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
+    verify_installed_skill_package(plugin_root)?;
+    let installed = install_runtime(plugin_root)?;
+    verify_mcp_runtime(
+        &installed.entrypoint,
+        &installed.root,
+        Duration::from_secs(20),
+    )?;
+    eprintln!(
+        "verified Unica {} package, runtime, and MCP tools at {}",
+        VERSION,
+        installed.root.display()
+    );
+    Ok(())
+}
+
+fn install_and_verify_migration(plugin_root: &Path) -> Result<()> {
+    install_and_verify_runtime(plugin_root)?;
+    verify_fresh_prompt_input(plugin_root)?;
+    eprintln!(
+        "verified Unica {} prompt-visible skills through fresh Codex prompt-input",
+        VERSION
+    );
+    Ok(())
+}
+
+fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
+    let metadata_path = plugin_root.join(".codex-plugin").join("plugin.json");
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+    if metadata.get("name").and_then(serde_json::Value::as_str) != Some("unica")
+        || metadata.get("version").and_then(serde_json::Value::as_str) != Some(VERSION)
+        || metadata.get("skills").and_then(serde_json::Value::as_str) != Some("./skills/")
+    {
+        return Err(unica_bootstrap::BootstrapError::new(format!(
+            "installed Unica plugin metadata does not expose version {VERSION} skills: {}",
+            metadata_path.display()
+        )));
+    }
+
+    let skills_root = plugin_root.join("skills");
+    let mut visible = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&skills_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let skill_file = entry.path().join("SKILL.md");
+        if !skill_file.is_file() {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "installed prompt-visible skill is incomplete: {}",
+                entry.path().display()
+            )));
+        }
+        visible.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+    for required in [
+        "code-search",
+        "platform-help",
+        "release-support",
+        "v8-runner",
+    ] {
+        if !visible.contains(required) {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "installed prompt-visible skill is missing: {required}"
+            )));
+        }
+    }
+    if visible.is_empty() {
+        return Err(unica_bootstrap::BootstrapError::new(
+            "installed Unica plugin exposes no prompt-visible skills",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_fresh_prompt_input(plugin_root: &Path) -> Result<()> {
+    let codex_home = codex_home_root()?;
+    let output = SystemCommandRunner.run(&CommandSpec::codex(
+        &codex_home,
+        &["debug", "prompt-input", "Проверь доступность Unica skills"],
+    ))?;
+    let proof: serde_json::Value = serde_json::from_str(&output).map_err(|error| {
+        unica_bootstrap::BootstrapError::new(format!(
+            "invalid codex debug prompt-input JSON: {error}"
+        ))
+    })?;
+    for required in [
+        "unica:code-search",
+        "unica:platform-help",
+        "unica:release-support",
+        "unica:v8-runner",
+    ] {
+        if !json_contains_text(&proof, required) {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "fresh Codex prompt-input does not expose installed skill {required}"
+            )));
+        }
+    }
+    let expected_root = format!("plugins/cache/unica/unica/{VERSION}/skills");
+    if !json_contains_normalized_path(&proof, &expected_root) {
+        return Err(unica_bootstrap::BootstrapError::new(format!(
+            "fresh Codex prompt-input does not reference installed Unica skill root: {}",
+            plugin_root.join("skills").display()
+        )));
+    }
+    Ok(())
+}
+
+fn json_contains_text(value: &serde_json::Value, needle: &str) -> bool {
+    match value {
+        serde_json::Value::String(text) => text.contains(needle),
+        serde_json::Value::Array(items) => {
+            items.iter().any(|item| json_contains_text(item, needle))
+        }
+        serde_json::Value::Object(fields) => fields
+            .values()
+            .any(|field| json_contains_text(field, needle)),
+        _ => false,
+    }
+}
+
+fn json_contains_normalized_path(value: &serde_json::Value, needle: &str) -> bool {
+    match value {
+        serde_json::Value::String(text) => text
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains(needle),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_contains_normalized_path(item, needle)),
+        serde_json::Value::Object(fields) => fields
+            .values()
+            .any(|field| json_contains_normalized_path(field, needle)),
+        _ => false,
     }
 }
 
@@ -141,5 +274,31 @@ fn normalize_exit_code(code: i32) -> u8 {
         code as u8
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_plugin_exposes_required_prompt_visible_skills() {
+        let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
+        verify_installed_skill_package(&plugin_root).unwrap();
+    }
+
+    #[test]
+    fn prompt_proof_searches_nested_skill_names_and_normalized_paths() {
+        let proof = serde_json::json!({
+            "content": [{
+                "text": r"- unica:code-search (file: C:\Codex\plugins\cache\unica\unica\0.7.3\skills\code-search\SKILL.md)"
+            }]
+        });
+
+        assert!(json_contains_text(&proof, "unica:code-search"));
+        assert!(json_contains_normalized_path(
+            &proof,
+            "c:/codex/plugins/cache/unica/unica/0.7.3/skills"
+        ));
     }
 }
