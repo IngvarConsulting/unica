@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
+toml_edit.workspace = true
 ureq.workspace = true
 uuid.workspace = true
 
@@ -30,5 +31,4 @@ windows-sys.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
-toml_edit = "0.25"
 uuid.workspace = true

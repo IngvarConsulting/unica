@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
+use toml_edit::{DocumentMut, Item};
 use uuid::Uuid;
 
 use crate::codex::{discover, CodexDiscovery, CommandRunner, CommandSpec, MarketplaceRecord};
@@ -18,7 +19,6 @@ pub const CANONICAL_REF: &str = "main";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CANONICAL_HTTPS_SOURCE: &str = "https://github.com/ingvarconsulting/unica-marketplace";
 const LEGACY_PLUGIN_SELECTOR: &str = "unica@unica-local";
-const LEGACY_PLUGIN_CONFIG_TABLE: &str = "[plugins.\"unica@unica-local\"]";
 const LEGACY_V061_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 
 #[derive(Clone, Debug, Serialize)]
@@ -181,9 +181,50 @@ fn config_has_legacy_plugin(codex_home: &Path) -> Result<bool> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    Ok(config
-        .lines()
-        .any(|line| line.trim() == LEGACY_PLUGIN_CONFIG_TABLE))
+    let config = parse_codex_config(&config_path, &config)?;
+    let Some(plugins) = config.as_table().get("plugins") else {
+        return Ok(false);
+    };
+    let plugins = plugins.as_table_like().ok_or_else(|| {
+        BootstrapError::new(format!(
+            "unsupported Codex config {}: plugins must be a table",
+            config_path.display()
+        ))
+    })?;
+    Ok(plugins.contains_key("unica@unica-local"))
+}
+
+fn parse_codex_config(path: &Path, config: &str) -> Result<DocumentMut> {
+    config.parse().map_err(|error| {
+        BootstrapError::new(format!("invalid Codex config {}: {error}", path.display()))
+    })
+}
+
+fn capture_canonical_user_settings(
+    config_path: &Path,
+    config: &DocumentMut,
+) -> Result<Option<Item>> {
+    let Some(plugins) = config.as_table().get("plugins") else {
+        return Ok(None);
+    };
+    let plugins = plugins.as_table_like().ok_or_else(|| {
+        BootstrapError::new(format!(
+            "unsupported Codex config {}: plugins must be a table",
+            config_path.display()
+        ))
+    })?;
+    let Some(canonical) = plugins.get("unica@unica") else {
+        return Ok(None);
+    };
+    let mut captured = canonical.clone();
+    let canonical = captured.as_table_like_mut().ok_or_else(|| {
+        BootstrapError::new(format!(
+            "unsupported Codex config {}: plugins.\"unica@unica\" must be a table",
+            config_path.display()
+        ))
+    })?;
+    canonical.remove("enabled");
+    Ok(Some(captured))
 }
 
 fn existing_legacy_paths(
@@ -533,7 +574,12 @@ impl<R: CommandRunner> MigrationEngine<R> {
         let backup = Backup::capture(&self.codex_home, &plan)?;
         backup.append_diagnostic("migration-started", None)?;
         let mut journal = Vec::new();
-        let result = self.apply_steps(&plan, &mut journal, verify);
+        let result = self.apply_steps(
+            &plan,
+            &mut journal,
+            backup.canonical_user_settings.as_ref(),
+            verify,
+        );
         if let Err(error) = result {
             let _ = backup.append_diagnostic("migration-failed", Some(&error.to_string()));
             let rollback = self.rollback(&plan, &journal, &backup);
@@ -574,6 +620,7 @@ impl<R: CommandRunner> MigrationEngine<R> {
         &self,
         plan: &MigrationPlan,
         journal: &mut Vec<JournalEntry>,
+        canonical_user_settings: Option<&Item>,
         verify: F,
     ) -> Result<()>
     where
@@ -615,6 +662,9 @@ impl<R: CommandRunner> MigrationEngine<R> {
         if plan.install_canonical_plugin {
             journal.push(JournalEntry::AddedCanonicalPlugin);
             self.run_codex(&["plugin", "add", "unica@unica", "--json"])?;
+            if let Some(settings) = canonical_user_settings {
+                restore_canonical_user_settings(&self.codex_home, settings)?;
+            }
         }
 
         let current = discover(&self.runner, &self.codex_home)?;
@@ -733,11 +783,32 @@ struct Backup {
     root: PathBuf,
     config: Option<Vec<u8>>,
     config_permissions: Option<Permissions>,
+    canonical_user_settings: Option<Item>,
 }
 
 impl Backup {
     fn capture(codex_home: &Path, plan: &MigrationPlan) -> Result<Self> {
         reject_symlinked_config(codex_home)?;
+        let config_path = codex_home.join("config.toml");
+        let (config, config_permissions, canonical_user_settings) = if config_path.is_file() {
+            let metadata = fs::symlink_metadata(&config_path)?;
+            let bytes = fs::read(&config_path)?;
+            let text = std::str::from_utf8(&bytes).map_err(|error| {
+                BootstrapError::new(format!(
+                    "invalid Codex config {}: config is not UTF-8: {error}",
+                    config_path.display()
+                ))
+            })?;
+            let document = parse_codex_config(&config_path, text)?;
+            let canonical_user_settings = capture_canonical_user_settings(&config_path, &document)?;
+            (
+                Some(bytes),
+                Some(metadata.permissions()),
+                canonical_user_settings,
+            )
+        } else {
+            (None, None, None)
+        };
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| {
@@ -750,15 +821,9 @@ impl Backup {
             .join(format!("{timestamp}-{}", Uuid::new_v4()));
         ensure_path_within_codex_home(codex_home, &root)?;
         create_private_dir_all(&root)?;
-        let config_path = codex_home.join("config.toml");
-        let (config, config_permissions) = if config_path.is_file() {
-            let metadata = fs::symlink_metadata(&config_path)?;
-            let bytes = fs::read(&config_path)?;
-            write_private_file(&root.join("config.toml"), &bytes)?;
-            (Some(bytes), Some(metadata.permissions()))
-        } else {
-            (None, None)
-        };
+        if let Some(bytes) = &config {
+            write_private_file(&root.join("config.toml"), bytes)?;
+        }
         let snapshot = serde_json::json!({
             "schemaVersion": 2,
             "removePluginIds": plan.remove_plugin_ids,
@@ -767,6 +832,7 @@ impl Backup {
             "removeLegacyPaths": plan.remove_legacy_paths,
             "preserveOnRollbackPaths": plan.preserve_on_rollback_paths,
             "configExisted": config.is_some(),
+            "canonicalUserSettingsCaptured": canonical_user_settings.is_some(),
         });
         write_private_file(
             &root.join("snapshot.json"),
@@ -788,6 +854,7 @@ impl Backup {
             root,
             config,
             config_permissions,
+            canonical_user_settings,
         })
     }
 
@@ -817,12 +884,12 @@ impl Backup {
         let config_path = codex_home.join("config.toml");
         match &self.config {
             Some(bytes) => {
-                let temporary = codex_home.join(format!(".config.toml.restore-{}", Uuid::new_v4()));
-                write_private_file(&temporary, bytes)?;
-                if let Some(permissions) = &self.config_permissions {
-                    fs::set_permissions(&temporary, permissions.clone())?;
-                }
-                replace_config_file(&temporary, &config_path)?;
+                atomic_write_config(
+                    &config_path,
+                    bytes,
+                    self.config_permissions.as_ref(),
+                    "restore",
+                )?;
             }
             None if config_path.exists() => fs::remove_file(config_path)?,
             None => {}
@@ -852,6 +919,113 @@ impl Backup {
     }
 }
 
+fn restore_canonical_user_settings(codex_home: &Path, captured: &Item) -> Result<()> {
+    reject_symlinked_config(codex_home)?;
+    let config_path = codex_home.join("config.toml");
+    let metadata = fs::symlink_metadata(&config_path).map_err(|error| {
+        BootstrapError::new(format!(
+            "failed to preserve canonical Unica settings in {}: {error}",
+            config_path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(BootstrapError::new(format!(
+            "failed to preserve canonical Unica settings: {} is not a regular file",
+            config_path.display()
+        )));
+    }
+    let config = fs::read_to_string(&config_path)?;
+    let mut config = parse_codex_config(&config_path, &config)?;
+
+    let (canonical_key, enabled_key, enabled) = {
+        let plugins = config
+            .as_table()
+            .get("plugins")
+            .and_then(Item::as_table_like)
+            .ok_or_else(|| {
+                BootstrapError::new(format!(
+                    "failed to preserve canonical Unica settings in {}: plugins must be a table",
+                    config_path.display()
+                ))
+            })?;
+        let (canonical_key, canonical) =
+            plugins.get_key_value("unica@unica").ok_or_else(|| {
+                BootstrapError::new(format!(
+                    "failed to preserve canonical Unica settings in {}: plugin add did not create plugins.\"unica@unica\"",
+                    config_path.display()
+                ))
+            })?;
+        let canonical = canonical.as_table_like().ok_or_else(|| {
+            BootstrapError::new(format!(
+                "failed to preserve canonical Unica settings in {}: plugins.\"unica@unica\" must be a table",
+                config_path.display()
+            ))
+        })?;
+        let (enabled_key, enabled) = canonical.get_key_value("enabled").ok_or_else(|| {
+            BootstrapError::new(format!(
+                "failed to preserve canonical Unica settings in {}: plugin add did not create enabled",
+                config_path.display()
+            ))
+        })?;
+        (canonical_key.clone(), enabled_key.clone(), enabled.clone())
+    };
+
+    let mut restored = captured.clone();
+    let restored_table = restored.as_table_like_mut().ok_or_else(|| {
+        BootstrapError::new(
+            "failed to preserve canonical Unica settings: captured subtree is not a table",
+        )
+    })?;
+    *restored_table
+        .entry_format(&enabled_key)
+        .or_insert(Item::None) = enabled;
+
+    let plugins = config
+        .as_table_mut()
+        .get_mut("plugins")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| {
+            BootstrapError::new(format!(
+                "failed to preserve canonical Unica settings in {}: plugins must be a table",
+                config_path.display()
+            ))
+        })?;
+    *plugins.entry_format(&canonical_key).or_insert(Item::None) = restored;
+
+    atomic_write_config(
+        &config_path,
+        config.to_string().as_bytes(),
+        Some(&metadata.permissions()),
+        "preserve",
+    )
+}
+
+fn atomic_write_config(
+    destination: &Path,
+    bytes: &[u8],
+    permissions: Option<&Permissions>,
+    purpose: &str,
+) -> Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        BootstrapError::new(format!(
+            "Codex config has no parent directory: {}",
+            destination.display()
+        ))
+    })?;
+    let temporary = parent.join(format!(".config.toml.{purpose}-{}", Uuid::new_v4()));
+    let result = (|| {
+        write_private_file(&temporary, bytes)?;
+        if let Some(permissions) = permissions {
+            fs::set_permissions(&temporary, permissions.clone())?;
+        }
+        replace_config_file(&temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 #[cfg(not(windows))]
 fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
     fs::rename(source, destination)?;
@@ -860,13 +1034,44 @@ fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn replace_config_file(source: &Path, destination: &Path) -> Result<()> {
-    match fs::remove_file(destination) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        REPLACEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
-    fs::rename(source, destination)?;
-    Ok(())
+
+    let destination_exists = fs::symlink_metadata(destination).is_ok();
+    let source = wide(source);
+    let destination = wide(destination);
+    let replaced = unsafe {
+        if destination_exists {
+            ReplaceFileW(
+                destination.as_ptr(),
+                source.as_ptr(),
+                ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                ptr::null(),
+                ptr::null(),
+            )
+        } else {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        }
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error().into())
+    } else {
+        Ok(())
+    }
 }
 
 fn backup_path(
