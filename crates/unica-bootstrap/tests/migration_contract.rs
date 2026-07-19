@@ -59,6 +59,31 @@ fn canonical_plugin(version: &str) -> PluginRecord {
     }
 }
 
+fn materialize_contract_fixture(contents: &str, codex_home: &str) -> serde_json::Value {
+    fn replace_token(value: &mut serde_json::Value, codex_home: &str) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    replace_token(item, codex_home);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values_mut() {
+                    replace_token(item, codex_home);
+                }
+            }
+            serde_json::Value::String(text) => {
+                *text = text.replace("${CODEX_HOME}", codex_home);
+            }
+            _ => {}
+        }
+    }
+
+    let mut value: serde_json::Value = serde_json::from_str(contents).unwrap();
+    replace_token(&mut value, codex_home);
+    value
+}
+
 #[test]
 fn parses_current_empty_codex_json_contract() {
     let marketplaces: MarketplaceList =
@@ -79,14 +104,18 @@ fn parses_codex_0_145_contract_when_unrelated_marketplace_omits_source() {
         "fixtures/codex-0.145.0-alpha.18/metadata.json"
     ))
     .unwrap();
-    let marketplaces_json = include_str!("fixtures/codex-0.145.0-alpha.18/marketplaces-local.json")
-        .replace("${CODEX_HOME}", &home);
-    let plugins_json = include_str!("fixtures/codex-0.145.0-alpha.18/plugins-installed.json")
-        .replace("${CODEX_HOME}", &home);
+    let marketplaces = materialize_contract_fixture(
+        include_str!("fixtures/codex-0.145.0-alpha.18/marketplaces-local.json"),
+        &home,
+    );
+    let plugins = materialize_contract_fixture(
+        include_str!("fixtures/codex-0.145.0-alpha.18/plugins-installed.json"),
+        &home,
+    );
 
     let discovery = CodexDiscovery {
-        marketplaces: serde_json::from_str(&marketplaces_json).unwrap(),
-        plugins: serde_json::from_str(&plugins_json).unwrap(),
+        marketplaces: serde_json::from_value(marketplaces).unwrap(),
+        plugins: serde_json::from_value(plugins).unwrap(),
     };
     let plan = classify_discovery(discovery, &codex_home).unwrap();
 
@@ -100,6 +129,21 @@ fn parses_codex_0_145_contract_when_unrelated_marketplace_omits_source() {
     assert_eq!(plan.remove_marketplaces, vec!["unica"]);
     assert!(plan.add_canonical_marketplace);
     assert!(plan.install_canonical_plugin);
+}
+
+#[test]
+fn codex_contract_fixture_materializes_a_windows_root_as_json_data() {
+    let marketplaces = materialize_contract_fixture(
+        include_str!("fixtures/codex-0.145.0-alpha.18/marketplaces-local.json"),
+        r"D:\a\unica\codex-home",
+    );
+
+    let parsed: MarketplaceList = serde_json::from_value(marketplaces).unwrap();
+
+    assert_eq!(
+        parsed.marketplaces[1].marketplace_source.source,
+        r"D:\a\unica\codex-home/marketplaces/unica-local"
+    );
 }
 
 #[test]
