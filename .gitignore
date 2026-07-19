@@ -2,6 +2,7 @@ research/
 its/
 .build/
 .worktrees/
+.superpowers/
 target/
 dist/
 .DS_Store
