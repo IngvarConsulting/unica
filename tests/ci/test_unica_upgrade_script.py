@@ -46,6 +46,8 @@ class UnicaUpgradeScriptContractTests(unittest.TestCase):
         self.assertIn("idempotent", text)
         self.assertIn("ConvertTo-Json", text)
         self.assertIn("legacyManagedName", text)
+        self.assertIn('$legacyManagedPathContract = "marketplaces/$LegacyManagedName"', text)
+        self.assertIn("legacyManagedPathContract", text)
 
 
 if __name__ == "__main__":

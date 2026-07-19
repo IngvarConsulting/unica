@@ -64,6 +64,7 @@ $codexBinRoot = Split-Path -Parent $resolvedCodex
 $codexCommand = $resolvedCodex
 $legacyParent = Join-Path $codexHome "marketplaces"
 $legacyManagedRoot = Join-Path $legacyParent $LegacyManagedName
+$legacyManagedPathContract = "marketplaces/$LegacyManagedName"
 $originalCodexHome = $env:CODEX_HOME
 $originalPath = $env:PATH
 
@@ -153,6 +154,7 @@ try {
         codexVersion = $ExpectedCodexVersion
         legacyVersion = $ExpectedLegacyVersion
         legacyManagedName = $LegacyManagedName
+        legacyManagedPathContract = $legacyManagedPathContract
         candidateVersion = $candidateVersion
         preflightClassified = $true
         changed = $migrated

@@ -17,9 +17,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def publish_text(self) -> str:
         return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
-    def legacy_text(self) -> str:
-        return LEGACY_WORKFLOW.read_text(encoding="utf-8")
-
     def test_source_gate_covers_both_rust_packages_and_full_workspace(self) -> None:
         text = self.release_text()
 
@@ -60,46 +57,43 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs: [package-thin, publish-release-assets]", text)
         self.assertIn("--expect-download-failure", text)
 
-    def test_legacy_windows_migration_uses_pinned_real_cli_for_candidate_and_stable(self) -> None:
+    def test_source_release_preflight_covers_both_historical_managed_roots(self) -> None:
         release = self.release_text()
-        stable = self.legacy_text()
         preflight = release[
             release.index("  legacy-migration-preflight:") : release.index("  installer:")
         ]
 
-        for section in (preflight, stable):
-            self.assertIn("rust-v0.145.0-alpha.18", section)
-            self.assertIn("codex-x86_64-pc-windows-msvc.exe.zip", section)
-            self.assertIn("unica-codex-marketplace-win-x64.zip", section)
-            self.assertIn("test-unica-upgrade.ps1", section)
-            self.assertIn("Get-FileHash", section)
-            self.assertIn(
-                "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a",
-                section,
-            )
-            self.assertIn(
-                "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499",
-                section,
-            )
+        self.assertIn("rust-v0.145.0-alpha.18", preflight)
+        self.assertIn("codex-x86_64-pc-windows-msvc.exe.zip", preflight)
+        self.assertIn("unica-codex-marketplace-win-x64.zip", preflight)
+        self.assertIn("test-unica-upgrade.ps1", preflight)
+        self.assertIn("Get-FileHash", preflight)
+        self.assertIn(
+            "f719bcb43de2bcfed3af1055e53a57fa9b7ed00dcbce70c13ec71fd1f41ba86a",
+            preflight,
+        )
+        self.assertIn(
+            "ae8e7269d5fce2f29b9ea4947297b92d7c7d04d1bcb6c9334127c7c6fd85e499",
+            preflight,
+        )
         self.assertIn("name: unica-thin-marketplace", preflight)
         self.assertIn("-Mode Preflight", preflight)
         self.assertIn("legacy_managed_name: [unica-local, unica]", preflight)
         self.assertIn("-LegacyManagedName", preflight)
         self.assertIn("needs: package-thin", preflight)
-        self.assertIn("schedule:", stable)
-        self.assertIn("workflow_dispatch:", stable)
-        self.assertIn("-Mode Full", stable)
-        self.assertIn("legacy_managed_name: [unica-local, unica]", stable)
-        self.assertIn("-LegacyManagedName", stable)
-        self.assertIn("IngvarConsulting/unica-marketplace", stable)
-        self.assertIn("marketplace.json", stable)
-        self.assertIn("checkout --detach", stable)
         self.assertNotIn("legacy-migration-full", release)
+        self.assertNotIn("-Mode Full", preflight)
 
         publish = release[
             release.index("  publish-release-assets:") : release.index("  smoke-thin-plugin:")
         ]
         self.assertIn("- legacy-migration-preflight", publish)
+
+    def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
+        release = self.release_text()
+
+        self.assertFalse(LEGACY_WORKFLOW.exists())
+        self.assertNotIn("unica-legacy-migration.yml", release)
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         text = self.release_text()

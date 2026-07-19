@@ -6,7 +6,6 @@ on:
     paths:
       - ".agents/plugins/marketplace.json"
       - ".github/workflows/unica-plugin-release.yml"
-      - ".github/workflows/unica-legacy-migration.yml"
       - ".github/workflows/publish-unica-marketplace.yml"
       - "AGENTS.md"
       - "Cargo.toml"
