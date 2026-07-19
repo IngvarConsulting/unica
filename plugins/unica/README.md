@@ -25,14 +25,15 @@ codex plugin add unica@unica
 
 ## Legacy transition boundary
 
-Unica `v0.7.6` is the immutable migration bridge. A local, duplicated, or
+Unica `v0.7.7` is the immutable migration bridge. A local, duplicated, or
 otherwise legacy installation must first run the published
-[`install-unica.sh`](https://github.com/IngvarConsulting/unica/releases/download/v0.7.6/install-unica.sh)
+[`install-unica.sh`](https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.sh)
 or
-[`install-unica.ps1`](https://github.com/IngvarConsulting/unica/releases/download/v0.7.6/install-unica.ps1).
+[`install-unica.ps1`](https://github.com/IngvarConsulting/unica/releases/download/v0.7.7/install-unica.ps1).
 
 Unica `v0.8.0` supports ordinary marketplace updates only from canonical
-`v0.7.5`, canonical `v0.7.6`, and canonical technical `0.7.x` installations.
+`v0.7.5`, canonical `v0.7.6`, canonical `v0.7.7`, and canonical technical
+`0.7.x` installations.
 The version string alone does not make a local or duplicated installation
 canonical.
 

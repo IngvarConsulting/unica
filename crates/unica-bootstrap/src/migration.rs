@@ -639,6 +639,17 @@ impl<R: CommandRunner> MigrationEngine<R> {
             journal.push(JournalEntry::RemovedMarketplace(marketplace.clone()));
             self.run_codex(&["plugin", "marketplace", "remove", marketplace, "--json"])?;
         }
+        // Some legacy installations use plugins/cache/unica/unica, which is also the
+        // parent chosen for the new canonical package. Clean only those overlapping
+        // trees before installation; the remaining legacy trees stay in place until
+        // runtime verification succeeds.
+        for path in plan
+            .remove_legacy_paths
+            .iter()
+            .filter(|path| plan.canonical_plugin_root.starts_with(path))
+        {
+            remove_managed_path(&self.codex_home, path)?;
+        }
         if plan.upgrade_canonical_marketplace {
             journal.push(JournalEntry::UpgradedCanonicalMarketplace);
             self.run_codex(&[
@@ -676,7 +687,11 @@ impl<R: CommandRunner> MigrationEngine<R> {
         let plugin_root = prove_current_canonical(current, &self.codex_home)?;
         verify(&plugin_root)?;
 
-        for path in &plan.remove_legacy_paths {
+        for path in plan
+            .remove_legacy_paths
+            .iter()
+            .filter(|path| !plan.canonical_plugin_root.starts_with(path))
+        {
             remove_managed_path(&self.codex_home, path)?;
         }
 

@@ -873,9 +873,12 @@ fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_direct_canonic
     .unwrap();
     let legacy_root = codex_home.join("marketplaces/unica-local");
     let alias_cache = codex_home.join("plugins/cache/unica-local");
+    let canonical_cache = codex_home.join("plugins/cache/unica/unica/0.6.1");
     fs::create_dir_all(&legacy_root).unwrap();
     fs::create_dir_all(&alias_cache).unwrap();
+    fs::create_dir_all(&canonical_cache).unwrap();
     fs::write(alias_cache.join("marker"), "legacy alias cache").unwrap();
+    fs::write(canonical_cache.join("marker"), "legacy canonical cache").unwrap();
 
     let runner = NativeCodexMutationRunner::for_issue_90(codex_home.clone());
     let marketplaces = runner.marketplaces();
@@ -887,6 +890,10 @@ fn exact_issue_90_duplicate_migration_removes_alias_and_preserves_direct_canonic
 
     assert_canonical_marketplace_removals(&commands, &marketplaces);
     assert!(!alias_cache.exists());
+    assert!(
+        current_plugin_root(&codex_home).is_dir(),
+        "cleanup must not delete the canonical package installed during migration"
+    );
     assert_alias_plugin_table_is_absent(&codex_home);
     assert_canonical_direct_user_setting(&codex_home);
 }

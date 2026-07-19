@@ -1,5 +1,9 @@
 # Unica v0.7.6 Migration Bridge and v0.8.0 Legacy Cleanup Design
 
+> Superseded at the release barrier: the `v0.7.6` manual regression exposed an
+> overlapping-cache cleanup defect. The corrected bridge contract is
+> [`2026-07-19-v077-migration-bridge-v080-cleanup-amendment.md`](2026-07-19-v077-migration-bridge-v080-cleanup-amendment.md).
+
 **Status:** Approved direction from the maintainer request dated 2026-07-19.
 
 ## Purpose

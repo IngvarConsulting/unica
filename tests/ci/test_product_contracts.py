@@ -60,28 +60,28 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, readme)
 
-    def test_readme_documents_the_frozen_v076_bridge(self) -> None:
+    def test_readme_documents_the_frozen_v077_bridge(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("| Исходное состояние |", readme)
         self.assertIn(
-            "releases/download/v0.7.6/install-unica.sh",
+            "releases/download/v0.7.7/install-unica.sh",
             readme,
         )
         self.assertIn(
-            "releases/download/v0.7.6/install-unica.ps1",
+            "releases/download/v0.7.7/install-unica.ps1",
             readme,
         )
         self.assertIn("v0.7.5", readme)
         self.assertIn("техническ", readme.lower())
         self.assertIn("v0.8.0", readme)
 
-    def test_v076_release_note_declares_the_legacy_boundary(self) -> None:
+    def test_v077_release_note_declares_the_legacy_boundary(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        note = (repo_root / "docs/releases/v0.7.6.md").read_text(encoding="utf-8")
+        note = (repo_root / "docs/releases/v0.7.7.md").read_text(encoding="utf-8")
 
-        for value in ("#90", "unica-local", "v0.7.6", "v0.8.0", "manual"):
+        for value in ("#90", "unica-local", "v0.7.7", "v0.8.0", "manual"):
             with self.subTest(value=value):
                 self.assertIn(value, note)
 
@@ -108,6 +108,7 @@ class ProductContractTests(unittest.TestCase):
             repo_root / "docs/releases/v0.7.2.md",
             repo_root / "docs/releases/v0.7.5.md",
             repo_root / "docs/releases/v0.7.6.md",
+            repo_root / "docs/releases/v0.7.7.md",
         ]
         fat_archive_mentions = [
             str(path.relative_to(repo_root))
