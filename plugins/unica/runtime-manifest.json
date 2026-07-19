@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "pluginVersion": "0.7.0",
+  "development": true,
+  "source": {
+    "repository": "https://github.com/IngvarConsulting/unica",
+    "commit": "workspace"
+  },
+  "release": {
+    "repository": "https://github.com/IngvarConsulting/unica",
+    "tag": "workspace"
+  },
+  "targets": {}
+}

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/unica-coder"]
+members = ["crates/unica-bootstrap", "crates/unica-coder"]
 resolver = "2"
 
 [workspace.package]
