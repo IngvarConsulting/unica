@@ -30,4 +30,5 @@ windows-sys.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
+toml_edit = "0.25"
 uuid.workspace = true
