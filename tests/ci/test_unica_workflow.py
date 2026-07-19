@@ -96,8 +96,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
         release = self.release_text()
         violations: dict[str, list[str]] = {}
+        workflows = sorted(
+            (*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")),
+            key=lambda path: path.name,
+        )
 
-        for workflow in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        for workflow in workflows:
             text = workflow.read_text(encoding="utf-8")
             markers = [
                 marker
