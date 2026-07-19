@@ -9,7 +9,7 @@ Build a fully working local Unica Codex plugin for the current machine,
 install it as a local Codex marketplace, and verify fresh-session visibility.
 
 Options:
-  --marketplace-name NAME  Codex marketplace name (default: unica-local)
+  --marketplace-name NAME  Codex marketplace name (default: unica-dev)
   --build-dir DIR         Build directory (default: .build/local-codex-unica)
   --skip-build            Reuse an existing target tool bundle in --build-dir
   --skip-install          Build/package only, do not modify Codex config/cache
@@ -19,7 +19,7 @@ EOF
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-local}"
+MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-dev}"
 BUILD_ROOT="${UNICA_LOCAL_BUILD_DIR:-$REPO_ROOT/.build/local-codex-unica}"
 DO_BUILD=1
 DO_INSTALL=1
@@ -189,8 +189,7 @@ rm -rf "$PACKAGE_OUT"
   --lock-file plugins/unica/third-party/tools.lock.json \
   --out-dir "$PACKAGE_OUT" \
   --marketplace-name "$MARKETPLACE_NAME" \
-  --allow-partial-targets \
-  --no-archives
+  --local-debug-target "$TARGET"
 
 "$PYTHON_BIN" -m json.tool "$MARKETPLACE_DIR/.agents/plugins/marketplace.json" >/dev/null
 "$PYTHON_BIN" -m json.tool "$MARKETPLACE_DIR/plugins/unica/.codex-plugin/plugin.json" >/dev/null

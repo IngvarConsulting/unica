@@ -1,40 +1,39 @@
 # 7. Представление развертывания
 
-## Source Checkout
+## Source checkout
 
-In the repository checkout, `.mcp.json` runs the Rust binary from the plugin
-root through `cargo run --manifest-path ../../Cargo.toml --bin unica`. This
-keeps local development possible without generated binary commits or shell
-wrapper files.
+The tracked plugin is a development source tree. Its `.mcp.json` runs the Rust
+workspace with Cargo; generated binaries are not committed. The local debug
+script builds one host target and registers a distinct `unica-dev` marketplace.
 
-## Generated Marketplace Package
+## Source release
 
-The release pipeline builds target-specific bundled binaries, writes
-`third-party/manifest.json`, and packages `plugins/unica`.
+`IngvarConsulting/unica` publishes deterministic full runtime archives and JSON
+metadata for `darwin-arm64`, `linux-x64`, and `win-x64`. Each archive contains
+only one target. Published bytes are downloaded again and verified before the
+marketplace publication workflow can succeed.
 
-Packaged execution:
+## Public marketplace
 
-1. `.mcp.json` starts `./bin/<target>/unica` with `cwd` set to the plugin root.
-2. The bundled `unica` binary starts as stdio MCP server.
-3. Internal adapters resolve and verify their bundled tools through Rust before
-   execution.
+`IngvarConsulting/unica-marketplace` stores a thin plugin at `plugins/unica`.
+The stable `.agents/plugins/marketplace.json` entry uses `git-subdir` and an
+immutable marketplace tag. Staging changes plugin files only; promotion changes
+the catalog only after the staging merge commit is tagged.
 
-## Local Install
+## Consumer host
 
-`scripts/dev/install-local-unica.sh` builds a local package, installs it as a
-local Codex marketplace, validates native binaries, and can verify fresh Codex
-prompt visibility.
+Codex stores the thin plugin in its managed plugin cache. `.mcp.json` launches
+through standard Git, so the same command works with POSIX Git and Git for
+Windows. The selected native bootstrap downloads the current target runtime to
+`$CODEX_HOME/unica/runtimes/<version>/<target>`, validates it, and starts the
+single public MCP process.
 
-## Runtime State
+Git and Codex CLI are required. Node.js, Python, HTTP clients, JSON tools, and
+archive utilities are not part of the consumer deployment.
 
-Volatile state defaults to `.build/unica` under the workspace root and can be
-overridden by `UNICA_CACHE_DIR`.
+## State and rollback
 
-Workspace-scoped internal services store runtime state under
-`.build/unica/services/<service-key>/` or the equivalent `UNICA_CACHE_DIR`
-location. The service record contains the localhost port, process id, token,
-version, workspace root, source root, and access timestamps.
-
-Packaged binaries locate the plugin root from their own executable path when
-`UNICA_PLUGIN_ROOT` is not set, so hidden workspace services can locate internal
-adapter assets even when the user workspace is outside the plugin directory.
+Workspace state stays under `.build/unica` or `UNICA_CACHE_DIR`. Downloaded
+runtime state is version/target scoped and guarded by a ready marker. Migration
+backups live under `$CODEX_HOME/unica/migration-backups`; failed migration
+restores configuration atomically and reverses successful Codex mutations.

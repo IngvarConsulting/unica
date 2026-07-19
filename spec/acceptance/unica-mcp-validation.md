@@ -128,20 +128,27 @@ tracked in `spec/IMPLEMENTATION_TODO.md`.
 
 ## Packaging Smoke
 
-For a local host-target package, build the tool bundle and package marketplace
-with the normal CI scripts. A valid generated package must satisfy:
+For the thin public package and its three runtime assets, the normal CI scripts
+must satisfy:
 
 - packaged `.mcp.json` exposes exactly `unica`;
-- packaged `.mcp.json` starts the bundled `bin/<target>/unica` binary directly
-  with `cwd` set to the plugin root;
-- generated `third-party/manifest.json` lists `unica` as a bundled tool and
-  lists remote standards data only as an internal adapter.
+- packaged `.mcp.json` uses only the command-scoped Git alias and target-neutral
+  portable selector;
+- the thin plugin has exactly three native bootstrap binaries and no full
+  `bin/<target>` runtime;
+- `runtime-manifest.json` pins the source commit, release tag, exact GitHub URLs,
+  archive hashes, file hashes, and entrypoints for all targets;
+- re-downloaded release archives exactly match the metadata and contain the
+  generated `third-party/manifest.json` plus one target's runtime binaries;
+- bootstrap `verify` completes MCP `initialize` and `tools/list` with the
+  required stable public tools.
 
 ## Fresh Codex Visibility
 
-Use a clean `CODEX_HOME` when validating a packaged plugin. The acceptance
-signal is a fresh prompt showing Unica skills and only the public MCP server
-provided by the plugin, not stale cached MCP registrations.
+Use a clean `CODEX_HOME`, add `IngvarConsulting/unica-marketplace` at `main`,
+install `unica@unica`, and start a new Codex task. The acceptance signal is a
+fresh prompt showing Unica skills and only the public MCP server provided by the
+plugin, not stale cached registrations.
 
 ## Workspace Service Acceptance
 

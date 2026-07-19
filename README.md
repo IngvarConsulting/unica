@@ -1,81 +1,80 @@
 # Unica
 
-Unica - это плагин для Codex, который помогает работать с проектами 1С:Предприятие.
+Unica — публичный плагин Codex для разработки на 1С:Предприятии. Он добавляет
+навыки и один MCP-сервер `unica`, через который Codex создаёт и проверяет
+метаданные, формы, роли, СКД, внешние обработки и отчёты, запускает 1С и ищет
+BSL-код.
 
-Обычным языком: репозиторий содержит набор инструкций, сценариев и подключаемых инструментов, чтобы Codex мог выполнять типовые задачи 1С-разработчика: создавать объекты конфигурации, собирать внешние обработки и отчеты, обновлять базы, запускать проверки и искать код в больших 1С-проектах.
+## Требования
 
-## Что в этой репе
+- актуальный Codex CLI с командами `codex plugin`;
+- стандартный Git, включая Git for Windows на Windows;
+- платформа 1С только для операций, которым реально требуется запуск 1С.
 
-- `plugins/unica/skills/` - прикладные навыки Codex: формы, метаданные, EPF/ERF, базы, роли, СКД, веб-публикация и другие задачи 1С.
-- `plugins/unica/.mcp.json` - MCP-подключения для поиска кода, работы с инструментами 1С и справочными материалами.
-- `crates/unica-coder/` - Rust runtime `unica`, который реализует публичные `unica.*` tools без runtime script fallback.
-- `plugins/unica/third-party/tools.lock.json` - единый список версий внешних инструментов.
-- `.github/workflows/unica-plugin-release.yml` - сборка готового пакета плагина для установки.
-
-Исходники в репозитории не хранят готовые бинарные утилиты. Они собираются в GitHub Actions и попадают в готовый marketplace-пакет.
-
-## Для кого
-
-- Для 1С-разработчиков, которые хотят использовать Codex как помощника по реальным задачам разработки.
-- Для тех, кто поддерживает или расширяет сам плагин Unica.
-- Для команд, которым нужен воспроизводимый набор 1С-инструментов внутри Codex.
+Node.js, Python, `curl`, `wget`, `jq` и архиваторы для обычной установки и
+запуска не нужны. Git является частью runtime-контракта: Codex запускает
+command-scoped Git shell alias, а тот выбирает небольшой нативный bootstrap для
+Windows x64, macOS arm64 или Linux x64.
 
 ## Установка
 
-На macOS и Linux одна команда скачивает POSIX installer из последнего GitHub
-Release, определяет платформу, скачивает нужный пакет Unica и устанавливает его
-в Codex:
+```sh
+codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
+codex plugin add unica@unica
+```
+
+После установки откройте new Codex task: список навыков и MCP-конфигурация
+фиксируются на границе новой задачи, а не подменяются в уже работающей сессии.
+
+При первом MCP-вызове bootstrap скачивает только runtime текущей платформы из
+релиза `IngvarConsulting/unica`. Архив и каждый файл проверяются по SHA-256.
+Готовый runtime атомарно публикуется в
+`$CODEX_HOME/unica/runtimes/<version>/<target>`; при стандартном `CODEX_HOME`
+это `~/.codex/unica/runtimes/...`. Неполная или повреждённая загрузка не получает
+маркер готовности.
+
+## Обновление
 
 ```sh
-curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh
+codex plugin marketplace upgrade unica
+codex plugin remove unica@unica
+codex plugin add unica@unica
 ```
 
-На Windows используйте Windows PowerShell 5.1. `install-unica.sh` не
-поддерживает Windows, включая Git Bash, MSYS и Cygwin:
+Затем откройте new Codex task. Отдельной команды `codex plugin upgrade` в
+поддерживаемом CLI нет, поэтому переустановка плагина после обновления каталога
+является намеренным шагом.
 
-```powershell
-iwr https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.ps1 -OutFile install-unica.ps1
-powershell -ExecutionPolicy Bypass -File .\install-unica.ps1
-```
+## Переход со старой установки и откат
 
-Для установки конкретного релиза на macOS или Linux:
+Переходные скрипты `scripts/install-unica.sh` и `scripts/install-unica.ps1`
+нужны только для миграции прежней локальной схемы. Они клонируют стабильный
+Git-каталог, запускают `migrate-preflight`, затем общий нативный transactional
+bootstrap. Bootstrap сохраняет резервную копию в
+`$CODEX_HOME/unica/migration-backups/`, применяет только команды Codex CLI и при
+ошибке восстанавливает точный `config.toml` и прежние регистрации в обратном
+порядке. Путь резервной копии печатается в отчёте.
+
+Если миграция завершилась ошибкой, автоматический откат уже выполнен; не
+удаляйте cache вручную. Для возврата после успешной миграции сначала удалите
+публичную установку командами ниже, затем используйте инструкции и активы того
+предыдущего релиза, к которому возвращаетесь.
+
+## Удаление
 
 ```sh
-curl -fsSL https://github.com/IngvarConsulting/unica/releases/latest/download/install-unica.sh | sh -s -- --version v0.6.1
+codex plugin remove unica@unica
+codex plugin marketplace remove unica
 ```
 
-Для установки конкретного релиза на Windows:
+Проверенные runtime-кэши можно оставить для повторной установки. Их ручное
+удаление не является частью обычного uninstall.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-unica.ps1 -Version v0.6.1
-```
+## Разработка
 
-Release assets собираются отдельно под платформы:
-
-- `unica-codex-marketplace-darwin-arm64.tar.gz`
-- `unica-codex-marketplace-linux-x64.tar.gz`
-- `unica-codex-marketplace-win-x64.zip`
-
-Installer выбирает нужный архив для своей платформы, регистрирует marketplace
-`unica-local`, обновляет cache Codex и включает `unica@unica-local`.
-
-Проверка:
-
-```sh
-codex debug prompt-input 'test'
-```
-
-В выводе должны быть видны marketplace `unica-local` и навыки вида `unica:meta-compile`, `unica:v8-runner`, `unica:epf-bsp-init`.
-
-## Установка из исходников для разработки
-
-Этот режим нужен, если вы меняете сам плагин. Git/source marketplace install
-из этого репозитория не является runtime-установкой: skills и metadata могут
-быть видны, но готовых `bin/<target>/` бинарников нет. Source tree содержит
-checked-in placeholder `third-party/manifest.json`; generated marketplace archives overwrite
-его manifest-файлом с target-specific бинарниками и
-checksums. Для рабочего MCP используйте release installer или generated
-marketplace archive.
+Source checkout не является пользовательским пакетом: в нём нет готовых
+runtime-бинарников. Для разработки используется отдельный marketplace
+`unica-dev`:
 
 ```sh
 git clone https://github.com/IngvarConsulting/unica.git
@@ -83,20 +82,18 @@ cd unica
 scripts/dev/install-local-unica.sh
 ```
 
-Скрипт соберет пакет под текущую машину из локальных исходников, установит его
-в Codex как `unica-local` и проверит свежую сессию через
-`codex debug prompt-input`.
+Исходный `.mcp.json` запускает `cargo run`; локальный скрипт собирает инструменты
+только для текущей машины. Официальный пакет остаётся тонким: skills, assets,
+три bootstrap-бинарника и `runtime-manifest.json`, без полного runtime.
 
-## Что нужно для работы
+## Репозиторий
 
-- Установленный Codex CLI.
-- Для реальных операций с базами и конфигурациями - установленная платформа 1С.
-- Для Windows-сценариев 1С - PowerShell, когда сама платформа 1С или внешние workflow требуют Windows automation. XML/DSL операции `unica.form.*` и `unica.skd.*` выполняются внутри Rust runtime.
+- `plugins/unica/skills/` — прикладные навыки 1С;
+- `crates/unica-coder/` — единый MCP runtime `unica`;
+- `crates/unica-bootstrap/` — загрузка, проверка, запуск и миграция;
+- `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов;
+- `.github/workflows/unica-plugin-release.yml` — runtime-релиз;
+- `.github/workflows/publish-unica-marketplace.yml` — staging и promotion
+  публичного каталога.
 
-## Где смотреть детали
-
-- Техническое описание плагина: `plugins/unica/README.md`.
-- Внутренняя схема инструментов и сборки: `plugins/unica/references/tooling/internal-package.md`.
-- Список pinned-инструментов: `plugins/unica/third-party/tools.lock.json`.
-
-Официальная публикация в публичный каталог Codex будет отдельным шагом, когда OpenAI откроет self-serve публикацию плагинов. Сейчас репозиторий готовит воспроизводимый marketplace-пакет; рабочий runtime-путь идет через release artifacts или локально сгенерированный marketplace-пакет, а не через сырой Git/source checkout.
+Лицензия: LGPL-3.0-or-later.

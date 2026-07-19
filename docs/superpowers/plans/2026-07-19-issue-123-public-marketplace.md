@@ -1,5 +1,7 @@
 # Issue 123 Public Marketplace Implementation Plan
 
+> **Historical execution context.** Validate every command and requirement against current code, tests, and package metadata before reuse.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Publish Unica 0.7.0 through `IngvarConsulting/unica-marketplace` as one thin `unica@unica` plugin that bootstraps a checksum-pinned native runtime for the current platform and transactionally migrates legacy installations.

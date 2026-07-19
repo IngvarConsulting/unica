@@ -243,6 +243,20 @@ def write_packaged_mcp_launcher(
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_local_debug_mcp_launcher(plugin_dir: Path, target: str) -> None:
+    if target not in SUPPORTED_TARGETS:
+        raise SystemExit(f"unsupported local debug target: {target}")
+    executable = "unica.exe" if target == "win-x64" else "unica"
+    mcp_path = plugin_dir / ".mcp.json"
+    mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+    server = mcp["mcpServers"]["unica"]
+    server["command"] = f"./bin/{target}/{executable}"
+    server["args"] = []
+    server["cwd"] = "."
+    server["note"] = "Development-only current-host Unica MCP binary."
+    mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def write_official_marketplace(source_path: Path, dest_path: Path, *, marketplace_name: str = PLUGIN_ID) -> None:
     data = json.loads(source_path.read_text(encoding="utf-8"))
     data["name"] = marketplace_name
@@ -426,17 +440,87 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
             raise SystemExit(f"archive contains nested package artifact: {rel}")
 
 
+def package_local_debug(
+    *,
+    repo_root: Path,
+    tools_root: Path,
+    lock_file: Path,
+    out_dir: Path,
+    marketplace_name: str,
+    target: str,
+) -> None:
+    plugin_src = repo_root / "plugins" / "unica"
+    marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
+    marketplace_dir = out_dir / "marketplace"
+    shutil.rmtree(marketplace_dir, ignore_errors=True)
+    plugin_dst = marketplace_dir / "plugins" / "unica"
+    copy_tracked_plugin_source(repo_root, plugin_src, plugin_dst)
+
+    marketplace_dst = marketplace_dir / ".agents" / "plugins"
+    marketplace_dst.mkdir(parents=True, exist_ok=True)
+    write_official_marketplace(
+        marketplace_src,
+        marketplace_dst / "marketplace.json",
+        marketplace_name=marketplace_name,
+    )
+
+    lock = load_lock(lock_file)
+    grouped_tools, bin_roots = load_tool_bundles(
+        tools_root,
+        lock,
+        allow_partial_targets=True,
+        target=target,
+    )
+    for bin_root in bin_roots:
+        source = bin_root / target
+        if source.is_dir():
+            copy_binary_tree(source, plugin_dst / "bin" / target)
+    write_manifest(plugin_dst, grouped_tools, lock_file)
+    write_local_debug_mcp_launcher(plugin_dst, target)
+    assert_archive_clean(marketplace_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path("."))
-    parser.add_argument("--runtime-metadata-root", type=Path, required=True)
-    parser.add_argument("--bootstrap-root", type=Path, required=True)
-    parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--runtime-metadata-root", type=Path)
+    parser.add_argument("--bootstrap-root", type=Path)
+    parser.add_argument("--release-tag")
+    parser.add_argument("--source-commit")
+    parser.add_argument("--local-debug-target")
+    parser.add_argument("--tools-root", type=Path)
+    parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
+    parser.add_argument("--marketplace-name", default="unica-dev")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
+    if args.local_debug_target:
+        if args.tools_root is None:
+            raise SystemExit("--tools-root is required with --local-debug-target")
+        lock_file = args.lock_file if args.lock_file.is_absolute() else repo_root / args.lock_file
+        package_local_debug(
+            repo_root=repo_root,
+            tools_root=args.tools_root.resolve(),
+            lock_file=lock_file.resolve(),
+            out_dir=args.out_dir.resolve(),
+            marketplace_name=args.marketplace_name,
+            target=args.local_debug_target,
+        )
+        return
+
+    missing = [
+        name
+        for name, value in (
+            ("--runtime-metadata-root", args.runtime_metadata_root),
+            ("--bootstrap-root", args.bootstrap_root),
+            ("--release-tag", args.release_tag),
+            ("--source-commit", args.source_commit),
+        )
+        if value is None
+    ]
+    if missing:
+        raise SystemExit(f"release packaging requires: {', '.join(missing)}")
     plugin_src = repo_root / "plugins" / "unica"
     marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
     if not plugin_src.exists():

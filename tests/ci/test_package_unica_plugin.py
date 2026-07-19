@@ -576,16 +576,14 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(data["name"], "unica-local")
             self.assertEqual(data["plugins"][0]["name"], "unica")
 
-    def test_installer_prompt_verification_uses_current_skill_markers(self) -> None:
+    def test_transition_installer_delegates_to_transactional_bootstrap(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "scripts" / "install-unica.sh").read_text(encoding="utf-8")
 
-        self.assertIn('"unica:meta-compile"', installer)
-        self.assertIn('"unica:v8-runner"', installer)
-        self.assertIn('"unica:db-auth-check"', installer)
-        self.assertIn("grep -Fq", installer)
-        self.assertNotIn('"workspace-init"', installer)
-        self.assertNotIn('for needle in "Unica"', installer)
+        self.assertIn("migrate-preflight", installer)
+        self.assertIn("migrate --plugin-root", installer)
+        self.assertNotIn("plugins/cache", installer)
+        self.assertNotIn("config.toml", installer)
 
     @unittest.skipIf(os.name == "nt", "POSIX executable bits are validated on POSIX CI")
     def test_copy_binary_tree_marks_files_executable(self) -> None:
@@ -740,6 +738,67 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertTrue(product_backlog.is_file())
             self.assertIn("bsl-analyzer", product_backlog.read_text(encoding="utf-8"))
+
+    def test_local_debug_mode_remains_current_host_only_and_uses_unica_dev(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins/unica/third-party/tools.lock.json").read_text(encoding="utf-8")
+        )
+        target = "linux-x64"
+        triple = lock["targets"][target]["targetTriple"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "tools" / "unica-tools-linux-x64"
+            bin_dir = bundle / "bin" / target
+            bin_dir.mkdir(parents=True)
+            tools = []
+            for locked in lock["tools"]:
+                binary = bin_dir / locked["binaryName"]
+                binary.write_bytes(locked["name"].encode())
+                tools.append(
+                    {
+                        "name": locked["name"],
+                        "version": locked["version"],
+                        "repository": locked["repository"],
+                        "upstreamUrl": f"{locked['repository']}/releases/tag/{locked['sourceTag']}",
+                        "sourceTag": locked["sourceTag"],
+                        "sourceCommit": locked["sourceCommit"],
+                        "license": locked["license"],
+                        "targetTriple": triple,
+                        "binaryPath": f"bin/{target}/{locked['binaryName']}",
+                        "sha256": module.sha256(binary),
+                    }
+                )
+            (bundle / "tools.json").write_text(
+                json.dumps({"target": target, "targetTriple": triple, "tools": tools}),
+                encoding="utf-8",
+            )
+            out = root / "out"
+            argv = [
+                "package-unica-plugin.py",
+                "--repo-root",
+                str(repo_root),
+                "--tools-root",
+                str(root / "tools"),
+                "--out-dir",
+                str(out),
+                "--local-debug-target",
+                target,
+            ]
+            with patch("sys.argv", argv):
+                module.main()
+
+            marketplace = json.loads(
+                (out / "marketplace/.agents/plugins/marketplace.json").read_text(encoding="utf-8")
+            )
+            mcp = json.loads(
+                (out / "marketplace/plugins/unica/.mcp.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(marketplace["name"], "unica-dev")
+            self.assertEqual(mcp["mcpServers"]["unica"]["command"], "./bin/linux-x64/unica")
+            self.assertFalse((out / "marketplace/plugins/unica/bootstrap/bin").exists())
 
 
 if __name__ == "__main__":
