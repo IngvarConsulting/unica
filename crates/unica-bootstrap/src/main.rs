@@ -54,7 +54,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         if command == Command::MigratePreflight {
             println!("{}", serde_json::to_string_pretty(&plan)?);
         } else {
-            let report = engine.apply(plan, || install_and_verify_runtime(&plugin_root))?;
+            let report = engine.apply(plan, install_and_verify_runtime)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         return Ok(0);
@@ -84,6 +84,7 @@ fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstall
 }
 
 fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
+    verify_prompt_visible_skills(plugin_root)?;
     let installed = install_runtime(plugin_root)?;
     verify_mcp_runtime(
         &installed.entrypoint,
@@ -91,10 +92,59 @@ fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
         Duration::from_secs(20),
     )?;
     eprintln!(
-        "verified Unica runtime {} and MCP tools at {}",
+        "verified Unica {} prompt-visible skills, runtime, and MCP tools at {}",
         VERSION,
         installed.root.display()
     );
+    Ok(())
+}
+
+fn verify_prompt_visible_skills(plugin_root: &Path) -> Result<()> {
+    let metadata_path = plugin_root.join(".codex-plugin").join("plugin.json");
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+    if metadata.get("name").and_then(serde_json::Value::as_str) != Some("unica")
+        || metadata.get("version").and_then(serde_json::Value::as_str) != Some(VERSION)
+        || metadata.get("skills").and_then(serde_json::Value::as_str) != Some("./skills/")
+    {
+        return Err(unica_bootstrap::BootstrapError::new(format!(
+            "installed Unica plugin metadata does not expose version {VERSION} skills: {}",
+            metadata_path.display()
+        )));
+    }
+
+    let skills_root = plugin_root.join("skills");
+    let mut visible = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&skills_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let skill_file = entry.path().join("SKILL.md");
+        if !skill_file.is_file() {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "installed prompt-visible skill is incomplete: {}",
+                entry.path().display()
+            )));
+        }
+        visible.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+    for required in [
+        "code-search",
+        "platform-help",
+        "release-support",
+        "v8-runner",
+    ] {
+        if !visible.contains(required) {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "installed prompt-visible skill is missing: {required}"
+            )));
+        }
+    }
+    if visible.is_empty() {
+        return Err(unica_bootstrap::BootstrapError::new(
+            "installed Unica plugin exposes no prompt-visible skills",
+        ));
+    }
     Ok(())
 }
 
@@ -152,5 +202,16 @@ fn normalize_exit_code(code: i32) -> u8 {
         code as u8
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_plugin_exposes_required_prompt_visible_skills() {
+        let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
+        verify_prompt_visible_skills(&plugin_root).unwrap();
     }
 }
