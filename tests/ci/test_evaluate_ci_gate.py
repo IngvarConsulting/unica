@@ -9,22 +9,25 @@ MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "evaluate
 
 
 def load_gate_module():
-    if not MODULE_PATH.exists():
-        return None
     spec = importlib.util.spec_from_file_location("evaluate_ci_gate", MODULE_PATH)
     if spec is None or spec.loader is None:
-        return None
+        raise RuntimeError(f"failed to load {MODULE_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-COMMON_SUCCESS = {
-    "classify-changes": "success",
-    "verify-source": "success",
-    "test-rust-platforms": "success",
-}
-FULL_SUCCESS = {
+OUTPUT_NAMES = (
+    "rust_changed",
+    "platform_changed",
+    "toolchain_changed",
+    "package_changed",
+    "plugin_content_changed",
+    "ci_changed",
+    "release_required",
+)
+ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
+PACKAGE_SUCCESS = {
     "build-tools": "success",
     "package-runtime": "success",
     "package-thin": "success",
@@ -37,115 +40,167 @@ PUBLISH_SKIPPED = {
 }
 
 
+def classification(**enabled: bool) -> dict[str, str]:
+    return {name: str(enabled.get(name, False)).lower() for name in OUTPUT_NAMES}
+
+
+def source_results() -> dict[str, str]:
+    return {
+        **ALWAYS_SUCCESS,
+        "test-rust-primary": "skipped",
+        "test-rust-platforms": "skipped",
+        "build-tools": "skipped",
+        "package-runtime": "skipped",
+        "package-thin": "skipped",
+        "probe-thin-bootstrap": "skipped",
+        "release-assessment": "skipped",
+        **PUBLISH_SKIPPED,
+    }
+
+
 class EvaluateCiGateTests(unittest.TestCase):
-    def module(self):
+    def test_source_only_pr_accepts_only_classified_skips(self) -> None:
         module = load_gate_module()
-        self.assertIsNotNone(module, f"missing gate evaluator: {MODULE_PATH}")
-        self.assertTrue(hasattr(module, "evaluate_gate"), "missing evaluate_gate")
-        self.assertTrue(hasattr(module, "render_summary"), "missing render_summary")
-        return module
+        outputs = classification(plugin_content_changed=True)
+        results = source_results()
 
-    def test_light_pr_accepts_only_classified_pipeline_skips(self) -> None:
-        module = self.module()
-        results = {
-            **COMMON_SUCCESS,
-            "build-tools": "skipped",
-            "package-runtime": "skipped",
-            "package-thin": "skipped",
-            "probe-thin-bootstrap": "skipped",
-            "release-assessment": "skipped",
-            **PUBLISH_SKIPPED,
-        }
-
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/148/merge", "false", results)
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
-        self.assertEqual("light", evaluation.contour)
-        self.assertEqual(set(results) - set(COMMON_SUCCESS), set(evaluation.skipped_jobs))
-        self.assertEqual({}, evaluation.unexpected)
+        self.assertEqual("source", evaluation.contour)
+        self.assertEqual(set(results) - set(ALWAYS_SUCCESS), set(evaluation.skipped_jobs))
 
-    def test_full_pr_requires_the_conditional_pipeline(self) -> None:
-        module = self.module()
+    def test_platform_independent_rust_uses_primary_macos_and_package_pipeline(self) -> None:
+        module = load_gate_module()
+        outputs = classification(rust_changed=True, release_required=True)
         results = {
-            **COMMON_SUCCESS,
-            **FULL_SUCCESS,
+            **source_results(),
+            "test-rust-primary": "success",
+            **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
-            **PUBLISH_SKIPPED,
         }
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/148/merge", "true", results)
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("rust", evaluation.contour)
+        self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
+
+    def test_platform_rust_uses_full_matrix_instead_of_primary_job(self) -> None:
+        module = load_gate_module()
+        outputs = classification(rust_changed=True, platform_changed=True, release_required=True)
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            **PACKAGE_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("platform", evaluation.contour)
+        self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
+
+    def test_ci_full_pr_runs_all_validation_and_package_jobs_without_publication(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            **PACKAGE_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("full", evaluation.contour)
-        self.assertEqual(set(PUBLISH_SKIPPED), set(evaluation.skipped_jobs))
+        self.assertEqual({"test-rust-primary", *PUBLISH_SKIPPED}, set(evaluation.skipped_jobs))
 
-    def test_failure_cancelled_and_unexpected_skip_fail_the_gate(self) -> None:
-        module = self.module()
-        results = {
-            **COMMON_SUCCESS,
-            **FULL_SUCCESS,
+    def test_manual_full_contour_runs_probe_but_tag_publishes_instead(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        manual = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
-            **PUBLISH_SKIPPED,
-            "verify-source": "cancelled",
-            "build-tools": "failure",
-            "package-runtime": "skipped",
         }
-
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/148/merge", "true", results)
-
-        self.assertFalse(evaluation.ok)
-        self.assertEqual(
-            {
-                "verify-source": ("cancelled", "success"),
-                "build-tools": ("failure", "success"),
-                "package-runtime": ("skipped", "success"),
-            },
-            evaluation.unexpected,
-        )
-
-    def test_tag_gate_requires_publication_but_skips_pr_probe(self) -> None:
-        module = self.module()
-        results = {
-            **COMMON_SUCCESS,
-            **FULL_SUCCESS,
+        tag = {
+            **manual,
             "probe-thin-bootstrap": "skipped",
             "publish-release-assets": "success",
             "smoke-thin-plugin": "success",
             "verify-published-assets": "success",
         }
 
-        evaluation = module.evaluate_gate("push", "refs/tags/v0.8.1", "true", results)
+        manual_evaluation = module.evaluate_gate("workflow_dispatch", "refs/heads/main", outputs, manual)
+        tag_evaluation = module.evaluate_gate("push", "refs/tags/v0.8.1", outputs, tag)
 
-        self.assertTrue(evaluation.ok)
-        self.assertEqual("release", evaluation.contour)
-        self.assertEqual(["probe-thin-bootstrap"], evaluation.skipped_jobs)
+        self.assertTrue(manual_evaluation.ok)
+        self.assertEqual("full", manual_evaluation.contour)
+        self.assertTrue(tag_evaluation.ok)
+        self.assertEqual("release", tag_evaluation.contour)
 
-    def test_invalid_classifier_output_fails_closed(self) -> None:
-        module = self.module()
-        results = {**COMMON_SUCCESS, **FULL_SUCCESS, "probe-thin-bootstrap": "success", **PUBLISH_SKIPPED}
+    def test_missing_invalid_or_inconsistent_classification_fails_closed(self) -> None:
+        module = load_gate_module()
+        invalid_cases = (
+            {},
+            {**classification(), "rust_changed": "maybe"},
+            classification(platform_changed=True),
+            classification(package_changed=True),
+        )
+        for outputs in invalid_cases:
+            with self.subTest(outputs=outputs):
+                evaluation = module.evaluate_gate(
+                    "pull_request", "refs/pull/155/merge", outputs, source_results()
+                )
+                self.assertFalse(evaluation.ok)
+                self.assertIn("classification", evaluation.unexpected)
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/148/merge", "", results)
+    def test_failure_cancelled_and_unexpected_skip_fail_the_gate(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "verify-source": "cancelled",
+            "test-rust-platforms": "failure",
+            **PACKAGE_SUCCESS,
+            "package-runtime": "skipped",
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertFalse(evaluation.ok)
-        self.assertEqual("invalid", evaluation.contour)
-        self.assertIn("classification", evaluation.unexpected)
+        self.assertEqual(
+            {
+                "verify-source": ("cancelled", "success"),
+                "test-rust-platforms": ("failure", "success"),
+                "package-runtime": ("skipped", "success"),
+            },
+            {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
+        )
 
-    def test_summary_reports_contour_results_and_skipped_jobs(self) -> None:
-        module = self.module()
+    def test_summary_reports_classification_results_and_skipped_jobs(self) -> None:
+        module = load_gate_module()
+        outputs = classification(rust_changed=True, release_required=True)
         results = {
-            **COMMON_SUCCESS,
-            **FULL_SUCCESS,
+            **source_results(),
+            "test-rust-primary": "success",
+            **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
-            **PUBLISH_SKIPPED,
         }
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/148/merge", "true", results)
+        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         summary = module.render_summary(evaluation)
 
-        self.assertIn("Contour: `full`", summary)
-        self.assertIn("| `publish-release-assets` | `skipped` | `skipped` |", summary)
+        self.assertIn("Contour: `rust`", summary)
+        self.assertIn("Rust changed: `true`", summary)
+        self.assertIn("Platform changed: `false`", summary)
+        self.assertIn("| `test-rust-platforms` | `skipped` | `skipped` |", summary)
         self.assertIn("Skipped jobs", summary)
-        self.assertIn("`verify-published-assets`", summary)
 
 
 if __name__ == "__main__":

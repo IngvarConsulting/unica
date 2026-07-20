@@ -45,6 +45,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         gate = job_block(text, "unica-ci")
 
         self.assertIn("  pull_request:\n", trigger)
+        self.assertIn("labeled", trigger)
+        self.assertIn("unlabeled", trigger)
         self.assertNotIn("paths:", trigger)
         self.assertIn("name: Unica CI", gate)
         self.assertIn("if: always()", gate)
@@ -52,6 +54,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for upstream in (
             "classify-changes",
             "verify-source",
+            "test-rust-primary",
             "test-rust-platforms",
             "build-tools",
             "package-runtime",
@@ -64,6 +67,78 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(upstream=upstream):
                 self.assertIn(f"      - {upstream}", gate)
+
+    def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
+        text = self.release_text()
+        classifier = job_block(text, "classify-changes")
+
+        for output in (
+            "rust_changed",
+            "platform_changed",
+            "toolchain_changed",
+            "package_changed",
+            "plugin_content_changed",
+            "ci_changed",
+            "release_required",
+        ):
+            with self.subTest(output=output):
+                self.assertIn(f"      {output}:", classifier)
+        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", classifier)
+        self.assertIn("--force-full", classifier)
+
+    def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
+        text = self.release_text()
+        source = job_block(text, "verify-source")
+        primary = job_block(text, "test-rust-primary")
+        platforms = job_block(text, "test-rust-platforms")
+
+        self.assertNotIn("cargo test", source)
+        self.assertNotIn("dtolnay/rust-toolchain", source)
+        self.assertIn("runs-on: macos-14", primary)
+        self.assertIn("rust_changed == 'true'", primary)
+        self.assertIn("platform_changed == 'false'", primary)
+        self.assertIn("runner: [ubuntu-latest, windows-latest, macos-14]", platforms)
+        self.assertIn("platform_changed == 'true'", platforms)
+        self.assertIn("toolchain_changed == 'true'", platforms)
+        self.assertIn("ci_changed == 'true'", platforms)
+        self.assertEqual(2, platforms.count("if: matrix.runner == 'macos-14'"))
+
+    def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
+        text = self.release_text()
+        build = job_block(text, "build-tools")
+        probe = job_block(text, "probe-thin-bootstrap")
+        publish = job_block(text, "publish-release-assets")
+
+        self.assertIn("release_required == 'true'", build)
+        self.assertIn("ci_changed == 'true'", build)
+        self.assertIn("github.event_name == 'pull_request'", probe)
+        self.assertIn("github.event_name == 'workflow_dispatch'", probe)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
+
+    def test_conditional_pipeline_breaks_transitive_skip_propagation(self) -> None:
+        text = self.release_text()
+        dependencies = {
+            "package-runtime": ("needs.build-tools.result == 'success'",),
+            "package-thin": ("needs.package-runtime.result == 'success'",),
+            "probe-thin-bootstrap": ("needs.package-thin.result == 'success'",),
+            "release-assessment": ("needs.package-runtime.result == 'success'",),
+            "publish-release-assets": ("needs.package-runtime.result == 'success'",),
+            "smoke-thin-plugin": (
+                "needs.package-thin.result == 'success'",
+                "needs.publish-release-assets.result == 'success'",
+            ),
+            "verify-published-assets": (
+                "needs.package-thin.result == 'success'",
+                "needs.publish-release-assets.result == 'success'",
+            ),
+        }
+
+        for job_id, dependency_results in dependencies.items():
+            with self.subTest(job_id=job_id):
+                job = job_block(text, job_id)
+                self.assertIn("always()", job)
+                for dependency_result in dependency_results:
+                    self.assertIn(dependency_result, job)
 
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = self.release_text()
@@ -92,6 +167,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         expected_release_timeouts = {
             "classify-changes": 10,
             "verify-source": 90,
+            "test-rust-primary": 60,
             "test-rust-platforms": 60,
             "build-tools": 90,
             "package-runtime": 30,
