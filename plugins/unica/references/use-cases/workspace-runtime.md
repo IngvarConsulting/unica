@@ -32,7 +32,7 @@ source-set path itself has no stronger structural evidence.
 | Bind external EPF config locally | `operation=config-init`, required `config`, `sourceSet`, `connection`; creates only adjacent `v8project.local.yaml` |
 | Prepare runtime state | `operation=init` |
 | Apply sources to the infobase | `operation=build`, optional `sourceSet`, `fullRebuild` |
-| Export infobase state to files | `operation=dump`, optional `mode`, `object`, `sourceSet`, `extension` |
+| Export infobase state to files | `operation=dump`, `mode=full`, optional `sourceSet`, `extension` |
 | Convert Designer/EDT files | `operation=convert`, optional `sourceSet`, `output` |
 | Export CF/CFE/EPF/ERF artifacts | `operation=make`, required `output`, optional `sourceSet`, `extension` |
 | Load CF/CFE artifacts | `operation=load`, required `path`, optional `mode`, `settings`, `extension` |
@@ -40,6 +40,11 @@ source-set path itself has no stronger structural evidence.
 | Run tests | `operation=test`, required `testRunner` |
 | Launch client or Designer | `operation=launch`, required `clientMode` |
 | Sync extension properties | `operation=extensions` |
+
+Applied `mode=incremental|partial` is temporarily fail-closed because the
+pinned runner writes directly to the source root without an exact path/hash
+receipt. Use `dryRun=true` to preview those modes. Keep `ConfigDumpInfo.xml`
+out of Git; it is local per-infobase runtime state rather than source.
 
 ## Related references
 

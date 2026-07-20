@@ -259,9 +259,11 @@ fn platform_xml_evidence(
     kind: SourceSetKind,
 ) -> Vec<String> {
     let mut evidence = Vec::new();
-    for rel in ["Configuration.xml", "ConfigDumpInfo.xml"] {
-        push_existing(&mut evidence, workspace_root, &source_root.join(rel));
-    }
+    push_existing(
+        &mut evidence,
+        workspace_root,
+        &source_root.join("Configuration.xml"),
+    );
 
     if matches!(
         kind,
@@ -432,7 +434,34 @@ source-set:
             "main",
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
-            &["src/Configuration.xml", "src/ConfigDumpInfo.xml"],
+            &["src/Configuration.xml"],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_dump_info_is_not_platform_source_format_evidence() {
+        let root = temp_workspace("unica-source-map-cdfi-runtime-state");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+"#,
+        );
+        write(&root.join("src/ConfigDumpInfo.xml"), "<ConfigDumpInfo/>");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "main",
+            SourceSetKind::Configuration,
+            SourceFormat::Unknown,
+            &[],
         );
 
         fs::remove_dir_all(root).unwrap();

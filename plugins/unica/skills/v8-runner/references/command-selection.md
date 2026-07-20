@@ -8,7 +8,7 @@ Use MCP `unica.runtime.execute` and choose `operation` by intent:
 | Bind an existing external EPF config to a local infobase | `operation=config-init`, required `config`, `sourceSet`, `connection`; selected source-set must be `EXTERNAL_DATA_PROCESSORS` |
 | Create runtime state | `operation=init` |
 | Apply source changes to infobase | `operation=build`, optional `sourceSet`, `fullRebuild` |
-| Bring infobase changes back to files | `operation=dump`, optional `mode`, `object`, `objects`, `sourceSet`, `extension` |
+| Bring infobase changes back to files | `operation=dump`, `mode=full`, optional `sourceSet`, `extension` |
 | Convert Designer/EDT files | `operation=convert`, optional `sourceSet`, `output` |
 | Export artifact | `operation=make`, required `output`, optional `sourceSet`, `extension` |
 | Load artifact | `operation=load`, required `path`, optional `mode=load|merge`, `settings`, `extension` |
@@ -20,7 +20,7 @@ Use MCP `unica.runtime.execute` and choose `operation` by intent:
 
 For branch switches, rebases, large object moves, or suspicious incremental state, use `operation=build` with `fullRebuild=true`.
 
-For dumps, inspect the worktree before execution and compare the resulting diff after execution.
+For dumps, inspect the worktree before execution and compare the resulting diff after execution. Applied `mode=incremental|partial` is temporarily fail-closed until v8-runner publishes through shadow/staging with exact path/hash receipts; those modes remain available as `dryRun=true` previews.
 
 Operation-specific guardrails:
 

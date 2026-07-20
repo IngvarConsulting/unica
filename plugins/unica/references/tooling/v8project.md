@@ -88,8 +88,8 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 | Initialize infobase/workspace | `operation=init` |
 | Load XML sources and update DB | `operation=build` |
 | Force full source load | `operation=build`, `fullRebuild=true` |
-| Dump XML sources | `operation=dump`, `mode=full|incremental|partial` |
-| Dump selected objects | `operation=dump`, `mode=partial`, `object=TYPE:NAME` or `objects=[...]` |
+| Dump XML sources | `operation=dump`, `mode=full` |
+| Preview incremental/selected dump | `operation=dump`, `mode=incremental|partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
 | Load `.cf` / `.cfe` artifact | `operation=load`, `path=<file>`, `mode=load|merge` |
 | Export `.cf` / `.cfe` artifact | `operation=make`, `output=<file>` |
 | Launch 1C | `operation=launch`, `clientMode=thin|thick|designer|ordinary` |
@@ -103,6 +103,7 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 - Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
 - If the config is missing, use `operation=config-init` or ask for the connection string.
 - Prefer `source-set` names over ad hoc source directories.
+- Treat `ConfigDumpInfo.xml` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence.
 - Use `execution_timeout` in `v8project.yaml` for long runtime operations; Unica does not expose `timeoutMs` for `unica.runtime.execute`.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
 - When credentials are absent, try only empty-password `Администратор`, then empty-password `Admin`; if both fail, ask the user.

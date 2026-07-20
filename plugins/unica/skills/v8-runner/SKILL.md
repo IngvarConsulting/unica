@@ -275,6 +275,12 @@ allowed-tools:
 
 Перед `dump` проверь `git status --short`, чтобы не смешать чужие изменения с выгрузкой из базы.
 
+`ConfigDumpInfo.xml` — локальное состояние конкретной ИБ: не добавляй его в
+Git и не используй как XML-исходник. Пока runner не реализует private CDFI,
+точный receipt и shadow publication (alkoleft/v8-runner-rust#30), применяй
+только `mode=full`. Для `incremental` и `partial` Unica разрешает только
+read-only preview (`dryRun=true`) и fail-closed блокирует реальный запуск.
+
 ### Incremental dump
 
 ```json
@@ -287,7 +293,7 @@ allowed-tools:
       "cwd": "<workspace>",
       "operation": "dump",
       "mode": "incremental",
-      "dryRun": false
+      "dryRun": true
     }
   }
 }
@@ -306,7 +312,7 @@ allowed-tools:
       "operation": "dump",
       "mode": "partial",
       "object": "Catalog:Номенклатура",
-      "dryRun": false
+      "dryRun": true
     }
   }
 }
@@ -325,7 +331,7 @@ allowed-tools:
       "operation": "dump",
       "mode": "partial",
       "objects": ["Catalog:Номенклатура", "Document:ЗаказПокупателя"],
-      "dryRun": false
+      "dryRun": true
     }
   }
 }

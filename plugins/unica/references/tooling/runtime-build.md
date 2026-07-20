@@ -373,6 +373,12 @@ EPF/ERF workflows в packaged Unica plugin идут через `v8-runner` и MC
 
 `ConfigDumpInfo.xml` — служебный файл, создаваемый при выгрузке конфигурации в файлы (`/DumpConfigToFiles`). Содержит информацию о составе и версиях объектов конфигурации на момент выгрузки.
 
+Это локальное runtime-состояние конкретной ИБ, а не коллективный XML-исходник.
+Не добавляй `ConfigDumpInfo.xml` в Git и не передавай его в `unica.cf.*` или
+`unica.meta.*`. Чистый checkout без этого файла является нормальным состоянием.
+Unica не считает его признаком формата source-set и не включает в mutation
+targets/receipts.
+
 **Назначение:**
 - Определение изменений при инкрементальной выгрузке (`-update`, `-configDumpInfoForChanges`)
 - Синхронизация состояния выгрузки с конфигурацией ИБ
@@ -382,7 +388,13 @@ EPF/ERF workflows в packaged Unica plugin идут через `v8-runner` и MC
 - `-configDumpInfoOnly` — обновить только этот файл без выгрузки объектов
 - `-updateConfigDumpInfo` — обновить файл после частичной загрузки (`/LoadConfigFromFiles`)
 
-**Расположение:** корень каталога выгрузки (рядом с `Configuration.xml`).
+Платформа предоставляет параметры для использования вспомогательного CDFI при
+сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
+runtime-слою. До реализации private state и shadow publication в
+`alkoleft/v8-runner-rust#30` Unica разрешает применяемый `dump` только с
+`mode=full`. `mode=incremental|partial` доступен лишь с `dryRun=true`, потому
+что закреплённый runner пишет эти режимы прямо в рабочий source root и не
+возвращает точные processed paths/hashes.
 
 ## Переменные окружения
 

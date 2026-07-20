@@ -385,6 +385,23 @@ fn call_tool(
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
     tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let index_report = crate::infrastructure::workspace_index::IndexStartReport::default();
+    if let Some(outcome) = source_sync_dump_guard(spec, args, dry_run) {
+        let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+        return Ok(OperationResult {
+            ok: outcome.ok,
+            summary: outcome.summary,
+            changes: outcome.changes,
+            warnings: outcome.warnings,
+            errors: outcome.errors,
+            artifacts: outcome.artifacts,
+            cache,
+            stdout: outcome.stdout,
+            stderr: outcome.stderr,
+            command: outcome.command,
+            diagnostics: None,
+            job: None,
+        });
+    }
     let mut support_guard_warning = if spec.mutating && !dry_run {
         match support_guard_check(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
@@ -468,6 +485,48 @@ fn call_tool(
         diagnostics,
         job: handler_outcome.job,
     })
+}
+
+fn source_sync_dump_guard(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Option<AdapterOutcome> {
+    if dry_run || !is_source_dump(spec, args) {
+        return None;
+    }
+    let mode = args.get("mode").and_then(Value::as_str)?;
+    if !matches!(mode, "incremental" | "partial") {
+        return None;
+    }
+
+    let message = format!(
+        "applied {mode} dump is disabled because pinned v8-runner writes directly into the source root and cannot report exact processed paths/hashes; use mode=full or wait for the shadow/staging receipt contract in alkoleft/v8-runner-rust#30"
+    );
+    Some(AdapterOutcome {
+        ok: false,
+        summary: format!("{} blocked by source sync guard", spec.name),
+        changes: Vec::new(),
+        warnings: vec![
+            "dryRun=true remains available to inspect the planned v8-runner command".to_string(),
+        ],
+        errors: vec![message.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{message}\n")),
+        command: None,
+    })
+}
+
+fn is_source_dump(spec: ToolSpec, args: &Map<String, Value>) -> bool {
+    match spec.handler {
+        ToolHandler::BuildRuntime { command, .. } => command == ["dump"],
+        ToolHandler::RuntimeAdapter
+        | ToolHandler::RuntimeJob {
+            action: RuntimeJobAction::Start,
+        } => args.get("operation").and_then(Value::as_str) == Some("dump"),
+        _ => false,
+    }
 }
 
 fn should_emit_events(
@@ -893,6 +952,9 @@ fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
             .warnings
             .push(format!("source-set discovery failed: {error}")),
     }
+    if let Some(warning) = tracked_config_dump_info_warning(&context.workspace_root) {
+        outcome.warnings.push(warning);
+    }
     outcome
 }
 
@@ -905,6 +967,9 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
             ));
             if let Some(error) = &source_map.source_selection_error {
                 outcome.warnings.push(error.clone());
+            }
+            if let Some(warning) = tracked_config_dump_info_warning(&context.workspace_root) {
+                outcome.warnings.push(warning);
             }
             outcome.stdout =
                 Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
@@ -922,6 +987,40 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
             command: None,
         },
     }
+}
+
+fn tracked_config_dump_info_warning(workspace_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "-z",
+            "--",
+            "ConfigDumpInfo.xml",
+            ":(glob)**/ConfigDumpInfo.xml",
+        ])
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut paths = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "ConfigDumpInfo.xml is per-infobase runtime state but is tracked by Git at {}; remove it from the index with `git rm --cached -- <path>` and add ConfigDumpInfo.xml to .gitignore",
+        paths.join(", ")
+    ))
 }
 
 fn source_set_summary(source_map: &crate::domain::project_sources::ProjectSourceMap) -> String {
@@ -1530,6 +1629,86 @@ mod tests {
     }
 
     #[test]
+    fn applied_partial_dump_is_blocked_until_runner_can_publish_through_staging() {
+        let root = test_workspace_root("runtime-partial-dump-guard");
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+        args.insert("dryRun".to_string(), json!(false));
+        args.insert("operation".to_string(), json!("dump"));
+        args.insert("mode".to_string(), json!("partial"));
+        args.insert("object".to_string(), json!("Catalog:Items"));
+
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("source sync guard"));
+        assert!(result.errors.join("\n").contains("v8-runner-rust#30"));
+        assert!(result.changes.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn applied_incremental_dump_is_blocked_at_every_unica_runtime_entry_point() {
+        let root = test_workspace_root("runtime-incremental-dump-guard");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+        }));
+
+        for (tool, include_operation) in [
+            ("unica.build.dump", false),
+            ("unica.runtime.execute", true),
+            ("unica.runtime.job.start", true),
+        ] {
+            let mut args = Map::new();
+            args.insert("cwd".to_string(), json!(root));
+            args.insert("dryRun".to_string(), json!(false));
+            args.insert("mode".to_string(), json!("incremental"));
+            if include_operation {
+                args.insert("operation".to_string(), json!("dump"));
+            }
+
+            let result = app.call_tool(tool, &args).unwrap();
+            assert!(!result.ok, "{tool} must be fail-closed");
+            assert!(result.summary.contains("source sync guard"));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_dump_and_partial_dump_preview_remain_available() {
+        let root = test_workspace_root("runtime-safe-dump-modes");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("runtime adapter invoked"),
+        }));
+        let mut full_args = Map::new();
+        full_args.insert("cwd".to_string(), json!(root));
+        full_args.insert("dryRun".to_string(), json!(false));
+        full_args.insert("operation".to_string(), json!("dump"));
+        full_args.insert("mode".to_string(), json!("full"));
+
+        let full = app.call_tool("unica.runtime.execute", &full_args).unwrap();
+        assert!(full.ok);
+        assert_eq!(full.summary, "runtime adapter invoked");
+
+        let mut preview_args = full_args;
+        preview_args.insert("dryRun".to_string(), json!(true));
+        preview_args.insert("mode".to_string(), json!("partial"));
+        preview_args.insert("object".to_string(), json!("Catalog:Items"));
+        let preview = app
+            .call_tool("unica.runtime.execute", &preview_args)
+            .unwrap();
+        assert!(preview.ok);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn runtime_job_start_defaults_to_dry_run_without_runtime_cache_invalidation() {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("dump".to_string()));
@@ -1967,6 +2146,50 @@ mod tests {
         assert!(stdout.contains(r#""effectiveSourceSet": "main""#));
         assert!(stdout.contains(r#""effectiveSourceRoot""#));
         assert!(!stdout.contains("sourceSelectionError"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_warns_when_config_dump_info_is_tracked_by_git() {
+        let root = test_workspace_root("project-map-tracked-cdfi");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(src.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "add",
+                "v8project.yaml",
+                "src/Configuration.xml",
+                "src/ConfigDumpInfo.xml",
+            ])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("src/ConfigDumpInfo.xml")
+                && warning.contains("git rm --cached")));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -25,10 +25,14 @@ source-set. The format decision belongs to the selected source-set.
 
 Use native MCP tools exposed by the public `unica` server:
 
-- `unica.cf.*` for `Configuration.xml`, `ConfigDumpInfo.xml`, languages, roles, and child-object registration.
+- `unica.cf.*` for `Configuration.xml`, languages, roles, and child-object registration.
 - `unica.meta.*` for metadata object info/compile/edit/remove/validate.
 - `unica.subsystem.*` and `unica.interface.*` for sections and command interface.
 - `unica.template.*` for adding or removing metadata templates.
+
+`ConfigDumpInfo.xml` is per-infobase runtime state, not a metadata source.
+Do not edit or generate it with Unica metadata tools, do not use it as source
+format evidence, and keep it out of Git.
 
 ## Related references
 
