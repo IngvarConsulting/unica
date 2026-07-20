@@ -87,19 +87,23 @@
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
       "sourceTag": "v1.26.0",
       "sourceCommit": "dcfff95ce678f49971b14d8acd82b042a6855470",
+      "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
+      "assetTag": "rlm-tools-bsl-v1.26.0-build.2",
       "license": "MIT",
-      "assetStrategy": "pyinstaller-entrypoint",
+      "assetStrategy": "direct-release-asset",
       "binaryName": "rlm-tools-bsl",
-      "entrypoint": "rlm-tools-bsl",
       "assets": {
         "darwin-arm64": {
-          "assetName": "rlm-tools-bsl-darwin-arm64"
+          "assetName": "rlm-tools-bsl-darwin-arm64",
+          "sha256": "81a5817815d8f6a8aa38ede2dabc2d0693733722fb253400b3e879c5338b89c0"
         },
         "linux-x64": {
-          "assetName": "rlm-tools-bsl-linux-x64"
+          "assetName": "rlm-tools-bsl-linux-x64",
+          "sha256": "35c7acbbbcc1f8e32f4e4d9554ffba917a4f7ab4ee83ab95aa75bfe23378a517"
         },
         "win-x64": {
-          "assetName": "rlm-tools-bsl-win-x64.exe"
+          "assetName": "rlm-tools-bsl-win-x64.exe",
+          "sha256": "1f321e68375d9889c0f78716c31fe1e35b8a97444b32f4c6166f21b20185cb96"
         }
       }
     },
@@ -109,19 +113,23 @@
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
       "sourceTag": "v1.26.0",
       "sourceCommit": "dcfff95ce678f49971b14d8acd82b042a6855470",
+      "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
+      "assetTag": "rlm-tools-bsl-v1.26.0-build.2",
       "license": "MIT",
-      "assetStrategy": "pyinstaller-entrypoint",
+      "assetStrategy": "direct-release-asset",
       "binaryName": "rlm-bsl-index",
-      "entrypoint": "rlm-bsl-index",
       "assets": {
         "darwin-arm64": {
-          "assetName": "rlm-bsl-index-darwin-arm64"
+          "assetName": "rlm-bsl-index-darwin-arm64",
+          "sha256": "7ec1bb3d3c6675033b560a9a2146f0b70d4d34f91522cf92def3ffabf9083975"
         },
         "linux-x64": {
-          "assetName": "rlm-bsl-index-linux-x64"
+          "assetName": "rlm-bsl-index-linux-x64",
+          "sha256": "5d7cb090281c6600ef9f477617a666a9b84270b46cbeb43d210a36b40c584b39"
         },
         "win-x64": {
-          "assetName": "rlm-bsl-index-win-x64.exe"
+          "assetName": "rlm-bsl-index-win-x64.exe",
+          "sha256": "ae9bc9bcb8bef71bdfee21e1b15920cc837e2e2fc692df8e9f63db92b7e8479d"
         }
       }
     },

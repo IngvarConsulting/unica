@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import shutil
 import subprocess
@@ -56,6 +55,12 @@ def download(url: str, dest: Path) -> None:
     print(f"download {url}", flush=True)
     with urllib.request.urlopen(url) as response, dest.open("wb") as out:
         shutil.copyfileobj(response, out)
+
+
+def release_asset_url(tool: dict, asset: dict) -> str:
+    repository = tool.get("assetRepository", tool["repository"])
+    tag = tool.get("assetTag", tool["sourceTag"])
+    return f"{repository}/releases/download/{tag}/{asset['assetName']}"
 
 
 def assert_host(target: str, targets: dict) -> None:
@@ -115,185 +120,6 @@ def extract_v8_runner(archive: Path, binary_name: str, dest: Path) -> None:
     if not matches:
         raise SystemExit(f"{binary_name} not found in {archive}")
     shutil.copy2(matches[0], dest)
-
-
-def verify_git_commit(source_dir: Path, expected_commit: str) -> None:
-    if not expected_commit:
-        return
-
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return
-
-    actual = result.stdout.strip()
-    if actual != expected_commit:
-        raise SystemExit(f"{source_dir} is at {actual}, expected {expected_commit}")
-
-
-def checkout_source(tool: dict, work_dir: Path) -> Path:
-    source_dir = work_dir / "source" / tool["name"]
-    shutil.rmtree(source_dir, ignore_errors=True)
-    source_dir.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            tool["sourceTag"],
-            tool["repository"],
-            str(source_dir),
-        ]
-    )
-    verify_git_commit(source_dir, tool["sourceCommit"])
-    return source_dir
-
-
-def resolve_source(tool: dict, explicit_source: Path | None, work_dir: Path) -> Path:
-    if explicit_source is not None:
-        if not explicit_source.exists():
-            raise SystemExit(f"{tool['name']} source directory not found: {explicit_source}")
-        verify_git_commit(explicit_source, tool["sourceCommit"])
-        return explicit_source
-
-    return checkout_source(tool, work_dir)
-
-
-def create_python_env(source_dir: Path, work_dir: Path) -> Path:
-    if not source_dir.exists():
-        raise SystemExit(f"python tool source directory not found: {source_dir}")
-
-    venv_dir = (work_dir / "python-env").resolve()
-    if os.name == "nt":
-        venv_python = venv_dir / "Scripts" / "python.exe"
-    else:
-        venv_python = venv_dir / "bin" / "python"
-
-    if not venv_python.exists():
-        run([sys.executable, "-m", "venv", str(venv_dir)])
-
-    run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "pyinstaller"])
-    run([str(venv_python), "-m", "pip", "install", str(source_dir)])
-    return venv_python
-
-
-def resolve_console_script_entrypoint(venv_python: Path, command_name: str) -> tuple[str, str]:
-    code = r"""
-import json
-import sys
-from importlib.metadata import entry_points
-
-command_name = sys.argv[1]
-eps = entry_points()
-if hasattr(eps, "select"):
-    candidates = eps.select(group="console_scripts", name=command_name)
-else:
-    candidates = [ep for ep in eps.get("console_scripts", []) if ep.name == command_name]
-
-matches = list(candidates)
-if not matches:
-    raise SystemExit(f"console_scripts entrypoint not found: {command_name}")
-
-entrypoint = matches[0]
-if not entrypoint.attr:
-    raise SystemExit(f"console_scripts entrypoint is not callable: {entrypoint.value}")
-
-print(json.dumps({"module": entrypoint.module, "attr": entrypoint.attr}))
-"""
-    try:
-        result = subprocess.run(
-            [str(venv_python), "-c", code, command_name],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout).strip()
-        message = f": {detail}" if detail else ""
-        raise SystemExit(f"failed to resolve installed entrypoint {command_name}{message}") from exc
-
-    data = json.loads(result.stdout)
-    return data["module"], data["attr"]
-
-
-def write_entrypoint_stub(build_root: Path, command_name: str, module: str, attr: str) -> Path:
-    stub = build_root / f"{command_name}-entrypoint.py"
-    stub.write_text(
-        "\n".join(
-            [
-                "import importlib",
-                "import sys",
-                "",
-                f"MODULE = {module!r}",
-                f"CALLABLE = {attr!r}",
-                "",
-                "",
-                "def _load_entrypoint():",
-                "    obj = importlib.import_module(MODULE)",
-                "    for part in CALLABLE.split('.'):",
-                "        obj = getattr(obj, part)",
-                "    return obj",
-                "",
-                "",
-                "if __name__ == '__main__':",
-                "    sys.exit(_load_entrypoint()())",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return stub
-
-
-def build_python_entrypoint(
-    tool: dict,
-    work_dir: Path,
-    out_dir: Path,
-    exe: str,
-    venv_python: Path,
-) -> Path:
-    command_name = tool["entrypoint"]
-    build_root = (work_dir / command_name).resolve()
-    shutil.rmtree(build_root, ignore_errors=True)
-    build_root.mkdir(parents=True)
-
-    module, attr = resolve_console_script_entrypoint(venv_python, command_name)
-    script = write_entrypoint_stub(build_root, command_name, module, attr)
-    collect_package = tool.get("collectAll", module.split(".", 1)[0])
-    run(
-        [
-            str(venv_python),
-            "-m",
-            "PyInstaller",
-            "--onefile",
-            "--clean",
-            "--noconfirm",
-            "--name",
-            command_name,
-            "--collect-all",
-            collect_package,
-            "--hidden-import",
-            module,
-            str(script),
-        ],
-        cwd=build_root,
-    )
-    produced = build_root / "dist" / f"{command_name}{exe}"
-    if not produced.exists():
-        raise SystemExit(f"PyInstaller output not found: {produced}")
-
-    dest = out_dir / f"{tool['binaryName']}{exe}"
-    shutil.copy2(produced, dest)
-    return dest
 
 
 def build_cargo_workspace_tool(
@@ -399,7 +225,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
-    parser.add_argument("--rlm-source", type=Path)
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, default=Path(".build/unica-tools"))
@@ -420,9 +245,6 @@ def main() -> None:
     downloads_dir.mkdir(parents=True, exist_ok=True)
 
     built_paths: dict[str, Path] = {}
-    python_env_cache: dict[Path, Path] = {}
-    source_cache: dict[tuple[str, str, str], Path] = {}
-
     for tool in lock["tools"]:
         strategy = tool["assetStrategy"]
         dest = target_bin_dir / f"{tool['binaryName']}{exe}"
@@ -431,7 +253,7 @@ def main() -> None:
             asset = tool["assets"].get(args.target)
             if not asset:
                 raise SystemExit(f"{tool['name']} has no asset for target {args.target}")
-            url = f"{tool['repository']}/releases/download/{tool['sourceTag']}/{asset['assetName']}"
+            url = release_asset_url(tool, asset)
             downloaded = downloads_dir / asset["assetName"]
             download(url, downloaded)
             verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
@@ -440,26 +262,11 @@ def main() -> None:
             asset = tool["assets"].get(args.target)
             if not asset:
                 raise SystemExit(f"{tool['name']} has no asset for target {args.target}")
-            url = f"{tool['repository']}/releases/download/{tool['sourceTag']}/{asset['assetName']}"
+            url = release_asset_url(tool, asset)
             downloaded = downloads_dir / asset["assetName"]
             download(url, downloaded)
             verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
             extract_v8_runner(downloaded, asset["archiveBinary"], dest)
-        elif strategy == "pyinstaller-entrypoint":
-            key = (tool["repository"], tool["sourceTag"], tool["sourceCommit"])
-            if key not in source_cache:
-                source_cache[key] = resolve_source(tool, args.rlm_source, args.work_dir / args.target)
-            source_dir = source_cache[key]
-            if source_dir not in python_env_cache:
-                python_env_cache[source_dir] = create_python_env(source_dir, args.work_dir / args.target)
-            venv_python = python_env_cache[source_dir]
-            dest = build_python_entrypoint(
-                tool,
-                args.work_dir / args.target / "pyinstaller",
-                target_bin_dir,
-                exe,
-                venv_python,
-            )
         elif strategy == "cargo-workspace":
             dest = build_cargo_workspace_tool(
                 tool,
