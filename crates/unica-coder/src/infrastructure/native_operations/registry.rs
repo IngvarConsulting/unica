@@ -4,7 +4,8 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 use super::{
-    cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
+    cf, cfe, code, dcs, external, form, help, interface, meta, mxl, role, subsystem, support,
+    template,
 };
 
 pub(crate) fn invoke_read(
@@ -130,6 +131,7 @@ pub(crate) fn invoke_mutation(
 ) -> Option<AdapterOutcome> {
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
+        .or_else(|| code::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| external::apply(operation, tool_name, args, context))
         .or_else(|| meta::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| match operation {

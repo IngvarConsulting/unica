@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const CODE_PATCH_ARGS: &[&str] = &["path", "operation", "selector", "content", "position"];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -602,6 +603,7 @@ pub fn validate_tool_arguments(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_code_patch_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
@@ -617,6 +619,62 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.code.patch" {
+        return Ok(());
+    }
+    for key in ["path", "operation", "content", "position"] {
+        let value = args
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{} argument `{key}` must be a non-empty string", tool.name))?;
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{} argument `{key}` must be a non-empty string",
+                tool.name
+            ));
+        }
+    }
+    if args.get("operation").and_then(Value::as_str) != Some("insert") {
+        return Err(format!("{} supports only operation `insert`", tool.name));
+    }
+    if !matches!(
+        args.get("position").and_then(Value::as_str),
+        Some("before" | "after")
+    ) {
+        return Err(format!(
+            "{} argument `position` must be `before` or `after`",
+            tool.name
+        ));
+    }
+    let selector = args
+        .get("selector")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} argument `selector` must be an object", tool.name))?;
+    if selector.len() != 1
+        || !selector
+            .keys()
+            .all(|key| matches!(key.as_str(), "method" | "anchor"))
+    {
+        return Err(format!(
+            "{} selector must contain exactly one of `method` or `anchor`",
+            tool.name
+        ));
+    }
+    let value = selector
+        .values()
+        .next()
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    if value.is_none() {
+        return Err(format!(
+            "{} selector value must be a non-empty string",
+            tool.name
+        ));
+    }
     Ok(())
 }
 
@@ -1218,7 +1276,11 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => {
-            names.extend(native_args_for(operation));
+            if operation == "code-patch" {
+                names.extend(CODE_PATCH_ARGS);
+            } else {
+                names.extend(native_args_for(operation));
+            }
             if operation == "form-edit" {
                 names.push("definition");
             }
@@ -1418,6 +1480,21 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.code.patch" {
+        return match name {
+            "operation" => json!({ "type": "string", "enum": ["insert"] }),
+            "position" => json!({ "type": "string", "enum": ["before", "after"] }),
+            "selector" => json!({
+                "type": "object",
+                "additionalProperties": false,
+                "oneOf": [
+                    { "required": ["method"], "properties": { "method": { "type": "string", "minLength": 1 } } },
+                    { "required": ["anchor"], "properties": { "anchor": { "type": "string", "minLength": 1 } } }
+                ]
+            }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
@@ -1563,7 +1640,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "regex"
     ) {
         Some("boolean")
-    } else if key == "definition" {
+    } else if matches!(key, "definition" | "selector") {
         Some("object")
     } else if matches!(
         key,
@@ -1626,6 +1703,32 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn code_patch_contract_is_narrow_and_requires_one_typed_selector() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/X/Ext/Module.bsl"),
+        );
+        args.insert("operation".to_string(), json!("insert"));
+        args.insert("selector".to_string(), json!({"method": "ПриСоздании"}));
+        args.insert("content".to_string(), json!("Сообщить(\"ok\");"));
+        args.insert("position".to_string(), json!("after"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        args.insert(
+            "selector".to_string(),
+            json!({"method": "A", "anchor": "B"}),
+        );
+        assert!(validate_tool_arguments(tool, &args, false).is_err());
+        args.insert("rawArgs".to_string(), json!(["--unsafe"]));
+        assert!(validate_tool_arguments(tool, &args, false).is_err());
     }
 
     #[test]

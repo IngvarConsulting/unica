@@ -1185,6 +1185,25 @@
           "decision": "ported"
         },
         {
+          "skill": "code-patch",
+          "status": "adapted",
+          "notes": "The narrow one-insertion workflow is a Unica product contract. It adopts the donor's MCP-first and verification guidance while deliberately excluding untyped editor, batch rewrite, and direct-script workflows.",
+          "upstreamPaths": [
+            "content/rules/mcp-first-search.md",
+            "content/rules/verification-checklist.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/code-patch"
+          ],
+          "contractPaths": [
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/code.rs",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
+          "decision": "ported"
+        },
+        {
           "skill": "code-search",
           "status": "adapted",
           "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",

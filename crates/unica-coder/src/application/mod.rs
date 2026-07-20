@@ -310,6 +310,16 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
+            name: "unica.code.patch",
+            description: "Insert content into one selected existing BSL Module.bsl file.",
+            mutating: true,
+            cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "code-patch",
+                event: Some(DomainEventKind::ModuleChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             mutating: false,

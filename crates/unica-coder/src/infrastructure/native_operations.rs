@@ -1,6 +1,7 @@
 //! Thin facade over family-owned native XML/DSL operations.
 pub(crate) mod cf;
 pub(crate) mod cfe;
+pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod compile_transaction;
 pub(crate) mod dcs;
@@ -21,9 +22,7 @@ pub(crate) mod template;
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};
 use std::fs;
-
 pub struct NativeOperationAdapter;
-
 impl NativeOperationAdapter {
     pub fn invoke(
         operation: &str,
@@ -39,6 +38,9 @@ impl NativeOperationAdapter {
             }
             if operation == "form-edit" && form::has_edit_payload(args) {
                 return Ok(form::preview_form_edit(args, context));
+            }
+            if operation == "code-patch" {
+                return Ok(code::preview(args, context));
             }
             let mut fallback = AdapterOutcome {
                 ok: true,
@@ -98,7 +100,6 @@ impl NativeOperationAdapter {
         Ok(common::analyze_xml(operation, tool_name, &target, &text))
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::NativeOperationAdapter;
@@ -107,7 +108,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-
     #[test]
     fn missing_native_mutation_handler_is_contract_error() {
         let root = temp_root("missing-mutation-handler");
