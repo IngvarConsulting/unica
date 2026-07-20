@@ -339,7 +339,7 @@ fn write_parent_configurations(path: &Path, text: &str) -> Result<(), String> {
     let mut bytes = Vec::with_capacity(text.len() + 3);
     bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
     bytes.extend_from_slice(text.as_bytes());
-    fs::write(path, bytes).map_err(|err| format!("failed to write {}: {err}", path.display()))
+    super::common::atomic_replace(path, &bytes)
 }
 
 fn replace_global_flag(text: &str, target: u8) -> Result<String, String> {

@@ -5,7 +5,7 @@ use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1253,12 +1253,39 @@ pub(crate) fn output_dir_arg(
 }
 
 pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
-    let mut file = fs::File::create(path)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     let content = content.trim_start_matches('\u{feff}');
-    file.write_all(b"\xef\xbb\xbf")
-        .and_then(|_| file.write_all(content.as_bytes()))
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))
+    let mut bytes = Vec::with_capacity(content.len() + 3);
+    bytes.extend_from_slice(b"\xef\xbb\xbf");
+    bytes.extend_from_slice(content.as_bytes());
+    atomic_replace(path, &bytes)
+}
+
+/// Publish bytes through a sibling staging file. No target is opened for writing
+/// until the complete replacement has been synced successfully.
+pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let staged = path.with_file_name(format!(
+        ".{}.unica-stage-{}-{nonce}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unica-output"),
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(|error| format!("create staging file for {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("write staging file for {}: {error}", path.display()))?;
+    fs::rename(&staged, path).map_err(|error| {
+        let _ = fs::remove_file(&staged);
+        format!("publish replacement for {}: {error}", path.display())
+    })
 }
 
 pub(crate) fn stable_uuid(index: usize) -> String {
