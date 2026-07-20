@@ -1,8 +1,8 @@
 use super::cf::cf_validate_identifier;
 use super::common::{escape_xml, path_arg, string_arg, write_utf8_bom};
 use super::form::{form_add_content_xml, form_add_metadata_xml, form_add_module_bsl};
+use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::AdapterOutcome;
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -576,6 +576,8 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
 mod tests {
     use super::*;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
+    use crate::infrastructure::platform::testing;
+    use crate::infrastructure::workspace::discover_workspace;
     use serde_json::{json, Map, Value};
     use std::collections::BTreeSet;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -583,7 +585,7 @@ mod tests {
     #[test]
     fn epf_init_creates_make_ready_layout_with_optional_managed_form() {
         let root = temp_root("epf-init-layout");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = map(json!({
             "Name": "ИмпортТоваров",
             "Synonym": "Импорт товаров & цен",
@@ -657,7 +659,7 @@ mod tests {
     #[test]
     fn erf_init_creates_minimal_report_layout_without_a_form() {
         let root = temp_root("erf-init-layout");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = map(json!({"Name": "Остатки", "OutputDir": "external/erf"}));
         let outcome = apply("erf-init", "unica.erf.init", &args, &context).unwrap();
         assert!(outcome.ok, "{:?}", outcome.errors);
@@ -704,7 +706,7 @@ mod tests {
     #[test]
     fn erf_init_optional_form_uses_external_report_object_type() {
         let root = temp_root("erf-init-form");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = map(json!({
             "Name": "Продажи",
             "OutputDir": "external/erf",
@@ -740,7 +742,7 @@ mod tests {
     #[test]
     fn external_init_dry_run_lists_files_without_writing() {
         let root = temp_root("external-init-dry-run");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = map(json!({
             "Name": "Preview",
             "OutputDir": "external",
@@ -773,7 +775,7 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
         let existing = output.join("Existing.xml");
         fs::write(&existing, "sentinel").unwrap();
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
 
         for (name, expected) in [("Existing", "already exists"), ("1Invalid", "identifier")] {
             let args = map(json!({"Name": name, "OutputDir": "external"}));
@@ -816,7 +818,7 @@ mod tests {
     #[test]
     fn rollback_removes_only_known_files_and_preserves_unexpected_entries() {
         let root = temp_root("rollback-preserves-concurrent");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = map(json!({"Name": "Rollback", "OutputDir": "external"}));
         let plan = prepare_plan(ExternalArtifactKind::Processor, &args, &context).unwrap();
         fs::create_dir_all(plan.object_dir.join("Ext")).unwrap();
@@ -842,7 +844,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn normalized_output_path_never_traverses_symlink_before_parent_component() {
         let root = temp_root("normalized-output");
@@ -850,8 +851,14 @@ mod tests {
         let outside = root.join("outside");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(outside.join("target")).unwrap();
-        std::os::unix::fs::symlink(outside.join("target"), workspace.join("link")).unwrap();
-        let context = WorkspaceContext::discover(workspace.clone()).unwrap();
+        let Some(symlink) =
+            testing::create_dir_symlink_for_test(outside.join("target"), workspace.join("link"))
+        else {
+            let _ = fs::remove_dir_all(root);
+            return;
+        };
+        symlink.unwrap();
+        let context = discover_workspace(Some(workspace.clone())).unwrap();
         let args = map(json!({
             "Name": "Safe",
             "OutputDir": "link/../external"

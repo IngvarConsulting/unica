@@ -13,6 +13,99 @@ const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
+#[cfg(unix)]
+pub(crate) fn configure_runtime_job_command(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // The group makes safe cancellation cover v8-runner descendants too.
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+pub(crate) fn configure_runtime_job_command(_command: &mut Command) {}
+
+#[cfg(unix)]
+pub(crate) fn cancel_runtime_job_process_tree(process_id: u32) -> Result<(), String> {
+    let group = i32::try_from(process_id)
+        .map_err(|_| runtime_job_error("runtime job process id is outside Unix pid range"))?;
+    // A negative pid targets the process group created before spawn.
+    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(runtime_job_io_error(
+            "cancel runtime job process group",
+            &error,
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn cancel_runtime_job_process_tree(process_id: u32) -> Result<(), String> {
+    let status = Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .status()
+        .map_err(|error| runtime_job_io_error("cancel runtime job process tree", &error))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(runtime_job_error("cancel runtime job process tree failed"))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn cancel_runtime_job_process_tree(_process_id: u32) -> Result<(), String> {
+    Err(runtime_job_error(
+        "runtime job process-tree cancellation is unsupported on this platform",
+    ))
+}
+
+fn runtime_job_error(message: &str) -> String {
+    crate::infrastructure::redaction::redactor(message)
+}
+
+fn runtime_job_io_error(context: &str, error: &io::Error) -> String {
+    runtime_job_error(&format!("{context}: {error}"))
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn runtime_job_process_tree_test_command() -> Option<(PathBuf, Vec<String>)> {
+    Some((
+        PathBuf::from("/bin/sh"),
+        vec!["-c".to_string(), "sleep 10 & wait".to_string()],
+    ))
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn runtime_job_process_tree_test_command() -> Option<(PathBuf, Vec<String>)> {
+    None
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn runtime_job_process_tree_is_alive(process_id: u32) -> io::Result<bool> {
+    let process_group = i32::try_from(process_id)
+        .map_err(|_| io::Error::other("process id is outside Unix pid range"))?;
+    if unsafe { libc::kill(-process_group, 0) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn runtime_job_process_tree_is_alive(_process_id: u32) -> io::Result<bool> {
+    Ok(false)
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
@@ -793,7 +886,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "infrastructure::managed_child::tests::managed_child_test_helper",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -814,7 +907,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "infrastructure::managed_child::tests::managed_child_test_helper",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -835,7 +928,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "infrastructure::managed_child::tests::managed_child_test_helper",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -1029,7 +1122,7 @@ mod tests {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
@@ -1167,7 +1260,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1201,7 +1294,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1225,7 +1318,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1246,7 +1339,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1276,7 +1369,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1326,7 +1419,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".to_string(),
-                "infrastructure::managed_child::tests::managed_child_test_helper".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
                 "--nocapture".to_string(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -1378,7 +1471,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "process_tree_immediate_parent")
@@ -1403,7 +1496,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
@@ -1442,7 +1535,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "infrastructure::managed_child::tests::managed_child_test_helper",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "write_marker")

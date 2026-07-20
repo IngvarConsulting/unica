@@ -1,5 +1,5 @@
+use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::AdapterOutcome;
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,11 +1,11 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::source_roots::{normalize_path_identity, resolve_source_root};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::managed_child::{
+use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1151,6 +1151,7 @@ fn new_lock_id() -> String {
 mod tests {
     use super::*;
     use crate::domain::cancellation::CancellationToken;
+    use crate::infrastructure::platform::testing;
     use std::cell::RefCell;
 
     #[test]
@@ -1468,14 +1469,18 @@ source-set:
         cleanup(&context);
     }
 
-    #[cfg(unix)]
     #[test]
     fn path_normalization_failures_do_not_match_index_identity() {
-        use std::os::unix::fs::symlink;
-
         let context = test_context("invalid-path-identity");
         let dangling = context.workspace_root.join("dangling");
-        symlink(context.workspace_root.join("missing"), &dangling).unwrap();
+        let Some(symlink) = testing::create_file_symlink_for_test(
+            context.workspace_root.join("missing"),
+            &dangling,
+        ) else {
+            cleanup(&context);
+            return;
+        };
+        symlink.unwrap();
         let dangling_text = dangling.display().to_string();
 
         assert!(!stored_path_matches(Some(&dangling_text), &dangling));
@@ -1612,7 +1617,7 @@ source-set:
     #[test]
     fn managed_cancelled_output_never_maps_to_success() {
         let output = map_managed_output(
-            crate::infrastructure::managed_child::ManagedOutput {
+            crate::infrastructure::platform::ManagedOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
                 stdout: String::new(),
@@ -1633,7 +1638,7 @@ source-set:
     #[test]
     fn managed_timed_out_output_never_maps_to_success() {
         let output = map_managed_output(
-            crate::infrastructure::managed_child::ManagedOutput {
+            crate::infrastructure::platform::ManagedOutput {
                 status_success: true,
                 status: "exit status: 0".to_string(),
                 stdout: String::new(),
@@ -1654,7 +1659,7 @@ source-set:
     #[test]
     fn managed_truncation_is_visible_at_index_boundary() {
         let output = map_managed_output(
-            crate::infrastructure::managed_child::ManagedOutput {
+            crate::infrastructure::platform::ManagedOutput {
                 status_success: false,
                 status: "exit status: 0".into(),
                 stdout: "tail".into(),
@@ -1900,98 +1905,27 @@ source-set:
         lines: &[String],
         cancellation: CancellationToken,
     ) -> IndexCommand {
-        #[cfg(windows)]
-        {
-            let mut script = String::new();
-            if sleep_first {
-                script.push_str("Start-Sleep -Milliseconds 20; ");
-            }
-            for line in lines {
-                script.push_str("[Console]::Out.WriteLine('");
-                script.push_str(&line.replace('\'', "''"));
-                script.push_str("'); ");
-            }
-            IndexCommand {
-                program: PathBuf::from("powershell"),
-                args: vec!["-NoProfile".to_string(), "-Command".to_string(), script],
-                cwd: cwd.to_path_buf(),
-                env: Vec::new(),
-                timeout: Duration::from_secs(5),
-                cancellation,
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let mut script = String::new();
-            if sleep_first {
-                script.push_str("sleep 0.01; ");
-            }
-            script.push_str("printf '%s\\n'");
-            for line in lines {
-                script.push_str(" '");
-                script.push_str(&line.replace('\'', "'\\''"));
-                script.push('\'');
-            }
-            IndexCommand {
-                program: PathBuf::from("/bin/sh"),
-                args: vec!["-c".to_string(), script],
-                cwd: cwd.to_path_buf(),
-                env: Vec::new(),
-                timeout: Duration::from_secs(5),
-                cancellation,
-            }
+        let command = testing::line_printing_command(sleep_first, lines);
+        IndexCommand {
+            program: command.program,
+            args: command.args,
+            cwd: cwd.to_path_buf(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            cancellation,
         }
     }
 
     fn make_lock_file_old(context: &WorkspaceContext) {
-        #[cfg(windows)]
-        {
-            use std::ffi::c_void;
-            use std::os::windows::io::AsRawHandle;
-            use std::ptr;
+        use std::fs::FileTimes;
 
-            #[repr(C)]
-            struct FileTime {
-                low_date_time: u32,
-                high_date_time: u32,
-            }
-
-            unsafe extern "system" {
-                fn SetFileTime(
-                    file: *mut c_void,
-                    creation_time: *const FileTime,
-                    last_access_time: *const FileTime,
-                    last_write_time: *const FileTime,
-                ) -> i32;
-            }
-
-            const FILETIME_2000_01_01_UTC: u64 = 125_911_584_000_000_000;
-            let file_time = FileTime {
-                low_date_time: FILETIME_2000_01_01_UTC as u32,
-                high_date_time: (FILETIME_2000_01_01_UTC >> 32) as u32,
-            };
-            let file = OpenOptions::new()
-                .write(true)
-                .open(lock_path(context))
-                .unwrap();
-            let ok =
-                unsafe { SetFileTime(file.as_raw_handle(), ptr::null(), ptr::null(), &file_time) };
-            assert_ne!(
-                ok,
-                0,
-                "SetFileTime failed: {}",
-                std::io::Error::last_os_error()
-            );
-        };
-        #[cfg(not(windows))]
-        let status = std::process::Command::new("touch")
-            .args(["-t", "200001010000"])
-            .arg(lock_path(context))
-            .status()
+        const JANUARY_1_2000_UTC: Duration = Duration::from_secs(946_684_800);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(lock_path(context))
             .unwrap();
-        #[cfg(not(windows))]
-        assert!(status.success());
+        file.set_times(FileTimes::new().set_modified(UNIX_EPOCH + JANUARY_1_2000_UTC))
+            .unwrap();
     }
 
     fn test_context(name: &str) -> WorkspaceContext {

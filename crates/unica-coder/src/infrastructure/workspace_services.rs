@@ -1,10 +1,10 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::DomainEvent;
-use crate::domain::source_roots::normalize_path_identity;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::managed_child::{ManagedChild, ManagedStartupChild};
+use crate::infrastructure::platform::{ManagedChild, ManagedStartupChild};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -3159,6 +3159,7 @@ fn service_key(workspace_root: &str, source_root: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing;
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4465,11 +4466,8 @@ mod tests {
 
     fn compile_terminal_after_call_fixture(context: &WorkspaceContext) -> PathBuf {
         let source = context.cache_root.join("terminal-after-call-fixture.rs");
-        let executable = context.cache_root.join(if cfg!(windows) {
-            "terminal-after-call-fixture.exe"
-        } else {
-            "terminal-after-call-fixture"
-        });
+        let executable =
+            testing::fixture_executable_path(&context.cache_root, "terminal-after-call-fixture");
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,
@@ -4512,11 +4510,8 @@ fn main() {
 
     fn compile_exit_after_call_fixture(context: &WorkspaceContext) -> PathBuf {
         let source = context.cache_root.join("exit-after-call-fixture.rs");
-        let executable = context.cache_root.join(if cfg!(windows) {
-            "exit-after-call-fixture.exe"
-        } else {
-            "exit-after-call-fixture"
-        });
+        let executable =
+            testing::fixture_executable_path(&context.cache_root, "exit-after-call-fixture");
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,
@@ -4549,11 +4544,8 @@ fn main() {
 
     fn compile_session_tree_fixture(context: &WorkspaceContext) -> PathBuf {
         let source = context.cache_root.join("session-tree-fixture.rs");
-        let executable = context.cache_root.join(if cfg!(windows) {
-            "session-tree-fixture.exe"
-        } else {
-            "session-tree-fixture"
-        });
+        let executable =
+            testing::fixture_executable_path(&context.cache_root, "session-tree-fixture");
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,
@@ -4633,44 +4625,14 @@ fn main() {
         }
     }
 
-    #[cfg(unix)]
     fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            // SAFETY: signal zero only probes whether this PID still exists.
-            if unsafe { libc::kill(pid as i32, 0) } == -1 {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        false
-    }
-
-    #[cfg(windows)]
-    fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-        };
-        // SAFETY: the returned synchronization handle is closed below.
-        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-        if process.is_null() {
-            return true;
-        }
-        // SAFETY: process is a live synchronization handle.
-        let result = unsafe { WaitForSingleObject(process, timeout.as_millis() as u32) };
-        // SAFETY: process is owned by this function and closed exactly once.
-        unsafe { CloseHandle(process) };
-        result == WAIT_OBJECT_0
+        testing::wait_for_process_exit(pid, timeout)
     }
 
     fn compile_initialize_fixture(context: &WorkspaceContext) -> PathBuf {
         let source = context.cache_root.join("initialize-fixture.rs");
-        let executable = context.cache_root.join(if cfg!(windows) {
-            "initialize-fixture.exe"
-        } else {
-            "initialize-fixture"
-        });
+        let executable =
+            testing::fixture_executable_path(&context.cache_root, "initialize-fixture");
         fs::create_dir_all(&context.cache_root).unwrap();
         fs::write(
             &source,

@@ -1,10 +1,10 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
 };
-use crate::infrastructure::AdapterOutcome;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};

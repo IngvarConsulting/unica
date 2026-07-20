@@ -1,63 +1,18 @@
+pub(crate) mod application_ports;
 pub(crate) mod bundled_tools;
 pub mod internal_adapters;
-#[allow(dead_code)]
-pub mod managed_child;
 pub(crate) mod metadata_kinds;
 pub mod native_operations;
 pub mod path_policy;
+pub(crate) mod platform;
 pub mod plugin_runtime;
+pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod runtime_jobs;
+pub(crate) mod source_roots;
+pub(crate) mod support_guard;
+pub(crate) mod tool_context;
+pub(crate) mod workspace;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;
-
-use crate::domain::cancellation::cancelled_error;
-use serde::Serialize;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdapterOutcome {
-    pub ok: bool,
-    pub summary: String,
-    pub changes: Vec<String>,
-    pub warnings: Vec<String>,
-    pub errors: Vec<String>,
-    pub artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<Vec<String>>,
-}
-
-impl AdapterOutcome {
-    pub fn ok(summary: impl Into<String>) -> Self {
-        Self {
-            ok: true,
-            summary: summary.into(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
-        }
-    }
-
-    pub fn cancelled(detail: impl AsRef<str>) -> Self {
-        let error = cancelled_error(detail);
-        Self {
-            ok: false,
-            summary: error.clone(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
-        }
-    }
-}

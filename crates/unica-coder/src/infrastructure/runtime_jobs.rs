@@ -3,12 +3,14 @@
 use super::redaction;
 use crate::domain::cache::CacheAccess;
 use crate::domain::events::{runtime_event_kind, DomainEvent};
-use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform::filesystem::{replace_file_atomically, sync_parent_directory};
+use crate::infrastructure::platform::{
+    cancel_runtime_job_process_tree, configure_runtime_job_command,
+};
+use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -236,9 +238,7 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
             .current_dir(&self.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // The group makes safe cancellation cover v8-runner descendants too.
-        #[cfg(unix)]
-        command.process_group(0);
+        configure_runtime_job_command(&mut command);
         let mut child = command
             .spawn()
             .map_err(|error| redacted_error(&format!("spawn runtime job process: {error}")))?;
@@ -296,40 +296,7 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
     }
 
     fn cancel(&mut self) -> JobResult<()> {
-        #[cfg(unix)]
-        {
-            let group = i32::try_from(self.id)
-                .map_err(|_| redacted_error("runtime job process id is outside Unix pid range"))?;
-            // A negative pid targets the process group created in spawn().
-            let result = unsafe { libc::kill(-group, libc::SIGKILL) };
-            if result == 0 {
-                Ok(())
-            } else {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ESRCH) {
-                    Ok(())
-                } else {
-                    Err(io_error("cancel runtime job process group", &error))
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        #[cfg(windows)]
-        {
-            let status = Command::new("taskkill")
-                .args(["/PID", &self.id.to_string(), "/T", "/F"])
-                .status()
-                .map_err(|error| io_error("cancel runtime job process tree", &error))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(redacted_error("cancel runtime job process tree failed"))
-            }
-        }
-        #[cfg(all(not(unix), not(windows)))]
-        Err(redacted_error(
-            "runtime job process-tree cancellation is unsupported on this platform",
-        ))
+        cancel_runtime_job_process_tree(self.id)
     }
 
     fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
@@ -1416,7 +1383,7 @@ fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> J
     let Some(event_kind) = runtime_event_kind(operation) else {
         return Ok(());
     };
-    let context = WorkspaceContext::discover(cwd.to_path_buf())?;
+    let context = discover_workspace(Some(cwd.to_path_buf()))?;
     let events = vec![DomainEvent::new(
         event_kind,
         format!("runtime-job:{job_id}"),
@@ -1484,7 +1451,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> JobResult<()> {
         .map_err(|error| io_error("write temporary runtime job file", &error))?;
     file.sync_data()
         .map_err(|error| io_error("sync temporary runtime job file", &error))?;
-    let replace_result = replace_file_atomically(&temporary, path);
+    let replace_result = replace_file_atomically(&temporary, path)
+        .map_err(|error| io_error("atomically replace runtime job file", &error));
     if let Err(error) = replace_result {
         let cleanup = fs::remove_file(&temporary);
         return match cleanup {
@@ -1495,64 +1463,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> JobResult<()> {
             ))),
         };
     }
-    sync_parent_directory(parent)
-}
-
-#[cfg(not(windows))]
-fn replace_file_atomically(source: &Path, target: &Path) -> JobResult<()> {
-    fs::rename(source, target)
-        .map_err(|error| io_error("atomically replace runtime job file", &error))
-}
-
-#[cfg(windows)]
-fn replace_file_atomically(source: &Path, target: &Path) -> JobResult<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
-    }
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let target = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers for the call duration.
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io_error(
-            "atomically replace runtime job file",
-            &io::Error::last_os_error(),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> JobResult<()> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error("sync runtime job directory", &error))
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> JobResult<()> {
-    Ok(())
+    sync_parent_directory(parent).map_err(|error| io_error("sync runtime job directory", &error))
 }
 
 fn path_file_name(path: &Path) -> String {
@@ -1844,29 +1755,35 @@ mod tests {
         assert!(!store.active_lock_path().exists());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn system_cancellation_reaps_the_runtime_process_group() {
+    fn system_cancellation_reaps_the_runtime_process_tree() {
+        let Some((program, args)) =
+            crate::infrastructure::platform::runtime_job_process_tree_test_command()
+        else {
+            return;
+        };
         let cache = TestCache::new();
         fs::create_dir_all(cache.path()).expect("create worker cwd");
         let runner = SystemRuntimeJobRunner {
-            program: PathBuf::from("/bin/sh"),
+            program,
             cwd: cache.path().to_path_buf(),
         };
         let request = RuntimeJobRequest::new(
             RuntimeJobOperation::Test,
-            vec!["-c".to_string(), "sleep 10 & wait".to_string()],
+            args,
             "workspace:test".to_string(),
             None,
         );
         let mut process = runner.spawn(&request).expect("spawn process group");
-        let group = i32::try_from(process.id()).expect("pid is a Unix process id");
+        let process_id = process.id();
 
         cancel_and_reap(&mut *process).expect("cancel and reap process group");
 
-        let state = unsafe { libc::kill(-group, 0) };
-        assert_eq!(state, -1, "the process group must no longer be alive");
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        assert!(
+            !crate::infrastructure::platform::runtime_job_process_tree_is_alive(process_id)
+                .expect("probe process tree"),
+            "the process tree must no longer be alive"
+        );
     }
 
     #[test]

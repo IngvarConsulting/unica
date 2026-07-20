@@ -1,5 +1,5 @@
+use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::AdapterOutcome;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
@@ -144,4 +144,50 @@ pub(crate) fn invoke_mutation(
         .or_else(|| mxl::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| role::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| support::invoke_mutation(operation, tool_name, args, context))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::invoke_mutation;
+    use crate::application::{tools, ToolHandler};
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::Map;
+
+    #[test]
+    fn mutating_native_tools_have_registered_mutation_handlers() {
+        let args = Map::new();
+        for tool in tools() {
+            if !tool.mutating {
+                continue;
+            }
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let context = mutation_probe_context(operation);
+            assert!(
+                invoke_mutation(operation, tool.name, &args, &context).is_some(),
+                "{} routes to native mutation operation `{}` without a registered handler",
+                tool.name,
+                operation
+            );
+        }
+    }
+
+    fn mutation_probe_context(operation: &str) -> WorkspaceContext {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-mutation-probe-{operation}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
 }

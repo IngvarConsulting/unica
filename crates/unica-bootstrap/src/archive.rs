@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{BootstrapError, Result};
 use crate::manifest::RuntimeFile;
+use crate::platform::set_executable;
 
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = File::open(path)?;
@@ -130,19 +131,5 @@ fn validate_archive_path(path: &Path) -> Result<()> {
             path.display()
         )));
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path, executable: bool) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = if executable { 0o755 } else { 0o644 };
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path, _executable: bool) -> Result<()> {
     Ok(())
 }

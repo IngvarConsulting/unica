@@ -17,8 +17,8 @@ pub(crate) mod subsystem;
 pub(crate) mod support;
 pub(crate) mod template;
 
+use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::AdapterOutcome;
 use serde_json::{Map, Value};
 use std::fs;
 
@@ -102,7 +102,7 @@ impl NativeOperationAdapter {
 #[cfg(test)]
 mod tests {
     use super::NativeOperationAdapter;
-    use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::workspace::discover_workspace;
     use serde_json::Map;
     use std::fs;
     use std::path::PathBuf;
@@ -112,7 +112,7 @@ mod tests {
     fn missing_native_mutation_handler_is_contract_error() {
         let root = temp_root("missing-mutation-handler");
         fs::create_dir_all(root.join("src")).unwrap();
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
 
         let result = NativeOperationAdapter::invoke(
             "definitely-missing-operation",
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
         let root = temp_root("compile-preview-fallback");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
 
         let result = NativeOperationAdapter::invoke(
             "meta-compile",
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
         let root = temp_root("subsystem-preview-parent-fallback");
-        let context = WorkspaceContext::discover(root.clone()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
         let args = serde_json::from_value(serde_json::json!({
             "OutputDir": root.display().to_string(),
             "Value": r#"{"name":"Child"}"#,

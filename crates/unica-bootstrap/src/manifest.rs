@@ -5,7 +5,7 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{BootstrapError, Result};
-use crate::target::HostTarget;
+use crate::platform::HostTarget;
 
 const SOURCE_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 

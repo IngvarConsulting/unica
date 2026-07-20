@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 
+use crate::infrastructure::platform::filesystem::{path_lock_identity, prepare_file_for_removal};
+
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
@@ -555,13 +557,9 @@ fn registration_lock_path(target: &Path) -> Result<PathBuf, String> {
             target.display()
         )
     })?;
-    let canonical_text = canonical_target.to_string_lossy();
     let mut hasher = Sha256::new();
     hasher.update(b"unica-compile-registration-lock-v1\0");
-    #[cfg(any(windows, target_os = "macos"))]
-    hasher.update(canonical_text.to_lowercase().as_bytes());
-    #[cfg(not(any(windows, target_os = "macos")))]
-    hasher.update(canonical_text.as_bytes());
+    hasher.update(path_lock_identity(&canonical_target).as_bytes());
     let lock_name = format!("{:x}.lock", hasher.finalize());
     Ok(std::env::temp_dir()
         .join("unica-compile-registration-locks-v1")
@@ -922,30 +920,6 @@ fn remove_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
-fn prepare_file_for_removal(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(windows)]
-#[allow(
-    clippy::permissions_set_readonly_false,
-    reason = "on Windows this only clears the FILE_ATTRIBUTE_READONLY flag"
-)]
-fn prepare_file_for_removal(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    let mut permissions = metadata.permissions();
-    if permissions.readonly() {
-        permissions.set_readonly(false);
-        fs::set_permissions(path, permissions)?;
-    }
-    Ok(())
-}
-
 fn rollback(state: &mut PublishState) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -1289,6 +1263,9 @@ fn failpoint_post_write_validation() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::UnicaApplication;
+    use crate::infrastructure::platform::testing;
+    use serde_json::{Map, Value};
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1304,6 +1281,135 @@ mod tests {
         ));
         fs::create_dir_all(&root).expect("temporary root must be created");
         root
+    }
+
+    fn public_compile_workspace(name: &str) -> PathBuf {
+        let root = temp_root(name);
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">
+  <Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+    <Properties>
+      <Name>Demo</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Demo</v8:content></v8:item></Synonym>
+      <Version>1.0</Version>
+      <Vendor>Vendor</Vendor>
+      <CompatibilityMode>Version8_3_24</CompatibilityMode>
+      <DefaultRunMode>ManagedApplication</DefaultRunMode>
+      <ScriptVariant>Russian</ScriptVariant>
+      <DefaultLanguage>Russian</DefaultLanguage>
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <ModalityUseMode>DontUse</ModalityUseMode>
+      <InterfaceCompatibilityMode>Taxi</InterfaceCompatibilityMode>
+    </Properties>
+    <ChildObjects><Catalog>Items</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>"#,
+        )
+        .unwrap();
+        root
+    }
+
+    fn call_meta_compile(
+        workspace: &Path,
+        json_path: &Path,
+    ) -> crate::application::OperationResult {
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap()
+    }
+
+    #[test]
+    fn public_meta_compile_batch_rolls_back_after_object_files_failure() {
+        let root = public_compile_workspace("public-meta-batch-rollback");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let config_before = fs::read(&config_path).unwrap();
+        let json_path = workspace.join("batch.json");
+        fs::write(
+            &json_path,
+            r#"[
+  {"type":"CommonModule","name":"RollbackService"},
+  {"type":"Catalog","name":"RollbackCatalog"}
+]"#,
+        )
+        .unwrap();
+
+        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            call_meta_compile(&workspace, &json_path)
+        });
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.errors.join("\n").contains("after object files"));
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("CommonModules").exists());
+        assert!(!src.join("Catalogs").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_role_compile_rolls_back_after_object_files_failure() {
+        let root = public_compile_workspace("public-role-rollback");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let config_before = fs::read(&config_path).unwrap();
+        let role_json = workspace.join("rollback-user.json");
+        fs::write(
+            &role_json,
+            r#"{
+  "name": "RollbackUser",
+  "synonym": "Rollback user",
+  "objects": ["Catalog.Items: @view"]
+}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "JsonPath".to_string(),
+            Value::String(role_json.display().to_string()),
+        );
+        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
+
+        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            UnicaApplication::new()
+                .call_tool("unica.role.compile", &args)
+                .unwrap()
+        });
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.errors.join("\n").contains("after object files"));
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert!(!src.join("Roles").exists());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn configuration_bytes() -> Vec<u8> {
@@ -1792,16 +1898,17 @@ mod tests {
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
-    #[cfg(unix)]
     #[test]
     fn symlink_targets_are_rejected() {
-        use std::os::unix::fs::symlink;
-
         let root = temp_root("symlink");
         let real = root.join("real.xml");
         let link = root.join("Configuration.xml");
         fs::write(&real, configuration_bytes()).expect("fixture must be written");
-        symlink(&real, &link).expect("symlink must be created");
+        let Some(symlink) = testing::create_file_symlink_for_test(&real, &link) else {
+            fs::remove_dir_all(root).expect("temporary root must be removed");
+            return;
+        };
+        symlink.expect("symlink must be created");
         let mut transaction = CompileTransaction::new();
 
         let error = transaction

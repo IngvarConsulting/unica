@@ -2,24 +2,21 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::internal_adapters::RuntimeJobAction;
-use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, support_guard_violation, SupportGuardRequirement,
-    SupportGuardViolation,
-};
-use crate::infrastructure::native_operations::{meta, template};
-use crate::infrastructure::AdapterOutcome;
-use operation_descriptors::SupportGuardPolicy;
-use ports::{ApplicationPorts, DefaultApplicationPorts};
+pub(crate) use operation_descriptors::SupportGuardRequirement;
+pub(crate) use outcome::AdapterOutcome;
+use ports::{ApplicationPorts, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
+pub(crate) use tool_contracts::{
+    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+};
 
-mod operation_descriptors;
-mod ports;
-mod tool_contracts;
+pub(crate) mod operation_descriptors;
+mod outcome;
+pub(crate) mod ports;
+pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
 
 #[derive(Debug, Clone, Copy)]
@@ -55,6 +52,16 @@ pub enum ToolHandler {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeJobAction {
+    Start,
+    Status,
+    Wait,
+    Logs,
+    Cancel,
+    List,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OperationResult {
     pub ok: bool,
@@ -81,14 +88,7 @@ pub struct UnicaApplication {
 }
 
 impl UnicaApplication {
-    pub fn new() -> Self {
-        Self {
-            ports: Arc::new(DefaultApplicationPorts),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_ports(ports: Arc<dyn ApplicationPorts + Send + Sync>) -> Self {
+    pub(crate) fn with_ports(ports: Arc<dyn ApplicationPorts + Send + Sync>) -> Self {
         Self { ports }
     }
 
@@ -115,12 +115,6 @@ impl UnicaApplication {
             .find(|tool| tool.name == name)
             .ok_or_else(|| format!("unknown unica tool: {name}"))?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
-    }
-}
-
-impl Default for UnicaApplication {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -373,17 +367,9 @@ fn call_tool(
         .and_then(Value::as_bool)
         .unwrap_or(spec.mutating);
     tool_contracts::validate_tool_arguments(spec, args, dry_run)?;
-    let cwd = args
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or(
-            env::current_dir().map_err(|err| format!("failed to read current directory: {err}"))?,
-        );
+    let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
-    tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
-    tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
-    let index_report = crate::infrastructure::workspace_index::IndexStartReport::default();
+    ports.validate_tool_context(spec, args, dry_run, &context)?;
     if let Some(outcome) = source_sync_dump_guard(spec, args, dry_run, cancellation) {
         let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
         return Ok(OperationResult {
@@ -402,11 +388,10 @@ fn call_tool(
         });
     }
     let mut support_guard_warning = if spec.mutating && !dry_run {
-        match support_guard_check(spec, args, &context)? {
+        match ports.evaluate_support_guard(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
             SupportGuardCheck::Warn(warning) => Some(warning),
-            SupportGuardCheck::Block(mut outcome) => {
-                outcome.warnings.extend(index_report.warnings);
+            SupportGuardCheck::Block(outcome) => {
                 let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: outcome.ok,
@@ -431,11 +416,10 @@ fn call_tool(
     let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
     let mut outcome = handler_outcome.adapter;
     if is_successful_detailed_compile_preview(spec, dry_run, &outcome) {
-        match support_guard_check(spec, args, &context)? {
+        match ports.evaluate_support_guard(spec, args, &context)? {
             SupportGuardCheck::Allow => {}
             SupportGuardCheck::Warn(warning) => support_guard_warning = Some(warning),
-            SupportGuardCheck::Block(mut blocked) => {
-                blocked.warnings.extend(index_report.warnings);
+            SupportGuardCheck::Block(blocked) => {
                 let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: blocked.ok,
@@ -457,8 +441,6 @@ fn call_tool(
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
-    outcome.warnings.extend(index_report.warnings);
-
     let events = if should_emit_events(spec, args, dry_run, &outcome) {
         domain_events(spec, args)
     } else {
@@ -668,251 +650,6 @@ fn result_tail(text: &str) -> String {
     text.chars().skip(char_count - TAIL_CHARS).collect()
 }
 
-enum SupportGuardCheck {
-    Allow,
-    Warn(String),
-    Block(AdapterOutcome),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportGuardMode {
-    Deny,
-    Warn,
-    Off,
-}
-
-fn support_guard_check(
-    spec: ToolSpec,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<SupportGuardCheck, String> {
-    let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
-        return Ok(SupportGuardCheck::Allow);
-    };
-    let Some(violation) = support_guard_violation(&target_path, requirement) else {
-        return Ok(SupportGuardCheck::Allow);
-    };
-
-    Ok(match support_guard_mode(&violation.config_dir, context) {
-        SupportGuardMode::Off => SupportGuardCheck::Allow,
-        SupportGuardMode::Warn => SupportGuardCheck::Warn(format!(
-            "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
-            violation.reason,
-            violation.target_path.display()
-        )),
-        SupportGuardMode::Deny => {
-            SupportGuardCheck::Block(support_guard_blocked_outcome(spec, &violation, requirement))
-        }
-    })
-}
-
-fn support_guard_target(
-    spec: ToolSpec,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
-    let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
-        return None;
-    };
-    let policy = operation_descriptors::native_operation_descriptor(operation)?.support_guard?;
-    match policy {
-        SupportGuardPolicy::PathArgs { names, requirement } => {
-            support_guard_path_arg(args, context, names, requirement)
-        }
-        SupportGuardPolicy::MetaRemove { requirement } => {
-            support_guard_meta_remove_target(args, context).map(|path| (path, requirement))
-        }
-        SupportGuardPolicy::ObjectName { requirement } => {
-            support_guard_object_name_target(args, context).map(|path| (path, requirement))
-        }
-    }
-}
-
-fn support_guard_path_arg(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    names: &[&str],
-    requirement: SupportGuardRequirement,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
-    path_arg(args, names).map(|path| (absolutize(path, &context.cwd), requirement))
-}
-
-fn support_guard_meta_remove_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    let config_dir = path_arg(args, &["configDir", "ConfigDir"])?;
-    let object = required_string(args, &["object", "Object"], "Object").ok()?;
-    let (object_type, object_name) = object.split_once('.')?;
-    let type_dir = meta::meta_remove_type_plural(object_type)?;
-    Some(
-        absolutize(config_dir, &context.cwd)
-            .join(type_dir)
-            .join(format!("{object_name}.xml")),
-    )
-}
-
-fn support_guard_object_name_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    let object_name = required_string(
-        args,
-        &["objectName", "ObjectName", "processorName", "ProcessorName"],
-        "ObjectName",
-    )
-    .ok()?;
-    let src_dir = path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
-    let src_dir = absolutize(src_dir, &context.cwd);
-    let direct = src_dir.join(format!("{object_name}.xml"));
-    if direct.exists() {
-        return Some(direct);
-    }
-    for folder in template::template_add_object_type_folders() {
-        let candidate = src_dir.join(folder).join(format!("{object_name}.xml"));
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    Some(direct)
-}
-
-fn support_guard_mode(config_dir: &Path, context: &WorkspaceContext) -> SupportGuardMode {
-    let Some(project_file) = find_v8_project_file(&context.cwd)
-        .or_else(|| find_v8_project_file(config_dir))
-        .or_else(|| find_v8_project_file(&context.workspace_root))
-    else {
-        return SupportGuardMode::Deny;
-    };
-    let Ok(text) = std::fs::read_to_string(&project_file) else {
-        return SupportGuardMode::Deny;
-    };
-    let Ok(project) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else {
-        return SupportGuardMode::Deny;
-    };
-    let project_dir = project_file.parent().unwrap_or_else(|| Path::new(""));
-    let config_dir = normalize_guard_path(config_dir);
-
-    if let Some(databases) = project.get("databases").and_then(Value::as_array) {
-        for database in databases {
-            let Some(config_src) = database.get("configSrc").and_then(Value::as_str) else {
-                continue;
-            };
-            let config_src = PathBuf::from(config_src);
-            let config_src = if config_src.is_absolute() {
-                config_src
-            } else {
-                project_dir.join(config_src)
-            };
-            let config_src = normalize_guard_path(&config_src);
-            if (config_dir == config_src || config_dir.starts_with(&config_src))
-                && database
-                    .get("editingAllowedCheck")
-                    .and_then(Value::as_str)
-                    .is_some()
-            {
-                return support_guard_mode_value(
-                    database
-                        .get("editingAllowedCheck")
-                        .and_then(Value::as_str)
-                        .expect("checked above"),
-                );
-            }
-        }
-    }
-
-    project
-        .get("editingAllowedCheck")
-        .and_then(Value::as_str)
-        .map(support_guard_mode_value)
-        .unwrap_or(SupportGuardMode::Deny)
-}
-
-fn find_v8_project_file(start: &Path) -> Option<PathBuf> {
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        start.parent()?.to_path_buf()
-    };
-    for _ in 0..20 {
-        let candidate = current.join(".v8-project.json");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
-    }
-    None
-}
-
-fn support_guard_mode_value(value: &str) -> SupportGuardMode {
-    match value {
-        "warn" => SupportGuardMode::Warn,
-        "off" => SupportGuardMode::Off,
-        _ => SupportGuardMode::Deny,
-    }
-}
-
-fn normalize_guard_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn support_guard_blocked_outcome(
-    spec: ToolSpec,
-    violation: &SupportGuardViolation,
-    requirement: SupportGuardRequirement,
-) -> AdapterOutcome {
-    let target = violation.target_path.display();
-    let head = "[support-guard] Редактирование отклонено: это объект типовой конфигурации на поддержке поставщика, прямое редактирование молча сломает будущие обновления.";
-    let cfe = "Рекомендуемый путь: внести доработку в расширение (навыки cfe-borrow / cfe-patch-method) — состояние поддержки менять не нужно, обновления вендора сохраняются.";
-    let off_note =
-        "Снять проверку для этой базы: editingAllowedCheck = warn|off в .v8-project.json.";
-    let (state, fix) = match violation.code {
-        "capability-off" => (
-            format!(
-                "Состояние: у всей конфигурации выключена возможность изменения (режим read-only «из коробки») — поэтому объект «{target}» редактировать нельзя."
-            ),
-            format!(
-                "Либо снять защиту явно (навык support-edit, два шага):\n  support-edit -Path \"{}\" -Capability on — включить возможность изменения (объекты пока остаются на замке);\n  support-edit -Path \"{target}\" -Set editable — открыть этот объект для редактирования.\n  Изменение применяется в базу полной загрузкой выгрузки и обходит механизм обновлений вендора.",
-                violation.config_dir.display()
-            ),
-        ),
-        "not-removed" if requirement == SupportGuardRequirement::Removed => (
-            format!(
-                "Состояние: объект «{target}» на поддержке (не снят с поддержки) — его удаление разорвёт обновления вендора."
-            ),
-            format!(
-                "Либо сначала снять объект с поддержки, затем удалять:\n  support-edit -Path \"{target}\" -Set off-support — объект уходит из-под обновлений, после этого удаление безопасно."
-            ),
-        ),
-        _ => (
-            format!(
-                "Состояние: объект «{target}» на замке (возможность изменения конфигурации включена, но сам объект не редактируется)."
-            ),
-            format!(
-                "Либо разрешить редактирование этого объекта (навык support-edit, выбрать одно):\n  support-edit -Path \"{target}\" -Set editable — редактировать и дальше получать обновления вендора (возможны конфликты слияния);\n  support-edit -Path \"{target}\" -Set off-support — снять с поддержки: обновления по объекту больше не приходят."
-            ),
-        ),
-    };
-    let message = format!("{head}\n{state}\n{cfe}\n{fix}\n{off_note}");
-    AdapterOutcome {
-        ok: false,
-        summary: format!("{} blocked by support guard", spec.name),
-        changes: Vec::new(),
-        warnings: Vec::new(),
-        errors: vec![message.clone()],
-        artifacts: vec![violation.target_path.display().to_string()],
-        stdout: None,
-        stderr: Some(format!("{message}\n")),
-        command: None,
-    }
-}
-
 fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> {
     match spec.handler {
         ToolHandler::NativeOperation {
@@ -935,7 +672,7 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
         .and_then(runtime_event_kind)
 }
 
-fn project_status(
+pub(crate) fn project_status(
     context: &WorkspaceContext,
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
@@ -970,7 +707,7 @@ fn project_status(
     outcome
 }
 
-fn project_map(
+pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
 ) -> AdapterOutcome {
@@ -2059,42 +1796,6 @@ mod tests {
                 _ => panic!("{} routes through unexpected handler", tool.name),
             }
         }
-    }
-
-    #[test]
-    fn mutating_native_tools_have_registered_mutation_handlers() {
-        let args = Map::new();
-        for tool in tools() {
-            if !tool.mutating {
-                continue;
-            }
-            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
-                continue;
-            };
-            let context = mutation_probe_context(operation);
-            assert!(
-                crate::infrastructure::native_operations::registry::invoke_mutation(
-                    operation, tool.name, &args, &context
-                )
-                .is_some(),
-                "{} routes to native mutation operation `{}` without a registered handler",
-                tool.name,
-                operation
-            );
-        }
-    }
-
-    fn mutation_probe_context(operation: &str) -> WorkspaceContext {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "unica-mutation-probe-{operation}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        WorkspaceContext::discover(root).unwrap()
     }
 
     #[test]
@@ -3432,13 +3133,36 @@ mod tests {
         }
 
         impl ports::ApplicationPorts for CancellationRecordingPorts {
-            fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let cwd = requested_cwd.unwrap_or_default();
                 Ok(WorkspaceContext {
                     cwd: cwd.clone(),
                     workspace_root: cwd.clone(),
                     cache_root: cwd.join(".build").join("unica"),
                     workspace_epoch: 1,
                 })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _dry_run: bool,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
             }
 
             fn invoke_handler(
@@ -3522,9 +3246,37 @@ mod tests {
         }
 
         impl ports::ApplicationPorts for RecordingPorts {
-            fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let cwd = requested_cwd.unwrap_or_default();
                 self.discovered.lock().unwrap().push(cwd.clone());
-                WorkspaceContext::discover(cwd)
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build").join("unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _dry_run: bool,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
             }
 
             fn invoke_handler(
@@ -4028,43 +3780,6 @@ mod tests {
         assert_eq!(std::fs::read(&metadata_path).unwrap(), metadata_before);
         assert_eq!(std::fs::read(&module_path).unwrap(), module_before);
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_compile_batch_rolls_back_after_object_files_failure() {
-        use crate::infrastructure::native_operations::compile_transaction::{
-            with_commit_failpoint, CommitFailpoint,
-        };
-
-        let root = temp_meta_compile_workspace("unica-meta-compile-batch-rollback");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let config_before = std::fs::read(&config_path).unwrap();
-        let json_path = workspace.join("batch.json");
-        std::fs::write(
-            &json_path,
-            r#"[
-  {"type":"CommonModule","name":"RollbackService"},
-  {"type":"Catalog","name":"RollbackCatalog"}
-]"#,
-        )
-        .unwrap();
-
-        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            call_meta_compile(&workspace, &json_path)
-        });
-
-        assert!(!result.ok, "{result:?}");
-        assert!(
-            result.errors.join("\n").contains("after object files"),
-            "{result:?}"
-        );
-        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("CommonModules").exists());
-        assert!(!src.join("Catalogs").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4642,53 +4357,6 @@ mod tests {
         )));
         assert!(config.ends_with("<!-- registrar-tail -->\r\n\r\n"));
         assert!(!config.replace("\r\n", "").contains('\n'));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn role_compile_rolls_back_after_object_files_failure() {
-        use crate::infrastructure::native_operations::compile_transaction::{
-            with_commit_failpoint, CommitFailpoint,
-        };
-
-        let root = temp_meta_compile_workspace("unica-role-compile-rollback");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let config_before = std::fs::read(&config_path).unwrap();
-        let role_json = workspace.join("rollback-user.json");
-        std::fs::write(
-            &role_json,
-            r#"{
-  "name": "RollbackUser",
-  "synonym": "Rollback user",
-  "objects": ["Catalog.Items: @view"]
-}"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(role_json.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-
-        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            UnicaApplication::new()
-                .call_tool("unica.role.compile", &args)
-                .unwrap()
-        });
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.errors.join("\n").contains("after object files"));
-        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("Roles").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5708,13 +5376,36 @@ mod tests {
     }
 
     impl ports::ApplicationPorts for FixedOutcomePorts {
-        fn discover_workspace(&self, cwd: PathBuf) -> Result<WorkspaceContext, String> {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let cwd = requested_cwd.unwrap_or_default();
             Ok(WorkspaceContext {
                 cwd: cwd.clone(),
                 workspace_root: cwd.clone(),
                 cache_root: cwd.join(".build").join("unica"),
                 workspace_epoch: 1,
             })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
         }
 
         fn invoke_handler(
@@ -5863,7 +5554,7 @@ mod tests {
     fn assert_valid_root_uuid(xml: &str, tag_name: &str) {
         let uuid = metadata_root_uuid(xml, tag_name);
         assert!(
-            crate::infrastructure::native_operations::meta::is_guid(&uuid),
+            uuid::Uuid::parse_str(&uuid).is_ok(),
             "{tag_name} root uuid is invalid: {uuid}"
         );
     }
@@ -6169,60 +5860,6 @@ mod tests {
         format!(
             "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{locked_uuid},{locked_uuid},2,0,{removed_uuid},{removed_uuid}}}"
         )
-    }
-
-    #[test]
-    fn code_grep_does_not_start_rlm_index_side_effect() {
-        let root = std::env::temp_dir().join(format!("unica-code-grep-{}", std::process::id()));
-        let workspace = root.join("workspace");
-        let module_dir = workspace.join("CommonModules/SmokeModule/Ext");
-        std::fs::create_dir_all(&module_dir).unwrap();
-        std::fs::write(
-            module_dir.join("Module.bsl"),
-            "Процедура SmokeProcedure() Экспорт\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&workspace)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&workspace)
-            .status()
-            .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert(
-            "query".to_string(),
-            Value::String("SmokeProcedure".to_string()),
-        );
-        args.insert(
-            "path".to_string(),
-            Value::String("CommonModules".to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.code.grep", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        assert!(result.stdout.unwrap().contains("SmokeProcedure"));
-        let context = WorkspaceContext::discover(workspace.clone()).unwrap();
-        assert!(
-            !crate::infrastructure::workspace_index::status_path(&context).exists(),
-            "unica.code.grep must not start or mark RLM index state"
-        );
-        assert!(
-            !context.cache_root.join("services").exists(),
-            "unica.code.grep must not start workspace analyzer services"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6740,19 +6377,6 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("outside workspace root"), "{error}");
         assert!(!root.join("outside").exists());
-
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(workspace.join("erf"), workspace.join("epf-link")).unwrap();
-            args.insert(
-                "OutputDir".to_string(),
-                Value::String("epf-link".to_string()),
-            );
-            let error = UnicaApplication::new()
-                .call_tool("unica.epf.init", &args)
-                .unwrap_err();
-            assert!(error.contains("must not traverse symlink"), "{error}");
-        }
 
         std::fs::write(
             workspace.join("v8project.yaml"),

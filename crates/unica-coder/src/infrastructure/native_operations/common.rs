@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::AdapterOutcome;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1594,12 +1594,6 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         Some(2) => "снято с поддержки (правки свободны)".to_string(),
         _ => "не на поддержке".to_string(),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SupportGuardRequirement {
-    Editable,
-    Removed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

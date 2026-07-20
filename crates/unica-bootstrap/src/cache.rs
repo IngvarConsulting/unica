@@ -11,7 +11,7 @@ use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files}
 use crate::download::Downloader;
 use crate::error::{BootstrapError, Result};
 use crate::manifest::{RuntimeManifest, TargetRuntime};
-use crate::target::HostTarget;
+use crate::platform::HostTarget;
 
 #[derive(Clone)]
 pub struct RuntimeInstaller {

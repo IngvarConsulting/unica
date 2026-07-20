@@ -1,3 +1,4 @@
+use crate::infrastructure::platform::current_target_id;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -244,15 +245,6 @@ fn manifest_relative_path(plugin_root: &Path, relative: &str) -> Result<PathBuf,
         }
     }
     Ok(plugin_root.join(path))
-}
-
-fn current_target_id() -> Result<&'static str, String> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Ok("darwin-arm64"),
-        ("linux", "x86_64") => Ok("linux-x64"),
-        ("windows", "x86_64") => Ok("win-x64"),
-        (os, arch) => Err(format!("Unica does not ship binaries for {os}-{arch}.")),
-    }
 }
 
 fn target_triple_for_id(target_id: &str) -> Result<&'static str, String> {

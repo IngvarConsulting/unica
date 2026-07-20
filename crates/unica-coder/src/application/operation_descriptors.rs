@@ -1,7 +1,11 @@
-use crate::infrastructure::native_operations::common::SupportGuardRequirement;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportGuardRequirement {
+    Editable,
+    Removed,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct OperationDescriptor {
+pub(crate) struct OperationDescriptor {
     pub operation: &'static str,
     pub required_args: &'static [&'static str],
     pub write_path_args: &'static [&'static str],
@@ -10,7 +14,7 @@ pub(super) struct OperationDescriptor {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum SupportGuardPolicy {
+pub(crate) enum SupportGuardPolicy {
     PathArgs {
         names: &'static [&'static str],
         requirement: SupportGuardRequirement,
@@ -66,7 +70,7 @@ const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 
-pub(super) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
+pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
     NATIVE_OPERATION_DESCRIPTORS
         .iter()
         .find(|descriptor| descriptor.operation == operation)

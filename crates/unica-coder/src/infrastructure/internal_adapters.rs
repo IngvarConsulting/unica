@@ -1,24 +1,28 @@
+use crate::application::{
+    AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+    DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+};
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
-#[cfg(test)]
-use crate::domain::source_roots::normalize_path_identity;
-use crate::domain::source_roots::resolve_source_root;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::managed_child::{
+use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
+use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
-use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
+#[cfg(test)]
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::source_roots::resolve_source_root;
+use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
-use crate::infrastructure::AdapterOutcome;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,8 +32,6 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
-pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
-pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
 #[derive(Debug, Clone)]
 pub struct ProcessCommand {
@@ -93,16 +95,6 @@ pub struct CliAdapter<'a> {
 
 pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeJobAction {
-    Start,
-    Status,
-    Wait,
-    Logs,
-    Cancel,
-    List,
 }
 
 pub struct RuntimeJobAdapterOutcome {
@@ -3075,7 +3067,7 @@ fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
 
 impl BslMcpRunner for SystemBslMcpRunner {
     fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String> {
-        let context = WorkspaceContext::discover(command.cwd.clone())?;
+        let context = discover_workspace(Some(command.cwd.clone()))?;
         let output = WorkspaceServiceManager::new().call_bsl_mcp_cancellable(
             &context,
             &command.source_dir,
@@ -3915,7 +3907,9 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::UnicaApplication;
     use crate::infrastructure::metadata_kinds::METADATA_KINDS;
+    use crate::infrastructure::platform::testing;
     use crate::infrastructure::workspace_index::{IndexBackgroundJob, IndexCommand, IndexOutput};
     use rusqlite::Connection;
     use serde_json::json;
@@ -3925,6 +3919,60 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn code_grep_does_not_start_rlm_index_side_effect() {
+        let root = std::env::temp_dir().join(format!("unica-code-grep-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let module_dir = workspace.join("CommonModules/SmokeModule/Ext");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("Module.bsl"),
+            "Процедура SmokeProcedure() Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "query".to_string(),
+            Value::String("SmokeProcedure".to_string()),
+        );
+        args.insert(
+            "path".to_string(),
+            Value::String("CommonModules".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.code.grep", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result.stdout.unwrap().contains("SmokeProcedure"));
+        let context = discover_workspace(Some(workspace.clone())).unwrap();
+        assert!(
+            !crate::infrastructure::workspace_index::status_path(&context).exists(),
+            "unica.code.grep must not start or mark RLM index state"
+        );
+        assert!(
+            !context.cache_root.join("services").exists(),
+            "unica.code.grep must not start workspace analyzer services"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn config_dump_info_git_check_uses_bounded_cancellable_process() {
@@ -4924,7 +4972,7 @@ mod tests {
 
     #[test]
     fn code_search_adapter_dry_run_reports_typed_code_search() {
-        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let grep = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: true,
@@ -5875,7 +5923,7 @@ source-set:
 
     #[test]
     fn cli_adapter_rejects_raw_args_vector() {
-        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("args".to_string(), json!(["--unsafe", "../outside"]));
 
@@ -5888,7 +5936,7 @@ source-set:
 
     #[test]
     fn cli_adapter_redacts_secret_values_from_reported_command() {
-        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("dbPassword".to_string(), json!("super-secret"));
         args.insert("apiToken".to_string(), json!("token-secret"));
@@ -5906,7 +5954,7 @@ source-set:
 
     #[test]
     fn runtime_adapter_redacts_connection_string_from_reported_command() {
-        let context = WorkspaceContext::discover(std::env::current_dir().unwrap()).unwrap();
+        let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("config-init"));
         args.insert(
@@ -6459,25 +6507,12 @@ source-set:
 
     #[test]
     fn system_process_runner_does_not_timeout_when_timeout_is_none() {
-        #[cfg(windows)]
-        let (program, args) = (
-            PathBuf::from("powershell"),
-            vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                "[Console]::Write('ok')".to_string(),
-            ],
-        );
-        #[cfg(not(windows))]
-        let (program, args) = (
-            PathBuf::from("sh"),
-            vec!["-c".to_string(), "printf ok".to_string()],
-        );
+        let command = testing::command_writing_stdout("ok");
 
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
-                program,
-                args,
+                program: command.program,
+                args: command.args,
                 cwd: std::env::current_dir().unwrap(),
                 timeout: None,
                 cancellation: CancellationToken::new(),
@@ -6491,27 +6526,14 @@ source-set:
 
     #[test]
     fn cancelled_runner_stops_process_without_reporting_timeout() {
-        #[cfg(windows)]
-        let (program, args) = (
-            PathBuf::from("powershell"),
-            vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                "Start-Sleep -Seconds 10".to_string(),
-            ],
-        );
-        #[cfg(not(windows))]
-        let (program, args) = (
-            PathBuf::from("sh"),
-            vec!["-c".to_string(), "sleep 10".to_string()],
-        );
+        let command = testing::long_running_command();
         let token = crate::domain::cancellation::CancellationToken::new();
         token.cancel();
 
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
-                program,
-                args,
+                program: command.program,
+                args: command.args,
                 cwd: std::env::current_dir().unwrap(),
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: token,
