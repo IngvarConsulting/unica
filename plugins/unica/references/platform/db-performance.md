@@ -1,11 +1,11 @@
 # DB And Query Performance
 
-Use this reference when a slow 1C scenario may depend on query text, SKD/DCS
+Use this reference when a slow 1C scenario may depend on query text, DCS/DCS
 settings, metadata shape, DBMS behavior, locks, or data volume.
 
 ## Cause-First Workflow
 
-- Identify the user/API scenario first, then the exact query or SKD dataset
+- Identify the user/API scenario first, then the exact query or DCS dataset
   behind it.
 - Capture context: caller module, loop boundaries, transaction scope, virtual
   table parameters, temporary table chain, managed locks, lock order, and

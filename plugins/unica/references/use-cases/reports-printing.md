@@ -1,8 +1,8 @@
-# Reports, Printing, SKD, And MXL
+# Reports, Printing, DCS, And MXL
 
 ## When to use
 
-Use this when the user needs reports, SKD/DCS schemas, tabular document layouts,
+Use this when the user needs reports, DCS/DCS schemas, tabular document layouts,
 print forms, BSP external processing registration, or EPF/ERF build/export.
 
 Do not use `operation=load` for `.epf` or `.erf`. External processors and
@@ -11,7 +11,7 @@ reports are handled through external source-sets with `build`, `dump`, and
 
 ## Primary path
 
-- `unica.skd.*` for SKD/DCS schema info, compile, edit, and validation.
+- `unica.dcs.*` for DCS/DCS schema info, compile, edit, and validation.
 - `unica.mxl.*` for MXL info, compile, decompile, and validation.
 - `unica.template.*` for adding/removing templates on metadata objects.
 - `epf-init` and `erf-init` for make-ready artifact scaffolds inside external
@@ -46,7 +46,7 @@ source-set:
 ## Related references
 
 - `references/specs/1c-dcs-spec.md`
-- `references/specs/skd-dsl-spec.md`
+- `references/specs/dcs-dsl-spec.md`
 - `references/specs/1c-spreadsheet-spec.md`
 - `references/specs/mxl-dsl-spec.md`
 - `references/specs/1c-epf-spec.md`

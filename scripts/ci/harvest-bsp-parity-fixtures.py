@@ -27,7 +27,7 @@ METADATA_ROOT_LIMITS = {
 CATEGORY_LIMITS = {
     "cf": 1,
     "forms": 4,
-    "skd": 3,
+    "dcs": 3,
     "mxl": 2,
     "roles": 2,
     "subsystems": 2,
@@ -137,7 +137,7 @@ def _classify(rel_path: Path, text: str) -> tuple[str, Path] | None:
 
     if len(parts) >= 5 and parts[-4] == "Templates" and parts[-2] == "Ext" and parts[-1] == "Template.xml":
         fixture = _fixture_name(parts[:-4] + (parts[-3],))
-        category = "skd" if "DataCompositionSchema" in text or "СхемаКомпоновки" in fixture else "mxl"
+        category = "dcs" if "DataCompositionSchema" in text or "СхемаКомпоновки" in fixture else "mxl"
         return category, Path(category) / fixture / "Template.xml"
 
     if len(parts) == 2 and parts[0] in METADATA_ROOT_LIMITS and rel_path.suffix.lower() == ".xml":

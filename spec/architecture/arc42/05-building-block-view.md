@@ -37,7 +37,7 @@
 
 ## Target Native MCP Handlers
 
-The target implementation for configuration, form, SKD, MXL, role, subsystem,
+The target implementation for configuration, form, DCS, MXL, role, subsystem,
 interface, and template operations is native Rust logic behind `unica.*` tools.
 Python/PowerShell/Bash operation files must not remain as runtime building
 blocks. Reference scripts belong in test fixtures only.

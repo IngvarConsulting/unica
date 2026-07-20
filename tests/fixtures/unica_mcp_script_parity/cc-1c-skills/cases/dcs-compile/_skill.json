@@ -1,5 +1,5 @@
 {
-  "script": "skd-compile/scripts/skd-compile",
+  "script": "dcs-compile/scripts/dcs-compile",
   "setup": "none",
   "args": [
     { "flag": "-DefinitionFile", "from": "inputFile" },
@@ -10,7 +10,7 @@
     "normalizeUuids": true
   },
   "postValidate": {
-    "script": "skd-validate/scripts/skd-validate",
+    "script": "dcs-validate/scripts/dcs-validate",
     "flag": "-TemplatePath",
     "pathFrom": "validatePath"
   }

@@ -1494,7 +1494,7 @@ def new_uuid():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Настройки компоновщика ListSettings: filter/order/conditionalAppearance.
-# Грамматика DSL и эмиссия dcsset скопированы из skd-compile (навыки автономны).
+# Грамматика DSL и эмиссия dcsset скопированы из dcs-compile (навыки автономны).
 # ─────────────────────────────────────────────────────────────────────────────
 COMPARISON_TYPES = {
     '=': 'Equal', '<>': 'NotEqual',
@@ -1928,7 +1928,7 @@ def emit_list_grouping(lines, grouping, indent):
 
 
 # === Вычисляемые поля DataSet динамического списка (<CalculatedField>) ===
-# Зеркало skd calculatedFields: shorthand "Имя [Заголовок]: тип = Выражение #noField #noFilter
+# Зеркало dcs calculatedFields: shorthand "Имя [Заголовок]: тип = Выражение #noField #noFilter
 # #noGroup #noOrder" или объект. Форм-специфика: dcssch:-теги + presentationExpression/orderExpression.
 _CALC_RESTRICT_MAP = {'noField': 'field', 'noFilter': 'condition', 'noCondition': 'condition',
                       'noGroup': 'group', 'noOrder': 'order'}
@@ -5271,7 +5271,7 @@ def emit_dl_input_parameters(lines, ip, indent):
     lines.append(f'{indent}</dcssch:inputParameters>')
 
 
-# ── dataParameters (значения параметров запроса в настройках компоновки) — порт из skd ──
+# ── dataParameters (значения параметров запроса в настройках компоновки) — порт из dcs ──
 def _test_empty_value(v):
     if v is None:
         return True
@@ -5768,7 +5768,7 @@ def emit_attributes(lines, attrs, indent, conditional_appearance=None):
             # AutoSaveUserSettings — после MainTable (дефолт true; эмитим только при заданном ключе = отклонении).
             if s.get('autoSaveUserSettings') is not None:
                 lines.append(f'{si}<AutoSaveUserSettings>{"true" if s["autoSaveUserSettings"] else "false"}</AutoSaveUserSettings>')
-            # ListSettings: filter/order/conditionalAppearance (skd-грамматика) + каноничные блок-GUID.
+            # ListSettings: filter/order/conditionalAppearance (dcs-грамматика) + каноничные блок-GUID.
             # Нет items → контейнеры всё равно эмитятся (blockMeta) = каноничный пустой скелет платформы.
             lsi = f'{si}\t'
             lines.append(f'{si}<ListSettings>')

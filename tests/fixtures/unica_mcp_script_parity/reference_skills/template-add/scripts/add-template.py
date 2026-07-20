@@ -79,7 +79,7 @@ def main():
     template_type = args.TemplateType
     synonym = args.Synonym if args.Synonym is not None else template_name
     src_dir = args.SrcDir
-    set_main_skd = args.SetMainSKD
+    set_main_dcs = args.SetMainSKD
 
     tmpl = TYPE_MAP[template_type]
 
@@ -282,7 +282,7 @@ def main():
             main_dcs = root.find(f".//md:{object_type_name}/md:Properties/md:MainDataCompositionSchema", NSMAP)
             if main_dcs is not None:
                 is_empty = main_dcs.text is None or main_dcs.text.strip() == ""
-                if is_empty or set_main_skd:
+                if is_empty or set_main_dcs:
                     obj_name_node = root.find(f".//md:{object_type_name}/md:Properties/md:Name", NSMAP)
                     obj_name = obj_name_node.text if obj_name_node is not None else ""
                     main_dcs.text = f"{object_type_name}.{obj_name}.Template.{template_name}"

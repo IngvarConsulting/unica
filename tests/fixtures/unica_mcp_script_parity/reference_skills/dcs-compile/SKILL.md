@@ -1,5 +1,5 @@
 ---
-name: skd-compile
+name: dcs-compile
 description: Компиляция схемы компоновки данных 1С (СКД) из компактного JSON-определения. Используй когда нужно создать СКД с нуля
 argument-hint: "[-DefinitionFile <json> | -Value <json-string>] -OutputPath <Template.xml>"
 allowed-tools:
@@ -9,7 +9,7 @@ allowed-tools:
   - Glob
 ---
 
-# /skd-compile — генерация СКД из JSON DSL
+# /dcs-compile — генерация СКД из JSON DSL
 
 Принимает JSON-определение схемы компоновки данных → генерирует Template.xml (DataCompositionSchema).
 
@@ -23,10 +23,10 @@ allowed-tools:
 
 ```powershell
 # Из файла
-powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/skd-compile.ps1" -DefinitionFile "<json>" -OutputPath "<Template.xml>"
+powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/dcs-compile.ps1" -DefinitionFile "<json>" -OutputPath "<Template.xml>"
 
 # Из строки (без промежуточного файла)
-powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/skd-compile.ps1" -Value '<json-string>' -OutputPath "<Template.xml>"
+powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/dcs-compile.ps1" -Value '<json-string>' -OutputPath "<Template.xml>"
 ```
 
 ## JSON DSL — краткий справочник
@@ -346,7 +346,7 @@ Folder в selection: `{"folder": "Поступление", "items": ["ПолеА
 
 Встроенные стили: `header` (фон, центр, перенос), `data` (фон группы), `subheader` (без фона, центр), `total` (без фона). Все — Arial 10, рамки Solid 1px, цвета через стили платформы.
 
-Пользовательские стили: файл `skd-styles.json` рядом с JSON-определением, в текущей директории, или в `presets/skills/skd/skd-styles.json` (поиск вверх от OutputPath). Первый найденный файл побеждает. Все допустимые ключи и формат цветов — в `examples/skd-styles.json`.
+Пользовательские стили: файл `dcs-styles.json` рядом с JSON-определением, в текущей директории, или в `presets/skills/dcs/dcs-styles.json` (поиск вверх от OutputPath). Первый найденный файл побеждает. Все допустимые ключи и формат цветов — в `examples/dcs-styles.json`.
 
 Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: если есть `rows` — DSL, иначе — raw.
 
@@ -430,7 +430,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
 ## Верификация
 
 ```
-/skd-validate <OutputPath>                  — валидация структуры XML
-/skd-info <OutputPath>                      — визуальная сводка
-/skd-info <OutputPath> -Mode variant -Name 1 — проверка варианта настроек
+/dcs-validate <OutputPath>                  — валидация структуры XML
+/dcs-info <OutputPath>                      — визуальная сводка
+/dcs-info <OutputPath> -Mode variant -Name 1 — проверка варианта настроек
 ```

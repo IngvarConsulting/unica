@@ -44,6 +44,22 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
+## DCS naming migration
+
+The release containing [issue #158](https://github.com/IngvarConsulting/unica/issues/158)
+atomically replaces the transliterated `skd` domain with the official
+**Data Composition System (`dcs`)** term. There is no deprecated alias:
+
+| Removed contract | Canonical contract |
+| --- | --- |
+| `unica.skd.compile` | `unica.dcs.compile` |
+| `unica.skd.edit` | `unica.dcs.edit` |
+| `unica.skd.info` | `unica.dcs.info` |
+| `unica.skd.validate` | `unica.dcs.validate` |
+| `skd-compile/edit/info/validate` | `dcs-compile/edit/info/validate` |
+
+The operation arguments and `DataCompositionSchema` XML format are unchanged.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and
@@ -68,7 +84,7 @@ The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
 ## Skills
 
 The `skills/` tree covers configuration and extension metadata, forms, roles,
-SKD/MXL, command interfaces, EPF/ERF and BSP registration, database/build
+DCS/MXL, command interfaces, EPF/ERF and BSP registration, database/build
 workflows, BSL search and diagnostics, integrations, background jobs,
 performance, security, data separation, release support, autonomous runtime,
 and platform help.

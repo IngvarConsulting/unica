@@ -967,7 +967,7 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 #### parameters — параметры схемы дин-списка
 
-Параметры запроса дин-списка — это та же сущность `DataCompositionSchemaParameter`, что и параметры СКД (`&Параметр` в тексте запроса). **Грамматика идентична параметрам СКД** (см. [skd-dsl-spec.md](skd-dsl-spec.md)): shorthand `"Имя [Заголовок]: Тип = Значение @valueList @hidden"` или объект. Используй те же ключи — модель переносит знание один-в-один.
+Параметры запроса дин-списка — это та же сущность `DataCompositionSchemaParameter`, что и параметры СКД (`&Параметр` в тексте запроса). **Грамматика идентична параметрам СКД** (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)): shorthand `"Имя [Заголовок]: Тип = Значение @valueList @hidden"` или объект. Используй те же ключи — модель переносит знание один-в-один.
 
 ```json
 "settings": {
@@ -1022,11 +1022,11 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `periodAdditionType` | Дополнение периода для группировки по дате (умолчание `None`) |
 | `periodAdditionBegin` / `periodAdditionEnd` | Границы дополнения периода: ISO-дата (`xs:dateTime`) или путь к полю (`dcscor:Field`) — авто-детект |
 
-> Грамматика уровня совпадает с элементом `groupBy`/`groupFields` структуры СКД (см. [skd-dsl-spec.md](skd-dsl-spec.md)); отличие от СКД — плоская модель (нет `children`/`selection`/`order`/детальных записей, которых у группировки списка не бывает).
+> Грамматика уровня совпадает с элементом `groupBy`/`groupFields` структуры СКД (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)); отличие от СКД — плоская модель (нет `children`/`selection`/`order`/детальных записей, которых у группировки списка не бывает).
 
 #### calculatedFields — вычисляемые поля набора
 
-Поля, вычисляемые выражением (XML: `<CalculatedField>` в DataSet). Грамматика как в СКД (см. [skd-dsl-spec.md](skd-dsl-spec.md)).
+Поля, вычисляемые выражением (XML: `<CalculatedField>` в DataSet). Грамматика как в СКД (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)).
 
 Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #noFilter #noGroup #noOrder"` — всё кроме имени опционально:
 ```json
@@ -1048,7 +1048,7 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 
 #### order / filter / conditionalAppearance
 
-Грамматика этих ключей идентична настройкам СКД — см. [skd-dsl-spec.md](skd-dsl-spec.md) (разделы filter / order / conditionalAppearance). Кратко:
+Грамматика этих ключей идентична настройкам СКД — см. [dcs-dsl-spec.md](dcs-dsl-spec.md) (разделы filter / order / conditionalAppearance). Кратко:
 
 ```json
 "settings": {

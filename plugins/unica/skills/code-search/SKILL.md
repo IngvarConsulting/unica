@@ -8,7 +8,7 @@ description: "Поиск и исследование BSL-кода и точек 
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.grep`, `unica.code.graph`, `unica.meta.profile`, and `unica.project.map`.
-- Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, SKD, roles, or HTTP service structure.
+- Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
 - Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Tool choice

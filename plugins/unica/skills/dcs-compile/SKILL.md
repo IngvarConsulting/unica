@@ -1,5 +1,5 @@
 ---
-name: skd-compile
+name: dcs-compile
 description: Компиляция схемы компоновки данных 1С (СКД) из компактного JSON-определения. Используй когда нужно создать СКД с нуля
 argument-hint: "[-DefinitionFile <json> | -Value <json-string>] -OutputPath <Template.xml>"
 allowed-tools:
@@ -9,13 +9,13 @@ allowed-tools:
   - Glob
 ---
 
-# /skd-compile — генерация СКД из JSON DSL
+# /dcs-compile — генерация СКД из JSON DSL
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.skd.compile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
+- Preferred path: use MCP `unica` tool `unica.dcs.compile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.skd.compile`; skill-local operation scripts are not part of the workflow.
+- Execution path: call MCP `unica` tool `unica.dcs.compile`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 - Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
 
@@ -36,7 +36,7 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.skd.compile",
+    "name": "unica.dcs.compile",
     "arguments": {
       "cwd": "<workspace>",
       "DefinitionFile": "<json>",
@@ -54,7 +54,7 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.skd.compile",
+    "name": "unica.dcs.compile",
     "arguments": {
       "cwd": "<workspace>",
       "Value": "<json-string>",
@@ -371,7 +371,7 @@ Folder в selection: `{"folder": "Поступление", "items": ["ПолеА
 
 Встроенные стили: `header` (фон, центр, перенос), `data` (фон группы), `subheader` (без фона, центр), `total` (без фона). Все — Arial 10, рамки Solid 1px, цвета через стили платформы.
 
-Пользовательские стили: файл `skd-styles.json` рядом с JSON-определением, в текущей директории, или в `presets/skills/skd/skd-styles.json` (поиск вверх от OutputPath). Первый найденный файл побеждает. Все допустимые ключи и формат цветов — в `examples/skd-styles.json`.
+Пользовательские стили: файл `dcs-styles.json` рядом с JSON-определением, в текущей директории, или в `presets/skills/dcs/dcs-styles.json` (поиск вверх от OutputPath). Первый найденный файл побеждает. Все допустимые ключи и формат цветов — в `examples/dcs-styles.json`.
 
 Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: если есть `rows` — DSL, иначе — raw.
 
@@ -461,7 +461,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.skd.validate",
+    "name": "unica.dcs.validate",
     "arguments": {
       "cwd": "<workspace>",
       "TemplatePath": "<OutputPath>"
@@ -477,7 +477,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.skd.info",
+    "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
       "TemplatePath": "<OutputPath>"
@@ -493,7 +493,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.skd.info",
+    "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
       "TemplatePath": "<OutputPath>",

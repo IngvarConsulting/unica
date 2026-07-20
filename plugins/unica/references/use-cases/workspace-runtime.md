@@ -7,7 +7,7 @@ source build/dump, Designer/EDT conversion, CF/CFE artifact load/export,
 EPF/ERF external source-set build/export, syntax checks, tests, or 1C launch.
 
 Do not use this for point edits inside XML metadata. Use the object-specific
-skills for configuration roots, metadata objects, forms, SKD, MXL, roles,
+skills for configuration roots, metadata objects, forms, DCS, MXL, roles,
 subsystems, interfaces, and templates.
 
 ## Primary path

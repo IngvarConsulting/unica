@@ -69,7 +69,7 @@ class DcsNamingContractTests(unittest.TestCase):
             if DSC_IDENTIFIER.search(relative):
                 violations.append(f"{relative}: path contains DSC identifier")
 
-            text = path.read_text(encoding="utf-8")
+            text = self.text_for_naming_scan(path)
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if SKD_IDENTIFIER.search(line):
                     violations.append(f"{relative}:{line_number}: {line.strip()}")
@@ -150,6 +150,18 @@ class DcsNamingContractTests(unittest.TestCase):
                     continue
                 paths.append(path)
         return sorted(set(paths))
+
+    def text_for_naming_scan(self, path: Path) -> str:
+        text = path.read_text(encoding="utf-8")
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if relative == "plugins/unica/README.md":
+            text = re.sub(
+                r"\n## DCS naming migration\n.*?(?=\n## )",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+        return text
 
 
 if __name__ == "__main__":

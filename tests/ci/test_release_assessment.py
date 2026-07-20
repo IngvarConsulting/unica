@@ -501,7 +501,7 @@ for raw in sys.stdin:
             self.assertIn("manifest.json", harvested)
             self.assertIn("cf/Configuration.xml", harvested)
             self.assertTrue(any(path.startswith("forms/") and path.endswith("/Form.xml") for path in harvested))
-            self.assertTrue(any(path.startswith("skd/") and path.endswith("/Template.xml") for path in harvested))
+            self.assertTrue(any(path.startswith("dcs/") and path.endswith("/Template.xml") for path in harvested))
             self.assertTrue(any(path.startswith("roles/") and path.endswith("/Rights.xml") for path in harvested))
             self.assertFalse(any(".build" in path or path.endswith(".db") for path in harvested))
 

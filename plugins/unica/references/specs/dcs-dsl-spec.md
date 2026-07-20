@@ -1,7 +1,7 @@
 # JSON DSL для схемы компоновки данных (СКД)
 
 Компактный JSON-формат для описания `DataCompositionSchema` (Template.xml).
-Компилируется через MCP `unica.skd.compile` в XML, валидируется через MCP `unica.skd.validate`.
+Компилируется через MCP `unica.dcs.compile` в XML, валидируется через MCP `unica.dcs.validate`.
 
 ---
 
@@ -1101,8 +1101,8 @@ Shorthand-флаги `@inaccessible`, `@quickAccess` доступны для `fi
 
 Платформа эмитит `viewMode` непоследовательно: в одних местах `<viewMode>Normal</viewMode>` присутствует явно (когда элемент — пункт пользовательских настроек), в других — нет. Для bit-perfect round-trip:
 
-- `skd-decompile` сохраняет `viewMode` в JSON **точно как было в XML**, включая явный `"Normal"` если он физически присутствовал.
-- `skd-compile` эмитит `<viewMode>` только если значение задано в JSON (без `implicit Normal`-подстановки).
+- `dcs-decompile` сохраняет `viewMode` в JSON **точно как было в XML**, включая явный `"Normal"` если он физически присутствовал.
+- `dcs-compile` эмитит `<viewMode>` только если значение задано в JSON (без `implicit Normal`-подстановки).
 
 При компиляции JSON, написанного с нуля моделью, `viewMode` опускается → платформа применит default `Normal` при загрузке схемы.
 
@@ -1179,9 +1179,9 @@ Shorthand-флаги `@inaccessible`, `@quickAccess` доступны для `fi
 | `subheader` | — | Arial 10 | Center | да | Solid 1px |
 | `total` | — | Arial 10 | — | нет | Solid 1px |
 
-#### Пользовательские пресеты (skd-styles.json)
+#### Пользовательские пресеты (dcs-styles.json)
 
-Файл `skd-styles.json` в директории определения или в корне проекта. Переопределяет встроенные пресеты или добавляет новые:
+Файл `dcs-styles.json` в директории определения или в корне проекта. Переопределяет встроенные пресеты или добавляет новые:
 
 ```json
 {

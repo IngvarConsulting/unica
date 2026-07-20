@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# skd-compile v1.107 — Compile 1C DCS from JSON
+# dcs-compile v1.107 — Compile 1C DCS from JSON
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 import argparse
 import json
@@ -859,7 +859,7 @@ def emit_field(lines, field_def, indent):
             'appearance': {},
             'roleExtras': {},
         }
-        # Parse role (string shorthand / list / dict — единый формат с /skd-edit set-field-role)
+        # Parse role (string shorthand / list / dict — единый формат с /dcs-edit set-field-role)
         if field_def.get('role') is not None:
             parsed = parse_role_spec(field_def['role'])
             f['roles'] = parsed['tokens']
@@ -1524,15 +1524,15 @@ AREA_STYLE_PRESETS = {
 
 
 def load_user_styles(base_dir, output_path=None):
-    # Search order (first found wins): 1) definition dir, 2) cwd, 3) scan-up from OutputPath for presets/skills/skd/
+    # Search order (first found wins): 1) definition dir, 2) cwd, 3) scan-up from OutputPath for presets/skills/dcs/
     search_paths = [
-        os.path.join(base_dir, 'skd-styles.json'),
-        os.path.join(os.getcwd(), 'skd-styles.json'),
+        os.path.join(base_dir, 'dcs-styles.json'),
+        os.path.join(os.getcwd(), 'dcs-styles.json'),
     ]
     if output_path:
         scan_dir = os.path.dirname(output_path)
         while scan_dir:
-            search_paths.append(os.path.join(scan_dir, 'presets', 'skills', 'skd', 'skd-styles.json'))
+            search_paths.append(os.path.join(scan_dir, 'presets', 'skills', 'dcs', 'dcs-styles.json'))
             parent_dir = os.path.dirname(scan_dir)
             if parent_dir == scan_dir:
                 break

@@ -1,4 +1,4 @@
-﻿# skd-compile v1.107 — Compile 1C DCS from JSON
+﻿# dcs-compile v1.107 — Compile 1C DCS from JSON
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 param(
 	[string]$DefinitionFile,
@@ -154,7 +154,7 @@ if ($DefinitionFile) {
 
 $def = $json | ConvertFrom-Json
 
-# --- Sentinel check: refuse to compile if JSON contains skd-decompile sentinels ---
+# --- Sentinel check: refuse to compile if JSON contains dcs-decompile sentinels ---
 # These mark places the decompiler couldn't reverse cleanly; user must resolve
 # them manually before compile (see <basename>.warnings.md alongside the JSON).
 $script:foundSentinels = @()
@@ -188,7 +188,7 @@ function Scan-Sentinels {
 }
 Scan-Sentinels -obj $def -path ''
 if ($script:foundSentinels.Count -gt 0) {
-	[Console]::Error.WriteLine("skd-compile: JSON содержит __unsupported__ маркеры от skd-decompile.")
+	[Console]::Error.WriteLine("dcs-compile: JSON содержит __unsupported__ маркеры от dcs-decompile.")
 	[Console]::Error.WriteLine("Это конструкции, которые декомпиляция не смогла обратить — нужно разрешить вручную перед компиляцией.")
 	[Console]::Error.WriteLine("См. <basename>.warnings.md рядом с JSON. Найдено:")
 	foreach ($s in $script:foundSentinels) { [Console]::Error.WriteLine($s) }
@@ -1022,7 +1022,7 @@ function Emit-Field {
 			appearance = [ordered]@{}
 			roleExtras = [ordered]@{}
 		}
-		# Parse role (string shorthand / array / object — единый формат с /skd-edit set-field-role)
+		# Parse role (string shorthand / array / object — единый формат с /dcs-edit set-field-role)
 		if ($fieldDef.role) {
 			$parsed = Parse-RoleSpec $fieldDef.role
 			$f.roles = $parsed.tokens
@@ -1761,17 +1761,17 @@ $script:areaStylePresets = @{
 	}
 }
 
-# Load user presets from skd-styles.json
-# Search order (first found wins): 1) definition dir, 2) cwd, 3) scan-up from OutputPath for presets/skills/skd/
+# Load user presets from dcs-styles.json
+# Search order (first found wins): 1) definition dir, 2) cwd, 3) scan-up from OutputPath for presets/skills/dcs/
 $script:userStylesLoaded = $false
 $searchPaths = @(
-	(Join-Path $script:queryBaseDir "skd-styles.json"),
-	(Join-Path (Get-Location).Path "skd-styles.json")
+	(Join-Path $script:queryBaseDir "dcs-styles.json"),
+	(Join-Path (Get-Location).Path "dcs-styles.json")
 )
 $outResolved = if ([System.IO.Path]::IsPathRooted($OutputPath)) { $OutputPath } else { Join-Path (Get-Location).Path $OutputPath }
 $scanDir = [System.IO.Path]::GetDirectoryName($outResolved)
 while ($scanDir) {
-	$searchPaths += Join-Path (Join-Path (Join-Path (Join-Path $scanDir "presets") "skills") "skd") "skd-styles.json"
+	$searchPaths += Join-Path (Join-Path (Join-Path (Join-Path $scanDir "presets") "skills") "dcs") "dcs-styles.json"
 	$parentDir = Split-Path $scanDir -Parent
 	if ($parentDir -eq $scanDir) { break }
 	$scanDir = $parentDir
