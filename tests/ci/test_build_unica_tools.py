@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -19,7 +20,45 @@ def load_build_module():
     return module
 
 
-class BuildPythonEntrypointTests(unittest.TestCase):
+class BuildUnicaToolsTests(unittest.TestCase):
+    def test_release_asset_url_can_differ_from_upstream_source(self) -> None:
+        module = load_build_module()
+
+        url = module.release_asset_url(
+            {
+                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "sourceTag": "v1.26.0",
+                "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "assetTag": "rlm-tools-bsl-v1.26.0-build.2",
+            },
+            {"assetName": "rlm-tools-bsl-linux-x64"},
+        )
+
+        self.assertEqual(
+            url,
+            "https://github.com/IngvarConsulting/unica-toolchain/releases/download/"
+            "rlm-tools-bsl-v1.26.0-build.2/rlm-tools-bsl-linux-x64",
+        )
+
+    def test_checked_in_rlm_tools_use_prebuilt_toolchain_assets(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        rlm_tools = [tool for tool in lock["tools"] if tool["name"].startswith("rlm-")]
+
+        self.assertEqual(len(rlm_tools), 2)
+        for tool in rlm_tools:
+            self.assertEqual(tool["assetStrategy"], "direct-release-asset")
+            self.assertEqual(
+                tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
+            )
+            self.assertEqual(tool["assetTag"], "rlm-tools-bsl-v1.26.0-build.2")
+            for asset in tool["assets"].values():
+                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()
 
@@ -53,54 +92,6 @@ class BuildPythonEntrypointTests(unittest.TestCase):
                 module.extract_v8_runner(archive, "v8-runner", root / "v8-runner")
 
             self.assertFalse(outside.exists())
-
-    def test_pyinstaller_uses_generated_python_stub_for_entrypoint(self) -> None:
-        module = load_build_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            work_dir = root / "pyinstaller"
-            out_dir = root / "out"
-            out_dir.mkdir()
-            calls = []
-
-            def fake_run(args, *, cwd=None):
-                calls.append((args, cwd))
-                dist = Path(cwd) / "dist"
-                dist.mkdir()
-                (dist / "rlm-tools-bsl.exe").write_bytes(b"frozen")
-
-            with (
-                patch.object(
-                    module,
-                    "resolve_console_script_entrypoint",
-                    return_value=("rlm_tools_bsl.server", "main"),
-                ),
-                patch.object(module, "run", side_effect=fake_run),
-            ):
-                dest = module.build_python_entrypoint(
-                    {
-                        "entrypoint": "rlm-tools-bsl",
-                        "binaryName": "rlm-tools-bsl",
-                    },
-                    work_dir,
-                    out_dir,
-                    ".exe",
-                    root / "venv" / "Scripts" / "python.exe",
-                )
-
-            stub = work_dir / "rlm-tools-bsl" / "rlm-tools-bsl-entrypoint.py"
-            self.assertEqual(dest, out_dir / "rlm-tools-bsl.exe")
-            self.assertEqual(dest.read_bytes(), b"frozen")
-            self.assertTrue(stub.exists())
-            self.assertIn("MODULE = 'rlm_tools_bsl.server'", stub.read_text(encoding="utf-8"))
-
-            args, cwd = calls[0]
-            self.assertEqual(cwd, (work_dir / "rlm-tools-bsl").resolve())
-            self.assertEqual(Path(args[-1]).resolve(), stub.resolve())
-            self.assertEqual(args[args.index("--collect-all") + 1], "rlm_tools_bsl")
-            self.assertEqual(args[args.index("--hidden-import") + 1], "rlm_tools_bsl.server")
-            self.assertFalse(str(args[-1]).endswith(".exe"))
 
     def test_cargo_workspace_tool_builds_from_repo_root(self) -> None:
         module = load_build_module()
