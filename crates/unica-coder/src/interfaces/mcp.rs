@@ -812,6 +812,32 @@ mod tests {
     }
 
     #[test]
+    fn tools_list_exposes_flat_diagnostics_worktree_contract() {
+        let app = UnicaApplication::new();
+        let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let response = handle_message(&app, request).unwrap();
+        let listed = response["result"]["tools"].as_array().unwrap();
+        let diagnostics = listed
+            .iter()
+            .find(|tool| tool["name"] == "unica.code.diagnostics")
+            .expect("unica.code.diagnostics must be listed");
+
+        let schema = &diagnostics["inputSchema"];
+        let properties = schema["properties"].as_object().unwrap();
+        for name in [
+            "cwd",
+            "sourceDir",
+            "mode",
+            "path",
+            "codes",
+            "timeoutSeconds",
+        ] {
+            assert!(properties.contains_key(name), "missing {name}");
+        }
+        assert!(schema.get("oneOf").is_none());
+    }
+
+    #[test]
     fn native_tool_schema_is_contract_specific_and_does_not_expose_raw_args() {
         let app = UnicaApplication::new();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
