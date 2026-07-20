@@ -6,6 +6,8 @@
 
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
@@ -15,12 +17,14 @@ use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+#[cfg(test)]
+use std::sync::{mpsc::Sender, Barrier};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 
 use crate::infrastructure::platform::filesystem::{
     hard_link_count, install_file_no_clobber, metadata_is_link_or_reparse_point,
-    path_lock_identity, portable_permissions, replace_file_atomically, restrict_stage_to_owner,
-    PortablePermissions,
+    path_lock_identity, portable_permissions, prepare_file_for_removal, replace_file_atomically,
+    restrict_stage_to_owner, PortablePermissions,
 };
 
 const STAGE_ATTEMPTS: usize = 16;
@@ -234,10 +238,6 @@ pub(crate) enum PublishErrorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "cleanup phase is part of the typed contract for richer lifecycle handling"
-)]
 pub(crate) enum PublishPhase {
     Inspect,
     Lock,
@@ -250,6 +250,131 @@ pub(crate) enum PublishPhase {
     Recheck,
     Commit,
     Cleanup,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishFailpoint {
+    Write,
+    Flush,
+    Sync,
+    Permissions,
+    Validate,
+    Recheck,
+    Commit,
+    Cleanup,
+}
+
+#[cfg(test)]
+impl PublishFailpoint {
+    fn phase(self) -> PublishPhase {
+        match self {
+            Self::Write => PublishPhase::Write,
+            Self::Flush => PublishPhase::Flush,
+            Self::Sync => PublishPhase::Sync,
+            Self::Permissions => PublishPhase::Permissions,
+            Self::Validate => PublishPhase::Validate,
+            Self::Recheck => PublishPhase::Recheck,
+            Self::Commit => PublishPhase::Commit,
+            Self::Cleanup => PublishPhase::Cleanup,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct PublicationLockPause {
+    acquired: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+#[cfg(test)]
+type BeforeCommitHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishFailpoint>> = const { RefCell::new(Vec::new()) };
+    static TEST_BEFORE_COMMIT_HOOK: RefCell<Option<BeforeCommitHook>> = const { RefCell::new(None) };
+    static TEST_PUBLICATION_LOCK_PAUSE: RefCell<Option<PublicationLockPause>> = const { RefCell::new(None) };
+    static TEST_PUBLICATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_publish_failpoints<T>(
+    failpoints: &[PublishFailpoint],
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Vec<PublishFailpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PUBLISH_FAILPOINTS.with(|slot| {
+                slot.replace(std::mem::take(&mut self.0));
+            });
+        }
+    }
+
+    let previous = TEST_PUBLISH_FAILPOINTS.with(|slot| slot.replace(failpoints.to_vec()));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+pub(crate) fn with_before_commit_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeCommitHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_COMMIT_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_COMMIT_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+pub(crate) fn with_publication_lock_pause<T>(
+    acquired: Arc<Barrier>,
+    release: Arc<Barrier>,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PublicationLockPause>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PUBLICATION_LOCK_PAUSE.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let pause = PublicationLockPause { acquired, release };
+    let previous = TEST_PUBLICATION_LOCK_PAUSE.with(|slot| slot.replace(Some(pause)));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+pub(crate) fn with_publication_lock_contention_signal<T>(
+    sender: Sender<()>,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<Sender<()>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PUBLICATION_LOCK_CONTENDED.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_PUBLICATION_LOCK_CONTENDED.with(|slot| slot.replace(Some(sender)));
+    let _reset = Reset(previous);
+    action()
 }
 
 impl fmt::Display for PublishPhase {
@@ -292,10 +417,7 @@ pub(crate) fn with_publication_locks<T>(
     let process_locks = publication_process_locks(&identities);
     let process_guards = process_locks
         .iter()
-        .map(|lock| {
-            lock.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        })
+        .map(|lock| lock_publication_process_mutex(lock))
         .collect::<Vec<MutexGuard<'_, ()>>>();
     let file_locks = acquire_publication_file_locks(&identities)?;
     let token = PublicationLockToken {
@@ -303,6 +425,7 @@ pub(crate) fn with_publication_locks<T>(
         _scope: PhantomData,
     };
 
+    pause_after_publication_locks();
     let result = action(&token);
 
     // Both guard layers intentionally remain alive through the callback. Lock
@@ -348,7 +471,19 @@ pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
 
 impl PreparedCreate<'_, '_, '_> {
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
-        inspect_create_target(self.target, PublishPhase::Recheck)?;
+        run_before_commit_hook(self.target);
+        let recheck = injected_failure(PublishPhase::Recheck, self.target)
+            .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
+            .and_then(|()| inspect_create_target(self.target, PublishPhase::Recheck));
+        if let Err(mut error) = recheck {
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
+        if let Err(source) = injected_failure(PublishPhase::Commit, self.target) {
+            let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
         if let Err(source) = install_file_no_clobber(&self.stage.path, self.target) {
             let mut error = if source.kind() == ErrorKind::AlreadyExists {
                 PublishError::new(PublishErrorKind::AlreadyExists {
@@ -388,7 +523,21 @@ impl PreparedReplace<'_, '_, '_> {
     }
 
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
-        recheck_replace_target(self.target, &self.snapshot, PublishPhase::Recheck)?;
+        run_before_commit_hook(self.target);
+        let recheck = injected_failure(PublishPhase::Recheck, self.target)
+            .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
+            .and_then(|()| {
+                recheck_replace_target(self.target, &self.snapshot, PublishPhase::Recheck)
+            });
+        if let Err(mut error) = recheck {
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
+        if let Err(source) = injected_failure(PublishPhase::Commit, self.target) {
+            let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
         if let Err(source) = replace_file_atomically(&self.stage.path, self.target) {
             let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
             attach_stage_cleanup(&mut error, &mut self.stage);
@@ -513,6 +662,37 @@ fn publication_process_locks(identities: &[String]) -> Vec<Arc<Mutex<()>>> {
             lock
         })
         .collect()
+}
+
+fn lock_publication_process_mutex(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+    match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => {
+            signal_publication_lock_contention();
+            lock.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+        Err(TryLockError::Poisoned(error)) => error.into_inner(),
+    }
+}
+
+fn pause_after_publication_locks() {
+    #[cfg(test)]
+    TEST_PUBLICATION_LOCK_PAUSE.with(|slot| {
+        if let Some(pause) = slot.borrow_mut().take() {
+            pause.acquired.wait();
+            pause.release.wait();
+        }
+    });
+}
+
+fn signal_publication_lock_contention() {
+    #[cfg(test)]
+    TEST_PUBLICATION_LOCK_CONTENDED.with(|slot| {
+        if let Some(sender) = slot.borrow_mut().take() {
+            let _ = sender.send(());
+        }
+    });
 }
 
 fn acquire_publication_file_locks(identities: &[String]) -> Result<Vec<File>, PublishError> {
@@ -681,8 +861,19 @@ fn create_stage(
     replacement: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<StageGuard, PublishError> {
+    create_stage_with_candidates(target, replacement, final_permissions, || {
+        next_stage_path(target)
+    })
+}
+
+fn create_stage_with_candidates(
+    target: &Path,
+    replacement: &[u8],
+    final_permissions: Option<&PortablePermissions>,
+    mut next_candidate: impl FnMut() -> PathBuf,
+) -> Result<StageGuard, PublishError> {
     for attempt in 1..=STAGE_ATTEMPTS {
-        let path = next_stage_path(target);
+        let path = next_candidate();
         let open = OpenOptions::new()
             .read(true)
             .write(true)
@@ -730,24 +921,38 @@ fn initialize_stage(
     replacement: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<(), PublishError> {
+    injected_failure(PublishPhase::Permissions, path)
+        .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     let process_default_permissions = file
         .metadata()
         .map(|metadata| portable_permissions(&metadata))
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     restrict_stage_to_owner(file)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
+    injected_failure(PublishPhase::Write, path)
+        .map_err(|source| PublishError::io(PublishPhase::Write, path, source))?;
     file.write_all(replacement)
         .map_err(|source| PublishError::io(PublishPhase::Write, path, source))?;
+    injected_failure(PublishPhase::Flush, path)
+        .map_err(|source| PublishError::io(PublishPhase::Flush, path, source))?;
     file.flush()
         .map_err(|source| PublishError::io(PublishPhase::Flush, path, source))?;
+    injected_failure(PublishPhase::Sync, path)
+        .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
     file.sync_all()
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
+    injected_failure(PublishPhase::Permissions, path)
+        .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     final_permissions
         .unwrap_or(&process_default_permissions)
         .apply_to(file)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
+    injected_failure(PublishPhase::Sync, path)
+        .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
     file.sync_all()
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
+    injected_failure(PublishPhase::Validate, path)
+        .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
     let mut actual = Vec::with_capacity(replacement.len());
@@ -785,12 +990,37 @@ fn next_stage_path(target: &Path) -> PathBuf {
     parent.join(name)
 }
 
+fn injected_failure(_phase: PublishPhase, _path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let should_fail = TEST_PUBLISH_FAILPOINTS.with(|slot| {
+            slot.borrow()
+                .iter()
+                .any(|failpoint| failpoint.phase() == _phase)
+        });
+        if should_fail {
+            return Err(io::Error::other(format!(
+                "injected publication {_phase} failure"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn run_before_commit_hook(_target: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_BEFORE_COMMIT_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_target);
+    }
+}
+
 fn attach_stage_cleanup(error: &mut PublishError, stage: &mut StageGuard) {
     if let Err(warning) = stage.cleanup() {
         error.attach_cleanup_warning(warning);
     }
 }
 
+#[derive(Debug)]
 struct StageGuard {
     path: PathBuf,
     armed: bool,
@@ -805,7 +1035,7 @@ impl StageGuard {
         if !self.armed {
             return Ok(());
         }
-        match fs::remove_file(&self.path) {
+        match remove_stage(&self.path) {
             Ok(()) => {
                 self.armed = false;
                 Ok(())
@@ -829,27 +1059,48 @@ impl StageGuard {
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fs::remove_file(&self.path);
+            let _ = remove_stage(&self.path);
         }
+    }
+}
+
+fn remove_stage(path: &Path) -> io::Result<()> {
+    match prepare_file_for_removal(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    injected_failure(PublishPhase::Cleanup, path)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare, publish, with_publication_locks, PublishEffect, PublishErrorKind, PublishMode,
-        PublishRequest,
+        create_stage_with_candidates, publish, remove_stage, with_before_commit_hook,
+        with_publication_lock_contention_signal, with_publication_lock_pause,
+        with_publication_locks, with_publish_failpoints, PublishEffect, PublishErrorKind,
+        PublishFailpoint, PublishMode, PublishPhase, PublishRequest,
     };
     use crate::infrastructure::platform::filesystem::{
-        metadata_is_link_or_reparse_point, portable_permissions, prepare_file_for_removal,
+        hard_link_count, metadata_is_link_or_reparse_point, portable_permissions,
+        prepare_file_for_removal,
     };
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
         FileLinkFixtureOutcome,
     };
     use std::fs;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -943,6 +1194,382 @@ mod tests {
         assert!(error.cleanup_warnings().is_empty());
         assert_eq!(fs::read(&target).unwrap(), current);
         assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn target_changed_after_staging_is_rejected() {
+        let root = unique_temp_root("target-changed-after-staging");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        let concurrent = b"concurrent replacement";
+        fs::write(&target, original).unwrap();
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+        let hook_target = target.clone();
+
+        let error = with_before_commit_hook(
+            move |hook_path| {
+                assert_eq!(hook_path, hook_target);
+                fs::write(hook_path, concurrent).unwrap();
+            },
+            || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"our replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: original,
+                    },
+                })
+            },
+        )
+        .expect_err("a target changed after staging must be rejected");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::StalePreimage { .. }
+        ));
+        assert!(error.cleanup_warnings().is_empty());
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stage_collisions_retry_without_clobbering() {
+        let root = unique_temp_root("stage-collision-retry");
+        let target = root.join("target.bin");
+        let collider = root.join(".target.bin.unica-stage-collider");
+        let available = root.join(".target.bin.unica-stage-available");
+        let collider_bytes = b"do not clobber";
+        fs::write(&collider, collider_bytes).unwrap();
+        let collider_permissions = portable_permissions(&fs::metadata(&collider).unwrap());
+        let permissions_probe = root.join("permissions-probe.bin");
+        fs::write(&permissions_probe, b"probe").unwrap();
+        let expected_stage_permissions =
+            portable_permissions(&fs::metadata(&permissions_probe).unwrap());
+        fs::remove_file(&permissions_probe).unwrap();
+        let mut candidates = [collider.clone(), available.clone()].into_iter();
+
+        let mut stage = create_stage_with_candidates(&target, b"replacement", None, || {
+            candidates.next().expect("two candidates must be enough")
+        })
+        .expect("the second unused stage candidate must succeed");
+
+        assert_eq!(stage.path, available);
+        assert_eq!(fs::read(&stage.path).unwrap(), b"replacement");
+        assert!(expected_stage_permissions.matches(&fs::metadata(&stage.path).unwrap()));
+        assert_eq!(fs::read(&collider).unwrap(), collider_bytes);
+        assert!(collider_permissions.matches(&fs::metadata(&collider).unwrap()));
+        stage.cleanup().expect("stage cleanup must succeed");
+        fs::remove_file(&collider).unwrap();
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stage_collision_exhaustion_is_typed() {
+        let root = unique_temp_root("stage-collision-exhaustion");
+        let target = root.join("target.bin");
+        let colliders = (0..16)
+            .map(|index| {
+                let path = root.join(format!(".target.bin.unica-stage-collider-{index}"));
+                let bytes = format!("collider {index}").into_bytes();
+                fs::write(&path, &bytes).unwrap();
+                let permissions = portable_permissions(&fs::metadata(&path).unwrap());
+                (path, bytes, permissions)
+            })
+            .collect::<Vec<_>>();
+        let mut attempts = 0;
+
+        let error = create_stage_with_candidates(&target, b"replacement", None, || {
+            attempts += 1;
+            colliders
+                .get(attempts - 1)
+                .unwrap_or_else(|| panic!("stage creation requested a seventeenth candidate"))
+                .0
+                .clone()
+        })
+        .expect_err("sixteen colliding candidates must exhaust stage creation");
+
+        assert_eq!(attempts, 16);
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::StageCollisionsExhausted { attempts: 16, .. }
+        ));
+        assert!(error.cleanup_warnings().is_empty());
+        for (collider, bytes, permissions) in &colliders {
+            assert_eq!(fs::read(collider).unwrap(), *bytes);
+            assert!(permissions.matches(&fs::metadata(collider).unwrap()));
+            fs::remove_file(collider).unwrap();
+        }
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn precommit_failpoints_preserve_target_and_remove_stage() {
+        let cases = [
+            (PublishFailpoint::Write, PublishPhase::Write),
+            (PublishFailpoint::Flush, PublishPhase::Flush),
+            (PublishFailpoint::Sync, PublishPhase::Sync),
+            (PublishFailpoint::Permissions, PublishPhase::Permissions),
+            (PublishFailpoint::Validate, PublishPhase::Validate),
+            (PublishFailpoint::Recheck, PublishPhase::Recheck),
+            (PublishFailpoint::Commit, PublishPhase::Commit),
+        ];
+
+        for (failpoint, expected_phase) in cases {
+            let root = unique_temp_root(&format!("failpoint-{failpoint:?}"));
+            let target = root.join("existing.bin");
+            let original = b"original";
+            fs::write(&target, original).unwrap();
+            let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+            let error = with_publish_failpoints(&[failpoint], || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: original,
+                    },
+                })
+            })
+            .expect_err("an injected pre-commit failure must abort publication");
+
+            assert!(
+                matches!(
+                    error.kind(),
+                    PublishErrorKind::Io { phase, .. } if *phase == expected_phase
+                ),
+                "unexpected typed error for {failpoint:?}: {error:?}"
+            );
+            assert!(error.cleanup_warnings().is_empty());
+            assert_eq!(fs::read(&target).unwrap(), original);
+            assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+            assert!(publication_debris(&root).is_empty());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_is_attached_to_primary_error() {
+        let root = unique_temp_root("primary-and-cleanup-failure");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let error = with_publish_failpoints(
+            &[PublishFailpoint::Write, PublishFailpoint::Cleanup],
+            || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: original,
+                    },
+                })
+            },
+        )
+        .expect_err("the primary write failure must remain the returned error");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::Io {
+                phase: PublishPhase::Write,
+                ..
+            }
+        ));
+        assert_eq!(error.cleanup_warnings().len(), 1);
+        assert!(error.cleanup_warnings()[0]
+            .message
+            .contains("injected publication cleanup failure"));
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        let debris = publication_debris(&root);
+        assert_eq!(debris, [error.cleanup_warnings()[0].path.clone()]);
+        assert_eq!(fs::read(&debris[0]).unwrap(), b"");
+        remove_stage(&debris[0]).expect("manual cleanup after failpoint scope must succeed");
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn committed_create_with_cleanup_failure_returns_warning() {
+        let root = unique_temp_root("committed-create-cleanup-warning");
+        let target = root.join("created.bin");
+        let permissions_probe = root.join("permissions-probe.bin");
+        fs::write(&permissions_probe, b"probe").unwrap();
+        let expected_permissions = portable_permissions(&fs::metadata(&permissions_probe).unwrap());
+        fs::remove_file(&permissions_probe).unwrap();
+
+        let report = with_publish_failpoints(&[PublishFailpoint::Cleanup], || {
+            publish(PublishRequest {
+                target: &target,
+                replacement: b"committed bytes",
+                mode: PublishMode::CreateOnly,
+            })
+        })
+        .expect("cleanup after a committed create must be a warning, not an error");
+
+        assert_eq!(report.effect, PublishEffect::Created);
+        assert_eq!(report.cleanup_warnings.len(), 1);
+        assert!(report.cleanup_warnings[0]
+            .message
+            .contains("injected publication cleanup failure"));
+        assert_eq!(fs::read(&target).unwrap(), b"committed bytes");
+        assert!(expected_permissions.matches(&fs::metadata(&target).unwrap()));
+        let debris = publication_debris(&root);
+        assert_eq!(debris, [report.cleanup_warnings[0].path.clone()]);
+        assert_eq!(fs::read(&debris[0]).unwrap(), b"committed bytes");
+        assert!(expected_permissions.matches(&fs::metadata(&debris[0]).unwrap()));
+        assert_eq!(
+            hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
+            2
+        );
+        remove_stage(&debris[0]).expect("manual cleanup after failpoint scope must succeed");
+        assert_eq!(
+            hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
+            1
+        );
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn panic_in_before_commit_hook_still_removes_stage() {
+        let root = unique_temp_root("panic-before-commit");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let unwind = catch_unwind(AssertUnwindSafe(|| {
+            with_before_commit_hook(
+                |_| panic!("injected hook panic"),
+                || {
+                    let _ = publish(PublishRequest {
+                        target: &target,
+                        replacement: b"replacement",
+                        mode: PublishMode::ReplaceExisting {
+                            expected_preimage: original,
+                        },
+                    });
+                },
+            );
+        }));
+
+        assert!(unwind.is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failpoint_scope_is_restored_after_unwind() {
+        let root = unique_temp_root("failpoint-scope-unwind");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+
+        let unwind = catch_unwind(AssertUnwindSafe(|| {
+            with_publish_failpoints(&[PublishFailpoint::Write], || {
+                panic!("panic inside failpoint scope");
+            });
+        }));
+        assert!(unwind.is_err());
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect("failpoint scope must be reset while unwinding");
+
+        assert_eq!(report.effect, PublishEffect::Replaced);
+        assert!(report.cleanup_warnings.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_only_detects_target_created_before_commit() {
+        let root = unique_temp_root("create-race");
+        let target = root.join("created-by-other.bin");
+        let hook_target = target.clone();
+        let concurrent = b"other writer won";
+        let permissions_probe = root.join("permissions-probe.bin");
+        fs::write(&permissions_probe, b"probe").unwrap();
+        let concurrent_permissions =
+            portable_permissions(&fs::metadata(&permissions_probe).unwrap());
+        fs::remove_file(&permissions_probe).unwrap();
+
+        let error = with_before_commit_hook(
+            move |hook_path| {
+                assert_eq!(hook_path, hook_target);
+                fs::write(hook_path, concurrent).unwrap();
+            },
+            || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"our bytes",
+                    mode: PublishMode::CreateOnly,
+                })
+            },
+        )
+        .expect_err("create-only must reject a target created before commit");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::AlreadyExists { .. }
+        ));
+        assert!(error.cleanup_warnings().is_empty());
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
+        assert!(concurrent_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_lock_pause_and_contention_signal_are_scoped() {
+        let root = unique_temp_root("publication-lock-contention");
+        let target = root.join("target.bin");
+        let acquired = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let acquired_by_a = acquired.clone();
+        let release_a = release.clone();
+        let target_a = target.clone();
+        let thread_a = thread::spawn(move || {
+            with_publication_lock_pause(acquired_by_a, release_a, || {
+                with_publication_locks(&[target_a], |_| ())
+            })
+        });
+        acquired.wait();
+
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let target_b = target.clone();
+        let thread_b = thread::spawn(move || {
+            with_publication_lock_contention_signal(contended_sender, || {
+                with_publication_locks(&[target_b], |_| ())
+            })
+        });
+        let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
+        release.wait();
+
+        thread_a
+            .join()
+            .expect("first lock thread must not panic")
+            .expect("first lock acquisition must succeed");
+        thread_b
+            .join()
+            .expect("second lock thread must not panic")
+            .expect("second lock acquisition must succeed");
+        contention.expect("the second thread must signal in-process lock contention");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1056,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn writable_permission_change_before_commit_is_metadata_changed() {
+    fn permission_change_before_commit_is_rejected() {
         let root = unique_temp_root("metadata-changed");
         let target = root.join("existing.bin");
         let original = b"original";
@@ -1070,26 +1697,26 @@ mod tests {
         }
         assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
 
-        let result = with_publication_locks(std::slice::from_ref(&target), |lock| {
-            let prepared = prepare(
-                lock,
-                PublishRequest {
+        let hook_target = target.clone();
+        let result = with_before_commit_hook(
+            move |hook_path| {
+                assert_eq!(hook_path, hook_target);
+                assert!(
+                    set_unix_mode_for_test(hook_path, 0o640)
+                        .expect("Unix mode fixture must remain supported after staging"),
+                    "Unix mode fixture must remain supported after staging"
+                );
+            },
+            || {
+                publish(PublishRequest {
                     target: &target,
                     replacement: b"replacement",
                     mode: PublishMode::ReplaceExisting {
                         expected_preimage: original,
                     },
-                },
-            )?;
-            assert!(
-                set_unix_mode_for_test(&target, 0o640)
-                    .expect("Unix mode fixture must remain supported after prepare"),
-                "Unix mode fixture must remain supported after prepare"
-            );
-            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o640));
-            prepared.commit()
-        })
-        .expect("publication lock acquisition must succeed");
+                })
+            },
+        );
         let changed_permissions = portable_permissions(&fs::metadata(&target).unwrap());
 
         let error = result.expect_err("changed writable permissions must reject the commit");
