@@ -842,9 +842,11 @@ mod tests {
     };
     use crate::infrastructure::platform::filesystem::{
         metadata_is_link_or_reparse_point, portable_permissions, prepare_file_for_removal,
-        restrict_stage_to_owner,
     };
-    use crate::infrastructure::platform::testing::create_file_symlink_for_test;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
+        FileLinkFixtureOutcome,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -951,10 +953,11 @@ mod tests {
         let original = b"original";
         let replacement = b"replacement";
         fs::write(&target, original).unwrap();
-        let target_file = fs::File::open(&target).unwrap();
-        restrict_stage_to_owner(&target_file).unwrap();
-        let original_permissions = portable_permissions(&target_file.metadata().unwrap());
-        drop(target_file);
+        let unix_mode_supported = set_unix_mode_for_test(&target, 0o600).unwrap();
+        if unix_mode_supported {
+            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
+        }
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
 
         let report = publish(PublishRequest {
             target: &target,
@@ -968,6 +971,9 @@ mod tests {
         assert_eq!(report.effect, PublishEffect::Replaced);
         assert_eq!(fs::read(&target).unwrap(), replacement);
         assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        if unix_mode_supported {
+            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
+        }
         assert!(publication_debris(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -978,12 +984,14 @@ mod tests {
         let target = root.join("existing.bin");
         let original = b"original";
         fs::write(&target, original).unwrap();
-        let target_file = fs::File::open(&target).unwrap();
-        restrict_stage_to_owner(&target_file).unwrap();
-        drop(target_file);
-        let mut permissions = fs::metadata(&target).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&target, permissions).unwrap();
+        let unix_mode_supported = set_unix_mode_for_test(&target, 0o400).unwrap();
+        if unix_mode_supported {
+            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
+        } else {
+            let mut permissions = fs::metadata(&target).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&target, permissions).unwrap();
+        }
         let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
 
         let error = publish(PublishRequest {
@@ -999,6 +1007,9 @@ mod tests {
         assert!(error.cleanup_warnings().is_empty());
         assert_eq!(fs::read(&target).unwrap(), original);
         assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        if unix_mode_supported {
+            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
+        }
         assert!(publication_debris(&root).is_empty());
         prepare_file_for_removal(&target).unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -1050,23 +1061,14 @@ mod tests {
         let target = root.join("existing.bin");
         let original = b"original";
         fs::write(&target, original).unwrap();
-        let target_file = fs::File::open(&target).unwrap();
-        restrict_stage_to_owner(&target_file).unwrap();
-        drop(target_file);
-        let initial_permissions = portable_permissions(&fs::metadata(&target).unwrap());
-        if !try_set_unix_mode_0640(&target)
-            || initial_permissions.matches(&fs::metadata(&target).unwrap())
-        {
+        if !set_unix_mode_for_test(&target, 0o600).unwrap() {
             eprintln!(
                 "[SKIPPED FIXTURE] this host cannot represent a writable 0600-to-0640 permission change"
             );
             fs::remove_dir_all(root).unwrap();
             return;
         }
-        let target_file = fs::File::open(&target).unwrap();
-        restrict_stage_to_owner(&target_file).unwrap();
-        assert!(initial_permissions.matches(&target_file.metadata().unwrap()));
-        drop(target_file);
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
 
         let result = with_publication_locks(std::slice::from_ref(&target), |lock| {
             let prepared = prepare(
@@ -1080,9 +1082,11 @@ mod tests {
                 },
             )?;
             assert!(
-                try_set_unix_mode_0640(&target),
-                "chmod 0640 fixture setup must keep succeeding after prepare"
+                set_unix_mode_for_test(&target, 0o640)
+                    .expect("Unix mode fixture must remain supported after prepare"),
+                "Unix mode fixture must remain supported after prepare"
             );
+            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o640));
             prepared.commit()
         })
         .expect("publication lock acquisition must succeed");
@@ -1096,6 +1100,7 @@ mod tests {
         ));
         assert_eq!(fs::read(&target).unwrap(), original);
         assert!(changed_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o640));
         assert!(publication_debris(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1227,36 +1232,22 @@ mod tests {
     }
 
     fn create_file_link_fixture(referent: &Path, link: &Path) -> bool {
-        let Some(result) = create_file_symlink_for_test(referent, link) else {
-            eprintln!(
-                "[SKIPPED FIXTURE] this host does not expose a file-link test implementation"
-            );
-            return false;
-        };
-        match result {
-            Ok(()) => true,
-            Err(error)
-                if matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
-                    || error.raw_os_error() == Some(1314) =>
-            {
+        match create_file_link_fixture_for_test(referent, link)
+            .expect("unexpected file-link fixture error must fail the test")
+        {
+            FileLinkFixtureOutcome::Created => true,
+            FileLinkFixtureOutcome::Unsupported => {
                 eprintln!(
-                    "[SKIPPED FIXTURE] host denied the privilege required to create a file link: {error}"
+                    "[SKIPPED FIXTURE] this host does not expose a file-link test implementation"
                 );
                 false
             }
-            Err(error) => panic!("file-link fixture must be created: {error}"),
-        }
-    }
-
-    fn try_set_unix_mode_0640(path: &Path) -> bool {
-        let status = std::process::Command::new("chmod")
-            .arg("0640")
-            .arg(path)
-            .status();
-        match status {
-            Ok(status) => status.success(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => panic!("chmod 0640 fixture setup failed: {error}"),
+            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                eprintln!(
+                    "[SKIPPED FIXTURE] Windows privilege required to create a file link is unavailable"
+                );
+                false
+            }
         }
     }
 
