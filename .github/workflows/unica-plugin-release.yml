@@ -3,6 +3,7 @@ name: Build Unica Codex Plugin
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     tags:
       - "v*"
@@ -19,22 +20,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      release_artifacts: ${{ steps.scope.outputs.release_artifacts }}
+      rust_changed: ${{ steps.scope.outputs.rust_changed }}
+      platform_changed: ${{ steps.scope.outputs.platform_changed }}
+      toolchain_changed: ${{ steps.scope.outputs.toolchain_changed }}
+      package_changed: ${{ steps.scope.outputs.package_changed }}
+      plugin_content_changed: ${{ steps.scope.outputs.plugin_content_changed }}
+      ci_changed: ${{ steps.scope.outputs.ci_changed }}
+      release_required: ${{ steps.scope.outputs.release_required }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: scope
         shell: bash
+        env:
+          FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "release_artifacts=true" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE_FULL" = "true" ]; then
+            python scripts/ci/classify-workflow-changes.py --force-full </dev/null >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          git diff --name-only FETCH_HEAD...HEAD | python scripts/ci/classify-workflow-changes.py |
-            sed 's/^/release_artifacts=/' >> "$GITHUB_OUTPUT"
+          git diff --name-only FETCH_HEAD...HEAD |
+            python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
 
   verify-source:
     name: Verify source guardrails
@@ -46,12 +55,27 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - run: python -m unittest discover -s tests/ci --durations 20
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python scripts/ci/check-version-contract.py
+
+  test-rust-primary:
+    name: Rust tests (macos-14 primary)
+    runs-on: macos-14
+    timeout-minutes: 60
+    needs: classify-changes
+    if: >-
+      ${{
+        needs.classify-changes.outputs.rust_changed == 'true' &&
+        needs.classify-changes.outputs.platform_changed == 'false' &&
+        needs.classify-changes.outputs.toolchain_changed == 'false' &&
+        needs.classify-changes.outputs.ci_changed == 'false'
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace -- --test-threads=1
@@ -60,21 +84,41 @@ jobs:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    needs: classify-changes
+    if: >-
+      ${{
+        needs.classify-changes.outputs.platform_changed == 'true' ||
+        needs.classify-changes.outputs.toolchain_changed == 'true' ||
+        needs.classify-changes.outputs.ci_changed == 'true'
+      }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, macos-14]
+        runner: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace -- --test-threads=1
 
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, verify-source, test-rust-platforms]
-    if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}
+    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms]
+    if: >-
+      ${{
+        always() &&
+        needs.classify-changes.result == 'success' &&
+        needs.verify-source.result == 'success' &&
+        (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
+        (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
+        (needs.classify-changes.outputs.release_required == 'true' ||
+         needs.classify-changes.outputs.ci_changed == 'true')
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -190,7 +234,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: package-thin
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -330,6 +374,7 @@ jobs:
     needs:
       - classify-changes
       - verify-source
+      - test-rust-primary
       - test-rust-platforms
       - build-tools
       - package-runtime
