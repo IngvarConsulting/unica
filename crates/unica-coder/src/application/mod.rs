@@ -1,7 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
-use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::RuntimeJobAction;
 use crate::infrastructure::native_operations::common::{
@@ -385,7 +384,7 @@ fn call_tool(
     tool_contracts::validate_workspace_paths(spec, args, dry_run, &context)?;
     tool_contracts::validate_native_source_set_format(spec, args, dry_run, &context)?;
     let index_report = crate::infrastructure::workspace_index::IndexStartReport::default();
-    if let Some(outcome) = source_sync_dump_guard(spec, args, dry_run) {
+    if let Some(outcome) = source_sync_dump_guard(spec, args, dry_run, cancellation) {
         let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
         return Ok(OperationResult {
             ok: outcome.ok,
@@ -491,17 +490,27 @@ fn source_sync_dump_guard(
     spec: ToolSpec,
     args: &Map<String, Value>,
     dry_run: bool,
+    cancellation: &CancellationToken,
 ) -> Option<AdapterOutcome> {
     if dry_run || !is_source_dump(spec, args) {
         return None;
     }
-    let mode = args.get("mode").and_then(Value::as_str)?;
-    if !matches!(mode, "incremental" | "partial") {
+    if cancellation.is_cancelled() {
+        return Some(AdapterOutcome::cancelled(format!(
+            "{} dump stopped before execution",
+            spec.name
+        )));
+    }
+    let mode = args.get("mode").and_then(Value::as_str);
+    if mode == Some("full") {
         return None;
     }
 
+    let requested_mode = mode
+        .map(|mode| format!("mode={mode}"))
+        .unwrap_or_else(|| "no explicit mode".to_string());
     let message = format!(
-        "applied {mode} dump is disabled because pinned v8-runner writes directly into the source root and cannot report exact processed paths/hashes; use mode=full or wait for the shadow/staging receipt contract in alkoleft/v8-runner-rust#30"
+        "applied dump with {requested_mode} is disabled because only explicit mode=full declares whole-tree replacement and uses staging publication; pinned v8-runner cannot report exact processed paths/hashes or perform a divergence-safe merge; DESIGNER incremental/partial dumps also write directly into the source root, while EDT stages final publication but still lacks that merge receipt; use mode=full or wait for the shadow/staging receipt contract in alkoleft/v8-runner-rust#30"
     );
     Some(AdapterOutcome {
         ok: false,
@@ -926,8 +935,11 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
         .and_then(runtime_event_kind)
 }
 
-fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
-    let source_map = discover_project_source_map(&context.workspace_root);
+fn project_status(
+    context: &WorkspaceContext,
+    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
+    tracked_config_dump_info_warning: Option<String>,
+) -> AdapterOutcome {
     let mut outcome = AdapterOutcome::ok(format!(
         "workspace root: {}; cache root: {}",
         context.workspace_root.display(),
@@ -952,14 +964,17 @@ fn project_status(context: &WorkspaceContext) -> AdapterOutcome {
             .warnings
             .push(format!("source-set discovery failed: {error}")),
     }
-    if let Some(warning) = tracked_config_dump_info_warning(&context.workspace_root) {
+    if let Some(warning) = tracked_config_dump_info_warning {
         outcome.warnings.push(warning);
     }
     outcome
 }
 
-fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
-    match discover_project_source_map(&context.workspace_root) {
+fn project_map(
+    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
+    tracked_config_dump_info_warning: Option<String>,
+) -> AdapterOutcome {
+    match source_map {
         Ok(source_map) => {
             let mut outcome = AdapterOutcome::ok(format!(
                 "project map discovered {} source set(s)",
@@ -968,7 +983,7 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
             if let Some(error) = &source_map.source_selection_error {
                 outcome.warnings.push(error.clone());
             }
-            if let Some(warning) = tracked_config_dump_info_warning(&context.workspace_root) {
+            if let Some(warning) = tracked_config_dump_info_warning {
                 outcome.warnings.push(warning);
             }
             outcome.stdout =
@@ -979,7 +994,7 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
             ok: false,
             summary: "project map discovery failed".to_string(),
             changes: Vec::new(),
-            warnings: Vec::new(),
+            warnings: tracked_config_dump_info_warning.into_iter().collect(),
             errors: vec![error],
             artifacts: Vec::new(),
             stdout: None,
@@ -987,40 +1002,6 @@ fn project_map(context: &WorkspaceContext) -> AdapterOutcome {
             command: None,
         },
     }
-}
-
-fn tracked_config_dump_info_warning(workspace_root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args([
-            "ls-files",
-            "--cached",
-            "-z",
-            "--",
-            "ConfigDumpInfo.xml",
-            ":(glob)**/ConfigDumpInfo.xml",
-        ])
-        .current_dir(workspace_root)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let mut paths = output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.dedup();
-    if paths.is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "ConfigDumpInfo.xml is per-infobase runtime state but is tracked by Git at {}; remove it from the index with `git rm --cached -- <path>` and add ConfigDumpInfo.xml to .gitignore",
-        paths.join(", ")
-    ))
 }
 
 fn source_set_summary(source_map: &crate::domain::project_sources::ProjectSourceMap) -> String {
@@ -1646,7 +1627,11 @@ mod tests {
 
         assert!(!result.ok);
         assert!(result.summary.contains("source sync guard"));
-        assert!(result.errors.join("\n").contains("v8-runner-rust#30"));
+        let errors = result.errors.join("\n");
+        assert!(errors.contains("v8-runner-rust#30"));
+        assert!(errors.contains("DESIGNER"));
+        assert!(errors.contains("EDT"));
+        assert!(errors.contains("divergence-safe merge"));
         assert!(result.changes.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
@@ -1676,6 +1661,66 @@ mod tests {
             assert!(!result.ok, "{tool} must be fail-closed");
             assert!(result.summary.contains("source sync guard"));
         }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn applied_dump_requires_explicit_full_mode_at_every_runtime_entry_point() {
+        let root = test_workspace_root("runtime-explicit-full-dump-guard");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+        }));
+
+        for (tool, include_operation) in [
+            ("unica.build.dump", false),
+            ("unica.runtime.execute", true),
+            ("unica.runtime.job.start", true),
+        ] {
+            let mut args = Map::new();
+            args.insert("cwd".to_string(), json!(root));
+            args.insert("dryRun".to_string(), json!(false));
+            if include_operation {
+                args.insert("operation".to_string(), json!("dump"));
+            }
+
+            let result = app.call_tool(tool, &args).unwrap();
+            assert!(!result.ok, "{tool} must require explicit mode=full");
+            assert!(result.summary.contains("source sync guard"));
+        }
+
+        let mut unknown_mode = Map::new();
+        unknown_mode.insert("cwd".to_string(), json!(root));
+        unknown_mode.insert("dryRun".to_string(), json!(false));
+        unknown_mode.insert("mode".to_string(), json!("future-mode"));
+        let result = app.call_tool("unica.build.dump", &unknown_mode).unwrap();
+        assert!(!result.ok);
+        assert!(result.summary.contains("source sync guard"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelled_applied_dump_wins_over_source_sync_guard() {
+        let root = test_workspace_root("runtime-cancelled-dump-guard");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+        }));
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+        args.insert("dryRun".to_string(), json!(false));
+        args.insert("operation".to_string(), json!("dump"));
+        args.insert("mode".to_string(), json!("incremental"));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = app
+            .call_tool_cancellable("unica.runtime.execute", &args, cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.errors[0].starts_with("cancelled:"));
+        assert!(!result.summary.contains("source sync guard"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2161,7 +2206,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(src.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-        std::fs::write(src.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
+        std::fs::write(src.join("configdumpinfo.xml"), "<ConfigDumpInfo/>").unwrap();
         std::process::Command::new("git")
             .args(["init", "--quiet"])
             .current_dir(&root)
@@ -2172,7 +2217,7 @@ mod tests {
                 "add",
                 "v8project.yaml",
                 "src/Configuration.xml",
-                "src/ConfigDumpInfo.xml",
+                "src/configdumpinfo.xml",
             ])
             .current_dir(&root)
             .status()
@@ -2188,7 +2233,259 @@ mod tests {
         assert!(result
             .warnings
             .iter()
-            .any(|warning| warning.contains("src/ConfigDumpInfo.xml")
+            .any(|warning| warning.contains("src/configdumpinfo.xml")
+                && warning.contains("git rm --cached")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_does_not_warn_for_tracked_external_object_named_config_dump_info() {
+        let root = test_workspace_root("project-map-external-object-named-cdfi");
+        let epf = root.join("epf");
+        let erf = root.join("erf");
+        std::fs::create_dir_all(&epf).unwrap();
+        std::fs::create_dir_all(&erf).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+                "  - name: reports\n",
+                "    type: EXTERNAL_REPORTS\n",
+                "    path: erf\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            epf.join("ConfigDumpInfo.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+        std::fs::write(
+            erf.join("configdumpinfo.xml"),
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "add",
+                "v8project.yaml",
+                "epf/ConfigDumpInfo.xml",
+                "erf/configdumpinfo.xml",
+            ])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(
+            result
+                .stdout
+                .as_deref()
+                .map(|stdout| stdout.matches(r#""sourceFormat": "platform_xml""#).count()),
+            Some(2)
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("git rm --cached")),
+            "valid external descriptor must not be treated as runtime state: {:?}",
+            result.warnings
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_classifies_config_dump_info_from_git_index_not_worktree() {
+        let runtime_index = test_workspace_root("project-map-cdfi-runtime-index");
+        std::fs::create_dir_all(runtime_index.join("epf")).unwrap();
+        std::fs::write(
+            runtime_index.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            runtime_index.join("epf/ConfigDumpInfo.xml"),
+            "<ConfigDumpInfo/>",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&runtime_index)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "v8project.yaml", "epf/ConfigDumpInfo.xml"])
+            .current_dir(&runtime_index)
+            .status()
+            .unwrap();
+        std::fs::write(
+            runtime_index.join("epf/ConfigDumpInfo.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(runtime_index));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.warnings.iter().any(|warning| {
+            warning.contains("epf/ConfigDumpInfo.xml")
+                && warning.contains("git rm --cached")
+                && warning.contains("workspace-relative paths")
+        }));
+
+        let external_index = test_workspace_root("project-map-cdfi-external-index");
+        std::fs::create_dir_all(external_index.join("epf")).unwrap();
+        std::fs::write(
+            external_index.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: processors\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            external_index.join("epf/ConfigDumpInfo.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&external_index)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "v8project.yaml", "epf/ConfigDumpInfo.xml"])
+            .current_dir(&external_index)
+            .status()
+            .unwrap();
+        std::fs::write(
+            external_index.join("epf/ConfigDumpInfo.xml"),
+            "<ConfigDumpInfo/>",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(external_index));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.warnings.iter().all(|warning| {
+            !warning.contains("git rm --cached") && !warning.contains("manual review")
+        }));
+
+        let _ = std::fs::remove_dir_all(runtime_index);
+        let _ = std::fs::remove_dir_all(external_index);
+    }
+
+    #[test]
+    fn project_map_does_not_treat_nested_metadata_object_as_runtime_sidecar() {
+        let root = test_workspace_root("project-map-nested-metadata-named-cdfi");
+        std::fs::create_dir_all(root.join("src/Catalogs")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            root.join("src/Catalogs/ConfigDumpInfo.xml"),
+            "<MetaDataObject><Catalog/></MetaDataObject>",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "add",
+                "v8project.yaml",
+                "src/Configuration.xml",
+                "src/Catalogs/ConfigDumpInfo.xml",
+            ])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert!(result.warnings.iter().all(|warning| {
+            !warning.contains("git rm --cached") && !warning.contains("manual review")
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_map_preserves_tracked_config_dump_info_warning_when_map_fails() {
+        let root = test_workspace_root("project-map-invalid-with-tracked-cdfi");
+        std::fs::write(root.join("v8project.yaml"), "source-set: [").unwrap();
+        std::fs::write(root.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "v8project.yaml", "ConfigDumpInfo.xml"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!(root));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.map", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ConfigDumpInfo.xml")
                 && warning.contains("git rm --cached")));
 
         let _ = std::fs::remove_dir_all(root);

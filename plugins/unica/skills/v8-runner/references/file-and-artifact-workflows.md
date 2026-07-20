@@ -2,12 +2,15 @@
 
 Use `dump` to bring database changes into Git-visible files. Check the worktree before dump and review the diff after dump.
 
-Use `dump` with:
+For an applied `dump`, use:
 
-- `mode=incremental` for ordinary database-to-source synchronization.
 - `mode=full` for first workspace fill or explicit full export.
-- `mode=partial` plus `object` or `objects` when the backend supports scoped export.
 - `sourceSet` or `extension` for scoped export.
+
+`mode=incremental` and `mode=partial` are temporarily available only as
+read-only previews with `dryRun=true`. Applied execution is fail-closed until
+v8-runner publishes through shadow/staging with exact path/hash receipts.
+Partial preview also requires `object` or `objects`.
 
 Use `convert` for Designer/EDT source conversion. It is repository-aware and does not require an infobase.
 

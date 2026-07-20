@@ -114,6 +114,21 @@ class ProductContractTests(unittest.TestCase):
         self.assertFalse((decisions / "0009-remove-script-backed-utility-skills.md").exists())
         self.assertNotIn("Script-backed utility", index)
 
+    def test_application_layer_does_not_spawn_git_directly(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        application_root = (
+            repo_root / "crates" / "unica-coder" / "src" / "application"
+        )
+        offenders = []
+        for path in application_root.rglob("*.rs"):
+            production = path.read_text(encoding="utf-8").split(
+                "#[cfg(test)]\nmod tests", maxsplit=1
+            )[0]
+            if 'std::process::Command::new("git")' in production:
+                offenders.append(str(path.relative_to(repo_root)))
+
+        self.assertEqual(offenders, [])
+
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
             "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],

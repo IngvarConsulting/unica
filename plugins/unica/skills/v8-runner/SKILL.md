@@ -275,11 +275,17 @@ allowed-tools:
 
 Перед `dump` проверь `git status --short`, чтобы не смешать чужие изменения с выгрузкой из базы.
 
-`ConfigDumpInfo.xml` — локальное состояние конкретной ИБ: не добавляй его в
-Git и не используй как XML-исходник. Пока runner не реализует private CDFI,
-точный receipt и shadow publication (alkoleft/v8-runner-rust#30), применяй
-только `mode=full`. Для `incremental` и `partial` Unica разрешает только
-read-only preview (`dryRun=true`) и fail-closed блокирует реальный запуск.
+`ConfigDumpInfo.xml` с корнем `<ConfigDumpInfo>` — platform-generated CDFI sidecar
+и локальное состояние конкретной ИБ: не добавляй его в Git
+и не используй как XML-исходник. Это правило не относится к metadata-файлу
+реального объекта: legitimate metadata descriptor (включая external EPF/ERF)
+с именем `ConfigDumpInfo.xml` remains source и должен храниться в Git. Пока runner не
+реализует private CDFI, точный receipt и divergence-safe publication
+(alkoleft/v8-runner-rust#30), применяй только `mode=full`. Для `incremental` и
+`partial` Unica разрешает только read-only preview (`dryRun=true`) и
+fail-closed блокирует реальный запуск. В DESIGNER эти режимы пишут прямо в
+source root; EDT публикует через staging, но также не возвращает receipt для
+безопасного разрешения divergence.
 
 ### Incremental dump
 

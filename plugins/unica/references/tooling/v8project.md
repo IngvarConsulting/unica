@@ -103,7 +103,7 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 - Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
 - If the config is missing, use `operation=config-init` or ask for the connection string.
 - Prefer `source-set` names over ad hoc source directories.
-- Treat `ConfigDumpInfo.xml` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence.
+- Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
 - Use `execution_timeout` in `v8project.yaml` for long runtime operations; Unica does not expose `timeoutMs` for `unica.runtime.execute`.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
 - When credentials are absent, try only empty-password `Администратор`, then empty-password `Admin`; if both fail, ask the user.

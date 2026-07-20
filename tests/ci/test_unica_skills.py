@@ -1029,6 +1029,62 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
 
+    def test_v8_runner_dump_references_keep_unsafe_modes_preview_only(self) -> None:
+        v8_runner_root = self.skill_root() / "v8-runner"
+        safety_context = re.compile(
+            r"dryRun.{0,8}(?:true|`true`)|preview|read-only|fail-closed|block",
+            re.IGNORECASE | re.DOTALL,
+        )
+        paths = sorted(
+            [*v8_runner_root.rglob("*.md"), *self.reference_root().rglob("*.md")]
+        )
+
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for match in re.finditer(r"mode=(?:incremental|partial)", text):
+                context = text[max(0, match.start() - 240) : match.end() + 240]
+                with self.subTest(
+                    path=path.relative_to(self.repo_root()), mode=match.group(0)
+                ):
+                    self.assertRegex(context, safety_context)
+
+        for path in v8_runner_root.rglob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
+                payload = json.loads(block)
+                arguments = payload.get("params", {}).get("arguments", {})
+                if (
+                    arguments.get("operation") == "dump"
+                    and arguments.get("mode") in {"incremental", "partial"}
+                ):
+                    with self.subTest(
+                        path=path.relative_to(self.repo_root()),
+                        mode=arguments["mode"],
+                    ):
+                        self.assertIs(arguments.get("dryRun"), True)
+
+    def test_config_dump_info_version_is_documented_as_opaque_platform_state(self) -> None:
+        configuration_spec = (
+            self.reference_root() / "specs" / "1c-configuration-spec.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("`configVersion` — непрозрачное значение платформы", configuration_spec)
+        self.assertNotRegex(configuration_spec, r"`configVersion`\s*\|\s*Хеш версии")
+
+    def test_config_dump_info_docs_preserve_same_named_metadata_source(self) -> None:
+        docs = [
+            self.skill_root() / "v8-runner" / "SKILL.md",
+            self.reference_root() / "tooling" / "v8project.md",
+            self.reference_root() / "use-cases" / "metadata-modeling.md",
+        ]
+
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(self.repo_root())):
+                self.assertIn("platform-generated CDFI sidecar", text)
+                self.assertIn("legitimate metadata descriptor", text)
+                self.assertIn("remains source", text)
+
     def test_skills_and_references_do_not_expose_restricted_research_sources(self) -> None:
         forbidden_patterns = [
             r"docs/its",

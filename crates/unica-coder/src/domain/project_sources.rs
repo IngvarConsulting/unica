@@ -1,7 +1,20 @@
 use crate::domain::source_roots::{normalize_contained_source_root, select_default_source_set};
+use roxmltree::Document;
 use serde::Serialize;
 use serde_yaml::Value as YamlValue;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+const MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigDumpInfoXmlKind {
+    RuntimeSidecar,
+    ExternalProcessor,
+    ExternalReport,
+    MetadataDescriptor,
+    Other,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,7 +285,9 @@ fn platform_xml_evidence(
         if let Ok(entries) = std::fs::read_dir(source_root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
+                if path.extension().and_then(|ext| ext.to_str()) == Some("xml")
+                    && !is_config_dump_info_sidecar(&path, kind)
+                {
                     push_existing(&mut evidence, workspace_root, &path);
                 }
             }
@@ -281,6 +296,89 @@ fn platform_xml_evidence(
     evidence.sort();
     evidence.dedup();
     evidence
+}
+
+fn is_config_dump_info_sidecar(path: &Path, kind: SourceSetKind) -> bool {
+    if !has_config_dump_info_filename(path) {
+        return false;
+    }
+    !matches!(
+        (config_dump_info_xml_file_kind(path), kind),
+        (
+            ConfigDumpInfoXmlKind::ExternalProcessor,
+            SourceSetKind::ExternalProcessor
+        ) | (
+            ConfigDumpInfoXmlKind::ExternalReport,
+            SourceSetKind::ExternalReport
+        )
+    )
+}
+
+fn config_dump_info_xml_file_kind(path: &Path) -> ConfigDumpInfoXmlKind {
+    if !has_config_dump_info_filename(path) {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    let Ok(link_metadata) = std::fs::symlink_metadata(path) else {
+        return ConfigDumpInfoXmlKind::Other;
+    };
+    if link_metadata.file_type().is_symlink() || !link_metadata.file_type().is_file() {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return ConfigDumpInfoXmlKind::Other;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return ConfigDumpInfoXmlKind::Other;
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    let mut bytes = Vec::new();
+    if (&mut file)
+        .take(MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES
+    {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    config_dump_info_xml_kind(&bytes)
+}
+
+fn has_config_dump_info_filename(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+}
+
+pub(crate) fn config_dump_info_xml_kind(bytes: &[u8]) -> ConfigDumpInfoXmlKind {
+    if bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    let Ok(xml) = std::str::from_utf8(bytes) else {
+        return ConfigDumpInfoXmlKind::Other;
+    };
+    let Ok(document) = Document::parse(xml.trim_start_matches('\u{feff}')) else {
+        return ConfigDumpInfoXmlKind::Other;
+    };
+    let root = document.root_element();
+    if root.tag_name().name() == "ConfigDumpInfo" {
+        return ConfigDumpInfoXmlKind::RuntimeSidecar;
+    }
+    if root.tag_name().name() != "MetaDataObject" {
+        return ConfigDumpInfoXmlKind::Other;
+    }
+    let has_external_processor = root
+        .children()
+        .any(|node| node.is_element() && node.tag_name().name() == "ExternalDataProcessor");
+    let has_external_report = root
+        .children()
+        .any(|node| node.is_element() && node.tag_name().name() == "ExternalReport");
+    match (has_external_processor, has_external_report) {
+        (true, false) => ConfigDumpInfoXmlKind::ExternalProcessor,
+        (false, true) => ConfigDumpInfoXmlKind::ExternalReport,
+        (false, false) | (true, true) => ConfigDumpInfoXmlKind::MetadataDescriptor,
+    }
 }
 
 fn edt_evidence(workspace_root: &Path, source_root: &Path) -> Vec<String> {
@@ -389,6 +487,7 @@ source-set:
             &root.join("epf/PriceLoader.xml"),
             "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
         );
+        write(&root.join("epf/ConfigDumpInfo.xml"), "<ConfigDumpInfo/>");
 
         let map = discover_project_source_map(&root).unwrap();
 
@@ -406,6 +505,173 @@ source-set:
             SourceSetKind::ExternalProcessor,
             SourceFormat::PlatformXml,
             &["epf/PriceLoader.xml"],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_dump_info_alone_is_not_external_source_format_evidence() {
+        let root = temp_workspace("unica-source-map-external-cdfi-runtime-state");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+  - name: external-reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        write(&root.join("epf/ConfigDumpInfo.xml"), "<ConfigDumpInfo/>");
+        write(&root.join("erf/configdumpinfo.xml"), "<ConfigDumpInfo/>");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-processors",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::Unknown,
+            &[],
+        );
+        assert_source_set(
+            &map,
+            "external-reports",
+            SourceSetKind::ExternalReport,
+            SourceFormat::Unknown,
+            &[],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_object_named_config_dump_info_remains_platform_xml_evidence() {
+        let root = temp_workspace("unica-source-map-external-object-named-cdfi");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+"#,
+        );
+        write(
+            &root.join("epf/ConfigDumpInfo.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-processors",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::PlatformXml,
+            &["epf/ConfigDumpInfo.xml"],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_external_tag_does_not_make_config_dump_info_source_evidence() {
+        let root = temp_workspace("unica-source-map-nested-external-tag-cdfi");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+"#,
+        );
+        write(
+            &root.join("epf/ConfigDumpInfo.xml"),
+            "<MetaDataObject><Properties><ExternalDataProcessor/></Properties></MetaDataObject>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-processors",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::Unknown,
+            &[],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_config_dump_info_is_not_external_source_format_evidence() {
+        let root = temp_workspace("unica-source-map-malformed-external-cdfi");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        write(
+            &root.join("erf/ConfigDumpInfo.xml"),
+            "<<<<<<< ours\n<ConfigDumpInfo/>\n=======\n<ConfigDumpInfo/>\n>>>>>>> theirs",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-reports",
+            SourceSetKind::ExternalReport,
+            SourceFormat::Unknown,
+            &[],
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_config_dump_info_is_not_external_source_format_evidence() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_workspace("unica-source-map-symlinked-external-cdfi");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+"#,
+        );
+        write(
+            &root.join("outside.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+        fs::create_dir_all(root.join("epf")).unwrap();
+        symlink(
+            root.join("outside.xml"),
+            root.join("epf/ConfigDumpInfo.xml"),
+        )
+        .unwrap();
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-processors",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::Unknown,
+            &[],
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -672,15 +938,13 @@ source-set:
             .unwrap_or_else(|| panic!("source set {name} not found in {map:?}"));
         assert_eq!(source_set.kind, kind);
         assert_eq!(source_set.source_format, source_format);
-        for evidence in expected_evidence {
-            assert!(
-                source_set
-                    .format_evidence
-                    .iter()
-                    .any(|actual| actual == evidence),
-                "missing evidence {evidence} in {source_set:?}"
-            );
-        }
+        assert_eq!(
+            source_set.format_evidence,
+            expected_evidence
+                .iter()
+                .map(|evidence| (*evidence).to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     fn temp_workspace(prefix: &str) -> PathBuf {

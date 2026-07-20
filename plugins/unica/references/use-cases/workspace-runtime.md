@@ -42,9 +42,12 @@ source-set path itself has no stronger structural evidence.
 | Sync extension properties | `operation=extensions` |
 
 Applied `mode=incremental|partial` is temporarily fail-closed because the
-pinned runner writes directly to the source root without an exact path/hash
-receipt. Use `dryRun=true` to preview those modes. Keep `ConfigDumpInfo.xml`
-out of Git; it is local per-infobase runtime state rather than source.
+pinned runner has no exact path/hash receipt or divergence-safe merge. DESIGNER
+writes those modes directly to the source root; EDT stages final publication
+but still cannot prove a safe merge. Use `dryRun=true` to preview them. Keep a
+platform-generated CDFI sidecar out of Git; a legitimate metadata descriptor
+(including an external EPF/ERF descriptor) for an object named
+`ConfigDumpInfo` remains source.
 
 ## Related references
 

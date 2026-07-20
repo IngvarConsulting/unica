@@ -102,7 +102,7 @@ Preview отчёта с пустой управляемой формой:
 
 ## Верификация
 
-`unica.erf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. `unica.meta.validate` не использовать: он не принимает root `ExternalReport`. Не создавать `Configuration.xml`, `ConfigDumpInfo.xml` или СКД без запроса.
+`unica.erf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. `unica.meta.validate` не использовать: он не принимает root `ExternalReport`. Не создавать `Configuration.xml`, platform-generated CDFI sidecar или СКД без запроса; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
 Перед реальной сборкой проверить ту же команду с `dryRun: true`. Повторить с `dryRun: false` только если пользователь явно запросил сборку ERF:
 

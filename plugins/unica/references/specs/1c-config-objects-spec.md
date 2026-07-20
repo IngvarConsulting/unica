@@ -18,7 +18,7 @@
 
 ```
 Configuration.xml                  # Корневой файл конфигурации
-ConfigDumpInfo.xml                 # Служебный файл выгрузки
+ConfigDumpInfo.xml                 # Platform-generated CDFI sidecar (не source/Git)
 Catalogs/                          # Справочники
 Documents/                         # Документы
 InformationRegisters/              # Регистры сведений
@@ -63,6 +63,12 @@ WSReferences/                      # WS-ссылки
 XDTOPackages/                      # XDTO-пакеты
 Ext/                               # Расширение конфигурации
 ```
+
+Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
+`<ConfigDumpInfo>` может присутствовать в физической выгрузке платформы, но не
+входит в коллективные исходники и не требуется в чистом checkout. Это не
+относится к legitimate metadata descriptor реального объекта с именем
+`ConfigDumpInfo`, включая external EPF/ERF: такой metadata-файл остаётся исходником.
 
 ### 1.2. Структура каталога объекта метаданных
 

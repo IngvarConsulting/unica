@@ -17,7 +17,7 @@
 
 ```
 Configuration.xml                  # Корневой файл — свойства и состав расширения
-ConfigDumpInfo.xml                 # Служебный файл — версии объектов
+ConfigDumpInfo.xml                 # Platform-generated CDFI sidecar (не хранится в Git)
 Languages/                         # Языки (всегда заимствованные)
 Roles/                             # Роли (собственные)
 Subsystems/                        # Подсистемы (собственные или заимствованные)
@@ -29,6 +29,12 @@ Documents/                         # Документы
 Enums/                             # Перечисления
 ...                                # Другие типы объектов
 ```
+
+Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
+`<ConfigDumpInfo>` показан как часть физической выгрузки. Он связан с конкретной
+ИБ, не является исходником расширения и отсутствует в минимальном Git-visible
+дереве. Legitimate metadata descriptor реального объекта с именем
+`ConfigDumpInfo`, включая external EPF/ERF, остаётся metadata-исходником.
 
 ### Ключевые отличия от конфигурации
 
@@ -183,6 +189,10 @@ Enums/                             # Перечисления
 
 Формат идентичен конфигурации:
 
+Это platform-generated CDFI sidecar конкретной ИБ. Не добавляй его в Git, не
+используй как format evidence и не создавай/не изменяй его средствами Unica.
+Правило не относится к legitimate metadata descriptor одноимённого объекта.
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo"
@@ -191,15 +201,15 @@ Enums/                             # Перечисления
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     format="Hierarchical" version="2.17">
   <ConfigVersions>
-    <Metadata name="Configuration.ИмяРасширения" id="uuid" configVersion="sha1"/>
-    <Metadata name="Language.Русский" id="uuid" configVersion="sha1"/>
-    <Metadata name="Role.Расш1_ОсновнаяРоль" id="uuid" configVersion="sha1"/>
+    <Metadata name="Configuration.ИмяРасширения" id="uuid" configVersion="..."/>
+    <Metadata name="Language.Русский" id="uuid" configVersion="..."/>
+    <Metadata name="Role.Расш1_ОсновнаяРоль" id="uuid" configVersion="..."/>
     <!-- ... все объекты расширения ... -->
   </ConfigVersions>
 </ConfigDumpInfo>
 ```
 
-Включает записи для **всех** объектов расширения (и собственных, и заимствованных). Атрибут `configVersion` — 40-символьный SHA1-хеш версии объекта.
+Включает записи для **всех** объектов расширения (и собственных, и заимствованных). `configVersion` — непрозрачное значение платформы: даже если оно выглядит как 40 шестнадцатеричных символов, его нельзя считать source-хешем или синтезировать вручную.
 
 ---
 
@@ -1209,16 +1219,17 @@ Catalogs/Валюты/
 
 ```
 Configuration.xml                                # Корневой файл
-ConfigDumpInfo.xml                               # Версии объектов
 Languages/
   Русский.xml                                    # Язык (заимствованный)
 ```
+
+Это минимальное Git-visible дерево. Платформа может создать локальный
+`ConfigDumpInfo.xml` при runtime-операции, но файл остаётся untracked.
 
 ### 15.4. Типичное расширение с ролью
 
 ```
 Configuration.xml
-ConfigDumpInfo.xml
 Languages/
   Русский.xml
 Roles/

@@ -17,7 +17,7 @@ reports are handled through external source-sets with `build`, `dump`, and
 - `epf-init` and `erf-init` for make-ready artifact scaffolds inside external
   source-sets, with an optional managed form. These skills call
   `unica.epf.init` or `unica.erf.init`
-  and do not synthesize `Configuration.xml` or `ConfigDumpInfo.xml`.
+  and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
 - `v8-runner` with `unica.runtime.execute` for EPF/ERF external source-set build/dump/make.
 

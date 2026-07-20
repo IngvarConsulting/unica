@@ -102,7 +102,7 @@ Preview обработки с формой:
 
 ## Верификация
 
-`unica.epf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. `unica.meta.validate` не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или `ConfigDumpInfo.xml`.
+`unica.epf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. `unica.meta.validate` не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
 Перед реальной сборкой проверить ту же команду с `dryRun: true`. Повторить с `dryRun: false` только если пользователь явно запросил сборку EPF:
 

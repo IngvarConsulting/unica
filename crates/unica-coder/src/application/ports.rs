@@ -2,10 +2,12 @@ use super::{project_map, project_status, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::DomainEvent;
+use crate::domain::project_sources::discover_project_source_map;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter, RuntimeAdapter,
-    RuntimeJobAdapter, StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter,
+    ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter, RuntimeJobAdapter,
+    StandardsAdapter,
 };
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
@@ -79,8 +81,46 @@ impl ApplicationPorts for DefaultApplicationPorts {
                 spec.mutating,
             )
             .map(HandlerOutcome::plain),
-            ToolHandler::ProjectStatus => Ok(HandlerOutcome::plain(project_status(context))),
-            ToolHandler::ProjectMap => Ok(HandlerOutcome::plain(project_map(context))),
+            ToolHandler::ProjectStatus => {
+                let source_map = discover_project_source_map(&context.workspace_root);
+                if cancellation.is_cancelled() {
+                    return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
+                        "unica.project.status source-set discovery stopped",
+                    )));
+                }
+                let warning = match GitTrackingAdapter::new()
+                    .config_dump_info_warning(context, cancellation)
+                {
+                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
+                    ConfigDumpInfoGitCheck::Cancelled => {
+                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
+                            "unica.project.status Git tracking check stopped",
+                        )));
+                    }
+                };
+                Ok(HandlerOutcome::plain(project_status(
+                    context, source_map, warning,
+                )))
+            }
+            ToolHandler::ProjectMap => {
+                let source_map = discover_project_source_map(&context.workspace_root);
+                if cancellation.is_cancelled() {
+                    return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
+                        "unica.project.map source-set discovery stopped",
+                    )));
+                }
+                let warning = match GitTrackingAdapter::new()
+                    .config_dump_info_warning(context, cancellation)
+                {
+                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
+                    ConfigDumpInfoGitCheck::Cancelled => {
+                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
+                            "unica.project.map Git tracking check stopped",
+                        )));
+                    }
+                };
+                Ok(HandlerOutcome::plain(project_map(source_map, warning)))
+            }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
                     .invoke_cancellable(
