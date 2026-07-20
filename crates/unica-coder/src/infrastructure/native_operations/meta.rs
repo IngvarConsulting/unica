@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use super::common::*;
 use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{
-    cf::*, cfe::*, form::*, interface::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
+    cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
 };
 
 pub(crate) fn fresh_meta_compile_uuid() -> String {

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 use super::{
-    cf, cfe, external, form, help, interface, meta, mxl, role, skd, subsystem, support, template,
+    cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
 };
 
 pub(crate) fn invoke_read(
@@ -20,7 +20,7 @@ pub(crate) fn invoke_read(
         .or_else(|| interface::invoke_read(operation, tool_name, args, context))
         .or_else(|| subsystem::invoke_read(operation, tool_name, args, context))
         .or_else(|| template::invoke_read(operation, tool_name, args, context))
-        .or_else(|| skd::invoke_read(operation, tool_name, args, context))
+        .or_else(|| dcs::invoke_read(operation, tool_name, args, context))
         .or_else(|| mxl::invoke_read(operation, tool_name, args, context))
         .or_else(|| role::invoke_read(operation, tool_name, args, context))
 }
@@ -140,7 +140,7 @@ pub(crate) fn invoke_mutation(
         .or_else(|| interface::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| subsystem::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| template::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| skd::invoke_mutation(operation, tool_name, args, context))
+        .or_else(|| dcs::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| mxl::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| role::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| support::invoke_mutation(operation, tool_name, args, context))

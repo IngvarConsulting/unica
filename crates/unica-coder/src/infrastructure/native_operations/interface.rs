@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
-use super::{cf::*, cfe::*, form::*, meta::*, mxl::*, role::*, skd::*, subsystem::*, template::*};
+use super::{cf::*, cfe::*, dcs::*, form::*, meta::*, mxl::*, role::*, subsystem::*, template::*};
 pub(crate) const INTERFACE_CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
 pub(crate) const INTERFACE_XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";

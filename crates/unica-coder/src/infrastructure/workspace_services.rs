@@ -1470,7 +1470,7 @@ fn invalidates_analyzer(event: &str) -> bool {
             | "CfeChanged"
             | "FormChanged"
             | "RoleChanged"
-            | "SkdChanged"
+            | "DcsChanged"
     )
 }
 

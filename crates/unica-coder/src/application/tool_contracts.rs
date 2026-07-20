@@ -2214,13 +2214,13 @@ mod tests {
     }
 
     #[test]
-    fn skd_info_contract_exposes_raw_query_export() {
-        let skd_info = tools()
+    fn dcs_info_contract_exposes_raw_query_export() {
+        let dcs_info = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.skd.info")
-            .expect("unica.skd.info must be registered");
+            .find(|tool| tool.name == "unica.dcs.info")
+            .expect("unica.dcs.info must be registered");
 
-        let schema = input_schema_for_tool(&skd_info);
+        let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
         assert_eq!(schema["required"], json!(["TemplatePath"]));
@@ -2233,7 +2233,7 @@ mod tests {
         args.insert("Mode".to_string(), json!("query"));
         args.insert("Name".to_string(), json!("Sales"));
         args.insert("Raw".to_string(), json!(true));
-        validate_tool_arguments(skd_info, &args, false).unwrap();
+        validate_tool_arguments(dcs_info, &args, false).unwrap();
     }
 
     #[test]

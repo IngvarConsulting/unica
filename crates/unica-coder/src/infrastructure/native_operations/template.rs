@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::common::*;
-use super::{cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*};
+use super::{cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*};
 pub(crate) fn add_template(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -27,7 +27,7 @@ pub(crate) fn add_template(
             required_string(args, &["templateType", "TemplateType"], "TemplateType")?;
         let (metadata_type, extension) = template_type_info(template_type)?;
         let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(template_name);
-        let set_main_skd = bool_arg(args, &["setMainSKD", "SetMainSKD"]);
+        let set_main_dcs = bool_arg(args, &["setMainSKD", "SetMainSKD"]);
         let mut src_dir_display =
             path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
         let mut src_dir_abs = absolutize(src_dir_display.clone(), &context.cwd);
@@ -130,7 +130,7 @@ pub(crate) fn add_template(
         let mut main_dcs_value = String::new();
         if template_type == "DataCompositionSchema" {
             let (new_text, updated, value) =
-                update_main_data_composition_schema_text(&xml_text, template_name, set_main_skd);
+                update_main_data_composition_schema_text(&xml_text, template_name, set_main_dcs);
             xml_text = new_text;
             main_dcs_updated = updated;
             main_dcs_value = value;
@@ -506,7 +506,7 @@ pub(crate) fn append_metadata_child_text(
 pub(crate) fn update_main_data_composition_schema_text(
     xml_text: &str,
     template_name: &str,
-    set_main_skd: bool,
+    set_main_dcs: bool,
 ) -> (String, bool, String) {
     let Some((object_type, object_start)) = ["ExternalReport", "Report"]
         .iter()
@@ -521,7 +521,7 @@ pub(crate) fn update_main_data_composition_schema_text(
         return (xml_text.to_string(), false, String::new());
     };
     let content = xml_text[content_start..close_start].trim();
-    if !content.is_empty() && !set_main_skd {
+    if !content.is_empty() && !set_main_dcs {
         return (xml_text.to_string(), false, String::new());
     }
     let value = format!("{object_type}.{object_name}.Template.{template_name}");

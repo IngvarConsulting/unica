@@ -1115,42 +1115,42 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.skd.compile",
+            name: "unica.dcs.compile",
             description: "Compile Data Composition Schema XML from JSON DSL.",
             mutating: true,
-            cache_access: cache_access_for("skd-compile", Some(DomainEventKind::SkdChanged)),
+            cache_access: cache_access_for("dcs-compile", Some(DomainEventKind::DcsChanged)),
             handler: ToolHandler::NativeOperation {
-                operation: "skd-compile",
-                event: Some(DomainEventKind::SkdChanged),
+                operation: "dcs-compile",
+                event: Some(DomainEventKind::DcsChanged),
             },
         },
         ToolSpec {
-            name: "unica.skd.edit",
+            name: "unica.dcs.edit",
             description: "Edit Data Composition Schema Template.xml.",
             mutating: true,
-            cache_access: cache_access_for("skd-edit", Some(DomainEventKind::SkdChanged)),
+            cache_access: cache_access_for("dcs-edit", Some(DomainEventKind::DcsChanged)),
             handler: ToolHandler::NativeOperation {
-                operation: "skd-edit",
-                event: Some(DomainEventKind::SkdChanged),
+                operation: "dcs-edit",
+                event: Some(DomainEventKind::DcsChanged),
             },
         },
         ToolSpec {
-            name: "unica.skd.info",
+            name: "unica.dcs.info",
             description: "Inspect Data Composition Schema Template.xml.",
             mutating: false,
-            cache_access: cache_access_for("skd-info", None),
+            cache_access: cache_access_for("dcs-info", None),
             handler: ToolHandler::NativeOperation {
-                operation: "skd-info",
+                operation: "dcs-info",
                 event: None,
             },
         },
         ToolSpec {
-            name: "unica.skd.validate",
+            name: "unica.dcs.validate",
             description: "Validate Data Composition Schema Template.xml.",
             mutating: false,
-            cache_access: cache_access_for("skd-validate", None),
+            cache_access: cache_access_for("dcs-validate", None),
             handler: ToolHandler::NativeOperation {
-                operation: "skd-validate",
+                operation: "dcs-validate",
                 event: None,
             },
         },
@@ -1245,9 +1245,9 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
             reads: &["metadata_graph", "rights_graph"],
             writes: &[],
         }
-    } else if operation.starts_with("skd-") {
+    } else if operation.starts_with("dcs-") {
         CacheAccess {
-            reads: &["metadata_graph", "skd_graph"],
+            reads: &["metadata_graph", "dcs_graph"],
             writes: &[],
         }
     } else if operation.starts_with("mxl-") {
@@ -1284,7 +1284,7 @@ mod tests {
         assert!(names.contains(&"unica.project.status"));
         assert!(names.contains(&"unica.project.map"));
         assert!(names.contains(&"unica.form.validate"));
-        assert!(names.contains(&"unica.skd.edit"));
+        assert!(names.contains(&"unica.dcs.edit"));
         assert!(names.contains(&"unica.mxl.compile"));
         assert!(names.contains(&"unica.role.validate"));
         assert!(names.contains(&"unica.support.edit"));
@@ -1749,10 +1749,10 @@ mod tests {
             "unica.subsystem.validate",
             "unica.template.add",
             "unica.template.remove",
-            "unica.skd.compile",
-            "unica.skd.edit",
-            "unica.skd.info",
-            "unica.skd.validate",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.dcs.info",
+            "unica.dcs.validate",
             "unica.mxl.compile",
             "unica.mxl.decompile",
             "unica.mxl.info",
@@ -1772,7 +1772,7 @@ mod tests {
                 && !tool.name.starts_with("unica.interface.")
                 && !tool.name.starts_with("unica.subsystem.")
                 && !tool.name.starts_with("unica.template.")
-                && !tool.name.starts_with("unica.skd.")
+                && !tool.name.starts_with("unica.dcs.")
                 && !tool.name.starts_with("unica.mxl.")
                 && !tool.name.starts_with("unica.role.")
                 && !tool.name.starts_with("unica.support.")
@@ -1799,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn form_and_skd_tools_route_through_native_handlers() {
+    fn form_and_dcs_tools_route_through_native_handlers() {
         let expected = [
             (
                 "unica.form.add",
@@ -1824,23 +1824,23 @@ mod tests {
             ),
             ("unica.form.validate", "form-validate", None),
             (
-                "unica.skd.compile",
-                "skd-compile",
-                Some(DomainEventKind::SkdChanged),
+                "unica.dcs.compile",
+                "dcs-compile",
+                Some(DomainEventKind::DcsChanged),
             ),
             (
-                "unica.skd.edit",
-                "skd-edit",
-                Some(DomainEventKind::SkdChanged),
+                "unica.dcs.edit",
+                "dcs-edit",
+                Some(DomainEventKind::DcsChanged),
             ),
-            ("unica.skd.info", "skd-info", None),
-            ("unica.skd.validate", "skd-validate", None),
+            ("unica.dcs.info", "dcs-info", None),
+            ("unica.dcs.validate", "dcs-validate", None),
         ];
         for (tool_name, expected_operation, expected_event) in expected {
             let tool = tools()
                 .into_iter()
                 .find(|tool| tool.name == tool_name)
-                .expect("form/SKD tool exists");
+                .expect("form/DCS tool exists");
 
             match tool.handler {
                 ToolHandler::NativeOperation { operation, event } => {
@@ -3094,7 +3094,7 @@ mod tests {
 
     #[test]
     fn source_format_sensitive_descriptors_name_source_paths() {
-        for operation in ["cf-info", "form-edit", "skd-edit", "role-info"] {
+        for operation in ["cf-info", "form-edit", "dcs-edit", "role-info"] {
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
                 !descriptor.source_path_args.is_empty(),

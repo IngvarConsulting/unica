@@ -14,7 +14,7 @@ use super::common::*;
 use super::{
     cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
-pub(crate) struct SkdValidationReporter {
+pub(crate) struct DcsValidationReporter {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
     pub(crate) ok_count: usize,
@@ -24,7 +24,7 @@ pub(crate) struct SkdValidationReporter {
     pub(crate) lines: Vec<String>,
 }
 
-pub(crate) struct SkdValidationRun {
+pub(crate) struct DcsValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
     pub(crate) out_file: Option<PathBuf>,
@@ -33,7 +33,7 @@ pub(crate) struct SkdValidationRun {
     pub(crate) errors: Vec<String>,
 }
 
-impl SkdValidationReporter {
+impl DcsValidationReporter {
     pub(crate) fn new(max_errors: usize, detailed: bool, file_name: &str) -> Self {
         Self {
             errors: 0,
@@ -91,7 +91,7 @@ impl SkdValidationReporter {
     }
 }
 
-pub(crate) fn analyze_skd_info(
+pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
@@ -99,7 +99,7 @@ pub(crate) fn analyze_skd_info(
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
     let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
-        let template_path = resolve_skd_info_path_for_script(args, context)?;
+        let template_path = resolve_dcs_info_path_for_script(args, context)?;
         let resolved_path = template_path
             .canonicalize()
             .unwrap_or_else(|_| template_path.clone());
@@ -119,7 +119,7 @@ pub(crate) fn analyze_skd_info(
 
         match mode {
             "overview" => {
-                skd_info_overview(
+                dcs_info_overview(
                     root,
                     &resolved_path,
                     &text,
@@ -127,36 +127,36 @@ pub(crate) fn analyze_skd_info(
                     NS_SCHEMA,
                     NS_SETTINGS,
                 );
-                skd_info_overview_hints(root, &mut lines, NS_SCHEMA, NS_SETTINGS);
+                dcs_info_overview_hints(root, &mut lines, NS_SCHEMA, NS_SETTINGS);
             }
             "query" => {
                 let name = string_arg(args, &["name", "Name"]);
-                skd_info_query(root, &mut lines, NS_SCHEMA, name)?;
+                dcs_info_query(root, &mut lines, NS_SCHEMA, name)?;
             }
-            "fields" => skd_info_fields(root, &mut lines, NS_SCHEMA),
-            "links" => skd_info_links(root, &mut lines, NS_SCHEMA),
+            "fields" => dcs_info_fields(root, &mut lines, NS_SCHEMA),
+            "links" => dcs_info_links(root, &mut lines, NS_SCHEMA),
             "calculated" => {
                 let name = string_arg(args, &["name", "Name"]);
-                skd_info_calculated(root, &mut lines, NS_SCHEMA, name)?;
+                dcs_info_calculated(root, &mut lines, NS_SCHEMA, name)?;
             }
             "resources" => {
                 let name = string_arg(args, &["name", "Name"]);
-                skd_info_resources(root, &mut lines, NS_SCHEMA, name)?;
+                dcs_info_resources(root, &mut lines, NS_SCHEMA, name)?;
             }
             "params" => {
-                skd_info_params(root, &mut lines, NS_SCHEMA);
+                dcs_info_params(root, &mut lines, NS_SCHEMA);
             }
-            "variant" => skd_info_variant(root, &mut lines, NS_SCHEMA, NS_SETTINGS),
-            "templates" => skd_info_templates(root, &mut lines, NS_SCHEMA),
+            "variant" => dcs_info_variant(root, &mut lines, NS_SCHEMA, NS_SETTINGS),
+            "templates" => dcs_info_templates(root, &mut lines, NS_SCHEMA),
             "trace" => {
                 let name = string_arg(args, &["name", "Name"]).unwrap_or("");
                 if name.is_empty() {
                     return Err("Trace mode requires -Name <field_name_or_title>".to_string());
                 }
-                skd_info_trace(root, &mut lines, NS_SCHEMA, name)?;
+                dcs_info_trace(root, &mut lines, NS_SCHEMA, name)?;
             }
             "full" => {
-                skd_info_full(
+                dcs_info_full(
                     root,
                     &resolved_path,
                     &text,
@@ -222,7 +222,7 @@ pub(crate) fn analyze_skd_info(
             }
             AdapterOutcome {
                 ok: true,
-                summary: "unica.skd.info completed with native DCS inspector".to_string(),
+                summary: "unica.dcs.info completed with native DCS inspector".to_string(),
                 changes: Vec::new(),
                 warnings: Vec::new(),
                 errors: Vec::new(),
@@ -234,7 +234,7 @@ pub(crate) fn analyze_skd_info(
         }
         Err(error) => AdapterOutcome {
             ok: false,
-            summary: "unica.skd.info failed in native DCS inspector".to_string(),
+            summary: "unica.dcs.info failed in native DCS inspector".to_string(),
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![error.clone()],
@@ -246,7 +246,7 @@ pub(crate) fn analyze_skd_info(
     }
 }
 
-pub(crate) fn skd_info_overview(
+pub(crate) fn dcs_info_overview(
     root: roxmltree::Node<'_, '_>,
     resolved_path: &Path,
     text: &str,
@@ -254,7 +254,7 @@ pub(crate) fn skd_info_overview(
     ns_schema: &str,
     ns_settings: &str,
 ) {
-    let template_name = skd_info_template_name(resolved_path);
+    let template_name = dcs_info_template_name(resolved_path);
     let total_xml_lines = text.lines().count();
     lines.push(format!(
         "=== DCS: {template_name} ({total_xml_lines} lines) ==="
@@ -265,16 +265,16 @@ pub(crate) fn skd_info_overview(
     ));
     lines.push(String::new());
 
-    let sources = skd_children(root, "dataSource", ns_schema)
+    let sources = dcs_children(root, "dataSource", ns_schema)
         .into_iter()
         .map(|source| {
             format!(
                 "{} ({})",
-                skd_child(source, "name", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(source, "name", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default(),
-                skd_child(source, "dataSourceType", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(source, "dataSourceType", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default()
             )
         })
@@ -283,22 +283,22 @@ pub(crate) fn skd_info_overview(
     lines.push(String::new());
 
     lines.push("Datasets:".to_string());
-    for data_set in skd_children(root, "dataSet", ns_schema) {
-        skd_info_dataset_overview(data_set, lines, ns_schema, "  ");
+    for data_set in dcs_children(root, "dataSet", ns_schema) {
+        dcs_info_dataset_overview(data_set, lines, ns_schema, "  ");
     }
 
-    let links = skd_children(root, "dataSetLink", ns_schema);
+    let links = dcs_children(root, "dataSetLink", ns_schema);
     if !links.is_empty() {
         let mut link_pairs = BTreeMap::<String, usize>::new();
         let mut ordered = Vec::<String>::new();
         for link in links {
             let key = format!(
                 "{} -> {}",
-                skd_child(link, "sourceDataSet", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(link, "sourceDataSet", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default(),
-                skd_child(link, "destinationDataSet", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(link, "destinationDataSet", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default()
             );
             if !link_pairs.contains_key(&key) {
@@ -320,22 +320,22 @@ pub(crate) fn skd_info_overview(
         lines.push(format!("Links: {}", link_strs.join(", ")));
     }
 
-    let calculated = skd_children(root, "calculatedField", ns_schema);
+    let calculated = dcs_children(root, "calculatedField", ns_schema);
     if !calculated.is_empty() {
         lines.push(format!("Calculated: {}", calculated.len()));
     }
 
-    let totals = skd_children(root, "totalField", ns_schema);
+    let totals = dcs_children(root, "totalField", ns_schema);
     if !totals.is_empty() {
         let mut unique = HashSet::<String>::new();
         let mut has_grouped = false;
         for total in &totals {
             unique.insert(
-                skd_child(*total, "dataPath", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(*total, "dataPath", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default(),
             );
-            if skd_child(*total, "group", ns_schema).is_some() {
+            if dcs_child(*total, "group", ns_schema).is_some() {
                 has_grouped = true;
             }
         }
@@ -355,12 +355,12 @@ pub(crate) fn skd_info_overview(
         }
     }
 
-    let templates = skd_children(root, "template", ns_schema);
+    let templates = dcs_children(root, "template", ns_schema);
     if !templates.is_empty() {
-        let field_templates = skd_children(root, "fieldTemplate", ns_schema);
-        let group_count = skd_children(root, "groupTemplate", ns_schema).len()
-            + skd_children(root, "groupHeaderTemplate", ns_schema).len()
-            + skd_children(root, "groupFooterTemplate", ns_schema).len();
+        let field_templates = dcs_children(root, "fieldTemplate", ns_schema);
+        let group_count = dcs_children(root, "groupTemplate", ns_schema).len()
+            + dcs_children(root, "groupHeaderTemplate", ns_schema).len()
+            + dcs_children(root, "groupFooterTemplate", ns_schema).len();
         let mut parts = Vec::new();
         if !field_templates.is_empty() {
             parts.push(format!("{} field", field_templates.len()));
@@ -379,18 +379,18 @@ pub(crate) fn skd_info_overview(
         }
     }
 
-    let params = skd_children(root, "parameter", ns_schema);
+    let params = dcs_children(root, "parameter", ns_schema);
     if params.is_empty() {
         lines.push("Params: (none)".to_string());
     } else {
         let mut visible_names = Vec::new();
         let mut hidden_count = 0usize;
         for param in &params {
-            let name = skd_child(*param, "name", ns_schema)
-                .map(skd_text_of)
+            let name = dcs_child(*param, "name", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
-            let hidden = skd_child(*param, "useRestriction", ns_schema)
-                .map(skd_text_of)
+            let hidden = dcs_child(*param, "useRestriction", ns_schema)
+                .map(dcs_text_of)
                 .is_some_and(|value| value == "true");
             if hidden {
                 hidden_count += 1;
@@ -415,28 +415,28 @@ pub(crate) fn skd_info_overview(
     }
 
     lines.push(String::new());
-    let variants = skd_children(root, "settingsVariant", ns_schema);
+    let variants = dcs_children(root, "settingsVariant", ns_schema);
     if !variants.is_empty() {
         lines.push("Variants:".to_string());
         for (index, variant) in variants.iter().enumerate() {
-            let name = skd_child(*variant, "name", ns_settings)
-                .map(skd_text_of)
+            let name = dcs_child(*variant, "name", ns_settings)
+                .map(dcs_text_of)
                 .unwrap_or_default();
-            let presentation = skd_child(*variant, "presentation", ns_settings)
-                .map(skd_info_multilang_or_inner_text)
+            let presentation = dcs_child(*variant, "presentation", ns_settings)
+                .map(dcs_info_multilang_or_inner_text)
                 .unwrap_or_default();
             let presentation_str = if presentation.is_empty() {
                 String::new()
             } else {
                 format!("  \"{presentation}\"")
             };
-            let settings = skd_child(*variant, "settings", ns_settings);
+            let settings = dcs_child(*variant, "settings", ns_settings);
             let mut struct_items = Vec::new();
             let mut filter_count = 0usize;
             if let Some(settings) = settings {
-                for item in skd_children(settings, "item", ns_settings) {
-                    let item_type = skd_info_structure_item_type(item);
-                    let group_fields = skd_info_group_fields(item, ns_settings);
+                for item in dcs_children(settings, "item", ns_settings) {
+                    let item_type = dcs_info_structure_item_type(item);
+                    let group_fields = dcs_info_group_fields(item, ns_settings);
                     let group = if group_fields.is_empty() {
                         "(detail)".to_string()
                     } else {
@@ -444,8 +444,8 @@ pub(crate) fn skd_info_overview(
                     };
                     struct_items.push(format!("{item_type}{group}"));
                 }
-                if let Some(filter) = skd_child(settings, "filter", ns_settings) {
-                    filter_count = skd_children(filter, "item", ns_settings).len();
+                if let Some(filter) = dcs_child(settings, "filter", ns_settings) {
+                    filter_count = dcs_children(filter, "item", ns_settings).len();
                 }
             }
             let struct_str = if struct_items.is_empty() {
@@ -466,29 +466,29 @@ pub(crate) fn skd_info_overview(
     }
 }
 
-pub(crate) fn skd_info_dataset_overview(
+pub(crate) fn dcs_info_dataset_overview(
     data_set: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
     indent: &str,
 ) {
-    let ds_type = skd_info_dataset_type(data_set);
-    let name = skd_child(data_set, "name", ns_schema)
-        .map(skd_text_of)
+    let ds_type = dcs_info_dataset_type(data_set);
+    let name = dcs_child(data_set, "name", ns_schema)
+        .map(dcs_text_of)
         .unwrap_or_default();
-    let field_count = skd_children(data_set, "field", ns_schema).len();
+    let field_count = dcs_children(data_set, "field", ns_schema).len();
     match ds_type.as_str() {
         "Query" => {
-            let query_lines = skd_child(data_set, "query", ns_schema)
-                .map(|node| skd_inner_text(node).split('\n').count())
+            let query_lines = dcs_child(data_set, "query", ns_schema)
+                .map(|node| dcs_inner_text(node).split('\n').count())
                 .unwrap_or(0);
             lines.push(format!(
                 "{indent}[Query]  {name}   {field_count} fields, query {query_lines} lines"
             ));
         }
         "Object" => {
-            let obj_str = skd_child(data_set, "objectName", ns_schema)
-                .map(skd_text_of)
+            let obj_str = dcs_child(data_set, "objectName", ns_schema)
+                .map(dcs_text_of)
                 .filter(|value| !value.is_empty())
                 .map(|value| format!("  objectName={value}"))
                 .unwrap_or_default();
@@ -498,23 +498,23 @@ pub(crate) fn skd_info_dataset_overview(
         }
         "Union" => {
             lines.push(format!("{indent}[Union]  {name}  {field_count} fields"));
-            for sub_ds in skd_children(data_set, "item", ns_schema) {
-                let sub_type = skd_info_dataset_type(sub_ds);
-                let sub_name = skd_child(sub_ds, "name", ns_schema)
-                    .map(skd_text_of)
+            for sub_ds in dcs_children(data_set, "item", ns_schema) {
+                let sub_type = dcs_info_dataset_type(sub_ds);
+                let sub_name = dcs_child(sub_ds, "name", ns_schema)
+                    .map(dcs_text_of)
                     .filter(|value| !value.is_empty())
                     .unwrap_or_else(|| "?".to_string());
-                let sub_fields = skd_children(sub_ds, "field", ns_schema).len();
+                let sub_fields = dcs_children(sub_ds, "field", ns_schema).len();
                 if sub_type == "Query" {
-                    let query_lines = skd_child(sub_ds, "query", ns_schema)
-                        .map(|node| skd_inner_text(node).split('\n').count())
+                    let query_lines = dcs_child(sub_ds, "query", ns_schema)
+                        .map(|node| dcs_inner_text(node).split('\n').count())
                         .unwrap_or(0);
                     lines.push(format!(
                         "    ├─ [Query] {sub_name}   {sub_fields} fields, query {query_lines} lines"
                     ));
                 } else if sub_type == "Object" {
-                    let obj_str = skd_child(sub_ds, "objectName", ns_schema)
-                        .map(skd_text_of)
+                    let obj_str = dcs_child(sub_ds, "objectName", ns_schema)
+                        .map(dcs_text_of)
                         .filter(|value| !value.is_empty())
                         .map(|value| format!("  objectName={value}"))
                         .unwrap_or_default();
@@ -532,7 +532,7 @@ pub(crate) fn skd_info_dataset_overview(
     }
 }
 
-pub(crate) fn skd_info_overview_hints(
+pub(crate) fn dcs_info_overview_hints(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
@@ -541,19 +541,19 @@ pub(crate) fn skd_info_overview_hints(
     lines.push(String::new());
     let mut hints = Vec::<String>::new();
     let mut query_names = Vec::<String>::new();
-    for data_set in skd_children(root, "dataSet", ns_schema) {
-        if skd_info_dataset_type(data_set) == "Query" {
+    for data_set in dcs_children(root, "dataSet", ns_schema) {
+        if dcs_info_dataset_type(data_set) == "Query" {
             query_names.push(
-                skd_child(data_set, "name", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(data_set, "name", ns_schema)
+                    .map(dcs_text_of)
                     .unwrap_or_default(),
             );
-        } else if skd_info_dataset_type(data_set) == "Union" {
-            for sub_ds in skd_children(data_set, "item", ns_schema) {
-                if skd_info_dataset_type(sub_ds) == "Query" {
+        } else if dcs_info_dataset_type(data_set) == "Union" {
+            for sub_ds in dcs_children(data_set, "item", ns_schema) {
+                if dcs_info_dataset_type(sub_ds) == "Query" {
                     query_names.push(
-                        skd_child(sub_ds, "name", ns_schema)
-                            .map(skd_text_of)
+                        dcs_child(sub_ds, "name", ns_schema)
+                            .map(dcs_text_of)
                             .unwrap_or_default(),
                     );
                 }
@@ -569,31 +569,31 @@ pub(crate) fn skd_info_overview_hints(
         ));
     }
     hints.push("-Mode fields            field tables by dataset".to_string());
-    let links = skd_children(root, "dataSetLink", ns_schema);
+    let links = dcs_children(root, "dataSetLink", ns_schema);
     if !links.is_empty() {
         hints.push(format!(
             "-Mode links             dataset connections ({})",
             links.len()
         ));
     }
-    let calculated = skd_children(root, "calculatedField", ns_schema);
+    let calculated = dcs_children(root, "calculatedField", ns_schema);
     if !calculated.is_empty() {
         hints.push(format!(
             "-Mode calculated        calculated field expressions ({})",
             calculated.len()
         ));
     }
-    let totals = skd_children(root, "totalField", ns_schema);
+    let totals = dcs_children(root, "totalField", ns_schema);
     if !totals.is_empty() {
         hints.push(format!(
             "-Mode resources         resource aggregation ({})",
             totals.len()
         ));
     }
-    if !skd_children(root, "parameter", ns_schema).is_empty() {
+    if !dcs_children(root, "parameter", ns_schema).is_empty() {
         hints.push("-Mode params            parameter details".to_string());
     }
-    let variants = skd_children(root, "settingsVariant", ns_schema);
+    let variants = dcs_children(root, "settingsVariant", ns_schema);
     if variants.len() == 1 {
         hints.push("-Mode variant           variant structure".to_string());
     } else if variants.len() > 1 {
@@ -602,7 +602,7 @@ pub(crate) fn skd_info_overview_hints(
             variants.len()
         ));
     }
-    if !skd_children(root, "template", ns_schema).is_empty() {
+    if !dcs_children(root, "template", ns_schema).is_empty() {
         hints.push("-Mode templates         template bindings and expressions".to_string());
     }
     let _ = ns_settings;
@@ -614,7 +614,7 @@ pub(crate) fn skd_info_overview_hints(
     }
 }
 
-pub(crate) fn skd_info_query(
+pub(crate) fn dcs_info_query(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
@@ -622,11 +622,11 @@ pub(crate) fn skd_info_query(
 ) -> Result<(), String> {
     let mut target = None;
     if let Some(name) = name.filter(|value| !value.is_empty()) {
-        for data_set in skd_children(root, "dataSet", ns_schema) {
-            if skd_info_dataset_type(data_set) == "Union" {
-                for sub_ds in skd_children(data_set, "item", ns_schema) {
-                    let ds_name = skd_child(sub_ds, "name", ns_schema)
-                        .map(skd_text_of)
+        for data_set in dcs_children(root, "dataSet", ns_schema) {
+            if dcs_info_dataset_type(data_set) == "Union" {
+                for sub_ds in dcs_children(data_set, "item", ns_schema) {
+                    let ds_name = dcs_child(sub_ds, "name", ns_schema)
+                        .map(dcs_text_of)
                         .unwrap_or_default();
                     if ds_name == name {
                         target = Some(sub_ds);
@@ -638,12 +638,12 @@ pub(crate) fn skd_info_query(
                 break;
             }
         }
-        for data_set in skd_children(root, "dataSet", ns_schema) {
+        for data_set in dcs_children(root, "dataSet", ns_schema) {
             if target.is_some() {
                 break;
             }
-            let ds_name = skd_child(data_set, "name", ns_schema)
-                .map(skd_text_of)
+            let ds_name = dcs_child(data_set, "name", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
             if ds_name == name {
                 target = Some(data_set);
@@ -654,14 +654,14 @@ pub(crate) fn skd_info_query(
             return Err(format!("Dataset '{name}' not found"));
         }
     } else {
-        for data_set in skd_children(root, "dataSet", ns_schema) {
-            if skd_info_dataset_type(data_set) == "Query" {
+        for data_set in dcs_children(root, "dataSet", ns_schema) {
+            if dcs_info_dataset_type(data_set) == "Query" {
                 target = Some(data_set);
                 break;
             }
-            if skd_info_dataset_type(data_set) == "Union" {
-                for sub_ds in skd_children(data_set, "item", ns_schema) {
-                    if skd_info_dataset_type(sub_ds) == "Query" {
+            if dcs_info_dataset_type(data_set) == "Union" {
+                for sub_ds in dcs_children(data_set, "item", ns_schema) {
+                    if dcs_info_dataset_type(sub_ds) == "Query" {
                         target = Some(sub_ds);
                         break;
                     }
@@ -675,14 +675,14 @@ pub(crate) fn skd_info_query(
     let Some(target) = target else {
         return Err("No Query dataset found".to_string());
     };
-    if skd_child(target, "query", ns_schema).is_none() {
-        if skd_info_dataset_type(target) == "Union" {
-            let sub_names = skd_children(target, "item", ns_schema)
+    if dcs_child(target, "query", ns_schema).is_none() {
+        if dcs_info_dataset_type(target) == "Union" {
+            let sub_names = dcs_children(target, "item", ns_schema)
                 .into_iter()
-                .filter_map(|sub_ds| skd_child(sub_ds, "name", ns_schema).map(skd_text_of))
+                .filter_map(|sub_ds| dcs_child(sub_ds, "name", ns_schema).map(dcs_text_of))
                 .collect::<Vec<_>>();
-            let ds_name = skd_child(target, "name", ns_schema)
-                .map(skd_text_of)
+            let ds_name = dcs_child(target, "name", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
             return Err(format!(
                 "Dataset '{ds_name}' is a Union. Specify nested: {}",
@@ -691,11 +691,11 @@ pub(crate) fn skd_info_query(
         }
         return Err("Dataset has no query element".to_string());
     }
-    let query = skd_child(target, "query", ns_schema)
-        .map(skd_inner_text)
+    let query = dcs_child(target, "query", ns_schema)
+        .map(dcs_inner_text)
         .unwrap_or_default();
-    let name = skd_child(target, "name", ns_schema)
-        .map(skd_text_of)
+    let name = dcs_child(target, "name", ns_schema)
+        .map(dcs_text_of)
         .unwrap_or_default();
     lines.push(format!(
         "=== Query: {name} ({} lines) ===",
@@ -708,17 +708,17 @@ pub(crate) fn skd_info_query(
     Ok(())
 }
 
-pub(crate) fn skd_info_fields(
+pub(crate) fn dcs_info_fields(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
 ) {
     lines.push("=== Fields map ===".to_string());
-    for data_set in skd_children(root, "dataSet", ns_schema) {
-        skd_info_field_map(data_set, lines, ns_schema, "");
-        if skd_info_dataset_type(data_set) == "Union" {
-            for sub_ds in skd_children(data_set, "item", ns_schema) {
-                skd_info_field_map(sub_ds, lines, ns_schema, "  ");
+    for data_set in dcs_children(root, "dataSet", ns_schema) {
+        dcs_info_field_map(data_set, lines, ns_schema, "");
+        if dcs_info_dataset_type(data_set) == "Union" {
+            for sub_ds in dcs_children(data_set, "item", ns_schema) {
+                dcs_info_field_map(sub_ds, lines, ns_schema, "  ");
             }
         }
     }
@@ -726,18 +726,18 @@ pub(crate) fn skd_info_fields(
     lines.push("Use -Name <field> for details.".to_string());
 }
 
-pub(crate) fn skd_info_field_map(
+pub(crate) fn dcs_info_field_map(
     data_set: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
     indent: &str,
 ) {
-    let fields = skd_children(data_set, "field", ns_schema)
+    let fields = dcs_children(data_set, "field", ns_schema)
         .into_iter()
-        .filter_map(|field| skd_child(field, "dataPath", ns_schema).map(skd_text_of))
+        .filter_map(|field| dcs_child(field, "dataPath", ns_schema).map(dcs_text_of))
         .collect::<Vec<_>>();
-    let name = skd_child(data_set, "name", ns_schema)
-        .map(skd_text_of)
+    let name = dcs_child(data_set, "name", ns_schema)
+        .map(dcs_text_of)
         .unwrap_or_default();
     let mut name_list = fields.join(", ");
     if name_list.chars().count() > 100 {
@@ -745,17 +745,17 @@ pub(crate) fn skd_info_field_map(
     }
     lines.push(format!(
         "{indent}{name} [{}] ({}): {name_list}",
-        skd_info_dataset_type(data_set),
+        dcs_info_dataset_type(data_set),
         fields.len()
     ));
 }
 
-pub(crate) fn skd_info_links(
+pub(crate) fn dcs_info_links(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
 ) {
-    let links = skd_children(root, "dataSetLink", ns_schema);
+    let links = dcs_children(root, "dataSetLink", ns_schema);
     if links.is_empty() {
         lines.push("(no links)".to_string());
     } else {
@@ -763,21 +763,21 @@ pub(crate) fn skd_info_links(
     }
 }
 
-pub(crate) fn skd_info_calculated(
+pub(crate) fn dcs_info_calculated(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
     name: Option<&str>,
 ) -> Result<(), String> {
-    let calculated = skd_children(root, "calculatedField", ns_schema);
+    let calculated = dcs_children(root, "calculatedField", ns_schema);
     if calculated.is_empty() {
         lines.push("(no calculated fields)".to_string());
         return Ok(());
     }
     if let Some(name) = name.filter(|value| !value.is_empty()) {
         for field in calculated {
-            let path = skd_child(field, "dataPath", ns_schema)
-                .map(skd_text_of)
+            let path = dcs_child(field, "dataPath", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
             if path != name {
                 continue;
@@ -785,23 +785,23 @@ pub(crate) fn skd_info_calculated(
             lines.push(format!("=== Calculated: {path} ==="));
             lines.push(String::new());
             lines.push("Expression:".to_string());
-            let expression = skd_child(field, "expression", ns_schema)
-                .map(skd_all_text)
+            let expression = dcs_child(field, "expression", ns_schema)
+                .map(dcs_all_text)
                 .unwrap_or_default();
             for line in expression.split('\n') {
                 lines.push(format!("  {}", line.trim_end()));
             }
-            if let Some(title) = skd_child(field, "title", ns_schema)
-                .map(skd_info_multilang_or_inner_text)
+            if let Some(title) = dcs_child(field, "title", ns_schema)
+                .map(dcs_info_multilang_or_inner_text)
                 .filter(|value| !value.is_empty())
             {
                 lines.push(format!("Title: {title}"));
             }
-            if let Some(restriction) = skd_child(field, "useRestriction", ns_schema) {
+            if let Some(restriction) = dcs_child(field, "useRestriction", ns_schema) {
                 let parts = restriction
                     .children()
                     .filter(|child| child.is_element())
-                    .filter(|child| skd_text_of(*child) == "true")
+                    .filter(|child| dcs_text_of(*child) == "true")
                     .map(|child| child.tag_name().name().to_string())
                     .collect::<Vec<_>>();
                 if !parts.is_empty() {
@@ -815,11 +815,11 @@ pub(crate) fn skd_info_calculated(
 
     lines.push(format!("=== Calculated fields ({}) ===", calculated.len()));
     for field in calculated {
-        let path = skd_child(field, "dataPath", ns_schema)
-            .map(skd_text_of)
+        let path = dcs_child(field, "dataPath", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
-        let title = skd_child(field, "title", ns_schema)
-            .map(skd_info_multilang_or_inner_text)
+        let title = dcs_child(field, "title", ns_schema)
+            .map(dcs_info_multilang_or_inner_text)
             .unwrap_or_default();
         let title_str = if !title.is_empty() && title != path {
             format!("  \"{title}\"")
@@ -833,13 +833,13 @@ pub(crate) fn skd_info_calculated(
     Ok(())
 }
 
-pub(crate) fn skd_info_resources(
+pub(crate) fn dcs_info_resources(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
     name: Option<&str>,
 ) -> Result<(), String> {
-    let totals = skd_children(root, "totalField", ns_schema);
+    let totals = dcs_children(root, "totalField", ns_schema);
     if totals.is_empty() {
         lines.push("(no resources)".to_string());
         return Ok(());
@@ -848,8 +848,8 @@ pub(crate) fn skd_info_resources(
         let matched = totals
             .into_iter()
             .filter(|total| {
-                skd_child(*total, "dataPath", ns_schema)
-                    .map(skd_text_of)
+                dcs_child(*total, "dataPath", ns_schema)
+                    .map(dcs_text_of)
                     .is_some_and(|path| path == name)
             })
             .collect::<Vec<_>>();
@@ -859,11 +859,11 @@ pub(crate) fn skd_info_resources(
         lines.push(format!("=== Resource: {name} ==="));
         lines.push(String::new());
         for total in matched {
-            let expression = skd_child(total, "expression", ns_schema)
-                .map(skd_text_of)
+            let expression = dcs_child(total, "expression", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
-            let group = skd_child(total, "group", ns_schema)
-                .map(skd_text_of)
+            let group = dcs_child(total, "group", ns_schema)
+                .map(dcs_text_of)
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "(overall)".to_string());
             lines.push(format!("  [{group}] {expression}"));
@@ -875,13 +875,13 @@ pub(crate) fn skd_info_resources(
     let mut ordered = Vec::<String>::new();
     let mut has_group = BTreeMap::<String, bool>::new();
     for total in totals {
-        let path = skd_child(total, "dataPath", ns_schema)
-            .map(skd_text_of)
+        let path = dcs_child(total, "dataPath", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
         if !has_group.contains_key(&path) {
             ordered.push(path.clone());
         }
-        if skd_child(total, "group", ns_schema).is_some() {
+        if dcs_child(total, "group", ns_schema).is_some() {
             has_group.insert(path, true);
         } else {
             has_group.entry(path).or_insert(false);
@@ -902,31 +902,31 @@ pub(crate) fn skd_info_resources(
     Ok(())
 }
 
-pub(crate) fn skd_info_params(
+pub(crate) fn dcs_info_params(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
 ) {
-    let params = skd_children(root, "parameter", ns_schema);
+    let params = dcs_children(root, "parameter", ns_schema);
     lines.push(format!("=== Parameters ({}) ===", params.len()));
     lines.push("  Name                            Type                   Default          Visible  Expression".to_string());
     for param in params {
-        let name = skd_child(param, "name", ns_schema)
-            .map(skd_text_of)
+        let name = dcs_child(param, "name", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
-        let type_name = skd_child(param, "valueType", ns_schema)
-            .map(skd_info_compact_type)
+        let type_name = dcs_child(param, "valueType", ns_schema)
+            .map(dcs_info_compact_type)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "-".to_string());
-        let default = skd_child(param, "value", ns_schema)
-            .map(skd_info_param_default)
+        let default = dcs_child(param, "value", ns_schema)
+            .map(dcs_info_param_default)
             .unwrap_or_else(|| "-".to_string());
-        let visible = skd_child(param, "useRestriction", ns_schema)
-            .map(skd_text_of)
+        let visible = dcs_child(param, "useRestriction", ns_schema)
+            .map(dcs_text_of)
             .map(|value| if value == "true" { "hidden" } else { "yes" })
             .unwrap_or("yes");
-        let expression = skd_child(param, "expression", ns_schema)
-            .map(skd_all_text)
+        let expression = dcs_child(param, "expression", ns_schema)
+            .map(dcs_all_text)
             .map(|value| {
                 if value.is_empty() {
                     "-".to_string()
@@ -935,8 +935,8 @@ pub(crate) fn skd_info_params(
                 }
             })
             .unwrap_or_else(|| "-".to_string());
-        let no_field = skd_child(param, "availableAsField", ns_schema)
-            .map(skd_text_of)
+        let no_field = dcs_child(param, "availableAsField", ns_schema)
+            .map(dcs_text_of)
             .is_some_and(|value| value == "false");
         let suffix = if no_field { " [noField]" } else { "" };
         lines.push(format!(
@@ -946,38 +946,38 @@ pub(crate) fn skd_info_params(
     }
 }
 
-pub(crate) fn skd_info_variant(
+pub(crate) fn dcs_info_variant(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
     ns_settings: &str,
 ) {
-    let variants = skd_children(root, "settingsVariant", ns_schema);
+    let variants = dcs_children(root, "settingsVariant", ns_schema);
     if variants.is_empty() {
         lines.push("=== Variants: (none) ===".to_string());
         return;
     }
     lines.push(format!("=== Variants ({}) ===", variants.len()));
     for (index, variant) in variants.iter().enumerate() {
-        let name = skd_child(*variant, "name", ns_settings)
-            .map(skd_text_of)
+        let name = dcs_child(*variant, "name", ns_settings)
+            .map(dcs_text_of)
             .unwrap_or_default();
-        let presentation = skd_child(*variant, "presentation", ns_settings)
-            .map(skd_info_multilang_or_inner_text)
+        let presentation = dcs_child(*variant, "presentation", ns_settings)
+            .map(dcs_info_multilang_or_inner_text)
             .unwrap_or_default();
         let presentation_str = if presentation.is_empty() {
             String::new()
         } else {
             format!("  \"{presentation}\"")
         };
-        let settings = skd_child(*variant, "settings", ns_settings);
+        let settings = dcs_child(*variant, "settings", ns_settings);
         let mut struct_items = Vec::new();
         let mut filter_count = 0usize;
         let mut selection = Vec::new();
         if let Some(settings) = settings {
-            for item in skd_children(settings, "item", ns_settings) {
-                let item_type = skd_info_structure_item_type(item);
-                let group_fields = skd_info_group_fields(item, ns_settings);
+            for item in dcs_children(settings, "item", ns_settings) {
+                let item_type = dcs_info_structure_item_type(item);
+                let group_fields = dcs_info_group_fields(item, ns_settings);
                 let group = if group_fields.is_empty() {
                     "(detail)".to_string()
                 } else {
@@ -1007,10 +1007,10 @@ pub(crate) fn skd_info_variant(
                 }
                 struct_items = compact;
             }
-            if let Some(filter) = skd_child(settings, "filter", ns_settings) {
-                filter_count = skd_children(filter, "item", ns_settings).len();
+            if let Some(filter) = dcs_child(settings, "filter", ns_settings) {
+                filter_count = dcs_children(filter, "item", ns_settings).len();
             }
-            selection = skd_info_selection_fields(settings, ns_settings);
+            selection = dcs_info_selection_fields(settings, ns_settings);
         }
         let struct_str = if struct_items.is_empty() {
             String::new()
@@ -1032,7 +1032,7 @@ pub(crate) fn skd_info_variant(
     }
 }
 
-pub(crate) fn skd_info_trace(
+pub(crate) fn dcs_info_trace(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
@@ -1040,38 +1040,38 @@ pub(crate) fn skd_info_trace(
 ) -> Result<(), String> {
     let mut dataset_hits = Vec::<String>::new();
     let mut title = String::new();
-    for data_set in skd_children(root, "dataSet", ns_schema) {
-        skd_info_collect_field_trace(data_set, ns_schema, name, &mut dataset_hits, &mut title);
-        for sub_ds in skd_children(data_set, "item", ns_schema) {
-            skd_info_collect_field_trace(sub_ds, ns_schema, name, &mut dataset_hits, &mut title);
+    for data_set in dcs_children(root, "dataSet", ns_schema) {
+        dcs_info_collect_field_trace(data_set, ns_schema, name, &mut dataset_hits, &mut title);
+        for sub_ds in dcs_children(data_set, "item", ns_schema) {
+            dcs_info_collect_field_trace(sub_ds, ns_schema, name, &mut dataset_hits, &mut title);
         }
     }
 
     let mut calc_expression = None::<String>;
     let mut calc_operands = Vec::<String>::new();
-    for field in skd_children(root, "calculatedField", ns_schema) {
-        let path = skd_child(field, "dataPath", ns_schema)
-            .map(skd_text_of)
+    for field in dcs_children(root, "calculatedField", ns_schema) {
+        let path = dcs_child(field, "dataPath", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
-        let field_title = skd_child(field, "title", ns_schema)
-            .map(skd_info_multilang_or_inner_text)
+        let field_title = dcs_child(field, "title", ns_schema)
+            .map(dcs_info_multilang_or_inner_text)
             .unwrap_or_default();
         if path == name || field_title == name {
             if title.is_empty() {
                 title = field_title;
             }
-            let expression = skd_child(field, "expression", ns_schema)
-                .map(skd_all_text)
+            let expression = dcs_child(field, "expression", ns_schema)
+                .map(dcs_all_text)
                 .unwrap_or_default();
-            for data_set in skd_children(root, "dataSet", ns_schema) {
-                for operand in skd_info_dataset_field_paths(data_set, ns_schema) {
+            for data_set in dcs_children(root, "dataSet", ns_schema) {
+                for operand in dcs_info_dataset_field_paths(data_set, ns_schema) {
                     if !operand.is_empty() && expression.contains(&operand) {
-                        let ds_name = skd_child(data_set, "name", ns_schema)
-                            .map(skd_text_of)
+                        let ds_name = dcs_child(data_set, "name", ns_schema)
+                            .map(dcs_text_of)
                             .unwrap_or_default();
                         calc_operands.push(format!(
                             "{operand} -> {ds_name} [{}]",
-                            skd_info_dataset_type(data_set)
+                            dcs_info_dataset_type(data_set)
                         ));
                     }
                 }
@@ -1081,17 +1081,17 @@ pub(crate) fn skd_info_trace(
     }
 
     let mut resources = Vec::<String>::new();
-    for total in skd_children(root, "totalField", ns_schema) {
-        let path = skd_child(total, "dataPath", ns_schema)
-            .map(skd_text_of)
+    for total in dcs_children(root, "totalField", ns_schema) {
+        let path = dcs_child(total, "dataPath", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
         if path == name {
-            let group = skd_child(total, "group", ns_schema)
-                .map(skd_text_of)
+            let group = dcs_child(total, "group", ns_schema)
+                .map(dcs_text_of)
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "(overall)".to_string());
-            let expression = skd_child(total, "expression", ns_schema)
-                .map(skd_text_of)
+            let expression = dcs_child(total, "expression", ns_schema)
+                .map(dcs_text_of)
                 .unwrap_or_default();
             resources.push(format!("  [{group}] {expression}"));
         }
@@ -1134,7 +1134,7 @@ pub(crate) fn skd_info_trace(
     Ok(())
 }
 
-pub(crate) fn skd_info_full(
+pub(crate) fn dcs_info_full(
     root: roxmltree::Node<'_, '_>,
     resolved_path: &Path,
     text: &str,
@@ -1142,20 +1142,20 @@ pub(crate) fn skd_info_full(
     ns_schema: &str,
     ns_settings: &str,
 ) -> Result<(), String> {
-    skd_info_overview(root, resolved_path, text, lines, ns_schema, ns_settings);
+    dcs_info_overview(root, resolved_path, text, lines, ns_schema, ns_settings);
     lines.push(String::new());
     lines.push("--- query ---".to_string());
     lines.push(String::new());
-    if skd_children(root, "dataSet", ns_schema)
+    if dcs_children(root, "dataSet", ns_schema)
         .iter()
-        .any(|data_set| skd_info_dataset_type(*data_set) == "Query")
+        .any(|data_set| dcs_info_dataset_type(*data_set) == "Query")
     {
-        skd_info_query(root, lines, ns_schema, None)?;
+        dcs_info_query(root, lines, ns_schema, None)?;
     } else {
-        let object_names = skd_children(root, "dataSet", ns_schema)
+        let object_names = dcs_children(root, "dataSet", ns_schema)
             .into_iter()
-            .filter(|data_set| skd_info_dataset_type(*data_set) == "Object")
-            .filter_map(|data_set| skd_child(data_set, "objectName", ns_schema).map(skd_text_of))
+            .filter(|data_set| dcs_info_dataset_type(*data_set) == "Object")
+            .filter_map(|data_set| dcs_child(data_set, "objectName", ns_schema).map(dcs_text_of))
             .filter(|name| !name.is_empty())
             .collect::<Vec<_>>();
         if object_names.is_empty() {
@@ -1170,39 +1170,39 @@ pub(crate) fn skd_info_full(
     lines.push(String::new());
     lines.push("--- fields ---".to_string());
     lines.push(String::new());
-    skd_info_fields(root, lines, ns_schema);
+    dcs_info_fields(root, lines, ns_schema);
     lines.push(String::new());
     lines.push("--- resources ---".to_string());
     lines.push(String::new());
-    skd_info_resources(root, lines, ns_schema, None)?;
+    dcs_info_resources(root, lines, ns_schema, None)?;
     lines.push(String::new());
     lines.push("--- params ---".to_string());
     lines.push(String::new());
-    skd_info_params(root, lines, ns_schema);
+    dcs_info_params(root, lines, ns_schema);
     lines.push(String::new());
     lines.push("--- variant ---".to_string());
     lines.push(String::new());
-    skd_info_variant(root, lines, ns_schema, ns_settings);
+    dcs_info_variant(root, lines, ns_schema, ns_settings);
     Ok(())
 }
 
-pub(crate) fn skd_info_templates(
+pub(crate) fn dcs_info_templates(
     root: roxmltree::Node<'_, '_>,
     lines: &mut Vec<String>,
     ns_schema: &str,
 ) {
-    let templates = skd_children(root, "template", ns_schema);
-    let field_count = skd_children(root, "fieldTemplate", ns_schema).len();
-    let group_count = skd_children(root, "groupTemplate", ns_schema).len()
-        + skd_children(root, "groupHeaderTemplate", ns_schema).len()
-        + skd_children(root, "groupFooterTemplate", ns_schema).len();
+    let templates = dcs_children(root, "template", ns_schema);
+    let field_count = dcs_children(root, "fieldTemplate", ns_schema).len();
+    let group_count = dcs_children(root, "groupTemplate", ns_schema).len()
+        + dcs_children(root, "groupHeaderTemplate", ns_schema).len()
+        + dcs_children(root, "groupFooterTemplate", ns_schema).len();
     lines.push(format!(
         "=== Templates ({} defined: {field_count} field, {group_count} group) ===",
         templates.len()
     ));
 }
 
-pub(crate) fn skd_info_dataset_type(data_set: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_info_dataset_type(data_set: roxmltree::Node<'_, '_>) -> String {
     let xsi_type = attribute_by_local_name(data_set, "type").unwrap_or("");
     if xsi_type.contains("DataSetQuery") {
         "Query".to_string()
@@ -1215,7 +1215,7 @@ pub(crate) fn skd_info_dataset_type(data_set: roxmltree::Node<'_, '_>) -> String
     }
 }
 
-pub(crate) fn skd_info_structure_item_type(item: roxmltree::Node<'_, '_>) -> &'static str {
+pub(crate) fn dcs_info_structure_item_type(item: roxmltree::Node<'_, '_>) -> &'static str {
     let xsi_type = attribute_by_local_name(item, "type").unwrap_or("");
     if xsi_type.contains("StructureItemGroup") {
         "Group"
@@ -1228,29 +1228,29 @@ pub(crate) fn skd_info_structure_item_type(item: roxmltree::Node<'_, '_>) -> &'s
     }
 }
 
-pub(crate) fn skd_info_multilang_or_inner_text(node: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_info_multilang_or_inner_text(node: roxmltree::Node<'_, '_>) -> String {
     let value = multilang_text(node);
     if value.is_empty() {
         if let Some(text) = node.text().map(str::trim).filter(|value| !value.is_empty()) {
             return text.to_string();
         }
-        skd_all_text(node)
+        dcs_all_text(node)
     } else {
         value
     }
 }
 
-pub(crate) fn skd_info_group_fields(
+pub(crate) fn dcs_info_group_fields(
     item: roxmltree::Node<'_, '_>,
     ns_settings: &str,
 ) -> Vec<String> {
     let mut fields = Vec::new();
-    for group_item in skd_find_all_path(item, &[("groupItems", ns_settings), ("item", ns_settings)])
+    for group_item in dcs_find_all_path(item, &[("groupItems", ns_settings), ("item", ns_settings)])
     {
-        if let Some(field) = skd_child(group_item, "field", ns_settings) {
-            let mut value = skd_text_of(field);
-            let group_type = skd_child(group_item, "groupType", ns_settings)
-                .map(skd_text_of)
+        if let Some(field) = dcs_child(group_item, "field", ns_settings) {
+            let mut value = dcs_text_of(field);
+            let group_type = dcs_child(group_item, "groupType", ns_settings)
+                .map(dcs_text_of)
                 .unwrap_or_default();
             if !group_type.is_empty() && group_type != "Items" {
                 value.push_str(&format!("({group_type})"));
@@ -1261,19 +1261,19 @@ pub(crate) fn skd_info_group_fields(
     fields
 }
 
-pub(crate) fn skd_info_selection_fields(
+pub(crate) fn dcs_info_selection_fields(
     item_node: roxmltree::Node<'_, '_>,
     ns_settings: &str,
 ) -> Vec<String> {
     let mut fields = Vec::new();
-    if let Some(selection) = skd_child(item_node, "selection", ns_settings) {
-        for item in skd_children(selection, "item", ns_settings) {
+    if let Some(selection) = dcs_child(item_node, "selection", ns_settings) {
+        for item in dcs_children(selection, "item", ns_settings) {
             let xsi_type = attribute_by_local_name(item, "type").unwrap_or("");
             if xsi_type.contains("SelectedItemAuto") {
                 fields.push("Auto".to_string());
             } else if xsi_type.contains("SelectedItemField") {
-                if let Some(field) = skd_child(item, "field", ns_settings) {
-                    fields.push(skd_text_of(field));
+                if let Some(field) = dcs_child(item, "field", ns_settings) {
+                    fields.push(dcs_text_of(field));
                 }
             } else if xsi_type.contains("SelectedItemFolder") {
                 fields.push("Folder".to_string());
@@ -1283,13 +1283,13 @@ pub(crate) fn skd_info_selection_fields(
     fields
 }
 
-pub(crate) fn skd_info_compact_type(value_type: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_info_compact_type(value_type: roxmltree::Node<'_, '_>) -> String {
     let mut types = Vec::new();
     for type_node in value_type
         .descendants()
         .filter(|node| node.is_element() && node.tag_name().name() == "Type")
     {
-        let raw = skd_text_of(type_node);
+        let raw = dcs_text_of(type_node);
         let mapped = match raw.as_str() {
             "xs:string" => "String".to_string(),
             "xs:decimal" => "Number".to_string(),
@@ -1309,11 +1309,11 @@ pub(crate) fn skd_info_compact_type(value_type: roxmltree::Node<'_, '_>) -> Stri
     types.join(" | ")
 }
 
-pub(crate) fn skd_info_param_default(value_node: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_info_param_default(value_node: roxmltree::Node<'_, '_>) -> String {
     if attribute_by_local_name(value_node, "nil").is_some_and(|value| value == "true") {
         return "null".to_string();
     }
-    let raw = skd_all_text(value_node);
+    let raw = dcs_all_text(value_node);
     if raw == "0001-01-01T00:00:00" || raw.is_empty() {
         return "-".to_string();
     }
@@ -1321,7 +1321,7 @@ pub(crate) fn skd_info_param_default(value_node: roxmltree::Node<'_, '_>) -> Str
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "variant")
     {
-        return skd_text_of(variant);
+        return dcs_text_of(variant);
     }
     if raw.chars().count() > 15 {
         format!("{}...", raw.chars().take(12).collect::<String>())
@@ -1330,23 +1330,23 @@ pub(crate) fn skd_info_param_default(value_node: roxmltree::Node<'_, '_>) -> Str
     }
 }
 
-pub(crate) fn skd_info_collect_field_trace(
+pub(crate) fn dcs_info_collect_field_trace(
     data_set: roxmltree::Node<'_, '_>,
     ns_schema: &str,
     name: &str,
     dataset_hits: &mut Vec<String>,
     title: &mut String,
 ) {
-    let ds_name = skd_child(data_set, "name", ns_schema)
-        .map(skd_text_of)
+    let ds_name = dcs_child(data_set, "name", ns_schema)
+        .map(dcs_text_of)
         .unwrap_or_default();
-    let ds_type = skd_info_dataset_type(data_set);
-    for field in skd_children(data_set, "field", ns_schema) {
-        let path = skd_child(field, "dataPath", ns_schema)
-            .map(skd_text_of)
+    let ds_type = dcs_info_dataset_type(data_set);
+    for field in dcs_children(data_set, "field", ns_schema) {
+        let path = dcs_child(field, "dataPath", ns_schema)
+            .map(dcs_text_of)
             .unwrap_or_default();
-        let field_title = skd_child(field, "title", ns_schema)
-            .map(skd_info_multilang_or_inner_text)
+        let field_title = dcs_child(field, "title", ns_schema)
+            .map(dcs_info_multilang_or_inner_text)
             .unwrap_or_default();
         if path == name || field_title == name {
             if title.is_empty() {
@@ -1357,17 +1357,17 @@ pub(crate) fn skd_info_collect_field_trace(
     }
 }
 
-pub(crate) fn skd_info_dataset_field_paths(
+pub(crate) fn dcs_info_dataset_field_paths(
     data_set: roxmltree::Node<'_, '_>,
     ns_schema: &str,
 ) -> Vec<String> {
-    skd_children(data_set, "field", ns_schema)
+    dcs_children(data_set, "field", ns_schema)
         .into_iter()
-        .filter_map(|field| skd_child(field, "dataPath", ns_schema).map(skd_text_of))
+        .filter_map(|field| dcs_child(field, "dataPath", ns_schema).map(dcs_text_of))
         .collect()
 }
 
-pub(crate) fn skd_info_template_name(path: &Path) -> String {
+pub(crate) fn dcs_info_template_name(path: &Path) -> String {
     let parts = path
         .components()
         .map(|part| part.as_os_str().to_string_lossy().to_string())
@@ -1380,7 +1380,7 @@ pub(crate) fn skd_info_template_name(path: &Path) -> String {
     path.display().to_string()
 }
 
-pub(crate) fn resolve_skd_info_path_for_script(
+pub(crate) fn resolve_dcs_info_path_for_script(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
@@ -1467,14 +1467,14 @@ pub(crate) fn resolve_skd_info_path_for_script(
     Ok(abs_template)
 }
 
-pub(crate) fn validate_skd(
+pub(crate) fn validate_dcs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
 
-    let result = (|| -> Result<SkdValidationRun, String> {
-        let template_path = resolve_skd_validate_path(args, context)?;
+    let result = (|| -> Result<DcsValidationRun, String> {
+        let template_path = resolve_dcs_validate_path(args, context)?;
         let resolved_path = template_path
             .canonicalize()
             .unwrap_or_else(|_| template_path.clone());
@@ -1494,7 +1494,7 @@ pub(crate) fn validate_skd(
             .max(0) as usize;
 
         let text = read_utf8_sig(&resolved_path)?;
-        let mut report = SkdValidationReporter::new(max_errors, detailed, &file_name);
+        let mut report = DcsValidationReporter::new(max_errors, detailed, &file_name);
         let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
             Ok(doc) => {
                 report.ok("XML parsed successfully");
@@ -1508,7 +1508,7 @@ pub(crate) fn validate_skd(
                     .filter(|line| line.starts_with("[ERROR] "))
                     .cloned()
                     .collect::<Vec<_>>();
-                return Ok(SkdValidationRun {
+                return Ok(DcsValidationRun {
                     ok: false,
                     stdout: format!("{}\n", report.lines.join("\n")),
                     out_file,
@@ -1537,7 +1537,7 @@ pub(crate) fn validate_skd(
             report.ok("Default namespace correct");
         }
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1546,49 +1546,49 @@ pub(crate) fn validate_skd(
             );
         }
 
-        let data_source_nodes = skd_children(root, "dataSource", NS_SCHEMA);
+        let data_source_nodes = dcs_children(root, "dataSource", NS_SCHEMA);
         let mut data_source_names = HashSet::<String>::new();
         for dsn in &data_source_nodes {
-            if let Some(name) = skd_child(*dsn, "name", NS_SCHEMA) {
-                data_source_names.insert(skd_inner_text(name));
+            if let Some(name) = dcs_child(*dsn, "name", NS_SCHEMA) {
+                data_source_names.insert(dcs_inner_text(name));
             }
         }
 
-        let data_set_nodes = skd_children(root, "dataSet", NS_SCHEMA);
+        let data_set_nodes = dcs_children(root, "dataSet", NS_SCHEMA);
         let mut data_set_names = HashSet::<String>::new();
         let mut all_field_paths = HashMap::<String, String>::new();
         for ds in &data_set_nodes {
-            if let Some(name_node) = skd_child(*ds, "name", NS_SCHEMA) {
-                let ds_name = skd_inner_text(name_node);
+            if let Some(name_node) = dcs_child(*ds, "name", NS_SCHEMA) {
+                let ds_name = dcs_inner_text(name_node);
                 data_set_names.insert(ds_name.clone());
-                skd_collect_data_set_fields(*ds, &ds_name, &mut all_field_paths);
+                dcs_collect_data_set_fields(*ds, &ds_name, &mut all_field_paths);
             }
         }
 
-        let calc_field_nodes = skd_children(root, "calculatedField", NS_SCHEMA);
+        let calc_field_nodes = dcs_children(root, "calculatedField", NS_SCHEMA);
         let mut calc_field_paths = HashSet::<String>::new();
         for cf in &calc_field_nodes {
-            if let Some(dp) = skd_child(*cf, "dataPath", NS_SCHEMA) {
-                calc_field_paths.insert(skd_inner_text(dp));
+            if let Some(dp) = dcs_child(*cf, "dataPath", NS_SCHEMA) {
+                calc_field_paths.insert(dcs_inner_text(dp));
             }
         }
-        let total_field_nodes = skd_children(root, "totalField", NS_SCHEMA);
-        let param_nodes = skd_children(root, "parameter", NS_SCHEMA);
-        let template_nodes = skd_children(root, "template", NS_SCHEMA);
+        let total_field_nodes = dcs_children(root, "totalField", NS_SCHEMA);
+        let param_nodes = dcs_children(root, "parameter", NS_SCHEMA);
+        let template_nodes = dcs_children(root, "template", NS_SCHEMA);
         let mut template_names = HashSet::<String>::new();
         for template in &template_nodes {
-            if let Some(name_node) = skd_child(*template, "name", NS_SCHEMA) {
-                template_names.insert(skd_inner_text(name_node));
+            if let Some(name_node) = dcs_child(*template, "name", NS_SCHEMA) {
+                template_names.insert(dcs_inner_text(name_node));
             }
         }
-        let group_template_nodes = skd_children(root, "groupTemplate", NS_SCHEMA);
-        let variant_nodes = skd_children(root, "settingsVariant", NS_SCHEMA);
+        let group_template_nodes = dcs_children(root, "groupTemplate", NS_SCHEMA);
+        let variant_nodes = dcs_children(root, "settingsVariant", NS_SCHEMA);
         let mut known_fields = all_field_paths.keys().cloned().collect::<HashSet<String>>();
         known_fields.extend(calc_field_paths.iter().cloned());
 
-        skd_validate_data_sources(&mut report, &data_source_nodes);
+        dcs_validate_data_sources(&mut report, &data_source_nodes);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1596,9 +1596,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
+        dcs_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1607,12 +1607,12 @@ pub(crate) fn validate_skd(
             );
         }
         for ds in &data_set_nodes {
-            let ds_name = skd_child(*ds, "name", NS_SCHEMA)
-                .map(skd_inner_text)
+            let ds_name = dcs_child(*ds, "name", NS_SCHEMA)
+                .map(dcs_inner_text)
                 .unwrap_or_else(|| "(unnamed)".to_string());
-            skd_validate_data_set_fields(&mut report, *ds, &ds_name);
+            dcs_validate_data_set_fields(&mut report, *ds, &ds_name);
             if report.stopped {
-                return skd_validation_finish(
+                return dcs_validation_finish(
                     report,
                     &file_name,
                     out_file.clone(),
@@ -1622,7 +1622,7 @@ pub(crate) fn validate_skd(
             }
         }
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1630,9 +1630,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_data_set_links(&mut report, root, &data_set_names);
+        dcs_validate_data_set_links(&mut report, root, &data_set_names);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1640,9 +1640,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
+        dcs_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1650,9 +1650,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_total_fields(&mut report, &total_field_nodes);
+        dcs_validate_total_fields(&mut report, &total_field_nodes);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1660,9 +1660,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_parameters(&mut report, &param_nodes);
+        dcs_validate_parameters(&mut report, &param_nodes);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1670,9 +1670,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_templates(&mut report, &template_nodes);
+        dcs_validate_templates(&mut report, &template_nodes);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1680,9 +1680,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_group_templates(&mut report, &group_template_nodes, &template_names);
+        dcs_validate_group_templates(&mut report, &group_template_nodes, &template_names);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1690,9 +1690,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
+        dcs_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1700,9 +1700,9 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_value_types(&mut report, root);
+        dcs_validate_value_types(&mut report, root);
         if report.stopped {
-            return skd_validation_finish(
+            return dcs_validation_finish(
                 report,
                 &file_name,
                 out_file,
@@ -1710,8 +1710,8 @@ pub(crate) fn validate_skd(
                 resolved_path,
             );
         }
-        skd_validate_value_contents(&mut report, root);
-        skd_validation_finish(report, &file_name, out_file, out_file_label, resolved_path)
+        dcs_validate_value_contents(&mut report, root);
+        dcs_validation_finish(report, &file_name, out_file, out_file_label, resolved_path)
     })();
 
     match result {
@@ -1722,7 +1722,7 @@ pub(crate) fn validate_skd(
                 if let Err(error) = write_utf8_bom(out_file, run.stdout.trim_end_matches('\n')) {
                     return AdapterOutcome {
                         ok: false,
-                        summary: "unica.skd.validate failed in native DCS validator".to_string(),
+                        summary: "unica.dcs.validate failed in native DCS validator".to_string(),
                         changes: Vec::new(),
                         warnings: Vec::new(),
                         errors: vec![error.clone()],
@@ -1740,9 +1740,9 @@ pub(crate) fn validate_skd(
             AdapterOutcome {
                 ok: run.ok,
                 summary: if run.ok {
-                    "unica.skd.validate completed with native DCS validator".to_string()
+                    "unica.dcs.validate completed with native DCS validator".to_string()
                 } else {
-                    "unica.skd.validate failed in native DCS validator".to_string()
+                    "unica.dcs.validate failed in native DCS validator".to_string()
                 },
                 changes: Vec::new(),
                 warnings: Vec::new(),
@@ -1755,7 +1755,7 @@ pub(crate) fn validate_skd(
         }
         Err(error) => AdapterOutcome {
             ok: false,
-            summary: "unica.skd.validate failed in native DCS validator".to_string(),
+            summary: "unica.dcs.validate failed in native DCS validator".to_string(),
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![error.clone()],
@@ -1767,15 +1767,15 @@ pub(crate) fn validate_skd(
     }
 }
 
-pub(crate) fn skd_validation_finish(
-    report: SkdValidationReporter,
+pub(crate) fn dcs_validation_finish(
+    report: DcsValidationReporter,
     file_name: &str,
     out_file: Option<PathBuf>,
     out_file_label: Option<String>,
     artifact: PathBuf,
-) -> Result<SkdValidationRun, String> {
+) -> Result<DcsValidationRun, String> {
     let (ok, stdout, errors) = report.finalize(file_name);
-    Ok(SkdValidationRun {
+    Ok(DcsValidationRun {
         ok,
         stdout,
         out_file,
@@ -1785,8 +1785,8 @@ pub(crate) fn skd_validation_finish(
     })
 }
 
-pub(crate) fn skd_validate_data_sources(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_data_sources(
+    report: &mut DcsValidationReporter,
     data_source_nodes: &[roxmltree::Node<'_, '_>],
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -1797,9 +1797,9 @@ pub(crate) fn skd_validate_data_sources(
     let mut names_seen = HashSet::<String>::new();
     let mut ds_ok = true;
     for dsn in data_source_nodes {
-        let name = skd_child(*dsn, "name", NS_SCHEMA);
-        let typ = skd_child(*dsn, "dataSourceType", NS_SCHEMA);
-        let name_text = name.map(skd_inner_text).unwrap_or_default();
+        let name = dcs_child(*dsn, "name", NS_SCHEMA);
+        let typ = dcs_child(*dsn, "dataSourceType", NS_SCHEMA);
+        let name_text = name.map(dcs_inner_text).unwrap_or_default();
         if name_text.is_empty() {
             report.error("DataSource has empty name");
             ds_ok = false;
@@ -1808,7 +1808,7 @@ pub(crate) fn skd_validate_data_sources(
             ds_ok = false;
         }
         if let Some(typ) = typ {
-            let type_text = skd_inner_text(typ);
+            let type_text = dcs_inner_text(typ);
             if !matches!(type_text.as_str(), "Local" | "External") {
                 report.warn(format!(
                     "DataSource '{name_text}' has unusual type: {type_text}"
@@ -1824,8 +1824,8 @@ pub(crate) fn skd_validate_data_sources(
     }
 }
 
-pub(crate) fn skd_validate_value_types(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_value_types(
+    report: &mut DcsValidationReporter,
     root: roxmltree::Node<'_, '_>,
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -1864,7 +1864,7 @@ pub(crate) fn skd_validate_value_types(
             }
             let local = child.tag_name().name();
             if local == "Type" {
-                let type_text = skd_text_of(child);
+                let type_text = dcs_text_of(child);
                 if type_text.is_empty() {
                     report.error("valueType: <v8:Type> is empty");
                     all_ok = false;
@@ -1895,7 +1895,7 @@ pub(crate) fn skd_validate_value_types(
                 } else {
                     let prefix_ns = child.lookup_namespace_uri(Some(prefix));
                     if prefix_ns == Some(NS_CONFIG) {
-                        if !skd_validate_config_ref_type_shape(local_type) {
+                        if !dcs_validate_config_ref_type_shape(local_type) {
                             report.error(format!(
                                 "valueType: ref type '{type_text}' must look like '<prefix>:<Kind>.<Name>' (e.g. d5p1:CatalogRef.X)"
                             ));
@@ -1904,7 +1904,7 @@ pub(crate) fn skd_validate_value_types(
                             types.insert(String::new());
                         }
                     } else if prefix_ns == Some(NS_ENTERPRISE) {
-                        if !skd_validate_system_type_shape(local_type) {
+                        if !dcs_validate_system_type_shape(local_type) {
                             report.error(format!(
                                 "valueType: system type '{type_text}' has unexpected local-name shape"
                             ));
@@ -1928,9 +1928,9 @@ pub(crate) fn skd_validate_value_types(
                 qualifiers.push(q_name.clone());
                 match q_name.as_str() {
                     "v8:NumberQualifiers" => {
-                        let digits = skd_child(child, "Digits", NS_V8).map(skd_text_of);
-                        let fraction = skd_child(child, "FractionDigits", NS_V8).map(skd_text_of);
-                        let sign = skd_child(child, "AllowedSign", NS_V8).map(skd_text_of);
+                        let digits = dcs_child(child, "Digits", NS_V8).map(dcs_text_of);
+                        let fraction = dcs_child(child, "FractionDigits", NS_V8).map(dcs_text_of);
+                        let sign = dcs_child(child, "AllowedSign", NS_V8).map(dcs_text_of);
                         if digits
                             .as_deref()
                             .filter(|value| {
@@ -1966,9 +1966,9 @@ pub(crate) fn skd_validate_value_types(
                         }
                     }
                     "v8:StringQualifiers" => {
-                        let length = skd_child(child, "Length", NS_V8).map(skd_text_of);
+                        let length = dcs_child(child, "Length", NS_V8).map(dcs_text_of);
                         let allowed_length =
-                            skd_child(child, "AllowedLength", NS_V8).map(skd_text_of);
+                            dcs_child(child, "AllowedLength", NS_V8).map(dcs_text_of);
                         if length
                             .as_deref()
                             .filter(|value| {
@@ -1994,7 +1994,7 @@ pub(crate) fn skd_validate_value_types(
                         }
                     }
                     "v8:DateQualifiers" => {
-                        let fractions = skd_child(child, "DateFractions", NS_V8).map(skd_text_of);
+                        let fractions = dcs_child(child, "DateFractions", NS_V8).map(dcs_text_of);
                         if let Some(fractions) =
                             fractions.as_deref().filter(|value| !value.is_empty())
                         {
@@ -2044,8 +2044,8 @@ pub(crate) fn skd_validate_value_types(
     }
 }
 
-pub(crate) fn skd_validate_value_contents(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_value_contents(
+    report: &mut DcsValidationReporter,
     root: roxmltree::Node<'_, '_>,
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -2075,7 +2075,7 @@ pub(crate) fn skd_validate_value_contents(
                 if report.stopped {
                     return;
                 }
-            } else if !skd_validate_design_time_value_ref_shape(stripped) {
+            } else if !dcs_validate_design_time_value_ref_shape(stripped) {
                 report.warn(format!(
                     "<value xsi:type=\"dcscor:DesignTimeValue\">{text}</value> — doesn't look like a typical ref path"
                 ));
@@ -2090,7 +2090,7 @@ pub(crate) fn skd_validate_value_contents(
     }
 }
 
-pub(crate) fn skd_validate_design_time_value_ref_shape(value: &str) -> bool {
+pub(crate) fn dcs_validate_design_time_value_ref_shape(value: &str) -> bool {
     let Some((prefix, rest)) = value.split_once('.') else {
         return false;
     };
@@ -2106,14 +2106,14 @@ pub(crate) fn skd_validate_design_time_value_ref_shape(value: &str) -> bool {
         })
 }
 
-pub(crate) fn skd_validate_config_ref_type_shape(local_type: &str) -> bool {
+pub(crate) fn dcs_validate_config_ref_type_shape(local_type: &str) -> bool {
     let Some((kind, name)) = local_type.split_once('.') else {
         return false;
     };
     !kind.is_empty() && !name.is_empty() && kind.chars().all(|ch| ch.is_ascii_alphabetic())
 }
 
-pub(crate) fn skd_validate_system_type_shape(local_type: &str) -> bool {
+pub(crate) fn dcs_validate_system_type_shape(local_type: &str) -> bool {
     let mut chars = local_type.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -2121,8 +2121,8 @@ pub(crate) fn skd_validate_system_type_shape(local_type: &str) -> bool {
     first.is_ascii_alphabetic() && chars.all(|ch| ch.is_ascii_alphanumeric())
 }
 
-pub(crate) fn skd_validate_data_sets(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_data_sets(
+    report: &mut DcsValidationReporter,
     data_set_nodes: &[roxmltree::Node<'_, '_>],
     data_source_names: &HashSet<String>,
 ) {
@@ -2136,9 +2136,9 @@ pub(crate) fn skd_validate_data_sets(
     let mut ds_ok = true;
     for ds in data_set_nodes {
         let xsi_type = attribute_by_local_name(*ds, "type").unwrap_or("");
-        let name_node = skd_child(*ds, "name", NS_SCHEMA);
+        let name_node = dcs_child(*ds, "name", NS_SCHEMA);
         let ds_name = name_node
-            .map(skd_inner_text)
+            .map(dcs_inner_text)
             .unwrap_or_else(|| "(unnamed)".to_string());
         if name_node.is_none() || ds_name.is_empty() {
             report.error("DataSet has empty name");
@@ -2156,8 +2156,8 @@ pub(crate) fn skd_validate_data_sets(
             ));
         }
         if xsi_type != "DataSetUnion" {
-            if let Some(src_node) = skd_child(*ds, "dataSource", NS_SCHEMA) {
-                let source = skd_inner_text(src_node);
+            if let Some(src_node) = dcs_child(*ds, "dataSource", NS_SCHEMA) {
+                let source = dcs_inner_text(src_node);
                 if !source.is_empty() && !data_source_names.contains(&source) {
                     report.error(format!(
                         "DataSet '{ds_name}' references unknown dataSource: {source}"
@@ -2167,14 +2167,14 @@ pub(crate) fn skd_validate_data_sets(
             }
         }
         if xsi_type == "DataSetQuery" {
-            let query_node = skd_child(*ds, "query", NS_SCHEMA);
-            if query_node.map(skd_text_of).unwrap_or_default().is_empty() {
+            let query_node = dcs_child(*ds, "query", NS_SCHEMA);
+            if query_node.map(dcs_text_of).unwrap_or_default().is_empty() {
                 report.warn(format!("DataSet '{ds_name}' (Query) has empty query"));
             }
         }
         if xsi_type == "DataSetObject" {
-            let obj_node = skd_child(*ds, "objectName", NS_SCHEMA);
-            if obj_node.map(skd_text_of).unwrap_or_default().is_empty() {
+            let obj_node = dcs_child(*ds, "objectName", NS_SCHEMA);
+            if obj_node.map(dcs_text_of).unwrap_or_default().is_empty() {
                 report.error(format!("DataSet '{ds_name}' (Object) has empty objectName"));
                 ds_ok = false;
             }
@@ -2188,22 +2188,22 @@ pub(crate) fn skd_validate_data_sets(
     }
 }
 
-pub(crate) fn skd_validate_data_set_fields(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_data_set_fields(
+    report: &mut DcsValidationReporter,
     ds_node: roxmltree::Node<'_, '_>,
     ds_name: &str,
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
-    let fields = skd_children(ds_node, "field", NS_SCHEMA);
+    let fields = dcs_children(ds_node, "field", NS_SCHEMA);
     if fields.is_empty() {
         return;
     }
     let mut paths_seen = HashSet::<String>::new();
     let mut field_ok = true;
     for field in &fields {
-        let dp = skd_child(*field, "dataPath", NS_SCHEMA);
-        let field_ref = skd_child(*field, "field", NS_SCHEMA);
-        let path = dp.map(skd_inner_text).unwrap_or_default();
+        let dp = dcs_child(*field, "dataPath", NS_SCHEMA);
+        let field_ref = dcs_child(*field, "field", NS_SCHEMA);
+        let path = dp.map(dcs_inner_text).unwrap_or_default();
         if path.is_empty() {
             report.error(format!("DataSet '{ds_name}': field has empty dataPath"));
             field_ok = false;
@@ -2212,7 +2212,7 @@ pub(crate) fn skd_validate_data_set_fields(
         if !paths_seen.insert(path.clone()) {
             report.warn(format!("DataSet '{ds_name}': duplicate dataPath '{path}'"));
         }
-        if field_ref.map(skd_inner_text).unwrap_or_default().is_empty() {
+        if field_ref.map(dcs_inner_text).unwrap_or_default().is_empty() {
             report.warn(format!(
                 "DataSet '{ds_name}': field '{path}' has empty <field> element"
             ));
@@ -2224,47 +2224,47 @@ pub(crate) fn skd_validate_data_set_fields(
             fields.len()
         ));
     }
-    for item in skd_children(ds_node, "item", NS_SCHEMA) {
-        let item_name = skd_child(item, "name", NS_SCHEMA)
-            .map(skd_inner_text)
+    for item in dcs_children(ds_node, "item", NS_SCHEMA) {
+        let item_name = dcs_child(item, "name", NS_SCHEMA)
+            .map(dcs_inner_text)
             .unwrap_or_else(|| "(unnamed item)".to_string());
-        skd_validate_data_set_fields(report, item, &item_name);
+        dcs_validate_data_set_fields(report, item, &item_name);
     }
 }
 
-pub(crate) fn skd_validate_data_set_links(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_data_set_links(
+    report: &mut DcsValidationReporter,
     root: roxmltree::Node<'_, '_>,
     data_set_names: &HashSet<String>,
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
-    let link_nodes = skd_children(root, "dataSetLink", NS_SCHEMA);
+    let link_nodes = dcs_children(root, "dataSetLink", NS_SCHEMA);
     if link_nodes.is_empty() {
         return;
     }
     let mut link_ok = true;
     for link in &link_nodes {
-        let src = skd_child(*link, "sourceDataSet", NS_SCHEMA);
-        let dst = skd_child(*link, "destinationDataSet", NS_SCHEMA);
-        let src_expr = skd_child(*link, "sourceExpression", NS_SCHEMA);
-        let dst_expr = skd_child(*link, "destinationExpression", NS_SCHEMA);
-        let src_text = src.map(skd_inner_text).unwrap_or_default();
+        let src = dcs_child(*link, "sourceDataSet", NS_SCHEMA);
+        let dst = dcs_child(*link, "destinationDataSet", NS_SCHEMA);
+        let src_expr = dcs_child(*link, "sourceExpression", NS_SCHEMA);
+        let dst_expr = dcs_child(*link, "destinationExpression", NS_SCHEMA);
+        let src_text = src.map(dcs_inner_text).unwrap_or_default();
         if !src_text.is_empty() && !data_set_names.contains(&src_text) {
             report.error(format!("DataSetLink: sourceDataSet '{src_text}' not found"));
             link_ok = false;
         }
-        let dst_text = dst.map(skd_inner_text).unwrap_or_default();
+        let dst_text = dst.map(dcs_inner_text).unwrap_or_default();
         if !dst_text.is_empty() && !data_set_names.contains(&dst_text) {
             report.error(format!(
                 "DataSetLink: destinationDataSet '{dst_text}' not found"
             ));
             link_ok = false;
         }
-        if src_expr.map(skd_text_of).unwrap_or_default().is_empty() {
+        if src_expr.map(dcs_text_of).unwrap_or_default().is_empty() {
             report.error("DataSetLink: empty sourceExpression");
             link_ok = false;
         }
-        if dst_expr.map(skd_text_of).unwrap_or_default().is_empty() {
+        if dst_expr.map(dcs_text_of).unwrap_or_default().is_empty() {
             report.error("DataSetLink: empty destinationExpression");
             link_ok = false;
         }
@@ -2277,8 +2277,8 @@ pub(crate) fn skd_validate_data_set_links(
     }
 }
 
-pub(crate) fn skd_validate_calculated_fields(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_calculated_fields(
+    report: &mut DcsValidationReporter,
     calc_field_nodes: &[roxmltree::Node<'_, '_>],
     all_field_paths: &HashMap<String, String>,
 ) {
@@ -2289,9 +2289,9 @@ pub(crate) fn skd_validate_calculated_fields(
     let mut cf_ok = true;
     let mut cf_seen = HashSet::<String>::new();
     for calc in calc_field_nodes {
-        let dp = skd_child(*calc, "dataPath", NS_SCHEMA);
-        let expr = skd_child(*calc, "expression", NS_SCHEMA);
-        let path = dp.map(skd_inner_text).unwrap_or_default();
+        let dp = dcs_child(*calc, "dataPath", NS_SCHEMA);
+        let expr = dcs_child(*calc, "expression", NS_SCHEMA);
+        let path = dp.map(dcs_inner_text).unwrap_or_default();
         if path.is_empty() {
             report.error("CalculatedField has empty dataPath");
             cf_ok = false;
@@ -2301,7 +2301,7 @@ pub(crate) fn skd_validate_calculated_fields(
             report.error(format!("Duplicate calculatedField dataPath: {path}"));
             cf_ok = false;
         }
-        if expr.map(skd_text_of).unwrap_or_default().is_empty() {
+        if expr.map(dcs_text_of).unwrap_or_default().is_empty() {
             report.error(format!("CalculatedField '{path}' has empty expression"));
             cf_ok = false;
         }
@@ -2319,8 +2319,8 @@ pub(crate) fn skd_validate_calculated_fields(
     }
 }
 
-pub(crate) fn skd_validate_total_fields(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_total_fields(
+    report: &mut DcsValidationReporter,
     total_field_nodes: &[roxmltree::Node<'_, '_>],
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -2329,15 +2329,15 @@ pub(crate) fn skd_validate_total_fields(
     }
     let mut tf_ok = true;
     for total in total_field_nodes {
-        let dp = skd_child(*total, "dataPath", NS_SCHEMA);
-        let expr = skd_child(*total, "expression", NS_SCHEMA);
-        let path = dp.map(skd_inner_text).unwrap_or_default();
+        let dp = dcs_child(*total, "dataPath", NS_SCHEMA);
+        let expr = dcs_child(*total, "expression", NS_SCHEMA);
+        let path = dp.map(dcs_inner_text).unwrap_or_default();
         if path.is_empty() {
             report.error("TotalField has empty dataPath");
             tf_ok = false;
             continue;
         }
-        if expr.map(skd_text_of).unwrap_or_default().is_empty() {
+        if expr.map(dcs_text_of).unwrap_or_default().is_empty() {
             report.error(format!("TotalField '{path}' has empty expression"));
             tf_ok = false;
         }
@@ -2350,8 +2350,8 @@ pub(crate) fn skd_validate_total_fields(
     }
 }
 
-pub(crate) fn skd_validate_parameters(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_parameters(
+    report: &mut DcsValidationReporter,
     param_nodes: &[roxmltree::Node<'_, '_>],
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -2361,8 +2361,8 @@ pub(crate) fn skd_validate_parameters(
     let mut param_ok = true;
     let mut param_seen = HashSet::<String>::new();
     for param in param_nodes {
-        let name = skd_child(*param, "name", NS_SCHEMA)
-            .map(skd_inner_text)
+        let name = dcs_child(*param, "name", NS_SCHEMA)
+            .map(dcs_inner_text)
             .unwrap_or_default();
         if name.is_empty() {
             report.error("Parameter has empty name");
@@ -2379,8 +2379,8 @@ pub(crate) fn skd_validate_parameters(
     }
 }
 
-pub(crate) fn skd_validate_templates(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_templates(
+    report: &mut DcsValidationReporter,
     template_nodes: &[roxmltree::Node<'_, '_>],
 ) {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
@@ -2390,8 +2390,8 @@ pub(crate) fn skd_validate_templates(
     let mut tpl_ok = true;
     let mut tpl_seen = HashSet::<String>::new();
     for template in template_nodes {
-        let name = skd_child(*template, "name", NS_SCHEMA)
-            .map(skd_inner_text)
+        let name = dcs_child(*template, "name", NS_SCHEMA)
+            .map(dcs_inner_text)
             .unwrap_or_default();
         if name.is_empty() {
             report.error("Template has empty name");
@@ -2411,8 +2411,8 @@ pub(crate) fn skd_validate_templates(
     }
 }
 
-pub(crate) fn skd_validate_group_templates(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_group_templates(
+    report: &mut DcsValidationReporter,
     group_template_nodes: &[roxmltree::Node<'_, '_>],
     template_names: &HashSet<String>,
 ) {
@@ -2429,11 +2429,11 @@ pub(crate) fn skd_validate_group_templates(
     ];
     let mut gt_ok = true;
     for group_template in group_template_nodes {
-        let tpl_ref = skd_child(*group_template, "template", NS_SCHEMA)
-            .map(skd_inner_text)
+        let tpl_ref = dcs_child(*group_template, "template", NS_SCHEMA)
+            .map(dcs_inner_text)
             .unwrap_or_default();
-        let tpl_type = skd_child(*group_template, "templateType", NS_SCHEMA)
-            .map(skd_inner_text)
+        let tpl_type = dcs_child(*group_template, "templateType", NS_SCHEMA)
+            .map(dcs_inner_text)
             .unwrap_or_default();
         if !tpl_ref.is_empty() && !template_names.contains(&tpl_ref) {
             report.error(format!(
@@ -2455,8 +2455,8 @@ pub(crate) fn skd_validate_group_templates(
     }
 }
 
-pub(crate) fn skd_validate_settings_variants(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_validate_settings_variants(
+    report: &mut DcsValidationReporter,
     variant_nodes: &[roxmltree::Node<'_, '_>],
     known_fields: &HashSet<String>,
 ) {
@@ -2467,13 +2467,13 @@ pub(crate) fn skd_validate_settings_variants(
     }
     let mut v_ok = true;
     for (idx, variant) in variant_nodes.iter().enumerate() {
-        let v_name = skd_child(*variant, "name", NS_SETTINGS);
-        let variant_name = v_name.map(skd_inner_text).unwrap_or_default();
+        let v_name = dcs_child(*variant, "name", NS_SETTINGS);
+        let variant_name = v_name.map(dcs_inner_text).unwrap_or_default();
         if variant_name.is_empty() {
             report.error(format!("SettingsVariant #{} has empty name", idx + 1));
             v_ok = false;
         }
-        let settings = skd_child(*variant, "settings", NS_SETTINGS);
+        let settings = dcs_child(*variant, "settings", NS_SETTINGS);
         let Some(settings) = settings else {
             report.error(format!(
                 "SettingsVariant '{variant_name}' has no settings element"
@@ -2481,15 +2481,15 @@ pub(crate) fn skd_validate_settings_variants(
             v_ok = false;
             continue;
         };
-        skd_check_settings(report, settings, &variant_name, known_fields);
+        dcs_check_settings(report, settings, &variant_name, known_fields);
     }
     if v_ok {
         report.ok(format!("{} settingsVariant(s) found", variant_nodes.len()));
     }
 }
 
-pub(crate) fn skd_check_settings(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_check_settings(
+    report: &mut DcsValidationReporter,
     settings_node: roxmltree::Node<'_, '_>,
     variant_name: &str,
     known_fields: &HashSet<String>,
@@ -2498,14 +2498,14 @@ pub(crate) fn skd_check_settings(
     if report.stopped {
         return;
     }
-    for selected_item in skd_find_all_path(
+    for selected_item in dcs_find_all_path(
         settings_node,
         &[("selection", NS_SETTINGS), ("item", NS_SETTINGS)],
     ) {
         let xsi_type = attribute_by_local_name(selected_item, "type").unwrap_or("");
         if xsi_type == "dcsset:SelectedItemField" {
-            let field = skd_child(selected_item, "field", NS_SETTINGS)
-                .map(skd_inner_text)
+            let field = dcs_child(selected_item, "field", NS_SETTINGS)
+                .map(dcs_inner_text)
                 .unwrap_or_default();
             if !field.is_empty() && field != "SystemFields.Number" {
                 let base_path = field.split('.').next().unwrap_or("");
@@ -2515,15 +2515,15 @@ pub(crate) fn skd_check_settings(
             }
         }
     }
-    skd_check_filter_items(report, settings_node, variant_name);
-    for order_item in skd_find_all_path(
+    dcs_check_filter_items(report, settings_node, variant_name);
+    for order_item in dcs_find_all_path(
         settings_node,
         &[("order", NS_SETTINGS), ("item", NS_SETTINGS)],
     ) {
         let xsi_type = attribute_by_local_name(order_item, "type").unwrap_or("");
         if xsi_type == "dcsset:OrderItemField" {
-            let order_type = skd_child(order_item, "orderType", NS_SETTINGS)
-                .map(skd_inner_text)
+            let order_type = dcs_child(order_item, "orderType", NS_SETTINGS)
+                .map(dcs_inner_text)
                 .unwrap_or_default();
             if !order_type.is_empty() && !matches!(order_type.as_str(), "Asc" | "Desc") {
                 report.warn(format!(
@@ -2532,13 +2532,13 @@ pub(crate) fn skd_check_settings(
             }
         }
     }
-    for structure_item in skd_children(settings_node, "item", NS_SETTINGS) {
-        skd_check_structure_item(report, structure_item, variant_name);
+    for structure_item in dcs_children(settings_node, "item", NS_SETTINGS) {
+        dcs_check_structure_item(report, structure_item, variant_name);
     }
 }
 
-pub(crate) fn skd_check_filter_items(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_check_filter_items(
+    report: &mut DcsValidationReporter,
     parent_node: roxmltree::Node<'_, '_>,
     variant_name: &str,
 ) {
@@ -2561,7 +2561,7 @@ pub(crate) fn skd_check_filter_items(
         "Filled",
         "NotFilled",
     ];
-    for filter_item in skd_find_all_path(
+    for filter_item in dcs_find_all_path(
         parent_node,
         &[("filter", NS_SETTINGS), ("item", NS_SETTINGS)],
     ) {
@@ -2570,8 +2570,8 @@ pub(crate) fn skd_check_filter_items(
         }
         let xsi_type = attribute_by_local_name(filter_item, "type").unwrap_or("");
         if xsi_type == "dcsset:FilterItemComparison" {
-            let comp_type = skd_child(filter_item, "comparisonType", NS_SETTINGS)
-                .map(skd_inner_text)
+            let comp_type = dcs_child(filter_item, "comparisonType", NS_SETTINGS)
+                .map(dcs_inner_text)
                 .unwrap_or_default();
             if !comp_type.is_empty() && !valid_comparison_types.contains(&comp_type.as_str()) {
                 report.error(format!(
@@ -2579,8 +2579,8 @@ pub(crate) fn skd_check_filter_items(
                 ));
             }
         } else if xsi_type == "dcsset:FilterItemGroup" {
-            let group_type = skd_child(filter_item, "groupType", NS_SETTINGS)
-                .map(skd_inner_text)
+            let group_type = dcs_child(filter_item, "groupType", NS_SETTINGS)
+                .map(dcs_inner_text)
                 .unwrap_or_default();
             if !group_type.is_empty()
                 && !matches!(group_type.as_str(), "AndGroup" | "OrGroup" | "NotGroup")
@@ -2589,11 +2589,11 @@ pub(crate) fn skd_check_filter_items(
                     "Variant '{variant_name}' filter group: unusual groupType '{group_type}'"
                 ));
             }
-            for nested in skd_children(filter_item, "item", NS_SETTINGS) {
+            for nested in dcs_children(filter_item, "item", NS_SETTINGS) {
                 let nested_type = attribute_by_local_name(nested, "type").unwrap_or("");
                 if nested_type == "dcsset:FilterItemComparison" {
-                    let comp_type = skd_child(nested, "comparisonType", NS_SETTINGS)
-                        .map(skd_inner_text)
+                    let comp_type = dcs_child(nested, "comparisonType", NS_SETTINGS)
+                        .map(dcs_inner_text)
                         .unwrap_or_default();
                     if !comp_type.is_empty()
                         && !valid_comparison_types.contains(&comp_type.as_str())
@@ -2608,8 +2608,8 @@ pub(crate) fn skd_check_filter_items(
     }
 }
 
-pub(crate) fn skd_check_structure_item(
-    report: &mut SkdValidationReporter,
+pub(crate) fn dcs_check_structure_item(
+    report: &mut DcsValidationReporter,
     item_node: roxmltree::Node<'_, '_>,
     variant_name: &str,
 ) {
@@ -2635,12 +2635,12 @@ pub(crate) fn skd_check_structure_item(
             "Variant '{variant_name}': unusual structure item type '{xsi_type}'"
         ));
     }
-    for nested in skd_children(item_node, "item", NS_SETTINGS) {
-        skd_check_structure_item(report, nested, variant_name);
+    for nested in dcs_children(item_node, "item", NS_SETTINGS) {
+        dcs_check_structure_item(report, nested, variant_name);
     }
     if xsi_type == "dcsset:StructureItemTable" {
-        let columns = skd_children(item_node, "column", NS_SETTINGS);
-        let rows = skd_children(item_node, "row", NS_SETTINGS);
+        let columns = dcs_children(item_node, "column", NS_SETTINGS);
+        let rows = dcs_children(item_node, "row", NS_SETTINGS);
         if columns.is_empty() {
             report.warn(format!("Variant '{variant_name}': table has no columns"));
         }
@@ -2650,29 +2650,29 @@ pub(crate) fn skd_check_structure_item(
     }
 }
 
-pub(crate) fn skd_collect_data_set_fields(
+pub(crate) fn dcs_collect_data_set_fields(
     ds_node: roxmltree::Node<'_, '_>,
     ds_name: &str,
     all_field_paths: &mut HashMap<String, String>,
 ) -> HashSet<String> {
     const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
     let mut local_paths = HashSet::<String>::new();
-    for field in skd_children(ds_node, "field", NS_SCHEMA) {
-        if let Some(dp) = skd_child(field, "dataPath", NS_SCHEMA) {
-            let path = skd_inner_text(dp);
+    for field in dcs_children(ds_node, "field", NS_SCHEMA) {
+        if let Some(dp) = dcs_child(field, "dataPath", NS_SCHEMA) {
+            let path = dcs_inner_text(dp);
             local_paths.insert(path.clone());
             all_field_paths.insert(path, ds_name.to_string());
         }
     }
-    for item in skd_children(ds_node, "item", NS_SCHEMA) {
-        if let Some(item_name) = skd_child(item, "name", NS_SCHEMA) {
-            skd_collect_data_set_fields(item, &skd_inner_text(item_name), all_field_paths);
+    for item in dcs_children(ds_node, "item", NS_SCHEMA) {
+        if let Some(item_name) = dcs_child(item, "name", NS_SCHEMA) {
+            dcs_collect_data_set_fields(item, &dcs_inner_text(item_name), all_field_paths);
         }
     }
     local_paths
 }
 
-pub(crate) fn skd_children<'a, 'input>(
+pub(crate) fn dcs_children<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     local_name: &str,
     namespace: &str,
@@ -2682,7 +2682,7 @@ pub(crate) fn skd_children<'a, 'input>(
         .collect()
 }
 
-pub(crate) fn skd_child<'a, 'input>(
+pub(crate) fn dcs_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     local_name: &str,
     namespace: &str,
@@ -2691,7 +2691,7 @@ pub(crate) fn skd_child<'a, 'input>(
         .find(|child| role_info_element(*child, local_name, Some(namespace)))
 }
 
-pub(crate) fn skd_find_all_path<'a, 'input>(
+pub(crate) fn dcs_find_all_path<'a, 'input>(
     parent: roxmltree::Node<'a, 'input>,
     path: &[(&str, &str)],
 ) -> Vec<roxmltree::Node<'a, 'input>> {
@@ -2699,22 +2699,22 @@ pub(crate) fn skd_find_all_path<'a, 'input>(
     for (local_name, namespace) in path {
         let mut next = Vec::<roxmltree::Node<'a, 'input>>::new();
         for node in current {
-            next.extend(skd_children(node, local_name, namespace));
+            next.extend(dcs_children(node, local_name, namespace));
         }
         current = next;
     }
     current
 }
 
-pub(crate) fn skd_inner_text(node: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_inner_text(node: roxmltree::Node<'_, '_>) -> String {
     node.text().unwrap_or("").to_string()
 }
 
-pub(crate) fn skd_text_of(node: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_text_of(node: roxmltree::Node<'_, '_>) -> String {
     node.text().unwrap_or("").trim().to_string()
 }
 
-pub(crate) fn skd_all_text(node: roxmltree::Node<'_, '_>) -> String {
+pub(crate) fn dcs_all_text(node: roxmltree::Node<'_, '_>) -> String {
     node.descendants()
         .filter(|child| child.is_text())
         .filter_map(|child| child.text())
@@ -2723,7 +2723,7 @@ pub(crate) fn skd_all_text(node: roxmltree::Node<'_, '_>) -> String {
         .to_string()
 }
 
-pub(crate) fn resolve_skd_validate_path(
+pub(crate) fn resolve_dcs_validate_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
@@ -2789,7 +2789,7 @@ pub(crate) fn resolve_skd_validate_path(
     Ok(template_path)
 }
 
-pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let write_result = (|| -> Result<(String, PathBuf), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let value = string_arg(args, &["value", "Value"]);
@@ -2825,7 +2825,7 @@ pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext)
         };
 
         let mut defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("failed to parse SKD JSON: {err}"))?;
+            .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
         {
             let Some(data_sets) = defn.get_mut("dataSets").and_then(Value::as_array_mut) else {
                 return Err("JSON must have at least one entry in 'dataSets'".to_string());
@@ -2850,7 +2850,7 @@ pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext)
             }
         }
 
-        let content = skd_compile_xml(&defn, &query_base_dir, &context.cwd)?;
+        let content = dcs_compile_xml(&defn, &query_base_dir, &context.cwd)?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
@@ -2906,7 +2906,7 @@ pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext)
     match write_result {
         Ok((stdout, output_path)) => AdapterOutcome {
             ok: true,
-            summary: "unica.skd.compile completed with native DCS compiler".to_string(),
+            summary: "unica.dcs.compile completed with native DCS compiler".to_string(),
             changes: vec![format!("created {}", output_path.display())],
             warnings: Vec::new(),
             errors: Vec::new(),
@@ -2917,7 +2917,7 @@ pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext)
         },
         Err(error) => AdapterOutcome {
             ok: false,
-            summary: "unica.skd.compile failed in native DCS compiler".to_string(),
+            summary: "unica.dcs.compile failed in native DCS compiler".to_string(),
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![error.clone()],
@@ -2929,12 +2929,12 @@ pub(crate) fn compile_skd(args: &Map<String, Value>, context: &WorkspaceContext)
     }
 }
 
-pub(crate) fn skd_compile_xml(
+pub(crate) fn dcs_compile_xml(
     defn: &Value,
     query_base_dir: &Path,
     cwd: &Path,
 ) -> Result<String, String> {
-    let data_sources = skd_compile_data_sources(defn);
+    let data_sources = dcs_compile_data_sources(defn);
     let default_source = data_sources
         .first()
         .map(|source| source.0.clone())
@@ -2956,7 +2956,7 @@ pub(crate) fn skd_compile_xml(
 
     if let Some(data_sets) = defn.get("dataSets").and_then(Value::as_array) {
         for data_set in data_sets {
-            skd_compile_emit_data_set(
+            dcs_compile_emit_data_set(
                 &mut lines,
                 data_set,
                 "\t",
@@ -2967,16 +2967,16 @@ pub(crate) fn skd_compile_xml(
         }
     }
 
-    skd_compile_emit_data_set_links(&mut lines, defn);
-    skd_compile_emit_calculated_fields(&mut lines, defn);
-    skd_compile_emit_total_fields(&mut lines, defn);
-    skd_compile_emit_parameters(&mut lines, defn);
-    skd_compile_emit_settings_variants(&mut lines, defn);
+    dcs_compile_emit_data_set_links(&mut lines, defn);
+    dcs_compile_emit_calculated_fields(&mut lines, defn);
+    dcs_compile_emit_total_fields(&mut lines, defn);
+    dcs_compile_emit_parameters(&mut lines, defn);
+    dcs_compile_emit_settings_variants(&mut lines, defn);
     lines.push("</DataCompositionSchema>".to_string());
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-pub(crate) fn skd_compile_data_sources(defn: &Value) -> Vec<(String, String)> {
+pub(crate) fn dcs_compile_data_sources(defn: &Value) -> Vec<(String, String)> {
     if let Some(items) = defn.get("dataSources").and_then(Value::as_array) {
         let mut result = Vec::new();
         for item in items {
@@ -2995,7 +2995,7 @@ pub(crate) fn skd_compile_data_sources(defn: &Value) -> Vec<(String, String)> {
     vec![("ИсточникДанных1".to_string(), "Local".to_string())]
 }
 
-pub(crate) fn skd_compile_emit_data_set(
+pub(crate) fn dcs_compile_emit_data_set(
     lines: &mut Vec<String>,
     data_set: &Value,
     indent: &str,
@@ -3017,7 +3017,7 @@ pub(crate) fn skd_compile_emit_data_set(
     ));
     if let Some(fields) = data_set.get("fields").and_then(Value::as_array) {
         for field in fields {
-            skd_compile_emit_field(lines, field, &format!("{indent}\t"));
+            dcs_compile_emit_field(lines, field, &format!("{indent}\t"));
         }
     }
     if ds_type != "DataSetUnion" {
@@ -3031,7 +3031,7 @@ pub(crate) fn skd_compile_emit_data_set(
     match ds_type {
         "DataSetQuery" => {
             let query = json_string_field(data_set, "query").unwrap_or_default();
-            let query = skd_compile_resolve_query_value(&query, query_base_dir, cwd)?;
+            let query = dcs_compile_resolve_query_value(&query, query_base_dir, cwd)?;
             lines.push(format!("{indent}\t<query>{}</query>", escape_xml(&query)));
             if data_set
                 .get("autoFillFields")
@@ -3051,7 +3051,7 @@ pub(crate) fn skd_compile_emit_data_set(
         "DataSetUnion" => {
             if let Some(items) = data_set.get("items").and_then(Value::as_array) {
                 for item in items {
-                    skd_compile_emit_data_set(
+                    dcs_compile_emit_data_set(
                         lines,
                         item,
                         &format!("{indent}\t"),
@@ -3068,15 +3068,15 @@ pub(crate) fn skd_compile_emit_data_set(
     Ok(())
 }
 
-pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_field(lines: &mut Vec<String>, field: &Value, indent: &str) {
     let (data_path, field_name, title, field_type, presentation_expression) =
         if let Some(text) = field.as_str() {
-            let parsed = skd_compile_parse_field_shorthand(text);
+            let parsed = dcs_compile_parse_field_shorthand(text);
             (
                 parsed.0.clone(),
                 parsed.1,
                 String::new(),
-                skd_compile_resolve_type(&parsed.2),
+                dcs_compile_resolve_type(&parsed.2),
                 String::new(),
             )
         } else {
@@ -3087,7 +3087,7 @@ pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
             let title = json_string_field(field, "title").unwrap_or_default();
             let field_type = field
                 .get("type")
-                .map(skd_compile_type_value)
+                .map(dcs_compile_type_value)
                 .unwrap_or_default();
             let presentation_expression =
                 json_string_field(field, "presentationExpression").unwrap_or_default();
@@ -3110,16 +3110,16 @@ pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
         escape_xml(&field_name)
     ));
     if !title.is_empty() {
-        skd_compile_emit_mltext(lines, &format!("{indent}\t"), "title", &title);
+        dcs_compile_emit_mltext(lines, &format!("{indent}\t"), "title", &title);
     }
-    skd_compile_emit_restriction(
+    dcs_compile_emit_restriction(
         lines,
         field,
         "restrict",
         "useRestriction",
         &format!("{indent}\t"),
     );
-    skd_compile_emit_restriction(
+    dcs_compile_emit_restriction(
         lines,
         field,
         "attrRestrict",
@@ -3128,7 +3128,7 @@ pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
     );
     if !field_type.is_empty() {
         lines.push(format!("{indent}\t<valueType>"));
-        skd_compile_emit_value_type(lines, &field_type, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type(lines, &field_type, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     if !presentation_expression.is_empty() {
@@ -3140,7 +3140,7 @@ pub(crate) fn skd_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
     lines.push(format!("{indent}</field>"));
 }
 
-pub(crate) fn skd_compile_parse_field_shorthand(text: &str) -> (String, String, String) {
+pub(crate) fn dcs_compile_parse_field_shorthand(text: &str) -> (String, String, String) {
     let value = text
         .split_whitespace()
         .filter(|part| !part.starts_with('@') && !part.starts_with('#'))
@@ -3152,21 +3152,21 @@ pub(crate) fn skd_compile_parse_field_shorthand(text: &str) -> (String, String, 
         (
             data_path.clone(),
             data_path,
-            skd_compile_resolve_type(right.trim()),
+            dcs_compile_resolve_type(right.trim()),
         )
     } else {
         (value.to_string(), value.to_string(), String::new())
     }
 }
 
-pub(crate) fn skd_compile_emit_restriction(
+pub(crate) fn dcs_compile_emit_restriction(
     lines: &mut Vec<String>,
     value: &Value,
     source_key: &str,
     tag_name: &str,
     indent: &str,
 ) {
-    let Some(items) = skd_compile_string_items(value.get(source_key)) else {
+    let Some(items) = dcs_compile_string_items(value.get(source_key)) else {
         return;
     };
     if items.is_empty() {
@@ -3194,7 +3194,7 @@ pub(crate) fn skd_compile_emit_restriction(
     lines.push(format!("{indent}</{tag_name}>"));
 }
 
-pub(crate) fn skd_compile_string_items(value: Option<&Value>) -> Option<Vec<String>> {
+pub(crate) fn dcs_compile_string_items(value: Option<&Value>) -> Option<Vec<String>> {
     let value = value?;
     if let Some(items) = value.as_array() {
         return Some(items.iter().map(json_value_to_python_string).collect());
@@ -3219,11 +3219,11 @@ pub(crate) fn skd_compile_string_items(value: Option<&Value>) -> Option<Vec<Stri
     Some(vec![json_value_to_python_string(value)])
 }
 
-pub(crate) fn skd_compile_type_value(value: &Value) -> String {
+pub(crate) fn dcs_compile_type_value(value: &Value) -> String {
     if let Some(items) = value.as_array() {
         return items
             .iter()
-            .map(skd_compile_type_value)
+            .map(dcs_compile_type_value)
             .filter(|item| !item.is_empty())
             .collect::<Vec<_>>()
             .join("|");
@@ -3231,12 +3231,12 @@ pub(crate) fn skd_compile_type_value(value: &Value) -> String {
     json_value_to_python_string(value)
         .split('|')
         .map(str::trim)
-        .map(skd_compile_resolve_type)
+        .map(dcs_compile_resolve_type)
         .collect::<Vec<_>>()
         .join("|")
 }
 
-pub(crate) fn skd_compile_resolve_type(type_str: &str) -> String {
+pub(crate) fn dcs_compile_resolve_type(type_str: &str) -> String {
     if type_str.is_empty() {
         return String::new();
     }
@@ -3244,23 +3244,23 @@ pub(crate) fn skd_compile_resolve_type(type_str: &str) -> String {
         if type_str.ends_with(')') {
             let base = type_str[..open].trim();
             let params = &type_str[open + 1..type_str.len() - 1];
-            if let Some(resolved) = skd_compile_type_synonym(base) {
+            if let Some(resolved) = dcs_compile_type_synonym(base) {
                 return format!("{resolved}({params})");
             }
         }
     }
     if let Some(dot_idx) = type_str.find('.') {
         let prefix = &type_str[..dot_idx];
-        if let Some(resolved) = skd_compile_type_synonym(prefix) {
+        if let Some(resolved) = dcs_compile_type_synonym(prefix) {
             return format!("{resolved}{}", &type_str[dot_idx..]);
         }
     }
-    skd_compile_type_synonym(type_str)
+    dcs_compile_type_synonym(type_str)
         .unwrap_or(type_str)
         .to_string()
 }
 
-pub(crate) fn skd_compile_type_synonym(type_str: &str) -> Option<&'static str> {
+pub(crate) fn dcs_compile_type_synonym(type_str: &str) -> Option<&'static str> {
     match type_str.to_lowercase().as_str() {
         "число" | "int" | "integer" | "number" | "num" => Some("decimal"),
         "bool" => Some("boolean"),
@@ -3280,22 +3280,22 @@ pub(crate) fn skd_compile_type_synonym(type_str: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn skd_compile_emit_value_type(lines: &mut Vec<String>, type_spec: &str, indent: &str) {
+pub(crate) fn dcs_compile_emit_value_type(lines: &mut Vec<String>, type_spec: &str, indent: &str) {
     for part in type_spec
         .split('|')
         .map(str::trim)
         .filter(|part| !part.is_empty())
     {
-        skd_compile_emit_single_value_type(lines, part, indent);
+        dcs_compile_emit_single_value_type(lines, part, indent);
     }
 }
 
-pub(crate) fn skd_compile_emit_single_value_type(
+pub(crate) fn dcs_compile_emit_single_value_type(
     lines: &mut Vec<String>,
     type_str: &str,
     indent: &str,
 ) {
-    let type_str = skd_compile_resolve_type(type_str);
+    let type_str = dcs_compile_resolve_type(type_str);
     if type_str == "boolean" {
         lines.push(format!("{indent}<v8:Type>xs:boolean</v8:Type>"));
         return;
@@ -3304,7 +3304,7 @@ pub(crate) fn skd_compile_emit_single_value_type(
         lines.push(format!("{indent}<v8:Type>v8:StandardPeriod</v8:Type>"));
         return;
     }
-    if let Some(length) = skd_compile_string_length(&type_str) {
+    if let Some(length) = dcs_compile_string_length(&type_str) {
         lines.push(format!("{indent}<v8:Type>xs:string</v8:Type>"));
         lines.push(format!("{indent}<v8:StringQualifiers>"));
         lines.push(format!("{indent}\t<v8:Length>{length}</v8:Length>"));
@@ -3314,7 +3314,7 @@ pub(crate) fn skd_compile_emit_single_value_type(
         lines.push(format!("{indent}</v8:StringQualifiers>"));
         return;
     }
-    if let Some((digits, fraction, sign)) = skd_compile_decimal_qualifiers(&type_str) {
+    if let Some((digits, fraction, sign)) = dcs_compile_decimal_qualifiers(&type_str) {
         lines.push(format!("{indent}<v8:Type>xs:decimal</v8:Type>"));
         lines.push(format!("{indent}<v8:NumberQualifiers>"));
         lines.push(format!("{indent}\t<v8:Digits>{digits}</v8:Digits>"));
@@ -3352,7 +3352,7 @@ pub(crate) fn skd_compile_emit_single_value_type(
     }
 }
 
-pub(crate) fn skd_compile_string_length(type_str: &str) -> Option<&str> {
+pub(crate) fn dcs_compile_string_length(type_str: &str) -> Option<&str> {
     if type_str == "string" {
         return Some("0");
     }
@@ -3360,7 +3360,7 @@ pub(crate) fn skd_compile_string_length(type_str: &str) -> Option<&str> {
     (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())).then_some(rest)
 }
 
-pub(crate) fn skd_compile_decimal_qualifiers(type_str: &str) -> Option<(&str, &str, &'static str)> {
+pub(crate) fn dcs_compile_decimal_qualifiers(type_str: &str) -> Option<(&str, &str, &'static str)> {
     if type_str == "decimal" {
         return Some(("10", "2", "Any"));
     }
@@ -3385,16 +3385,16 @@ pub(crate) fn skd_compile_decimal_qualifiers(type_str: &str) -> Option<(&str, &s
     Some((parts[0], fraction, sign))
 }
 
-pub(crate) fn skd_compile_emit_mltext(
+pub(crate) fn dcs_compile_emit_mltext(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
     text: &str,
 ) {
-    skd_compile_emit_mltext_ex(lines, indent, tag, text, false);
+    dcs_compile_emit_mltext_ex(lines, indent, tag, text, false);
 }
 
-pub(crate) fn skd_compile_emit_mltext_ex(
+pub(crate) fn dcs_compile_emit_mltext_ex(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
@@ -3424,10 +3424,10 @@ pub(crate) fn skd_compile_emit_mltext_ex(
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn skd_compile_emit_default_settings_variant(lines: &mut Vec<String>) {
+pub(crate) fn dcs_compile_emit_default_settings_variant(lines: &mut Vec<String>) {
     lines.push("\t<settingsVariant>".to_string());
     lines.push("\t\t<dcsset:name>Основной</dcsset:name>".to_string());
-    skd_compile_emit_mltext(lines, "\t\t", "dcsset:presentation", "Основной");
+    dcs_compile_emit_mltext(lines, "\t\t", "dcsset:presentation", "Основной");
     lines.push("\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">".to_string());
     lines.push("\t\t\t<dcsset:selection>".to_string());
     lines.push("\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>".to_string());
@@ -3444,7 +3444,7 @@ pub(crate) fn skd_compile_emit_default_settings_variant(lines: &mut Vec<String>)
     lines.push("\t</settingsVariant>".to_string());
 }
 
-pub(crate) fn skd_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Value) {
     let Some(links) = defn.get("dataSetLinks").and_then(Value::as_array) else {
         return;
     };
@@ -3509,13 +3509,13 @@ pub(crate) fn skd_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Va
     }
 }
 
-pub(crate) fn skd_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: &Value) {
     let Some(fields) = defn.get("calculatedFields").and_then(Value::as_array) else {
         return;
     };
     for field in fields {
         let (data_path, expression, title, field_type) = if let Some(text) = field.as_str() {
-            let parsed = skd_edit_parse_calc_field(text);
+            let parsed = dcs_edit_parse_calc_field(text);
             (
                 parsed.data_path,
                 parsed.expression,
@@ -3532,7 +3532,7 @@ pub(crate) fn skd_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: 
                 json_string_field(field, "title").unwrap_or_default(),
                 field
                     .get("type")
-                    .map(skd_compile_type_value)
+                    .map(dcs_compile_type_value)
                     .unwrap_or_default(),
             )
         };
@@ -3546,16 +3546,16 @@ pub(crate) fn skd_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: 
             escape_xml(&expression)
         ));
         if !title.is_empty() {
-            skd_compile_emit_mltext(lines, "\t\t", "title", &title);
+            dcs_compile_emit_mltext(lines, "\t\t", "title", &title);
         }
         if !field_type.is_empty() {
             lines.push("\t\t<valueType>".to_string());
-            skd_compile_emit_value_type(lines, &field_type, "\t\t\t");
+            dcs_compile_emit_value_type(lines, &field_type, "\t\t\t");
             lines.push("\t\t</valueType>".to_string());
         }
-        skd_compile_emit_restriction(lines, field, "restrict", "useRestriction", "\t\t");
+        dcs_compile_emit_restriction(lines, field, "restrict", "useRestriction", "\t\t");
         if let Some(value) = field.get("useRestriction") {
-            skd_compile_emit_restriction(
+            dcs_compile_emit_restriction(
                 lines,
                 &json!({ "useRestriction": value }),
                 "useRestriction",
@@ -3567,7 +3567,7 @@ pub(crate) fn skd_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: 
     }
 }
 
-pub(crate) fn skd_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Value) {
     let Some(fields) = defn.get("totalFields").and_then(Value::as_array) else {
         return;
     };
@@ -3577,12 +3577,12 @@ pub(crate) fn skd_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Valu
                 .split_once(':')
                 .map(|(left, right)| (left.trim().to_string(), right.trim().to_string()))
                 .unwrap_or((text.trim().to_string(), String::new()));
-            let expression = skd_edit_total_expression(&data_path, &expression);
+            let expression = dcs_edit_total_expression(&data_path, &expression);
             (data_path, expression, Vec::new())
         } else {
             let data_path = json_string_field(field, "dataPath").unwrap_or_default();
             let expression = json_string_field(field, "expression").unwrap_or_default();
-            let groups = skd_compile_string_items(field.get("group")).unwrap_or_default();
+            let groups = dcs_compile_string_items(field.get("group")).unwrap_or_default();
             (data_path, expression, groups)
         };
         lines.push("\t<totalField>".to_string());
@@ -3601,26 +3601,26 @@ pub(crate) fn skd_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Valu
     }
 }
 
-pub(crate) fn skd_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value) {
     let Some(parameters) = defn.get("parameters").and_then(Value::as_array) else {
         return;
     };
     for parameter in parameters {
         let parsed = if let Some(text) = parameter.as_str() {
-            skd_edit_parse_parameter(text)
+            dcs_edit_parse_parameter(text)
         } else {
-            SkdEditParameter {
+            DcsEditParameter {
                 name: json_string_field(parameter, "name").unwrap_or_default(),
                 title: json_string_field(parameter, "title")
                     .or_else(|| json_string_field(parameter, "presentation"))
                     .unwrap_or_default(),
                 type_name: parameter
                     .get("type")
-                    .map(skd_compile_type_value)
+                    .map(dcs_compile_type_value)
                     .unwrap_or_default(),
                 values: parameter
                     .get("value")
-                    .map(|value| vec![skd_compile_setting_value_text(value)])
+                    .map(|value| vec![dcs_compile_setting_value_text(value)])
                     .unwrap_or_default(),
                 hidden: parameter
                     .get("hidden")
@@ -3645,20 +3645,20 @@ pub(crate) fn skd_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value)
         lines.push("\t<parameter>".to_string());
         lines.push(format!("\t\t<name>{}</name>", escape_xml(&parsed.name)));
         if !parsed.title.is_empty() {
-            skd_compile_emit_mltext(lines, "\t\t", "title", &parsed.title);
+            dcs_compile_emit_mltext(lines, "\t\t", "title", &parsed.title);
         }
         if !parsed.type_name.is_empty() {
             lines.push("\t\t<valueType>".to_string());
-            skd_compile_emit_value_type(lines, &parsed.type_name, "\t\t\t");
+            dcs_compile_emit_value_type(lines, &parsed.type_name, "\t\t\t");
             lines.push("\t\t</valueType>".to_string());
         }
         if parsed.values.is_empty() {
             if !parsed.value_list_allowed {
-                skd_compile_emit_empty_value(lines, &parsed.type_name, "\t\t", "value");
+                dcs_compile_emit_empty_value(lines, &parsed.type_name, "\t\t", "value");
             }
         } else {
             for value in &parsed.values {
-                skd_compile_emit_parameter_value(lines, &parsed.type_name, value, "\t\t", "value");
+                dcs_compile_emit_parameter_value(lines, &parsed.type_name, value, "\t\t", "value");
             }
         }
         let use_restriction = parsed.hidden
@@ -3701,13 +3701,13 @@ pub(crate) fn skd_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value)
     }
 }
 
-pub(crate) fn skd_compile_emit_empty_value(
+pub(crate) fn dcs_compile_emit_empty_value(
     lines: &mut Vec<String>,
     type_name: &str,
     indent: &str,
     tag_name: &str,
 ) {
-    let type_name = skd_edit_normalize_declared_type(type_name);
+    let type_name = dcs_edit_normalize_declared_type(type_name);
     if type_name.is_empty() {
         lines.push(format!("{indent}<{tag_name} xsi:nil=\"true\"/>"));
     } else if type_name == "StandardPeriod" {
@@ -3743,18 +3743,18 @@ pub(crate) fn skd_compile_emit_empty_value(
     }
 }
 
-pub(crate) fn skd_compile_emit_parameter_value(
+pub(crate) fn dcs_compile_emit_parameter_value(
     lines: &mut Vec<String>,
     type_name: &str,
     value: &str,
     indent: &str,
     tag_name: &str,
 ) {
-    if skd_edit_is_empty_value(value) {
-        skd_compile_emit_empty_value(lines, type_name, indent, tag_name);
+    if dcs_edit_is_empty_value(value) {
+        dcs_compile_emit_empty_value(lines, type_name, indent, tag_name);
         return;
     }
-    let normalized_type = skd_edit_normalize_declared_type(type_name);
+    let normalized_type = dcs_edit_normalize_declared_type(type_name);
     if normalized_type == "StandardPeriod" {
         lines.push(format!(
             "{indent}<{tag_name} xsi:type=\"v8:StandardPeriod\">"
@@ -3774,7 +3774,7 @@ pub(crate) fn skd_compile_emit_parameter_value(
         lines.push(format!("{indent}</{tag_name}>"));
         return;
     }
-    let xsi_type = skd_compile_setting_xsi_type(Some(&normalized_type), value);
+    let xsi_type = dcs_compile_setting_xsi_type(Some(&normalized_type), value);
     let value_text = if xsi_type == "xs:boolean" {
         value.to_lowercase()
     } else {
@@ -3786,13 +3786,13 @@ pub(crate) fn skd_compile_emit_parameter_value(
     ));
 }
 
-pub(crate) fn skd_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
     let Some(variants) = defn.get("settingsVariants").and_then(Value::as_array) else {
-        skd_compile_emit_default_settings_variant(lines);
+        dcs_compile_emit_default_settings_variant(lines);
         return;
     };
     if variants.is_empty() {
-        skd_compile_emit_default_settings_variant(lines);
+        dcs_compile_emit_default_settings_variant(lines);
         return;
     }
     for variant in variants {
@@ -3805,45 +3805,45 @@ pub(crate) fn skd_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
         let presentation = json_string_field(variant, "presentation")
             .or_else(|| json_string_field(variant, "title"))
             .unwrap_or_else(|| name.clone());
-        skd_compile_emit_mltext(lines, "\t\t", "dcsset:presentation", &presentation);
+        dcs_compile_emit_mltext(lines, "\t\t", "dcsset:presentation", &presentation);
         lines.push("\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">".to_string());
         let settings = variant.get("settings").unwrap_or(&Value::Null);
         if let Some(selection) = settings.get("selection").and_then(Value::as_array) {
-            skd_compile_emit_selection(lines, selection, "\t\t\t");
+            dcs_compile_emit_selection(lines, selection, "\t\t\t");
         }
         if let Some(filter) = settings.get("filter").and_then(Value::as_array) {
-            skd_compile_emit_filter(lines, filter, "\t\t\t");
+            dcs_compile_emit_filter(lines, filter, "\t\t\t");
         }
         if let Some(order) = settings.get("order").and_then(Value::as_array) {
-            skd_compile_emit_order(lines, order, "\t\t\t");
+            dcs_compile_emit_order(lines, order, "\t\t\t");
         }
         if let Some(output_parameters) = settings.get("outputParameters").and_then(Value::as_object)
         {
-            skd_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
+            dcs_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
         }
         if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
-            skd_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
+            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
         }
         if let Some(structure) = settings.get("structure") {
-            skd_compile_emit_structure(lines, structure, "\t\t\t");
+            dcs_compile_emit_structure(lines, structure, "\t\t\t");
         }
         lines.push("\t\t</dcsset:settings>".to_string());
         lines.push("\t</settingsVariant>".to_string());
     }
 }
 
-pub(crate) fn skd_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+pub(crate) fn dcs_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
     }
     lines.push(format!("{indent}<dcsset:selection>"));
     for item in items {
-        skd_compile_emit_selection_item(lines, item, &format!("{indent}\t"));
+        dcs_compile_emit_selection_item(lines, item, &format!("{indent}\t"));
     }
     lines.push(format!("{indent}</dcsset:selection>"));
 }
 
-pub(crate) fn skd_compile_emit_selection_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_selection_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     if let Some(text) = item.as_str() {
         if text == "Auto" {
             lines.push(format!(
@@ -3891,7 +3891,7 @@ pub(crate) fn skd_compile_emit_selection_item(lines: &mut Vec<String>, item: &Va
         escape_xml(&field)
     ));
     if let Some(title) = json_string_field(item, "title").filter(|value| !value.is_empty()) {
-        skd_compile_emit_mltext_ex(
+        dcs_compile_emit_mltext_ex(
             lines,
             &format!("{indent}\t"),
             "dcsset:lwsTitle",
@@ -3908,21 +3908,21 @@ pub(crate) fn skd_compile_emit_selection_item(lines: &mut Vec<String>, item: &Va
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
-pub(crate) fn skd_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+pub(crate) fn dcs_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
     }
     lines.push(format!("{indent}<dcsset:filter>"));
     for item in items {
-        skd_compile_emit_filter_item(lines, item, &format!("{indent}\t"));
+        dcs_compile_emit_filter_item(lines, item, &format!("{indent}\t"));
     }
     lines.push(format!("{indent}</dcsset:filter>"));
 }
 
-pub(crate) fn skd_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     let parsed_from_string;
     let item = if let Some(text) = item.as_str() {
-        let parsed = skd_edit_parse_filter(text);
+        let parsed = dcs_edit_parse_filter(text);
         parsed_from_string = json!({
             "field": parsed.field,
             "op": parsed.operator,
@@ -3954,13 +3954,13 @@ pub(crate) fn skd_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value
     let operator = json_string_field(item, "op").unwrap_or_else(|| "Equal".to_string());
     lines.push(format!(
         "{indent}\t<dcsset:comparisonType>{}</dcsset:comparisonType>",
-        escape_xml(skd_compile_comparison_type(&operator))
+        escape_xml(dcs_compile_comparison_type(&operator))
     ));
     if let Some(value) = item.get("value").filter(|value| !value.is_null()) {
-        let value_text = skd_compile_setting_value_text(value);
+        let value_text = dcs_compile_setting_value_text(value);
         if !value_text.is_empty() {
             let explicit_type = json_string_field(item, "valueType");
-            let xsi_type = skd_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
+            let xsi_type = dcs_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
             lines.push(format!(
                 "{indent}\t<dcsset:right xsi:type=\"{xsi_type}\">{}</dcsset:right>",
                 escape_xml(&value_text)
@@ -3984,26 +3984,26 @@ pub(crate) fn skd_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
-pub(crate) fn skd_compile_emit_order(lines: &mut Vec<String>, items: &[Value], indent: &str) {
+pub(crate) fn dcs_compile_emit_order(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
     }
     lines.push(format!("{indent}<dcsset:order>"));
     for item in items {
         let fragment = if let Some(text) = item.as_str() {
-            skd_edit_order_fragment(text, &format!("{indent}\t"))
+            dcs_edit_order_fragment(text, &format!("{indent}\t"))
         } else {
             let field = json_string_field(item, "field").unwrap_or_default();
             let direction =
                 json_string_field(item, "direction").unwrap_or_else(|| "Asc".to_string());
-            skd_edit_order_fragment(&format!("{field} {direction}"), &format!("{indent}\t"))
+            dcs_edit_order_fragment(&format!("{field} {direction}"), &format!("{indent}\t"))
         };
         lines.extend(fragment.lines().map(ToOwned::to_owned));
     }
     lines.push(format!("{indent}</dcsset:order>"));
 }
 
-pub(crate) fn skd_compile_emit_output_parameters(
+pub(crate) fn dcs_compile_emit_output_parameters(
     lines: &mut Vec<String>,
     params: &Map<String, Value>,
     indent: &str,
@@ -4029,10 +4029,10 @@ pub(crate) fn skd_compile_emit_output_parameters(
         } else {
             (raw_value, None, false)
         };
-        let value_text = skd_compile_setting_value_text(value);
+        let value_text = dcs_compile_setting_value_text(value);
         let xsi_type = explicit_type
             .as_deref()
-            .unwrap_or_else(|| skd_compile_output_parameter_type(key, value));
+            .unwrap_or_else(|| dcs_compile_output_parameter_type(key, value));
         lines.push(format!(
             "{indent}\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
         ));
@@ -4044,7 +4044,7 @@ pub(crate) fn skd_compile_emit_output_parameters(
             escape_xml(key)
         ));
         if xsi_type == "mltext" {
-            skd_compile_emit_mltext(lines, &format!("{indent}\t\t"), "dcscor:value", &value_text);
+            dcs_compile_emit_mltext(lines, &format!("{indent}\t\t"), "dcscor:value", &value_text);
         } else {
             lines.push(format!(
                 "{indent}\t\t<dcscor:value xsi:type=\"{xsi_type}\">{}</dcscor:value>",
@@ -4056,7 +4056,7 @@ pub(crate) fn skd_compile_emit_output_parameters(
     lines.push(format!("{indent}</dcsset:outputParameters>"));
 }
 
-pub(crate) fn skd_compile_emit_data_parameters(
+pub(crate) fn dcs_compile_emit_data_parameters(
     lines: &mut Vec<String>,
     items: &[Value],
     indent: &str,
@@ -4088,9 +4088,9 @@ pub(crate) fn skd_compile_emit_data_parameters(
         {
             lines.push(format!("{indent}\t\t<dcscor:value xsi:nil=\"true\"/>"));
         } else if let Some(value) = item.get("value").filter(|value| !value.is_null()) {
-            let value_text = skd_compile_setting_value_text(value);
+            let value_text = dcs_compile_setting_value_text(value);
             let explicit_type = json_string_field(item, "valueType");
-            let xsi_type = skd_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
+            let xsi_type = dcs_compile_setting_xsi_type(explicit_type.as_deref(), &value_text);
             lines.push(format!(
                 "{indent}\t\t<dcscor:value xsi:type=\"{xsi_type}\">{}</dcscor:value>",
                 escape_xml(&value_text)
@@ -4115,7 +4115,7 @@ pub(crate) fn skd_compile_emit_data_parameters(
         if let Some(presentation) =
             json_string_field(item, "userSettingPresentation").filter(|value| !value.is_empty())
         {
-            skd_compile_emit_mltext(
+            dcs_compile_emit_mltext(
                 lines,
                 &format!("{indent}\t\t"),
                 "dcsset:userSettingPresentation",
@@ -4127,26 +4127,26 @@ pub(crate) fn skd_compile_emit_data_parameters(
     lines.push(format!("{indent}</dcsset:dataParameters>"));
 }
 
-pub(crate) fn skd_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
     if let Some(text) = structure.as_str() {
-        for item in skd_edit_parse_structure(text) {
-            let fragment = skd_edit_structure_item_fragment(&item, indent);
+        for item in dcs_edit_parse_structure(text) {
+            let fragment = dcs_edit_structure_item_fragment(&item, indent);
             lines.extend(fragment.lines().map(ToOwned::to_owned));
         }
         return;
     }
     if let Some(item) = structure.as_object() {
-        skd_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
+        dcs_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
         return;
     }
     if let Some(items) = structure.as_array() {
         for item in items {
-            skd_compile_emit_structure_item(lines, item, indent);
+            dcs_compile_emit_structure_item(lines, item, indent);
         }
     }
 }
 
-pub(crate) fn skd_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     let item_type = json_string_field(item, "type").unwrap_or_else(|| "group".to_string());
     if item_type != "group" {
         return;
@@ -4168,30 +4168,30 @@ pub(crate) fn skd_compile_emit_structure_item(lines: &mut Vec<String>, item: &Va
         ));
     }
     let group_by = item.get("groupBy").or_else(|| item.get("groupFields"));
-    skd_compile_emit_group_items(lines, group_by, &format!("{indent}\t"));
+    dcs_compile_emit_group_items(lines, group_by, &format!("{indent}\t"));
     if let Some(order) = item.get("order").and_then(Value::as_array) {
-        skd_compile_emit_order(lines, order, &format!("{indent}\t"));
+        dcs_compile_emit_order(lines, order, &format!("{indent}\t"));
     }
     if let Some(selection) = item.get("selection").and_then(Value::as_array) {
-        skd_compile_emit_selection(lines, selection, &format!("{indent}\t"));
+        dcs_compile_emit_selection(lines, selection, &format!("{indent}\t"));
     }
     if let Some(filter) = item.get("filter").and_then(Value::as_array) {
-        skd_compile_emit_filter(lines, filter, &format!("{indent}\t"));
+        dcs_compile_emit_filter(lines, filter, &format!("{indent}\t"));
     }
     if let Some(children) = item.get("children").and_then(Value::as_array) {
         for child in children {
-            skd_compile_emit_structure_item(lines, child, &format!("{indent}\t"));
+            dcs_compile_emit_structure_item(lines, child, &format!("{indent}\t"));
         }
     }
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
-pub(crate) fn skd_compile_emit_group_items(
+pub(crate) fn dcs_compile_emit_group_items(
     lines: &mut Vec<String>,
     value: Option<&Value>,
     indent: &str,
 ) {
-    let Some(items) = skd_compile_string_items(value) else {
+    let Some(items) = dcs_compile_string_items(value) else {
         return;
     };
     if items.is_empty() {
@@ -4225,7 +4225,7 @@ pub(crate) fn skd_compile_emit_group_items(
     lines.push(format!("{indent}</dcsset:groupItems>"));
 }
 
-pub(crate) fn skd_compile_comparison_type(operator: &str) -> &str {
+pub(crate) fn dcs_compile_comparison_type(operator: &str) -> &str {
     match operator {
         "=" => "Equal",
         "<>" => "NotEqual",
@@ -4245,7 +4245,7 @@ pub(crate) fn skd_compile_comparison_type(operator: &str) -> &str {
     }
 }
 
-pub(crate) fn skd_compile_setting_value_text(value: &Value) -> String {
+pub(crate) fn dcs_compile_setting_value_text(value: &Value) -> String {
     match value {
         Value::Bool(value) => value.to_string(),
         Value::String(value) => value.clone(),
@@ -4255,7 +4255,7 @@ pub(crate) fn skd_compile_setting_value_text(value: &Value) -> String {
     }
 }
 
-pub(crate) fn skd_compile_setting_xsi_type(explicit_type: Option<&str>, value: &str) -> String {
+pub(crate) fn dcs_compile_setting_xsi_type(explicit_type: Option<&str>, value: &str) -> String {
     if let Some(explicit_type) = explicit_type {
         if explicit_type.contains(':') {
             return explicit_type.to_string();
@@ -4279,14 +4279,14 @@ pub(crate) fn skd_compile_setting_xsi_type(explicit_type: Option<&str>, value: &
         "xs:dateTime".to_string()
     } else if value.parse::<f64>().is_ok() {
         "xs:decimal".to_string()
-    } else if skd_edit_is_design_time_value(value) {
+    } else if dcs_edit_is_design_time_value(value) {
         "dcscor:DesignTimeValue".to_string()
     } else {
         "xs:string".to_string()
     }
 }
 
-pub(crate) fn skd_compile_output_parameter_type(key: &str, value: &Value) -> &'static str {
+pub(crate) fn dcs_compile_output_parameter_type(key: &str, value: &Value) -> &'static str {
     if value.is_object() && !value.get("@type").is_some_and(|value| value == "Font") {
         return "mltext";
     }
@@ -4315,7 +4315,7 @@ pub(crate) fn skd_compile_output_parameter_type(key: &str, value: &Value) -> &'s
     }
 }
 
-pub(crate) fn skd_compile_resolve_query_value(
+pub(crate) fn dcs_compile_resolve_query_value(
     value: &str,
     base_dir: &Path,
     cwd: &Path,
@@ -4346,9 +4346,9 @@ pub(crate) fn skd_compile_resolve_query_value(
     ))
 }
 
-pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
-        let template_path = resolve_skd_validate_path(args, context)?;
+        let template_path = resolve_dcs_validate_path(args, context)?;
         let operation = required_string(args, &["operation", "Operation"], "Operation")?;
         let value_arg = required_string(args, &["value", "Value"], "Value")?;
         let data_set = string_arg(args, &["dataSet", "DataSet"]).unwrap_or("");
@@ -4369,12 +4369,12 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
         };
         let original_xml_text = xml_text.clone();
         let base_dir = template_path.parent().unwrap_or(context.cwd.as_path());
-        let values = skd_edit_split_values(operation, value_arg);
+        let values = dcs_edit_split_values(operation, value_arg);
         let mut force_save = false;
         let mut stdout = String::new();
         for value in values {
             match operation {
-                "add-field" => skd_edit_add_field(
+                "add-field" => dcs_edit_add_field(
                     &mut xml_text,
                     data_set,
                     variant,
@@ -4387,25 +4387,25 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         .split_once(':')
                         .map(|(left, right)| (left.trim(), right.trim()))
                         .unwrap_or((value.trim(), ""));
-                    let expression = skd_edit_total_expression(key, expression);
-                    skd_edit_add_top_level_fragment(
+                    let expression = dcs_edit_total_expression(key, expression);
+                    dcs_edit_add_top_level_fragment(
                         &mut xml_text,
                         "totalField",
                         "dataPath",
                         key,
-                        &skd_edit_total_fragment(key, &expression),
+                        &dcs_edit_total_fragment(key, &expression),
                         &format!("[OK] TotalField \"{key}\" = {expression} added\n"),
                         &mut stdout,
                     )?;
                 }
                 "add-calculated-field" => {
-                    let parsed = skd_edit_parse_calc_field(&value);
-                    skd_edit_add_top_level_fragment(
+                    let parsed = dcs_edit_parse_calc_field(&value);
+                    dcs_edit_add_top_level_fragment(
                         &mut xml_text,
                         "calculatedField",
                         "dataPath",
                         &parsed.data_path,
-                        &skd_edit_calc_field_fragment(&parsed, "\t"),
+                        &dcs_edit_calc_field_fragment(&parsed, "\t"),
                         &format!(
                             "[OK] CalculatedField \"{}\" = {} added\n",
                             parsed.data_path, parsed.expression
@@ -4413,8 +4413,8 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         &mut stdout,
                     )?;
                     if !no_selection {
-                        let fragment = skd_edit_selection_fragment(&parsed.data_path, "\t\t\t");
-                        if skd_edit_insert_prefixed_item(
+                        let fragment = dcs_edit_selection_fragment(&parsed.data_path, "\t\t\t");
+                        if dcs_edit_insert_prefixed_item(
                             &mut xml_text,
                             variant,
                             "dcsset:selection",
@@ -4425,26 +4425,26 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             stdout.push_str(&format!(
                                 "[OK] Field \"{}\" added to selection of variant \"{}\"\n",
                                 parsed.data_path,
-                                skd_edit_variant_name(&xml_text, variant)
+                                dcs_edit_variant_name(&xml_text, variant)
                                     .unwrap_or_else(|| variant.to_string())
                             ));
                         }
                     }
                 }
                 "add-parameter" => {
-                    let parsed = skd_edit_parse_parameter(&value);
-                    skd_edit_add_top_level_fragment(
+                    let parsed = dcs_edit_parse_parameter(&value);
+                    dcs_edit_add_top_level_fragment(
                         &mut xml_text,
                         "parameter",
                         "name",
                         &parsed.name,
-                        &skd_edit_parameter_fragment(&parsed, "\t"),
+                        &dcs_edit_parameter_fragment(&parsed, "\t"),
                         &format!("[OK] Parameter \"{}\" added\n", parsed.name),
                         &mut stdout,
                     )?;
                     if parsed.auto_dates {
                         for suffix in ["ДатаНачала", "ДатаОкончания"] {
-                            let auto = SkdEditParameter {
+                            let auto = DcsEditParameter {
                                 name: suffix.to_string(),
                                 title: if suffix == "ДатаНачала" {
                                     "Начало периода".to_string()
@@ -4460,12 +4460,12 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 auto_dates: false,
                                 expression: Some(format!("&{}.{}", parsed.name, suffix)),
                             };
-                            let _ = skd_edit_add_top_level_fragment(
+                            let _ = dcs_edit_add_top_level_fragment(
                                 &mut xml_text,
                                 "parameter",
                                 "name",
                                 &auto.name,
-                                &skd_edit_parameter_fragment(&auto, "\t"),
+                                &dcs_edit_parameter_fragment(&auto, "\t"),
                                 "",
                                 &mut String::new(),
                             );
@@ -4476,15 +4476,15 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     }
                 }
                 "add-filter" => {
-                    let parsed = skd_edit_parse_filter(&value);
-                    let indent = skd_edit_settings_container_child_indent(
+                    let parsed = dcs_edit_parse_filter(&value);
+                    let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
                         "dcsset:filter",
                     )
                     .unwrap_or_else(|_| "\t\t\t".to_string());
-                    let fragment = skd_edit_filter_fragment(&parsed, &indent);
-                    skd_edit_insert_or_create_settings_item(
+                    let fragment = dcs_edit_filter_fragment(&parsed, &indent);
+                    dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:filter",
@@ -4494,20 +4494,20 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "[OK] Filter \"{} {}\" added to variant \"{}\"\n",
                         parsed.field,
                         parsed.operator,
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "add-dataParameter" => {
-                    let parsed = skd_edit_parse_data_parameter(&value);
-                    let indent = skd_edit_settings_container_child_indent(
+                    let parsed = dcs_edit_parse_data_parameter(&value);
+                    let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
                         "dcsset:dataParameters",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = skd_edit_data_parameter_fragment(&parsed, &indent);
-                    skd_edit_insert_or_create_settings_item(
+                    let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent);
+                    dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:dataParameters",
@@ -4516,28 +4516,28 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     stdout.push_str(&format!(
                         "[OK] DataParameter \"{}\" added to variant \"{}\"\n",
                         parsed.parameter,
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "set-query" => {
-                    let query = skd_compile_resolve_query_value(&value, base_dir, &context.cwd)?;
-                    skd_edit_set_query(&mut xml_text, data_set, &query)?;
+                    let query = dcs_compile_resolve_query_value(&value, base_dir, &context.cwd)?;
+                    dcs_edit_set_query(&mut xml_text, data_set, &query)?;
                     stdout.push_str(&format!(
                         "[OK] Query replaced in dataset \"{}\"\n",
-                        skd_edit_dataset_name(&xml_text, data_set)
+                        dcs_edit_dataset_name(&xml_text, data_set)
                             .unwrap_or_else(|| data_set.to_string())
                     ));
                 }
                 "patch-query" => {
-                    let (value, once) = skd_edit_extract_once_marker(&value);
+                    let (value, once) = dcs_edit_extract_once_marker(&value);
                     let Some((old, new)) = value.split_once(" => ") else {
                         return Err(
                             "patch-query value must contain ' => ' separator: old => new"
                                 .to_string(),
                         );
                     };
-                    let count = skd_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
+                    let count = dcs_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
                     let suffix = if once {
                         " (1 occurrence)".to_string()
                     } else {
@@ -4545,52 +4545,52 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     };
                     stdout.push_str(&format!(
                         "[OK] Query patched in dataset \"{}\": replaced '{}'{}\n",
-                        skd_edit_dataset_name(&xml_text, data_set)
+                        dcs_edit_dataset_name(&xml_text, data_set)
                             .unwrap_or_else(|| data_set.to_string()),
                         old,
                         suffix
                     ));
                 }
                 "clear-selection" => {
-                    skd_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
+                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
                     stdout.push_str(&format!(
                         "[OK] Selection cleared in variant \"{}\"\n",
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "clear-order" => {
-                    skd_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
+                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
                     stdout.push_str(&format!(
                         "[OK] Order cleared in variant \"{}\"\n",
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "clear-filter" => {
-                    skd_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
+                    dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
                     stdout.push_str(&format!(
                         "[OK] Filter cleared in variant \"{}\"\n",
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "clear-conditionalAppearance" => {
-                    skd_edit_clear_prefixed_container(
+                    dcs_edit_clear_prefixed_container(
                         &mut xml_text,
                         variant,
                         "dcsset:conditionalAppearance",
                     )?;
                     stdout.push_str(&format!(
                         "[OK] ConditionalAppearance cleared in variant \"{}\"\n",
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "add-selection" => {
-                    let parsed = skd_edit_parse_selection_value(&value);
+                    let parsed = dcs_edit_parse_selection_value(&value);
                     if let Some(group_name) = &parsed.group {
-                        if skd_edit_insert_selection_into_group(
+                        if dcs_edit_insert_selection_into_group(
                             &mut xml_text,
                             variant,
                             group_name,
@@ -4605,14 +4605,14 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 "[WARN] StructureItemGroup \"{}\" not found -- adding to variant level\n",
                                 group_name
                             ));
-                            let indent = skd_edit_settings_container_child_indent(
+                            let indent = dcs_edit_settings_container_child_indent(
                                 &xml_text,
                                 variant,
                                 "dcsset:selection",
                             )
                             .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                            let fragment = skd_edit_selection_fragment(&parsed.field, &indent);
-                            skd_edit_insert_or_create_settings_item(
+                            let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
+                            dcs_edit_insert_or_create_settings_item(
                                 &mut xml_text,
                                 variant,
                                 "dcsset:selection",
@@ -4621,19 +4621,19 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             stdout.push_str(&format!(
                                 "[OK] Selection \"{}\" added to variant \"{}\"\n",
                                 parsed.field,
-                                skd_edit_variant_name(&xml_text, variant)
+                                dcs_edit_variant_name(&xml_text, variant)
                                     .unwrap_or_else(|| variant.to_string())
                             ));
                         }
                     } else {
-                        let indent = skd_edit_settings_container_child_indent(
+                        let indent = dcs_edit_settings_container_child_indent(
                             &xml_text,
                             variant,
                             "dcsset:selection",
                         )
                         .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                        let fragment = skd_edit_selection_fragment(&parsed.field, &indent);
-                        skd_edit_insert_or_create_settings_item(
+                        let fragment = dcs_edit_selection_fragment(&parsed.field, &indent);
+                        dcs_edit_insert_or_create_settings_item(
                             &mut xml_text,
                             variant,
                             "dcsset:selection",
@@ -4642,21 +4642,21 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         stdout.push_str(&format!(
                             "[OK] Selection \"{}\" added to variant \"{}\"\n",
                             parsed.field,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
                 }
                 "add-order" => {
-                    let indent = skd_edit_settings_container_child_indent(
+                    let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
                         "dcsset:order",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = skd_edit_order_fragment(&value, &indent);
-                    let desc = skd_edit_order_description(&value);
-                    skd_edit_insert_or_create_settings_item(
+                    let fragment = dcs_edit_order_fragment(&value, &indent);
+                    let desc = dcs_edit_order_description(&value);
+                    dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:order",
@@ -4665,14 +4665,14 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     stdout.push_str(&format!(
                         "[OK] Order \"{}\" added to variant \"{}\"\n",
                         desc,
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "add-dataSetLink" => {
-                    let parsed = skd_edit_parse_data_set_link(&value)?;
-                    let fragment = skd_edit_data_set_link_fragment(&parsed, "\t");
-                    skd_edit_insert_before_first_root_child(
+                    let parsed = dcs_edit_parse_data_set_link(&value)?;
+                    let fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
+                    dcs_edit_insert_before_first_root_child(
                         &mut xml_text,
                         &[
                             "calculatedField",
@@ -4694,17 +4694,17 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     stdout.push_str(&format!("[OK] DataSetLink \"{desc}\" added\n"));
                 }
                 "add-dataSet" => {
-                    let parsed = skd_edit_parse_data_set(&value, base_dir, &context.cwd)?;
-                    if skd_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
+                    let parsed = dcs_edit_parse_data_set(&value, base_dir, &context.cwd)?;
+                    if dcs_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
                         stdout.push_str(&format!(
                             "[WARN] DataSet \"{}\" already exists -- skipped\n",
                             parsed.name
                         ));
                     } else {
-                        let source = skd_edit_first_data_source(&xml_text)
+                        let source = dcs_edit_first_data_source(&xml_text)
                             .unwrap_or_else(|| "ИсточникДанных1".to_string());
-                        let fragment = skd_edit_data_set_fragment(&parsed, &source, "\t");
-                        skd_edit_insert_before_first_root_child(
+                        let fragment = dcs_edit_data_set_fragment(&parsed, &source, "\t");
+                        dcs_edit_insert_before_first_root_child(
                             &mut xml_text,
                             &[
                                 "dataSetLink",
@@ -4722,15 +4722,15 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     }
                 }
                 "add-variant" => {
-                    let parsed = skd_edit_parse_variant(&value);
-                    if skd_edit_variant_exists(&xml_text, &parsed.name) {
+                    let parsed = dcs_edit_parse_variant(&value);
+                    if dcs_edit_variant_exists(&xml_text, &parsed.name) {
                         stdout.push_str(&format!(
                             "[WARN] Variant \"{}\" already exists -- skipped\n",
                             parsed.name
                         ));
                     } else {
-                        let fragment = skd_edit_variant_fragment(&parsed, "\t");
-                        skd_edit_insert_before_root_close(&mut xml_text, &fragment)?;
+                        let fragment = dcs_edit_variant_fragment(&parsed, "\t");
+                        dcs_edit_insert_before_root_close(&mut xml_text, &fragment)?;
                         stdout.push_str(&format!(
                             "[OK] Variant \"{}\" [\"{}\"] added\n",
                             parsed.name, parsed.presentation
@@ -4738,49 +4738,49 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     }
                 }
                 "add-conditionalAppearance" => {
-                    let parsed = skd_edit_parse_conditional_appearance(&value);
-                    let indent = skd_edit_settings_container_child_indent(
+                    let parsed = dcs_edit_parse_conditional_appearance(&value);
+                    let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
                         "dcsset:conditionalAppearance",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = skd_edit_conditional_appearance_fragment(&parsed, &indent);
-                    skd_edit_insert_or_create_settings_item(
+                    let fragment = dcs_edit_conditional_appearance_fragment(&parsed, &indent);
+                    dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:conditionalAppearance",
                         &fragment,
                     )?;
-                    let desc = skd_edit_conditional_appearance_description(&parsed);
+                    let desc = dcs_edit_conditional_appearance_description(&parsed);
                     stdout.push_str(&format!(
                         "[OK] ConditionalAppearance \"{}\" added to variant \"{}\"\n",
                         desc,
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
                 "add-drilldown" => {
-                    match skd_edit_add_drilldown(&mut xml_text, &value) {
-                        SkdEditDrilldownResult::Added => {
+                    match dcs_edit_add_drilldown(&mut xml_text, &value) {
+                        DcsEditDrilldownResult::Added => {
                             stdout.push_str(&format!("[OK] DrillDown added for \"{}\"\n", value));
                         }
-                        SkdEditDrilldownResult::NoNamedTemplates => {
+                        DcsEditDrilldownResult::NoNamedTemplates => {
                             stdout.push_str("[WARN] No named templates found in schema\n");
                         }
-                        SkdEditDrilldownResult::NoMatch => {}
+                        DcsEditDrilldownResult::NoMatch => {}
                     }
                     force_save = true;
                 }
                 "set-outputParameter" => {
-                    let parsed = skd_edit_parse_output_parameter(&value)?;
+                    let parsed = dcs_edit_parse_output_parameter(&value)?;
                     let mut replaced = false;
-                    if let Ok(range) = skd_edit_prefixed_container_range(
+                    if let Ok(range) = dcs_edit_prefixed_container_range(
                         &xml_text,
                         variant,
                         "dcsset:outputParameters",
                     ) {
-                        replaced = skd_edit_remove_item_by_child(
+                        replaced = dcs_edit_remove_item_by_child(
                             &mut xml_text,
                             (range.open_end, range.close_start),
                             "dcscor:item",
@@ -4788,14 +4788,14 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             &parsed.key,
                         )?;
                     }
-                    let indent = skd_edit_settings_container_child_indent(
+                    let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
                         "dcsset:outputParameters",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = skd_edit_output_parameter_fragment(&parsed, &indent);
-                    skd_edit_insert_or_create_settings_item(
+                    let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent);
+                    dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:outputParameters",
@@ -4805,35 +4805,35 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         stdout.push_str(&format!(
                             "[OK] Replaced outputParameter \"{}\" in variant \"{}\"\n",
                             parsed.key,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     } else {
                         stdout.push_str(&format!(
                             "[OK] OutputParameter \"{}\" added to variant \"{}\"\n",
                             parsed.key,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
                 }
                 "set-structure" => {
-                    let parsed = skd_edit_parse_structure(&value);
-                    let fragments = skd_edit_structure_fragments(&parsed, "\t\t\t");
-                    skd_edit_replace_structure(&mut xml_text, variant, &fragments)?;
+                    let parsed = dcs_edit_parse_structure(&value);
+                    let fragments = dcs_edit_structure_fragments(&parsed, "\t\t\t");
+                    dcs_edit_replace_structure(&mut xml_text, variant, &fragments)?;
                     stdout.push_str(&format!(
                         "[OK] Structure set in variant \"{}\": {}\n",
-                        skd_edit_variant_name(&xml_text, variant)
+                        dcs_edit_variant_name(&xml_text, variant)
                             .unwrap_or_else(|| variant.to_string()),
                         value
                     ));
                 }
                 "modify-structure" => {
-                    let parsed = skd_edit_parse_structure(&value);
-                    skd_edit_modify_structure(&mut xml_text, variant, &parsed, &mut stdout)?;
+                    let parsed = dcs_edit_parse_structure(&value);
+                    dcs_edit_modify_structure(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
                 "remove-field" => {
-                    let removed = skd_edit_remove_dataset_item(
+                    let removed = dcs_edit_remove_dataset_item(
                         &mut xml_text,
                         data_set,
                         "field",
@@ -4844,29 +4844,29 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         stdout.push_str(&format!(
                             "[OK] Field \"{}\" removed from dataset \"{}\"\n",
                             value,
-                            skd_edit_dataset_name(&xml_text, data_set)
+                            dcs_edit_dataset_name(&xml_text, data_set)
                                 .unwrap_or_else(|| data_set.to_string())
                         ));
                     } else {
                         stdout.push_str(&format!(
                             "[WARN] Field \"{}\" not found in dataset \"{}\"\n",
                             value,
-                            skd_edit_dataset_name(&xml_text, data_set)
+                            dcs_edit_dataset_name(&xml_text, data_set)
                                 .unwrap_or_else(|| data_set.to_string())
                         ));
                     }
-                    if skd_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
+                    if dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
                         stdout.push_str(&format!(
                             "[OK] Field \"{}\" removed from selection of variant \"{}\"\n",
                             value,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
                 }
                 "remove-parameter" => {
                     let removed =
-                        skd_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
+                        dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
                     if removed {
                         stdout.push_str(&format!("[OK] Parameter \"{}\" removed\n", value));
                     } else {
@@ -4874,34 +4874,34 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     }
                 }
                 "modify-field" => {
-                    let parsed = skd_edit_parse_field(&value);
-                    if skd_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)? {
+                    let parsed = dcs_edit_parse_field(&value);
+                    if dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)? {
                         stdout.push_str(&format!(
                             "[OK] Field \"{}\" modified in dataset \"{}\"\n",
                             parsed.data_path,
-                            skd_edit_dataset_name(&xml_text, data_set)
+                            dcs_edit_dataset_name(&xml_text, data_set)
                                 .unwrap_or_else(|| data_set.to_string())
                         ));
                     } else {
                         stdout.push_str(&format!(
                             "[WARN] Field \"{}\" not found in dataset \"{}\"\n",
                             parsed.data_path,
-                            skd_edit_dataset_name(&xml_text, data_set)
+                            dcs_edit_dataset_name(&xml_text, data_set)
                                 .unwrap_or_else(|| data_set.to_string())
                         ));
                     }
                 }
                 "set-field-role" => {
-                    skd_edit_set_field_role(&mut xml_text, data_set, &value, &mut stdout)?;
+                    dcs_edit_set_field_role(&mut xml_text, data_set, &value, &mut stdout)?;
                 }
                 "modify-filter" => {
-                    let parsed = skd_edit_parse_filter(&value);
+                    let parsed = dcs_edit_parse_filter(&value);
                     force_save |=
-                        skd_edit_modify_filter(&mut xml_text, variant, &parsed, &mut stdout)?;
+                        dcs_edit_modify_filter(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
                 "modify-dataParameter" => {
-                    let parsed = skd_edit_parse_data_parameter(&value);
-                    force_save |= skd_edit_modify_data_parameter(
+                    let parsed = dcs_edit_parse_data_parameter(&value);
+                    force_save |= dcs_edit_modify_data_parameter(
                         &mut xml_text,
                         variant,
                         &parsed,
@@ -4909,17 +4909,17 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     )?;
                 }
                 "modify-parameter" => {
-                    let parsed = skd_edit_parse_parameter_patch(&value);
-                    skd_edit_modify_parameter(&mut xml_text, &parsed, &mut stdout)?;
+                    let parsed = dcs_edit_parse_parameter_patch(&value);
+                    dcs_edit_modify_parameter(&mut xml_text, &parsed, &mut stdout)?;
                 }
                 "rename-parameter" => {
-                    skd_edit_rename_parameter(&mut xml_text, &value, &mut stdout)?;
+                    dcs_edit_rename_parameter(&mut xml_text, &value, &mut stdout)?;
                 }
                 "reorder-parameters" => {
-                    skd_edit_reorder_parameters(&mut xml_text, &value, &mut stdout)?;
+                    dcs_edit_reorder_parameters(&mut xml_text, &value, &mut stdout)?;
                 }
                 "remove-total" => {
-                    let removed = skd_edit_remove_top_level_item(
+                    let removed = dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "totalField",
                         "dataPath",
@@ -4932,7 +4932,7 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     }
                 }
                 "remove-calculated-field" => {
-                    let removed = skd_edit_remove_top_level_item(
+                    let removed = dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "calculatedField",
                         "dataPath",
@@ -4944,19 +4944,19 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         stdout
                             .push_str(&format!("[WARN] CalculatedField \"{}\" not found\n", value));
                     }
-                    if skd_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
+                    if dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
                         stdout.push_str(&format!(
                             "[OK] Field \"{}\" removed from selection of variant \"{}\"\n",
                             value,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
                 }
                 "remove-filter" => {
                     let filter_range =
-                        skd_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
-                    let removed = skd_edit_remove_item_by_child(
+                        dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
+                    let removed = dcs_edit_remove_item_by_child(
                         &mut xml_text,
                         (filter_range.open_end, filter_range.close_start),
                         "dcsset:item",
@@ -4967,21 +4967,21 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         stdout.push_str(&format!(
                             "[OK] Filter for \"{}\" removed from variant \"{}\"\n",
                             value,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     } else {
                         stdout.push_str(&format!(
                             "[WARN] Filter for \"{}\" not found in variant \"{}\"\n",
                             value,
-                            skd_edit_variant_name(&xml_text, variant)
+                            dcs_edit_variant_name(&xml_text, variant)
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
                 }
                 other => {
                     return Err(format!(
-                        "native skd-edit does not support Operation '{other}' yet"
+                        "native dcs-edit does not support Operation '{other}' yet"
                     ));
                 }
             }
@@ -5009,7 +5009,7 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
     match edit_result {
         Ok((stdout, template_path, changed)) => AdapterOutcome {
             ok: true,
-            summary: "unica.skd.edit completed with native DCS editor".to_string(),
+            summary: "unica.dcs.edit completed with native DCS editor".to_string(),
             changes: if changed {
                 vec![format!("updated {}", template_path.display())]
             } else {
@@ -5024,7 +5024,7 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
         },
         Err(error) => AdapterOutcome {
             ok: false,
-            summary: "unica.skd.edit failed in native DCS editor".to_string(),
+            summary: "unica.dcs.edit failed in native DCS editor".to_string(),
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![error.clone()],
@@ -5036,7 +5036,7 @@ pub(crate) fn edit_skd(args: &Map<String, Value>, context: &WorkspaceContext) ->
     }
 }
 
-pub(crate) fn skd_edit_split_values(operation: &str, value: &str) -> Vec<String> {
+pub(crate) fn dcs_edit_split_values(operation: &str, value: &str) -> Vec<String> {
     if matches!(
         operation,
         "set-query" | "set-structure" | "modify-structure" | "add-dataSet"
@@ -5059,7 +5059,7 @@ pub(crate) fn skd_edit_split_values(operation: &str, value: &str) -> Vec<String>
         .collect()
 }
 
-pub(crate) fn skd_edit_add_field(
+pub(crate) fn dcs_edit_add_field(
     xml_text: &mut String,
     data_set: &str,
     variant: &str,
@@ -5067,13 +5067,13 @@ pub(crate) fn skd_edit_add_field(
     no_selection: bool,
     stdout: &mut String,
 ) -> Result<(), String> {
-    let parsed = skd_edit_parse_field(value);
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
+    let parsed = dcs_edit_parse_field(value);
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
     let escaped_data_path = escape_xml(&parsed.data_path);
     let duplicate_probe = format!("<dataPath>{escaped_data_path}</dataPath>");
     let dataset_text = &xml_text[range.0..range.1];
     let data_set_name =
-        skd_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string());
+        dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string());
     if dataset_text.contains(&duplicate_probe) {
         stdout.push_str(&format!(
             "[WARN] Field \"{}\" already exists in dataset \"{}\" -- skipped\n",
@@ -5083,8 +5083,8 @@ pub(crate) fn skd_edit_add_field(
     }
 
     let mut lines = Vec::new();
-    skd_edit_emit_field(&mut lines, &parsed, "\t\t");
-    skd_edit_insert_before_dataset_payload(xml_text, range, &lines.join("\n"))?;
+    dcs_edit_emit_field(&mut lines, &parsed, "\t\t");
+    dcs_edit_insert_before_dataset_payload(xml_text, range, &lines.join("\n"))?;
     stdout.push_str(&format!(
         "[OK] Field \"{}\" added to dataset \"{}\"\n",
         parsed.data_path, data_set_name
@@ -5092,10 +5092,10 @@ pub(crate) fn skd_edit_add_field(
 
     if !no_selection {
         let selection_indent =
-            skd_edit_settings_container_child_indent(xml_text, variant, "dcsset:selection")
+            dcs_edit_settings_container_child_indent(xml_text, variant, "dcsset:selection")
                 .unwrap_or_else(|_| "\t\t\t\t".to_string());
-        let fragment = skd_edit_selection_fragment(&parsed.data_path, &selection_indent);
-        if skd_edit_prefixed_container_contains_field(
+        let fragment = dcs_edit_selection_fragment(&parsed.data_path, &selection_indent);
+        if dcs_edit_prefixed_container_contains_field(
             xml_text,
             variant,
             "dcsset:selection",
@@ -5105,20 +5105,20 @@ pub(crate) fn skd_edit_add_field(
                 "[INFO] Field \"{}\" already in selection -- skipped\n",
                 parsed.data_path
             ));
-        } else if skd_edit_insert_prefixed_item(xml_text, variant, "dcsset:selection", &fragment)
+        } else if dcs_edit_insert_prefixed_item(xml_text, variant, "dcsset:selection", &fragment)
             .is_ok()
         {
             stdout.push_str(&format!(
                 "[OK] Field \"{}\" added to selection of variant \"{}\"\n",
                 parsed.data_path,
-                skd_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
             ));
         }
     }
     Ok(())
 }
 
-pub(crate) fn skd_edit_add_top_level(
+pub(crate) fn dcs_edit_add_top_level(
     xml_text: &mut String,
     item: &str,
     child: &str,
@@ -5130,7 +5130,7 @@ pub(crate) fn skd_edit_add_top_level(
         .split_once(':')
         .map(|(left, right)| (left.trim(), right.trim()))
         .unwrap_or((value.trim(), ""));
-    skd_edit_add_top_level_fragment(
+    dcs_edit_add_top_level_fragment(
         xml_text,
         item,
         child,
@@ -5141,7 +5141,7 @@ pub(crate) fn skd_edit_add_top_level(
     )
 }
 
-pub(crate) fn skd_edit_add_top_level_fragment(
+pub(crate) fn dcs_edit_add_top_level_fragment(
     xml_text: &mut String,
     item: &str,
     child: &str,
@@ -5150,24 +5150,24 @@ pub(crate) fn skd_edit_add_top_level_fragment(
     ok_message: &str,
     stdout: &mut String,
 ) -> Result<(), String> {
-    if skd_edit_top_level_contains(xml_text, item, child, key) {
+    if dcs_edit_top_level_contains(xml_text, item, child, key) {
         stdout.push_str(&format!(
             "[WARN] {} \"{}\" already exists -- skipped\n",
             item, key
         ));
         return Ok(());
     }
-    skd_edit_insert_top_level_fragment(xml_text, item, fragment)?;
+    dcs_edit_insert_top_level_fragment(xml_text, item, fragment)?;
     stdout.push_str(ok_message);
     Ok(())
 }
 
-pub(crate) fn skd_edit_insert_top_level_fragment(
+pub(crate) fn dcs_edit_insert_top_level_fragment(
     xml_text: &mut String,
     item: &str,
     fragment: &str,
 ) -> Result<(), String> {
-    if let Some(end) = skd_edit_last_top_level_block_end(xml_text, item) {
+    if let Some(end) = dcs_edit_last_top_level_block_end(xml_text, item) {
         xml_text.insert_str(end, &format!("\n{fragment}"));
         return Ok(());
     }
@@ -5190,23 +5190,23 @@ pub(crate) fn skd_edit_insert_top_level_fragment(
             "settingsVariant",
         ][..],
     };
-    skd_edit_insert_before_first_root_child(xml_text, before, fragment)
+    dcs_edit_insert_before_first_root_child(xml_text, before, fragment)
 }
 
-pub(crate) fn skd_edit_last_top_level_block_end(xml_text: &str, item: &str) -> Option<usize> {
+pub(crate) fn dcs_edit_last_top_level_block_end(xml_text: &str, item: &str) -> Option<usize> {
     let needle = format!("\n\t<{item}");
     let mut cursor = 0usize;
     let mut last = None;
     while let Some(rel) = xml_text[cursor..].find(&needle) {
         let start = cursor + rel + 1;
-        let end = skd_edit_matching_element_end(xml_text, start, xml_text.len(), item)?;
+        let end = dcs_edit_matching_element_end(xml_text, start, xml_text.len(), item)?;
         last = Some(end);
         cursor = end;
     }
     last
 }
 
-pub(crate) fn skd_edit_top_level_contains(
+pub(crate) fn dcs_edit_top_level_contains(
     xml_text: &str,
     item: &str,
     child: &str,
@@ -5230,7 +5230,7 @@ pub(crate) fn skd_edit_top_level_contains(
     false
 }
 
-pub(crate) fn skd_edit_insert_before_root_close(
+pub(crate) fn dcs_edit_insert_before_root_close(
     xml_text: &mut String,
     fragment: &str,
 ) -> Result<(), String> {
@@ -5241,7 +5241,7 @@ pub(crate) fn skd_edit_insert_before_root_close(
     Ok(())
 }
 
-pub(crate) fn skd_edit_insert_before_first_root_child(
+pub(crate) fn dcs_edit_insert_before_first_root_child(
     xml_text: &mut String,
     before: &[&str],
     fragment: &str,
@@ -5257,12 +5257,12 @@ pub(crate) fn skd_edit_insert_before_first_root_child(
         xml_text.insert_str(pos, &format!("{fragment}\n"));
         Ok(())
     } else {
-        skd_edit_insert_before_root_close(xml_text, fragment)
+        dcs_edit_insert_before_root_close(xml_text, fragment)
     }
 }
 
-pub(crate) fn skd_edit_total_fragment(data_path: &str, expression: &str) -> String {
-    let expression = skd_edit_total_expression(data_path, expression);
+pub(crate) fn dcs_edit_total_fragment(data_path: &str, expression: &str) -> String {
+    let expression = dcs_edit_total_expression(data_path, expression);
     format!(
         "\t<totalField>\n\t\t<dataPath>{}</dataPath>\n\t\t<expression>{}</expression>\n\t</totalField>",
         escape_xml(data_path),
@@ -5270,7 +5270,7 @@ pub(crate) fn skd_edit_total_fragment(data_path: &str, expression: &str) -> Stri
     )
 }
 
-pub(crate) fn skd_edit_total_expression(data_path: &str, expression: &str) -> String {
+pub(crate) fn dcs_edit_total_expression(data_path: &str, expression: &str) -> String {
     let expression = expression.trim();
     if expression.is_empty() {
         return format!("Сумма({data_path})");
@@ -5296,30 +5296,30 @@ pub(crate) fn skd_edit_total_expression(data_path: &str, expression: &str) -> St
     expression.to_string()
 }
 
-pub(crate) struct SkdEditCalcField {
+pub(crate) struct DcsEditCalcField {
     pub(crate) data_path: String,
     pub(crate) title: String,
     pub(crate) field_type: String,
     pub(crate) expression: String,
 }
 
-pub(crate) fn skd_edit_parse_calc_field(value: &str) -> SkdEditCalcField {
+pub(crate) fn dcs_edit_parse_calc_field(value: &str) -> DcsEditCalcField {
     let (left, expression) = value
         .split_once('=')
         .map(|(left, right)| (left.trim(), right.trim()))
         .unwrap_or((value.trim(), ""));
-    let (mut name_type, title) = skd_edit_extract_bracket_title(left);
-    name_type = skd_edit_strip_markers(&name_type);
+    let (mut name_type, title) = dcs_edit_extract_bracket_title(left);
+    name_type = dcs_edit_strip_markers(&name_type);
     let (data_path, field_type) = name_type
         .split_once(':')
         .map(|(name, type_name)| {
             (
                 name.trim().to_string(),
-                skd_compile_resolve_type(type_name.trim()),
+                dcs_compile_resolve_type(type_name.trim()),
             )
         })
         .unwrap_or((name_type.trim().to_string(), String::new()));
-    SkdEditCalcField {
+    DcsEditCalcField {
         data_path,
         title,
         field_type,
@@ -5327,7 +5327,7 @@ pub(crate) fn skd_edit_parse_calc_field(value: &str) -> SkdEditCalcField {
     }
 }
 
-pub(crate) fn skd_edit_calc_field_fragment(field: &SkdEditCalcField, indent: &str) -> String {
+pub(crate) fn dcs_edit_calc_field_fragment(field: &DcsEditCalcField, indent: &str) -> String {
     let mut lines = vec![
         format!("{indent}<calculatedField>"),
         format!(
@@ -5340,18 +5340,18 @@ pub(crate) fn skd_edit_calc_field_fragment(field: &SkdEditCalcField, indent: &st
         ),
     ];
     if !field.title.is_empty() {
-        skd_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &field.title);
+        dcs_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &field.title);
     }
     if !field.field_type.is_empty() {
         lines.push(format!("{indent}\t<valueType>"));
-        skd_compile_emit_value_type(&mut lines, &field.field_type, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type(&mut lines, &field.field_type, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     lines.push(format!("{indent}</calculatedField>"));
     lines.join("\n")
 }
 
-pub(crate) struct SkdEditParameter {
+pub(crate) struct DcsEditParameter {
     pub(crate) name: String,
     pub(crate) title: String,
     pub(crate) type_name: String,
@@ -5364,12 +5364,12 @@ pub(crate) struct SkdEditParameter {
     pub(crate) expression: Option<String>,
 }
 
-pub(crate) fn skd_edit_parse_parameter(value: &str) -> SkdEditParameter {
+pub(crate) fn dcs_edit_parse_parameter(value: &str) -> DcsEditParameter {
     let auto_dates = value.contains("@autoDates");
     let hidden = value.contains("@hidden");
     let always = value.contains("@always");
     let value_list_allowed = value.contains("@valueList");
-    let available_values = skd_edit_extract_available_values(value);
+    let available_values = dcs_edit_extract_available_values(value);
     let cleaned = value
         .split("availableValue=")
         .next()
@@ -5381,23 +5381,23 @@ pub(crate) fn skd_edit_parse_parameter(value: &str) -> SkdEditParameter {
     let (left, values, value_list_allowed) = cleaned
         .split_once('=')
         .map(|(left, right)| {
-            let values = skd_edit_parse_value_list(right.trim());
+            let values = dcs_edit_parse_value_list(right.trim());
             let value_list_allowed = value_list_allowed || values.len() >= 2;
             (left.trim(), values, value_list_allowed)
         })
         .unwrap_or((cleaned.trim(), Vec::new(), value_list_allowed));
-    let (mut name_type, title) = skd_edit_extract_bracket_title(left);
-    name_type = skd_edit_strip_markers(&name_type);
+    let (mut name_type, title) = dcs_edit_extract_bracket_title(left);
+    name_type = dcs_edit_strip_markers(&name_type);
     let (name, type_name) = name_type
         .split_once(':')
         .map(|(name, type_name)| {
             (
                 name.trim().to_string(),
-                skd_compile_resolve_type(type_name.trim()),
+                dcs_compile_resolve_type(type_name.trim()),
             )
         })
         .unwrap_or((name_type.trim().to_string(), String::new()));
-    SkdEditParameter {
+    DcsEditParameter {
         name,
         title,
         type_name,
@@ -5411,21 +5411,21 @@ pub(crate) fn skd_edit_parse_parameter(value: &str) -> SkdEditParameter {
     }
 }
 
-pub(crate) fn skd_edit_parameter_fragment(param: &SkdEditParameter, indent: &str) -> String {
+pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str) -> String {
     let mut lines = vec![
         format!("{indent}<parameter>"),
         format!("{indent}\t<name>{}</name>", escape_xml(&param.name)),
     ];
     if !param.title.is_empty() {
-        skd_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &param.title);
+        dcs_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &param.title);
     }
     if !param.type_name.is_empty() {
         lines.push(format!("{indent}\t<valueType>"));
-        skd_compile_emit_value_type(&mut lines, &param.type_name, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type(&mut lines, &param.type_name, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     for value in &param.values {
-        lines.extend(skd_edit_parameter_value_lines(
+        lines.extend(dcs_edit_parameter_value_lines(
             &param.type_name,
             value,
             &format!("{indent}\t"),
@@ -5455,14 +5455,14 @@ pub(crate) fn skd_edit_parameter_fragment(param: &SkdEditParameter, indent: &str
     if !param.available_values.is_empty() {
         for (value, presentation) in &param.available_values {
             lines.push(format!("{indent}\t<availableValue>"));
-            lines.extend(skd_edit_parameter_value_lines(
+            lines.extend(dcs_edit_parameter_value_lines(
                 &param.type_name,
                 value,
                 &format!("{indent}\t\t"),
                 "value",
             ));
             if !presentation.is_empty() {
-                skd_compile_emit_mltext(
+                dcs_compile_emit_mltext(
                     &mut lines,
                     &format!("{indent}\t\t"),
                     "presentation",
@@ -5476,14 +5476,14 @@ pub(crate) fn skd_edit_parameter_fragment(param: &SkdEditParameter, indent: &str
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_parameter_value_lines(
+pub(crate) fn dcs_edit_parameter_value_lines(
     declared_type: &str,
     value: &str,
     indent: &str,
     tag_name: &str,
 ) -> Vec<String> {
-    let declared_type = skd_edit_normalize_declared_type(declared_type);
-    if skd_edit_is_empty_value(value) {
+    let declared_type = dcs_edit_normalize_declared_type(declared_type);
+    if dcs_edit_is_empty_value(value) {
         return vec![format!("{indent}<{tag_name} xsi:nil=\"true\"/>")];
     }
     if declared_type == "StandardPeriod" {
@@ -5506,13 +5506,13 @@ pub(crate) fn skd_edit_parameter_value_lines(
         "xs:decimal"
     } else if declared_type.starts_with("string") {
         "xs:string"
-    } else if skd_edit_is_design_time_type(&declared_type) {
+    } else if dcs_edit_is_design_time_type(&declared_type) {
         "dcscor:DesignTimeValue"
     } else if is_date_time_literal(value) {
         "xs:dateTime"
     } else if value == "true" || value == "false" {
         "xs:boolean"
-    } else if skd_edit_is_design_time_value(value) {
+    } else if dcs_edit_is_design_time_value(value) {
         "dcscor:DesignTimeValue"
     } else {
         "xs:string"
@@ -5523,7 +5523,7 @@ pub(crate) fn skd_edit_parameter_value_lines(
     )]
 }
 
-pub(crate) fn skd_edit_normalize_declared_type(value: &str) -> String {
+pub(crate) fn dcs_edit_normalize_declared_type(value: &str) -> String {
     let value = value.trim();
     if let Some(rest) = value
         .strip_prefix("xs:")
@@ -5539,7 +5539,7 @@ pub(crate) fn skd_edit_normalize_declared_type(value: &str) -> String {
     value.to_string()
 }
 
-pub(crate) fn skd_edit_is_design_time_type(value: &str) -> bool {
+pub(crate) fn dcs_edit_is_design_time_type(value: &str) -> bool {
     [
         "CatalogRef.",
         "DocumentRef.",
@@ -5556,7 +5556,7 @@ pub(crate) fn skd_edit_is_design_time_type(value: &str) -> bool {
     .any(|prefix| value.starts_with(prefix))
 }
 
-pub(crate) fn skd_edit_is_design_time_value(value: &str) -> bool {
+pub(crate) fn dcs_edit_is_design_time_value(value: &str) -> bool {
     [
         "Перечисление.",
         "Справочник.",
@@ -5583,7 +5583,7 @@ pub(crate) fn skd_edit_is_design_time_value(value: &str) -> bool {
     .any(|prefix| value.starts_with(prefix))
 }
 
-pub(crate) struct SkdEditFilter {
+pub(crate) struct DcsEditFilter {
     pub(crate) field: String,
     pub(crate) operator: String,
     pub(crate) value: String,
@@ -5593,7 +5593,7 @@ pub(crate) struct SkdEditFilter {
     pub(crate) view_mode: Option<String>,
 }
 
-pub(crate) fn skd_edit_parse_filter(value: &str) -> SkdEditFilter {
+pub(crate) fn dcs_edit_parse_filter(value: &str) -> DcsEditFilter {
     let use_flag = if value.contains("@off") {
         Some(false)
     } else if value.contains("@on") {
@@ -5622,9 +5622,9 @@ pub(crate) fn skd_edit_parse_filter(value: &str) -> SkdEditFilter {
         .replace("@quickAccess", "")
         .replace("@normal", "")
         .replace("@inaccessible", "");
-    let (field, operator, filter_value) = skd_edit_parse_filter_expression(&cleaned);
-    let (filter_value, value_type) = skd_edit_filter_value_type(&filter_value);
-    SkdEditFilter {
+    let (field, operator, filter_value) = dcs_edit_parse_filter_expression(&cleaned);
+    let (filter_value, value_type) = dcs_edit_filter_value_type(&filter_value);
+    DcsEditFilter {
         field,
         operator,
         value: filter_value,
@@ -5635,7 +5635,7 @@ pub(crate) fn skd_edit_parse_filter(value: &str) -> SkdEditFilter {
     }
 }
 
-pub(crate) fn skd_edit_filter_fragment(filter: &SkdEditFilter, indent: &str) -> String {
+pub(crate) fn dcs_edit_filter_fragment(filter: &DcsEditFilter, indent: &str) -> String {
     let mut lines = vec![format!(
         "{indent}<dcsset:item xsi:type=\"dcsset:FilterItemComparison\">"
     )];
@@ -5673,21 +5673,21 @@ pub(crate) fn skd_edit_filter_fragment(filter: &SkdEditFilter, indent: &str) -> 
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_modify_filter(
+pub(crate) fn dcs_edit_modify_filter(
     xml_text: &mut String,
     variant: &str,
-    filter: &SkdEditFilter,
+    filter: &DcsEditFilter,
     stdout: &mut String,
 ) -> Result<bool, String> {
-    let var_name = skd_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string());
-    let Ok(filter_range) = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")
+    let var_name = dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string());
+    let Ok(filter_range) = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")
     else {
         stdout.push_str(&format!(
             "[WARN] No filter section in variant \"{var_name}\"\n"
         ));
         return Ok(false);
     };
-    let Some(item_range) = skd_edit_find_item_by_child(
+    let Some(item_range) = dcs_edit_find_item_by_child(
         xml_text,
         (filter_range.open_end, filter_range.close_start),
         "dcsset:item",
@@ -5700,9 +5700,9 @@ pub(crate) fn skd_edit_modify_filter(
         ));
         return Ok(false);
     };
-    let item_indent = skd_edit_line_indent(xml_text, item_range.0);
+    let item_indent = dcs_edit_line_indent(xml_text, item_range.0);
     let child_indent = format!("{item_indent}\t");
-    skd_edit_replace_or_insert_child_fragment(
+    dcs_edit_replace_or_insert_child_fragment(
         xml_text,
         item_range,
         "dcsset:comparisonType",
@@ -5712,8 +5712,8 @@ pub(crate) fn skd_edit_modify_filter(
         ),
         &["dcsset:right", "dcsset:viewMode", "dcsset:userSettingID"],
     );
-    let filter_range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
-    let item_range = skd_edit_find_item_by_child(
+    let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (filter_range.open_end, filter_range.close_start),
         "dcsset:item",
@@ -5722,7 +5722,7 @@ pub(crate) fn skd_edit_modify_filter(
     )
     .ok_or_else(|| format!("Filter for \"{}\" not found", filter.field))?;
     if !filter.value.is_empty() {
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:right",
@@ -5734,8 +5734,8 @@ pub(crate) fn skd_edit_modify_filter(
             &["dcsset:viewMode", "dcsset:userSettingID"],
         );
     }
-    let filter_range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
-    let item_range = skd_edit_find_item_by_child(
+    let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (filter_range.open_end, filter_range.close_start),
         "dcsset:item",
@@ -5744,7 +5744,7 @@ pub(crate) fn skd_edit_modify_filter(
     )
     .ok_or_else(|| format!("Filter for \"{}\" not found", filter.field))?;
     match filter.use_flag {
-        Some(false) => skd_edit_replace_or_insert_child_fragment(
+        Some(false) => dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:use",
@@ -5752,12 +5752,12 @@ pub(crate) fn skd_edit_modify_filter(
             &["dcsset:left", "dcsset:comparisonType", "dcsset:right"],
         ),
         Some(true) => {
-            let _ = skd_edit_remove_child_element(xml_text, item_range, "dcsset:use");
+            let _ = dcs_edit_remove_child_element(xml_text, item_range, "dcsset:use");
         }
         None => {}
     }
-    let filter_range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
-    let item_range = skd_edit_find_item_by_child(
+    let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (filter_range.open_end, filter_range.close_start),
         "dcsset:item",
@@ -5766,7 +5766,7 @@ pub(crate) fn skd_edit_modify_filter(
     )
     .ok_or_else(|| format!("Filter for \"{}\" not found", filter.field))?;
     if let Some(view_mode) = &filter.view_mode {
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:viewMode",
@@ -5777,8 +5777,8 @@ pub(crate) fn skd_edit_modify_filter(
             &["dcsset:userSettingID"],
         );
     }
-    let filter_range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
-    let item_range = skd_edit_find_item_by_child(
+    let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (filter_range.open_end, filter_range.close_start),
         "dcsset:item",
@@ -5787,7 +5787,7 @@ pub(crate) fn skd_edit_modify_filter(
     )
     .ok_or_else(|| format!("Filter for \"{}\" not found", filter.field))?;
     if let Some(user_setting_id) = &filter.user_setting_id {
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:userSettingID",
@@ -5805,7 +5805,7 @@ pub(crate) fn skd_edit_modify_filter(
     Ok(true)
 }
 
-pub(crate) fn skd_edit_parse_filter_expression(value: &str) -> (String, String, String) {
+pub(crate) fn dcs_edit_parse_filter_expression(value: &str) -> (String, String, String) {
     let operators = [
         ("notBeginsWith", "NotBeginsWith"),
         ("beginsWith", "BeginsWith"),
@@ -5835,7 +5835,7 @@ pub(crate) fn skd_edit_parse_filter_expression(value: &str) -> (String, String, 
     (value.trim().to_string(), "Equal".to_string(), String::new())
 }
 
-pub(crate) fn skd_edit_filter_value_type(value: &str) -> (String, String) {
+pub(crate) fn dcs_edit_filter_value_type(value: &str) -> (String, String) {
     if value.is_empty() || value == "_" {
         return (String::new(), "xs:string".to_string());
     }
@@ -5871,7 +5871,7 @@ pub(crate) fn is_date_time_literal(value: &str) -> bool {
         && value.as_bytes().get(10) == Some(&b'T')
 }
 
-pub(crate) struct SkdEditDataParameter {
+pub(crate) struct DcsEditDataParameter {
     pub(crate) parameter: String,
     pub(crate) value: Option<String>,
     pub(crate) use_flag: Option<bool>,
@@ -5879,7 +5879,7 @@ pub(crate) struct SkdEditDataParameter {
     pub(crate) view_mode: Option<String>,
 }
 
-pub(crate) fn skd_edit_parse_data_parameter(value: &str) -> SkdEditDataParameter {
+pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter {
     let use_flag = if value.contains("@off") {
         Some(false)
     } else if value.contains("@on") {
@@ -5909,7 +5909,7 @@ pub(crate) fn skd_edit_parse_data_parameter(value: &str) -> SkdEditDataParameter
         .split_once('=')
         .map(|(left, right)| (left.trim().to_string(), Some(right.trim().to_string())))
         .unwrap_or((cleaned.trim().to_string(), None));
-    SkdEditDataParameter {
+    DcsEditDataParameter {
         parameter,
         value: val,
         use_flag,
@@ -5918,8 +5918,8 @@ pub(crate) fn skd_edit_parse_data_parameter(value: &str) -> SkdEditDataParameter
     }
 }
 
-pub(crate) fn skd_edit_data_parameter_fragment(
-    param: &SkdEditDataParameter,
+pub(crate) fn dcs_edit_data_parameter_fragment(
+    param: &DcsEditDataParameter,
     indent: &str,
 ) -> String {
     let mut lines = vec![format!(
@@ -5933,7 +5933,7 @@ pub(crate) fn skd_edit_data_parameter_fragment(
         escape_xml(&param.parameter)
     ));
     if let Some(value) = &param.value {
-        lines.extend(skd_edit_settings_value_lines("dcscor:value", value, indent));
+        lines.extend(dcs_edit_settings_value_lines("dcscor:value", value, indent));
     }
     if let Some(view_mode) = &param.view_mode {
         lines.push(format!(
@@ -5951,21 +5951,21 @@ pub(crate) fn skd_edit_data_parameter_fragment(
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_modify_data_parameter(
+pub(crate) fn dcs_edit_modify_data_parameter(
     xml_text: &mut String,
     variant: &str,
-    param: &SkdEditDataParameter,
+    param: &DcsEditDataParameter,
     stdout: &mut String,
 ) -> Result<bool, String> {
-    let var_name = skd_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string());
-    let Ok(range) = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")
+    let var_name = dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string());
+    let Ok(range) = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")
     else {
         stdout.push_str(&format!(
             "[WARN] No dataParameters section in variant \"{var_name}\"\n"
         ));
         return Ok(false);
     };
-    let Some(item_range) = skd_edit_find_item_by_child(
+    let Some(item_range) = dcs_edit_find_item_by_child(
         xml_text,
         (range.open_end, range.close_start),
         "dcscor:item",
@@ -5978,10 +5978,10 @@ pub(crate) fn skd_edit_modify_data_parameter(
         ));
         return Ok(false);
     };
-    let item_indent = skd_edit_line_indent(xml_text, item_range.0);
+    let item_indent = dcs_edit_line_indent(xml_text, item_range.0);
     let child_indent = format!("{item_indent}\t");
     match param.use_flag {
-        Some(false) => skd_edit_replace_or_insert_child_fragment(
+        Some(false) => dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcscor:use",
@@ -5989,12 +5989,12 @@ pub(crate) fn skd_edit_modify_data_parameter(
             &["dcscor:parameter", "dcscor:value"],
         ),
         Some(true) => {
-            let _ = skd_edit_remove_child_element(xml_text, item_range, "dcscor:use");
+            let _ = dcs_edit_remove_child_element(xml_text, item_range, "dcscor:use");
         }
         None => {}
     }
-    let range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
-    let item_range = skd_edit_find_item_by_child(
+    let range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (range.open_end, range.close_start),
         "dcscor:item",
@@ -6004,8 +6004,8 @@ pub(crate) fn skd_edit_modify_data_parameter(
     .ok_or_else(|| format!("DataParameter \"{}\" not found", param.parameter))?;
     if let Some(value) = &param.value {
         let value_fragment =
-            skd_edit_settings_value_lines("dcscor:value", value, &item_indent).join("\n");
-        skd_edit_replace_or_insert_child_fragment(
+            dcs_edit_settings_value_lines("dcscor:value", value, &item_indent).join("\n");
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcscor:value",
@@ -6013,8 +6013,8 @@ pub(crate) fn skd_edit_modify_data_parameter(
             &["dcsset:viewMode", "dcsset:userSettingID"],
         );
     }
-    let range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
-    let item_range = skd_edit_find_item_by_child(
+    let range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (range.open_end, range.close_start),
         "dcscor:item",
@@ -6023,7 +6023,7 @@ pub(crate) fn skd_edit_modify_data_parameter(
     )
     .ok_or_else(|| format!("DataParameter \"{}\" not found", param.parameter))?;
     if let Some(view_mode) = &param.view_mode {
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:viewMode",
@@ -6034,8 +6034,8 @@ pub(crate) fn skd_edit_modify_data_parameter(
             &["dcsset:userSettingID"],
         );
     }
-    let range = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
-    let item_range = skd_edit_find_item_by_child(
+    let range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
+    let item_range = dcs_edit_find_item_by_child(
         xml_text,
         (range.open_end, range.close_start),
         "dcscor:item",
@@ -6044,7 +6044,7 @@ pub(crate) fn skd_edit_modify_data_parameter(
     )
     .ok_or_else(|| format!("DataParameter \"{}\" not found", param.parameter))?;
     if let Some(user_setting_id) = &param.user_setting_id {
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcsset:userSettingID",
@@ -6062,15 +6062,15 @@ pub(crate) fn skd_edit_modify_data_parameter(
     Ok(true)
 }
 
-pub(crate) fn skd_edit_settings_value_lines(
+pub(crate) fn dcs_edit_settings_value_lines(
     tag_name: &str,
     value: &str,
     indent: &str,
 ) -> Vec<String> {
-    if skd_edit_is_empty_value(value) {
+    if dcs_edit_is_empty_value(value) {
         return vec![format!("{indent}\t<{tag_name} xsi:nil=\"true\"/>")];
     }
-    if skd_edit_is_standard_period_variant(value) {
+    if dcs_edit_is_standard_period_variant(value) {
         return vec![
             format!("{indent}\t<{tag_name} xsi:type=\"v8:StandardPeriod\">"),
             format!(
@@ -6095,12 +6095,12 @@ pub(crate) fn skd_edit_settings_value_lines(
     )]
 }
 
-pub(crate) fn skd_edit_is_empty_value(value: &str) -> bool {
+pub(crate) fn dcs_edit_is_empty_value(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.is_empty() || trimmed == "_" || trimmed.eq_ignore_ascii_case("null")
 }
 
-pub(crate) fn skd_edit_is_standard_period_variant(value: &str) -> bool {
+pub(crate) fn dcs_edit_is_standard_period_variant(value: &str) -> bool {
     matches!(
         value,
         "Custom"
@@ -6139,23 +6139,23 @@ pub(crate) fn skd_edit_is_standard_period_variant(value: &str) -> bool {
     )
 }
 
-pub(crate) fn skd_edit_insert_or_create_settings_item(
+pub(crate) fn dcs_edit_insert_or_create_settings_item(
     xml_text: &mut String,
     variant: &str,
     container: &str,
     fragment: &str,
 ) -> Result<(), String> {
-    match skd_edit_insert_prefixed_item(xml_text, variant, container, fragment) {
+    match dcs_edit_insert_prefixed_item(xml_text, variant, container, fragment) {
         Ok(()) => Ok(()),
         Err(_) => {
-            let settings = skd_edit_settings_element_range(xml_text, variant)?;
+            let settings = dcs_edit_settings_element_range(xml_text, variant)?;
             let insert_pos =
-                skd_edit_new_settings_container_insert_pos(xml_text, variant, container)
+                dcs_edit_new_settings_container_insert_pos(xml_text, variant, container)
                     .unwrap_or_else(|_| {
                         let settings_pos = settings.1 - "</dcsset:settings>".len();
-                        skd_edit_line_start(xml_text, settings_pos)
+                        dcs_edit_line_start(xml_text, settings_pos)
                     });
-            let settings_indent = skd_edit_line_indent(xml_text, settings.0);
+            let settings_indent = dcs_edit_line_indent(xml_text, settings.0);
             let child_indent = format!("{settings_indent}\t");
             xml_text.insert_str(
                 insert_pos,
@@ -6166,26 +6166,26 @@ pub(crate) fn skd_edit_insert_or_create_settings_item(
     }
 }
 
-pub(crate) fn skd_edit_new_settings_container_insert_pos(
+pub(crate) fn dcs_edit_new_settings_container_insert_pos(
     xml_text: &str,
     variant: &str,
     container: &str,
 ) -> Result<usize, String> {
-    let settings_content = skd_edit_settings_content_range(xml_text, variant)?;
-    for sibling in skd_edit_settings_container_after_siblings(container) {
-        if let Ok(range) = skd_edit_prefixed_container_range(xml_text, variant, sibling) {
-            return Ok(skd_edit_next_settings_child_line_start(
+    let settings_content = dcs_edit_settings_content_range(xml_text, variant)?;
+    for sibling in dcs_edit_settings_container_after_siblings(container) {
+        if let Ok(range) = dcs_edit_prefixed_container_range(xml_text, variant, sibling) {
+            return Ok(dcs_edit_next_settings_child_line_start(
                 xml_text,
                 range.end,
                 settings_content.1,
             )
-            .unwrap_or_else(|| skd_edit_line_start(xml_text, settings_content.1)));
+            .unwrap_or_else(|| dcs_edit_line_start(xml_text, settings_content.1)));
         }
     }
-    Ok(skd_edit_line_start(xml_text, settings_content.1))
+    Ok(dcs_edit_line_start(xml_text, settings_content.1))
 }
 
-pub(crate) fn skd_edit_settings_container_after_siblings(
+pub(crate) fn dcs_edit_settings_container_after_siblings(
     container: &str,
 ) -> &'static [&'static str] {
     match container {
@@ -6214,7 +6214,7 @@ pub(crate) fn skd_edit_settings_container_after_siblings(
     }
 }
 
-pub(crate) fn skd_edit_next_settings_child_line_start(
+pub(crate) fn dcs_edit_next_settings_child_line_start(
     xml_text: &str,
     from: usize,
     to: usize,
@@ -6224,29 +6224,29 @@ pub(crate) fn skd_edit_next_settings_child_line_start(
         let rel = xml_text[offset..to].find('<')?;
         let pos = offset + rel;
         if !xml_text[pos..].starts_with("</dcsset:settings>") {
-            return Some(skd_edit_line_start(xml_text, pos));
+            return Some(dcs_edit_line_start(xml_text, pos));
         }
         offset = pos + 1;
     }
     None
 }
 
-pub(crate) fn skd_edit_settings_container_child_indent(
+pub(crate) fn dcs_edit_settings_container_child_indent(
     xml_text: &str,
     variant: &str,
     container: &str,
 ) -> Result<String, String> {
-    if let Ok(range) = skd_edit_prefixed_container_range(xml_text, variant, container) {
-        return Ok(format!("{}\t", skd_edit_line_indent(xml_text, range.start)));
+    if let Ok(range) = dcs_edit_prefixed_container_range(xml_text, variant, container) {
+        return Ok(format!("{}\t", dcs_edit_line_indent(xml_text, range.start)));
     }
-    let settings = skd_edit_settings_element_range(xml_text, variant)?;
+    let settings = dcs_edit_settings_element_range(xml_text, variant)?;
     Ok(format!(
         "{}\t\t",
-        skd_edit_line_indent(xml_text, settings.0)
+        dcs_edit_line_indent(xml_text, settings.0)
     ))
 }
 
-pub(crate) struct SkdEditDataSetLink {
+pub(crate) struct DcsEditDataSetLink {
     pub(crate) source: String,
     pub(crate) dest: String,
     pub(crate) source_expr: String,
@@ -6254,7 +6254,7 @@ pub(crate) struct SkdEditDataSetLink {
     pub(crate) parameter: String,
 }
 
-pub(crate) fn skd_edit_parse_data_set_link(value: &str) -> Result<SkdEditDataSetLink, String> {
+pub(crate) fn dcs_edit_parse_data_set_link(value: &str) -> Result<DcsEditDataSetLink, String> {
     let (source, rest) = value
         .split_once('>')
         .ok_or_else(|| "dataSetLink value must contain '>'".to_string())?;
@@ -6269,7 +6269,7 @@ pub(crate) fn skd_edit_parse_data_set_link(value: &str) -> Result<SkdEditDataSet
     let (source_expr, dest_expr) = expr
         .split_once('=')
         .ok_or_else(|| "dataSetLink expression must contain '='".to_string())?;
-    Ok(SkdEditDataSetLink {
+    Ok(DcsEditDataSetLink {
         source: source.trim().to_string(),
         dest: dest.trim().to_string(),
         source_expr: source_expr.trim().to_string(),
@@ -6278,7 +6278,7 @@ pub(crate) fn skd_edit_parse_data_set_link(value: &str) -> Result<SkdEditDataSet
     })
 }
 
-pub(crate) fn skd_edit_data_set_link_fragment(link: &SkdEditDataSetLink, indent: &str) -> String {
+pub(crate) fn dcs_edit_data_set_link_fragment(link: &DcsEditDataSetLink, indent: &str) -> String {
     let mut lines = vec![
         format!("{indent}<dataSetLink>"),
         format!(
@@ -6308,34 +6308,34 @@ pub(crate) fn skd_edit_data_set_link_fragment(link: &SkdEditDataSetLink, indent:
     lines.join("\n")
 }
 
-pub(crate) struct SkdEditDataSet {
+pub(crate) struct DcsEditDataSet {
     pub(crate) name: String,
     pub(crate) query: String,
 }
 
-pub(crate) fn skd_edit_parse_data_set(
+pub(crate) fn dcs_edit_parse_data_set(
     value: &str,
     base_dir: &Path,
     cwd: &Path,
-) -> Result<SkdEditDataSet, String> {
+) -> Result<DcsEditDataSet, String> {
     let (name, query) = if let Some((left, right)) = value.split_once(':') {
         (left.trim().to_string(), right.trim())
     } else {
         ("НаборДанных".to_string(), value.trim())
     };
-    let query = skd_compile_resolve_query_value(query, base_dir, cwd)?;
-    Ok(SkdEditDataSet { name, query })
+    let query = dcs_compile_resolve_query_value(query, base_dir, cwd)?;
+    Ok(DcsEditDataSet { name, query })
 }
 
-pub(crate) fn skd_edit_first_data_source(xml_text: &str) -> Option<String> {
+pub(crate) fn dcs_edit_first_data_source(xml_text: &str) -> Option<String> {
     let start = xml_text.find("<dataSource>")?;
     let end = xml_text[start..].find("</dataSource>")? + start;
-    let name = skd_edit_child_text_range(xml_text, (start, end), "name").ok()?;
+    let name = dcs_edit_child_text_range(xml_text, (start, end), "name").ok()?;
     Some(xml_text[name].trim().to_string())
 }
 
-pub(crate) fn skd_edit_data_set_fragment(
-    data_set: &SkdEditDataSet,
+pub(crate) fn dcs_edit_data_set_fragment(
+    data_set: &DcsEditDataSet,
     source: &str,
     indent: &str,
 ) -> String {
@@ -6347,28 +6347,28 @@ pub(crate) fn skd_edit_data_set_fragment(
     )
 }
 
-pub(crate) struct SkdEditVariant {
+pub(crate) struct DcsEditVariant {
     pub(crate) name: String,
     pub(crate) presentation: String,
 }
 
-pub(crate) fn skd_edit_parse_variant(value: &str) -> SkdEditVariant {
-    let (name, presentation) = skd_edit_extract_bracket_title(value);
+pub(crate) fn dcs_edit_parse_variant(value: &str) -> DcsEditVariant {
+    let (name, presentation) = dcs_edit_extract_bracket_title(value);
     let name = name.trim().to_string();
     let presentation = if presentation.is_empty() {
         name.clone()
     } else {
         presentation
     };
-    SkdEditVariant { name, presentation }
+    DcsEditVariant { name, presentation }
 }
 
-pub(crate) fn skd_edit_variant_exists(xml_text: &str, name: &str) -> bool {
+pub(crate) fn dcs_edit_variant_exists(xml_text: &str, name: &str) -> bool {
     xml_text.contains(&format!("<dcsset:name>{}</dcsset:name>", escape_xml(name)))
         || xml_text.contains(&format!("<name>{}</name>", escape_xml(name)))
 }
 
-pub(crate) fn skd_edit_variant_fragment(variant: &SkdEditVariant, indent: &str) -> String {
+pub(crate) fn dcs_edit_variant_fragment(variant: &DcsEditVariant, indent: &str) -> String {
     let mut lines = vec![
         format!("{indent}<settingsVariant>"),
         format!(
@@ -6376,7 +6376,7 @@ pub(crate) fn skd_edit_variant_fragment(variant: &SkdEditVariant, indent: &str) 
             escape_xml(&variant.name)
         ),
     ];
-    skd_compile_emit_mltext(
+    dcs_compile_emit_mltext(
         &mut lines,
         &format!("{indent}\t"),
         "dcsset:presentation",
@@ -6410,14 +6410,14 @@ pub(crate) fn skd_edit_variant_fragment(variant: &SkdEditVariant, indent: &str) 
     lines.join("\n")
 }
 
-pub(crate) struct SkdEditConditionalAppearance {
+pub(crate) struct DcsEditConditionalAppearance {
     pub(crate) parameter: String,
     pub(crate) value: String,
     pub(crate) fields: Vec<String>,
-    pub(crate) filters: Vec<SkdEditFilter>,
+    pub(crate) filters: Vec<DcsEditFilter>,
 }
 
-pub(crate) fn skd_edit_parse_conditional_appearance(value: &str) -> SkdEditConditionalAppearance {
+pub(crate) fn dcs_edit_parse_conditional_appearance(value: &str) -> DcsEditConditionalAppearance {
     let (head, fields) = if let Some((left, right)) = value.split_once(" for ") {
         (
             left.trim(),
@@ -6437,7 +6437,7 @@ pub(crate) fn skd_edit_parse_conditional_appearance(value: &str) -> SkdEditCondi
                 .split(" or ")
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
-                .map(skd_edit_parse_filter)
+                .map(dcs_edit_parse_filter)
                 .collect(),
         )
     } else {
@@ -6447,7 +6447,7 @@ pub(crate) fn skd_edit_parse_conditional_appearance(value: &str) -> SkdEditCondi
         .split_once('=')
         .map(|(left, right)| (left.trim().to_string(), right.trim().to_string()))
         .unwrap_or((head.to_string(), String::new()));
-    SkdEditConditionalAppearance {
+    DcsEditConditionalAppearance {
         parameter,
         value: val,
         fields,
@@ -6455,8 +6455,8 @@ pub(crate) fn skd_edit_parse_conditional_appearance(value: &str) -> SkdEditCondi
     }
 }
 
-pub(crate) fn skd_edit_conditional_appearance_fragment(
-    item: &SkdEditConditionalAppearance,
+pub(crate) fn dcs_edit_conditional_appearance_fragment(
+    item: &DcsEditConditionalAppearance,
     indent: &str,
 ) -> String {
     let mut lines = vec![format!("{indent}<dcsset:item>")];
@@ -6487,11 +6487,11 @@ pub(crate) fn skd_edit_conditional_appearance_fragment(
                 "{indent}\t\t\t<dcsset:groupType>OrGroup</dcsset:groupType>"
             ));
             for filter in &item.filters {
-                skd_edit_emit_filter_comparison(&mut lines, filter, &format!("{indent}\t\t\t"));
+                dcs_edit_emit_filter_comparison(&mut lines, filter, &format!("{indent}\t\t\t"));
             }
             lines.push(format!("{indent}\t\t</dcsset:item>"));
         } else if let Some(filter) = item.filters.first() {
-            skd_edit_emit_filter_comparison(&mut lines, filter, &format!("{indent}\t\t"));
+            dcs_edit_emit_filter_comparison(&mut lines, filter, &format!("{indent}\t\t"));
         }
         lines.push(format!("{indent}\t</dcsset:filter>"));
     }
@@ -6504,7 +6504,7 @@ pub(crate) fn skd_edit_conditional_appearance_fragment(
         "{indent}\t\t\t<dcscor:parameter>{}</dcscor:parameter>",
         escape_xml(&item.parameter)
     ));
-    lines.extend(skd_edit_conditional_appearance_value_lines(
+    lines.extend(dcs_edit_conditional_appearance_value_lines(
         &item.parameter,
         &item.value,
         &format!("{indent}\t\t\t"),
@@ -6515,9 +6515,9 @@ pub(crate) fn skd_edit_conditional_appearance_fragment(
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_emit_filter_comparison(
+pub(crate) fn dcs_edit_emit_filter_comparison(
     lines: &mut Vec<String>,
-    filter: &SkdEditFilter,
+    filter: &DcsEditFilter,
     indent: &str,
 ) {
     lines.push(format!(
@@ -6541,7 +6541,7 @@ pub(crate) fn skd_edit_emit_filter_comparison(
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
-pub(crate) fn skd_edit_conditional_appearance_value_lines(
+pub(crate) fn dcs_edit_conditional_appearance_value_lines(
     parameter: &str,
     value: &str,
     indent: &str,
@@ -6578,8 +6578,8 @@ pub(crate) fn skd_edit_conditional_appearance_value_lines(
     )]
 }
 
-pub(crate) fn skd_edit_conditional_appearance_description(
-    item: &SkdEditConditionalAppearance,
+pub(crate) fn dcs_edit_conditional_appearance_description(
+    item: &DcsEditConditionalAppearance,
 ) -> String {
     let mut desc = format!("{} = {}", item.parameter, item.value);
     if let Some(filter) = item.filters.first() {
@@ -6595,25 +6595,25 @@ pub(crate) fn skd_edit_conditional_appearance_description(
     desc
 }
 
-pub(crate) struct SkdEditOutputParameter {
+pub(crate) struct DcsEditOutputParameter {
     pub(crate) key: String,
     pub(crate) value: String,
 }
 
-pub(crate) fn skd_edit_parse_output_parameter(
+pub(crate) fn dcs_edit_parse_output_parameter(
     value: &str,
-) -> Result<SkdEditOutputParameter, String> {
+) -> Result<DcsEditOutputParameter, String> {
     let (key, val) = value
         .split_once('=')
         .ok_or_else(|| "outputParameter value must contain '='".to_string())?;
-    Ok(SkdEditOutputParameter {
+    Ok(DcsEditOutputParameter {
         key: key.trim().to_string(),
         value: val.trim().to_string(),
     })
 }
 
-pub(crate) fn skd_edit_output_parameter_fragment(
-    item: &SkdEditOutputParameter,
+pub(crate) fn dcs_edit_output_parameter_fragment(
+    item: &DcsEditOutputParameter,
     indent: &str,
 ) -> String {
     let mut lines = vec![
@@ -6636,7 +6636,7 @@ pub(crate) fn skd_edit_output_parameter_fragment(
         lines.push(format!("{indent}\t\t</v8:item>"));
         lines.push(format!("{indent}\t</dcscor:value>"));
     } else {
-        lines.extend(skd_edit_settings_value_lines(
+        lines.extend(dcs_edit_settings_value_lines(
             "dcscor:value",
             &item.value,
             indent,
@@ -6647,13 +6647,13 @@ pub(crate) fn skd_edit_output_parameter_fragment(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SkdEditStructureItem {
+pub(crate) struct DcsEditStructureItem {
     pub(crate) name: Option<String>,
     pub(crate) group_by: Vec<String>,
-    pub(crate) children: Vec<SkdEditStructureItem>,
+    pub(crate) children: Vec<DcsEditStructureItem>,
 }
 
-pub(crate) fn skd_edit_parse_structure(value: &str) -> Vec<SkdEditStructureItem> {
+pub(crate) fn dcs_edit_parse_structure(value: &str) -> Vec<DcsEditStructureItem> {
     let segments = value
         .split('>')
         .map(str::trim)
@@ -6661,7 +6661,7 @@ pub(crate) fn skd_edit_parse_structure(value: &str) -> Vec<SkdEditStructureItem>
         .collect::<Vec<_>>();
     let mut innermost = None;
     for segment in segments.into_iter().rev() {
-        let (segment, name) = skd_edit_extract_structure_name(segment);
+        let (segment, name) = dcs_edit_extract_structure_name(segment);
         let group_by = if segment.eq_ignore_ascii_case("details") || segment == "детали" {
             Vec::new()
         } else {
@@ -6673,7 +6673,7 @@ pub(crate) fn skd_edit_parse_structure(value: &str) -> Vec<SkdEditStructureItem>
                 .collect()
         };
         let children = innermost.into_iter().collect::<Vec<_>>();
-        innermost = Some(SkdEditStructureItem {
+        innermost = Some(DcsEditStructureItem {
             name,
             group_by,
             children,
@@ -6682,7 +6682,7 @@ pub(crate) fn skd_edit_parse_structure(value: &str) -> Vec<SkdEditStructureItem>
     innermost.into_iter().collect()
 }
 
-pub(crate) fn skd_edit_extract_structure_name(segment: &str) -> (String, Option<String>) {
+pub(crate) fn dcs_edit_extract_structure_name(segment: &str) -> (String, Option<String>) {
     let Some(marker) = segment.find("@name=") else {
         return (segment.trim().to_string(), None);
     };
@@ -6713,19 +6713,19 @@ pub(crate) fn skd_edit_extract_structure_name(segment: &str) -> (String, Option<
     (cleaned.trim().to_string(), Some(name.trim().to_string()))
 }
 
-pub(crate) fn skd_edit_structure_fragments(
-    structures: &[SkdEditStructureItem],
+pub(crate) fn dcs_edit_structure_fragments(
+    structures: &[DcsEditStructureItem],
     indent: &str,
 ) -> String {
     structures
         .iter()
-        .map(|item| skd_edit_structure_item_fragment(item, indent))
+        .map(|item| dcs_edit_structure_item_fragment(item, indent))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-pub(crate) fn skd_edit_structure_item_fragment(
-    item: &SkdEditStructureItem,
+pub(crate) fn dcs_edit_structure_item_fragment(
+    item: &DcsEditStructureItem,
     indent: &str,
 ) -> String {
     let mut lines = vec![format!(
@@ -6742,7 +6742,7 @@ pub(crate) fn skd_edit_structure_item_fragment(
     } else {
         lines.push(format!("{indent}\t<dcsset:groupItems>"));
         for field in &item.group_by {
-            lines.push(skd_edit_group_item_field_fragment(
+            lines.push(dcs_edit_group_item_field_fragment(
                 field,
                 &format!("{indent}\t\t"),
             ));
@@ -6760,7 +6760,7 @@ pub(crate) fn skd_edit_structure_item_fragment(
     ));
     lines.push(format!("{indent}\t</dcsset:selection>"));
     for child in &item.children {
-        lines.push(skd_edit_structure_item_fragment(
+        lines.push(dcs_edit_structure_item_fragment(
             child,
             &format!("{indent}\t"),
         ));
@@ -6769,7 +6769,7 @@ pub(crate) fn skd_edit_structure_item_fragment(
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_group_item_field_fragment(field: &str, indent: &str) -> String {
+pub(crate) fn dcs_edit_group_item_field_fragment(field: &str, indent: &str) -> String {
     [
         format!("{indent}<dcsset:item xsi:type=\"dcsset:GroupItemField\">"),
         format!(
@@ -6789,27 +6789,27 @@ pub(crate) fn skd_edit_group_item_field_fragment(field: &str, indent: &str) -> S
     .join("\n")
 }
 
-pub(crate) fn skd_edit_replace_structure(
+pub(crate) fn dcs_edit_replace_structure(
     xml_text: &mut String,
     variant: &str,
     fragment: &str,
 ) -> Result<(), String> {
     loop {
-        let settings = skd_edit_settings_content_range(xml_text, variant)?;
+        let settings = dcs_edit_settings_content_range(xml_text, variant)?;
         let Some(open_rel) = xml_text[settings.0..settings.1]
             .find("<dcsset:item xsi:type=\"dcsset:StructureItemGroup\"")
         else {
             break;
         };
         let start = settings.0 + open_rel;
-        let Some(end) = skd_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
+        let Some(end) = dcs_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
             return Err("No closing </dcsset:item> found for structure item".to_string());
         };
-        let range = skd_edit_element_line_range(xml_text, start, end);
+        let range = dcs_edit_element_line_range(xml_text, start, end);
         xml_text.replace_range(range, "");
     }
-    let settings = skd_edit_settings_content_range(xml_text, variant)?;
-    let insert_pos = skd_edit_first_settings_child_pos(
+    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
+    let insert_pos = dcs_edit_first_settings_child_pos(
         xml_text,
         settings,
         &[
@@ -6823,12 +6823,12 @@ pub(crate) fn skd_edit_replace_structure(
         ],
     )
     .unwrap_or(settings.1);
-    let insert_pos = skd_edit_line_start(xml_text, insert_pos);
+    let insert_pos = dcs_edit_line_start(xml_text, insert_pos);
     xml_text.insert_str(insert_pos, &format!("{fragment}\n"));
     Ok(())
 }
 
-pub(crate) fn skd_edit_first_settings_child_pos(
+pub(crate) fn dcs_edit_first_settings_child_pos(
     xml_text: &str,
     settings: (usize, usize),
     tags: &[&str],
@@ -6844,24 +6844,24 @@ pub(crate) fn skd_edit_first_settings_child_pos(
     result
 }
 
-pub(crate) fn skd_edit_modify_structure(
+pub(crate) fn dcs_edit_modify_structure(
     xml_text: &mut String,
     variant: &str,
-    structures: &[SkdEditStructureItem],
+    structures: &[DcsEditStructureItem],
     stdout: &mut String,
 ) -> Result<(), String> {
     let mut targets = Vec::new();
     for structure in structures {
-        skd_edit_collect_structure_targets(structure, &mut targets);
+        dcs_edit_collect_structure_targets(structure, &mut targets);
     }
     if targets.is_empty() {
         return Err(format!(
             "modify-structure requires @name= for at least one group: {}",
-            skd_edit_structure_description(structures)
+            dcs_edit_structure_description(structures)
         ));
     }
     for (name, group_by) in targets {
-        if skd_edit_replace_named_group_items(xml_text, variant, &name, &group_by)? {
+        if dcs_edit_replace_named_group_items(xml_text, variant, &name, &group_by)? {
             let desc = if group_by.is_empty() {
                 "details".to_string()
             } else {
@@ -6881,19 +6881,19 @@ pub(crate) fn skd_edit_modify_structure(
     Ok(())
 }
 
-pub(crate) fn skd_edit_collect_structure_targets(
-    item: &SkdEditStructureItem,
+pub(crate) fn dcs_edit_collect_structure_targets(
+    item: &DcsEditStructureItem,
     targets: &mut Vec<(String, Vec<String>)>,
 ) {
     if let Some(name) = &item.name {
         targets.push((name.clone(), item.group_by.clone()));
     }
     for child in &item.children {
-        skd_edit_collect_structure_targets(child, targets);
+        dcs_edit_collect_structure_targets(child, targets);
     }
 }
 
-pub(crate) fn skd_edit_structure_description(structures: &[SkdEditStructureItem]) -> String {
+pub(crate) fn dcs_edit_structure_description(structures: &[DcsEditStructureItem]) -> String {
     structures
         .iter()
         .flat_map(|item| item.group_by.iter().cloned())
@@ -6901,37 +6901,37 @@ pub(crate) fn skd_edit_structure_description(structures: &[SkdEditStructureItem]
         .join(", ")
 }
 
-pub(crate) fn skd_edit_replace_named_group_items(
+pub(crate) fn dcs_edit_replace_named_group_items(
     xml_text: &mut String,
     variant: &str,
     name: &str,
     group_by: &[String],
 ) -> Result<bool, String> {
-    let Some(group_range) = skd_edit_find_named_structure_group(xml_text, variant, name)? else {
+    let Some(group_range) = dcs_edit_find_named_structure_group(xml_text, variant, name)? else {
         return Ok(false);
     };
-    let Some(group_items) = skd_edit_find_group_items_range(xml_text, group_range)? else {
+    let Some(group_items) = dcs_edit_find_group_items_range(xml_text, group_range)? else {
         let insert_pos = group_range.0
             + xml_text[group_range.0..group_range.1]
                 .find("</dcsset:name>")
                 .map(|rel| rel + "</dcsset:name>".len())
                 .unwrap_or(0);
-        let fragment = skd_edit_group_items_fragment(group_by, "\n\t\t\t\t");
+        let fragment = dcs_edit_group_items_fragment(group_by, "\n\t\t\t\t");
         xml_text.insert_str(insert_pos, &fragment);
         return Ok(true);
     };
     if group_items.self_closing {
-        let group_indent = skd_edit_line_indent(xml_text, group_items.start);
+        let group_indent = dcs_edit_line_indent(xml_text, group_items.start);
         let child_indent = format!("{group_indent}\t");
-        let fragment = skd_edit_group_items_inner_fragment(group_by, &child_indent);
+        let fragment = dcs_edit_group_items_inner_fragment(group_by, &child_indent);
         xml_text.replace_range(
             group_items.start..group_items.end,
             &format!("<dcsset:groupItems>\n{fragment}{group_indent}</dcsset:groupItems>"),
         );
     } else {
-        let group_indent = skd_edit_line_indent(xml_text, group_items.start);
+        let group_indent = dcs_edit_line_indent(xml_text, group_items.start);
         let child_indent = format!("{group_indent}\t");
-        let fragment = skd_edit_group_items_inner_fragment(group_by, &child_indent);
+        let fragment = dcs_edit_group_items_inner_fragment(group_by, &child_indent);
         xml_text.replace_range(
             group_items.open_end..group_items.close_start,
             &format!("\n{fragment}{group_indent}"),
@@ -6940,25 +6940,25 @@ pub(crate) fn skd_edit_replace_named_group_items(
     Ok(true)
 }
 
-pub(crate) fn skd_edit_group_items_fragment(group_by: &[String], indent: &str) -> String {
+pub(crate) fn dcs_edit_group_items_fragment(group_by: &[String], indent: &str) -> String {
     if group_by.is_empty() {
         return format!("{indent}<dcsset:groupItems/>");
     }
     format!(
         "{indent}<dcsset:groupItems>\n{}{indent}</dcsset:groupItems>",
-        skd_edit_group_items_inner_fragment(group_by, &(indent.to_string() + "\t")),
+        dcs_edit_group_items_inner_fragment(group_by, &(indent.to_string() + "\t")),
     )
 }
 
-pub(crate) fn skd_edit_group_items_inner_fragment(group_by: &[String], indent: &str) -> String {
+pub(crate) fn dcs_edit_group_items_inner_fragment(group_by: &[String], indent: &str) -> String {
     group_by
         .iter()
-        .map(|field| skd_edit_group_item_field_fragment(field, indent))
+        .map(|field| dcs_edit_group_item_field_fragment(field, indent))
         .map(|fragment| format!("{fragment}\n"))
         .collect::<String>()
 }
 
-pub(crate) fn skd_edit_line_indent(xml_text: &str, pos: usize) -> String {
+pub(crate) fn dcs_edit_line_indent(xml_text: &str, pos: usize) -> String {
     let line_start = xml_text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     xml_text[line_start..pos]
         .chars()
@@ -6966,12 +6966,12 @@ pub(crate) fn skd_edit_line_indent(xml_text: &str, pos: usize) -> String {
         .collect()
 }
 
-pub(crate) fn skd_edit_find_named_structure_group(
+pub(crate) fn dcs_edit_find_named_structure_group(
     xml_text: &str,
     variant: &str,
     name: &str,
 ) -> Result<Option<(usize, usize)>, String> {
-    let settings = skd_edit_settings_content_range(xml_text, variant)?;
+    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
     let name_probe = format!("<dcsset:name>{}</dcsset:name>", escape_xml(name));
     let open_probe = "<dcsset:item xsi:type=\"dcsset:StructureItemGroup\"";
     let mut cursor = settings.0;
@@ -6982,7 +6982,7 @@ pub(crate) fn skd_edit_find_named_structure_group(
             continue;
         };
         let start = settings.0 + open_rel;
-        let Some(end) = skd_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
+        let Some(end) = dcs_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
             return Err("No closing </dcsset:item> found for structure item".to_string());
         };
         if end > name_start {
@@ -6993,10 +6993,10 @@ pub(crate) fn skd_edit_find_named_structure_group(
     Ok(None)
 }
 
-pub(crate) fn skd_edit_find_group_items_range(
+pub(crate) fn dcs_edit_find_group_items_range(
     xml_text: &str,
     group_range: (usize, usize),
-) -> Result<Option<SkdEditElementRange>, String> {
+) -> Result<Option<DcsEditElementRange>, String> {
     let Some(open_rel) = xml_text[group_range.0..group_range.1].find("<dcsset:groupItems") else {
         return Ok(None);
     };
@@ -7007,7 +7007,7 @@ pub(crate) fn skd_edit_find_group_items_range(
     let open_end = start + open_end_rel + 1;
     let open_tag = &xml_text[start..open_end];
     if open_tag.trim_end().ends_with("/>") {
-        return Ok(Some(SkdEditElementRange {
+        return Ok(Some(DcsEditElementRange {
             start,
             open_end,
             close_start: open_end,
@@ -7020,7 +7020,7 @@ pub(crate) fn skd_edit_find_group_items_range(
         return Err("No </dcsset:groupItems> element found".to_string());
     };
     let close_start = open_end + close_rel;
-    Ok(Some(SkdEditElementRange {
+    Ok(Some(DcsEditElementRange {
         start,
         open_end,
         close_start,
@@ -7029,7 +7029,7 @@ pub(crate) fn skd_edit_find_group_items_range(
     }))
 }
 
-pub(crate) fn skd_edit_remove_first_block(
+pub(crate) fn dcs_edit_remove_first_block(
     xml_text: &mut String,
     range: (usize, usize),
     open_prefix: &str,
@@ -7047,7 +7047,7 @@ pub(crate) fn skd_edit_remove_first_block(
     true
 }
 
-pub(crate) fn skd_edit_matching_dcsset_item_end(
+pub(crate) fn dcs_edit_matching_dcsset_item_end(
     xml_text: &str,
     start: usize,
     limit: usize,
@@ -7083,39 +7083,39 @@ pub(crate) fn skd_edit_matching_dcsset_item_end(
     None
 }
 
-pub(crate) enum SkdEditDrilldownResult {
+pub(crate) enum DcsEditDrilldownResult {
     Added,
     NoNamedTemplates,
     NoMatch,
 }
 
-pub(crate) fn skd_edit_add_drilldown(
+pub(crate) fn dcs_edit_add_drilldown(
     xml_text: &mut String,
     resource: &str,
-) -> SkdEditDrilldownResult {
+) -> DcsEditDrilldownResult {
     if !xml_text.contains("<template>") {
-        return SkdEditDrilldownResult::NoNamedTemplates;
+        return DcsEditDrilldownResult::NoNamedTemplates;
     }
     if !xml_text.contains(resource) {
-        return SkdEditDrilldownResult::NoMatch;
+        return DcsEditDrilldownResult::NoMatch;
     }
     let marker = format!("DrillDown{}", sanitize_xml_identifier(resource));
     if xml_text.contains(&marker) {
-        return SkdEditDrilldownResult::NoMatch;
+        return DcsEditDrilldownResult::NoMatch;
     }
     let fragment = format!(
         "\t<parameter>\n\t\t<name>{}</name>\n\t\t<expression>{}</expression>\n\t</parameter>",
         escape_xml(&marker),
         escape_xml(resource)
     );
-    if skd_edit_insert_before_root_close(xml_text, &fragment).is_ok() {
-        SkdEditDrilldownResult::Added
+    if dcs_edit_insert_before_root_close(xml_text, &fragment).is_ok() {
+        DcsEditDrilldownResult::Added
     } else {
-        SkdEditDrilldownResult::NoMatch
+        DcsEditDrilldownResult::NoMatch
     }
 }
 
-pub(crate) fn skd_edit_set_field_role(
+pub(crate) fn dcs_edit_set_field_role(
     xml_text: &mut String,
     data_set: &str,
     value: &str,
@@ -7140,18 +7140,18 @@ pub(crate) fn skd_edit_set_field_role(
         stdout.push_str("[WARN] set-field-role: empty dataPath\n");
         return Ok(());
     }
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
-    let field_range = skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &data_path);
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    let field_range = dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &data_path);
     let Some(field_range) = field_range else {
         stdout.push_str(&format!("[WARN] Field \"{}\" not found\n", data_path));
         return Ok(());
     };
-    let preserved_role_children = skd_edit_preserved_role_children(xml_text, field_range, &kv);
-    let _ = skd_edit_remove_child_block(xml_text, field_range, "role");
+    let preserved_role_children = dcs_edit_preserved_role_children(xml_text, field_range, &kv);
+    let _ = dcs_edit_remove_child_block(xml_text, field_range, "role");
     if !flags.is_empty() || !kv.is_empty() {
-        let range = skd_edit_dataset_range(xml_text, data_set)?;
+        let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
-            skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &data_path)
+            dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", data_path))?;
         let block = &xml_text[field_range.0..field_range.1];
         let insert = ["\n\t\t\t<valueType", "\n\t\t\t<inputParameters"]
@@ -7214,12 +7214,12 @@ pub(crate) fn skd_edit_set_field_role(
     Ok(())
 }
 
-pub(crate) fn skd_edit_preserved_role_children(
+pub(crate) fn dcs_edit_preserved_role_children(
     xml_text: &str,
     field_range: (usize, usize),
     kv: &[(String, String)],
 ) -> Vec<String> {
-    let Some(role_range) = skd_edit_child_element_range(xml_text, field_range, "role") else {
+    let Some(role_range) = dcs_edit_child_element_range(xml_text, field_range, "role") else {
         return Vec::new();
     };
     let Some(open_end_rel) = xml_text[role_range.0..role_range.1].find('>') else {
@@ -7278,7 +7278,7 @@ pub(crate) fn skd_edit_preserved_role_children(
     result
 }
 
-pub(crate) struct SkdEditParameterPatch {
+pub(crate) struct DcsEditParameterPatch {
     pub(crate) name: String,
     pub(crate) title: String,
     pub(crate) values: Option<Vec<String>>,
@@ -7288,7 +7288,7 @@ pub(crate) struct SkdEditParameterPatch {
     pub(crate) always: bool,
 }
 
-pub(crate) fn skd_edit_parse_parameter_patch(value: &str) -> SkdEditParameterPatch {
+pub(crate) fn dcs_edit_parse_parameter_patch(value: &str) -> DcsEditParameterPatch {
     let hidden = value.contains("@hidden");
     let always = value.contains("@always");
     let cleaned = value.replace("@hidden", "").replace("@always", "");
@@ -7296,13 +7296,13 @@ pub(crate) fn skd_edit_parse_parameter_patch(value: &str) -> SkdEditParameterPat
         if let Some((head, tail)) = cleaned.split_once("availableValue=") {
             (
                 head.trim().to_string(),
-                skd_edit_extract_available_values(&format!("availableValue={tail}")),
+                dcs_edit_extract_available_values(&format!("availableValue={tail}")),
             )
         } else {
             (cleaned.trim().to_string(), Vec::new())
         };
-    let (head, title) = skd_edit_extract_bracket_title(&without_available);
-    let mut parts = skd_edit_split_quoted_whitespace(&head)
+    let (head, title) = dcs_edit_extract_bracket_title(&without_available);
+    let mut parts = dcs_edit_split_quoted_whitespace(&head)
         .into_iter()
         .peekable();
     let name = parts.next().unwrap_or_default();
@@ -7325,12 +7325,12 @@ pub(crate) fn skd_edit_parse_parameter_patch(value: &str) -> SkdEditParameterPat
                 raw_value.push_str(next);
                 parts.next();
             }
-            values = Some(skd_edit_parse_value_list(&raw_value));
+            values = Some(dcs_edit_parse_value_list(&raw_value));
         } else {
-            simple_pairs.push((key.to_string(), skd_edit_strip_quotes(val)));
+            simple_pairs.push((key.to_string(), dcs_edit_strip_quotes(val)));
         }
     }
-    SkdEditParameterPatch {
+    DcsEditParameterPatch {
         name,
         title,
         values,
@@ -7341,12 +7341,12 @@ pub(crate) fn skd_edit_parse_parameter_patch(value: &str) -> SkdEditParameterPat
     }
 }
 
-pub(crate) fn skd_edit_modify_parameter(
+pub(crate) fn dcs_edit_modify_parameter(
     xml_text: &mut String,
-    patch: &SkdEditParameterPatch,
+    patch: &DcsEditParameterPatch,
     stdout: &mut String,
 ) -> Result<(), String> {
-    if skd_edit_parameter_range(xml_text, &patch.name).is_none() {
+    if dcs_edit_parameter_range(xml_text, &patch.name).is_none() {
         stdout.push_str(&format!(
             "[WARN] Parameter \"{}\" not found -- skipped\n",
             patch.name
@@ -7354,11 +7354,11 @@ pub(crate) fn skd_edit_modify_parameter(
         return Ok(());
     }
     if !patch.title.is_empty() {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
         let mut lines = Vec::new();
-        skd_compile_emit_mltext(&mut lines, "\t\t", "title", &patch.title);
-        skd_edit_replace_or_insert_parameter_child_fragment(
+        dcs_compile_emit_mltext(&mut lines, "\t\t", "title", &patch.title);
+        dcs_edit_replace_or_insert_parameter_child_fragment(
             xml_text,
             range,
             "title",
@@ -7380,20 +7380,20 @@ pub(crate) fn skd_edit_modify_parameter(
         ));
     }
     if let Some(values) = &patch.values {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let declared_type = skd_edit_parameter_declared_type(xml_text, range);
-        let existed = skd_edit_remove_parameter_value_children(xml_text, range);
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let declared_type = dcs_edit_parameter_declared_type(xml_text, range);
+        let existed = dcs_edit_remove_parameter_value_children(xml_text, range);
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
         let fragment = values
             .iter()
             .flat_map(|value| {
-                skd_edit_parameter_value_lines(&declared_type, value, "\t\t", "value")
+                dcs_edit_parameter_value_lines(&declared_type, value, "\t\t", "value")
             })
             .collect::<Vec<_>>()
             .join("\n");
-        skd_edit_insert_parameter_child_fragment(
+        dcs_edit_insert_parameter_child_fragment(
             xml_text,
             range,
             &fragment,
@@ -7408,9 +7408,9 @@ pub(crate) fn skd_edit_modify_parameter(
             ],
         );
         if values.len() >= 2 {
-            let range = skd_edit_parameter_range(xml_text, &patch.name)
+            let range = dcs_edit_parameter_range(xml_text, &patch.name)
                 .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-            skd_edit_replace_or_insert_parameter_child_fragment(
+            dcs_edit_replace_or_insert_parameter_child_fragment(
                 xml_text,
                 range,
                 "valueListAllowed",
@@ -7438,15 +7438,15 @@ pub(crate) fn skd_edit_modify_parameter(
         }
     }
     for (key, value) in &patch.simple_pairs {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let existed = skd_edit_child_element_range(xml_text, range, key).is_some();
+        let existed = dcs_edit_child_element_range(xml_text, range, key).is_some();
         let before = if key == "denyIncompleteValues" {
             &["use"][..]
         } else {
             &[][..]
         };
-        skd_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_parameter_child_fragment(
             xml_text,
             range,
             key,
@@ -7464,32 +7464,32 @@ pub(crate) fn skd_edit_modify_parameter(
         ));
     }
     if !patch.available_values.is_empty() {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let declared_type = skd_edit_parameter_declared_type(xml_text, range);
-        skd_edit_remove_parameter_available_value_children(xml_text, range);
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let declared_type = dcs_edit_parameter_declared_type(xml_text, range);
+        dcs_edit_remove_parameter_available_value_children(xml_text, range);
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
         let fragment = patch
             .available_values
             .iter()
             .map(|(value, presentation)| {
                 let mut lines = vec!["\t\t<availableValue>".to_string()];
-                lines.extend(skd_edit_parameter_value_lines(
+                lines.extend(dcs_edit_parameter_value_lines(
                     &declared_type,
                     value,
                     "\t\t\t",
                     "value",
                 ));
                 if !presentation.is_empty() {
-                    skd_compile_emit_mltext(&mut lines, "\t\t\t", "presentation", presentation);
+                    dcs_compile_emit_mltext(&mut lines, "\t\t\t", "presentation", presentation);
                 }
                 lines.push("\t\t</availableValue>".to_string());
                 lines.join("\n")
             })
             .collect::<Vec<_>>()
             .join("\n");
-        skd_edit_insert_parameter_child_fragment(
+        dcs_edit_insert_parameter_child_fragment(
             xml_text,
             range,
             &fragment,
@@ -7502,9 +7502,9 @@ pub(crate) fn skd_edit_modify_parameter(
         ));
     }
     if patch.hidden {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        skd_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_parameter_child_fragment(
             xml_text,
             range,
             "availableAsField",
@@ -7516,9 +7516,9 @@ pub(crate) fn skd_edit_modify_parameter(
                 "expression",
             ],
         );
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        skd_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_parameter_child_fragment(
             xml_text,
             range,
             "useRestriction",
@@ -7537,9 +7537,9 @@ pub(crate) fn skd_edit_modify_parameter(
         ));
     }
     if patch.always {
-        let range = skd_edit_parameter_range(xml_text, &patch.name)
+        let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        skd_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_parameter_child_fragment(
             xml_text,
             range,
             "use",
@@ -7554,15 +7554,15 @@ pub(crate) fn skd_edit_modify_parameter(
     Ok(())
 }
 
-pub(crate) fn skd_edit_replace_or_insert_parameter_child_fragment(
+pub(crate) fn dcs_edit_replace_or_insert_parameter_child_fragment(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
     fragment: &str,
     before_children: &[&str],
 ) {
-    if let Some(child_range) = skd_edit_child_element_range(xml_text, range, child) {
-        let replace = skd_edit_element_line_range(xml_text, child_range.0, child_range.1);
+    if let Some(child_range) = dcs_edit_child_element_range(xml_text, range, child) {
+        let replace = dcs_edit_element_line_range(xml_text, child_range.0, child_range.1);
         xml_text.replace_range(replace, &format!("{fragment}\n"));
         return;
     }
@@ -7582,7 +7582,7 @@ pub(crate) fn skd_edit_replace_or_insert_parameter_child_fragment(
     xml_text.insert_str(insert, &format!("{fragment}\n"));
 }
 
-pub(crate) fn skd_edit_insert_parameter_child_fragment(
+pub(crate) fn dcs_edit_insert_parameter_child_fragment(
     xml_text: &mut String,
     range: (usize, usize),
     fragment: &str,
@@ -7604,31 +7604,31 @@ pub(crate) fn skd_edit_insert_parameter_child_fragment(
     xml_text.insert_str(insert, &format!("{fragment}\n"));
 }
 
-pub(crate) fn skd_edit_parameter_declared_type(xml_text: &str, range: (usize, usize)) -> String {
-    let Some(value_type_range) = skd_edit_child_element_range(xml_text, range, "valueType") else {
+pub(crate) fn dcs_edit_parameter_declared_type(xml_text: &str, range: (usize, usize)) -> String {
+    let Some(value_type_range) = dcs_edit_child_element_range(xml_text, range, "valueType") else {
         return String::new();
     };
-    let Ok(type_range) = skd_edit_child_text_range(xml_text, value_type_range, "v8:Type") else {
+    let Ok(type_range) = dcs_edit_child_text_range(xml_text, value_type_range, "v8:Type") else {
         return String::new();
     };
     xml_text[type_range].trim().to_string()
 }
 
-pub(crate) fn skd_edit_remove_parameter_value_children(
+pub(crate) fn dcs_edit_remove_parameter_value_children(
     xml_text: &mut String,
     range: (usize, usize),
 ) -> bool {
-    skd_edit_remove_parameter_children_by_name(xml_text, range, "value")
+    dcs_edit_remove_parameter_children_by_name(xml_text, range, "value")
 }
 
-pub(crate) fn skd_edit_remove_parameter_available_value_children(
+pub(crate) fn dcs_edit_remove_parameter_available_value_children(
     xml_text: &mut String,
     range: (usize, usize),
 ) -> bool {
-    skd_edit_remove_parameter_children_by_name(xml_text, range, "availableValue")
+    dcs_edit_remove_parameter_children_by_name(xml_text, range, "availableValue")
 }
 
-pub(crate) fn skd_edit_remove_parameter_children_by_name(
+pub(crate) fn dcs_edit_remove_parameter_children_by_name(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
@@ -7636,32 +7636,32 @@ pub(crate) fn skd_edit_remove_parameter_children_by_name(
     let mut removed = false;
     loop {
         let current_range = (range.0, range.1.min(xml_text.len()));
-        let Some((start, end)) = skd_edit_child_element_range(xml_text, current_range, child)
+        let Some((start, end)) = dcs_edit_child_element_range(xml_text, current_range, child)
         else {
             break;
         };
-        let remove = skd_edit_element_line_range(xml_text, start, end);
+        let remove = dcs_edit_element_line_range(xml_text, start, end);
         xml_text.replace_range(remove, "");
         removed = true;
     }
     removed
 }
 
-pub(crate) fn skd_edit_replace_or_insert_child_fragment(
+pub(crate) fn dcs_edit_replace_or_insert_child_fragment(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
     fragment: &str,
     before_children: &[&str],
 ) {
-    if let Some(child_range) = skd_edit_child_element_range(xml_text, range, child) {
-        let replace = skd_edit_element_line_range(xml_text, child_range.0, child_range.1);
+    if let Some(child_range) = dcs_edit_child_element_range(xml_text, range, child) {
+        let replace = dcs_edit_element_line_range(xml_text, child_range.0, child_range.1);
         xml_text.replace_range(replace, &format!("{fragment}\n"));
         return;
     }
     let block = &xml_text[range.0..range.1];
-    let parent_name = skd_edit_element_name_at(xml_text, range.0).unwrap_or_default();
-    let parent_indent = skd_edit_line_indent(xml_text, range.0);
+    let parent_name = dcs_edit_element_name_at(xml_text, range.0).unwrap_or_default();
+    let parent_indent = dcs_edit_line_indent(xml_text, range.0);
     let child_indent = format!("{parent_indent}\t");
     let insert = before_children
         .iter()
@@ -7679,7 +7679,7 @@ pub(crate) fn skd_edit_replace_or_insert_child_fragment(
     xml_text.insert_str(insert, &format!("{fragment}\n"));
 }
 
-pub(crate) fn skd_edit_element_name_at(xml_text: &str, start: usize) -> Option<String> {
+pub(crate) fn dcs_edit_element_name_at(xml_text: &str, start: usize) -> Option<String> {
     let text = xml_text.get(start..)?;
     let text = text.strip_prefix('<')?;
     let end = text
@@ -7688,7 +7688,7 @@ pub(crate) fn skd_edit_element_name_at(xml_text: &str, start: usize) -> Option<S
     Some(text[..end].to_string())
 }
 
-pub(crate) fn skd_edit_child_element_range(
+pub(crate) fn dcs_edit_child_element_range(
     xml_text: &str,
     range: (usize, usize),
     child: &str,
@@ -7714,21 +7714,21 @@ pub(crate) fn skd_edit_child_element_range(
     if xml_text[start..=open_end].trim_end().ends_with("/>") {
         return Some((start, open_end + 1));
     }
-    let end = skd_edit_matching_element_end(xml_text, start, end_bound, child)?;
+    let end = dcs_edit_matching_element_end(xml_text, start, end_bound, child)?;
     Some((start, end))
 }
 
-pub(crate) fn skd_edit_parameter_range(xml_text: &str, name: &str) -> Option<(usize, usize)> {
-    skd_edit_find_item_by_child(
+pub(crate) fn dcs_edit_parameter_range(xml_text: &str, name: &str) -> Option<(usize, usize)> {
+    dcs_edit_find_item_by_child(
         xml_text,
-        (0, skd_edit_parameter_limit(xml_text)),
+        (0, dcs_edit_parameter_limit(xml_text)),
         "parameter",
         "name",
         name,
     )
 }
 
-pub(crate) fn skd_edit_rename_parameter(
+pub(crate) fn dcs_edit_rename_parameter(
     xml_text: &mut String,
     value: &str,
     stdout: &mut String,
@@ -7745,20 +7745,20 @@ pub(crate) fn skd_edit_rename_parameter(
         stdout.push_str("[WARN] rename-parameter: old and new names are equal -- skipped\n");
         return Ok(());
     }
-    if !skd_edit_top_level_contains(xml_text, "parameter", "name", old) {
+    if !dcs_edit_top_level_contains(xml_text, "parameter", "name", old) {
         stdout.push_str(&format!(
             "[WARN] Parameter \"{}\" not found -- skipped\n",
             old
         ));
         return Ok(());
     }
-    let parameter_limit = skd_edit_parameter_limit(xml_text);
+    let parameter_limit = dcs_edit_parameter_limit(xml_text);
     let range =
-        skd_edit_find_item_by_child(xml_text, (0, parameter_limit), "parameter", "name", old)
+        dcs_edit_find_item_by_child(xml_text, (0, parameter_limit), "parameter", "name", old)
             .ok_or_else(|| format!("Parameter \"{}\" not found", old))?;
-    skd_edit_replace_child_text(xml_text, range, "name", new)?;
-    let expr_updated = skd_edit_update_parameter_expression_refs(xml_text, old, new);
-    let dp_updated = skd_edit_replace_exact_data_parameter_refs(xml_text, old, new);
+    dcs_edit_replace_child_text(xml_text, range, "name", new)?;
+    let expr_updated = dcs_edit_update_parameter_expression_refs(xml_text, old, new);
+    let dp_updated = dcs_edit_replace_exact_data_parameter_refs(xml_text, old, new);
     stdout.push_str(&format!(
         "[OK] Parameter renamed: \"{}\" => \"{}\" (expressions updated: {}, dataParameters updated: {})\n",
         old, new, expr_updated, dp_updated
@@ -7766,14 +7766,14 @@ pub(crate) fn skd_edit_rename_parameter(
     Ok(())
 }
 
-pub(crate) fn skd_edit_parameter_limit(xml_text: &str) -> usize {
+pub(crate) fn dcs_edit_parameter_limit(xml_text: &str) -> usize {
     xml_text
         .find("\n\t<settingsVariant")
         .or_else(|| xml_text.find("</DataCompositionSchema>"))
         .unwrap_or(xml_text.len())
 }
 
-pub(crate) fn skd_edit_update_parameter_expression_refs(
+pub(crate) fn dcs_edit_update_parameter_expression_refs(
     xml_text: &mut String,
     old: &str,
     new: &str,
@@ -7781,7 +7781,7 @@ pub(crate) fn skd_edit_update_parameter_expression_refs(
     let mut updated = 0usize;
     let mut cursor = 0usize;
     loop {
-        let limit = skd_edit_parameter_limit(xml_text);
+        let limit = dcs_edit_parameter_limit(xml_text);
         if cursor >= limit {
             break;
         }
@@ -7789,15 +7789,15 @@ pub(crate) fn skd_edit_update_parameter_expression_refs(
             break;
         };
         let start = cursor + open_rel;
-        let Some(end) = skd_edit_matching_element_end(xml_text, start, limit, "parameter") else {
+        let Some(end) = dcs_edit_matching_element_end(xml_text, start, limit, "parameter") else {
             break;
         };
-        let Ok(expr_range) = skd_edit_child_text_range(xml_text, (start, end), "expression") else {
+        let Ok(expr_range) = dcs_edit_child_text_range(xml_text, (start, end), "expression") else {
             cursor = end;
             continue;
         };
         let current = xml_text[expr_range.clone()].to_string();
-        let (replacement, count) = skd_edit_replace_parameter_tokens(&current, old, new);
+        let (replacement, count) = dcs_edit_replace_parameter_tokens(&current, old, new);
         if count > 0 {
             let old_len = expr_range.end - expr_range.start;
             xml_text.replace_range(expr_range.start..expr_range.end, &replacement);
@@ -7810,7 +7810,7 @@ pub(crate) fn skd_edit_update_parameter_expression_refs(
     updated
 }
 
-pub(crate) fn skd_edit_replace_parameter_tokens(
+pub(crate) fn dcs_edit_replace_parameter_tokens(
     text: &str,
     old: &str,
     new: &str,
@@ -7840,7 +7840,7 @@ pub(crate) fn skd_edit_replace_parameter_tokens(
     (result, count)
 }
 
-pub(crate) fn skd_edit_replace_exact_data_parameter_refs(
+pub(crate) fn dcs_edit_replace_exact_data_parameter_refs(
     xml_text: &mut String,
     old: &str,
     new: &str,
@@ -7854,7 +7854,7 @@ pub(crate) fn skd_edit_replace_exact_data_parameter_refs(
     count
 }
 
-pub(crate) fn skd_edit_reorder_parameters(
+pub(crate) fn dcs_edit_reorder_parameters(
     xml_text: &mut String,
     value: &str,
     stdout: &mut String,
@@ -7869,8 +7869,8 @@ pub(crate) fn skd_edit_reorder_parameters(
         stdout.push_str("[WARN] reorder-parameters: empty list -- skipped\n");
         return Ok(());
     }
-    let parameter_limit = skd_edit_parameter_limit(xml_text);
-    let mut blocks = skd_edit_collect_root_parameter_blocks(xml_text, parameter_limit);
+    let parameter_limit = dcs_edit_parameter_limit(xml_text);
+    let mut blocks = dcs_edit_collect_root_parameter_blocks(xml_text, parameter_limit);
     if blocks.is_empty() {
         stdout.push_str("[WARN] reorder-parameters: no parameters in schema\n");
         return Ok(());
@@ -7895,7 +7895,7 @@ pub(crate) fn skd_edit_reorder_parameters(
         .chain(remaining)
         .map(|(_, block)| block)
         .collect::<Vec<_>>();
-    let current_blocks = skd_edit_collect_root_parameter_blocks(xml_text, parameter_limit);
+    let current_blocks = dcs_edit_collect_root_parameter_blocks(xml_text, parameter_limit);
     let first_start = current_blocks
         .first()
         .map(|(_, start, _, _)| *start)
@@ -7904,7 +7904,7 @@ pub(crate) fn skd_edit_reorder_parameters(
         .last()
         .map(|(_, _, end, _)| *end)
         .ok_or_else(|| "No parameter block found".to_string())?;
-    let indent = skd_edit_line_indent(xml_text, first_start);
+    let indent = dcs_edit_line_indent(xml_text, first_start);
     xml_text.replace_range(first_start..last_end, &all.join(&format!("\n{indent}")));
     stdout.push_str(&format!(
         "[OK] Parameters reordered ({} total, {} explicit)\n",
@@ -7914,7 +7914,7 @@ pub(crate) fn skd_edit_reorder_parameters(
     Ok(())
 }
 
-pub(crate) fn skd_edit_collect_root_parameter_blocks(
+pub(crate) fn dcs_edit_collect_root_parameter_blocks(
     xml_text: &str,
     limit: usize,
 ) -> Vec<(String, usize, usize, String)> {
@@ -7925,11 +7925,11 @@ pub(crate) fn skd_edit_collect_root_parameter_blocks(
             break;
         };
         let start = cursor + open_rel + 1;
-        let Some(end) = skd_edit_matching_element_end(xml_text, start, limit, "parameter") else {
+        let Some(end) = dcs_edit_matching_element_end(xml_text, start, limit, "parameter") else {
             break;
         };
         let block = xml_text[start..end].to_string();
-        let name = skd_edit_child_text_range(xml_text, (start, end), "name")
+        let name = dcs_edit_child_text_range(xml_text, (start, end), "name")
             .map(|range| xml_text[range].trim().to_string())
             .unwrap_or_default();
         result.push((name, start, end, block));
@@ -7938,11 +7938,11 @@ pub(crate) fn skd_edit_collect_root_parameter_blocks(
     result
 }
 
-pub(crate) fn skd_edit_collect_blocks(xml_text: &str, item: &str) -> Vec<(String, String)> {
-    skd_edit_collect_blocks_in_range(xml_text, item, (0, xml_text.len()))
+pub(crate) fn dcs_edit_collect_blocks(xml_text: &str, item: &str) -> Vec<(String, String)> {
+    dcs_edit_collect_blocks_in_range(xml_text, item, (0, xml_text.len()))
 }
 
-pub(crate) fn skd_edit_collect_blocks_in_range(
+pub(crate) fn dcs_edit_collect_blocks_in_range(
     xml_text: &str,
     item: &str,
     range: (usize, usize),
@@ -7961,7 +7961,7 @@ pub(crate) fn skd_edit_collect_blocks_in_range(
         };
         let end = start + close_rel + close.len();
         let block = xml_text[start..end].to_string();
-        let name = skd_edit_child_text_range(xml_text, (start, end), "name")
+        let name = dcs_edit_child_text_range(xml_text, (start, end), "name")
             .map(|range| xml_text[range].trim().to_string())
             .unwrap_or_default();
         result.push((name, block));
@@ -7970,7 +7970,7 @@ pub(crate) fn skd_edit_collect_blocks_in_range(
     result
 }
 
-pub(crate) fn skd_edit_find_item_by_child(
+pub(crate) fn dcs_edit_find_item_by_child(
     xml_text: &str,
     range: (usize, usize),
     item: &str,
@@ -7982,8 +7982,8 @@ pub(crate) fn skd_edit_find_item_by_child(
     while cursor < range.1 {
         let open_rel = xml_text[cursor..range.1].find(&open_prefix)?;
         let start = cursor + open_rel;
-        let end = skd_edit_matching_element_end(xml_text, start, range.1, item)?;
-        if skd_edit_block_has_child_text(&xml_text[start..end], child, value) {
+        let end = dcs_edit_matching_element_end(xml_text, start, range.1, item)?;
+        if dcs_edit_block_has_child_text(&xml_text[start..end], child, value) {
             return Some((start, end));
         }
         cursor = end;
@@ -7991,7 +7991,7 @@ pub(crate) fn skd_edit_find_item_by_child(
     None
 }
 
-pub(crate) fn skd_edit_remove_child_block(
+pub(crate) fn dcs_edit_remove_child_block(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
@@ -8014,26 +8014,26 @@ pub(crate) fn skd_edit_remove_child_block(
     true
 }
 
-pub(crate) fn skd_edit_remove_child_element(
+pub(crate) fn dcs_edit_remove_child_element(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
 ) -> bool {
-    let Some((start, end)) = skd_edit_child_element_range(xml_text, range, child) else {
+    let Some((start, end)) = dcs_edit_child_element_range(xml_text, range, child) else {
         return false;
     };
-    let remove = skd_edit_element_line_range(xml_text, start, end);
+    let remove = dcs_edit_element_line_range(xml_text, start, end);
     xml_text.replace_range(remove, "");
     true
 }
 
-pub(crate) fn skd_edit_replace_or_insert_simple_child(
+pub(crate) fn dcs_edit_replace_or_insert_simple_child(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
     value: &str,
 ) {
-    if let Ok(text_range) = skd_edit_child_text_range(xml_text, range, child) {
+    if let Ok(text_range) = dcs_edit_child_text_range(xml_text, range, child) {
         xml_text.replace_range(text_range, &escape_xml(value));
         return;
     }
@@ -8047,7 +8047,7 @@ pub(crate) fn skd_edit_replace_or_insert_simple_child(
     }
 }
 
-pub(crate) fn skd_edit_extract_bracket_title(value: &str) -> (String, String) {
+pub(crate) fn dcs_edit_extract_bracket_title(value: &str) -> (String, String) {
     let mut text = value.to_string();
     if let (Some(open), Some(close)) = (text.find('['), text.find(']')) {
         if close > open {
@@ -8059,7 +8059,7 @@ pub(crate) fn skd_edit_extract_bracket_title(value: &str) -> (String, String) {
     (text.trim().to_string(), String::new())
 }
 
-pub(crate) fn skd_edit_strip_markers(value: &str) -> String {
+pub(crate) fn dcs_edit_strip_markers(value: &str) -> String {
     value
         .split_whitespace()
         .filter(|part| !part.starts_with('@') && !part.starts_with('#'))
@@ -8067,34 +8067,34 @@ pub(crate) fn skd_edit_strip_markers(value: &str) -> String {
         .join(" ")
 }
 
-pub(crate) fn skd_edit_extract_available_values(value: &str) -> Vec<(String, String)> {
+pub(crate) fn dcs_edit_extract_available_values(value: &str) -> Vec<(String, String)> {
     let Some((_, tail)) = value.split_once("availableValue=") else {
         return Vec::new();
     };
-    skd_edit_split_quoted_csv(tail)
+    dcs_edit_split_quoted_csv(tail)
         .into_iter()
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty() && !item.starts_with('@'))
         .map(|item| {
-            skd_edit_split_once_unquoted_colon(&item)
-                .map(|(left, right)| (skd_edit_strip_quotes(left), skd_edit_strip_quotes(right)))
-                .unwrap_or((skd_edit_strip_quotes(&item), String::new()))
+            dcs_edit_split_once_unquoted_colon(&item)
+                .map(|(left, right)| (dcs_edit_strip_quotes(left), dcs_edit_strip_quotes(right)))
+                .unwrap_or((dcs_edit_strip_quotes(&item), String::new()))
         })
         .collect()
 }
 
-pub(crate) fn skd_edit_parse_value_list(value: &str) -> Vec<String> {
+pub(crate) fn dcs_edit_parse_value_list(value: &str) -> Vec<String> {
     if value.is_empty() {
         return vec![String::new()];
     }
-    skd_edit_split_quoted_csv(value)
+    dcs_edit_split_quoted_csv(value)
         .into_iter()
-        .map(|item| skd_edit_strip_quotes(&item))
+        .map(|item| dcs_edit_strip_quotes(&item))
         .filter(|item| !item.is_empty())
         .collect()
 }
 
-pub(crate) fn skd_edit_split_quoted_csv(value: &str) -> Vec<String> {
+pub(crate) fn dcs_edit_split_quoted_csv(value: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
     let mut quote = None;
@@ -8120,7 +8120,7 @@ pub(crate) fn skd_edit_split_quoted_csv(value: &str) -> Vec<String> {
     result
 }
 
-pub(crate) fn skd_edit_split_quoted_whitespace(value: &str) -> Vec<String> {
+pub(crate) fn dcs_edit_split_quoted_whitespace(value: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
     let mut quote = None;
@@ -8148,7 +8148,7 @@ pub(crate) fn skd_edit_split_quoted_whitespace(value: &str) -> Vec<String> {
     result
 }
 
-pub(crate) fn skd_edit_strip_quotes(value: &str) -> String {
+pub(crate) fn dcs_edit_strip_quotes(value: &str) -> String {
     let value = value.trim();
     if value.len() >= 2 {
         let bytes = value.as_bytes();
@@ -8161,7 +8161,7 @@ pub(crate) fn skd_edit_strip_quotes(value: &str) -> String {
     value.to_string()
 }
 
-pub(crate) fn skd_edit_split_once_unquoted_colon(value: &str) -> Option<(&str, &str)> {
+pub(crate) fn dcs_edit_split_once_unquoted_colon(value: &str) -> Option<(&str, &str)> {
     let mut quote = None;
     for (idx, ch) in value.char_indices() {
         if let Some(active) = quote {
@@ -8184,7 +8184,7 @@ pub(crate) fn sanitize_xml_identifier(value: &str) -> String {
         .collect()
 }
 
-pub(crate) struct SkdEditField {
+pub(crate) struct DcsEditField {
     pub(crate) data_path: String,
     pub(crate) field: String,
     pub(crate) title: String,
@@ -8193,7 +8193,7 @@ pub(crate) struct SkdEditField {
     pub(crate) restrict: Vec<String>,
 }
 
-pub(crate) fn skd_edit_parse_field(value: &str) -> SkdEditField {
+pub(crate) fn dcs_edit_parse_field(value: &str) -> DcsEditField {
     let mut text = value.to_string();
     let title = if let (Some(open), Some(close)) = (text.find('['), text.find(']')) {
         if close > open {
@@ -8222,12 +8222,12 @@ pub(crate) fn skd_edit_parse_field(value: &str) -> SkdEditField {
     let (data_path, field_type) = if let Some((left, right)) = text.split_once(':') {
         (
             left.trim().to_string(),
-            skd_compile_resolve_type(right.trim()),
+            dcs_compile_resolve_type(right.trim()),
         )
     } else {
         (text.trim().to_string(), String::new())
     };
-    SkdEditField {
+    DcsEditField {
         field: data_path.clone(),
         data_path,
         title,
@@ -8237,7 +8237,7 @@ pub(crate) fn skd_edit_parse_field(value: &str) -> SkdEditField {
     }
 }
 
-pub(crate) fn skd_edit_emit_field(lines: &mut Vec<String>, field: &SkdEditField, indent: &str) {
+pub(crate) fn dcs_edit_emit_field(lines: &mut Vec<String>, field: &DcsEditField, indent: &str) {
     lines.push(format!("{indent}<field xsi:type=\"DataSetFieldField\">"));
     lines.push(format!(
         "{indent}\t<dataPath>{}</dataPath>",
@@ -8248,25 +8248,25 @@ pub(crate) fn skd_edit_emit_field(lines: &mut Vec<String>, field: &SkdEditField,
         escape_xml(&field.field)
     ));
     if !field.title.is_empty() {
-        skd_compile_emit_mltext(lines, &format!("{indent}\t"), "title", &field.title);
+        dcs_compile_emit_mltext(lines, &format!("{indent}\t"), "title", &field.title);
     }
-    let restriction = skd_edit_field_restriction_fragment(&field.restrict, &format!("{indent}\t"));
+    let restriction = dcs_edit_field_restriction_fragment(&field.restrict, &format!("{indent}\t"));
     if !restriction.is_empty() {
         lines.push(restriction);
     }
-    let role = skd_edit_field_role_fragment(&field.roles, &format!("{indent}\t"));
+    let role = dcs_edit_field_role_fragment(&field.roles, &format!("{indent}\t"));
     if !role.is_empty() {
         lines.push(role);
     }
     if !field.field_type.is_empty() {
         lines.push(format!("{indent}\t<valueType>"));
-        skd_compile_emit_value_type(lines, &field.field_type, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type(lines, &field.field_type, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     lines.push(format!("{indent}</field>"));
 }
 
-pub(crate) fn skd_edit_field_role_fragment(roles: &[String], indent: &str) -> String {
+pub(crate) fn dcs_edit_field_role_fragment(roles: &[String], indent: &str) -> String {
     if roles.is_empty() {
         return String::new();
     }
@@ -8287,7 +8287,7 @@ pub(crate) fn skd_edit_field_role_fragment(roles: &[String], indent: &str) -> St
     lines.join("\n")
 }
 
-pub(crate) fn skd_edit_field_restriction_fragment(restrict: &[String], indent: &str) -> String {
+pub(crate) fn dcs_edit_field_restriction_fragment(restrict: &[String], indent: &str) -> String {
     if restrict.is_empty() {
         return String::new();
     }
@@ -8312,25 +8312,25 @@ pub(crate) fn skd_edit_field_restriction_fragment(restrict: &[String], indent: &
     }
 }
 
-pub(crate) fn skd_edit_replace_dataset_field(
+pub(crate) fn dcs_edit_replace_dataset_field(
     xml_text: &mut String,
     data_set: &str,
-    field: &SkdEditField,
+    field: &DcsEditField,
 ) -> Result<bool, String> {
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
     let Some(_) =
-        skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
+        dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
     else {
         return Ok(false);
     };
     if !field.title.is_empty() {
-        let range = skd_edit_dataset_range(xml_text, data_set)?;
+        let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
-            skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
+            dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
         let mut lines = Vec::new();
-        skd_compile_emit_mltext(&mut lines, "\t\t\t", "title", &field.title);
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_compile_emit_mltext(&mut lines, "\t\t\t", "title", &field.title);
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             field_range,
             "title",
@@ -8339,13 +8339,13 @@ pub(crate) fn skd_edit_replace_dataset_field(
         );
     }
     if !field.restrict.is_empty() {
-        let range = skd_edit_dataset_range(xml_text, data_set)?;
+        let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
-            skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
+            dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
-        let fragment = skd_edit_field_restriction_fragment(&field.restrict, "\t\t\t");
+        let fragment = dcs_edit_field_restriction_fragment(&field.restrict, "\t\t\t");
         if !fragment.is_empty() {
-            skd_edit_replace_or_insert_child_fragment(
+            dcs_edit_replace_or_insert_child_fragment(
                 xml_text,
                 field_range,
                 "useRestriction",
@@ -8355,12 +8355,12 @@ pub(crate) fn skd_edit_replace_dataset_field(
         }
     }
     if !field.roles.is_empty() {
-        let range = skd_edit_dataset_range(xml_text, data_set)?;
+        let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
-            skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
+            dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
-        let fragment = skd_edit_field_role_fragment(&field.roles, "\t\t\t");
-        skd_edit_replace_or_insert_child_fragment(
+        let fragment = dcs_edit_field_role_fragment(&field.roles, "\t\t\t");
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             field_range,
             "role",
@@ -8369,14 +8369,14 @@ pub(crate) fn skd_edit_replace_dataset_field(
         );
     }
     if !field.field_type.is_empty() {
-        let range = skd_edit_dataset_range(xml_text, data_set)?;
+        let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
-            skd_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
+            dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
         let mut lines = vec!["\t\t\t<valueType>".to_string()];
-        skd_compile_emit_value_type(&mut lines, &field.field_type, "\t\t\t\t");
+        dcs_compile_emit_value_type(&mut lines, &field.field_type, "\t\t\t\t");
         lines.push("\t\t\t</valueType>".to_string());
-        skd_edit_replace_or_insert_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             field_range,
             "valueType",
@@ -8387,16 +8387,16 @@ pub(crate) fn skd_edit_replace_dataset_field(
     Ok(true)
 }
 
-pub(crate) fn skd_edit_set_query(
+pub(crate) fn dcs_edit_set_query(
     xml_text: &mut String,
     data_set: &str,
     query: &str,
 ) -> Result<(), String> {
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
-    skd_edit_replace_child_text(xml_text, range, "query", query)
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    dcs_edit_replace_child_text(xml_text, range, "query", query)
 }
 
-pub(crate) fn skd_edit_extract_once_marker(value: &str) -> (String, bool) {
+pub(crate) fn dcs_edit_extract_once_marker(value: &str) -> (String, bool) {
     let mut once = false;
     let cleaned = value
         .split_whitespace()
@@ -8413,22 +8413,22 @@ pub(crate) fn skd_edit_extract_once_marker(value: &str) -> (String, bool) {
     (cleaned, once)
 }
 
-pub(crate) fn skd_edit_patch_query(
+pub(crate) fn dcs_edit_patch_query(
     xml_text: &mut String,
     data_set: &str,
     old: &str,
     new: &str,
     once: bool,
 ) -> Result<usize, String> {
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
-    let query_range = skd_edit_child_text_range(xml_text, range, "query")?;
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    let query_range = dcs_edit_child_text_range(xml_text, range, "query")?;
     let current = &xml_text[query_range.clone()];
     let escaped_old = escape_xml(old);
     let count = current.matches(&escaped_old).count();
     if count == 0 {
         return Err(format!(
             "Substring not found in query of dataset '{}': {}",
-            skd_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string()),
+            dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string()),
             old
         ));
     }
@@ -8436,7 +8436,7 @@ pub(crate) fn skd_edit_patch_query(
         return Err(format!(
             "@once: expected 1 occurrence of '{}' in dataset '{}', found {}",
             old,
-            skd_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string()),
+            dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string()),
             count
         ));
     }
@@ -8445,7 +8445,7 @@ pub(crate) fn skd_edit_patch_query(
     Ok(count)
 }
 
-pub(crate) fn skd_edit_dataset_range(
+pub(crate) fn dcs_edit_dataset_range(
     xml_text: &str,
     data_set: &str,
 ) -> Result<(usize, usize), String> {
@@ -8470,24 +8470,24 @@ pub(crate) fn skd_edit_dataset_range(
     }
 }
 
-pub(crate) fn skd_edit_dataset_name(xml_text: &str, data_set: &str) -> Option<String> {
-    let range = skd_edit_dataset_range(xml_text, data_set).ok()?;
-    let name_range = skd_edit_child_text_range(xml_text, range, "name").ok()?;
+pub(crate) fn dcs_edit_dataset_name(xml_text: &str, data_set: &str) -> Option<String> {
+    let range = dcs_edit_dataset_range(xml_text, data_set).ok()?;
+    let name_range = dcs_edit_child_text_range(xml_text, range, "name").ok()?;
     Some(xml_text[name_range].trim().to_string())
 }
 
-pub(crate) fn skd_edit_variant_name(xml_text: &str, variant: &str) -> Option<String> {
+pub(crate) fn dcs_edit_variant_name(xml_text: &str, variant: &str) -> Option<String> {
     if !variant.is_empty() {
         return Some(variant.to_string());
     }
-    let (start, end) = skd_edit_variant_range(xml_text, variant).ok()?;
-    let name_range = skd_edit_prefixed_child_text_range(xml_text, (start, end), "dcsset:name")
-        .or_else(|_| skd_edit_child_text_range(xml_text, (start, end), "name"))
+    let (start, end) = dcs_edit_variant_range(xml_text, variant).ok()?;
+    let name_range = dcs_edit_prefixed_child_text_range(xml_text, (start, end), "dcsset:name")
+        .or_else(|_| dcs_edit_child_text_range(xml_text, (start, end), "name"))
         .ok()?;
     Some(xml_text[name_range].trim().to_string())
 }
 
-pub(crate) fn skd_edit_variant_range(
+pub(crate) fn dcs_edit_variant_range(
     xml_text: &str,
     variant: &str,
 ) -> Result<(usize, usize), String> {
@@ -8498,7 +8498,7 @@ pub(crate) fn skd_edit_variant_range(
             return Err("No closing </settingsVariant> found".to_string());
         };
         let end = start + rel_end + "</settingsVariant>".len();
-        if variant.is_empty() || skd_edit_variant_block_has_name(&xml_text[start..end], variant) {
+        if variant.is_empty() || dcs_edit_variant_block_has_name(&xml_text[start..end], variant) {
             return Ok((start, end));
         }
         cursor = end;
@@ -8510,17 +8510,17 @@ pub(crate) fn skd_edit_variant_range(
     }
 }
 
-pub(crate) fn skd_edit_variant_block_has_name(block: &str, variant: &str) -> bool {
+pub(crate) fn dcs_edit_variant_block_has_name(block: &str, variant: &str) -> bool {
     let escaped = escape_xml(variant);
     block.contains(&format!("<dcsset:name>{escaped}</dcsset:name>"))
         || block.contains(&format!("<name>{escaped}</name>"))
 }
 
-pub(crate) fn skd_edit_settings_element_range(
+pub(crate) fn dcs_edit_settings_element_range(
     xml_text: &str,
     variant: &str,
 ) -> Result<(usize, usize), String> {
-    let variant_range = skd_edit_variant_range(xml_text, variant)?;
+    let variant_range = dcs_edit_variant_range(xml_text, variant)?;
     let Some(open_rel) = xml_text[variant_range.0..variant_range.1].find("<dcsset:settings") else {
         return Err("No <dcsset:settings> found in variant".to_string());
     };
@@ -8532,11 +8532,11 @@ pub(crate) fn skd_edit_settings_element_range(
     Ok((start, end))
 }
 
-pub(crate) fn skd_edit_settings_content_range(
+pub(crate) fn dcs_edit_settings_content_range(
     xml_text: &str,
     variant: &str,
 ) -> Result<(usize, usize), String> {
-    let settings = skd_edit_settings_element_range(xml_text, variant)?;
+    let settings = dcs_edit_settings_element_range(xml_text, variant)?;
     let Some(open_end_rel) = xml_text[settings.0..settings.1].find('>') else {
         return Err("Malformed <dcsset:settings> element".to_string());
     };
@@ -8545,7 +8545,7 @@ pub(crate) fn skd_edit_settings_content_range(
     Ok((content_start, content_end))
 }
 
-pub(crate) fn skd_edit_insert_before_dataset_close(
+pub(crate) fn dcs_edit_insert_before_dataset_close(
     xml_text: &mut String,
     range: (usize, usize),
     fragment: &str,
@@ -8559,7 +8559,7 @@ pub(crate) fn skd_edit_insert_before_dataset_close(
     Ok(())
 }
 
-pub(crate) fn skd_edit_insert_before_dataset_payload(
+pub(crate) fn dcs_edit_insert_before_dataset_payload(
     xml_text: &mut String,
     range: (usize, usize),
     fragment: &str,
@@ -8574,22 +8574,22 @@ pub(crate) fn skd_edit_insert_before_dataset_payload(
         xml_text.insert_str(pos, &format!("{fragment}\n"));
         Ok(())
     } else {
-        skd_edit_insert_before_dataset_close(xml_text, range, fragment)
+        dcs_edit_insert_before_dataset_close(xml_text, range, fragment)
     }
 }
 
-pub(crate) fn skd_edit_replace_child_text(
+pub(crate) fn dcs_edit_replace_child_text(
     xml_text: &mut String,
     range: (usize, usize),
     child: &str,
     value: &str,
 ) -> Result<(), String> {
-    let text_range = skd_edit_child_text_range(xml_text, range, child)?;
+    let text_range = dcs_edit_child_text_range(xml_text, range, child)?;
     xml_text.replace_range(text_range, &escape_xml(value));
     Ok(())
 }
 
-pub(crate) fn skd_edit_child_text_range(
+pub(crate) fn dcs_edit_child_text_range(
     xml_text: &str,
     range: (usize, usize),
     child: &str,
@@ -8607,20 +8607,20 @@ pub(crate) fn skd_edit_child_text_range(
     Ok(text_start..text_start + close_rel)
 }
 
-pub(crate) fn skd_edit_prefixed_child_text_range(
+pub(crate) fn dcs_edit_prefixed_child_text_range(
     xml_text: &str,
     range: (usize, usize),
     child: &str,
 ) -> Result<std::ops::Range<usize>, String> {
-    skd_edit_child_text_range(xml_text, range, child)
+    dcs_edit_child_text_range(xml_text, range, child)
 }
 
-pub(crate) struct SkdEditSelectionValue {
+pub(crate) struct DcsEditSelectionValue {
     pub(crate) field: String,
     pub(crate) group: Option<String>,
 }
 
-pub(crate) fn skd_edit_parse_selection_value(value: &str) -> SkdEditSelectionValue {
+pub(crate) fn dcs_edit_parse_selection_value(value: &str) -> DcsEditSelectionValue {
     let mut field = value.trim().to_string();
     let mut group = None;
     if let Some(marker) = field.find(" @group=") {
@@ -8629,10 +8629,10 @@ pub(crate) fn skd_edit_parse_selection_value(value: &str) -> SkdEditSelectionVal
         field.truncate(marker);
         field = field.trim().to_string();
     }
-    SkdEditSelectionValue { field, group }
+    DcsEditSelectionValue { field, group }
 }
 
-pub(crate) fn skd_edit_selection_fragment(field_name: &str, indent: &str) -> String {
+pub(crate) fn dcs_edit_selection_fragment(field_name: &str, indent: &str) -> String {
     if field_name == "Auto" {
         return format!("{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>");
     }
@@ -8685,42 +8685,42 @@ pub(crate) fn skd_edit_selection_fragment(field_name: &str, indent: &str) -> Str
     )
 }
 
-pub(crate) fn skd_edit_insert_selection_into_group(
+pub(crate) fn dcs_edit_insert_selection_into_group(
     xml_text: &mut String,
     variant: &str,
     group_name: &str,
     field_name: &str,
 ) -> Result<bool, String> {
-    let Some(group_range) = skd_edit_find_named_structure_group(xml_text, variant, group_name)?
+    let Some(group_range) = dcs_edit_find_named_structure_group(xml_text, variant, group_name)?
     else {
         return Ok(false);
     };
     let Some(selection_range) =
-        skd_edit_find_prefixed_child_range(xml_text, group_range, "dcsset:selection")?
+        dcs_edit_find_prefixed_child_range(xml_text, group_range, "dcsset:selection")?
     else {
         return Ok(false);
     };
     let indent = if selection_range.self_closing {
         format!(
             "{}\t",
-            skd_edit_line_indent(xml_text, selection_range.start)
+            dcs_edit_line_indent(xml_text, selection_range.start)
         )
     } else {
         format!(
             "{}\t",
-            skd_edit_line_indent(xml_text, selection_range.close_start)
+            dcs_edit_line_indent(xml_text, selection_range.close_start)
         )
     };
-    let fragment = skd_edit_selection_fragment(field_name, &indent);
-    skd_edit_insert_into_prefixed_range(xml_text, selection_range, "dcsset:selection", &fragment);
+    let fragment = dcs_edit_selection_fragment(field_name, &indent);
+    dcs_edit_insert_into_prefixed_range(xml_text, selection_range, "dcsset:selection", &fragment);
     Ok(true)
 }
 
-pub(crate) fn skd_edit_find_prefixed_child_range(
+pub(crate) fn dcs_edit_find_prefixed_child_range(
     xml_text: &str,
     parent_range: (usize, usize),
     child: &str,
-) -> Result<Option<SkdEditElementRange>, String> {
+) -> Result<Option<DcsEditElementRange>, String> {
     let open = format!("<{child}");
     let Some(open_rel) = xml_text[parent_range.0..parent_range.1].find(&open) else {
         return Ok(None);
@@ -8732,7 +8732,7 @@ pub(crate) fn skd_edit_find_prefixed_child_range(
     let open_end = start + open_end_rel + 1;
     let open_tag = &xml_text[start..open_end];
     if open_tag.trim_end().ends_with("/>") {
-        return Ok(Some(SkdEditElementRange {
+        return Ok(Some(DcsEditElementRange {
             start,
             open_end,
             close_start: open_end,
@@ -8745,7 +8745,7 @@ pub(crate) fn skd_edit_find_prefixed_child_range(
         return Err(format!("No closing </{child}> found"));
     };
     let close_start = open_end + close_rel;
-    Ok(Some(SkdEditElementRange {
+    Ok(Some(DcsEditElementRange {
         start,
         open_end,
         close_start,
@@ -8754,14 +8754,14 @@ pub(crate) fn skd_edit_find_prefixed_child_range(
     }))
 }
 
-pub(crate) fn skd_edit_insert_into_prefixed_range(
+pub(crate) fn dcs_edit_insert_into_prefixed_range(
     xml_text: &mut String,
-    range: SkdEditElementRange,
+    range: DcsEditElementRange,
     container: &str,
     fragment: &str,
 ) {
     if range.self_closing {
-        let indent = skd_edit_line_indent(xml_text, range.start);
+        let indent = dcs_edit_line_indent(xml_text, range.start);
         xml_text.replace_range(
             range.start..range.end,
             &format!("<{container}>\n{fragment}\n{indent}</{container}>"),
@@ -8775,7 +8775,7 @@ pub(crate) fn skd_edit_insert_into_prefixed_range(
     }
 }
 
-pub(crate) fn skd_edit_order_fragment(value: &str, indent: &str) -> String {
+pub(crate) fn dcs_edit_order_fragment(value: &str, indent: &str) -> String {
     let value = value.trim();
     if value == "Auto" {
         return format!("{indent}<dcsset:item xsi:type=\"dcsset:OrderItemAuto\"/>");
@@ -8796,7 +8796,7 @@ pub(crate) fn skd_edit_order_fragment(value: &str, indent: &str) -> String {
     )
 }
 
-pub(crate) fn skd_edit_order_description(value: &str) -> String {
+pub(crate) fn dcs_edit_order_description(value: &str) -> String {
     let value = value.trim();
     if value == "Auto" {
         return "Auto".to_string();
@@ -8814,7 +8814,7 @@ pub(crate) fn skd_edit_order_description(value: &str) -> String {
     format!("{field} {direction}")
 }
 
-pub(crate) struct SkdEditElementRange {
+pub(crate) struct DcsEditElementRange {
     pub(crate) start: usize,
     pub(crate) open_end: usize,
     pub(crate) close_start: usize,
@@ -8822,14 +8822,14 @@ pub(crate) struct SkdEditElementRange {
     pub(crate) self_closing: bool,
 }
 
-pub(crate) fn skd_edit_prefixed_container_range(
+pub(crate) fn dcs_edit_prefixed_container_range(
     xml_text: &str,
     variant: &str,
     container: &str,
-) -> Result<SkdEditElementRange, String> {
-    let settings_element = skd_edit_settings_element_range(xml_text, variant)?;
-    let settings = skd_edit_settings_content_range(xml_text, variant)?;
-    let settings_indent = skd_edit_line_indent(xml_text, settings_element.0);
+) -> Result<DcsEditElementRange, String> {
+    let settings_element = dcs_edit_settings_element_range(xml_text, variant)?;
+    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
+    let settings_indent = dcs_edit_line_indent(xml_text, settings_element.0);
     let child_indent = format!("{settings_indent}\t");
     let open_prefix = format!("\n{child_indent}<{container}");
     let Some(open_rel) = xml_text[settings.0..settings.1].find(&open_prefix) else {
@@ -8842,7 +8842,7 @@ pub(crate) fn skd_edit_prefixed_container_range(
     let open_end = start + open_end_rel + 1;
     let open_tag = &xml_text[start..open_end];
     if open_tag.trim_end().ends_with("/>") {
-        return Ok(SkdEditElementRange {
+        return Ok(DcsEditElementRange {
             start,
             open_end,
             close_start: open_end,
@@ -8855,7 +8855,7 @@ pub(crate) fn skd_edit_prefixed_container_range(
         return Err(format!("No </{container}> section found in DCS"));
     };
     let close_start = open_end + close_rel;
-    Ok(SkdEditElementRange {
+    Ok(DcsEditElementRange {
         start,
         open_end,
         close_start,
@@ -8864,15 +8864,15 @@ pub(crate) fn skd_edit_prefixed_container_range(
     })
 }
 
-pub(crate) fn skd_edit_insert_prefixed_item(
+pub(crate) fn dcs_edit_insert_prefixed_item(
     xml_text: &mut String,
     variant: &str,
     container: &str,
     fragment: &str,
 ) -> Result<(), String> {
-    let range = skd_edit_prefixed_container_range(xml_text, variant, container)?;
+    let range = dcs_edit_prefixed_container_range(xml_text, variant, container)?;
     if range.self_closing {
-        let indent = skd_edit_line_indent(xml_text, range.start);
+        let indent = dcs_edit_line_indent(xml_text, range.start);
         xml_text.replace_range(
             range.start..range.end,
             &format!("<{container}>\n{fragment}\n{indent}</{container}>"),
@@ -8887,27 +8887,27 @@ pub(crate) fn skd_edit_insert_prefixed_item(
     Ok(())
 }
 
-pub(crate) fn skd_edit_clear_prefixed_container(
+pub(crate) fn dcs_edit_clear_prefixed_container(
     xml_text: &mut String,
     variant: &str,
     container: &str,
 ) -> Result<(), String> {
-    let range = skd_edit_prefixed_container_range(xml_text, variant, container)?;
+    let range = dcs_edit_prefixed_container_range(xml_text, variant, container)?;
     if range.self_closing {
         return Ok(());
     }
-    let indent = skd_edit_line_indent(xml_text, range.start);
+    let indent = dcs_edit_line_indent(xml_text, range.start);
     xml_text.replace_range(range.open_end..range.close_start, &format!("\n{indent}"));
     Ok(())
 }
 
-pub(crate) fn skd_edit_prefixed_container_contains_field(
+pub(crate) fn dcs_edit_prefixed_container_contains_field(
     xml_text: &str,
     variant: &str,
     container: &str,
     field: &str,
 ) -> bool {
-    let Ok(range) = skd_edit_prefixed_container_range(xml_text, variant, container) else {
+    let Ok(range) = dcs_edit_prefixed_container_range(xml_text, variant, container) else {
         return false;
     };
     if range.self_closing {
@@ -8919,27 +8919,27 @@ pub(crate) fn skd_edit_prefixed_container_contains_field(
     ))
 }
 
-pub(crate) fn skd_edit_remove_dataset_item(
+pub(crate) fn dcs_edit_remove_dataset_item(
     xml_text: &mut String,
     data_set: &str,
     item: &str,
     child: &str,
     value: &str,
 ) -> Result<bool, String> {
-    let range = skd_edit_dataset_range(xml_text, data_set)?;
-    skd_edit_remove_item_by_child(xml_text, range, item, child, value)
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    dcs_edit_remove_item_by_child(xml_text, range, item, child, value)
 }
 
-pub(crate) fn skd_edit_remove_top_level_item(
+pub(crate) fn dcs_edit_remove_top_level_item(
     xml_text: &mut String,
     item: &str,
     child: &str,
     value: &str,
 ) -> Result<bool, String> {
-    skd_edit_remove_item_by_child(xml_text, (0, xml_text.len()), item, child, value)
+    dcs_edit_remove_item_by_child(xml_text, (0, xml_text.len()), item, child, value)
 }
 
-pub(crate) fn skd_edit_remove_item_by_child(
+pub(crate) fn dcs_edit_remove_item_by_child(
     xml_text: &mut String,
     range: (usize, usize),
     item: &str,
@@ -8953,11 +8953,11 @@ pub(crate) fn skd_edit_remove_item_by_child(
             return Ok(false);
         };
         let start = cursor + open_rel;
-        let Some(end) = skd_edit_matching_element_end(xml_text, start, range.1, item) else {
+        let Some(end) = dcs_edit_matching_element_end(xml_text, start, range.1, item) else {
             return Err(format!("No closing </{item}> found"));
         };
-        if skd_edit_block_has_child_text(&xml_text[start..end], child, value) {
-            let range = skd_edit_element_line_range(xml_text, start, end);
+        if dcs_edit_block_has_child_text(&xml_text[start..end], child, value) {
+            let range = dcs_edit_element_line_range(xml_text, start, end);
             xml_text.replace_range(range, "");
             return Ok(true);
         }
@@ -8966,7 +8966,7 @@ pub(crate) fn skd_edit_remove_item_by_child(
     Ok(false)
 }
 
-pub(crate) fn skd_edit_block_has_child_text(block: &str, child: &str, value: &str) -> bool {
+pub(crate) fn dcs_edit_block_has_child_text(block: &str, child: &str, value: &str) -> bool {
     let escaped = escape_xml(value);
     let exact = format!("<{child}>{escaped}</{child}>");
     if block.contains(&exact) {
@@ -8993,16 +8993,16 @@ pub(crate) fn skd_edit_block_has_child_text(block: &str, child: &str, value: &st
     false
 }
 
-pub(crate) fn skd_edit_line_start(xml_text: &str, pos: usize) -> usize {
+pub(crate) fn dcs_edit_line_start(xml_text: &str, pos: usize) -> usize {
     xml_text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
 }
 
-pub(crate) fn skd_edit_element_line_range(
+pub(crate) fn dcs_edit_element_line_range(
     xml_text: &str,
     start: usize,
     end: usize,
 ) -> std::ops::Range<usize> {
-    let line_start = skd_edit_line_start(xml_text, start);
+    let line_start = dcs_edit_line_start(xml_text, start);
     let remove_start = if xml_text[line_start..start]
         .chars()
         .all(|ch| ch == '\t' || ch == ' ')
@@ -9021,7 +9021,7 @@ pub(crate) fn skd_edit_element_line_range(
     remove_start..remove_end
 }
 
-pub(crate) fn skd_edit_matching_element_end(
+pub(crate) fn dcs_edit_matching_element_end(
     xml_text: &str,
     start: usize,
     limit: usize,
@@ -9062,19 +9062,19 @@ pub(crate) fn skd_edit_matching_element_end(
     None
 }
 
-pub(crate) fn skd_edit_remove_prefixed_selection_field(
+pub(crate) fn dcs_edit_remove_prefixed_selection_field(
     xml_text: &mut String,
     variant: &str,
     field: &str,
 ) -> Result<bool, String> {
-    let Ok(selection) = skd_edit_prefixed_container_range(xml_text, variant, "dcsset:selection")
+    let Ok(selection) = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:selection")
     else {
         return Ok(false);
     };
     if selection.self_closing {
         return Ok(false);
     }
-    skd_edit_remove_item_by_child(
+    dcs_edit_remove_item_by_child(
         xml_text,
         (selection.open_end, selection.close_start),
         "dcsset:item",
@@ -9090,8 +9090,8 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "skd-info" => Some(Ok(analyze_skd_info(args, context))),
-        "skd-validate" => Some(Ok(validate_skd(args, context))),
+        "dcs-info" => Some(Ok(analyze_dcs_info(args, context))),
+        "dcs-validate" => Some(Ok(validate_dcs(args, context))),
         _ => None,
     }
 }
@@ -9103,8 +9103,8 @@ pub(crate) fn invoke_mutation(
     context: &WorkspaceContext,
 ) -> Option<AdapterOutcome> {
     match operation {
-        "skd-compile" => Some(compile_skd(args, context)),
-        "skd-edit" => Some(edit_skd(args, context)),
+        "dcs-compile" => Some(compile_dcs(args, context)),
+        "dcs-edit" => Some(edit_dcs(args, context)),
         _ => None,
     }
 }
@@ -9118,10 +9118,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn native_skd_edit_accepts_documented_operations_without_script_fallback() {
-        let context = temp_context("skd-edit-ops");
+    fn native_dcs_edit_accepts_documented_operations_without_script_fallback() {
+        let context = temp_context("dcs-edit-ops");
         let template_path = context.cwd.join("Template.xml");
-        fs::write(&template_path, base_skd_xml()).unwrap();
+        fs::write(&template_path, base_dcs_xml()).unwrap();
 
         let operations = [
             ("add-field", "Quantity: decimal(10,0)"),
@@ -9183,7 +9183,7 @@ mod tests {
             args.insert("TemplatePath".to_string(), json!("Template.xml"));
             args.insert("Operation".to_string(), json!(operation));
             args.insert("Value".to_string(), json!(value));
-            let outcome = edit_skd(&args, &context);
+            let outcome = edit_dcs(&args, &context);
             assert!(
                 outcome.ok,
                 "{operation} failed: {:?}\nstderr={:?}",
@@ -9199,10 +9199,10 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_edit_structure_preserves_nested_named_groups() {
-        let context = temp_context("skd-edit-structure");
+    fn native_dcs_edit_structure_preserves_nested_named_groups() {
+        let context = temp_context("dcs-edit-structure");
         let template_path = context.cwd.join("Template.xml");
-        fs::write(&template_path, base_skd_xml()).unwrap();
+        fs::write(&template_path, base_dcs_xml()).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
@@ -9211,12 +9211,12 @@ mod tests {
             "Value".to_string(),
             json!("Amount @name=G1 > Quantity @name=G2 > details"),
         );
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(outcome.ok, "{outcome:?}");
 
         args.insert("Operation".to_string(), json!("modify-structure"));
         args.insert("Value".to_string(), json!("Price @name=G2"));
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(outcome.ok, "{outcome:?}");
 
         let updated = fs::read_to_string(&template_path).unwrap();
@@ -9253,10 +9253,10 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_edit_scopes_settings_changes_to_requested_variant() {
-        let context = temp_context("skd-edit-variant");
+    fn native_dcs_edit_scopes_settings_changes_to_requested_variant() {
+        let context = temp_context("dcs-edit-variant");
         let template_path = context.cwd.join("Template.xml");
-        fs::write(&template_path, two_variant_skd_xml()).unwrap();
+        fs::write(&template_path, two_variant_dcs_xml()).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
@@ -9264,7 +9264,7 @@ mod tests {
         args.insert("Value".to_string(), json!("Amount"));
         args.insert("Variant".to_string(), json!("Дополнительный"));
 
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(outcome.ok, "{outcome:?}");
 
         let updated = fs::read_to_string(&template_path).unwrap();
@@ -9283,12 +9283,12 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_edit_patch_query_honors_once_marker() {
-        let context = temp_context("skd-edit-patch-once");
+    fn native_dcs_edit_patch_query_honors_once_marker() {
+        let context = temp_context("dcs-edit-patch-once");
         let template_path = context.cwd.join("Template.xml");
         fs::write(
             &template_path,
-            base_skd_xml().replace("ВЫБРАТЬ Amount КАК Amount", "ВЫБРАТЬ Code КАК Code"),
+            base_dcs_xml().replace("ВЫБРАТЬ Amount КАК Amount", "ВЫБРАТЬ Code КАК Code"),
         )
         .unwrap();
 
@@ -9297,7 +9297,7 @@ mod tests {
         args.insert("Operation".to_string(), json!("patch-query"));
         args.insert("Value".to_string(), json!("Code => ItemCode @once"));
 
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(!outcome.ok, "{outcome:?}");
         let stderr = outcome.stderr.unwrap_or_default();
         assert!(stderr.contains("@once: expected 1 occurrence"), "{stderr}");
@@ -9308,17 +9308,17 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_edit_rename_parameter_uses_token_boundaries() {
-        let context = temp_context("skd-edit-rename-boundary");
+    fn native_dcs_edit_rename_parameter_uses_token_boundaries() {
+        let context = temp_context("dcs-edit-rename-boundary");
         let template_path = context.cwd.join("Template.xml");
-        fs::write(&template_path, parameter_skd_xml()).unwrap();
+        fs::write(&template_path, parameter_dcs_xml()).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
         args.insert("Operation".to_string(), json!("rename-parameter"));
         args.insert("Value".to_string(), json!("Период => ПериодОтчета"));
 
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(outcome.ok, "{outcome:?}");
 
         let updated = fs::read_to_string(&template_path).unwrap();
@@ -9344,10 +9344,10 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_edit_noop_leaves_file_untouched() {
-        let context = temp_context("skd-edit-noop");
+    fn native_dcs_edit_noop_leaves_file_untouched() {
+        let context = temp_context("dcs-edit-noop");
         let template_path = context.cwd.join("Template.xml");
-        fs::write(&template_path, base_skd_xml()).unwrap();
+        fs::write(&template_path, base_dcs_xml()).unwrap();
         let before = fs::read(&template_path).unwrap();
 
         let mut args = Map::new();
@@ -9355,7 +9355,7 @@ mod tests {
         args.insert("Operation".to_string(), json!("remove-filter"));
         args.insert("Value".to_string(), json!("MissingField"));
 
-        let outcome = edit_skd(&args, &context);
+        let outcome = edit_dcs(&args, &context);
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome.changes.is_empty(), "{outcome:?}");
         assert!(
@@ -9372,12 +9372,12 @@ mod tests {
     }
 
     #[test]
-    fn native_skd_validate_rejects_ref_type_bound_to_unexpected_namespace() {
-        let context = temp_context("skd-validate-bad-prefix");
+    fn native_dcs_validate_rejects_ref_type_bound_to_unexpected_namespace() {
+        let context = temp_context("dcs-validate-bad-prefix");
         let template_path = context.cwd.join("Template.xml");
         fs::write(
             &template_path,
-            base_skd_xml().replace(
+            base_dcs_xml().replace(
                 "<field>Amount</field>",
                 "<field>Amount</field>\n\t\t\t<valueType>\n\t\t\t\t<v8:Type xmlns:bad=\"http://example.com\">bad:CatalogRef.X</v8:Type>\n\t\t\t</valueType>",
             ),
@@ -9386,7 +9386,7 @@ mod tests {
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
-        let outcome = validate_skd(&args, &context);
+        let outcome = validate_dcs(&args, &context);
         let stdout = outcome.stdout.unwrap_or_default();
         assert!(!outcome.ok, "{stdout}");
         assert!(
@@ -9412,7 +9412,7 @@ mod tests {
         }
     }
 
-    fn base_skd_xml() -> &'static str {
+    fn base_dcs_xml() -> &'static str {
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
 		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
@@ -9455,15 +9455,15 @@ mod tests {
 "#
     }
 
-    fn two_variant_skd_xml() -> String {
-        base_skd_xml().replace(
+    fn two_variant_dcs_xml() -> String {
+        base_dcs_xml().replace(
             "</settingsVariant>\n</DataCompositionSchema>",
             "</settingsVariant>\n\t<settingsVariant>\n\t\t<dcsset:name>Дополнительный</dcsset:name>\n\t\t<dcsset:settings>\n\t\t\t<dcsset:selection>\n\t\t\t</dcsset:selection>\n\t\t</dcsset:settings>\n\t</settingsVariant>\n</DataCompositionSchema>",
         )
     }
 
-    fn parameter_skd_xml() -> String {
-        base_skd_xml().replace(
+    fn parameter_dcs_xml() -> String {
+        base_dcs_xml().replace(
             "\t<settingsVariant>",
             "\t<parameter>\n\t\t<name>Период</name>\n\t\t<expression>&amp;Период</expression>\n\t</parameter>\n\t<parameter>\n\t\t<name>ПериодОтчетаДокумента</name>\n\t\t<expression>&amp;ПериодОтчетаДокумента</expression>\n\t</parameter>\n\t<settingsVariant>",
         )
