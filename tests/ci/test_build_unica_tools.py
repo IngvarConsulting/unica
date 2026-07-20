@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
-import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,38 +24,47 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         url = module.release_asset_url(
             {
-                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-                "sourceTag": "v1.26.0",
+                "repository": "https://github.com/example/upstream",
+                "sourceTag": "v1.2.3",
                 "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-                "assetTag": "rlm-tools-bsl-v1.26.0-build.2",
+                "assetTag": "example-v1.2.3-build.7",
             },
-            {"assetName": "rlm-tools-bsl-linux-x64"},
+            {"assetName": "example-linux-x64"},
         )
 
         self.assertEqual(
             url,
             "https://github.com/IngvarConsulting/unica-toolchain/releases/download/"
-            "rlm-tools-bsl-v1.26.0-build.2/rlm-tools-bsl-linux-x64",
+            "example-v1.2.3-build.7/example-linux-x64",
         )
 
-    def test_checked_in_rlm_tools_use_prebuilt_toolchain_assets(self) -> None:
+    def test_all_checked_in_external_tools_use_independent_toolchain_assets(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         lock = json.loads(
             (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
             )
         )
-        rlm_tools = [tool for tool in lock["tools"] if tool["name"].startswith("rlm-")]
+        external_tools = [tool for tool in lock["tools"] if tool["name"] != "unica"]
+        expected_tags = {
+            "bsl-analyzer": "bsl-analyzer-v0.2.55-build.1",
+            "v8-runner": "v8-runner-v0.5.1-build.1",
+            "rlm-tools-bsl": "rlm-tools-bsl-v1.26.0-build.3",
+            "rlm-bsl-index": "rlm-tools-bsl-v1.26.0-build.3",
+        }
 
-        self.assertEqual(len(rlm_tools), 2)
-        for tool in rlm_tools:
+        self.assertEqual({tool["name"] for tool in external_tools}, set(expected_tags))
+        for tool in external_tools:
             self.assertEqual(tool["assetStrategy"], "direct-release-asset")
             self.assertEqual(
                 tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
             )
-            self.assertEqual(tool["assetTag"], "rlm-tools-bsl-v1.26.0-build.2")
-            for asset in tool["assets"].values():
+            self.assertEqual(tool["assetTag"], expected_tags[tool["name"]])
+            for target, asset in tool["assets"].items():
+                exe = ".exe" if target == "win-x64" else ""
+                self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
                 self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+                self.assertNotIn("archiveBinary", asset)
 
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()
@@ -74,24 +81,15 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     target="linux-x64",
                 )
 
-    def test_archive_extraction_rejects_path_traversal_members(self) -> None:
+    def test_bundle_builder_has_no_archive_asset_dependency_path(self) -> None:
         module = load_build_module()
+        source = (
+            Path(__file__).resolve().parents[2] / "scripts" / "ci" / "build-unica-tools.py"
+        ).read_text(encoding="utf-8")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            archive = root / "v8-runner.tar.gz"
-            outside = root / "escape"
-            payload = b"owned"
-
-            with tarfile.open(archive, "w:gz") as tf:
-                info = tarfile.TarInfo("../escape")
-                info.size = len(payload)
-                tf.addfile(info, io.BytesIO(payload))
-
-            with self.assertRaisesRegex(SystemExit, "unsafe archive member"):
-                module.extract_v8_runner(archive, "v8-runner", root / "v8-runner")
-
-            self.assertFalse(outside.exists())
+        self.assertFalse(hasattr(module, "extract_v8_runner"))
+        self.assertNotIn("archive-release-asset", source)
+        self.assertNotIn("archiveBinary", source)
 
     def test_cargo_workspace_tool_builds_from_repo_root(self) -> None:
         module = load_build_module()
