@@ -42,15 +42,22 @@
 
 ## Mutating Dry Run
 
-1. Caller invokes a mutating tool without `dryRun: false`.
+This flow applies only when the operation has an honest, target-effect-free
+preview. Platform mutations such as supported update use the branched
+sandbox/prepare/apply flow instead.
+
+1. Caller invokes a preview-capable mutating tool without `dryRun: false`.
 2. Application resolves `dryRun: true`.
-3. Adapter returns planned command or placeholder outcome without changing files.
+3. Adapter returns the plan without changing target/workspace/cache/domain
+   state. A durable workflow may persist only the bounded operation/idempotency
+   and preview evidence needed to replay and authorize apply.
 4. Application emits the relevant domain event for impact calculation.
 5. Cache report returns `mode = "dry-run"` and impacted cache names.
 
 ## Applied Mutation
 
-1. Caller explicitly passes `dryRun: false`.
+1. Caller explicitly passes `dryRun: false` for a preview-capable tool, or
+   authorizes a previously prepared no-preview transition.
 2. Native MCP handler executes the operation.
 3. Successful mutation emits domain events.
 4. `WorkspaceStateRepository` marks affected caches stale and records eager
@@ -61,6 +68,55 @@
 
 Read tools do not emit mutation events by default. They may inspect current cache
 state and, in future slices, trigger lazy refresh if a required cache is stale.
+
+## Branched Development Cycle
+
+1. `branched.status` reads existing durable state; `repository.recover` is the
+   only operation that persists reconciliation after an interrupted effect.
+2. `branched.start` validates the named local profile, task/operation IDs,
+   capability row, state/work roots, exclusive original-infobase lease, and
+   dedicated repository-account reservation before creating a journal and owned
+   instance.
+3. Repository status and a digest-bound preview/apply update prove the
+   still-bound original equals repository content. Exact incoming add/delete
+   may trigger only the capability-proven internal structural confirmation.
+   Delivery creates and probes distribution D0, deploys a disposable File IB,
+   and creates a guarded platform-XML Unica workspace.
+4. Compatible existing typed tools receive the original `cwd` plus an opaque
+   `branchedTask` context. The application resolves the owned task workspace,
+   routes its cache events there, and durably receipts mutations without
+   exposing its path. Ordinary mutations atomically return to `developing` and
+   invalidate all descendant workflow evidence; session-scoped manual work is
+   isolated from task sources. Final local verification freezes the IB/XML
+   boundary, reruns configured checks, and records an immutable
+   delta/checkpoint.
+5. A current repository distribution D1 is applied first in a restored sandbox.
+   Typed conflict decisions are replayed from the checkpoint; only a verified
+   equivalent/adapted delta is repeated against the authoritative task IB.
+6. Main integration is prevalidated in a repository-fresh non-bound sandbox.
+   The canonical delta and reference closure produce an explained lock plan.
+7. Repository locks are acquired one object at a time with finite per-call
+   deadlines, no polling, and intent-before-effect records. A failure compensates
+   only observed operation-owned acquisitions; ambiguity enters
+   `recoveryRequired`.
+8. Relevant anchors are checked after locking. The original configuration is
+   merged only with the prepared settings, then maximum validation and exact
+   result fingerprints run while locks are held.
+9. One exact integration-set commit, including add/delete entries and the frozen
+   task-bound comment, is performed without force/keepLocked and accepted only
+   after content and released-lock proof. Archive and cleanup follow the
+   successful terminal state.
+10. Safe abandonment requires original equality, no worker, no owned locks, and
+    no unknown effect before archive/quarantine/cleanup.
+
+Each long `operationId`-bound contained or authoritative platform operation runs
+in a dedicated worker that survives MCP stdio disconnect. Worker death leaves a
+durable observation boundary and is never blindly restarted; only a
+proven-contained owned-area outcome resumes from its recorded safe phase.
+Read-only platform inspection is bounded, ephemeral, target-effect-free, and
+safely rerunnable after its owned process and temporary output are discarded.
+Task-workspace mutations report cache events against the disposable workspace
+context, not only the original caller context.
 
 ## Workspace Analyzer Service
 

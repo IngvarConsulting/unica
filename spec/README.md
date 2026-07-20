@@ -10,7 +10,9 @@ rules, ADRs, and acceptance.
 - `architecture/invariants.md`: non-negotiable rules that changes must preserve.
 - `architecture/change-checklist.md`: required sync checklist for MCP, skill, cache, and package changes.
 - `architecture/arc42/`: detailed architecture map for maintainers and agentic work.
+- `contracts/branched-development-tools.md`: strict 21-tool request, response, state, lock-plan, and error contract.
 - `acceptance/unica-mcp-validation.md`: active acceptance and smoke plan for the single MCP contract.
+- `acceptance/branched-development.md`: normative full-cycle acceptance matrix for configuration-repository tasks.
 
 ## Project Boundary
 

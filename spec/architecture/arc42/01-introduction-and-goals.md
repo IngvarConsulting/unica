@@ -4,7 +4,8 @@
 
 Unica предоставляет Codex-плагин для повседневной разработки 1C:Enterprise:
 инициализация workspace, работа с XML-исходниками конфигурации, формами, СКД,
-MXL, ролями, сборкой, диагностикой и справочной информацией.
+MXL, ролями, сборкой, диагностикой, справочной информацией и полным безопасным
+циклом задач для конфигураций, связанных с хранилищем 1С.
 
 ## Главная архитектурная цель
 
@@ -28,3 +29,5 @@ workspace state происходила внутри orchestrator, а не чер
 3. Явное владение cache/state внутри Rust orchestrator.
 4. Native Rust MCP handlers own command semantics for operation backends.
 5. Проверяемый packaging и fresh Codex visibility.
+6. Воспроизводимый branched-development от чистого distribution baseline до
+   одного repository commit, verified unlock, archive, recovery и owned cleanup.
