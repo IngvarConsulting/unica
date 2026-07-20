@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,20 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketplace.yml"
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
+
+
+def job_block(workflow: str, job_id: str) -> str:
+    marker = f"  {job_id}:\n"
+    start = workflow.find(marker)
+    if start == -1:
+        return ""
+    next_job = re.search(r"(?m)^  [a-zA-Z0-9_-]+:\n", workflow[start + len(marker) :])
+    if next_job is None:
+        return workflow[start:]
+    end = start + len(marker) + next_job.start()
+    return workflow[start:end]
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def release_text(self) -> str:
         return RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -16,15 +31,85 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def publish_text(self) -> str:
         return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
-    def test_source_gate_covers_both_rust_packages_and_full_workspace(self) -> None:
+    def test_source_gate_checks_the_full_rust_and_python_workspace(self) -> None:
         text = self.release_text()
 
-        self.assertIn('"crates/unica-bootstrap/**"', text)
-        self.assertIn('"crates/unica-coder/**"', text)
         self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
         self.assertIn("cargo test --workspace -- --test-threads=1", text)
-        self.assertIn("python -m unittest discover -s tests/ci", text)
+        self.assertIn("python -m unittest discover -s tests/ci --durations 20", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
+
+    def test_every_pull_request_gets_a_stable_aggregate_gate(self) -> None:
+        text = self.release_text()
+        trigger = text[text.index("on:\n") : text.index("\npermissions:")]
+        gate = job_block(text, "unica-ci")
+
+        self.assertIn("  pull_request:\n", trigger)
+        self.assertNotIn("paths:", trigger)
+        self.assertIn("name: Unica CI", gate)
+        self.assertIn("if: always()", gate)
+        self.assertIn("python scripts/ci/evaluate-ci-gate.py", gate)
+        for upstream in (
+            "classify-changes",
+            "verify-source",
+            "test-rust-platforms",
+            "build-tools",
+            "package-runtime",
+            "package-thin",
+            "probe-thin-bootstrap",
+            "release-assessment",
+            "publish-release-assets",
+            "smoke-thin-plugin",
+            "verify-published-assets",
+        ):
+            with self.subTest(upstream=upstream):
+                self.assertIn(f"      - {upstream}", gate)
+
+    def test_javascript_actions_use_node24_compatible_majors(self) -> None:
+        release = self.release_text()
+        publish = self.publish_text()
+        combined = release + publish
+
+        self.assertIn("actions/checkout@v7", combined)
+        self.assertIn("actions/setup-python@v7", release)
+        self.assertIn("actions/upload-artifact@v7", release)
+        self.assertIn("actions/download-artifact@v8", release)
+        self.assertIn("softprops/action-gh-release@v3", release)
+        for stale in (
+            "actions/checkout@v4",
+            "actions/setup-python@v5",
+            "actions/upload-artifact@v4",
+            "actions/download-artifact@v4",
+            "softprops/action-gh-release@v2",
+        ):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, combined)
+
+    def test_heavy_and_external_jobs_have_timeouts(self) -> None:
+        release = self.release_text()
+        publish = self.publish_text()
+
+        expected_release_timeouts = {
+            "classify-changes": 10,
+            "verify-source": 90,
+            "test-rust-platforms": 60,
+            "build-tools": 90,
+            "package-runtime": 30,
+            "package-thin": 30,
+            "probe-thin-bootstrap": 30,
+            "release-assessment": 60,
+            "publish-release-assets": 15,
+            "smoke-thin-plugin": 30,
+            "verify-published-assets": 15,
+            "unica-ci": 5,
+        }
+        for job_id, minutes in expected_release_timeouts.items():
+            with self.subTest(job_id=job_id):
+                self.assertIn(f"timeout-minutes: {minutes}", job_block(release, job_id))
+
+        for job_id in ("stage", "promote"):
+            with self.subTest(job_id=job_id):
+                self.assertIn("timeout-minutes: 20", job_block(publish, job_id))
 
     def test_runtime_matrix_builds_deterministic_assets_and_thin_payload(self) -> None:
         text = self.release_text()
@@ -100,7 +185,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertNotIn("publish-assessment-pages", publish)
         self.assertIn("needs: package-runtime", publish)
-        self.assertIn("softprops/action-gh-release@v2", publish)
+        self.assertIn("softprops/action-gh-release@v3", publish)
         self.assertIn("unica-runtime-*.tar.gz", publish)
         self.assertIn("unica-runtime-*.json", publish)
         self.assertNotIn("install-unica", publish)

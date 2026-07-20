@@ -3,21 +3,6 @@ name: Build Unica Codex Plugin
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".agents/plugins/marketplace.json"
-      - ".github/workflows/unica-plugin-release.yml"
-      - ".github/workflows/publish-unica-marketplace.yml"
-      - "AGENTS.md"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "README.md"
-      - "crates/unica-bootstrap/**"
-      - "crates/unica-coder/**"
-      - "plugins/unica/**"
-      - "scripts/ci/**"
-      - "tests/ci/**"
-      - "tests/fixtures/**"
-      - "spec/**"
   push:
     tags:
       - "v*"
@@ -32,10 +17,11 @@ concurrency:
 jobs:
   classify-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       release_artifacts: ${{ steps.scope.outputs.release_artifacts }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: scope
@@ -53,16 +39,17 @@ jobs:
   verify-source:
     name: Verify source guardrails
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: python -m unittest discover -s tests/ci
+      - run: python -m unittest discover -s tests/ci --durations 20
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python scripts/ci/check-version-contract.py
       - run: cargo fmt --all -- --check
@@ -72,18 +59,20 @@ jobs:
   test-rust-platforms:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         runner: [windows-latest, macos-14]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace -- --test-threads=1
 
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     needs: [classify-changes, verify-source, test-rust-platforms]
     if: ${{ github.event_name != 'pull_request' || needs.classify-changes.outputs.release_artifacts == 'true' }}
     strategy:
@@ -97,8 +86,8 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -123,7 +112,7 @@ jobs:
           python scripts/ci/smoke-unica-mcp.py \
             --binary "$executable" \
             --plugin-root ".build/tool-bundles/${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unica-tools-${{ matrix.target }}
           path: .build/tool-bundles/${{ matrix.target }}
@@ -132,17 +121,18 @@ jobs:
   package-runtime:
     name: Package runtime (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: build-tools
     strategy:
       fail-fast: false
       matrix:
         target: [darwin-arm64, linux-x64, win-x64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: unica-tools-${{ matrix.target }}
           path: .build/bundle
@@ -150,7 +140,7 @@ jobs:
           python scripts/ci/package-unica-runtime.py
           --bundle-root .build/bundle
           --out-dir dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-${{ matrix.target }}
           path: |
@@ -161,20 +151,21 @@ jobs:
   package-thin:
     name: Package thin marketplace payload
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: package-runtime
     env:
       RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.8.1' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: unica-runtime-*
           path: .build/runtime-metadata
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: unica-tools-*
           path: .build/bootstrap-root
@@ -187,7 +178,7 @@ jobs:
           --release-tag "$RELEASE_TAG"
           --source-commit "${{ github.sha }}"
           --out-dir dist/thin
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unica-thin-marketplace
           path: dist/thin/marketplace
@@ -197,6 +188,7 @@ jobs:
   probe-thin-bootstrap:
     name: Probe thin bootstrap (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     needs: package-thin
     if: github.event_name == 'pull_request'
     strategy:
@@ -210,11 +202,11 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -228,14 +220,15 @@ jobs:
   release-assessment:
     name: Assess Linux runtime on BSP
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: package-runtime
     if: ${{ always() && needs.package-runtime.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: unica-runtime-linux-x64
           path: dist/runtime
@@ -248,7 +241,7 @@ jobs:
           --bsp-ref 3.2.1.446
           --release-tag "${{ github.ref_name }}"
           --github-run-id "${{ github.run_id }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: unica-release-assessment
@@ -258,18 +251,19 @@ jobs:
   publish-release-assets:
     name: Publish runtime assets
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: package-runtime
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: unica-runtime-*
           path: dist/runtime
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
@@ -279,6 +273,7 @@ jobs:
   smoke-thin-plugin:
     name: Smoke published thin plugin (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     needs: [package-thin, publish-release-assets]
     if: startsWith(github.ref, 'refs/tags/')
     strategy:
@@ -292,11 +287,11 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -309,6 +304,7 @@ jobs:
   verify-published-assets:
     name: Re-download and verify published bytes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - publish-release-assets
       - package-thin
@@ -316,8 +312,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Download release assets from GitHub
@@ -325,3 +321,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
       - run: python scripts/ci/verify-release-assets.py --asset-dir published
+
+  unica-ci:
+    name: Unica CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs:
+      - classify-changes
+      - verify-source
+      - test-rust-platforms
+      - build-tools
+      - package-runtime
+      - package-thin
+      - probe-thin-bootstrap
+      - release-assessment
+      - publish-release-assets
+      - smoke-thin-plugin
+      - verify-published-assets
+    steps:
+      - uses: actions/checkout@v7
+      - name: Evaluate required CI results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci/evaluate-ci-gate.py

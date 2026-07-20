@@ -34,6 +34,7 @@ jobs:
       github.event.workflow_run.event == 'push') ||
       (github.event_name == 'workflow_dispatch' && inputs.mode == 'stage')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
@@ -43,7 +44,7 @@ jobs:
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download verified thin payload
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
       - name: Require package contract files
@@ -77,6 +78,7 @@ jobs:
   promote:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
