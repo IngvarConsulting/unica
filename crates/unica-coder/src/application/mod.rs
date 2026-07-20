@@ -1276,9 +1276,9 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 mod tests {
     use super::*;
     use crate::composition::testing::{
-        create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
-        with_publication_lock_contention_signal, with_publication_lock_pause, CompileTransaction,
-        FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, prepare_file_for_removal, set_unix_mode_for_test,
+        unix_mode_for_test, with_publication_lock_contention_signal, with_publication_lock_pause,
+        CompileTransaction, FileLinkFixtureOutcome,
     };
     use serde_json::Map;
     use std::collections::HashSet;
@@ -2470,10 +2470,21 @@ mod tests {
         let before = cf_edit_configuration_bytes();
         let (root, workspace, config_path) =
             cf_edit_mutation_workspace("unica-cf-edit-readonly", &before);
-        if !set_unix_mode_for_test(&config_path, 0o400).unwrap() {
-            eprintln!("[SKIPPED FIXTURE] Unix permission modes are unsupported on this host");
-            std::fs::remove_dir_all(root).unwrap();
-            return;
+        let exact_unix_mode = set_unix_mode_for_test(&config_path, 0o400).unwrap();
+        if !exact_unix_mode {
+            let mut permissions = std::fs::metadata(&config_path).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&config_path, permissions).unwrap();
+        }
+        let mode_before = unix_mode_for_test(&config_path).unwrap();
+        assert!(std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .readonly());
+        if exact_unix_mode {
+            assert_eq!(mode_before, Some(0o400));
+        } else {
+            assert_eq!(mode_before, None);
         }
 
         let result = UnicaApplication::new()
@@ -2486,8 +2497,13 @@ mod tests {
         assert!(!result.ok, "{result:?}");
         assert!(result.errors.join("\n").contains("read-only"), "{result:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), before);
-        assert_eq!(unix_mode_for_test(&config_path).unwrap(), Some(0o400));
+        assert!(std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(unix_mode_for_test(&config_path).unwrap(), mode_before);
         assert_no_cf_edit_stage_debris(&config_path);
+        prepare_file_for_removal(&config_path).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
