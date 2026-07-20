@@ -22,8 +22,6 @@ Use `rg`/`git ls-files` first. For packaging questions, prefer tracked files plu
 ## Development Rules
 
 - Fix root causes, not symptoms.
-- Use the installed Superpowers workflow for implementation, debugging, planning, and verification work.
-- For every Rust implementation or refactoring change, use the `rust-expert-best-practices-code-review` skill before final verification; apply its type-safety, error-handling, and API-design guidance.
 - Surface contradictions in assumptions, docs, tests, and runtime behavior.
 - Keep the public MCP boundary as one server named `unica` with `unica.*` tools unless an ADR changes that contract.
 - Prompt-visible skills stay MCP-first. Direct packaged-script execution paths must not return once a native `unica.*` tool exists, except for documented utility exceptions.

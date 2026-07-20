@@ -172,7 +172,12 @@ pub(crate) fn read_utf8_sig_snapshot(path: &Path) -> Result<Utf8TextSnapshot, St
 }
 
 pub(crate) fn read_utf8_sig(path: &Path) -> Result<String, String> {
-    read_utf8_sig_snapshot(path).map(|snapshot| snapshot.text)
+    let mut text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    while text.starts_with('\u{feff}') {
+        text.remove(0);
+    }
+    Ok(text)
 }
 
 pub(crate) fn ensure_trailing_newline(mut text: String) -> String {

@@ -436,8 +436,14 @@ impl CompileTransaction {
                     PreparedPublication::Create(prepared) => {
                         prepared_creates.push_back((create, prepared));
                     }
-                    unexpected => {
-                        record_cleanup_warnings(state, unexpected.discard());
+                    PreparedPublication::Replace(prepared) => {
+                        record_cleanup_warnings(state, prepared.discard());
+                        return Err(format!(
+                            "create-only publication prepared an invalid state for {}",
+                            create.path.display()
+                        ));
+                    }
+                    PreparedPublication::Unchanged => {
                         return Err(format!(
                             "create-only publication prepared an invalid state for {}",
                             create.path.display()
@@ -466,8 +472,14 @@ impl CompileTransaction {
                     PreparedPublication::Replace(prepared) => {
                         prepared_registrations.push_back((registration, prepared));
                     }
-                    unexpected => {
-                        record_cleanup_warnings(state, unexpected.discard());
+                    PreparedPublication::Create(prepared) => {
+                        record_cleanup_warnings(state, prepared.discard());
+                        return Err(format!(
+                            "changed registration prepared an invalid state for {}",
+                            registration.path.display()
+                        ));
+                    }
+                    PreparedPublication::Unchanged => {
                         return Err(format!(
                             "changed registration prepared an invalid state for {}",
                             registration.path.display()

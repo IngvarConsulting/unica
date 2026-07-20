@@ -191,7 +191,16 @@ impl Error for PublishError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
             PublishErrorKind::Io { source, .. } => Some(source),
-            _ => None,
+            PublishErrorKind::InvalidTarget { .. }
+            | PublishErrorKind::AlreadyExists { .. }
+            | PublishErrorKind::MissingTarget { .. }
+            | PublishErrorKind::LinkOrReparsePoint { .. }
+            | PublishErrorKind::NonRegular { .. }
+            | PublishErrorKind::ReadOnly { .. }
+            | PublishErrorKind::MultipleHardLinks { .. }
+            | PublishErrorKind::StalePreimage { .. }
+            | PublishErrorKind::MetadataChanged { .. }
+            | PublishErrorKind::StageCollisionsExhausted { .. } => None,
         }
     }
 }
@@ -450,14 +459,6 @@ impl PreparedPublication<'_, '_, '_> {
             }),
             Self::Create(prepared) => prepared.commit(),
             Self::Replace(prepared) => prepared.commit(),
-        }
-    }
-
-    pub(crate) fn discard(self) -> Vec<CleanupWarning> {
-        match self {
-            Self::Unchanged => Vec::new(),
-            Self::Create(prepared) => prepared.discard(),
-            Self::Replace(prepared) => prepared.discard(),
         }
     }
 }
