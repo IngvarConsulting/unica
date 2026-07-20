@@ -51,6 +51,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         {"name": "unica.project.status"},
                         {"name": "unica.standards.search"},
                         {"name": "unica.standards.explain"},
+                        {"name": "unica.dcs.compile"},
+                        {"name": "unica.dcs.edit"},
+                        {"name": "unica.dcs.info"},
+                        {"name": "unica.dcs.validate"},
                     ]
                     print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}}), flush=True)
             """
@@ -77,7 +81,34 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unica.standards.explain", result.stderr)
 
+    def test_rejects_runtime_exposing_a_removed_dcs_alias(self) -> None:
+        result = self.run_smoke(
+            """
+            import json
+            import sys
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                if message.get("method") == "initialize":
+                    print(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}), flush=True)
+                elif message.get("method") == "tools/list":
+                    tools = [
+                        {"name": "unica.project.status"},
+                        {"name": "unica.standards.search"},
+                        {"name": "unica.standards.explain"},
+                        {"name": "unica.dcs.compile"},
+                        {"name": "unica.dcs.edit"},
+                        {"name": "unica.dcs.info"},
+                        {"name": "unica.dcs.validate"},
+                        {"name": "unica.s" + "kd.compile"},
+                    ]
+                    print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}}), flush=True)
+            """
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("removed DCS aliases", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
-
