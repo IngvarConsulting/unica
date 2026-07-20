@@ -9,32 +9,39 @@
 //! claim process-crash or power-loss atomicity; those require a persistent journal
 //! and directory-entry synchronization that this transaction does not provide.
 
-use fs2::FileExt;
 use roxmltree::Document;
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs;
+use std::io::ErrorKind;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 
-use crate::infrastructure::platform::filesystem::{path_lock_identity, prepare_file_for_removal};
+use crate::infrastructure::platform::filesystem::{
+    prepare_file_for_removal, replace_file_atomically, PortablePermissions,
+};
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
 #[cfg(test)]
-use std::sync::{mpsc::Sender, Barrier};
+use std::sync::{Arc, Barrier};
 
 use super::cf::cf_edit_add_child_object_text;
+use super::single_file_publisher::{
+    cleanup_publication_artifact, prepare, with_publication_locks, write_exact_new_file,
+    CleanupWarning, PreparedCreate, PreparedPublication, PreparedReplace, PublicationLockToken,
+    PublishError, PublishErrorKind, PublishMode, PublishRequest,
+};
+
+#[cfg(test)]
+use super::single_file_publisher::{
+    with_publication_lock_contention_signal, with_publication_lock_pause,
+};
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-static REGISTRATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
-    OnceLock::new();
+static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Result of asking the canonical registrar to add one child object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +70,7 @@ pub(crate) struct CommitReport {
     pub(crate) created: Vec<PathBuf>,
     pub(crate) updated: Vec<PathBuf>,
     /// Cleanup failures do not invalidate already-validated published bytes.
-    /// They are surfaced so a caller can report an orphaned backup explicitly.
+    /// They are surfaced so a caller can report an orphaned recovery copy explicitly.
     pub(crate) cleanup_warnings: Vec<String>,
 }
 
@@ -76,10 +83,8 @@ struct PlannedCreate {
 #[derive(Debug)]
 struct PlannedRegistration {
     path: PathBuf,
-    lock_path: PathBuf,
     original: Vec<u8>,
     updated: Vec<u8>,
-    original_permissions: fs::Permissions,
 }
 
 impl PlannedRegistration {
@@ -114,7 +119,28 @@ impl CompileTransaction {
     ) -> Result<(), String> {
         let path = path.into();
         self.reject_duplicate_plan_path(&path)?;
-        reject_existing_or_symlink_create_target(&path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                let kind = if metadata.file_type().is_symlink() {
+                    "symbolic link"
+                } else if metadata.is_dir() {
+                    "directory"
+                } else {
+                    "existing file"
+                };
+                return Err(format!(
+                    "create-only compile target is already a {kind}: {}",
+                    path.display()
+                ));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect create-only target {}: {error}",
+                    path.display()
+                ));
+            }
+        }
         self.create_paths.insert(path.clone());
         self.creates.push(PlannedCreate {
             path,
@@ -195,15 +221,12 @@ impl CompileTransaction {
                 )
             })?;
             validate_xml_bytes(&target, &original)?;
-            let lock_path = registration_lock_path(&target)?;
             self.registrations.insert(
                 target.clone(),
                 PlannedRegistration {
                     path: target.clone(),
-                    lock_path,
                     updated: original.clone(),
                     original,
-                    original_permissions: metadata.permissions(),
                 },
             );
         }
@@ -337,133 +360,202 @@ impl CompileTransaction {
     /// failure-atomic transaction for reported errors. This is not a
     /// process-crash or power-loss atomicity guarantee.
     pub(crate) fn commit(self) -> Result<CommitReport, String> {
-        let lock_paths = self.registration_lock_paths();
-        let process_locks = registration_process_locks(&lock_paths);
-        let process_guards = process_locks
-            .iter()
-            .map(|lock| lock_registration_process_mutex(lock))
-            .collect::<Vec<_>>();
-        let file_locks = acquire_registration_file_locks(&lock_paths)?;
-        pause_after_registration_locks();
-
         let mut state = PublishState::default();
-        let result = match self.commit_inner(&mut state) {
-            Ok(mut report) => {
-                report.cleanup_warnings = finalize_success(&mut state);
-                Ok(report)
-            }
-            Err(error) => {
-                let rollback_errors = rollback(&mut state);
-                if rollback_errors.is_empty() {
-                    Err(error)
-                } else {
-                    Err(format!(
-                        "{error}; rollback encountered: {}",
-                        rollback_errors.join("; ")
-                    ))
-                }
-            }
-        };
+        self.semantic_preflight()?;
 
-        // Keep both lock layers alive through success cleanup or rollback. File
-        // closure releases the advisory locks; persistent lock files must not be
-        // removed because a waiter may already hold their inode open.
-        drop(file_locks);
-        drop(process_guards);
-        result
+        for create in &self.creates {
+            if let Err(error) = ensure_parent_directories(&create.path, &mut state.created_dirs) {
+                let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
+                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+            }
+        }
+        for registration in self.registrations.values().filter(|item| item.changed()) {
+            if let Err(error) =
+                ensure_parent_directories(&registration.path, &mut state.created_dirs)
+            {
+                let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
+                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+            }
+        }
+
+        let mut targets = self
+            .creates
+            .iter()
+            .map(|create| create.path.clone())
+            .collect::<Vec<_>>();
+        targets.extend(
+            self.registrations
+                .values()
+                .filter(|registration| registration.changed())
+                .map(|registration| registration.path.clone()),
+        );
+
+        match with_publication_locks(&targets, |lock| self.commit_locked(lock, &mut state)) {
+            Ok(result) => result,
+            Err(error) => {
+                let primary = adapt_publish_error(&error, PublicationRole::Transaction);
+                record_publish_error_cleanup(&mut state, &error);
+                let mut cleanup_errors = retry_warned_artifacts(&mut state);
+                cleanup_errors.extend(cleanup_created_directories(&mut state.created_dirs));
+                cleanup_errors.extend(std::mem::take(&mut state.cleanup_warnings));
+                Err(with_cleanup_diagnostics(primary, cleanup_errors))
+            }
+        }
     }
 
-    fn commit_inner(&self, state: &mut PublishState) -> Result<CommitReport, String> {
-        self.preflight()?;
+    fn commit_locked<'request, 'lock, 'scope>(
+        &'request self,
+        lock: &'lock PublicationLockToken<'scope>,
+        state: &mut PublishState,
+    ) -> Result<CommitReport, String> {
+        let mut prepared_creates: VecDeque<(
+            &'request PlannedCreate,
+            PreparedCreate<'request, 'lock, 'scope>,
+        )> = VecDeque::new();
+        let mut prepared_registrations: VecDeque<(
+            &'request PlannedRegistration,
+            PreparedReplace<'request, 'lock, 'scope>,
+        )> = VecDeque::new();
 
-        for create in &self.creates {
-            ensure_parent_directories(&create.path, &mut state.created_dirs)?;
-        }
-        for registration in self.registrations.values().filter(|item| item.changed()) {
-            ensure_parent_directories(&registration.path, &mut state.created_dirs)?;
-        }
-
-        for create in &self.creates {
-            let staged = stage_bytes(&create.path, &create.bytes, None)?;
-            state.staged_paths.push(staged.clone());
-            state.create_stages.push(StagedCreate {
-                target: create.path.clone(),
-                staged,
-            });
-        }
-        for registration in self.registrations.values().filter(|item| item.changed()) {
-            let staged = stage_bytes(
-                &registration.path,
-                &registration.updated,
-                Some(registration.original_permissions.clone()),
-            )?;
-            state.staged_paths.push(staged.clone());
-            state.registration_stages.push(StagedRegistration {
-                target: registration.path.clone(),
-                staged,
-                original: registration.original.clone(),
-            });
-        }
-
-        for staged in &state.create_stages {
-            reject_existing_or_symlink_create_target(&staged.target)?;
-            fs::hard_link(&staged.staged, &staged.target).map_err(|error| {
-                format!(
-                    "failed to publish create-only file {}: {error}",
-                    staged.target.display()
+        let operation = (|| -> Result<CommitReport, String> {
+            for create in &self.creates {
+                let publication = prepare(
+                    lock,
+                    PublishRequest {
+                        target: &create.path,
+                        replacement: &create.bytes,
+                        mode: PublishMode::CreateOnly,
+                    },
                 )
-            })?;
-            state.created_paths.push(staged.target.clone());
-            remove_if_exists(&staged.staged).map_err(|error| {
-                format!(
-                    "failed to remove staged link {}: {error}",
-                    staged.staged.display()
+                .map_err(|error| {
+                    let message = adapt_publish_error(&error, PublicationRole::Create);
+                    record_publish_error_cleanup(state, &error);
+                    message
+                })?;
+                match publication {
+                    PreparedPublication::Create(prepared) => {
+                        prepared_creates.push_back((create, prepared));
+                    }
+                    unexpected => {
+                        record_cleanup_warnings(state, unexpected.discard());
+                        return Err(format!(
+                            "create-only publication prepared an invalid state for {}",
+                            create.path.display()
+                        ));
+                    }
+                }
+            }
+
+            for registration in self.registrations.values().filter(|item| item.changed()) {
+                let publication = prepare(
+                    lock,
+                    PublishRequest {
+                        target: &registration.path,
+                        replacement: &registration.updated,
+                        mode: PublishMode::ReplaceExisting {
+                            expected_preimage: &registration.original,
+                        },
+                    },
                 )
-            })?;
-        }
+                .map_err(|error| {
+                    let message = adapt_publish_error(&error, PublicationRole::Registration);
+                    record_publish_error_cleanup(state, &error);
+                    message
+                })?;
+                match publication {
+                    PreparedPublication::Replace(prepared) => {
+                        prepared_registrations.push_back((registration, prepared));
+                    }
+                    unexpected => {
+                        record_cleanup_warnings(state, unexpected.discard());
+                        return Err(format!(
+                            "changed registration prepared an invalid state for {}",
+                            registration.path.display()
+                        ));
+                    }
+                }
+            }
 
-        failpoint_after_object_files()?;
+            while let Some((create, prepared)) = prepared_creates.pop_front() {
+                let report = prepared.commit().map_err(|error| {
+                    let message = adapt_publish_error(&error, PublicationRole::Create);
+                    record_publish_error_cleanup(state, &error);
+                    message
+                })?;
+                record_cleanup_warnings(state, report.cleanup_warnings);
+                state.created_paths.push(create.path.clone());
+            }
 
-        for staged in &state.registration_stages {
-            reject_registration_target_change(&staged.target, &staged.original)?;
-            let backup = reserve_backup(&staged.target)?;
-            if let Err(error) = fs::rename(&staged.target, &backup.path) {
-                let cleanup_error = fs::remove_dir(&backup.directory).err();
-                let cleanup_note = cleanup_error.map_or_else(String::new, |cleanup_error| {
-                    format!(
-                        "; failed to remove empty backup reservation {}: {cleanup_error}",
-                        backup.directory.display()
-                    )
-                });
-                return Err(format!(
-                    "failed to move registration target {} to backup {}: {error}{cleanup_note}",
-                    staged.target.display(),
-                    backup.path.display()
+            failpoint_after_object_files()?;
+
+            while let Some((registration, prepared)) = prepared_registrations.pop_front() {
+                let permissions = prepared.portable_permissions().clone();
+                let mut recovery = match reserve_recovery(&registration.path) {
+                    Ok(recovery) => recovery,
+                    Err(error) => {
+                        record_cleanup_warnings(state, prepared.discard());
+                        return Err(error);
+                    }
+                };
+                if let Err(error) =
+                    write_exact_new_file(&recovery.path, &registration.original, &permissions)
+                {
+                    let message = adapt_publish_error(&error, PublicationRole::Recovery);
+                    record_publish_error_cleanup(state, &error);
+                    record_cleanup_warnings(state, prepared.discard());
+                    record_cleanup_strings(state, recovery.cleanup());
+                    return Err(message);
+                }
+
+                pause_after_registration_recovery();
+                if let Err(error) = failpoint_after_registration_backup() {
+                    record_cleanup_warnings(state, prepared.discard());
+                    record_cleanup_strings(state, recovery.cleanup());
+                    return Err(error);
+                }
+
+                let report = match prepared.commit() {
+                    Ok(report) => report,
+                    Err(error) => {
+                        let message = adapt_publish_error(&error, PublicationRole::Registration);
+                        record_publish_error_cleanup(state, &error);
+                        record_cleanup_strings(state, recovery.cleanup());
+                        return Err(message);
+                    }
+                };
+                record_cleanup_warnings(state, report.cleanup_warnings);
+                state.published_registrations.push(recovery.into_published(
+                    registration.path.clone(),
+                    registration.original.clone(),
+                    permissions,
                 ));
             }
-            state.published_registrations.push(PublishedRegistration {
-                target: staged.target.clone(),
-                backup: backup.path,
-                backup_directory: backup.directory,
-                original: staged.original.clone(),
-            });
-            failpoint_after_registration_backup()?;
-            fs::rename(&staged.staged, &staged.target).map_err(|error| {
-                format!(
-                    "failed to publish registration target {}: {error}",
-                    staged.target.display()
-                )
-            })?;
+
+            self.post_validate()?;
+            failpoint_post_write_validation()?;
+
+            Ok(CommitReport {
+                created: self.planned_created_paths(),
+                updated: self.planned_updated_paths(),
+                cleanup_warnings: Vec::new(),
+            })
+        })();
+
+        match operation {
+            Ok(mut report) => {
+                debug_assert!(prepared_creates.is_empty());
+                debug_assert!(prepared_registrations.is_empty());
+                finalize_success(state);
+                report.cleanup_warnings = std::mem::take(&mut state.cleanup_warnings);
+                Ok(report)
+            }
+            Err(primary) => {
+                discard_prepared(state, &mut prepared_creates, &mut prepared_registrations);
+                let mut rollback_errors = rollback(state);
+                rollback_errors.extend(std::mem::take(&mut state.cleanup_warnings));
+                Err(with_rollback_diagnostics(primary, rollback_errors))
+            }
         }
-
-        self.post_validate()?;
-        failpoint_post_write_validation()?;
-
-        Ok(CommitReport {
-            created: self.planned_created_paths(),
-            updated: self.planned_updated_paths(),
-            cleanup_warnings: Vec::new(),
-        })
     }
 
     fn reject_duplicate_plan_path(&self, path: &Path) -> Result<(), String> {
@@ -477,25 +569,11 @@ impl CompileTransaction {
         }
     }
 
-    fn registration_lock_paths(&self) -> Vec<PathBuf> {
-        let mut paths = self
-            .registrations
-            .values()
-            .filter(|registration| registration.changed())
-            .map(|registration| registration.lock_path.clone())
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths.dedup();
-        paths
-    }
-
-    fn preflight(&self) -> Result<(), String> {
+    fn semantic_preflight(&self) -> Result<(), String> {
         for create in &self.creates {
-            reject_existing_or_symlink_create_target(&create.path)?;
             validate_xml_when_applicable(&create.path, &create.bytes)?;
         }
         for registration in self.registrations.values().filter(|item| item.changed()) {
-            reject_registration_target_change(&registration.path, &registration.original)?;
             validate_xml_bytes(&registration.path, &registration.updated)?;
         }
         Ok(())
@@ -514,210 +592,80 @@ impl CompileTransaction {
 }
 
 #[derive(Debug)]
-struct StagedCreate {
-    target: PathBuf,
-    staged: PathBuf,
-}
-
-#[derive(Debug)]
-struct StagedRegistration {
-    target: PathBuf,
-    staged: PathBuf,
-    original: Vec<u8>,
-}
-
-#[derive(Debug)]
 struct PublishedRegistration {
     target: PathBuf,
-    backup: PathBuf,
-    backup_directory: PathBuf,
+    recovery: PathBuf,
+    recovery_directory: PathBuf,
     original: Vec<u8>,
+    original_permissions: PortablePermissions,
 }
 
 #[derive(Debug)]
-struct BackupReservation {
+struct PendingRecovery {
     directory: PathBuf,
     path: PathBuf,
+    armed: bool,
+}
+
+impl PendingRecovery {
+    fn cleanup(&mut self) -> Vec<String> {
+        if !self.armed {
+            return Vec::new();
+        }
+
+        if let Err(warning) = cleanup_publication_artifact(&self.path) {
+            return vec![format!(
+                "failed to remove pending registration recovery {warning}"
+            )];
+        }
+        match fs::remove_dir(&self.directory) {
+            Ok(()) => {
+                self.armed = false;
+                Vec::new()
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                self.armed = false;
+                Vec::new()
+            }
+            Err(error) => vec![format!(
+                "failed to remove pending registration recovery directory {}: {error}",
+                self.directory.display()
+            )],
+        }
+    }
+
+    fn into_published(
+        mut self,
+        target: PathBuf,
+        original: Vec<u8>,
+        original_permissions: PortablePermissions,
+    ) -> PublishedRegistration {
+        self.armed = false;
+        PublishedRegistration {
+            target,
+            recovery: self.path.clone(),
+            recovery_directory: self.directory.clone(),
+            original,
+            original_permissions,
+        }
+    }
+}
+
+impl Drop for PendingRecovery {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.cleanup();
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct PublishState {
-    create_stages: Vec<StagedCreate>,
-    registration_stages: Vec<StagedRegistration>,
-    staged_paths: Vec<PathBuf>,
     created_paths: Vec<PathBuf>,
     published_registrations: Vec<PublishedRegistration>,
     created_dirs: Vec<PathBuf>,
-}
-
-fn registration_lock_path(target: &Path) -> Result<PathBuf, String> {
-    let canonical_target = fs::canonicalize(target).map_err(|error| {
-        format!(
-            "failed to canonicalize registration target {} for locking: {error}",
-            target.display()
-        )
-    })?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-compile-registration-lock-v1\0");
-    hasher.update(path_lock_identity(&canonical_target).as_bytes());
-    let lock_name = format!("{:x}.lock", hasher.finalize());
-    Ok(std::env::temp_dir()
-        .join("unica-compile-registration-locks-v1")
-        .join(lock_name))
-}
-
-fn registration_process_locks(lock_paths: &[PathBuf]) -> Vec<Arc<Mutex<()>>> {
-    let registry = REGISTRATION_PROCESS_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    registry.retain(|_, lock| lock.strong_count() > 0);
-
-    lock_paths
-        .iter()
-        .map(|path| {
-            if let Some(lock) = registry.get(path).and_then(Weak::upgrade) {
-                return lock;
-            }
-            let lock = Arc::new(Mutex::new(()));
-            registry.insert(path.clone(), Arc::downgrade(&lock));
-            lock
-        })
-        .collect()
-}
-
-fn lock_registration_process_mutex(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
-    match lock.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::WouldBlock) => {
-            signal_registration_lock_contention();
-            lock.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        }
-        Err(TryLockError::Poisoned(error)) => error.into_inner(),
-    }
-}
-
-fn acquire_registration_file_locks(lock_paths: &[PathBuf]) -> Result<Vec<File>, String> {
-    lock_paths
-        .iter()
-        .map(|path| {
-            let file = open_registration_lock_file(path)?;
-            FileExt::lock_exclusive(&file).map_err(|error| {
-                format!(
-                    "failed to lock registration target via {}: {error}",
-                    path.display()
-                )
-            })?;
-            Ok(file)
-        })
-        .collect()
-}
-
-fn open_registration_lock_file(path: &Path) -> Result<File, String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create registration lock directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(file) => Ok(file),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(path).map_err(|inspect_error| {
-                format!(
-                    "failed to inspect existing registration lock {} after {error}: {inspect_error}",
-                    path.display()
-                )
-            })?;
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "registration lock must not be a symbolic link: {}",
-                    path.display()
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(format!(
-                    "registration lock is not a regular file: {}",
-                    path.display()
-                ));
-            }
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path)
-                .map_err(|open_error| {
-                    format!(
-                        "failed to open existing registration lock {}: {open_error}",
-                        path.display()
-                    )
-                })
-        }
-        Err(error) => Err(format!(
-            "failed to create registration lock {}: {error}",
-            path.display()
-        )),
-    }
-}
-
-fn reject_existing_or_symlink_create_target(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            let kind = if metadata.file_type().is_symlink() {
-                "symbolic link"
-            } else if metadata.is_dir() {
-                "directory"
-            } else {
-                "existing file"
-            };
-            Err(format!(
-                "create-only compile target is already a {kind}: {}",
-                path.display()
-            ))
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "failed to inspect create-only target {}: {error}",
-            path.display()
-        )),
-    }
-}
-
-fn reject_registration_target_change(path: &Path, original: &[u8]) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        format!(
-            "registration target disappeared before commit {}: {error}",
-            path.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "registration target became a symbolic link before commit: {}",
-            path.display()
-        ));
-    }
-    if !metadata.is_file() {
-        return Err(format!(
-            "registration target is no longer a regular file: {}",
-            path.display()
-        ));
-    }
-    let current =
-        fs::read(path).map_err(|error| format!("failed to re-read {}: {error}", path.display()))?;
-    if current != original {
-        return Err(format!(
-            "registration target changed after planning: {}",
-            path.display()
-        ));
-    }
-    Ok(())
+    warned_artifacts: Vec<PathBuf>,
+    cleanup_warnings: Vec<String>,
 }
 
 fn validate_published_file(path: &Path, expected: &[u8]) -> Result<(), String> {
@@ -753,72 +701,28 @@ fn validate_xml_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("XML parse error in {}: {error}", path.display()))
 }
 
-fn stage_bytes(
-    target: &Path,
-    bytes: &[u8],
-    permissions: Option<fs::Permissions>,
-) -> Result<PathBuf, String> {
-    let mut attempts = 0usize;
-    loop {
-        attempts += 1;
-        let staged = unique_sibling_path(target, "stage");
-        let open = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&staged);
-        let mut file = match open {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists && attempts < 16 => continue,
-            Err(error) => {
-                return Err(format!(
-                    "failed to create staged file {}: {error}",
-                    staged.display()
-                ));
-            }
-        };
-        let write_result = write_and_sync(&mut file, bytes);
-        drop(file);
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&staged);
-            return Err(format!(
-                "failed to write staged file {}: {error}",
-                staged.display()
-            ));
-        }
-        if let Some(permissions) = permissions {
-            if let Err(error) = fs::set_permissions(&staged, permissions) {
-                let _ = fs::remove_file(&staged);
-                return Err(format!(
-                    "failed to preserve permissions on staged file {}: {error}",
-                    staged.display()
-                ));
-            }
-        }
-        return Ok(staged);
-    }
+fn reserve_recovery(target: &Path) -> Result<PendingRecovery, String> {
+    reserve_recovery_with(target, || unique_recovery_directory(target))
 }
 
-fn reserve_backup(target: &Path) -> Result<BackupReservation, String> {
-    reserve_backup_with(target, || unique_sibling_path(target, "backup"))
-}
-
-fn reserve_backup_with(
+fn reserve_recovery_with(
     target: &Path,
     mut next_directory: impl FnMut() -> PathBuf,
-) -> Result<BackupReservation, String> {
+) -> Result<PendingRecovery, String> {
     for attempt in 1..=16 {
         let directory = next_directory();
         match fs::create_dir(&directory) {
             Ok(()) => {
-                return Ok(BackupReservation {
+                return Ok(PendingRecovery {
                     path: directory.join("original"),
                     directory,
+                    armed: true,
                 });
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists && attempt < 16 => continue,
             Err(error) => {
                 return Err(format!(
-                    "failed to reserve no-clobber backup for {} at {}: {error}",
+                    "failed to reserve no-clobber recovery for {} at {}: {error}",
                     target.display(),
                     directory.display()
                 ));
@@ -826,18 +730,12 @@ fn reserve_backup_with(
         }
     }
     Err(format!(
-        "failed to reserve no-clobber backup for {}",
+        "failed to reserve no-clobber recovery for {}",
         target.display()
     ))
 }
 
-fn write_and_sync(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()
-}
-
-fn unique_sibling_path(target: &Path, label: &str) -> PathBuf {
+fn unique_recovery_directory(target: &Path) -> PathBuf {
     let parent = usable_parent(target);
     let mut name = OsString::from(".");
     name.push(
@@ -846,9 +744,9 @@ fn unique_sibling_path(target: &Path, label: &str) -> PathBuf {
             .unwrap_or_else(|| std::ffi::OsStr::new("compile")),
     );
     name.push(format!(
-        ".unica-{label}-{}-{}",
+        ".unica-recovery-{}-{}",
         std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     parent.join(name)
 }
@@ -911,84 +809,107 @@ fn ensure_parent_directories(path: &Path, created_dirs: &mut Vec<PathBuf>) -> Re
     Ok(())
 }
 
-fn remove_if_exists(path: &Path) -> std::io::Result<()> {
-    prepare_file_for_removal(path)?;
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+#[derive(Debug, Clone, Copy)]
+enum PublicationRole {
+    Create,
+    Registration,
+    Recovery,
+    Transaction,
+}
+
+fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> String {
+    match error.kind() {
+        PublishErrorKind::StalePreimage { target } => match role {
+            PublicationRole::Registration => format!(
+                "registration target changed after planning: {}",
+                target.display()
+            ),
+            PublicationRole::Create | PublicationRole::Recovery | PublicationRole::Transaction => {
+                error.to_string()
+            }
+        },
+        PublishErrorKind::MetadataChanged { target } => match role {
+            PublicationRole::Registration => format!(
+                "registration target metadata changed after planning: {}",
+                target.display()
+            ),
+            PublicationRole::Create | PublicationRole::Recovery | PublicationRole::Transaction => {
+                error.to_string()
+            }
+        },
+        PublishErrorKind::MissingTarget { target } => match role {
+            PublicationRole::Registration => format!(
+                "registration target disappeared before commit: {}",
+                target.display()
+            ),
+            PublicationRole::Create | PublicationRole::Recovery | PublicationRole::Transaction => {
+                error.to_string()
+            }
+        },
+        PublishErrorKind::InvalidTarget { .. }
+        | PublishErrorKind::AlreadyExists { .. }
+        | PublishErrorKind::LinkOrReparsePoint { .. }
+        | PublishErrorKind::NonRegular { .. }
+        | PublishErrorKind::ReadOnly { .. }
+        | PublishErrorKind::MultipleHardLinks { .. }
+        | PublishErrorKind::StageCollisionsExhausted { .. }
+        | PublishErrorKind::Io { .. } => error.to_string(),
     }
 }
 
-fn rollback(state: &mut PublishState) -> Vec<String> {
+fn record_publish_error_cleanup(state: &mut PublishState, error: &PublishError) {
+    record_cleanup_warnings(state, error.cleanup_warnings().iter().cloned());
+}
+
+fn record_cleanup_warnings(
+    state: &mut PublishState,
+    warnings: impl IntoIterator<Item = CleanupWarning>,
+) {
+    for warning in warnings {
+        if !state.warned_artifacts.contains(&warning.path) {
+            state.warned_artifacts.push(warning.path.clone());
+        }
+        state.cleanup_warnings.push(warning.to_string());
+    }
+}
+
+fn record_cleanup_strings(state: &mut PublishState, warnings: impl IntoIterator<Item = String>) {
+    state.cleanup_warnings.extend(warnings);
+}
+
+fn discard_prepared<'request, 'lock, 'scope>(
+    state: &mut PublishState,
+    creates: &mut VecDeque<(
+        &'request PlannedCreate,
+        PreparedCreate<'request, 'lock, 'scope>,
+    )>,
+    registrations: &mut VecDeque<(
+        &'request PlannedRegistration,
+        PreparedReplace<'request, 'lock, 'scope>,
+    )>,
+) {
+    while let Some((_create_plan, prepared)) = creates.pop_front() {
+        record_cleanup_warnings(state, prepared.discard());
+    }
+    while let Some((_registration_plan, prepared)) = registrations.pop_front() {
+        record_cleanup_warnings(state, prepared.discard());
+    }
+}
+
+fn retry_warned_artifacts(state: &mut PublishState) -> Vec<String> {
+    std::mem::take(&mut state.warned_artifacts)
+        .into_iter()
+        .filter_map(|path| {
+            cleanup_publication_artifact(&path)
+                .err()
+                .map(|warning| format!("failed to retry publication cleanup {warning}"))
+        })
+        .collect()
+}
+
+fn cleanup_created_directories(created_dirs: &mut Vec<PathBuf>) -> Vec<String> {
     let mut errors = Vec::new();
-
-    for published in state.published_registrations.iter().rev() {
-        match fs::symlink_metadata(&published.target) {
-            Ok(_) => {
-                if let Err(error) = remove_if_exists(&published.target) {
-                    errors.push(format!(
-                        "failed to remove published registration {}: {error}; original remains at {}",
-                        published.target.display(),
-                        published.backup.display()
-                    ));
-                    continue;
-                }
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                errors.push(format!(
-                    "failed to inspect published registration {}: {error}; original remains at {}",
-                    published.target.display(),
-                    published.backup.display()
-                ));
-                continue;
-            }
-        }
-        if let Err(error) = fs::rename(&published.backup, &published.target) {
-            errors.push(format!(
-                "failed to restore registration {} from {}: {error}",
-                published.target.display(),
-                published.backup.display()
-            ));
-            continue;
-        }
-        match fs::read(&published.target) {
-            Ok(bytes) if bytes == published.original => {}
-            Ok(_) => errors.push(format!(
-                "restored registration bytes differ from original: {}",
-                published.target.display()
-            )),
-            Err(error) => errors.push(format!(
-                "failed to verify restored registration {}: {error}",
-                published.target.display()
-            )),
-        }
-        if let Err(error) = fs::remove_dir(&published.backup_directory) {
-            errors.push(format!(
-                "failed to remove restored registration backup directory {}: {error}",
-                published.backup_directory.display()
-            ));
-        }
-    }
-
-    for path in state.created_paths.iter().rev() {
-        if let Err(error) = remove_if_exists(path) {
-            errors.push(format!(
-                "failed to remove published create-only file {}: {error}",
-                path.display()
-            ));
-        }
-    }
-    for path in &state.staged_paths {
-        if let Err(error) = remove_if_exists(path) {
-            errors.push(format!(
-                "failed to remove staged file {}: {error}",
-                path.display()
-            ));
-        }
-    }
-    for directory in state.created_dirs.iter().rev() {
+    for directory in created_dirs.iter().rev() {
         match fs::remove_dir(directory) {
             Ok(()) => {}
             Err(error)
@@ -1002,35 +923,157 @@ fn rollback(state: &mut PublishState) -> Vec<String> {
             )),
         }
     }
+    created_dirs.clear();
     errors
 }
 
-fn finalize_success(state: &mut PublishState) -> Vec<String> {
-    let mut warnings = Vec::new();
-    for path in &state.staged_paths {
+fn with_cleanup_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+    if diagnostics.is_empty() {
+        primary
+    } else {
+        format!("{primary}; cleanup encountered: {}", diagnostics.join("; "))
+    }
+}
+
+fn with_rollback_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+    if diagnostics.is_empty() {
+        primary
+    } else {
+        format!(
+            "{primary}; rollback encountered: {}",
+            diagnostics.join("; ")
+        )
+    }
+}
+
+fn remove_if_exists(path: &Path) -> std::io::Result<()> {
+    prepare_file_for_removal(path)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn rollback(state: &mut PublishState) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for published in state.published_registrations.iter().rev() {
+        if let Err(error) = replace_file_atomically(&published.recovery, &published.target) {
+            errors.push(format!(
+                "failed to atomically restore registration {} from {}; recovery is preserved at {}: {error}",
+                published.target.display(),
+                published.recovery.display(),
+                published.recovery.display()
+            ));
+            continue;
+        }
+
+        let bytes_restored = match fs::read(&published.target) {
+            Ok(bytes) if bytes == published.original => true,
+            Ok(_) => {
+                errors.push(format!(
+                    "restored registration bytes differ from original: {}",
+                    published.target.display()
+                ));
+                false
+            }
+            Err(error) => {
+                errors.push(format!(
+                    "failed to verify restored registration {}: {error}",
+                    published.target.display()
+                ));
+                false
+            }
+        };
+        let permissions_restored = match fs::metadata(&published.target) {
+            Ok(metadata) if published.original_permissions.matches(&metadata) => true,
+            Ok(_) => {
+                errors.push(format!(
+                    "restored registration permissions differ from original: {}",
+                    published.target.display()
+                ));
+                false
+            }
+            Err(error) => {
+                errors.push(format!(
+                    "failed to verify restored registration permissions {}: {error}",
+                    published.target.display()
+                ));
+                false
+            }
+        };
+        if !bytes_restored || !permissions_restored {
+            preserve_recovery_copy(published, &mut errors);
+            continue;
+        }
+        if let Err(error) = fs::remove_dir(&published.recovery_directory) {
+            errors.push(format!(
+                "failed to remove restored registration recovery directory {}: {error}",
+                published.recovery_directory.display()
+            ));
+            preserve_recovery_copy(published, &mut errors);
+        }
+    }
+
+    for path in state.created_paths.iter().rev() {
         if let Err(error) = remove_if_exists(path) {
-            warnings.push(format!(
-                "failed to remove staged file {}: {error}",
+            errors.push(format!(
+                "failed to remove published create-only file {}: {error}",
                 path.display()
             ));
         }
     }
+    errors.extend(retry_warned_artifacts(state));
+    errors.extend(cleanup_created_directories(&mut state.created_dirs));
+    errors
+}
+
+fn preserve_recovery_copy(published: &PublishedRegistration, diagnostics: &mut Vec<String>) {
+    if published.recovery.exists() {
+        diagnostics.push(format!(
+            "registration recovery is preserved at {}",
+            published.recovery.display()
+        ));
+        return;
+    }
+    match write_exact_new_file(
+        &published.recovery,
+        &published.original,
+        &published.original_permissions,
+    ) {
+        Ok(()) => diagnostics.push(format!(
+            "registration recovery is preserved at {}",
+            published.recovery.display()
+        )),
+        Err(error) => diagnostics.push(format!(
+            "failed to preserve recovery copy {} after rollback cleanup failure: {error}",
+            published.recovery.display()
+        )),
+    }
+}
+
+fn finalize_success(state: &mut PublishState) {
     for published in &state.published_registrations {
-        if let Err(error) = remove_if_exists(&published.backup) {
-            warnings.push(format!(
-                "failed to remove registration backup {}: {error}",
-                published.backup.display()
+        if let Err(warning) = cleanup_publication_artifact(&published.recovery) {
+            state.cleanup_warnings.push(format!(
+                "failed to remove registration recovery {warning}; recovery is preserved at {}",
+                published.recovery.display()
             ));
             continue;
         }
-        if let Err(error) = fs::remove_dir(&published.backup_directory) {
-            warnings.push(format!(
-                "failed to remove registration backup directory {}: {error}",
-                published.backup_directory.display()
+        if let Err(error) = fs::remove_dir(&published.recovery_directory) {
+            state.cleanup_warnings.push(format!(
+                "failed to remove registration recovery directory {}: {error}",
+                published.recovery_directory.display()
             ));
+            let mut preservation_errors = Vec::new();
+            preserve_recovery_copy(published, &mut preservation_errors);
+            state.cleanup_warnings.extend(preservation_errors);
         }
     }
-    warnings
+    let retry_warnings = retry_warned_artifacts(state);
+    state.cleanup_warnings.extend(retry_warnings);
 }
 
 fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
@@ -1152,16 +1195,15 @@ pub(crate) enum CommitFailpoint {
 
 #[cfg(test)]
 #[derive(Clone)]
-struct RegistrationLockPause {
-    acquired: Arc<Barrier>,
+struct RegistrationRecoveryPause {
+    ready: Arc<Barrier>,
     release: Arc<Barrier>,
 }
 
 #[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
-    static TEST_REGISTRATION_LOCK_PAUSE: RefCell<Option<RegistrationLockPause>> = const { RefCell::new(None) };
-    static TEST_REGISTRATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
+    static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -1182,58 +1224,32 @@ pub(crate) fn with_commit_failpoint<T>(
 }
 
 #[cfg(test)]
-fn with_registration_lock_pause<T>(
-    acquired: Arc<Barrier>,
+fn with_registration_recovery_pause<T>(
+    ready: Arc<Barrier>,
     release: Arc<Barrier>,
     action: impl FnOnce() -> T,
 ) -> T {
-    struct Reset(Option<RegistrationLockPause>);
+    struct Reset(Option<RegistrationRecoveryPause>);
     impl Drop for Reset {
         fn drop(&mut self) {
-            TEST_REGISTRATION_LOCK_PAUSE.with(|slot| slot.replace(self.0.take()));
+            TEST_REGISTRATION_RECOVERY_PAUSE.with(|slot| slot.replace(self.0.take()));
         }
     }
 
-    let pause = RegistrationLockPause { acquired, release };
-    let previous = TEST_REGISTRATION_LOCK_PAUSE.with(|slot| slot.replace(Some(pause)));
+    let pause = RegistrationRecoveryPause { ready, release };
+    let previous = TEST_REGISTRATION_RECOVERY_PAUSE.with(|slot| slot.replace(Some(pause)));
     let _reset = Reset(previous);
     action()
 }
 
-#[cfg(test)]
-fn with_registration_lock_contention_signal<T>(
-    sender: Sender<()>,
-    action: impl FnOnce() -> T,
-) -> T {
-    struct Reset(Option<Sender<()>>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_REGISTRATION_LOCK_CONTENDED.with(|slot| slot.replace(self.0.take()));
-        }
+fn pause_after_registration_recovery() {
+    #[cfg(test)]
+    let pause = TEST_REGISTRATION_RECOVERY_PAUSE.with(|slot| slot.borrow_mut().take());
+    #[cfg(test)]
+    if let Some(pause) = pause {
+        pause.ready.wait();
+        pause.release.wait();
     }
-
-    let previous = TEST_REGISTRATION_LOCK_CONTENDED.with(|slot| slot.replace(Some(sender)));
-    let _reset = Reset(previous);
-    action()
-}
-
-fn pause_after_registration_locks() {
-    #[cfg(test)]
-    TEST_REGISTRATION_LOCK_PAUSE.with(|slot| {
-        if let Some(pause) = slot.borrow().clone() {
-            pause.acquired.wait();
-            pause.release.wait();
-        }
-    });
-}
-
-fn signal_registration_lock_contention() {
-    #[cfg(test)]
-    TEST_REGISTRATION_LOCK_CONTENDED.with(|slot| {
-        if let Some(sender) = slot.borrow().as_ref() {
-            let _ = sender.send(());
-        }
-    });
 }
 
 fn failpoint_after_object_files() -> Result<(), String> {
@@ -1449,7 +1465,9 @@ mod tests {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
-                        name.contains(".unica-stage-") || name.contains(".unica-backup-")
+                        name.contains(".unica-stage-")
+                            || name.contains(".unica-backup-")
+                            || name.contains(".unica-recovery-")
                     })
                 {
                     result.push(path.clone());
@@ -1757,6 +1775,199 @@ mod tests {
     }
 
     #[test]
+    fn post_validation_rollback_restores_bytes_and_unix_mode_0600() {
+        let root = temp_root("rollback-mode");
+        let config = root.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        if !testing::set_unix_mode_for_test(&config, 0o600)
+            .expect("mode fixture must be configurable")
+        {
+            fs::remove_dir_all(root).expect("temporary root must be removed");
+            return;
+        }
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let error = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            transaction.commit()
+        })
+        .expect_err("post-validation failpoint must roll the transaction back");
+
+        assert!(error.contains("post-write validation"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert_eq!(
+            testing::unix_mode_for_test(&config).expect("mode must remain readable"),
+            Some(0o600)
+        );
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_target_remains_present_after_backup_preparation() {
+        let root = temp_root("recovery-keeps-target-present");
+        let config = root.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let recovery_ready = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let recovery_ready_in_commit = Arc::clone(&recovery_ready);
+        let release_in_commit = Arc::clone(&release);
+        let commit_thread = thread::spawn(move || {
+            with_registration_recovery_pause(recovery_ready_in_commit, release_in_commit, || {
+                transaction.commit()
+            })
+        });
+
+        recovery_ready.wait();
+        let target_present = fs::symlink_metadata(&config).is_ok();
+        let bytes_during_recovery = fs::read(&config);
+        release.wait();
+
+        let commit_result = commit_thread.join().expect("commit thread must not panic");
+        assert!(
+            target_present,
+            "the target entry must remain present while recovery is ready"
+        );
+        assert_eq!(bytes_during_recovery.unwrap(), original);
+        let report = commit_result.expect("transaction must commit after the pause");
+        assert_eq!(report.updated, vec![config.clone()]);
+        assert!(fs::read_to_string(&config)
+            .unwrap()
+            .contains("<Role>Reader</Role>"));
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn compile_transaction_rejects_readonly_registration_without_partial_creates() {
+        let root = temp_root("readonly-preflight");
+        let config = root.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        if !testing::set_unix_mode_for_test(&config, 0o400)
+            .expect("mode fixture must be configurable")
+        {
+            let mut permissions = fs::metadata(&config).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&config, permissions).unwrap();
+        }
+        let original_mode = testing::unix_mode_for_test(&config).unwrap();
+        let object = root.join("Deep/Roles/Reader.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_text(&object, "<Object/>")
+            .expect("create must plan");
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let error = transaction
+            .commit()
+            .expect_err("read-only registration must reject the complete transaction");
+
+        assert!(error.contains("read-only"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert_eq!(testing::unix_mode_for_test(&config).unwrap(), original_mode);
+        assert!(!object.exists());
+        assert!(!root.join("Deep").exists());
+        assert!(transaction_debris(&root).is_empty());
+        prepare_file_for_removal(&config).expect("fixture must be removable");
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn compile_transaction_rejects_hard_linked_registration_without_mutation() {
+        let root = temp_root("hard-link-preflight");
+        let config = root.join("Configuration.xml");
+        let alias = root.join("Configuration.alias.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        fs::hard_link(&config, &alias).expect("hard-link fixture must be created");
+        let object = root.join("Deep/Roles/Reader.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_text(&object, "<Object/>")
+            .expect("create must plan");
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let error = transaction
+            .commit()
+            .expect_err("hard-linked registration must reject the complete transaction");
+
+        assert!(error.contains("hard links"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert_eq!(fs::read(&alias).unwrap(), original);
+        assert_eq!(
+            crate::infrastructure::platform::filesystem::hard_link_count(
+                &fs::File::open(&config).unwrap()
+            )
+            .unwrap(),
+            2
+        );
+        assert!(!object.exists());
+        assert!(!root.join("Deep").exists());
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn post_validation_failure_rolls_back_two_registrations_and_one_create() {
+        let root = temp_root("rollback-two-registrations");
+        let config_a = root.join("Configuration.xml");
+        let config_b = root.join("Subsystems/Core.xml");
+        fs::create_dir_all(config_b.parent().unwrap()).expect("fixture parent must be created");
+        let original_a = configuration_bytes();
+        let original_b = configuration_bytes();
+        fs::write(&config_a, &original_a).expect("first fixture must be written");
+        fs::write(&config_b, &original_b).expect("second fixture must be written");
+        let modes_supported = testing::set_unix_mode_for_test(&config_a, 0o600)
+            .and_then(|supported| {
+                testing::set_unix_mode_for_test(&config_b, 0o640)
+                    .map(|second_supported| supported && second_supported)
+            })
+            .expect("mode fixtures must be configurable");
+        let object = root.join("Deep/Roles/Reader.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_text(&object, "<Object/>")
+            .expect("create must plan");
+        transaction
+            .register_canonical_child(&config_a, "Role", "Reader")
+            .expect("first registration must plan");
+        transaction
+            .register_canonical_child(&config_b, "Catalog", "Orders")
+            .expect("second registration must plan");
+
+        let error = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            transaction.commit()
+        })
+        .expect_err("post-validation failure must roll every publication back");
+
+        assert!(error.contains("post-write validation"), "{error}");
+        assert_eq!(fs::read(&config_a).unwrap(), original_a);
+        assert_eq!(fs::read(&config_b).unwrap(), original_b);
+        if modes_supported {
+            assert_eq!(testing::unix_mode_for_test(&config_a).unwrap(), Some(0o600));
+            assert_eq!(testing::unix_mode_for_test(&config_b).unwrap(), Some(0o640));
+        }
+        assert!(!object.exists());
+        assert!(!root.join("Deep").exists());
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
     fn after_registration_backup_failure_restores_exact_bytes_and_removes_debris() {
         let root = temp_root("rollback-registration-backup");
         let config = root.join("Configuration.xml");
@@ -1794,15 +2005,15 @@ mod tests {
     }
 
     #[test]
-    fn backup_reservation_retries_without_clobbering_an_occupied_candidate() {
-        let root = temp_root("backup-reservation-collision");
+    fn recovery_reservation_retries_without_clobbering_an_occupied_candidate() {
+        let root = temp_root("recovery-reservation-collision");
         let target = root.join("Configuration.xml");
-        let occupied = root.join("occupied-backup");
-        let available = root.join("available-backup");
+        let occupied = root.join("occupied-recovery");
+        let available = root.join("available-recovery");
         fs::write(&occupied, b"must remain exact").expect("collision fixture must be written");
         let mut candidates = vec![occupied.clone(), available.clone()].into_iter();
 
-        let reservation = reserve_backup_with(&target, || {
+        let mut reservation = reserve_recovery_with(&target, || {
             candidates
                 .next()
                 .expect("reservation should need only one retry")
@@ -1813,7 +2024,7 @@ mod tests {
         assert_eq!(reservation.directory, available);
         assert!(reservation.directory.is_dir());
         assert!(!reservation.path.exists());
-        fs::remove_dir(&reservation.directory).expect("reservation must be removable");
+        assert!(reservation.cleanup().is_empty());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
@@ -1852,13 +2063,13 @@ mod tests {
         let acquired_by_a = acquired.clone();
         let release_a = release.clone();
         let thread_a = thread::spawn(move || {
-            with_registration_lock_pause(acquired_by_a, release_a, || transaction_a.commit())
+            with_publication_lock_pause(acquired_by_a, release_a, || transaction_a.commit())
         });
         acquired.wait();
 
         let (contended_sender, contended_receiver) = mpsc::channel();
         let thread_b = thread::spawn(move || {
-            with_registration_lock_contention_signal(contended_sender, || transaction_b.commit())
+            with_publication_lock_contention_signal(contended_sender, || transaction_b.commit())
         });
         let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
         release.wait();
@@ -1878,6 +2089,51 @@ mod tests {
         let actual = fs::read_to_string(&config).unwrap();
         assert!(actual.contains("<Role>ReaderA</Role>"));
         assert!(!actual.contains("<Role>ReaderB</Role>"));
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn two_create_only_transactions_contend_on_the_shared_target_lock() {
+        let root = temp_root("concurrent-create-only");
+        let target = root.join("shared.bin");
+        let mut transaction_a = CompileTransaction::new();
+        transaction_a
+            .create_bytes(&target, b"from transaction A".to_vec())
+            .expect("first create must plan");
+        let mut transaction_b = CompileTransaction::new();
+        transaction_b
+            .create_bytes(&target, b"from transaction B".to_vec())
+            .expect("second create must plan from the same absent preimage");
+
+        let acquired = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let acquired_by_a = Arc::clone(&acquired);
+        let release_a = Arc::clone(&release);
+        let thread_a = thread::spawn(move || {
+            with_publication_lock_pause(acquired_by_a, release_a, || transaction_a.commit())
+        });
+        acquired.wait();
+
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let thread_b = thread::spawn(move || {
+            with_publication_lock_contention_signal(contended_sender, || transaction_b.commit())
+        });
+        let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
+        release.wait();
+
+        let report_a = thread_a
+            .join()
+            .expect("first commit thread must not panic")
+            .expect("first create transaction must commit");
+        let error_b = thread_b
+            .join()
+            .expect("second commit thread must not panic")
+            .expect_err("second create transaction must observe the committed target");
+        contention.expect("second create transaction must contend on the publisher lock");
+        assert_eq!(report_a.created, vec![target.clone()]);
+        assert!(error_b.contains("already exists"), "{error_b}");
+        assert_eq!(fs::read(&target).unwrap(), b"from transaction A");
         assert!(transaction_debris(&root).is_empty());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }

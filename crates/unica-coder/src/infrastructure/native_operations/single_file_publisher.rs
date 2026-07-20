@@ -49,6 +49,10 @@ pub(crate) struct PublishRequest<'a> {
 pub(crate) enum PublishEffect {
     Created,
     Replaced,
+    #[allow(
+        dead_code,
+        reason = "constructed by the high-level cf-edit consumer added in Task 6"
+    )]
     Unchanged,
 }
 
@@ -442,6 +446,10 @@ pub(crate) enum PreparedPublication<'request, 'lock, 'scope> {
 }
 
 impl PreparedPublication<'_, '_, '_> {
+    #[allow(
+        dead_code,
+        reason = "used by the high-level cf-edit consumer added in Task 6"
+    )]
     pub(crate) fn commit(self) -> Result<PublishReport, PublishError> {
         match self {
             Self::Unchanged => Ok(PublishReport {
@@ -453,7 +461,6 @@ impl PreparedPublication<'_, '_, '_> {
         }
     }
 
-    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
     pub(crate) fn discard(self) -> Vec<CleanupWarning> {
         match self {
             Self::Unchanged => Vec::new(),
@@ -503,7 +510,6 @@ impl PreparedCreate<'_, '_, '_> {
         })
     }
 
-    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
     pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
         self.stage.cleanup().err().into_iter().collect()
     }
@@ -517,7 +523,6 @@ pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
 }
 
 impl PreparedReplace<'_, '_, '_> {
-    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
     pub(crate) fn portable_permissions(&self) -> &PortablePermissions {
         &self.snapshot.permissions
     }
@@ -550,7 +555,6 @@ impl PreparedReplace<'_, '_, '_> {
         })
     }
 
-    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
     pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
         self.stage.cleanup().err().into_iter().collect()
     }
@@ -598,10 +602,42 @@ pub(crate) fn prepare<'request, 'lock, 'scope>(
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "used by the high-level cf-edit consumer added in Task 6"
+)]
 pub(crate) fn publish(request: PublishRequest<'_>) -> Result<PublishReport, PublishError> {
     with_publication_locks(&[request.target.to_path_buf()], |lock| {
         prepare(lock, request)?.commit()
     })?
+}
+
+/// Create one exact, private-until-complete file with authoritative portable
+/// permissions. The caller must already own a no-clobber reservation for
+/// `path`; failures remove the partial file or attach its cleanup warning.
+pub(crate) fn write_exact_new_file(
+    path: &Path,
+    bytes: &[u8],
+    permissions: &PortablePermissions,
+) -> Result<(), PublishError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| PublishError::io(PublishPhase::Stage, path, source))?;
+    let mut guard = initialize_new_exact_file(file, path, bytes, Some(permissions))?;
+    guard.disarm();
+    Ok(())
+}
+
+/// Retry removal of a publication-owned artifact previously reported in a
+/// cleanup warning.
+pub(crate) fn cleanup_publication_artifact(path: &Path) -> Result<(), CleanupWarning> {
+    remove_stage(path).map_err(|error| CleanupWarning {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
 }
 
 fn publication_identity(target: &Path) -> Result<String, PublishError> {
@@ -678,12 +714,12 @@ fn lock_publication_process_mutex(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
 
 fn pause_after_publication_locks() {
     #[cfg(test)]
-    TEST_PUBLICATION_LOCK_PAUSE.with(|slot| {
-        if let Some(pause) = slot.borrow_mut().take() {
-            pause.acquired.wait();
-            pause.release.wait();
-        }
-    });
+    let pause = TEST_PUBLICATION_LOCK_PAUSE.with(|slot| slot.borrow_mut().take());
+    #[cfg(test)]
+    if let Some(pause) = pause {
+        pause.acquired.wait();
+        pause.release.wait();
+    }
 }
 
 fn signal_publication_lock_contention() {
@@ -879,7 +915,7 @@ fn create_stage_with_candidates(
             .write(true)
             .create_new(true)
             .open(&path);
-        let mut file = match open {
+        let file = match open {
             Ok(file) => file,
             Err(source)
                 if source.kind() == ErrorKind::AlreadyExists && attempt < STAGE_ATTEMPTS =>
@@ -896,16 +932,7 @@ fn create_stage_with_candidates(
             }
             Err(source) => return Err(PublishError::io(PublishPhase::Stage, &path, source)),
         };
-        let mut stage = StageGuard::new(path.clone());
-        let result = initialize_stage(&mut file, &path, replacement, final_permissions);
-        drop(file);
-        match result {
-            Ok(()) => return Ok(stage),
-            Err(mut error) => {
-                attach_stage_cleanup(&mut error, &mut stage);
-                return Err(error);
-            }
-        }
+        return initialize_new_exact_file(file, &path, replacement, final_permissions);
     }
     Err(PublishError::new(
         PublishErrorKind::StageCollisionsExhausted {
@@ -913,6 +940,24 @@ fn create_stage_with_candidates(
             attempts: STAGE_ATTEMPTS,
         },
     ))
+}
+
+fn initialize_new_exact_file(
+    mut file: File,
+    path: &Path,
+    bytes: &[u8],
+    final_permissions: Option<&PortablePermissions>,
+) -> Result<StageGuard, PublishError> {
+    let mut guard = StageGuard::new(path.to_path_buf());
+    let result = initialize_stage(&mut file, path, bytes, final_permissions);
+    drop(file);
+    match result {
+        Ok(()) => Ok(guard),
+        Err(mut error) => {
+            attach_stage_cleanup(&mut error, &mut guard);
+            Err(error)
+        }
+    }
 }
 
 fn initialize_stage(
