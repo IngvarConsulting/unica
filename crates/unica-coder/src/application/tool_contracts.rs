@@ -575,22 +575,6 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["definition"]}
         ]);
     }
-    if tool.name == "unica.code.diagnostics" {
-        schema["oneOf"] = json!([
-            {
-                "properties": {
-                    "mode": {"enum": ["analyze"]}
-                }
-            },
-            {
-                "required": ["mode"],
-                "properties": {
-                    "mode": {"enum": ["status", "catalog", "file", "workspace"]}
-                },
-                "not": {"required": ["timeoutSeconds"]}
-            }
-        ]);
-    }
     schema
 }
 
@@ -2313,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn bsl_diagnostics_contract_exposes_modes_and_keeps_analyze_default() {
+    fn bsl_diagnostics_contract_stays_flat_and_keeps_analyze_default() {
         let diagnostics = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.diagnostics")
@@ -2329,7 +2313,9 @@ mod tests {
         assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
         assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
-        assert_eq!(schema["oneOf"][1]["not"]["required"][0], "timeoutSeconds");
+        assert!(schema["properties"].get("cwd").is_some());
+        assert!(schema["properties"].get("sourceDir").is_some());
+        assert!(schema.get("oneOf").is_none());
         assert!(schema["properties"]["mode"]["enum"]
             .as_array()
             .unwrap()
