@@ -131,7 +131,7 @@ Implementations:
 
 - Unix permission key is `mode() & 0o7777`, private stage mode is `0600`, link count is `MetadataExt::nlink()`.
 - Windows permission key is readonly; private-stage chmod is a no-op; link count uses `GetFileInformationByHandle` and `nNumberOfLinks` from `windows-sys`.
-- Other hosts use readonly as key, no-op restriction, link count one.
+- Other hosts use readonly as key and no-op restriction; hard-link count returns `io::ErrorKind::Unsupported` so replacement fails closed instead of assuming one link.
 - Keep every host cfg in this platform file.
 
 - [ ] **Step 4: Verify GREEN**
