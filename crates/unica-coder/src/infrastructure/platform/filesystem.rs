@@ -64,17 +64,23 @@ pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
 
 #[cfg(windows)]
 pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
+    use std::mem::MaybeUninit;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
 
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: the file owns a valid handle and `information` is writable for this call.
-    let succeeded = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the file owns a valid handle, and the pointer provides writable storage that the
+    // API fully initializes before returning a nonzero result.
+    let succeeded =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
     if succeeded == 0 {
         Err(io::Error::last_os_error())
     } else {
+        // SAFETY: a nonzero result guarantees that GetFileInformationByHandle initialized the
+        // entire BY_HANDLE_FILE_INFORMATION value.
+        let information = unsafe { information.assume_init() };
         Ok(u64::from(information.nNumberOfLinks))
     }
 }
@@ -376,6 +382,37 @@ mod tests {
 
         assert!(expected.matches(&staged_metadata));
         assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o600);
+
+        drop(staged_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_permissions_restore_mode_after_stage_restriction() {
+        use super::{portable_permissions, restrict_stage_to_owner};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_temp_root("portable-permissions-restore");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let staged = root.join("staged");
+        fs::write(&source, b"source").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o640)).unwrap();
+        let expected = portable_permissions(&fs::metadata(&source).unwrap());
+        let staged_file = fs::File::create(&staged).unwrap();
+
+        restrict_stage_to_owner(&staged_file).unwrap();
+        assert_eq!(
+            staged_file.metadata().unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+
+        expected.apply_to(&staged_file).unwrap();
+        let staged_metadata = staged_file.metadata().unwrap();
+
+        assert!(expected.matches(&staged_metadata));
+        assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o640);
 
         drop(staged_file);
         fs::remove_dir_all(root).unwrap();
