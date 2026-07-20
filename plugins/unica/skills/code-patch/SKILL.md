@@ -41,7 +41,7 @@ Method selectors match an entire procedure or function. Anchor selectors must ma
     "name": "unica.code.patch",
     "arguments": {
       "cwd": "<workspace>",
-      "path": "src/CommonModules/Example/Ext/Module.bsl",
+      "path": "src/cf/CommonModules/Example/Ext/Module.bsl",
       "operation": "insert",
       "selector": { "method": "ПриСозданииНаСервере" },
       "content": "// TODO: добавить проверку",
@@ -62,7 +62,7 @@ Method selectors match an entire procedure or function. Anchor selectors must ma
     "name": "unica.code.patch",
     "arguments": {
       "cwd": "<workspace>",
-      "path": "src/CommonModules/Example/Ext/Module.bsl",
+      "path": "src/cf/CommonModules/Example/Ext/Module.bsl",
       "operation": "insert",
       "selector": { "anchor": "Сообщить(\"Готово\");" },
       "content": "Лог.Информация(\"Операция завершена\");",
