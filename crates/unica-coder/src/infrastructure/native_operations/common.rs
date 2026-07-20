@@ -1254,16 +1254,8 @@ pub(crate) fn output_dir_arg(
 
 pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
     let content = content.trim_start_matches('\u{feff}');
-    // New native artifacts use a BOM for Designer compatibility. An existing
-    // artifact keeps its own marker instead of gaining one during a tiny edit.
-    let preserve_bom = fs::read(path)
-        .ok()
-        .map(|bytes| bytes.starts_with(b"\xef\xbb\xbf"))
-        .unwrap_or(true);
-    let mut bytes = Vec::with_capacity(content.len() + usize::from(preserve_bom) * 3);
-    if preserve_bom {
-        bytes.extend_from_slice(b"\xef\xbb\xbf");
-    }
+    let mut bytes = Vec::with_capacity(content.len() + 3);
+    bytes.extend_from_slice(b"\xef\xbb\xbf");
     bytes.extend_from_slice(content.as_bytes());
     atomic_replace(path, &bytes)
 }
@@ -1307,7 +1299,7 @@ mod mutation_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn writer_preserves_existing_bom_choice_and_uses_bom_for_new_files() {
+    fn writer_publishes_exactly_one_bom_for_existing_and_new_files() {
         let root = std::env::temp_dir().join(format!(
             "unica-common-mutation-{}",
             SystemTime::now()
@@ -1319,11 +1311,13 @@ mod mutation_tests {
         let without_bom = root.join("without-bom.xml");
         fs::write(&without_bom, b"<before/>").unwrap();
         write_utf8_bom(&without_bom, "<after/>").unwrap();
-        assert_eq!(fs::read(&without_bom).unwrap(), b"<after/>");
+        assert_eq!(fs::read(&without_bom).unwrap(), b"\xef\xbb\xbf<after/>");
 
         let new_file = root.join("new.xml");
         write_utf8_bom(&new_file, "<new/>").unwrap();
         assert_eq!(fs::read(&new_file).unwrap(), b"\xef\xbb\xbf<new/>");
+        write_utf8_bom(&new_file, "\u{feff}<rewritten/>").unwrap();
+        assert_eq!(fs::read(&new_file).unwrap(), b"\xef\xbb\xbf<rewritten/>");
         fs::remove_dir_all(root).unwrap();
     }
 }
