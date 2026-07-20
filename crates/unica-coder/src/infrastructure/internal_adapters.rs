@@ -1217,7 +1217,7 @@ fn open_read_only_index(
 ) -> Result<ReadOnlyIndexConnection, String> {
     #[cfg(unix)]
     {
-        return open_read_only_index_unix_with_hooks(cache_root, db_path, || {});
+        open_read_only_index_unix_with_hooks(cache_root, db_path, || {})
     }
     #[cfg(windows)]
     {
