@@ -1,7 +1,7 @@
 # Safe single-file publisher for Unica
 
 - Date: 2026-07-20
-- Status: proposed for written-spec confirmation
+- Status: approved on 2026-07-20; implementation authorized
 - Related work: issue #74, pull request #163
 
 ## Context
@@ -102,7 +102,7 @@ For `CompileTransaction`, the module also exposes crate-private preparation and 
 
 ### Typed errors
 
-`PublishError` is an internal error enum that implements `Display` and `Error`. It distinguishes at least:
+`PublishError` is an internal typed error wrapper around a `PublishErrorKind` enum and implements `Display` and `Error`. The wrapper carries cleanup warnings without duplicating that field across every error variant. The kind distinguishes at least:
 
 - invalid or missing parent/filename;
 - target already exists in `CreateOnly` mode;
