@@ -18,8 +18,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use crate::infrastructure::platform::filesystem::{
-    install_file_no_clobber, metadata_is_link_or_reparse_point, path_lock_identity,
-    portable_permissions, replace_file_atomically, restrict_stage_to_owner, PortablePermissions,
+    hard_link_count, install_file_no_clobber, metadata_is_link_or_reparse_point,
+    path_lock_identity, portable_permissions, replace_file_atomically, restrict_stage_to_owner,
+    PortablePermissions,
 };
 
 const STAGE_ATTEMPTS: usize = 16;
@@ -192,10 +193,6 @@ impl Error for PublishError {
 }
 
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "policy variants are part of the typed contract and land in the next slice"
-)]
 pub(crate) enum PublishErrorKind {
     InvalidTarget {
         target: PathBuf,
@@ -379,8 +376,7 @@ impl PreparedCreate<'_, '_, '_> {
 
 pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
     target: &'request Path,
-    expected_preimage: &'request [u8],
-    permissions: PortablePermissions,
+    snapshot: ReplaceSnapshot,
     _lock: &'lock PublicationLockToken<'scope>,
     stage: StageGuard,
 }
@@ -388,11 +384,11 @@ pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
 impl PreparedReplace<'_, '_, '_> {
     #[allow(dead_code, reason = "used by the upcoming transaction integration")]
     pub(crate) fn portable_permissions(&self) -> &PortablePermissions {
-        &self.permissions
+        &self.snapshot.permissions
     }
 
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
-        inspect_replace_target(self.target, self.expected_preimage, PublishPhase::Recheck)?;
+        recheck_replace_target(self.target, &self.snapshot, PublishPhase::Recheck)?;
         if let Err(source) = replace_file_atomically(&self.stage.path, self.target) {
             let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
             attach_stage_cleanup(&mut error, &mut self.stage);
@@ -433,16 +429,19 @@ pub(crate) fn prepare<'request, 'lock, 'scope>(
             }))
         }
         PublishMode::ReplaceExisting { expected_preimage } => {
-            let permissions =
+            let snapshot =
                 inspect_replace_target(request.target, expected_preimage, PublishPhase::Inspect)?;
-            if expected_preimage == request.replacement {
+            if snapshot.bytes == request.replacement {
                 return Ok(PreparedPublication::Unchanged);
             }
-            let stage = create_stage(request.target, request.replacement, Some(&permissions))?;
+            let stage = create_stage(
+                request.target,
+                request.replacement,
+                Some(&snapshot.permissions),
+            )?;
             Ok(PreparedPublication::Replace(PreparedReplace {
                 target: request.target,
-                expected_preimage,
-                permissions,
+                snapshot,
                 _lock: lock,
                 stage,
             }))
@@ -586,11 +585,34 @@ fn inspect_create_target(target: &Path, phase: PublishPhase) -> Result<(), Publi
     }
 }
 
+struct ReplaceSnapshot {
+    bytes: Vec<u8>,
+    permissions: PortablePermissions,
+    hard_link_count: u64,
+}
+
 fn inspect_replace_target(
     target: &Path,
     expected_preimage: &[u8],
     phase: PublishPhase,
-) -> Result<PortablePermissions, PublishError> {
+) -> Result<ReplaceSnapshot, PublishError> {
+    inspect_replace_target_against(target, expected_preimage, phase, None)
+}
+
+fn recheck_replace_target(
+    target: &Path,
+    initial: &ReplaceSnapshot,
+    phase: PublishPhase,
+) -> Result<(), PublishError> {
+    inspect_replace_target_against(target, &initial.bytes, phase, Some(initial)).map(|_| ())
+}
+
+fn inspect_replace_target_against(
+    target: &Path,
+    expected_preimage: &[u8],
+    phase: PublishPhase,
+    initial: Option<&ReplaceSnapshot>,
+) -> Result<ReplaceSnapshot, PublishError> {
     let metadata = match fs::symlink_metadata(target) {
         Ok(metadata) => metadata,
         Err(source) if source.kind() == ErrorKind::NotFound => {
@@ -611,13 +633,47 @@ fn inspect_replace_target(
         }));
     }
 
-    let current = fs::read(target).map_err(|source| PublishError::io(phase, target, source))?;
+    let mut file = File::open(target).map_err(|source| PublishError::io(phase, target, source))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|source| PublishError::io(phase, target, source))?;
+    let permissions = portable_permissions(&opened_metadata);
+    if permissions.readonly() {
+        return Err(PublishError::new(PublishErrorKind::ReadOnly {
+            target: target.to_path_buf(),
+        }));
+    }
+    let current_hard_link_count =
+        hard_link_count(&file).map_err(|source| PublishError::io(phase, target, source))?;
+    if current_hard_link_count != 1 {
+        return Err(PublishError::new(PublishErrorKind::MultipleHardLinks {
+            target: target.to_path_buf(),
+            count: current_hard_link_count,
+        }));
+    }
+
+    let mut current = Vec::new();
+    file.read_to_end(&mut current)
+        .map_err(|source| PublishError::io(phase, target, source))?;
     if current != expected_preimage {
         return Err(PublishError::new(PublishErrorKind::StalePreimage {
             target: target.to_path_buf(),
         }));
     }
-    Ok(portable_permissions(&metadata))
+    if initial.is_some_and(|snapshot| {
+        snapshot.hard_link_count != current_hard_link_count
+            || !snapshot.permissions.matches(&opened_metadata)
+    }) {
+        return Err(PublishError::new(PublishErrorKind::MetadataChanged {
+            target: target.to_path_buf(),
+        }));
+    }
+
+    Ok(ReplaceSnapshot {
+        bytes: current,
+        permissions,
+        hard_link_count: current_hard_link_count,
+    })
 }
 
 fn create_stage(
@@ -780,7 +836,15 @@ impl Drop for StageGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{publish, PublishEffect, PublishErrorKind, PublishMode, PublishRequest};
+    use super::{
+        prepare, publish, with_publication_locks, PublishEffect, PublishErrorKind, PublishMode,
+        PublishRequest,
+    };
+    use crate::infrastructure::platform::filesystem::{
+        metadata_is_link_or_reparse_point, portable_permissions, prepare_file_for_removal,
+        restrict_stage_to_owner,
+    };
+    use crate::infrastructure::platform::testing::create_file_symlink_for_test;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -878,6 +942,322 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), current);
         assert!(publication_debris(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replace_preserves_unix_mode_0600() {
+        let root = unique_temp_root("preserve-mode-0600");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        let replacement = b"replacement";
+        fs::write(&target, original).unwrap();
+        let target_file = fs::File::open(&target).unwrap();
+        restrict_stage_to_owner(&target_file).unwrap();
+        let original_permissions = portable_permissions(&target_file.metadata().unwrap());
+        drop(target_file);
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect("replacement must preserve the target permissions");
+
+        assert_eq!(report.effect, PublishEffect::Replaced);
+        assert_eq!(fs::read(&target).unwrap(), replacement);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_target_is_rejected_unchanged() {
+        let root = unique_temp_root("read-only");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        let target_file = fs::File::open(&target).unwrap();
+        restrict_stage_to_owner(&target_file).unwrap();
+        drop(target_file);
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: original,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect_err("read-only replacement target must be rejected");
+
+        assert!(matches!(error.kind(), PublishErrorKind::ReadOnly { .. }));
+        assert!(error.cleanup_warnings().is_empty());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        prepare_file_for_removal(&target).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn link_or_reparse_target_is_rejected_without_touching_referent() {
+        let root = unique_temp_root("link-or-reparse");
+        let referent = root.join("referent.bin");
+        let target = root.join("target.bin");
+        let original = b"referent bytes";
+        fs::write(&referent, original).unwrap();
+        let referent_permissions = portable_permissions(&fs::metadata(&referent).unwrap());
+        if !create_file_link_fixture(&referent, &target) {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let original_link = fs::read_link(&target).unwrap();
+        let target_permissions = portable_permissions(&fs::symlink_metadata(&target).unwrap());
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect_err("link or reparse-point replacement target must be rejected");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::LinkOrReparsePoint { .. }
+        ));
+        assert!(metadata_is_link_or_reparse_point(
+            &fs::symlink_metadata(&target).unwrap()
+        ));
+        assert_eq!(fs::read_link(&target).unwrap(), original_link);
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(fs::read(&referent).unwrap(), original);
+        assert!(target_permissions.matches(&fs::symlink_metadata(&target).unwrap()));
+        assert!(referent_permissions.matches(&fs::metadata(&referent).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writable_permission_change_before_commit_is_metadata_changed() {
+        let root = unique_temp_root("metadata-changed");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        let target_file = fs::File::open(&target).unwrap();
+        restrict_stage_to_owner(&target_file).unwrap();
+        drop(target_file);
+        let initial_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+        if !try_set_unix_mode_0640(&target)
+            || initial_permissions.matches(&fs::metadata(&target).unwrap())
+        {
+            eprintln!(
+                "[SKIPPED FIXTURE] this host cannot represent a writable 0600-to-0640 permission change"
+            );
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let target_file = fs::File::open(&target).unwrap();
+        restrict_stage_to_owner(&target_file).unwrap();
+        assert!(initial_permissions.matches(&target_file.metadata().unwrap()));
+        drop(target_file);
+
+        let result = with_publication_locks(std::slice::from_ref(&target), |lock| {
+            let prepared = prepare(
+                lock,
+                PublishRequest {
+                    target: &target,
+                    replacement: b"replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: original,
+                    },
+                },
+            )?;
+            assert!(
+                try_set_unix_mode_0640(&target),
+                "chmod 0640 fixture setup must keep succeeding after prepare"
+            );
+            prepared.commit()
+        })
+        .expect("publication lock acquisition must succeed");
+        let changed_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let error = result.expect_err("changed writable permissions must reject the commit");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::MetadataChanged { .. }
+        ));
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(changed_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn non_regular_target_is_rejected() {
+        let root = unique_temp_root("non-regular");
+        let target = root.join("target-directory");
+        let marker = target.join("marker.bin");
+        fs::create_dir(&target).unwrap();
+        fs::write(&marker, b"marker").unwrap();
+        let target_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: b"unused",
+            },
+        })
+        .expect_err("non-regular replacement target must be rejected");
+
+        assert!(matches!(error.kind(), PublishErrorKind::NonRegular { .. }));
+        assert!(target.is_dir());
+        assert_eq!(fs::read(&marker).unwrap(), b"marker");
+        assert!(target_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn multiple_hard_links_are_rejected() {
+        let root = unique_temp_root("multiple-hard-links");
+        let target = root.join("target.bin");
+        let alias = root.join("alias.bin");
+        let original = b"shared bytes";
+        fs::write(&target, original).unwrap();
+        fs::hard_link(&target, &alias).unwrap();
+        let target_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+        let alias_permissions = portable_permissions(&fs::metadata(&alias).unwrap());
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect_err("multiply-linked replacement target must be rejected");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::MultipleHardLinks { count: 2, .. }
+        ));
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(fs::read(&alias).unwrap(), original);
+        assert!(target_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert!(alias_permissions.matches(&fs::metadata(&alias).unwrap()));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_only_rejects_every_existing_target_kind() {
+        let root = unique_temp_root("create-only-existing-kinds");
+
+        let regular = root.join("regular.bin");
+        fs::write(&regular, b"regular").unwrap();
+        let regular_permissions = portable_permissions(&fs::metadata(&regular).unwrap());
+        assert_create_only_rejected(&regular);
+        assert_eq!(fs::read(&regular).unwrap(), b"regular");
+        assert!(regular_permissions.matches(&fs::metadata(&regular).unwrap()));
+
+        let directory = root.join("directory");
+        let marker = directory.join("marker.bin");
+        fs::create_dir(&directory).unwrap();
+        fs::write(&marker, b"marker").unwrap();
+        let directory_permissions = portable_permissions(&fs::metadata(&directory).unwrap());
+        assert_create_only_rejected(&directory);
+        assert_eq!(fs::read(&marker).unwrap(), b"marker");
+        assert!(directory_permissions.matches(&fs::metadata(&directory).unwrap()));
+
+        let hard_link = root.join("hard-link.bin");
+        let hard_link_alias = root.join("hard-link-alias.bin");
+        fs::write(&hard_link, b"hard-linked").unwrap();
+        fs::hard_link(&hard_link, &hard_link_alias).unwrap();
+        let hard_link_permissions = portable_permissions(&fs::metadata(&hard_link).unwrap());
+        assert_create_only_rejected(&hard_link);
+        assert_eq!(fs::read(&hard_link).unwrap(), b"hard-linked");
+        assert_eq!(fs::read(&hard_link_alias).unwrap(), b"hard-linked");
+        assert!(hard_link_permissions.matches(&fs::metadata(&hard_link).unwrap()));
+        assert!(hard_link_permissions.matches(&fs::metadata(&hard_link_alias).unwrap()));
+
+        let referent = root.join("referent.bin");
+        let link = root.join("link.bin");
+        fs::write(&referent, b"referent").unwrap();
+        let referent_permissions = portable_permissions(&fs::metadata(&referent).unwrap());
+        if create_file_link_fixture(&referent, &link) {
+            let original_link = fs::read_link(&link).unwrap();
+            let link_permissions = portable_permissions(&fs::symlink_metadata(&link).unwrap());
+            assert_create_only_rejected(&link);
+            assert!(metadata_is_link_or_reparse_point(
+                &fs::symlink_metadata(&link).unwrap()
+            ));
+            assert_eq!(fs::read_link(&link).unwrap(), original_link);
+            assert_eq!(fs::read(&link).unwrap(), b"referent");
+            assert_eq!(fs::read(&referent).unwrap(), b"referent");
+            assert!(link_permissions.matches(&fs::symlink_metadata(&link).unwrap()));
+            assert!(referent_permissions.matches(&fs::metadata(&referent).unwrap()));
+        }
+
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_create_only_rejected(target: &Path) {
+        let error = publish(PublishRequest {
+            target,
+            replacement: b"replacement",
+            mode: PublishMode::CreateOnly,
+        })
+        .expect_err("every existing target kind must fail create-only publication");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::AlreadyExists { .. }
+        ));
+        assert!(error.cleanup_warnings().is_empty());
+    }
+
+    fn create_file_link_fixture(referent: &Path, link: &Path) -> bool {
+        let Some(result) = create_file_symlink_for_test(referent, link) else {
+            eprintln!(
+                "[SKIPPED FIXTURE] this host does not expose a file-link test implementation"
+            );
+            return false;
+        };
+        match result {
+            Ok(()) => true,
+            Err(error)
+                if matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
+                    || error.raw_os_error() == Some(1314) =>
+            {
+                eprintln!(
+                    "[SKIPPED FIXTURE] host denied the privilege required to create a file link: {error}"
+                );
+                false
+            }
+            Err(error) => panic!("file-link fixture must be created: {error}"),
+        }
+    }
+
+    fn try_set_unix_mode_0640(path: &Path) -> bool {
+        let status = std::process::Command::new("chmod")
+            .arg("0640")
+            .arg(path)
+            .status();
+        match status {
+            Ok(status) => status.success(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("chmod 0640 fixture setup failed: {error}"),
+        }
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {
