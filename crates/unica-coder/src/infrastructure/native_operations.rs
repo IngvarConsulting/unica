@@ -12,6 +12,7 @@ pub(crate) mod meta;
 pub(crate) mod mxl;
 pub(crate) mod registry;
 pub(crate) mod role;
+pub(crate) mod single_file_publisher;
 pub(crate) mod skd;
 pub(crate) mod subsystem;
 pub(crate) mod support;

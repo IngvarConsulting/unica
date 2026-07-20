@@ -1,0 +1,904 @@
+//! Failure-atomic publication of one exact file payload.
+//!
+//! Publication locks coordinate Unica processes that use this protocol. They
+//! remain held from authoritative inspection through commit and cleanup. This
+//! module deliberately does not claim power-loss durability.
+
+use fs2::FileExt;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::ffi::OsString;
+use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+
+use crate::infrastructure::platform::filesystem::{
+    install_file_no_clobber, metadata_is_link_or_reparse_point, path_lock_identity,
+    portable_permissions, replace_file_atomically, restrict_stage_to_owner, PortablePermissions,
+};
+
+const STAGE_ATTEMPTS: usize = 16;
+static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static PUBLICATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PublishMode<'a> {
+    CreateOnly,
+    ReplaceExisting { expected_preimage: &'a [u8] },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublishRequest<'a> {
+    pub(crate) target: &'a Path,
+    pub(crate) replacement: &'a [u8],
+    pub(crate) mode: PublishMode<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishEffect {
+    Created,
+    Replaced,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PublishReport {
+    pub(crate) effect: PublishEffect,
+    pub(crate) cleanup_warnings: Vec<CleanupWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupWarning {
+    pub(crate) path: PathBuf,
+    pub(crate) message: String,
+}
+
+impl fmt::Display for CleanupWarning {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.path.display(), self.message)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PublishError {
+    kind: PublishErrorKind,
+    cleanup_warnings: Vec<CleanupWarning>,
+}
+
+impl PublishError {
+    fn new(kind: PublishErrorKind) -> Self {
+        Self {
+            kind,
+            cleanup_warnings: Vec::new(),
+        }
+    }
+
+    fn io(phase: PublishPhase, path: impl Into<PathBuf>, source: io::Error) -> Self {
+        Self::new(PublishErrorKind::Io {
+            phase,
+            path: path.into(),
+            source,
+        })
+    }
+
+    pub(crate) fn kind(&self) -> &PublishErrorKind {
+        &self.kind
+    }
+
+    pub(crate) fn cleanup_warnings(&self) -> &[CleanupWarning] {
+        &self.cleanup_warnings
+    }
+
+    fn attach_cleanup_warning(&mut self, warning: CleanupWarning) {
+        self.cleanup_warnings.push(warning);
+    }
+}
+
+impl fmt::Display for PublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            PublishErrorKind::InvalidTarget { target } => {
+                write!(
+                    formatter,
+                    "invalid publication target: {}",
+                    target.display()
+                )
+            }
+            PublishErrorKind::AlreadyExists { target } => write!(
+                formatter,
+                "create-only publication target already exists: {}",
+                target.display()
+            ),
+            PublishErrorKind::MissingTarget { target } => {
+                write!(
+                    formatter,
+                    "replacement target is missing: {}",
+                    target.display()
+                )
+            }
+            PublishErrorKind::LinkOrReparsePoint { target } => write!(
+                formatter,
+                "publication target is a link or reparse point: {}",
+                target.display()
+            ),
+            PublishErrorKind::NonRegular { target } => write!(
+                formatter,
+                "publication target is not a regular file: {}",
+                target.display()
+            ),
+            PublishErrorKind::ReadOnly { target } => {
+                write!(
+                    formatter,
+                    "publication target is read-only: {}",
+                    target.display()
+                )
+            }
+            PublishErrorKind::MultipleHardLinks { target, count } => write!(
+                formatter,
+                "publication target has {count} hard links: {}",
+                target.display()
+            ),
+            PublishErrorKind::StalePreimage { target } => write!(
+                formatter,
+                "publication target differs from the expected preimage: {}",
+                target.display()
+            ),
+            PublishErrorKind::MetadataChanged { target } => write!(
+                formatter,
+                "publication target metadata changed before commit: {}",
+                target.display()
+            ),
+            PublishErrorKind::StageCollisionsExhausted { target, attempts } => write!(
+                formatter,
+                "could not reserve a stage for {} after {attempts} attempts",
+                target.display()
+            ),
+            PublishErrorKind::Io {
+                phase,
+                path,
+                source,
+            } => write!(
+                formatter,
+                "publication I/O failed during {phase} for {}: {source}",
+                path.display()
+            ),
+        }?;
+        if !self.cleanup_warnings.is_empty() {
+            write!(formatter, "; cleanup warnings: ")?;
+            for (index, warning) in self.cleanup_warnings.iter().enumerate() {
+                if index > 0 {
+                    write!(formatter, "; ")?;
+                }
+                write!(formatter, "{warning}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Error for PublishError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.kind {
+            PublishErrorKind::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "policy variants are part of the typed contract and land in the next slice"
+)]
+pub(crate) enum PublishErrorKind {
+    InvalidTarget {
+        target: PathBuf,
+    },
+    AlreadyExists {
+        target: PathBuf,
+    },
+    MissingTarget {
+        target: PathBuf,
+    },
+    LinkOrReparsePoint {
+        target: PathBuf,
+    },
+    NonRegular {
+        target: PathBuf,
+    },
+    ReadOnly {
+        target: PathBuf,
+    },
+    MultipleHardLinks {
+        target: PathBuf,
+        count: u64,
+    },
+    StalePreimage {
+        target: PathBuf,
+    },
+    MetadataChanged {
+        target: PathBuf,
+    },
+    StageCollisionsExhausted {
+        target: PathBuf,
+        attempts: usize,
+    },
+    Io {
+        phase: PublishPhase,
+        path: PathBuf,
+        source: io::Error,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "cleanup phase is part of the typed contract for richer lifecycle handling"
+)]
+pub(crate) enum PublishPhase {
+    Inspect,
+    Lock,
+    Stage,
+    Write,
+    Flush,
+    Sync,
+    Permissions,
+    Validate,
+    Recheck,
+    Commit,
+    Cleanup,
+}
+
+impl fmt::Display for PublishPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Inspect => "inspect",
+            Self::Lock => "lock",
+            Self::Stage => "stage",
+            Self::Write => "write",
+            Self::Flush => "flush",
+            Self::Sync => "sync",
+            Self::Permissions => "permissions",
+            Self::Validate => "validate",
+            Self::Recheck => "recheck",
+            Self::Commit => "commit",
+            Self::Cleanup => "cleanup",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// Proof that the current callback owns the ordered lock set for these targets.
+pub(crate) struct PublicationLockToken<'scope> {
+    allowed_identities: HashSet<String>,
+    _scope: PhantomData<&'scope ()>,
+}
+
+/// Acquire process-local and cross-process advisory locks in stable order.
+pub(crate) fn with_publication_locks<T>(
+    targets: &[PathBuf],
+    action: impl FnOnce(&PublicationLockToken<'_>) -> T,
+) -> Result<T, PublishError> {
+    let mut identities = targets
+        .iter()
+        .map(|target| publication_identity(target))
+        .collect::<Result<Vec<_>, _>>()?;
+    identities.sort();
+    identities.dedup();
+
+    let process_locks = publication_process_locks(&identities);
+    let process_guards = process_locks
+        .iter()
+        .map(|lock| {
+            lock.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        })
+        .collect::<Vec<MutexGuard<'_, ()>>>();
+    let file_locks = acquire_publication_file_locks(&identities)?;
+    let token = PublicationLockToken {
+        allowed_identities: identities.into_iter().collect(),
+        _scope: PhantomData,
+    };
+
+    let result = action(&token);
+
+    // Both guard layers intentionally remain alive through the callback. Lock
+    // files are persistent because removing one races with existing waiters.
+    drop(file_locks);
+    drop(process_guards);
+    Ok(result)
+}
+
+pub(crate) enum PreparedPublication<'request, 'lock, 'scope> {
+    Unchanged,
+    Create(PreparedCreate<'request, 'lock, 'scope>),
+    Replace(PreparedReplace<'request, 'lock, 'scope>),
+}
+
+impl PreparedPublication<'_, '_, '_> {
+    pub(crate) fn commit(self) -> Result<PublishReport, PublishError> {
+        match self {
+            Self::Unchanged => Ok(PublishReport {
+                effect: PublishEffect::Unchanged,
+                cleanup_warnings: Vec::new(),
+            }),
+            Self::Create(prepared) => prepared.commit(),
+            Self::Replace(prepared) => prepared.commit(),
+        }
+    }
+
+    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
+    pub(crate) fn discard(self) -> Vec<CleanupWarning> {
+        match self {
+            Self::Unchanged => Vec::new(),
+            Self::Create(prepared) => prepared.discard(),
+            Self::Replace(prepared) => prepared.discard(),
+        }
+    }
+}
+
+pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
+    target: &'request Path,
+    _lock: &'lock PublicationLockToken<'scope>,
+    stage: StageGuard,
+}
+
+impl PreparedCreate<'_, '_, '_> {
+    pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
+        inspect_create_target(self.target, PublishPhase::Recheck)?;
+        if let Err(source) = install_file_no_clobber(&self.stage.path, self.target) {
+            let mut error = if source.kind() == ErrorKind::AlreadyExists {
+                PublishError::new(PublishErrorKind::AlreadyExists {
+                    target: self.target.to_path_buf(),
+                })
+            } else {
+                PublishError::io(PublishPhase::Commit, self.target, source)
+            };
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
+
+        let cleanup_warnings = self.stage.cleanup().err().into_iter().collect();
+        Ok(PublishReport {
+            effect: PublishEffect::Created,
+            cleanup_warnings,
+        })
+    }
+
+    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
+    pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
+        self.stage.cleanup().err().into_iter().collect()
+    }
+}
+
+pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
+    target: &'request Path,
+    expected_preimage: &'request [u8],
+    permissions: PortablePermissions,
+    _lock: &'lock PublicationLockToken<'scope>,
+    stage: StageGuard,
+}
+
+impl PreparedReplace<'_, '_, '_> {
+    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
+    pub(crate) fn portable_permissions(&self) -> &PortablePermissions {
+        &self.permissions
+    }
+
+    pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
+        inspect_replace_target(self.target, self.expected_preimage, PublishPhase::Recheck)?;
+        if let Err(source) = replace_file_atomically(&self.stage.path, self.target) {
+            let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
+            attach_stage_cleanup(&mut error, &mut self.stage);
+            return Err(error);
+        }
+        self.stage.disarm();
+        Ok(PublishReport {
+            effect: PublishEffect::Replaced,
+            cleanup_warnings: Vec::new(),
+        })
+    }
+
+    #[allow(dead_code, reason = "used by the upcoming transaction integration")]
+    pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
+        self.stage.cleanup().err().into_iter().collect()
+    }
+}
+
+pub(crate) fn prepare<'request, 'lock, 'scope>(
+    lock: &'lock PublicationLockToken<'scope>,
+    request: PublishRequest<'request>,
+) -> Result<PreparedPublication<'request, 'lock, 'scope>, PublishError> {
+    let identity = publication_identity(request.target)?;
+    if !lock.allowed_identities.contains(&identity) {
+        return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+            target: request.target.to_path_buf(),
+        }));
+    }
+
+    match request.mode {
+        PublishMode::CreateOnly => {
+            inspect_create_target(request.target, PublishPhase::Inspect)?;
+            let stage = create_stage(request.target, request.replacement, None)?;
+            Ok(PreparedPublication::Create(PreparedCreate {
+                target: request.target,
+                _lock: lock,
+                stage,
+            }))
+        }
+        PublishMode::ReplaceExisting { expected_preimage } => {
+            let permissions =
+                inspect_replace_target(request.target, expected_preimage, PublishPhase::Inspect)?;
+            if expected_preimage == request.replacement {
+                return Ok(PreparedPublication::Unchanged);
+            }
+            let stage = create_stage(request.target, request.replacement, Some(&permissions))?;
+            Ok(PreparedPublication::Replace(PreparedReplace {
+                target: request.target,
+                expected_preimage,
+                permissions,
+                _lock: lock,
+                stage,
+            }))
+        }
+    }
+}
+
+pub(crate) fn publish(request: PublishRequest<'_>) -> Result<PublishReport, PublishError> {
+    with_publication_locks(&[request.target.to_path_buf()], |lock| {
+        prepare(lock, request)?.commit()
+    })?
+}
+
+fn publication_identity(target: &Path) -> Result<String, PublishError> {
+    let Some(file_name) = target.file_name() else {
+        return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+            target: target.to_path_buf(),
+        }));
+    };
+    if file_name.is_empty() {
+        return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+            target: target.to_path_buf(),
+        }));
+    }
+
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical_parent = match fs::canonicalize(parent) {
+        Ok(path) => path,
+        Err(source)
+            if matches!(
+                source.kind(),
+                ErrorKind::NotFound | ErrorKind::NotADirectory
+            ) =>
+        {
+            return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+                target: target.to_path_buf(),
+            }));
+        }
+        Err(source) => return Err(PublishError::io(PublishPhase::Inspect, parent, source)),
+    };
+    let parent_metadata = fs::metadata(&canonical_parent)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, &canonical_parent, source))?;
+    if !parent_metadata.is_dir() {
+        return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+            target: target.to_path_buf(),
+        }));
+    }
+
+    Ok(path_lock_identity(&canonical_parent.join(file_name)))
+}
+
+fn publication_process_locks(identities: &[String]) -> Vec<Arc<Mutex<()>>> {
+    let registry = PUBLICATION_PROCESS_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    registry.retain(|_, lock| lock.strong_count() > 0);
+    identities
+        .iter()
+        .map(|identity| {
+            if let Some(lock) = registry.get(identity).and_then(Weak::upgrade) {
+                return lock;
+            }
+            let lock = Arc::new(Mutex::new(()));
+            registry.insert(identity.clone(), Arc::downgrade(&lock));
+            lock
+        })
+        .collect()
+}
+
+fn acquire_publication_file_locks(identities: &[String]) -> Result<Vec<File>, PublishError> {
+    identities
+        .iter()
+        .map(|identity| {
+            let path = publication_lock_path(identity);
+            let file = open_publication_lock_file(&path)?;
+            FileExt::lock_exclusive(&file)
+                .map_err(|source| PublishError::io(PublishPhase::Lock, &path, source))?;
+            Ok(file)
+        })
+        .collect()
+}
+
+fn publication_lock_path(identity: &str) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-single-file-publication-lock-v1\0");
+    hasher.update(identity.as_bytes());
+    std::env::temp_dir()
+        .join("unica-single-file-publication-locks-v1")
+        .join(format!("{:x}.lock", hasher.finalize()))
+}
+
+fn open_publication_lock_file(path: &Path) -> Result<File, PublishError> {
+    let parent = path.parent().ok_or_else(|| {
+        PublishError::new(PublishErrorKind::InvalidTarget {
+            target: path.to_path_buf(),
+        })
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|source| PublishError::io(PublishPhase::Lock, parent, source))?;
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => Ok(file),
+        Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(path)
+                .map_err(|source| PublishError::io(PublishPhase::Lock, path, source))?;
+            if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+                return Err(PublishError::io(
+                    PublishPhase::Lock,
+                    path,
+                    io::Error::new(
+                        ErrorKind::InvalidData,
+                        "publication lock is not a regular file",
+                    ),
+                ));
+            }
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|source| PublishError::io(PublishPhase::Lock, path, source))
+        }
+        Err(source) => Err(PublishError::io(PublishPhase::Lock, path, source)),
+    }
+}
+
+fn inspect_create_target(target: &Path, phase: PublishPhase) -> Result<(), PublishError> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => Err(PublishError::new(PublishErrorKind::AlreadyExists {
+            target: target.to_path_buf(),
+        })),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PublishError::io(phase, target, source)),
+    }
+}
+
+fn inspect_replace_target(
+    target: &Path,
+    expected_preimage: &[u8],
+    phase: PublishPhase,
+) -> Result<PortablePermissions, PublishError> {
+    let metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == ErrorKind::NotFound => {
+            return Err(PublishError::new(PublishErrorKind::MissingTarget {
+                target: target.to_path_buf(),
+            }));
+        }
+        Err(source) => return Err(PublishError::io(phase, target, source)),
+    };
+    if metadata_is_link_or_reparse_point(&metadata) {
+        return Err(PublishError::new(PublishErrorKind::LinkOrReparsePoint {
+            target: target.to_path_buf(),
+        }));
+    }
+    if !metadata.is_file() {
+        return Err(PublishError::new(PublishErrorKind::NonRegular {
+            target: target.to_path_buf(),
+        }));
+    }
+
+    let current = fs::read(target).map_err(|source| PublishError::io(phase, target, source))?;
+    if current != expected_preimage {
+        return Err(PublishError::new(PublishErrorKind::StalePreimage {
+            target: target.to_path_buf(),
+        }));
+    }
+    Ok(portable_permissions(&metadata))
+}
+
+fn create_stage(
+    target: &Path,
+    replacement: &[u8],
+    final_permissions: Option<&PortablePermissions>,
+) -> Result<StageGuard, PublishError> {
+    for attempt in 1..=STAGE_ATTEMPTS {
+        let path = next_stage_path(target);
+        let open = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        let mut file = match open {
+            Ok(file) => file,
+            Err(source)
+                if source.kind() == ErrorKind::AlreadyExists && attempt < STAGE_ATTEMPTS =>
+            {
+                continue;
+            }
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+                return Err(PublishError::new(
+                    PublishErrorKind::StageCollisionsExhausted {
+                        target: target.to_path_buf(),
+                        attempts: STAGE_ATTEMPTS,
+                    },
+                ));
+            }
+            Err(source) => return Err(PublishError::io(PublishPhase::Stage, &path, source)),
+        };
+        let mut stage = StageGuard::new(path.clone());
+        let result = initialize_stage(&mut file, &path, replacement, final_permissions);
+        drop(file);
+        match result {
+            Ok(()) => return Ok(stage),
+            Err(mut error) => {
+                attach_stage_cleanup(&mut error, &mut stage);
+                return Err(error);
+            }
+        }
+    }
+    Err(PublishError::new(
+        PublishErrorKind::StageCollisionsExhausted {
+            target: target.to_path_buf(),
+            attempts: STAGE_ATTEMPTS,
+        },
+    ))
+}
+
+fn initialize_stage(
+    file: &mut File,
+    path: &Path,
+    replacement: &[u8],
+    final_permissions: Option<&PortablePermissions>,
+) -> Result<(), PublishError> {
+    let process_default_permissions = file
+        .metadata()
+        .map(|metadata| portable_permissions(&metadata))
+        .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
+    restrict_stage_to_owner(file)
+        .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
+    file.write_all(replacement)
+        .map_err(|source| PublishError::io(PublishPhase::Write, path, source))?;
+    file.flush()
+        .map_err(|source| PublishError::io(PublishPhase::Flush, path, source))?;
+    file.sync_all()
+        .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
+    final_permissions
+        .unwrap_or(&process_default_permissions)
+        .apply_to(file)
+        .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
+    file.sync_all()
+        .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
+    let mut actual = Vec::with_capacity(replacement.len());
+    file.read_to_end(&mut actual)
+        .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
+    if actual != replacement {
+        return Err(PublishError::io(
+            PublishPhase::Validate,
+            path,
+            io::Error::new(
+                ErrorKind::InvalidData,
+                "staged bytes differ from replacement",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn next_stage_path(target: &Path) -> PathBuf {
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut name = OsString::from(".");
+    name.push(
+        target
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("publication")),
+    );
+    name.push(format!(
+        ".unica-stage-{}-{}",
+        std::process::id(),
+        STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    parent.join(name)
+}
+
+fn attach_stage_cleanup(error: &mut PublishError, stage: &mut StageGuard) {
+    if let Err(warning) = stage.cleanup() {
+        error.attach_cleanup_warning(warning);
+    }
+}
+
+struct StageGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StageGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn cleanup(&mut self) -> Result<(), CleanupWarning> {
+        if !self.armed {
+            return Ok(());
+        }
+        match fs::remove_file(&self.path) {
+            Ok(()) => {
+                self.armed = false;
+                Ok(())
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                self.armed = false;
+                Ok(())
+            }
+            Err(error) => Err(CleanupWarning {
+                path: self.path.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{publish, PublishEffect, PublishErrorKind, PublishMode, PublishRequest};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn create_only_publishes_exact_bytes_and_returns_created() {
+        let root = unique_temp_root("create-only");
+        let target = root.join("created.bin");
+        let replacement = b"\0exact\r\nbytes\xff";
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement,
+            mode: PublishMode::CreateOnly,
+        })
+        .expect("create-only publication must succeed");
+
+        assert_eq!(report.effect, PublishEffect::Created);
+        assert!(report.cleanup_warnings.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), replacement);
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replace_existing_publishes_exact_bytes_and_returns_replaced() {
+        let root = unique_temp_root("replace-existing");
+        let target = root.join("existing.bin");
+        let original = b"original\r\nbytes";
+        let replacement = b"replacement\0bytes\xff";
+        fs::write(&target, original).unwrap();
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect("replacement publication must succeed");
+
+        assert_eq!(report.effect, PublishEffect::Replaced);
+        assert!(report.cleanup_warnings.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), replacement);
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn identical_replacement_returns_unchanged_without_staging() {
+        let root = unique_temp_root("unchanged");
+        let target = root.join("existing.bin");
+        let original = b"already exact";
+        fs::write(&target, original).unwrap();
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement: original,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect("identical replacement must be a successful no-op");
+
+        assert_eq!(report.effect, PublishEffect::Unchanged);
+        assert!(report.cleanup_warnings.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_preimage_is_rejected_before_staging() {
+        let root = unique_temp_root("stale-preimage");
+        let target = root.join("existing.bin");
+        let current = b"concurrent bytes";
+        fs::write(&target, current).unwrap();
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: b"stale bytes",
+            },
+        })
+        .expect_err("stale preimage must be rejected");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::StalePreimage { .. }
+        ));
+        assert!(error.cleanup_warnings().is_empty());
+        assert_eq!(fs::read(&target).unwrap(), current);
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn unique_temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-single-file-publisher-{name}-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn publication_debris(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".unica-stage-"))
+            })
+            .collect()
+    }
+}
