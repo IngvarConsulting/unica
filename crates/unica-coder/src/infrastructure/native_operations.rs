@@ -18,8 +18,7 @@ pub(crate) mod subsystem;
 pub(crate) mod support;
 pub(crate) mod template;
 
-use crate::application::AdapterOutcome;
-use crate::domain::workspace::WorkspaceContext;
+use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};
 use std::fs;
 
