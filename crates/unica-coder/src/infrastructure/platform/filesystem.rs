@@ -4,6 +4,93 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+#[derive(Debug, Clone)]
+pub(crate) struct PortablePermissions {
+    permissions: fs::Permissions,
+    key: u32,
+}
+
+impl PortablePermissions {
+    pub(crate) fn readonly(&self) -> bool {
+        self.permissions.readonly()
+    }
+
+    pub(crate) fn matches(&self, metadata: &fs::Metadata) -> bool {
+        self.key == portable_permission_key(metadata)
+    }
+
+    pub(crate) fn apply_to(&self, file: &fs::File) -> io::Result<()> {
+        file.set_permissions(self.permissions.clone())
+    }
+}
+
+pub(crate) fn portable_permissions(metadata: &fs::Metadata) -> PortablePermissions {
+    PortablePermissions {
+        permissions: metadata.permissions(),
+        key: portable_permission_key(metadata),
+    }
+}
+
+#[cfg(unix)]
+fn portable_permission_key(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn portable_permission_key(metadata: &fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
+#[cfg(unix)]
+pub(crate) fn restrict_stage_to_owner(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_stage_to_owner(_file: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(file.metadata()?.nlink())
+}
+
+#[cfg(windows)]
+pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the file owns a valid handle and `information` is writable for this call.
+    let succeeded = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(u64::from(information.nNumberOfLinks))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn hard_link_count(_file: &fs::File) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "hard-link count is not available on this host",
+    ))
+}
+
+pub(crate) fn install_file_no_clobber(source: &Path, target: &Path) -> io::Result<()> {
+    fs::hard_link(source, target)
+}
+
 #[cfg(windows)]
 pub(crate) fn host_path_text(path: String) -> String {
     path.replace('\\', "/")
@@ -208,9 +295,91 @@ fn path_lock_identity_text(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::path_lock_identity_text;
+    use std::fs;
+    use std::io;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    fn unique_temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "unica-filesystem-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn no_clobber_install_never_replaces_an_existing_target() {
+        use super::install_file_no_clobber;
+
+        let root = unique_temp_root("no-clobber-install");
+        fs::create_dir_all(&root).unwrap();
+        let staged = root.join("staged");
+        let target = root.join("target");
+        fs::write(&staged, b"replacement").unwrap();
+        fs::write(&target, b"original").unwrap();
+
+        let error = install_file_no_clobber(&staged, &target).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&staged).unwrap(), b"replacement");
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn hard_link_count_observes_a_second_name() {
+        use super::hard_link_count;
+
+        let root = unique_temp_root("hard-link-count");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target");
+        let alias = root.join("alias");
+        fs::write(&target, b"content").unwrap();
+        fs::hard_link(&target, &alias).unwrap();
+
+        let target_file = fs::File::open(&target).unwrap();
+
+        assert_eq!(hard_link_count(&target_file).unwrap(), 2);
+
+        drop(target_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_permissions_round_trip_mode_0600() {
+        use super::{portable_permissions, restrict_stage_to_owner};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_temp_root("portable-permissions");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let staged = root.join("staged");
+        fs::write(&source, b"source").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        let expected = portable_permissions(&fs::metadata(&source).unwrap());
+        let staged_file = fs::File::create(&staged).unwrap();
+
+        assert!(!expected.readonly());
+        restrict_stage_to_owner(&staged_file).unwrap();
+        expected.apply_to(&staged_file).unwrap();
+        let staged_metadata = staged_file.metadata().unwrap();
+
+        assert!(expected.matches(&staged_metadata));
+        assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o600);
+
+        drop(staged_file);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn lock_identity_follows_host_case_policy() {
