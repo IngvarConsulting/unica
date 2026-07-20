@@ -19,6 +19,56 @@ def load_build_module():
 
 
 class BuildUnicaToolsTests(unittest.TestCase):
+    def assert_external_toolchain_contract(self, external_tools: list[dict]) -> None:
+        expected_names = {
+            "bsl-analyzer",
+            "v8-runner",
+            "rlm-tools-bsl",
+            "rlm-bsl-index",
+        }
+        self.assertEqual({tool["name"] for tool in external_tools}, expected_names)
+
+        tags_by_source: dict[tuple[str, str, str], str] = {}
+        for tool in external_tools:
+            source_identity = (
+                tool["repository"],
+                tool["sourceTag"],
+                tool["sourceCommit"],
+            )
+            release_tag, separator, build_revision = tool["assetTag"].rpartition("-build.")
+            self.assertEqual(separator, "-build.")
+            self.assertRegex(build_revision, r"^[1-9][0-9]*$")
+
+            source_suffix = f"-{tool['sourceTag']}"
+            self.assertTrue(release_tag.endswith(source_suffix))
+            release_name = release_tag[: -len(source_suffix)]
+            self.assertTrue(
+                any(
+                    candidate["name"] == release_name
+                    and (
+                        candidate["repository"],
+                        candidate["sourceTag"],
+                        candidate["sourceCommit"],
+                    )
+                    == source_identity
+                    for candidate in external_tools
+                )
+            )
+
+            existing_tag = tags_by_source.setdefault(source_identity, tool["assetTag"])
+            self.assertEqual(tool["assetTag"], existing_tag)
+            self.assertEqual(tool["assetStrategy"], "direct-release-asset")
+            self.assertEqual(
+                tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
+            )
+            for target, asset in tool["assets"].items():
+                exe = ".exe" if target == "win-x64" else ""
+                self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
+                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+                self.assertNotIn("archiveBinary", asset)
+
+        self.assertEqual(len(set(tags_by_source.values())), len(tags_by_source))
+
     def test_release_asset_url_can_differ_from_upstream_source(self) -> None:
         module = load_build_module()
 
@@ -46,25 +96,17 @@ class BuildUnicaToolsTests(unittest.TestCase):
             )
         )
         external_tools = [tool for tool in lock["tools"] if tool["name"] != "unica"]
-        expected_tags = {
-            "bsl-analyzer": "bsl-analyzer-v0.2.55-build.1",
-            "v8-runner": "v8-runner-v0.5.1-build.1",
-            "rlm-tools-bsl": "rlm-tools-bsl-v1.26.0-build.3",
-            "rlm-bsl-index": "rlm-tools-bsl-v1.26.0-build.3",
-        }
+        self.assert_external_toolchain_contract(external_tools)
 
-        self.assertEqual({tool["name"] for tool in external_tools}, set(expected_tags))
-        for tool in external_tools:
-            self.assertEqual(tool["assetStrategy"], "direct-release-asset")
-            self.assertEqual(
-                tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
-            )
-            self.assertEqual(tool["assetTag"], expected_tags[tool["name"]])
-            for target, asset in tool["assets"].items():
-                exe = ".exe" if target == "win-x64" else ""
-                self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
-                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
-                self.assertNotIn("archiveBinary", asset)
+        updated_tools = json.loads(json.dumps(external_tools))
+        for tool in updated_tools:
+            version = tool["sourceTag"].removeprefix("v").split(".")
+            version[-1] = str(int(version[-1]) + 1)
+            tool["sourceTag"] = f"v{'.'.join(version)}"
+            release_name = tool["assetTag"].rsplit("-v", 1)[0]
+            build_revision = int(tool["assetTag"].rsplit("-build.", 1)[1]) + 1
+            tool["assetTag"] = f"{release_name}-{tool['sourceTag']}-build.{build_revision}"
+        self.assert_external_toolchain_contract(updated_tools)
 
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()
