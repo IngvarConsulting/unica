@@ -9882,7 +9882,8 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
         let changed = serialized_bytes != original_bytes;
         if changed {
-            super::common::atomic_replace(&object_path, &serialized_bytes)?;
+            fs::write(&object_path, &serialized_bytes)
+                .map_err(|err| format!("failed to write {}: {err}", object_path.display()))?;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else {
             counts = MetaEditCounts::default();

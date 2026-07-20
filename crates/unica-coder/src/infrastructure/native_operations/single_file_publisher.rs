@@ -49,10 +49,6 @@ pub(crate) struct PublishRequest<'a> {
 pub(crate) enum PublishEffect {
     Created,
     Replaced,
-    #[allow(
-        dead_code,
-        reason = "constructed by the high-level cf-edit consumer added in Task 6"
-    )]
     Unchanged,
 }
 
@@ -446,10 +442,6 @@ pub(crate) enum PreparedPublication<'request, 'lock, 'scope> {
 }
 
 impl PreparedPublication<'_, '_, '_> {
-    #[allow(
-        dead_code,
-        reason = "used by the high-level cf-edit consumer added in Task 6"
-    )]
     pub(crate) fn commit(self) -> Result<PublishReport, PublishError> {
         match self {
             Self::Unchanged => Ok(PublishReport {
@@ -602,10 +594,6 @@ pub(crate) fn prepare<'request, 'lock, 'scope>(
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the high-level cf-edit consumer added in Task 6"
-)]
 pub(crate) fn publish(request: PublishRequest<'_>) -> Result<PublishReport, PublishError> {
     with_publication_locks(&[request.target.to_path_buf()], |lock| {
         prepare(lock, request)?.commit()

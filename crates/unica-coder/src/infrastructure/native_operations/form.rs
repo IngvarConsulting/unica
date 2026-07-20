@@ -4940,7 +4940,7 @@ pub(crate) fn form_edit_write_preserving_bom(
         bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
     }
     bytes.extend_from_slice(xml_text.as_bytes());
-    super::common::atomic_replace(path, &bytes)
+    fs::write(path, bytes).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
 pub(crate) fn form_edit_form_name(path: &Path) -> String {

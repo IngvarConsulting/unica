@@ -5,10 +5,9 @@ use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*,
@@ -157,13 +156,23 @@ pub(crate) fn register_form_in_object_text(text: &str, form_name: &str) -> Strin
     text.to_string()
 }
 
+pub(crate) struct Utf8TextSnapshot {
+    pub(crate) raw: Vec<u8>,
+    pub(crate) text: String,
+}
+
+pub(crate) fn read_utf8_sig_snapshot(path: &Path) -> Result<Utf8TextSnapshot, String> {
+    let raw =
+        fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let text = std::str::from_utf8(&raw)
+        .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?
+        .trim_start_matches('\u{feff}')
+        .to_string();
+    Ok(Utf8TextSnapshot { raw, text })
+}
+
 pub(crate) fn read_utf8_sig(path: &Path) -> Result<String, String> {
-    let mut text = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    while text.starts_with('\u{feff}') {
-        text.remove(0);
-    }
-    Ok(text)
+    read_utf8_sig_snapshot(path).map(|snapshot| snapshot.text)
 }
 
 pub(crate) fn ensure_trailing_newline(mut text: String) -> String {
@@ -1253,39 +1262,19 @@ pub(crate) fn output_dir_arg(
 }
 
 pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
+    let bytes = utf8_bom_bytes(content);
+    let mut file = File::create(path)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+pub(crate) fn utf8_bom_bytes(content: &str) -> Vec<u8> {
     let content = content.trim_start_matches('\u{feff}');
     let mut bytes = Vec::with_capacity(content.len() + 3);
     bytes.extend_from_slice(b"\xef\xbb\xbf");
     bytes.extend_from_slice(content.as_bytes());
-    atomic_replace(path, &bytes)
-}
-
-/// Publish bytes through a sibling staging file. No target is opened for writing
-/// until the complete replacement has been synced successfully.
-pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let staged = path.with_file_name(format!(
-        ".{}.unica-stage-{}-{nonce}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("unica-output"),
-        std::process::id()
-    ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)
-        .map_err(|error| format!("create staging file for {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| format!("write staging file for {}: {error}", path.display()))?;
-    fs::rename(&staged, path).map_err(|error| {
-        let _ = fs::remove_file(&staged);
-        format!("publish replacement for {}: {error}", path.display())
-    })
+    bytes
 }
 
 pub(crate) fn stable_uuid(index: usize) -> String {
@@ -1294,30 +1283,38 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 
 #[cfg(test)]
 mod mutation_tests {
-    use super::write_utf8_bom;
+    use super::{read_utf8_sig_snapshot, utf8_bom_bytes};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn writer_publishes_exactly_one_bom_for_existing_and_new_files() {
+    fn utf8_bom_bytes_emits_exactly_one_bom() {
+        assert_eq!(utf8_bom_bytes("<xml/>"), b"\xef\xbb\xbf<xml/>");
+        assert_eq!(
+            utf8_bom_bytes("\u{feff}\u{feff}<xml/>"),
+            b"\xef\xbb\xbf<xml/>"
+        );
+    }
+
+    #[test]
+    fn utf8_snapshot_keeps_raw_preimage_and_decodes_text_without_bom() {
         let root = std::env::temp_dir().join(format!(
-            "unica-common-mutation-{}",
+            "unica-common-snapshot-{}-{}",
+            std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
-        let without_bom = root.join("without-bom.xml");
-        fs::write(&without_bom, b"<before/>").unwrap();
-        write_utf8_bom(&without_bom, "<after/>").unwrap();
-        assert_eq!(fs::read(&without_bom).unwrap(), b"\xef\xbb\xbf<after/>");
+        let path = root.join("Configuration.xml");
+        let raw = b"\xef\xbb\xbf<xml/>\r\n";
+        fs::write(&path, raw).unwrap();
 
-        let new_file = root.join("new.xml");
-        write_utf8_bom(&new_file, "<new/>").unwrap();
-        assert_eq!(fs::read(&new_file).unwrap(), b"\xef\xbb\xbf<new/>");
-        write_utf8_bom(&new_file, "\u{feff}<rewritten/>").unwrap();
-        assert_eq!(fs::read(&new_file).unwrap(), b"\xef\xbb\xbf<rewritten/>");
+        let snapshot = read_utf8_sig_snapshot(&path).unwrap();
+
+        assert_eq!(snapshot.raw, raw);
+        assert_eq!(snapshot.text, "<xml/>\r\n");
         fs::remove_dir_all(root).unwrap();
     }
 }
