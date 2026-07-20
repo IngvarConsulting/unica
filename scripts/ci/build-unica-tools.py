@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -72,62 +73,46 @@ def assert_host(target: str, targets: dict) -> None:
         raise SystemExit(f"target {target} must be built on {expected}; current runner is {actual}")
 
 
-def build_cargo_workspace_tool(
-    tool: dict,
-    repo_root: Path,
-    target_dir: Path,
-    out_dir: Path,
-    exe: str,
-) -> Path:
-    package = tool["cargoPackage"]
-    binary_name = tool.get("cargoBin", tool["binaryName"])
-    run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--package",
-            package,
-            "--bin",
-            binary_name,
-            "--target-dir",
-            str(target_dir),
-        ],
-        cwd=repo_root,
-    )
-
-    produced = target_dir / "release" / f"{binary_name}{exe}"
-    if not produced.exists():
-        raise SystemExit(f"cargo build output not found: {produced}")
-
-    dest = out_dir / f"{tool['binaryName']}{exe}"
-    shutil.copy2(produced, dest)
-    return dest
-
-
-def build_bootstrap(
+def build_cargo_workspace_binaries(
+    cargo_tools: list[dict],
     *,
     repo_root: Path,
     target_dir: Path,
+    target_bin_dir: Path,
     bundle_root: Path,
     target: str,
     exe: str,
-) -> Path:
-    """Build package infrastructure without exposing it as a runtime tool."""
-    run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--package",
-            "unica-bootstrap",
-            "--bin",
-            "unica-bootstrap",
-            "--target-dir",
-            str(target_dir),
-        ],
-        cwd=repo_root,
+) -> tuple[dict[str, Path], Path, float]:
+    """Build runtime and package infrastructure in one locked Cargo invocation."""
+    packages = list(dict.fromkeys([tool["cargoPackage"] for tool in cargo_tools]))
+    packages.append("unica-bootstrap")
+    binary_names = list(
+        dict.fromkeys([tool.get("cargoBin", tool["binaryName"]) for tool in cargo_tools])
     )
+    binary_names.append("unica-bootstrap")
+
+    command = ["cargo", "build", "--release", "--locked"]
+    for package in packages:
+        command.extend(["--package", package])
+    for binary_name in binary_names:
+        command.extend(["--bin", binary_name])
+    command.extend(["--target-dir", str(target_dir)])
+
+    started_at = time.monotonic()
+    run(command, cwd=repo_root)
+    cargo_build_seconds = time.monotonic() - started_at
+
+    target_bin_dir.mkdir(parents=True, exist_ok=True)
+    built_paths: dict[str, Path] = {}
+    for tool in cargo_tools:
+        binary_name = tool.get("cargoBin", tool["binaryName"])
+        produced = target_dir / "release" / f"{binary_name}{exe}"
+        if not produced.exists():
+            raise SystemExit(f"cargo build output not found: {produced}")
+        destination = target_bin_dir / f"{tool['binaryName']}{exe}"
+        shutil.copy2(produced, destination)
+        built_paths[tool["name"]] = destination
+
     produced = target_dir / "release" / f"unica-bootstrap{exe}"
     if not produced.exists():
         raise SystemExit(f"cargo build output not found: {produced}")
@@ -137,7 +122,28 @@ def build_bootstrap(
     shutil.copy2(produced, destination)
     if not destination.name.endswith(".exe"):
         destination.chmod(destination.stat().st_mode | 0o755)
-    return destination
+    return built_paths, destination, cargo_build_seconds
+
+
+def write_build_metrics(
+    path: Path,
+    *,
+    target: str,
+    cargo_build_seconds: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "target": target,
+                "cargoBuildSeconds": round(cargo_build_seconds, 3),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def tool_entry(
@@ -178,6 +184,7 @@ def main() -> None:
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, default=Path(".build/unica-tools"))
+    parser.add_argument("--metrics-file", type=Path)
     args = parser.parse_args()
 
     lock = load_lock(args.lock_file)
@@ -195,6 +202,7 @@ def main() -> None:
     downloads_dir.mkdir(parents=True, exist_ok=True)
 
     built_paths: dict[str, Path] = {}
+    cargo_tools: list[dict] = []
     for tool in lock["tools"]:
         strategy = tool["assetStrategy"]
         dest = target_bin_dir / f"{tool['binaryName']}{exe}"
@@ -209,17 +217,29 @@ def main() -> None:
             verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
             shutil.copy2(downloaded, dest)
         elif strategy == "cargo-workspace":
-            dest = build_cargo_workspace_tool(
-                tool,
-                args.repo_root.resolve(),
-                args.work_dir / args.target / "cargo-target",
-                target_bin_dir,
-                exe,
-            )
+            cargo_tools.append(tool)
+            continue
         else:
             raise SystemExit(f"unsupported assetStrategy for {tool['name']}: {strategy}")
 
         built_paths[tool["name"]] = dest
+
+    cargo_paths, _, cargo_build_seconds = build_cargo_workspace_binaries(
+        cargo_tools,
+        repo_root=args.repo_root.resolve(),
+        target_dir=args.work_dir / args.target / "cargo-target",
+        target_bin_dir=target_bin_dir,
+        bundle_root=args.out_dir,
+        target=args.target,
+        exe=exe,
+    )
+    built_paths.update(cargo_paths)
+    if args.metrics_file is not None:
+        write_build_metrics(
+            args.metrics_file,
+            target=args.target,
+            cargo_build_seconds=cargo_build_seconds,
+        )
 
     for path in target_bin_dir.iterdir():
         if path.is_file() and not path.name.endswith(".exe"):
@@ -240,14 +260,6 @@ def main() -> None:
         )
         for tool in lock["tools"]
     ]
-
-    build_bootstrap(
-        repo_root=args.repo_root.resolve(),
-        target_dir=args.work_dir / args.target / "bootstrap-cargo-target",
-        bundle_root=args.out_dir,
-        target=args.target,
-        exe=exe,
-    )
 
     (args.out_dir / "tools.json").write_text(
         json.dumps(
