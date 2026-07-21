@@ -258,16 +258,16 @@ pub(crate) enum PublishPhase {
     Validate,
     Recheck,
     Commit,
-    Cleanup,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PublishFailpoint {
+pub(crate) enum PublishCheckpoint {
+    PermissionsBeforeWrite,
     Write,
     Flush,
-    Sync,
-    Permissions,
+    SyncBeforePermissions,
+    PermissionsAfterWrite,
+    SyncAfterPermissions,
     Validate,
     Recheck,
     Commit,
@@ -275,17 +275,17 @@ pub(crate) enum PublishFailpoint {
 }
 
 #[cfg(test)]
-impl PublishFailpoint {
-    fn phase(self) -> PublishPhase {
+impl PublishCheckpoint {
+    fn label(self) -> &'static str {
         match self {
-            Self::Write => PublishPhase::Write,
-            Self::Flush => PublishPhase::Flush,
-            Self::Sync => PublishPhase::Sync,
-            Self::Permissions => PublishPhase::Permissions,
-            Self::Validate => PublishPhase::Validate,
-            Self::Recheck => PublishPhase::Recheck,
-            Self::Commit => PublishPhase::Commit,
-            Self::Cleanup => PublishPhase::Cleanup,
+            Self::PermissionsBeforeWrite | Self::PermissionsAfterWrite => "permissions",
+            Self::Write => "write",
+            Self::Flush => "flush",
+            Self::SyncBeforePermissions | Self::SyncAfterPermissions => "sync",
+            Self::Validate => "validate",
+            Self::Recheck => "recheck",
+            Self::Commit => "commit",
+            Self::Cleanup => "cleanup",
         }
     }
 }
@@ -302,7 +302,7 @@ type BeforeCommitHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
 thread_local! {
-    static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishFailpoint>> = const { RefCell::new(Vec::new()) };
+    static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishCheckpoint>> = const { RefCell::new(Vec::new()) };
     static TEST_BEFORE_COMMIT_HOOK: RefCell<Option<BeforeCommitHook>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_LOCK_PAUSE: RefCell<Option<PublicationLockPause>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
@@ -310,10 +310,10 @@ thread_local! {
 
 #[cfg(test)]
 pub(crate) fn with_publish_failpoints<T>(
-    failpoints: &[PublishFailpoint],
+    failpoints: &[PublishCheckpoint],
     action: impl FnOnce() -> T,
 ) -> T {
-    struct Reset(Vec<PublishFailpoint>);
+    struct Reset(Vec<PublishCheckpoint>);
     impl Drop for Reset {
         fn drop(&mut self) {
             TEST_PUBLISH_FAILPOINTS.with(|slot| {
@@ -399,7 +399,6 @@ impl fmt::Display for PublishPhase {
             Self::Validate => "validate",
             Self::Recheck => "recheck",
             Self::Commit => "commit",
-            Self::Cleanup => "cleanup",
         };
         formatter.write_str(name)
     }
@@ -472,14 +471,14 @@ pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
 impl PreparedCreate<'_, '_, '_> {
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
         run_before_commit_hook(self.target);
-        let recheck = injected_failure(PublishPhase::Recheck, self.target)
+        let recheck = injected_failure(PublishCheckpoint::Recheck, self.target)
             .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
             .and_then(|()| inspect_create_target(self.target, PublishPhase::Recheck));
         if let Err(mut error) = recheck {
             attach_stage_cleanup(&mut error, &mut self.stage);
             return Err(error);
         }
-        if let Err(source) = injected_failure(PublishPhase::Commit, self.target) {
+        if let Err(source) = injected_failure(PublishCheckpoint::Commit, self.target) {
             let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
             attach_stage_cleanup(&mut error, &mut self.stage);
             return Err(error);
@@ -522,7 +521,7 @@ impl PreparedReplace<'_, '_, '_> {
 
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
         run_before_commit_hook(self.target);
-        let recheck = injected_failure(PublishPhase::Recheck, self.target)
+        let recheck = injected_failure(PublishCheckpoint::Recheck, self.target)
             .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
             .and_then(|()| {
                 recheck_replace_target(self.target, &self.snapshot, PublishPhase::Recheck)
@@ -531,7 +530,7 @@ impl PreparedReplace<'_, '_, '_> {
             attach_stage_cleanup(&mut error, &mut self.stage);
             return Err(error);
         }
-        if let Err(source) = injected_failure(PublishPhase::Commit, self.target) {
+        if let Err(source) = injected_failure(PublishCheckpoint::Commit, self.target) {
             let mut error = PublishError::io(PublishPhase::Commit, self.target, source);
             attach_stage_cleanup(&mut error, &mut self.stage);
             return Err(error);
@@ -955,7 +954,7 @@ fn initialize_stage(
     replacement: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<(), PublishError> {
-    injected_failure(PublishPhase::Permissions, path)
+    injected_failure(PublishCheckpoint::PermissionsBeforeWrite, path)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     let process_default_permissions = file
         .metadata()
@@ -963,29 +962,29 @@ fn initialize_stage(
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     restrict_stage_to_owner(file)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
-    injected_failure(PublishPhase::Write, path)
+    injected_failure(PublishCheckpoint::Write, path)
         .map_err(|source| PublishError::io(PublishPhase::Write, path, source))?;
     file.write_all(replacement)
         .map_err(|source| PublishError::io(PublishPhase::Write, path, source))?;
-    injected_failure(PublishPhase::Flush, path)
+    injected_failure(PublishCheckpoint::Flush, path)
         .map_err(|source| PublishError::io(PublishPhase::Flush, path, source))?;
     file.flush()
         .map_err(|source| PublishError::io(PublishPhase::Flush, path, source))?;
-    injected_failure(PublishPhase::Sync, path)
+    injected_failure(PublishCheckpoint::SyncBeforePermissions, path)
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
     file.sync_all()
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
-    injected_failure(PublishPhase::Permissions, path)
+    injected_failure(PublishCheckpoint::PermissionsAfterWrite, path)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     final_permissions
         .unwrap_or(&process_default_permissions)
         .apply_to(file)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
-    injected_failure(PublishPhase::Sync, path)
+    injected_failure(PublishCheckpoint::SyncAfterPermissions, path)
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
     file.sync_all()
         .map_err(|source| PublishError::io(PublishPhase::Sync, path, source))?;
-    injected_failure(PublishPhase::Validate, path)
+    injected_failure(PublishCheckpoint::Validate, path)
         .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|source| PublishError::io(PublishPhase::Validate, path, source))?;
@@ -1024,17 +1023,14 @@ fn next_stage_path(target: &Path) -> PathBuf {
     parent.join(name)
 }
 
-fn injected_failure(_phase: PublishPhase, _path: &Path) -> io::Result<()> {
+fn injected_failure(_checkpoint: PublishCheckpoint, _path: &Path) -> io::Result<()> {
     #[cfg(test)]
     {
-        let should_fail = TEST_PUBLISH_FAILPOINTS.with(|slot| {
-            slot.borrow()
-                .iter()
-                .any(|failpoint| failpoint.phase() == _phase)
-        });
+        let should_fail = TEST_PUBLISH_FAILPOINTS.with(|slot| slot.borrow().contains(&_checkpoint));
         if should_fail {
+            let phase = _checkpoint.label();
             return Err(io::Error::other(format!(
-                "injected publication {_phase} failure"
+                "injected publication {phase} failure"
             )));
         }
     }
@@ -1104,7 +1100,7 @@ fn remove_stage(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     }
-    injected_failure(PublishPhase::Cleanup, path)?;
+    injected_failure(PublishCheckpoint::Cleanup, path)?;
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -1117,8 +1113,8 @@ mod tests {
     use super::{
         create_stage_with_candidates, publish, remove_stage, with_before_commit_hook,
         with_publication_lock_contention_signal, with_publication_lock_pause,
-        with_publication_locks, with_publish_failpoints, PublishEffect, PublishErrorKind,
-        PublishFailpoint, PublishMode, PublishPhase, PublishRequest,
+        with_publication_locks, with_publish_failpoints, PublishCheckpoint, PublishEffect,
+        PublishErrorKind, PublishMode, PublishPhase, PublishRequest,
     };
     use crate::infrastructure::platform::filesystem::{
         hard_link_count, metadata_is_link_or_reparse_point, portable_permissions,
@@ -1344,13 +1340,21 @@ mod tests {
     #[test]
     fn precommit_failpoints_preserve_target_and_remove_stage() {
         let cases = [
-            (PublishFailpoint::Write, PublishPhase::Write),
-            (PublishFailpoint::Flush, PublishPhase::Flush),
-            (PublishFailpoint::Sync, PublishPhase::Sync),
-            (PublishFailpoint::Permissions, PublishPhase::Permissions),
-            (PublishFailpoint::Validate, PublishPhase::Validate),
-            (PublishFailpoint::Recheck, PublishPhase::Recheck),
-            (PublishFailpoint::Commit, PublishPhase::Commit),
+            (
+                PublishCheckpoint::PermissionsBeforeWrite,
+                PublishPhase::Permissions,
+            ),
+            (PublishCheckpoint::Write, PublishPhase::Write),
+            (PublishCheckpoint::Flush, PublishPhase::Flush),
+            (PublishCheckpoint::SyncBeforePermissions, PublishPhase::Sync),
+            (
+                PublishCheckpoint::PermissionsAfterWrite,
+                PublishPhase::Permissions,
+            ),
+            (PublishCheckpoint::SyncAfterPermissions, PublishPhase::Sync),
+            (PublishCheckpoint::Validate, PublishPhase::Validate),
+            (PublishCheckpoint::Recheck, PublishPhase::Recheck),
+            (PublishCheckpoint::Commit, PublishPhase::Commit),
         ];
 
         for (failpoint, expected_phase) in cases {
@@ -1387,6 +1391,86 @@ mod tests {
     }
 
     #[test]
+    fn permissions_failpoint_reaches_post_write_checkpoint() {
+        let root = unique_temp_root("late-permissions-failpoint");
+        let target = root.join("existing.bin");
+        fs::write(&target, b"original").unwrap();
+
+        let error = with_publish_failpoints(
+            &[
+                PublishCheckpoint::PermissionsAfterWrite,
+                PublishCheckpoint::Cleanup,
+            ],
+            || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: b"original",
+                    },
+                })
+            },
+        )
+        .expect_err("the post-write permissions failpoint must abort publication");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::Io {
+                phase: PublishPhase::Permissions,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        let debris = publication_debris(&root);
+        assert_eq!(debris.len(), 1);
+        assert_eq!(fs::read(&debris[0]).unwrap(), b"replacement");
+        fs::remove_file(&debris[0]).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_failpoint_reaches_post_permissions_checkpoint() {
+        let root = unique_temp_root("late-sync-failpoint");
+        let target = root.join("existing.bin");
+        fs::write(&target, b"original").unwrap();
+        if !set_unix_mode_for_test(&target, 0o640).unwrap() {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
+        let error = with_publish_failpoints(
+            &[
+                PublishCheckpoint::SyncAfterPermissions,
+                PublishCheckpoint::Cleanup,
+            ],
+            || {
+                publish(PublishRequest {
+                    target: &target,
+                    replacement: b"replacement",
+                    mode: PublishMode::ReplaceExisting {
+                        expected_preimage: b"original",
+                    },
+                })
+            },
+        )
+        .expect_err("the post-permissions sync failpoint must abort publication");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::Io {
+                phase: PublishPhase::Sync,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        let debris = publication_debris(&root);
+        assert_eq!(debris.len(), 1);
+        assert_eq!(unix_mode_for_test(&debris[0]).unwrap(), Some(0o640));
+        fs::remove_file(&debris[0]).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cleanup_failure_is_attached_to_primary_error() {
         let root = unique_temp_root("primary-and-cleanup-failure");
         let target = root.join("existing.bin");
@@ -1395,7 +1479,7 @@ mod tests {
         let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
 
         let error = with_publish_failpoints(
-            &[PublishFailpoint::Write, PublishFailpoint::Cleanup],
+            &[PublishCheckpoint::Write, PublishCheckpoint::Cleanup],
             || {
                 publish(PublishRequest {
                     target: &target,
@@ -1438,7 +1522,7 @@ mod tests {
         let expected_permissions = portable_permissions(&fs::metadata(&permissions_probe).unwrap());
         fs::remove_file(&permissions_probe).unwrap();
 
-        let report = with_publish_failpoints(&[PublishFailpoint::Cleanup], || {
+        let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
             publish(PublishRequest {
                 target: &target,
                 replacement: b"committed bytes",
@@ -1509,7 +1593,7 @@ mod tests {
         fs::write(&target, original).unwrap();
 
         let unwind = catch_unwind(AssertUnwindSafe(|| {
-            with_publish_failpoints(&[PublishFailpoint::Write], || {
+            with_publish_failpoints(&[PublishCheckpoint::Write], || {
                 panic!("panic inside failpoint scope");
             });
         }));
