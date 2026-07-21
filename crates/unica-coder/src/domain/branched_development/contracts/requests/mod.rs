@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 pub(crate) mod delivery;
 #[allow(dead_code)]
+pub(crate) mod merge;
+#[allow(dead_code)]
 pub(crate) mod task;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
