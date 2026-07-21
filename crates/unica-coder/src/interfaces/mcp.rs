@@ -1,5 +1,6 @@
 use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
+use crate::interfaces::strict_json;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -74,7 +75,7 @@ fn run_stdio_with_handler<R, W>(
             }
         };
 
-        let message = match serde_json::from_slice::<Value>(&line) {
+        let message = match strict_json::from_slice(&line) {
             Ok(message) => message,
             Err(err) => {
                 if !registry.publish(
@@ -710,6 +711,43 @@ mod tests {
         sender.send(format!("{message}\n").into_bytes()).unwrap();
     }
 
+    fn parse_raw_bytes_with_handler(message: Vec<u8>, handler: Arc<ToolCallHandler>) -> Vec<Value> {
+        let writer = SharedWriter::default();
+        let output = writer.clone();
+        run_stdio_with_handler(
+            BufReader::new(std::io::Cursor::new(message)),
+            writer,
+            Arc::new(UnicaApplication::new()),
+            handler,
+        );
+        output.responses()
+    }
+
+    fn parse_raw_message_with_handler(message: &str, handler: Arc<ToolCallHandler>) -> Vec<Value> {
+        parse_raw_bytes_with_handler(format!("{message}\n").into_bytes(), handler)
+    }
+
+    fn assert_parse_error_without_handler_call(message: &str) {
+        assert_parse_error_bytes_without_handler_call(format!("{message}\n").into_bytes());
+    }
+
+    fn assert_parse_error_bytes_without_handler_call(message: Vec<u8>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let responses = parse_raw_bytes_with_handler(
+            message,
+            Arc::new(move |_, _, _| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                Ok("must not run".to_string())
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["id"], Value::Null);
+        assert_eq!(responses[0]["error"]["code"], -32700);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn initialize_uses_single_public_server_name() {
         let app = UnicaApplication::new();
@@ -734,6 +772,125 @@ mod tests {
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["error"]["code"], -32700);
         assert_eq!(responses[1]["id"], 2);
+    }
+
+    #[test]
+    fn mcp_rejects_duplicate_json_members_before_dispatch() {
+        for message in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"ping","params":{"name":"unica.code.search","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","name":"unica.code.search","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","arguments":{"query":"one","query":"two"}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","arguments":{"request":{"path":"one","path":"two"}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","na\u006de":"unica.code.search","arguments":{}}}"#,
+        ] {
+            assert_parse_error_without_handler_call(message);
+        }
+    }
+
+    #[test]
+    fn mcp_rejects_non_interoperable_integral_number_spellings_before_dispatch() {
+        for number in [
+            "9007199254740992",
+            "9007199254740993",
+            "9007199254740992.0",
+            "9007199254740993.0",
+            "9.007199254740992e15",
+            "9.007199254740993e15",
+            "-9007199254740992",
+            "-9007199254740993",
+            "-9007199254740992.0",
+            "-9007199254740993.0",
+            "-9.007199254740992e15",
+            "-9.007199254740993e15",
+        ] {
+            assert_parse_error_without_handler_call(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"unica.code.search","arguments":{{"value":{number}}}}}}}"#
+            ));
+        }
+    }
+
+    #[test]
+    fn mcp_preserves_serde_json_parse_rejections_before_dispatch() {
+        let mut invalid_utf8 =
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"broken\":\"".to_vec();
+        invalid_utf8.push(0xff);
+        invalid_utf8.extend_from_slice(b"\"}\n");
+        let mut over_depth_limit = vec![b'['; 129];
+        over_depth_limit.extend_from_slice(b"0");
+        over_depth_limit.extend(std::iter::repeat_n(b']', 129));
+        over_depth_limit.push(b'\n');
+
+        for message in [
+            invalid_utf8,
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping","broken":"\uD800"}"#
+                .iter()
+                .copied()
+                .chain(std::iter::once(b'\n'))
+                .collect(),
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"value\":1e400}\n".to_vec(),
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"value\":NaN}\n".to_vec(),
+            over_depth_limit,
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"} {\"jsonrpc\":\"2.0\"}\n".to_vec(),
+        ] {
+            assert_parse_error_bytes_without_handler_call(message);
+        }
+    }
+
+    #[test]
+    fn mcp_recovers_after_a_duplicate_parse_error_before_eof() {
+        let (sender, receiver) = mpsc::channel();
+        let writer = SharedWriter::default();
+        let output = writer.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let dispatcher = thread::spawn(move || {
+            run_stdio_with_handler(
+                BufReader::new(ChannelReader::new(receiver)),
+                writer,
+                Arc::new(UnicaApplication::new()),
+                Arc::new(move |_, _, _| {
+                    observed_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("valid call completed".to_string())
+                }),
+            )
+        });
+
+        sender.send(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"method\":\"ping\",\"params\":{\"name\":\"unica.code.search\",\"arguments\":{}}}\n".to_vec()).unwrap();
+        send_message(
+            &sender,
+            json!({ "jsonrpc": "2.0", "id": "valid", "method": "tools/call", "params": { "name": "unica.code.search", "arguments": {} } }),
+        );
+
+        let responses = output.wait_for_responses(2);
+        assert!(responses.iter().any(|response| {
+            response["id"] == Value::Null && response["error"]["code"] == -32700
+        }));
+        assert!(responses.iter().any(|response| {
+            response["id"] == "valid"
+                && response["result"]["content"][0]["text"] == "valid call completed"
+        }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        drop(sender);
+        dispatcher.join().unwrap();
+    }
+
+    #[test]
+    fn mcp_accepts_safe_and_fractional_numbers_and_equal_names_in_separate_scopes() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let responses = parse_raw_message_with_handler(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","arguments":{"name":"same","safeDecimal":9007199254740991.0,"safeExponent":9.007199254740991e15,"fraction":1.5}}}"#,
+            Arc::new(move |_, _, _| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                Ok("ran".to_string())
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["id"], 1);
+        assert!(responses[0].get("result").is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

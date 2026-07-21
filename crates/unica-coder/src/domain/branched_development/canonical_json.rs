@@ -1,16 +1,16 @@
 use super::{BranchedLifecycleToolName, DurableExecutionPolicy, Sha256Digest};
+use crate::domain::i_json::validate_i_json_number;
 use serde::Serialize;
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-const MAX_I_JSON_INTEROPERABLE_INTEGER: u64 = (1 << 53) - 1;
 const OPERATION_INPUT_DIGEST_KIND: &str = "branchedOperationInputV1";
 
 #[derive(Debug)]
 pub(super) enum CanonicalJsonError {
     RequestMustBeObject,
-    NonInteroperableInteger { value: String },
+    NonInteroperableInteger,
     Canonicalization(serde_json::Error),
 }
 
@@ -20,10 +20,9 @@ impl fmt::Display for CanonicalJsonError {
             Self::RequestMustBeObject => {
                 formatter.write_str("operation request must be a JSON object")
             }
-            Self::NonInteroperableInteger { value } => write!(
-                formatter,
-                "integer {value} is outside the I-JSON interoperability range"
-            ),
+            Self::NonInteroperableInteger => {
+                formatter.write_str("integer is outside the I-JSON interoperability range")
+            }
             Self::Canonicalization(error) => {
                 write!(formatter, "JSON canonicalization failed: {error}")
             }
@@ -35,7 +34,7 @@ impl std::error::Error for CanonicalJsonError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Canonicalization(error) => Some(error),
-            Self::RequestMustBeObject | Self::NonInteroperableInteger { .. } => None,
+            Self::RequestMustBeObject | Self::NonInteroperableInteger => None,
         }
     }
 }
@@ -109,35 +108,11 @@ fn validate_i_json_numbers(value: &Value) -> Result<(), CanonicalJsonError> {
                 validate_i_json_numbers(value)?;
             }
         }
-        Value::Number(number) => validate_i_json_number(number)?,
+        Value::Number(number) => validate_i_json_number(number)
+            .map_err(|_| CanonicalJsonError::NonInteroperableInteger)?,
         Value::Null | Value::Bool(_) | Value::String(_) => {}
     }
     Ok(())
-}
-
-fn validate_i_json_number(number: &Number) -> Result<(), CanonicalJsonError> {
-    let interoperable = number
-        .as_i64()
-        .map(|value| value.unsigned_abs() <= MAX_I_JSON_INTEROPERABLE_INTEGER)
-        .or_else(|| {
-            number
-                .as_u64()
-                .map(|value| value <= MAX_I_JSON_INTEROPERABLE_INTEGER)
-        })
-        .or_else(|| {
-            number.as_f64().map(|value| {
-                value.is_finite()
-                    && (value.fract() != 0.0
-                        || value.abs() <= MAX_I_JSON_INTEROPERABLE_INTEGER as f64)
-            })
-        })
-        .unwrap_or(false);
-
-    interoperable
-        .then_some(())
-        .ok_or_else(|| CanonicalJsonError::NonInteroperableInteger {
-            value: number.to_string(),
-        })
 }
 
 #[cfg(test)]
@@ -296,11 +271,11 @@ mod tests {
         ] {
             assert!(matches!(
                 canonical_json_bytes(&value),
-                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+                Err(CanonicalJsonError::NonInteroperableInteger)
             ));
             assert!(matches!(
                 canonical_json_digest(&value),
-                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+                Err(CanonicalJsonError::NonInteroperableInteger)
             ));
         }
     }
@@ -326,7 +301,7 @@ mod tests {
         ] {
             assert!(matches!(
                 canonical_json_digest(&value),
-                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+                Err(CanonicalJsonError::NonInteroperableInteger)
             ));
         }
     }
@@ -361,7 +336,7 @@ mod tests {
                     DurableExecutionPolicy::JournaledEffect,
                     &request(number),
                 ),
-                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+                Err(CanonicalJsonError::NonInteroperableInteger)
             ));
         }
     }
