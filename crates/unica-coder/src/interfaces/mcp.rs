@@ -1,6 +1,6 @@
 use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
-use crate::interfaces::strict_json;
+use crate::domain::i_json;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -75,7 +75,7 @@ fn run_stdio_with_handler<R, W>(
             }
         };
 
-        let message = match strict_json::from_slice(&line) {
+        let message = match i_json::from_slice(&line) {
             Ok(message) => message,
             Err(err) => {
                 if !registry.publish(

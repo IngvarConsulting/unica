@@ -1,6 +1,7 @@
 mod canonical_json;
 mod identifiers;
 mod operation;
+mod operation_preflight;
 mod vocabulary;
 
 pub use identifiers::{IdentifierError, OperationId, Sha256Digest, TaskId};
