@@ -53,7 +53,7 @@ copied or adapted material. Its baseline publishes no license, so the page must
 not imply that it grants redistribution rights or forms part of Unica's
 license chain. Provenance metadata must state this boundary explicitly.
 
-The pinned `v8-runner` source is AGPL-3.0. The incorrect MIT declaration in
+The pinned `v8-runner` source is AGPL-3.0-only. The incorrect MIT declaration in
 `third-party/tools.lock.json` must be corrected and the corresponding license
 text must be packaged.
 
