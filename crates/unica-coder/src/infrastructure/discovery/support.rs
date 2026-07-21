@@ -184,6 +184,7 @@ fn support_fact(
     };
     Ok(SupportFact {
         artifact: node.artifact.clone(),
+        artifact_kind: node.artifact_kind,
         state,
         location,
     })
@@ -426,6 +427,30 @@ mod tests {
         assert_eq!(
             state_for(&batch.records, "Document.Purchase.Form.Main"),
             Some(SupportStateKind::NotOnSupport)
+        );
+        assert_eq!(
+            batch
+                .records
+                .iter()
+                .find(|fact| {
+                    fact.artifact
+                        == ArtifactId::parse("Document.Purchase.TabularSection.Серии")
+                            .expect("valid section artifact")
+                })
+                .map(|fact| fact.artifact_kind),
+            Some(crate::domain::discovery::ArtifactKind::TabularSection)
+        );
+        assert_eq!(
+            batch
+                .records
+                .iter()
+                .find(|fact| {
+                    fact.artifact
+                        == ArtifactId::parse("Document.Purchase.Form.Main")
+                            .expect("valid form artifact")
+                })
+                .map(|fact| fact.artifact_kind),
+            Some(crate::domain::discovery::ArtifactKind::Form)
         );
     }
 

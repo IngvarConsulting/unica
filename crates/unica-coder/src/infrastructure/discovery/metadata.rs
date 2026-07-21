@@ -631,7 +631,7 @@ fn metadata_facts(
 
 fn flatten_metadata_node(
     node: &MetadataNode,
-    container: Option<&ArtifactId>,
+    container: Option<(&ArtifactId, ArtifactKind)>,
 ) -> Vec<crate::domain::discovery::MetadataFact> {
     let mut facts = node
         .locations
@@ -639,13 +639,17 @@ fn flatten_metadata_node(
         .map(|location| crate::domain::discovery::MetadataFact {
             artifact: node.artifact.clone(),
             artifact_kind: node.artifact_kind,
-            container: container.cloned(),
+            container: container.map(|(artifact, _kind)| artifact.clone()),
+            container_kind: container.map(|(_artifact, kind)| kind),
             relation: StructuralRelationKind::Contains,
             location: location.clone(),
         })
         .collect::<Vec<_>>();
     for child in &node.children {
-        facts.extend(flatten_metadata_node(child, Some(&node.artifact)));
+        facts.extend(flatten_metadata_node(
+            child,
+            Some((&node.artifact, node.artifact_kind)),
+        ));
     }
     facts
 }
@@ -790,6 +794,7 @@ mod tests {
         assert!(batch.records.iter().any(|fact| {
             fact.artifact == separate_series
                 && fact.artifact_kind == ArtifactKind::TabularSection
+                && fact.container_kind == Some(ArtifactKind::MetadataObject)
                 && fact.relation == StructuralRelationKind::Contains
                 && fact.location.line == Some(13)
                 && fact.location.xml_path.as_deref()
@@ -798,7 +803,8 @@ mod tests {
         assert!(batch
             .records
             .iter()
-            .any(|fact| fact.artifact == goods_series));
+            .any(|fact| fact.artifact == goods_series
+                && fact.container_kind == Some(ArtifactKind::TabularSection)));
         assert!(batch.records.iter().any(|fact| {
             fact.artifact == processor
                 && fact.artifact_kind == ArtifactKind::MetadataObject

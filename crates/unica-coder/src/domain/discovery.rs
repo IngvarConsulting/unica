@@ -518,6 +518,7 @@ pub(crate) struct MetadataFact {
     pub artifact: ArtifactId,
     pub artifact_kind: ArtifactKind,
     pub container: Option<ArtifactId>,
+    pub container_kind: Option<ArtifactKind>,
     pub relation: StructuralRelationKind,
     pub location: EvidenceLocation,
 }
@@ -579,6 +580,7 @@ pub(crate) struct RuntimeFlowFact {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SupportFact {
     pub artifact: ArtifactId,
+    pub artifact_kind: ArtifactKind,
     pub state: SupportStateKind,
     pub location: EvidenceLocation,
 }

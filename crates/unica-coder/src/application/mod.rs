@@ -2303,7 +2303,7 @@ mod tests {
         std::fs::write(
             ext.join("ParentConfigurations.bin"),
             support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             ),

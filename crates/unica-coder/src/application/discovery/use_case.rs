@@ -163,18 +163,53 @@ macro_rules! provider_facts_without_additional_contract {
     };
 }
 
-provider_facts_without_additional_contract!(
-    MetadataFact,
-    FormFact,
-    BslFact,
-    DefinitionFact,
-    RuntimeFlowFact,
-);
+provider_facts_without_additional_contract!(FormFact, BslFact, DefinitionFact, RuntimeFlowFact,);
+
+impl ProviderFactContract for MetadataFact {
+    fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
+        let mut kinds = BTreeMap::new();
+        for fact in records {
+            validate_artifact_kind(&mut kinds, &fact.artifact, fact.artifact_kind)?;
+            match (&fact.container, fact.container_kind) {
+                (Some(container), Some(container_kind)) => {
+                    validate_artifact_kind(&mut kinds, container, container_kind)?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(provider_contract_diagnostic(
+                        "metadata_container_kind_missing",
+                        "metadata container identity and kind must be supplied together",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_artifact_kind(
+    kinds: &mut BTreeMap<ArtifactId, ArtifactKind>,
+    artifact: &ArtifactId,
+    kind: ArtifactKind,
+) -> Result<(), ProviderDiagnostic> {
+    if kinds
+        .insert(artifact.clone(), kind)
+        .is_some_and(|previous| previous != kind)
+    {
+        return Err(provider_contract_diagnostic(
+            "artifact_kind_conflict",
+            "provider returned conflicting kinds for one canonical artifact",
+        ));
+    }
+    Ok(())
+}
 
 impl ProviderFactContract for SupportFact {
     fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
         let mut states = BTreeMap::new();
+        let mut kinds = BTreeMap::new();
         for fact in records {
+            validate_artifact_kind(&mut kinds, &fact.artifact, fact.artifact_kind)?;
             if let Some(previous) = states.insert(&fact.artifact, fact.state) {
                 if previous != fact.state {
                     return Err(provider_contract_diagnostic(
@@ -692,12 +727,11 @@ fn metadata_contribution(
             fact.artifact_kind,
             evidence.0.id.clone(),
         ));
-        if let Some(container) = &fact.container {
-            contribution.related.push((
-                container.clone(),
-                ArtifactKind::MetadataObject,
-                evidence.0.id.clone(),
-            ));
+        if let Some((container, container_kind)) = fact.container.as_ref().zip(fact.container_kind)
+        {
+            contribution
+                .related
+                .push((container.clone(), container_kind, evidence.0.id.clone()));
             contribution.structural_edges.push((
                 container.clone(),
                 fact.artifact.clone(),
@@ -749,12 +783,17 @@ fn separate_series_warnings(
         if document.as_str().split('.').next() != Some("document") {
             continue;
         }
+        if !matcher.relevant(document, std::iter::empty::<&str>())
+            && !matcher.relevant(&series_attribute.artifact, std::iter::empty::<&str>())
+        {
+            continue;
+        }
         for separate_section in batch.records.iter().filter(|fact| {
             fact.artifact_kind == ArtifactKind::TabularSection
                 && fact.relation == StructuralRelationKind::Contains
                 && fact.container.as_ref() == Some(document)
                 && fact.artifact != goods_section.artifact
-                && matcher.relevant(&fact.artifact, std::iter::empty::<&str>())
+                && artifact_leaves_match(&series_attribute.artifact, &fact.artifact)
         }) {
             let Some(series_evidence) = evidence_by_artifact.get(&series_attribute.artifact) else {
                 continue;
@@ -777,6 +816,16 @@ fn separate_series_warnings(
     warnings.sort();
     warnings.dedup();
     warnings
+}
+
+fn artifact_leaves_match(left: &ArtifactId, right: &ArtifactId) -> bool {
+    match (
+        left.as_str().rsplit('.').next(),
+        right.as_str().rsplit('.').next(),
+    ) {
+        (Some(left), Some(right)) => normalized_prefix_matches(left, right),
+        (Some(_), None) | (None, Some(_)) | (None, None) => false,
+    }
 }
 
 fn artifact_has_typed_name(artifact: &ArtifactId, object_type: &str, name: &str) -> bool {
@@ -994,7 +1043,7 @@ fn support_contribution(
         contribution.contributors.push(evidence.1.clone());
         contribution.related.push((
             fact.artifact.clone(),
-            ArtifactKind::MetadataObject,
+            fact.artifact_kind,
             evidence.0.id.clone(),
         ));
         contribution
@@ -1059,7 +1108,7 @@ struct ReportAccumulator {
     evidence: BTreeMap<EvidenceId, Evidence>,
     known_files: BTreeMap<PortableRelativePath, AnalyzedFile>,
     contributors: BTreeMap<PortableRelativePath, AnalyzedFile>,
-    related: BTreeMap<(ArtifactId, ArtifactKind), BTreeSet<EvidenceId>>,
+    related: BTreeMap<ArtifactId, (ArtifactKind, BTreeSet<EvidenceId>)>,
     structural_edges:
         BTreeMap<(ArtifactId, ArtifactId, StructuralRelationKind), BTreeSet<EvidenceId>>,
     runtime_flow_edges: BTreeMap<
@@ -1147,6 +1196,20 @@ impl ReportAccumulator {
     fn merge(&mut self, contribution: ProviderContribution) -> Result<(), ProviderDiagnostic> {
         self.validate_file_identities(&contribution.analyzed_files)?;
         self.validate_file_identities(&contribution.contributors)?;
+        let mut contribution_kinds = BTreeMap::new();
+        for (artifact, kind, _) in &contribution.related {
+            validate_artifact_kind(&mut contribution_kinds, artifact, *kind)?;
+            if self
+                .related
+                .get(artifact)
+                .is_some_and(|(previous_kind, _)| previous_kind != kind)
+            {
+                return Err(provider_contract_diagnostic(
+                    "artifact_kind_conflict",
+                    "provider returned a kind that conflicts with an already accepted artifact",
+                ));
+            }
+        }
         let mut contribution_support = BTreeMap::new();
         for (artifact, state) in &contribution.support {
             if let Some(previous) = contribution_support.insert(artifact, state) {
@@ -1181,10 +1244,11 @@ impl ReportAccumulator {
             self.evidence.entry(evidence.id.clone()).or_insert(evidence);
         }
         for (artifact, kind, evidence_id) in contribution.related {
-            self.related
-                .entry((artifact, kind))
-                .or_default()
-                .insert(evidence_id);
+            let (_, evidence_ids) = self
+                .related
+                .entry(artifact)
+                .or_insert_with(|| (kind, BTreeSet::new()));
+            evidence_ids.insert(evidence_id);
         }
         for (source, target, relation, evidence_id) in contribution.structural_edges {
             self.structural_edges
@@ -1239,7 +1303,7 @@ impl ReportAccumulator {
         let related_artifacts = self
             .related
             .into_iter()
-            .map(|((artifact, kind), evidence_ids)| RelatedArtifact {
+            .map(|(artifact, (kind, evidence_ids))| RelatedArtifact {
                 artifact,
                 kind,
                 evidence_ids: evidence_ids.into_iter().collect(),
@@ -1559,6 +1623,11 @@ mod tests {
             self
         }
 
+        fn with_support(mut self, batch: FactBatch<SupportFact>) -> Self {
+            self.support = ProviderOutcome::Complete(batch);
+            self
+        }
+
         fn only_lexical(batch: FactBatch<BslFact>) -> Self {
             let mut ports = Self::complete_empty();
             ports.lexical = ProviderOutcome::Complete(batch);
@@ -1749,6 +1818,7 @@ mod tests {
                 artifact: series_id(),
                 artifact_kind: ArtifactKind::TabularSection,
                 container: Some(artifact("Document.Purchase")),
+                container_kind: Some(ArtifactKind::MetadataObject),
                 relation: StructuralRelationKind::Contains,
                 location: location(path, 7),
             }],
@@ -1759,6 +1829,14 @@ mod tests {
     }
 
     fn separate_series_metadata(path: &str, raw: &[u8]) -> FactBatch<MetadataFact> {
+        separate_section_metadata(path, raw, "Серии")
+    }
+
+    fn separate_section_metadata(
+        path: &str,
+        raw: &[u8],
+        section_name: &str,
+    ) -> FactBatch<MetadataFact> {
         let document = artifact("Document.ПриобретениеТоваровУслуг");
         let goods = artifact("Document.ПриобретениеТоваровУслуг.TabularSection.Товары");
         FactBatch {
@@ -1767,6 +1845,7 @@ mod tests {
                     artifact: goods.clone(),
                     artifact_kind: ArtifactKind::TabularSection,
                     container: Some(document.clone()),
+                    container_kind: Some(ArtifactKind::MetadataObject),
                     relation: StructuralRelationKind::Contains,
                     location: location(path, 5),
                 },
@@ -1776,13 +1855,17 @@ mod tests {
                     ),
                     artifact_kind: ArtifactKind::Attribute,
                     container: Some(goods),
+                    container_kind: Some(ArtifactKind::TabularSection),
                     relation: StructuralRelationKind::Contains,
                     location: location(path, 8),
                 },
                 MetadataFact {
-                    artifact: artifact("Document.ПриобретениеТоваровУслуг.TabularSection.Серии"),
+                    artifact: artifact(&format!(
+                        "Document.ПриобретениеТоваровУслуг.TabularSection.{section_name}"
+                    )),
                     artifact_kind: ArtifactKind::TabularSection,
                     container: Some(document),
+                    container_kind: Some(ArtifactKind::MetadataObject),
                     relation: StructuralRelationKind::Contains,
                     location: location(path, 13),
                 },
@@ -1835,11 +1918,13 @@ mod tests {
             records: vec![
                 SupportFact {
                     artifact: artifact("Document.Purchase"),
+                    artifact_kind: ArtifactKind::MetadataObject,
                     state: SupportStateKind::Locked,
                     location: location("Ext/ParentConfigurations.bin", 1),
                 },
                 SupportFact {
                     artifact: artifact("Document.Purchase"),
+                    artifact_kind: ArtifactKind::MetadataObject,
                     state: SupportStateKind::Editable,
                     location: location("Ext/ParentConfigurations.bin", 1),
                 },
@@ -1920,6 +2005,109 @@ mod tests {
         assert_eq!(warning.evidence_ids.len(), 2);
         assert!(warning.message.contains("Товары.Серия"));
         assert!(!warning.message.contains("отклон"));
+    }
+
+    #[test]
+    fn unrelated_distinct_section_leaf_does_not_emit_series_warning() {
+        let raw = b"actual metadata structure";
+        let path = "Documents/ПриобретениеТоваровУслуг.xml";
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(separate_section_metadata(path, raw, "Услуги"));
+
+        let report = execute(&fake, request("Проверить услуги документа", &[]))
+            .expect("structural discovery report");
+
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "separate_series_section"));
+    }
+
+    #[test]
+    fn conflicting_metadata_kinds_for_one_artifact_invalidate_the_provider() {
+        let raw = b"conflicting metadata kinds";
+        let path = "Documents/Purchase.xml";
+        let conflicting = FactBatch {
+            records: vec![
+                MetadataFact {
+                    artifact: artifact("Document.Purchase"),
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 1),
+                },
+                MetadataFact {
+                    artifact: artifact("Document.Purchase"),
+                    artifact_kind: ArtifactKind::Form,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 2),
+                },
+            ],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 2),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(conflicting);
+
+        let report = execute(&fake, task_only()).expect("partial discovery report");
+
+        assert!(report.provider_outcomes.iter().any(|outcome| {
+            outcome.provider == ProviderKind::MetadataCatalog
+                && outcome.outcome == ProviderOutcomeKind::ContractViolation
+        }));
+        assert!(report.related_artifacts.is_empty());
+    }
+
+    #[test]
+    fn cross_provider_artifact_kind_conflict_invalidates_later_provider_atomically() {
+        let metadata_raw = b"metadata";
+        let support_raw = b"support";
+        let metadata_path = "Documents/Purchase.xml";
+        let support_path = "Ext/ParentConfigurations.bin";
+        let support = FactBatch {
+            records: vec![SupportFact {
+                artifact: artifact("Document.Purchase"),
+                artifact_kind: ArtifactKind::Form,
+                state: SupportStateKind::Locked,
+                location: location(support_path, 1),
+            }],
+            analyzed_files: vec![contributor(support_path, support_raw)],
+            contributors: vec![contributor(support_path, support_raw)],
+            coverage: ProviderCoverage::new(1, 1, support_raw.len() as u64, 1),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![
+                source_file(metadata_path, metadata_raw),
+                source_file(support_path, support_raw),
+            ])
+            .with_metadata(series_metadata_at(metadata_path, metadata_raw))
+            .with_support(support);
+
+        let report = execute(&fake, task_only()).expect("partial discovery report");
+
+        assert!(report.provider_outcomes.iter().any(|outcome| {
+            outcome.provider == ProviderKind::SupportState
+                && outcome.outcome == ProviderOutcomeKind::ContractViolation
+        }));
+        assert_eq!(
+            report
+                .related_artifacts
+                .iter()
+                .filter(|related| related.artifact == artifact("Document.Purchase"))
+                .map(|related| related.kind)
+                .collect::<Vec<_>>(),
+            vec![ArtifactKind::MetadataObject]
+        );
+        assert!(report
+            .evidence
+            .iter()
+            .all(|evidence| evidence.provider != ProviderKind::SupportState));
     }
 
     #[test]
@@ -2552,6 +2740,7 @@ mod tests {
                     artifact: artifact("DataProcessor.ParserHook"),
                     artifact_kind: ArtifactKind::MetadataObject,
                     container: None,
+                    container_kind: None,
                     relation: StructuralRelationKind::Contains,
                     location: location(path, 1),
                 },
@@ -2559,6 +2748,7 @@ mod tests {
                     artifact: artifact("DataProcessor.РасчетHandler"),
                     artifact_kind: ArtifactKind::MetadataObject,
                     container: None,
+                    container_kind: None,
                     relation: StructuralRelationKind::Contains,
                     location: location(path, 2),
                 },
