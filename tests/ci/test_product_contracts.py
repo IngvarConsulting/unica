@@ -40,6 +40,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertTrue(adr.is_file())
         self.assertTrue(architecture.is_file())
         joined = adr.read_text(encoding="utf-8") + architecture.read_text(encoding="utf-8")
+        architecture_text = architecture.read_text(encoding="utf-8")
         for token in (
             "unica.project.discover",
             "OperationResult.data.discovery",
@@ -51,6 +52,15 @@ class ProductContractTests(unittest.TestCase):
         ):
             self.assertIn(token, joined)
         self.assertNotIn("discovery authorizes mutation", joined)
+        for requirement in (
+            "raw SHA-256 hashes of evidence-contributing files only",
+            "actual runtime-sidecar `ConfigDumpInfo.xml` content",
+            "`config_dump_info_xml_kind(bytes)`",
+            "domain-neutral and use no business-domain dictionary",
+            "Every provider/query returns exactly one exhaustive `ProviderOutcome<T>`",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, architecture_text)
 
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

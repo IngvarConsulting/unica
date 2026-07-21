@@ -13,7 +13,7 @@ and `limits` are optional. `cwd`, `mode`, and `task` alone are a supported
 first-class request.
 
 The application derives deterministic lexical concepts from `task` and passes
-the full task to typed search providers. Explicit concepts and search terms
+the full task to typed search providers. Task-derived concepts are domain-neutral and use no business-domain dictionary. Explicit concepts and search terms
 augment, not replace, that exploration. `objects` holds canonical 1C
 references parsed as typed artifact identities. Slice A rejects
 `proposedExtensionPoints`, receipts, `dryRun`, `confirm`, raw adapter
@@ -59,7 +59,7 @@ definition resolution, call-graph/runtime-flow evidence, and support state.
 Providers only collect facts; they do not call each other, parse other adapter
 display text, rank architecture, or return presentation JSON for reparsing.
 
-Each provider returns exhaustive `ProviderOutcome<T>` facts:
+Every provider/query returns exactly one exhaustive `ProviderOutcome<T>` fact:
 
 - `Complete`: complete for the exact typed query; only an empty result is
   negative evidence for that query.
@@ -82,10 +82,7 @@ related artifact but cannot by itself create an actionable candidate.
 ## Analysis snapshot boundary
 
 Slice A captures an **analysis snapshot**, not a mutation receipt. It records
-the resolved mapping identity and exact raw-byte hashes of every file that
-contributes evidence. BOM and EOL bytes participate; generated
-`ConfigDumpInfo.xml` is excluded. A bounded enumeration or read makes the
-provider and result partial.
+the resolved mapping identity and raw SHA-256 hashes of evidence-contributing files only. BOM and EOL bytes participate. The snapshot excludes only actual runtime-sidecar `ConfigDumpInfo.xml` content, as identified by `config_dump_info_xml_kind(bytes)`; legitimate external metadata with that filename remains evidence. A bounded enumeration or read makes the provider and result partial.
 
 Reads stay beneath the selected source root through verified regular-file
 handles. Escaping symlinks/reparse points, non-regular files, path swaps, and
