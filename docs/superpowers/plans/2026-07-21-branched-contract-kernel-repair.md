@@ -73,15 +73,24 @@ via `serde_json_canonicalizer`, existing MCP protocol tests.
 **Files:**
 - Create: `crates/unica-coder/src/interfaces/strict_json.rs`
 - Modify: `crates/unica-coder/src/interfaces/mod.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/canonical_json.rs`
+  or a lower shared number-policy module if code search proves that cleaner
 - Modify: the MCP JSON-RPC line parser selected by code search
 - Test: the existing MCP protocol test module
 
 - [ ] Add failing protocol tests for duplicate top-level, `params`, `arguments`,
-  and nested request members. Assert JSON-RPC `-32700` and zero handler calls.
+  nested request members, and escape-equivalent names. Assert JSON-RPC `-32700`
+  and zero handler calls.
 - [ ] Implement a recursive serde visitor that builds `serde_json::Value` while
   rejecting a duplicate key in every object scope.
-- [ ] Replace only the protocol parse boundary; preserve ordinary request/error
-  behavior and existing I-JSON number/string rejection.
+- [ ] Add raw integer/decimal/exponent tests at and beyond `2^53-1`; reject the
+  non-interoperable forms as `-32700` before dispatch and keep safe boundaries,
+  finite fractions, and ordinary request/error behavior unchanged. Ordinary
+  `serde_json::Value` parsing did not provide this guard, so share or exactly
+  align the parser rule with Task 2 instead of claiming it already existed.
+- [ ] Replace only the public MCP protocol parse boundary. Preserve serde's
+  existing invalid UTF-8, lone-surrogate, non-finite, depth, and trailing-data
+  rejection and the existing 8 MiB line bound.
 - [ ] Add a regression proving identical keys in different object scopes remain
   valid.
 - [ ] Run MCP protocol tests and the full interface test group.
