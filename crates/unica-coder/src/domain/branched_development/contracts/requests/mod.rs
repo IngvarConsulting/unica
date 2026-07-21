@@ -10,6 +10,8 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::domain::branched_development::Sha256Digest;
+
 macro_rules! request_one_of_schema {
     ($request:ty, $name:literal, [$($branch:ty),+ $(,)?]) => {
         impl schemars::JsonSchema for $request {
@@ -75,6 +77,19 @@ macro_rules! boolean_literal {
 boolean_literal!(TrueLiteral, true);
 boolean_literal!(FalseLiteral, false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(super) enum ApplyDecision {
+    #[serde(rename = "apply")]
+    Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DigestApproval {
+    digest: Sha256Digest,
+    decision: ApplyDecision,
+}
+
 pub(super) fn execution_policy_for_json<T>(
     value: &Value,
     policy: impl FnOnce(&T) -> crate::domain::branched_development::ExecutionPolicy,
@@ -100,6 +115,7 @@ mod tests {
         BranchedStatusRequest, BranchedStatusRequestVariant, CommonMutationRequest,
         CommonTaskRequest,
     };
+    use super::DigestApproval;
     use crate::domain::branched_development::contracts::schema::{
         audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
         is_normalized_utc_instant, I_JSON_LF_TEXT_FORMAT, I_JSON_SINGLE_LINE_TEXT_FORMAT,
@@ -203,6 +219,18 @@ mod tests {
         rejects::<CommonMutationRequest>(without(common_mutation(), "operationId"));
         rejects::<CommonTaskRequest>(with(common_task(), &[("operationId", json!(OPERATION_ID))]));
         rejects::<CommonMutationRequest>(with(common_mutation(), &[("extra", json!(true))]));
+    }
+
+    #[test]
+    fn digest_approval_is_one_shared_closed_apply_contract() {
+        let approval = json!({ "digest": DIGEST, "decision": "apply" });
+        accepts::<DigestApproval>(approval.clone());
+        assert_schema_is_closed::<DigestApproval>();
+
+        rejects::<DigestApproval>(without(approval.clone(), "digest"));
+        rejects::<DigestApproval>(without(approval.clone(), "decision"));
+        rejects::<DigestApproval>(with(approval.clone(), &[("decision", json!("approve"))]));
+        rejects::<DigestApproval>(with(approval, &[("extra", json!(true))]));
     }
 
     #[test]

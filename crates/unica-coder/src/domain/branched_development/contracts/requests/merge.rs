@@ -1,4 +1,4 @@
-use super::{execution_policy_for_json, request_one_of_schema};
+use super::{execution_policy_for_json, request_one_of_schema, DigestApproval};
 use crate::domain::branched_development::contracts::scalars::{
     OriginalProjectCwd, PropertyPath, Rationale,
 };
@@ -356,16 +356,8 @@ impl MergeResolveRequest {
     }
 }
 
-string_literal!(ApplyDecision, Value, "apply");
 string_literal!(TaskTarget, Value, "task");
 string_literal!(OriginalTarget, Value, "original");
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DigestApproval {
-    digest: Sha256Digest,
-    decision: ApplyDecision,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -558,13 +550,17 @@ mod tests {
         MergeCompareRequestVariant, MergeConflictsRequest, MergeConflictsRequestVariant,
         MergePrepareRequest, MergePrepareRequestVariant, MergeResolveRequest,
         MergeResolveRequestVariant, MergeVerifyRequest, MergeVerifyRequestVariant,
+        TakeOursResolution,
     };
+    use crate::domain::branched_development::contracts::scalars::PropertyPath;
     use crate::domain::branched_development::contracts::schema::{
         audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
         is_normalized_utc_instant, I_JSON_LF_TEXT_FORMAT, I_JSON_SINGLE_LINE_TEXT_FORMAT,
         NORMALIZED_UTC_INSTANT_FORMAT,
     };
-    use crate::domain::branched_development::ExecutionPolicy;
+    use crate::domain::branched_development::{
+        ExecutionPolicy, MetadataObjectId, Sha256Digest, UnicaId,
+    };
     use schemars::{schema_for, JsonSchema};
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
@@ -611,6 +607,33 @@ mod tests {
             serde_json::from_value::<T>(value.clone()).is_err(),
             "request contract accepted {value}"
         );
+    }
+
+    fn typed_field<T: DeserializeOwned + JsonSchema>(
+        name: &'static str,
+        value: Value,
+    ) -> (&'static str, Value) {
+        accepts::<T>(value.clone());
+        assert!(
+            schema_validator::<T>().is_valid(&value),
+            "field {name} fixture is invalid for its declared scalar schema: {value}"
+        );
+        (name, value)
+    }
+
+    fn assert_rejects_cross_variant_fields<T: DeserializeOwned + JsonSchema>(
+        base: Value,
+        fields: Vec<(&'static str, Value)>,
+    ) {
+        let validator = schema_validator::<T>();
+        for (field, value) in fields {
+            let request = with(base.clone(), &[(field, value)]);
+            rejects::<T>(request.clone());
+            assert!(
+                !validator.is_valid(&request),
+                "schema accepted cross-variant field {field} in {request}"
+            );
+        }
     }
 
     fn schema_validator<T: JsonSchema>() -> jsonschema::Validator {
@@ -853,6 +876,68 @@ mod tests {
                 common,
             ));
         }
+
+        assert_rejects_cross_variant_fields::<MergePrepareRequest>(
+            supported_update(),
+            vec![
+                typed_field::<UnicaId>("replacesSessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedReplacedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>(
+                    "expectedReplacedDecisionSetDigest",
+                    json!(OTHER_DIGEST),
+                ),
+                typed_field::<UnicaId>("sessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedDecisionSetDigest", json!(OTHER_DIGEST)),
+                typed_field::<UnicaId>("verificationId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedVerificationDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedRepositoryStatusDigest", json!(OTHER_DIGEST)),
+            ],
+        );
+        assert_rejects_cross_variant_fields::<MergePrepareRequest>(
+            supported_update_replacement(),
+            vec![
+                typed_field::<UnicaId>("sessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedDecisionSetDigest", json!(OTHER_DIGEST)),
+                typed_field::<UnicaId>("verificationId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedVerificationDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedRepositoryStatusDigest", json!(OTHER_DIGEST)),
+            ],
+        );
+        assert_rejects_cross_variant_fields::<MergePrepareRequest>(
+            resolved_replay(),
+            vec![
+                typed_field::<UnicaId>("checkpointId", json!(ID)),
+                typed_field::<UnicaId>("incomingDistributionId", json!(OTHER_ID)),
+                typed_field::<UnicaId>("comparisonId", json!(ID)),
+                typed_field::<UnicaId>("replacesSessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedReplacedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>(
+                    "expectedReplacedDecisionSetDigest",
+                    json!(OTHER_DIGEST),
+                ),
+                typed_field::<UnicaId>("verificationId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedVerificationDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedRepositoryStatusDigest", json!(OTHER_DIGEST)),
+            ],
+        );
+        assert_rejects_cross_variant_fields::<MergePrepareRequest>(
+            main_integration_prepare(),
+            vec![
+                typed_field::<UnicaId>("incomingDistributionId", json!(OTHER_ID)),
+                typed_field::<UnicaId>("comparisonId", json!(ID)),
+                typed_field::<UnicaId>("replacesSessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedReplacedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>(
+                    "expectedReplacedDecisionSetDigest",
+                    json!(OTHER_DIGEST),
+                ),
+                typed_field::<UnicaId>("sessionId", json!(ID)),
+                typed_field::<Sha256Digest>("expectedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedDecisionSetDigest", json!(OTHER_DIGEST)),
+            ],
+        );
     }
 
     fn conflicts() -> Value {
@@ -952,10 +1037,15 @@ mod tests {
         }
 
         for resolution in ["takeOurs", "takeTheirs"] {
-            assert_runtime_and_schema_reject::<MergeResolveRequest>(with(
+            assert_rejects_cross_variant_fields::<MergeResolveRequest>(
                 conflict_resolution(resolution),
-                &[("changeReceiptId", json!(ID))],
-            ));
+                vec![
+                    typed_field::<UnicaId>("changeReceiptId", json!(ID)),
+                    typed_field::<MetadataObjectId>("objectId", json!(OTHER_ID)),
+                    typed_field::<PropertyPath>("propertyPath", json!("Attributes.Price.Type")),
+                    typed_field::<Sha256Digest>("expectedResultSha256", json!(DIGEST)),
+                ],
+            );
         }
         for resolution in ["combine", "manual"] {
             for field in [
@@ -974,15 +1064,42 @@ mod tests {
             conflict_resolution("combine"),
             conflict_resolution("manual"),
             conflict_resolution("staticByKind"),
-            with(adapted_delta(), &[("sessionId", json!(ID))]),
-            with(
-                adapted_delta(),
-                &[("expectedDecisionSetDigest", json!(DIGEST))],
-            ),
             with(conflict_resolution("takeOurs"), &[("rationale", json!(""))]),
         ] {
             assert_runtime_and_schema_reject::<MergeResolveRequest>(invalid);
         }
+
+        for conflict in [
+            conflict_resolution("takeOurs"),
+            conflict_resolution("takeTheirs"),
+            changed_conflict_resolution("combine"),
+            changed_conflict_resolution("manual"),
+        ] {
+            assert_rejects_cross_variant_fields::<MergeResolveRequest>(
+                conflict,
+                vec![
+                    typed_field::<UnicaId>("verificationId", json!(ID)),
+                    typed_field::<Sha256Digest>("expectedVerificationDigest", json!(DIGEST)),
+                    typed_field::<Sha256Digest>("canonicalDeltaDigest", json!(OTHER_DIGEST)),
+                    typed_field::<UnicaId>("differenceManifestId", json!(OTHER_ID)),
+                    typed_field::<Sha256Digest>("differenceDigest", json!(DIGEST)),
+                ],
+            );
+        }
+        assert_rejects_cross_variant_fields::<MergeResolveRequest>(
+            adapted_delta(),
+            vec![
+                typed_field::<UnicaId>("sessionId", json!(ID)),
+                typed_field::<UnicaId>("conflictId", json!(OTHER_ID)),
+                typed_field::<TakeOursResolution>("resolution", json!("takeOurs")),
+                typed_field::<Sha256Digest>("expectedBaseSessionDigest", json!(DIGEST)),
+                typed_field::<Sha256Digest>("expectedDecisionSetDigest", json!(OTHER_DIGEST)),
+                typed_field::<UnicaId>("changeReceiptId", json!(ID)),
+                typed_field::<MetadataObjectId>("objectId", json!(OTHER_ID)),
+                typed_field::<PropertyPath>("propertyPath", json!("Attributes.Price.Type")),
+                typed_field::<Sha256Digest>("expectedResultSha256", json!(DIGEST)),
+            ],
+        );
     }
 
     fn approval() -> Value {
@@ -1035,21 +1152,21 @@ mod tests {
             assert_runtime_and_schema_accept::<MergeApplyRequest>(request);
         }
 
-        for field in [
-            "planId",
-            "expectedPlanDigest",
-            "integrationSetId",
-            "expectedIntegrationSetDigest",
-            "lockSetId",
-            "expectedLockSetDigest",
-            "supportGateId",
-            "expectedSupportGateDigest",
-            "expectedSupportGateHistoryEvidenceDigest",
+        for (field, value) in [
+            typed_field::<UnicaId>("planId", json!(ID)),
+            typed_field::<Sha256Digest>("expectedPlanDigest", json!(DIGEST)),
+            typed_field::<UnicaId>("integrationSetId", json!(ID)),
+            typed_field::<Sha256Digest>("expectedIntegrationSetDigest", json!(OTHER_DIGEST)),
+            typed_field::<UnicaId>("lockSetId", json!(ID)),
+            typed_field::<Sha256Digest>("expectedLockSetDigest", json!(DIGEST)),
+            typed_field::<UnicaId>("supportGateId", json!(ID)),
+            typed_field::<Sha256Digest>("expectedSupportGateDigest", json!(OTHER_DIGEST)),
+            typed_field::<Sha256Digest>("expectedSupportGateHistoryEvidenceDigest", json!(DIGEST)),
         ] {
             assert_runtime_and_schema_reject::<MergeApplyRequest>(without(original_apply(), field));
             assert_runtime_and_schema_reject::<MergeApplyRequest>(with(
                 task_apply(),
-                &[(field, json!(ID))],
+                &[(field, value)],
             ));
         }
         for invalid_approval in [
@@ -1150,18 +1267,70 @@ mod tests {
                 field,
             ));
         }
-        for invalid in [
-            with(local_checkpoint_verify(), &[("sessionId", json!(ID))]),
-            with(synchronized_task_verify(), &[("supportGateId", json!(ID))]),
-            with(main_sandbox_verify(), &[("mergeReceiptId", json!(ID))]),
-            with(
-                main_integration_verify(),
-                &[("adaptationDecisionId", json!(ID))],
-            ),
-            without(main_integration_verify(), "expectedIntegrationSetDigest"),
-        ] {
-            assert_runtime_and_schema_reject::<MergeVerifyRequest>(invalid);
-        }
+        assert_runtime_and_schema_reject::<MergeVerifyRequest>(without(
+            main_integration_verify(),
+            "expectedIntegrationSetDigest",
+        ));
+
+        let adaptation_fields = || {
+            vec![
+                typed_field::<UnicaId>("adaptationDecisionId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedAdaptationDecisionDigest", json!(DIGEST)),
+            ]
+        };
+        let main_fields = || {
+            vec![
+                typed_field::<Sha256Digest>("expectedResolvedSessionDigest", json!(DIGEST)),
+                typed_field::<UnicaId>("supportGateId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedSupportGateDigest", json!(OTHER_DIGEST)),
+                typed_field::<Sha256Digest>(
+                    "expectedSupportGateHistoryEvidenceDigest",
+                    json!(DIGEST),
+                ),
+            ]
+        };
+        let integration_fields = || {
+            vec![
+                typed_field::<UnicaId>("mergeReceiptId", json!(ID)),
+                typed_field::<UnicaId>("integrationSetId", json!(OTHER_ID)),
+                typed_field::<Sha256Digest>("expectedIntegrationSetDigest", json!(DIGEST)),
+            ]
+        };
+
+        let mut local_only_forbidden = vec![typed_field::<UnicaId>("sessionId", json!(ID))];
+        local_only_forbidden.extend(adaptation_fields());
+        local_only_forbidden.extend(main_fields());
+        local_only_forbidden.extend(integration_fields());
+        assert_rejects_cross_variant_fields::<MergeVerifyRequest>(
+            local_checkpoint_verify(),
+            local_only_forbidden,
+        );
+
+        let mut synchronized_forbidden = adaptation_fields();
+        synchronized_forbidden.extend(main_fields());
+        synchronized_forbidden.extend(integration_fields());
+        assert_rejects_cross_variant_fields::<MergeVerifyRequest>(
+            synchronized_task_verify(),
+            synchronized_forbidden,
+        );
+
+        let mut adapted_forbidden = main_fields();
+        adapted_forbidden.extend(integration_fields());
+        assert_rejects_cross_variant_fields::<MergeVerifyRequest>(
+            synchronized_task_adapted_verify(),
+            adapted_forbidden,
+        );
+
+        let mut sandbox_forbidden = adaptation_fields();
+        sandbox_forbidden.extend(integration_fields());
+        assert_rejects_cross_variant_fields::<MergeVerifyRequest>(
+            main_sandbox_verify(),
+            sandbox_forbidden,
+        );
+        assert_rejects_cross_variant_fields::<MergeVerifyRequest>(
+            main_integration_verify(),
+            adaptation_fields(),
+        );
     }
 
     #[test]
