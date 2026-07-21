@@ -3,6 +3,8 @@ pub(crate) mod delivery;
 #[allow(dead_code)]
 pub(crate) mod merge;
 #[allow(dead_code)]
+pub(crate) mod repository;
+#[allow(dead_code)]
 pub(crate) mod task;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
@@ -88,6 +90,46 @@ pub(super) enum ApplyDecision {
 pub(super) struct DigestApproval {
     digest: Sha256Digest,
     decision: ApplyDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DigestApprovalMismatch {
+    expected: Sha256Digest,
+    observed: Sha256Digest,
+}
+
+impl DigestApprovalMismatch {
+    pub(crate) fn expected(&self) -> &Sha256Digest {
+        &self.expected
+    }
+
+    pub(crate) fn observed(&self) -> &Sha256Digest {
+        &self.observed
+    }
+}
+
+impl std::fmt::Display for DigestApprovalMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("approval digest does not match the request-bound digest")
+    }
+}
+
+impl std::error::Error for DigestApprovalMismatch {}
+
+impl DigestApproval {
+    pub(super) fn validate_digest(
+        &self,
+        expected: &Sha256Digest,
+    ) -> Result<(), DigestApprovalMismatch> {
+        if &self.digest == expected {
+            Ok(())
+        } else {
+            Err(DigestApprovalMismatch {
+                expected: expected.clone(),
+                observed: self.digest.clone(),
+            })
+        }
+    }
 }
 
 pub(super) fn execution_policy_for_json<T>(
