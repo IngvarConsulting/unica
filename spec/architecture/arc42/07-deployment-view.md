@@ -33,7 +33,25 @@ archive utilities are not part of the consumer deployment.
 
 ## State and rollback
 
-Workspace state stays under `.build/unica` or `UNICA_CACHE_DIR`. Downloaded
-runtime state is version/target scoped and guarded by a ready marker. Migration
-backups live under `$CODEX_HOME/unica/migration-backups`; failed migration
-restores configuration atomically and reverses successful Codex mutations.
+Volatile workspace/cache state stays under `.build/unica` or `UNICA_CACHE_DIR`.
+Branched-development task/operation/lock/recovery state instead stays under the
+OS per-user application-state directory or `UNICA_STATE_DIR`; it survives cache
+deletion and has explicit schema migration and durable-write semantics.
+A small owner-only coordination root resolved from the OS user profile is not
+overridden; it locates the registered durable root and unresolved tasks across
+process restarts and override changes.
+It is a host-local guard only. A platform row identifies every original and
+repository endpoint as `hostConfined` or `multiHost`; the latter requires a
+reachable linearizable shared reservation coordinator, whose durable fenced
+receipts survive local process-lease loss. No additional capability manifest is
+introduced.
+
+Large task IBs, XML, sandboxes, checkpoints, artifacts, and raw logs live below
+the configured task work root in one marker-owned UUID instance. Successful or
+safely abandoned cleanup quarantines and deletes only that instance; compact
+redacted state/archive remain under the durable state root.
+
+Downloaded runtime state is version/target scoped and guarded by a ready marker.
+Migration backups live under `$CODEX_HOME/unica/migration-backups`; failed
+migration restores configuration atomically and reverses successful Codex
+mutations.

@@ -16,13 +16,20 @@ path = "src/lib.rs"
 [dependencies]
 fs2.workspace = true
 serde.workspace = true
+schemars.workspace = true
 serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
+time.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
 ureq.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+regex.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
