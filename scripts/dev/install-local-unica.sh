@@ -190,7 +190,7 @@ fi
 rm -rf "$PACKAGE_OUT"
 "$PYTHON_BIN" scripts/ci/package-unica-plugin.py \
   --repo-root "$REPO_ROOT" \
-  --tools-root "$TOOLS_ROOT" \
+  --tools-root "$TOOL_BUNDLE" \
   --lock-file plugins/unica/third-party/tools.lock.json \
   --out-dir "$PACKAGE_OUT" \
   --marketplace-name "$MARKETPLACE_NAME" \

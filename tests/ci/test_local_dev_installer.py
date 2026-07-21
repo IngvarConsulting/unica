@@ -139,6 +139,50 @@ class LocalDevInstallerTests(unittest.TestCase):
             f"--skip-build requested, but bundle is missing: {bundle}/tools.json\n",
         )
 
+    def test_prebuilt_bundle_override_is_passed_to_packager(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / "prebuilt-bundle"
+            bundle.mkdir()
+            (bundle / "tools.json").write_text("{}\n", encoding="utf-8")
+            captured = tmp_path / "package-args"
+            python_wrapper = tmp_path / "python-wrapper"
+            self.write_executable(
+                python_wrapper,
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1\" == *package-unica-plugin.py ]]; then\n"
+                f"  printf '%s\\n' \"$@\" > {shlex.quote(str(captured))}\n"
+                "  exit 91\n"
+                "fi\n"
+                f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+            )
+            env = os.environ.copy()
+            env["PYTHON"] = str(python_wrapper)
+            env["UNICA_LOCAL_TOOL_BUNDLE"] = str(bundle)
+
+            completed = subprocess.run(
+                [
+                    str(INSTALLER),
+                    "--build-dir",
+                    str(tmp_path / "build"),
+                    "--skip-build",
+                    "--skip-install",
+                    "--skip-verify",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            package_args = captured.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(completed.returncode, 91)
+        tools_root_index = package_args.index("--tools-root") + 1
+        self.assertEqual(package_args[tools_root_index], str(bundle))
+
     def test_unsupported_shells_and_hosts_keep_status_78(self) -> None:
         cases = (
             ("MSYS_NT-10.0-19045", "x86_64"),
