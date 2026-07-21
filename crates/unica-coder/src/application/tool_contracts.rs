@@ -1487,9 +1487,13 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "selector" => json!({
                 "type": "object",
                 "additionalProperties": false,
+                "properties": {
+                    "method": { "type": "string", "minLength": 1 },
+                    "anchor": { "type": "string", "minLength": 1 }
+                },
                 "oneOf": [
-                    { "required": ["method"], "properties": { "method": { "type": "string", "minLength": 1 } } },
-                    { "required": ["anchor"], "properties": { "anchor": { "type": "string", "minLength": 1 } } }
+                    { "required": ["method"] },
+                    { "required": ["anchor"] }
                 ]
             }),
             _ => property_schema(name),
@@ -2173,6 +2177,27 @@ mod tests {
         let logs_schema = input_schema_for_tool(&job_logs);
         assert_eq!(logs_schema["required"], json!(["jobId"]));
         assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+    }
+
+    #[test]
+    fn code_patch_schema_accepts_each_documented_selector_variant() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .expect("code patch tool is registered");
+        let schema = input_schema_for_tool(&tool);
+        let selector = &schema["properties"]["selector"];
+
+        assert_eq!(selector["type"], "object");
+        assert_eq!(selector["additionalProperties"], false);
+        assert_eq!(selector["properties"]["method"]["type"], "string");
+        assert_eq!(selector["properties"]["anchor"]["type"], "string");
+        assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
+        for required in ["path", "operation", "selector", "content", "position"] {
+            assert!(schema["required"].as_array().is_some_and(|items| {
+                items.iter().any(|value| value == required)
+            }));
+        }
     }
 
     #[test]
