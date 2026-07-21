@@ -19,6 +19,7 @@
 - Do not change package metadata, release targets, public MCP tools, or prompt-visible skills.
 - Do not add a PowerShell installer, cross-compilation, or fallback downloads.
 - Use the real Windows tool bundle in CI; fake only the external Codex CLI command boundary.
+- Reuse `.build/tool-bundles/win-x64` directly; do not reintroduce `unica-tools-*` workflow naming removed by issue #154.
 
 ---
 
@@ -381,17 +382,49 @@ git commit --no-gpg-sign -m "docs: describe Windows Git Bash development"
 
 **Files:**
 - Modify: `tests/ci/test_local_dev_installer.py`
+- Modify: `scripts/dev/install-local-unica.sh`
 - Modify: `.github/workflows/unica-plugin-release.yml`
 
 **Interfaces:**
 - Consumes: `.build/tool-bundles/win-x64` produced and already MCP-smoked by the `build-tools` matrix job.
-- Produces: an isolated Windows Git Bash package/install/verify smoke using real `v8-runner.exe` and `unica.exe` binaries.
+- Produces: `UNICA_LOCAL_TOOL_BUNDLE` as an internal prebuilt-bundle seam and
+  an isolated Windows Git Bash package/install/verify smoke using real
+  `v8-runner.exe` and `unica.exe` binaries.
 
 - [ ] **Step 1: Add a failing workflow contract test**
 
-Add this method to `LocalDevInstallerTests`:
+Add these methods to `LocalDevInstallerTests`:
 
 ```python
+    def test_prebuilt_bundle_override_controls_skip_build_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / "prebuilt-bundle"
+            env = os.environ.copy()
+            env["UNICA_LOCAL_TOOL_BUNDLE"] = str(bundle)
+            completed = subprocess.run(
+                [
+                    str(INSTALLER),
+                    "--build-dir",
+                    str(tmp_path / "build"),
+                    "--skip-build",
+                    "--skip-install",
+                    "--skip-verify",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 66)
+        self.assertEqual(
+            completed.stderr,
+            f"--skip-build requested, but bundle is missing: {bundle}/tools.json\n",
+        )
+
     def test_windows_ci_runs_local_installer_package_install_verify_smoke(self) -> None:
         workflow = (
             REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
@@ -399,9 +432,8 @@ Add this method to `LocalDevInstallerTests`:
         required = (
             "Smoke local development installer on Windows",
             "if: matrix.target == 'win-x64'",
-            'bundle_root="$build_root/tool-artifacts/unica-tools-win-x64"',
-            'cp -R ".build/tool-bundles/win-x64" "$bundle_root"',
             'CODEX_HOME="$build_root/codex-home"',
+            'UNICA_LOCAL_TOOL_BUNDLE="$PWD/.build/tool-bundles/win-x64"',
             'PATH="$fake_bin:$PATH"',
             "scripts/dev/install-local-unica.sh",
             "--skip-build",
@@ -409,6 +441,7 @@ Add this method to `LocalDevInstallerTests`:
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, workflow)
+        self.assertNotIn("unica-tools-", workflow)
 ```
 
 - [ ] **Step 2: Run the workflow contract and verify RED**
@@ -417,13 +450,22 @@ Run:
 
 ```bash
 python3.12 -m unittest \
+  tests.ci.test_local_dev_installer.LocalDevInstallerTests.test_prebuilt_bundle_override_controls_skip_build_check \
   tests.ci.test_local_dev_installer.LocalDevInstallerTests.test_windows_ci_runs_local_installer_package_install_verify_smoke \
   -v
 ```
 
-Expected: FAIL because the Windows build job does not invoke the local installer.
+Expected: FAIL because the installer ignores the prebuilt-bundle override and
+the Windows build job does not use it.
 
 - [ ] **Step 3: Add the Windows-only installer smoke step**
+
+In `scripts/dev/install-local-unica.sh`, select the internal override without
+changing the default local bundle layout:
+
+```bash
+TOOL_BUNDLE="${UNICA_LOCAL_TOOL_BUNDLE:-$TOOLS_ROOT/unica-tools-$TARGET}"
+```
 
 In `.github/workflows/unica-plugin-release.yml`, immediately after `Smoke packaged Unica MCP`, add:
 
@@ -434,12 +476,10 @@ In `.github/workflows/unica-plugin-release.yml`, immediately after `Smoke packag
         run: |
           set -euo pipefail
           build_root="$PWD/.build/local-installer-smoke"
-          bundle_root="$build_root/tool-artifacts/unica-tools-win-x64"
           fake_bin="$build_root/fake-bin"
           CODEX_HOME="$build_root/codex-home"
           rm -rf "$build_root"
-          mkdir -p "$(dirname "$bundle_root")" "$fake_bin"
-          cp -R ".build/tool-bundles/win-x64" "$bundle_root"
+          mkdir -p "$fake_bin"
           cat > "$fake_bin/codex" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -456,7 +496,9 @@ In `.github/workflows/unica-plugin-release.yml`, immediately after `Smoke packag
           esac
           EOF
           chmod +x "$fake_bin/codex"
-          CODEX_HOME="$CODEX_HOME" PATH="$fake_bin:$PATH" \
+          CODEX_HOME="$CODEX_HOME" \
+            UNICA_LOCAL_TOOL_BUNDLE="$PWD/.build/tool-bundles/win-x64" \
+            PATH="$fake_bin:$PATH" \
             scripts/dev/install-local-unica.sh \
               --build-dir "$build_root" \
               --skip-build
@@ -473,13 +515,13 @@ python3.12 -m unittest tests.ci.test_local_dev_installer -v
 actionlint .github/workflows/unica-plugin-release.yml
 ```
 
-Expected: all five installer test methods pass and `actionlint` reports no
+Expected: all seven installer test methods pass and `actionlint` reports no
 workflow, expression, or embedded-shell errors.
 
 - [ ] **Step 5: Commit the Windows integration smoke**
 
 ```bash
-git add .github/workflows/unica-plugin-release.yml tests/ci/test_local_dev_installer.py
+git add .github/workflows/unica-plugin-release.yml scripts/dev/install-local-unica.sh tests/ci/test_local_dev_installer.py
 git commit --no-gpg-sign -m "ci: smoke local installer on Windows"
 ```
 

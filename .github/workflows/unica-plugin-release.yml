@@ -198,12 +198,10 @@ jobs:
         run: |
           set -euo pipefail
           build_root="$PWD/.build/local-installer-smoke"
-          bundle_root="$build_root/tool-artifacts/unica-tools-win-x64"
           fake_bin="$build_root/fake-bin"
           CODEX_HOME="$build_root/codex-home"
           rm -rf "$build_root"
-          mkdir -p "$(dirname "$bundle_root")" "$fake_bin"
-          cp -R ".build/tool-bundles/win-x64" "$bundle_root"
+          mkdir -p "$fake_bin"
           cat > "$fake_bin/codex" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -220,7 +218,9 @@ jobs:
           esac
           EOF
           chmod +x "$fake_bin/codex"
-          CODEX_HOME="$CODEX_HOME" PATH="$fake_bin:$PATH" \
+          CODEX_HOME="$CODEX_HOME" \
+            UNICA_LOCAL_TOOL_BUNDLE="$PWD/.build/tool-bundles/win-x64" \
+            PATH="$fake_bin:$PATH" \
             scripts/dev/install-local-unica.sh \
               --build-dir "$build_root" \
               --skip-build

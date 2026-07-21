@@ -71,7 +71,8 @@ second expensive Windows build. That job already builds the real `win-x64`
 bundle and launches the bundled `unica.exe` through the MCP smoke. A
 Windows-only installer step will:
 
-1. place that real bundle in the directory layout expected by `--skip-build`;
+1. pass that real bundle directly through the internal
+   `UNICA_LOCAL_TOOL_BUNDLE` test seam used with `--skip-build`;
 2. use an isolated temporary `CODEX_HOME`;
 3. provide a deterministic fake only for the external `codex plugin` and
    `codex debug prompt-input` boundary;
@@ -87,7 +88,8 @@ the real tool executables under test.
 
 Together, the pre-existing Windows build step and the new installer smoke cover
 build, package, executable launch, install, and verify in one Windows job
-without compiling the Rust workspace twice.
+without compiling the Rust workspace twice or reintroducing the removed
+`unica-tools-*` workflow artifact convention.
 
 ## Contributor Documentation
 

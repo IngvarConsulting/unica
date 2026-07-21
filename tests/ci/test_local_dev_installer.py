@@ -110,6 +110,35 @@ class LocalDevInstallerTests(unittest.TestCase):
         self.assertIn("==> Unica local target: win-x64\n", completed.stdout)
         self.assertIn("--skip-build requested, but bundle is missing:", completed.stderr)
 
+    def test_prebuilt_bundle_override_controls_skip_build_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / "prebuilt-bundle"
+            env = os.environ.copy()
+            env["UNICA_LOCAL_TOOL_BUNDLE"] = str(bundle)
+            completed = subprocess.run(
+                [
+                    str(INSTALLER),
+                    "--build-dir",
+                    str(tmp_path / "build"),
+                    "--skip-build",
+                    "--skip-install",
+                    "--skip-verify",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 66)
+        self.assertEqual(
+            completed.stderr,
+            f"--skip-build requested, but bundle is missing: {bundle}/tools.json\n",
+        )
+
     def test_unsupported_shells_and_hosts_keep_status_78(self) -> None:
         cases = (
             ("MSYS_NT-10.0-19045", "x86_64"),
@@ -152,9 +181,8 @@ class LocalDevInstallerTests(unittest.TestCase):
         required = (
             "Smoke local development installer on Windows",
             "if: matrix.target == 'win-x64'",
-            'bundle_root="$build_root/tool-artifacts/unica-tools-win-x64"',
-            'cp -R ".build/tool-bundles/win-x64" "$bundle_root"',
             'CODEX_HOME="$build_root/codex-home"',
+            'UNICA_LOCAL_TOOL_BUNDLE="$PWD/.build/tool-bundles/win-x64"',
             'PATH="$fake_bin:$PATH"',
             "scripts/dev/install-local-unica.sh",
             "--skip-build",
@@ -162,6 +190,7 @@ class LocalDevInstallerTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, workflow)
+        self.assertNotIn("unica-tools-", workflow)
 
 
 if __name__ == "__main__":
