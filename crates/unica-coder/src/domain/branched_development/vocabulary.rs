@@ -288,6 +288,8 @@ pub enum BranchedLifecycleToolName {
 }
 
 impl BranchedLifecycleToolName {
+    pub const COUNT: usize = 21;
+
     pub const ALL: &[Self] = &[
         Self::BranchedStart,
         Self::BranchedStatus,

@@ -1,11 +1,15 @@
 #[allow(dead_code)]
 pub(crate) mod artifacts;
 #[allow(dead_code)]
+pub(crate) mod registry;
+#[allow(dead_code)]
 pub(crate) mod requests;
 #[allow(dead_code)]
 pub(crate) mod scalars;
 #[allow(dead_code)]
 pub(crate) mod schema;
+#[allow(dead_code)]
+pub(crate) mod selectors;
 
 #[cfg(test)]
 mod tests {

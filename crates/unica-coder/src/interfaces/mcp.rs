@@ -571,6 +571,8 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::tools as application_tools;
+    use crate::domain::branched_development::BranchedLifecycleToolName;
     use crate::domain::cancellation::CancellationToken;
     use serde_json::Map;
     use std::io::{BufReader, Read};
@@ -997,6 +999,32 @@ mod tests {
                 "missing {name}"
             );
         }
+    }
+
+    #[test]
+    fn handlerless_branched_lifecycle_registry_is_not_published() {
+        let lifecycle_names = BranchedLifecycleToolName::ALL
+            .iter()
+            .map(BranchedLifecycleToolName::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let application_names = application_tools()
+            .iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(lifecycle_names.is_disjoint(&application_names));
+
+        let response = handle_message(
+            &UnicaApplication::new(),
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+        )
+        .unwrap();
+        let listed_names = response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(lifecycle_names.is_disjoint(&listed_names));
     }
 
     #[test]
