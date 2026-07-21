@@ -39,6 +39,7 @@ Create `tests/ci/test_local_dev_installer.py` with:
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -49,22 +50,27 @@ INSTALLER = REPO_ROOT / "scripts/dev/install-local-unica.sh"
 
 class LocalDevInstallerTests(unittest.TestCase):
     def target_for_host(self, system: str, machine: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                "bash",
-                "-c",
-                'source "$1"; target_for_host "$2" "$3"',
-                "bash",
-                str(INSTALLER),
-                system,
-                machine,
-            ],
-            cwd=REPO_ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        'set -- --build-dir "$4" --skip-build --skip-install '
+                        '--skip-verify; source "$1"; target_for_host "$2" "$3"'
+                    ),
+                    "bash",
+                    str(INSTALLER),
+                    system,
+                    machine,
+                    tmp,
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
 
     def test_supported_hosts_map_to_package_targets(self) -> None:
         cases = (
@@ -116,7 +122,10 @@ Run:
 python3.12 -m unittest tests.ci.test_local_dev_installer -v
 ```
 
-Expected: FAIL because sourcing the current installer executes its normal flow and `target_for_host` does not exist.
+Expected: FAIL safely with status 66 because sourcing the current installer
+reaches the missing temporary `--skip-build` bundle before `target_for_host` can
+run. The RED path must not build tools, install a marketplace, or modify the
+real Codex home.
 
 - [ ] **Step 3: Add the pure mapping functions**
 
