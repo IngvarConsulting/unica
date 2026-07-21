@@ -39,13 +39,13 @@ via `serde_json_canonicalizer`, existing MCP protocol tests.
 - Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
 - Test: `crates/unica-coder/src/domain/branched_development/vocabulary.rs`
 
-- [ ] Add failing tests proving the exact five-value serialized list, rejection
+- [x] Add failing tests proving the exact five-value serialized list, rejection
   of `"readOnly"`, successful conversion of the five durable policies, and a
   typed rejection for `ExecutionPolicy::ReadOnly`.
-- [ ] Add `DurableExecutionPolicy` and `NonDurableExecutionPolicyError` with
+- [x] Add `DurableExecutionPolicy` and `NonDurableExecutionPolicyError` with
   `Display`/`Error`, `ALL`, `as_str`, and explicit `TryFrom<ExecutionPolicy>`.
-- [ ] Export the new types and run focused tests, formatting, and diff checks.
-- [ ] Commit and obtain independent review.
+- [x] Export the new types and run focused tests, formatting, and diff checks.
+- [x] Commit and obtain independent review.
 
 ### Task 2: RFC 8785 operation-input digest
 
