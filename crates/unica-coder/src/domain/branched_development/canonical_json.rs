@@ -8,7 +8,7 @@ const MAX_I_JSON_INTEROPERABLE_INTEGER: u64 = (1 << 53) - 1;
 const OPERATION_INPUT_DIGEST_KIND: &str = "branchedOperationInputV1";
 
 #[derive(Debug)]
-pub enum CanonicalJsonError {
+pub(crate) enum CanonicalJsonError {
     RequestMustBeObject,
     NonInteroperableInteger { value: String },
     Canonicalization(serde_json::Error),
@@ -56,12 +56,12 @@ fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, CanonicalJsonError> {
 }
 
 /// Returns the SHA-256 digest of RFC 8785 canonical JSON for a duplicate-free I-JSON value.
-pub fn canonical_json_digest(value: &Value) -> Result<Sha256Digest, CanonicalJsonError> {
+fn canonical_json_digest(value: &Value) -> Result<Sha256Digest, CanonicalJsonError> {
     canonical_json_bytes(value).map(|bytes| sha256_digest(&bytes))
 }
 
 /// Returns the domain-separated digest for one durable branched operation request.
-pub fn operation_input_digest(
+pub(crate) fn operation_input_digest(
     tool_name: BranchedLifecycleToolName,
     execution_policy: DurableExecutionPolicy,
     request: &Value,
@@ -120,7 +120,14 @@ fn validate_i_json_number(number: &Number) -> Result<(), CanonicalJsonError> {
                 .as_u64()
                 .map(|value| value <= MAX_I_JSON_INTEROPERABLE_INTEGER)
         })
-        .unwrap_or(true);
+        .or_else(|| {
+            number.as_f64().map(|value| {
+                value.is_finite()
+                    && (value.fract() != 0.0
+                        || value.abs() <= MAX_I_JSON_INTEROPERABLE_INTEGER as f64)
+            })
+        })
+        .unwrap_or(false);
 
     interoperable
         .then_some(())
@@ -289,6 +296,67 @@ mod tests {
             ));
             assert!(matches!(
                 canonical_json_digest(&value),
+                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn canonical_json_checks_safe_integer_range_for_decimal_and_exponent_forms() {
+        for value in [
+            json!(9_007_199_254_740_991.0),
+            json!(-9_007_199_254_740_991.0),
+            json!(9.007_199_254_740_991e15),
+            json!(-9.007_199_254_740_991e15),
+        ] {
+            assert!(canonical_json_digest(&value).is_ok(), "accepted {value}");
+        }
+
+        for value in [
+            json!(9_007_199_254_740_992.0),
+            json!(9_007_199_254_740_993.0),
+            json!(-9_007_199_254_740_992.0),
+            json!(-9_007_199_254_740_993.0),
+            json!(9.007_199_254_740_992e15),
+            json!(-9.007_199_254_740_992e15),
+        ] {
+            assert!(matches!(
+                canonical_json_digest(&value),
+                Err(CanonicalJsonError::NonInteroperableInteger { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn operation_input_digest_checks_safe_integer_range_for_decimal_and_exponent_forms() {
+        let request = |number| {
+            json!({
+                "operationId": "123e4567-e89b-12d3-a456-426614174000",
+                "taskId": "TASK-137",
+                "number": number,
+            })
+        };
+
+        for number in [9_007_199_254_740_991.0, 9.007_199_254_740_991e15] {
+            assert!(operation_input_digest(
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &request(number),
+            )
+            .is_ok());
+        }
+
+        for number in [
+            9_007_199_254_740_992.0,
+            9_007_199_254_740_993.0,
+            9.007_199_254_740_992e15,
+        ] {
+            assert!(matches!(
+                operation_input_digest(
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &request(number),
+                ),
                 Err(CanonicalJsonError::NonInteroperableInteger { .. })
             ));
         }
