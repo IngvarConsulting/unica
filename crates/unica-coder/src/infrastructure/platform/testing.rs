@@ -4,6 +4,33 @@ use std::time::Duration;
 
 pub(crate) use super::filesystem::{create_dir_symlink_for_test, create_file_symlink_for_test};
 
+#[cfg(unix)]
+fn distinct_non_utf8_relative_paths() -> Option<(PathBuf, PathBuf)> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    Some((
+        PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xff])),
+        PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xfe])),
+    ))
+}
+
+#[cfg(windows)]
+fn distinct_non_utf8_relative_paths() -> Option<(PathBuf, PathBuf)> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    Some((
+        PathBuf::from(OsString::from_wide(&[b'a' as u16, b'\\' as u16, 0xd800])),
+        PathBuf::from(OsString::from_wide(&[b'a' as u16, b'\\' as u16, 0xdfff])),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn distinct_non_utf8_relative_paths() -> Option<(PathBuf, PathBuf)> {
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileLinkFixtureOutcome {
     Created,
@@ -206,14 +233,37 @@ pub(crate) fn wait_for_process_exit(_pid: u32, _timeout: Duration) -> bool {
 mod tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
-        set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
+        distinct_non_utf8_relative_paths, set_unix_mode_for_test, unix_mode_for_test,
+        FileLinkFixtureOutcome,
     };
+    use crate::domain::discovery::{PortableRelativePath, PortableRelativePathError};
     use std::fs;
     use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn discovery_paths_reject_distinct_host_names_that_would_collide_lossily() {
+        let Some((first, second)) = distinct_non_utf8_relative_paths() else {
+            return;
+        };
+
+        assert_eq!(
+            first.to_string_lossy(),
+            second.to_string_lossy(),
+            "lossy conversion would collide distinct paths"
+        );
+        assert_eq!(
+            PortableRelativePath::parse(&first),
+            Err(PortableRelativePathError::NonUtf8)
+        );
+        assert_eq!(
+            PortableRelativePath::parse(&second),
+            Err(PortableRelativePathError::NonUtf8)
+        );
+    }
 
     #[test]
     fn unix_mode_fixture_is_exact_or_explicitly_unsupported() {

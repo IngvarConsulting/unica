@@ -1168,28 +1168,4 @@ mod tests {
             );
         }
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn portable_relative_path_rejects_non_utf8_without_lossy_collisions() {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-
-        let first = PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xff]));
-        let second = PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xfe]));
-
-        assert_eq!(
-            String::from_utf8_lossy(first.as_os_str().as_bytes()),
-            String::from_utf8_lossy(second.as_os_str().as_bytes()),
-            "lossy conversion would collide distinct paths"
-        );
-        assert_eq!(
-            PortableRelativePath::parse(&first),
-            Err(PortableRelativePathError::NonUtf8)
-        );
-        assert_eq!(
-            PortableRelativePath::parse(&second),
-            Err(PortableRelativePathError::NonUtf8)
-        );
-    }
 }
