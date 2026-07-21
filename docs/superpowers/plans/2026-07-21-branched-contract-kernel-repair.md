@@ -57,16 +57,16 @@ via `serde_json_canonicalizer`, existing MCP protocol tests.
 - Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
 - Test: `crates/unica-coder/src/domain/branched_development/canonical_json.rs`
 
-- [ ] Add failing RFC vectors for `[]`, reordered `{"b":2,"a":1}`, and
+- [x] Add failing RFC vectors for `[]`, reordered `{"b":2,"a":1}`, and
   `{"a":"€","z":null}`, including exact canonical bytes and contract hashes.
-- [ ] Add failing operation-input tests proving key-order independence,
+- [x] Add failing operation-input tests proving key-order independence,
   tool/policy domain separation, removal of only top-level `operationId`, and
   retention of nested `operationId` plus all other fields.
-- [ ] Add pinned workspace dependency `serde_json_canonicalizer = "0.3.2"`.
-- [ ] Implement a private-literal digest record and a typed canonicalization/hash
+- [x] Add pinned workspace dependency `serde_json_canonicalizer = "0.3.2"`.
+- [x] Implement a private-literal digest record and a typed canonicalization/hash
   error; accept only a JSON object request and return validated `Sha256Digest`.
-- [ ] Run focused tests, dependency/license audit, formatting, and diff checks.
-- [ ] Commit and obtain independent review.
+- [x] Run focused tests, dependency/license audit, formatting, and diff checks.
+- [x] Commit and obtain independent review.
 
 ### Task 3: Reject duplicate JSON names before hashing
 
