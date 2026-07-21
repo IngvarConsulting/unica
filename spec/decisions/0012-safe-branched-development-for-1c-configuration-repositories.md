@@ -1,7 +1,7 @@
 # ADR-0012: Safe branched development for 1C configuration repositories
 
 - Status: accepted
-- Implementation gate: pending confirmation of the hardened support-preflight revision
+- Implementation gate: confirmed by the owner on 2026-07-21
 - Date: 2026-07-21
 - Issue: [#137](https://github.com/IngvarConsulting/unica/issues/137)
 - Acceptance: [Branched development acceptance](../acceptance/branched-development.md)
