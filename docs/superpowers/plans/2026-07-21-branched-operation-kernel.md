@@ -1,5 +1,12 @@
 # Branched Operation Kernel Implementation Plan
 
+> **Historical plan:** Tasks 1-3 were completed and rebased onto specification
+> revision `1531d36`. The post-approval contract audit found additional durable
+> policy, canonical-input, and corrupt-record requirements. Further work follows
+> `2026-07-21-branched-contract-kernel-repair.md` and
+> `2026-07-21-branched-development-roadmap.md`; this document is retained as the
+> reviewed history of the first kernel increment.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the pure, transport-independent identifier, lifecycle-vocabulary, and operation-replay kernel required by ADR-0012 before any branched-development MCP handler is registered.

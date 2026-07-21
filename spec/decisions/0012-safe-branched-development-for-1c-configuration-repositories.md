@@ -1,8 +1,8 @@
 # ADR-0012: Safe branched development for 1C configuration repositories
 
 - Status: accepted
-- Implementation gate: reopened by this audit; fresh explicit owner approval is
-  required before any production implementation resumes
+- Implementation gate: approved by the owner on 2026-07-21 for specification
+  revision `1531d36`; production implementation may resume under this contract
 - Date: 2026-07-21
 - Issue: [#137](https://github.com/IngvarConsulting/unica/issues/137)
 - Acceptance: [Branched development acceptance](../acceptance/branched-development.md)
