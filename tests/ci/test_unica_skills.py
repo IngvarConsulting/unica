@@ -566,7 +566,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
 
-    def test_ai_rules_guidance_refresh_is_adapted_to_unica_surface(self) -> None:
+    def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
             "code-search": self.skill_root() / "code-search" / "SKILL.md",
             "code-diagnostics": self.skill_root() / "code-diagnostics" / "SKILL.md",

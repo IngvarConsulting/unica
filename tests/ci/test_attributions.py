@@ -138,6 +138,7 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("unknown attribution: tool ghost", errors)
         self.assertIn("tool other: repository link must match https://example.invalid/other", errors)
         self.assertIn("tool other: declared license MIT must appear in the section", errors)
+        self.assertIn("tool other: license link must point to a packaged file", errors)
 
     def test_repository_attribution_page_is_complete_and_linked(self) -> None:
         module = load_attribution_module()

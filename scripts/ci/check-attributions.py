@@ -108,12 +108,20 @@ def is_https(url: str | None) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
-def validate_local_license(root: Path, marker: tuple[str, str], link: str | None) -> str | None:
+def validate_local_license(
+    root: Path,
+    marker: tuple[str, str],
+    link: str | None,
+    *,
+    allow_external: bool,
+) -> str | None:
     label = f"{marker[0]} {marker[1]}"
     if not link:
         return f"{label}: license link is required"
     if is_https(link):
-        return None
+        if allow_external:
+            return None
+        return f"{label}: license link must point to a packaged file"
     relative = Path(link.split("#", 1)[0])
     if relative.is_absolute() or ".." in relative.parts:
         return f"{label}: license link must stay inside plugins/unica"
@@ -173,7 +181,12 @@ def validate_attributions(
         if needs_license:
             if kind in {"project", "tool"} and record["license"] not in section:
                 errors.append(f"{label}: declared license {record['license']} must appear in the section")
-            license_error = validate_local_license(root, marker, labelled_link(section, "license"))
+            license_error = validate_local_license(
+                root,
+                marker,
+                labelled_link(section, "license"),
+                allow_external=kind == "upstream",
+            )
             if license_error:
                 errors.append(license_error)
 
