@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "correctedAt": "2026-07-22",
+  "upstream": "ai-rules-1c",
+  "baselineCommit": "484e550043a4cb749d59d0671329f3112e3ae668",
+  "previousClassification": "adapted guidance",
+  "correctedClassification": "inspiration-only",
+  "reason": "Unica used general ideas from ai-rules-1c. No donor expression was copied or adapted; each local skill is Unica-owned.",
+  "licenseFinding": "No license was published at the recorded baseline, so Unica makes no redistribution or adaptation claim for this source.",
+  "historicalRecords": "Earlier dated review artifacts are retained as historical records and are superseded by this correction for current provenance classification."
+}

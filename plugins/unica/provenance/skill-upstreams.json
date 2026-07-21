@@ -1089,8 +1089,8 @@
       "entries": [
         {
           "skill": "api-design",
-          "status": "adapted",
-          "notes": "Unica-owned skill based on the Infostart \"База по API\" model; ai-rules-1c is tracked only as possible secondary guidance for architecture/MCP-routing ideas.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/architect.md",
             "content/agents/arch-reviewer.md",
@@ -1106,12 +1106,12 @@
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
           "primarySource": "unica",
           "decision": "ignored-with-reason",
-          "decisionReason": "Unica-owned skill; ai-rules-1c changes are secondary guidance only and do not replace the Infostart-based API model."
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "background-jobs",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/async-methods.md",
             "content/rules/locks-and-transactions.md",
@@ -1125,12 +1125,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "bsp-patterns",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/platform-solutions.md",
             "content/rules/tooling-playbooks.md",
@@ -1144,12 +1146,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "code-diagnostics",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/commands/doctor.md",
             "content/commands/checkmcp.md",
@@ -1163,12 +1167,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "code-review",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/code-reviewer.md",
             "content/rules/anti-patterns.md",
@@ -1182,12 +1188,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "code-search",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/explorer.md",
             "content/rules/mcp-first-search.md",
@@ -1200,12 +1208,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "data-exchange",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/integrations-add.md",
             "content/rules/registers-design.md",
@@ -1218,12 +1228,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "data-separation",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/dev-standards-architecture.md",
             "content/rules/dev-standards-core.md",
@@ -1237,12 +1249,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "db-performance",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/performance-optimizer.md",
             "content/rules/dcs-design.md",
@@ -1255,12 +1269,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "integration-implement",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/integrations-add.md",
             "content/rules/sdd-integrations.md",
@@ -1273,12 +1289,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "log-analysis",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/logging-strategy.md",
             "content/agents/performance-optimizer.md",
@@ -1291,12 +1309,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "platform-help",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/platform-solutions.md",
             "content/rules/dev-standards-core.md",
@@ -1309,12 +1329,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "query-optimize",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/performance-optimizer.md",
             "content/rules/dcs-design.md",
@@ -1327,12 +1349,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "release-support",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/extension-patterns.md",
             "content/rules/verification-checklist.md",
@@ -1345,12 +1369,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "security-auth-crypto",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/rules/integrations-add.md",
             "content/rules/dev-standards-core.md",
@@ -1363,12 +1389,14 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         },
         {
           "skill": "test-authoring",
-          "status": "adapted",
-          "notes": "Guidance adapted from ai-rules-1c and rewritten for Unica skill routing through public unica.* MCP tools.",
+          "status": "inspiration-only",
+          "notes": "Unica-owned skill informed by general ideas from ai-rules-1c; no donor expression was copied or adapted.",
           "upstreamPaths": [
             "content/agents/tester.md",
             "content/rules/verification-checklist.md",
@@ -1382,12 +1410,15 @@
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "a421cf44eb1f5859cf2a2b74884f8fbcaefc4826",
-          "decision": "ported"
+          "decision": "ignored-with-reason",
+          "primarySource": "unica",
+          "decisionReason": "Unica used ideas only; the local skill is Unica-owned, and no donor expression was copied or adapted."
         }
       ],
-      "lastAdaptedLocalCommit": "e5b4eeab4dac92e0c9f60d3f886aa2bb7ef79f80",
-      "lastAdaptedAt": "2026-05-04T23:48:32+07:00",
-      "baselineSelection": "latest donor commit before the local v17/v18 guidance adaptation window"
+      "baselineSelection": "latest donor commit reviewed as an inspiration source",
+      "usage": "inspiration-only",
+      "lastReviewedLocalCommit": "e5b4eeab4dac92e0c9f60d3f886aa2bb7ef79f80",
+      "lastReviewedAt": "2026-05-04T23:48:32+07:00"
     },
     {
       "id": "v8-runner-rust",

@@ -24,6 +24,7 @@ ALLOWED_ROLES = {
 }
 ALLOWED_STATUSES = {
     "adapted",
+    "inspiration-only",
     "ported-to-unica",
     "test-fixture-only",
     "still-local-script",

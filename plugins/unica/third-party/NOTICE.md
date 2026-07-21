@@ -13,8 +13,9 @@ commit generated tool binaries.
 
 ## v8-runner
 
+- Included license: `third-party/licenses/v8-runner/LICENSE`
 - See `third-party/tools.lock.json` for the pinned repository, version, tag,
-  commit, license field, and target assets.
+  commit, AGPL-3.0-only license field, and target assets.
 
 ## rlm-tools-bsl
 

@@ -64,7 +64,7 @@
       "sourceCommit": "ad72f64222ab0a7e6dfd391adb437a956c0a2428",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
       "assetTag": "v8-runner-v0.5.1-build.1",
-      "license": "MIT",
+      "license": "AGPL-3.0-only",
       "assetStrategy": "direct-release-asset",
       "binaryName": "v8-runner",
       "assets": {
