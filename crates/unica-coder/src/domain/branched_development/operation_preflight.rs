@@ -2,9 +2,8 @@ use crate::domain::branched_development::Sha256Digest;
 use crate::domain::i_json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-#[derive(Debug)]
 pub(super) enum OperationPreflight {
     StrictJsonFailure {
         source_bytes: Arc<[u8]>,
@@ -22,6 +21,36 @@ pub(super) enum OperationPreflight {
         source_bytes: Arc<[u8]>,
         observed_digest: Sha256Digest,
     },
+}
+
+impl fmt::Debug for OperationPreflight {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (variant, source_bytes, observed_digest) = match self {
+            Self::StrictJsonFailure {
+                source_bytes,
+                observed_digest,
+            } => ("StrictJsonFailure", source_bytes, observed_digest),
+            Self::TopLevelNotObject {
+                source_bytes,
+                observed_digest,
+            } => ("TopLevelNotObject", source_bytes, observed_digest),
+            Self::ForbiddenReadOnlyPolicy {
+                source_bytes,
+                observed_digest,
+            } => ("ForbiddenReadOnlyPolicy", source_bytes, observed_digest),
+            Self::OpaqueCandidate {
+                source_bytes,
+                observed_digest,
+            } => ("OpaqueCandidate", source_bytes, observed_digest),
+        };
+
+        formatter
+            .debug_struct("OperationPreflight")
+            .field("variant", &variant)
+            .field("observed_digest", observed_digest)
+            .field("source_byte_len", &source_bytes.len())
+            .finish()
+    }
 }
 
 impl OperationPreflight {
@@ -143,26 +172,62 @@ mod tests {
     }
 
     #[test]
-    fn exact_byte_digest_changes_for_whitespace_and_key_order() {
+    fn exact_byte_digest_changes_for_whitespace_only_difference() {
         let compact = source(br#"{"a":1,"b":2}"#);
-        let reordered = source(br#"{ "b": 2, "a": 1 }"#);
+        let whitespace_changed = source(br#"{"a":1, "b":2}"#);
         let compact_result = preflight(Arc::clone(&compact));
-        let reordered_result = preflight(Arc::clone(&reordered));
+        let whitespace_changed_result = preflight(Arc::clone(&whitespace_changed));
 
         assert!(matches!(
             compact_result,
             OperationPreflight::OpaqueCandidate { .. }
         ));
         assert!(matches!(
-            reordered_result,
+            whitespace_changed_result,
             OperationPreflight::OpaqueCandidate { .. }
         ));
         assert_retains_exact_bytes(&compact_result, &compact);
-        assert_retains_exact_bytes(&reordered_result, &reordered);
+        assert_retains_exact_bytes(&whitespace_changed_result, &whitespace_changed);
         assert_ne!(
             compact_result.observed_digest(),
-            reordered_result.observed_digest()
+            whitespace_changed_result.observed_digest()
         );
+    }
+
+    #[test]
+    fn exact_byte_digest_changes_for_key_order_only_difference() {
+        let a_then_b = source(br#"{"a":1,"b":2}"#);
+        let b_then_a = source(br#"{"b":2,"a":1}"#);
+        let a_then_b_result = preflight(Arc::clone(&a_then_b));
+        let b_then_a_result = preflight(Arc::clone(&b_then_a));
+
+        assert!(matches!(
+            a_then_b_result,
+            OperationPreflight::OpaqueCandidate { .. }
+        ));
+        assert!(matches!(
+            b_then_a_result,
+            OperationPreflight::OpaqueCandidate { .. }
+        ));
+        assert_retains_exact_bytes(&a_then_b_result, &a_then_b);
+        assert_retains_exact_bytes(&b_then_a_result, &b_then_a);
+        assert_ne!(
+            a_then_b_result.observed_digest(),
+            b_then_a_result.observed_digest()
+        );
+    }
+
+    #[test]
+    fn debug_redacts_secret_source_bytes_but_keeps_safe_diagnostics() {
+        let bytes = source(br#"{"secret":"correct-horse-battery-staple"}"#);
+        let result = preflight(Arc::clone(&bytes));
+        let debug = format!("{result:?}");
+
+        assert!(debug.contains("OpaqueCandidate"));
+        assert!(debug.contains(&digest(&bytes).to_string()));
+        assert!(debug.contains(&bytes.len().to_string()));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains(&format!("{:?}", bytes.as_ref())));
     }
 
     #[test]

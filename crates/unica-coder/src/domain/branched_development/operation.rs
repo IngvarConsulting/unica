@@ -8,44 +8,14 @@ use std::fmt;
 /// The provisional replay kernel is intentionally not public until Phase 1
 /// generates the closed task-operation tool union.
 ///
-/// ```compile_fail
-/// use unica_coder::domain::branched_development::{
-///     classify_replay, BranchedLifecycleToolName, DurableExecutionPolicy,
+/// ```compile_fail,E0603
+/// use unica_coder::domain::branched_development::operation::{
+///     classify_replay, OperationReplayView, ReplayDisposition,
 /// };
 ///
-/// let _ = classify_replay(
-///     None,
-///     BranchedLifecycleToolName::MergeApply,
-///     DurableExecutionPolicy::JournaledEffect,
-///     &serde_json::json!({}),
-/// );
-/// ```
-///
-/// ```compile_fail
-/// use unica_coder::domain::branched_development::{
-///     classify_replay, BranchedLifecycleToolName, Sha256Digest,
-/// };
-///
-/// let caller_supplied_digest = Sha256Digest::parse(&"a".repeat(64)).unwrap();
-/// let _ = classify_replay::<BranchedLifecycleToolName>(None, &caller_supplied_digest);
-/// ```
-///
-/// ```compile_fail
-/// use unica_coder::domain::branched_development::{
-///     BranchedLifecycleToolName, ExecutionPolicy, OperationId, OperationReplayView,
-///     OperationState, Sha256Digest,
-/// };
-///
-/// let _ = OperationReplayView::new(
-///     OperationId::parse("123e4567-e89b-12d3-a456-426614174000").unwrap(),
-///     BranchedLifecycleToolName::MergeApply,
-///     ExecutionPolicy::ReadOnly,
-///     Sha256Digest::parse(&"a".repeat(64)).unwrap(),
-///     OperationState::Registered,
-///     None,
-///     None,
-///     None,
-/// );
+/// fn main() {
+///     let _ = (classify_replay, OperationReplayView, ReplayDisposition::InProgress);
+/// }
 /// ```
 pub enum OperationState {
     Registered,
@@ -196,7 +166,7 @@ impl ValidatedOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OperationReplayView {
+struct OperationReplayView {
     operation_id: OperationId,
     tool_name: BranchedLifecycleToolName,
     policy: DurableExecutionPolicy,
@@ -213,7 +183,7 @@ impl OperationReplayView {
             reason = "Task 5 validated loader is the production record-parts consumer"
         )
     )]
-    pub(super) fn from_validated_record_parts(
+    fn from_validated_record_parts(
         operation_id: OperationId,
         tool_name: BranchedLifecycleToolName,
         policy: DurableExecutionPolicy,
@@ -246,7 +216,7 @@ impl OperationReplayView {
             reason = "Task 6 status projection consumes the operation ID"
         )
     )]
-    pub(super) fn operation_id(&self) -> &OperationId {
+    fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
@@ -254,7 +224,7 @@ impl OperationReplayView {
         not(test),
         expect(dead_code, reason = "Task 6 status projection consumes the tool name")
     )]
-    pub(super) fn tool_name(&self) -> BranchedLifecycleToolName {
+    fn tool_name(&self) -> BranchedLifecycleToolName {
         self.tool_name
     }
 
@@ -265,7 +235,7 @@ impl OperationReplayView {
             reason = "Task 6 status projection consumes the durable execution policy"
         )
     )]
-    pub(super) fn policy(&self) -> DurableExecutionPolicy {
+    fn policy(&self) -> DurableExecutionPolicy {
         self.policy
     }
 
@@ -276,13 +246,13 @@ impl OperationReplayView {
             reason = "Task 6 status projection consumes the operation state"
         )
     )]
-    pub(super) fn state(&self) -> OperationState {
+    fn state(&self) -> OperationState {
         self.state.operation_state()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ReplayDisposition {
+enum ReplayDisposition {
     DispatchNew {
         canonical_input_digest: Sha256Digest,
     },
@@ -308,7 +278,7 @@ pub(super) enum ReplayDisposition {
         reason = "Task 5 durable replay dispatch calls the provisional classifier"
     )
 )]
-pub(super) fn classify_replay(
+fn classify_replay(
     record: Option<&OperationReplayView>,
     incoming_tool_name: BranchedLifecycleToolName,
     incoming_policy: DurableExecutionPolicy,
