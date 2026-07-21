@@ -40,22 +40,25 @@ impl ContainedSourceInventoryPort {
         let mut bytes_analyzed = 0_u64;
         let mut bytes_read_budget = 0_u64;
         while let Some((path, (kind, expected_identity))) = pending.pop_first() {
-            if kind == VerifiedDirectoryEntryKind::Directory {
-                let entries = match expected_identity {
-                    Some(expected_identity) => {
-                        read_verified_contained_directory_with_expected_identity(
-                            &self.canonical_root,
-                            &path,
-                            expected_identity,
-                        )
+            match kind {
+                VerifiedDirectoryEntryKind::Directory => {
+                    let entries = match expected_identity {
+                        Some(expected_identity) => {
+                            read_verified_contained_directory_with_expected_identity(
+                                &self.canonical_root,
+                                &path,
+                                expected_identity,
+                            )
+                        }
+                        None => read_verified_contained_directory(&self.canonical_root, &path),
                     }
-                    None => read_verified_contained_directory(&self.canonical_root, &path),
+                    .map_err(classify_verified_directory_error)?;
+                    for entry in entries {
+                        pending.insert(entry.path, (entry.kind, Some(entry.identity)));
+                    }
+                    continue;
                 }
-                .map_err(classify_verified_directory_error)?;
-                for entry in entries {
-                    pending.insert(entry.path, (entry.kind, Some(entry.identity)));
-                }
-                continue;
+                VerifiedDirectoryEntryKind::RegularFile => {}
             }
             if !is_evidence_candidate(&path) {
                 continue;
@@ -280,10 +283,23 @@ fn classify_contained_file_error(error: ContainedFileError) -> CaptureError {
             ))
         }
         ContainedFileError::Io { operation, source } => classify_inventory_io(operation, source),
-        error => CaptureError::ContractViolation(ProviderDiagnostic::material(
-            "inventory_verified_read",
-            format!("verified source read failed: {error}"),
-        )),
+        error @ (ContainedFileError::RootNotCanonical
+        | ContainedFileError::RootNotDirectory
+        | ContainedFileError::PathOutsideRoot
+        | ContainedFileError::FinalPathOutsideRoot
+        | ContainedFileError::FinalPathMismatch
+        | ContainedFileError::AmbiguousHostPath
+        | ContainedFileError::InvalidRelativePath(_)
+        | ContainedFileError::SymlinkOrReparsePoint
+        | ContainedFileError::NotRegularFile
+        | ContainedFileError::IdentityChanged
+        | ContainedFileError::SizeLimitExceeded { .. }
+        | ContainedFileError::LengthOverflow) => {
+            CaptureError::ContractViolation(ProviderDiagnostic::material(
+                "inventory_verified_read",
+                format!("verified source read failed: {error}"),
+            ))
+        }
     }
 }
 
@@ -306,10 +322,20 @@ fn classify_verified_directory_error(error: VerifiedDirectoryError) -> CaptureEr
                 format!("source inventory contains an unsafe filesystem entry: {error}"),
             ))
         }
-        error => CaptureError::ContractViolation(ProviderDiagnostic::material(
-            "inventory_verified_directory",
-            format!("verified source directory failed: {error}"),
-        )),
+        error @ (VerifiedDirectoryError::RootNotCanonical
+        | VerifiedDirectoryError::RootNotDirectory
+        | VerifiedDirectoryError::PathOutsideRoot
+        | VerifiedDirectoryError::FinalPathOutsideRoot
+        | VerifiedDirectoryError::FinalPathMismatch
+        | VerifiedDirectoryError::AmbiguousHostPath
+        | VerifiedDirectoryError::InvalidRelativePath(_)
+        | VerifiedDirectoryError::IdentityChanged
+        | VerifiedDirectoryError::LengthOverflow) => {
+            CaptureError::ContractViolation(ProviderDiagnostic::material(
+                "inventory_verified_directory",
+                format!("verified source directory failed: {error}"),
+            ))
+        }
     }
 }
 
@@ -555,6 +581,13 @@ mod tests {
             classify_verified_directory_error(VerifiedDirectoryError::Io {
                 operation: "resolve opened directory path",
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+            }),
+            CaptureError::Failed(_)
+        ));
+        assert!(matches!(
+            classify_contained_file_error(ContainedFileError::Io {
+                operation: "resolve opened file path",
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "procfd unavailable"),
             }),
             CaptureError::Failed(_)
         ));

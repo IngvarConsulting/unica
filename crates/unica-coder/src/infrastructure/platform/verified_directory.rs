@@ -109,7 +109,7 @@ pub(crate) fn read_verified_contained_directory(
     root: &Path,
     path: &Path,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
-    read_verified_contained_directory_observing(root, path, None, || {}, || {})
+    read_verified_contained_directory_observing(root, path, None, || {}, || {}, || {})
 }
 
 pub(crate) fn read_verified_contained_directory_with_expected_identity(
@@ -117,7 +117,14 @@ pub(crate) fn read_verified_contained_directory_with_expected_identity(
     path: &Path,
     expected_identity: VerifiedIdentity,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
-    read_verified_contained_directory_observing(root, path, Some(expected_identity), || {}, || {})
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        Some(expected_identity),
+        || {},
+        || {},
+        || {},
+    )
 }
 
 #[cfg(test)]
@@ -133,6 +140,23 @@ fn read_verified_contained_directory_with_observer(
         None,
         post_open_observer,
         enumeration_observer,
+        || {},
+    )
+}
+
+#[cfg(test)]
+fn read_verified_contained_directory_with_final_metadata_observer(
+    root: &Path,
+    path: &Path,
+    final_metadata_observer: impl FnOnce(),
+) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        None,
+        || {},
+        || {},
+        final_metadata_observer,
     )
 }
 
@@ -142,6 +166,7 @@ fn read_verified_contained_directory_observing(
     expected_identity: Option<VerifiedIdentity>,
     post_open_observer: impl FnOnce(),
     enumeration_observer: impl FnOnce(),
+    final_metadata_observer: impl FnOnce(),
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     let canonical_root = std::fs::canonicalize(root)
         .map(|path| {
@@ -196,12 +221,13 @@ fn read_verified_contained_directory_observing(
         return Err(VerifiedDirectoryError::IdentityChanged);
     }
     post_open_observer();
-    validate_opened_directory(
+    validate_opened_directory_observing(
         &canonical_root,
         &candidate,
         expected_relative.as_ref(),
         &directory,
         opened_identity,
+        final_metadata_observer,
     )?;
     enumeration_observer();
     let mut entries = enumerate_directory_handle(&directory, &candidate)?;
@@ -258,6 +284,24 @@ fn validate_opened_directory(
     directory: &File,
     opened_identity: VerifiedIdentity,
 ) -> Result<(), VerifiedDirectoryError> {
+    validate_opened_directory_observing(
+        root,
+        candidate,
+        expected_relative,
+        directory,
+        opened_identity,
+        || {},
+    )
+}
+
+fn validate_opened_directory_observing(
+    root: &Path,
+    candidate: &Path,
+    expected_relative: Option<&PortableRelativePath>,
+    directory: &File,
+    opened_identity: VerifiedIdentity,
+    final_metadata_observer: impl FnOnce(),
+) -> Result<(), VerifiedDirectoryError> {
     let metadata = directory
         .metadata()
         .map_err(|source| VerifiedDirectoryError::Io {
@@ -268,14 +312,22 @@ fn validate_opened_directory(
     if directory_identity_from_open_file(directory, &metadata)? != opened_identity {
         return Err(VerifiedDirectoryError::IdentityChanged);
     }
-    let handle_path = final_opened_directory_path(directory)?;
+    let handle_path = final_opened_directory_path(directory).map_err(|error| {
+        reclassify_directory_final_path_error(candidate, opened_identity, error)
+    })?;
     let resolved_path = std::fs::canonicalize(&handle_path)
         .map(|path| {
             crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
         })
-        .map_err(|source| VerifiedDirectoryError::Io {
-            operation: "resolve opened directory path",
-            source,
+        .map_err(|source| {
+            reclassify_directory_final_path_error(
+                candidate,
+                opened_identity,
+                VerifiedDirectoryError::Io {
+                    operation: "resolve opened directory path",
+                    source,
+                },
+            )
         })?;
     if !resolved_path.starts_with(root) {
         return Err(VerifiedDirectoryError::FinalPathOutsideRoot);
@@ -286,10 +338,59 @@ fn validate_opened_directory(
     if portable_directory_relative(final_relative)?.as_ref() != expected_relative {
         return Err(VerifiedDirectoryError::FinalPathMismatch);
     }
+    final_metadata_observer();
+    let final_metadata = std::fs::symlink_metadata(&resolved_path).map_err(|source| {
+        reclassify_directory_final_path_error(
+            candidate,
+            opened_identity,
+            VerifiedDirectoryError::Io {
+                operation: "inspect resolved opened directory",
+                source,
+            },
+        )
+    })?;
+    validate_directory_metadata(&final_metadata)?;
+    if directory_identity_at_path(&resolved_path)? != opened_identity {
+        return Err(VerifiedDirectoryError::IdentityChanged);
+    }
     if directory_identity_at_path(candidate)? != opened_identity {
         return Err(VerifiedDirectoryError::IdentityChanged);
     }
     Ok(())
+}
+
+fn reclassify_directory_final_path_error(
+    candidate: &Path,
+    opened_identity: VerifiedIdentity,
+    final_path_error: VerifiedDirectoryError,
+) -> VerifiedDirectoryError {
+    match directory_identity_at_path(candidate) {
+        Ok(candidate_identity) => {
+            if candidate_identity == opened_identity {
+                final_path_error
+            } else {
+                VerifiedDirectoryError::IdentityChanged
+            }
+        }
+        Err(
+            VerifiedDirectoryError::IdentityChanged
+            | VerifiedDirectoryError::SymlinkOrReparsePoint
+            | VerifiedDirectoryError::NotDirectory
+            | VerifiedDirectoryError::NonRegularEntry,
+        ) => VerifiedDirectoryError::IdentityChanged,
+        Err(
+            VerifiedDirectoryError::RootNotCanonical
+            | VerifiedDirectoryError::RootNotDirectory
+            | VerifiedDirectoryError::PathOutsideRoot
+            | VerifiedDirectoryError::FinalPathOutsideRoot
+            | VerifiedDirectoryError::FinalPathMismatch
+            | VerifiedDirectoryError::AmbiguousHostPath
+            | VerifiedDirectoryError::InvalidRelativePath(_)
+            | VerifiedDirectoryError::LengthOverflow
+            | VerifiedDirectoryError::UnsupportedHost
+            | VerifiedDirectoryError::Io { .. },
+        ) => final_path_error,
+    }
 }
 
 fn validate_directory_metadata(metadata: &Metadata) -> Result<(), VerifiedDirectoryError> {
@@ -549,13 +650,30 @@ fn final_opened_directory_path(_directory: &File) -> Result<PathBuf, VerifiedDir
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn duplicate_directory_descriptor_cloexec(
+    descriptor: std::os::fd::RawFd,
+) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    // SAFETY: descriptor is live for this call. F_DUPFD_CLOEXEC creates a distinct descriptor
+    // with FD_CLOEXEC set atomically, so no inheritable descriptor is observable between calls.
+    let duplicate = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: successful F_DUPFD_CLOEXEC returns a new descriptor owned by this function.
+        Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) })
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn enumerate_directory_handle(
     directory: &File,
     path: &Path,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     use std::ffi::{CStr, CString};
     use std::mem::MaybeUninit;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, IntoRawFd};
     use std::os::unix::ffi::OsStrExt;
 
     struct OwnedDirectory(*mut libc::DIR);
@@ -570,27 +688,21 @@ fn enumerate_directory_handle(
     }
 
     let descriptor = directory.as_raw_fd();
-    // SAFETY: descriptor is live; dup returns an independently owned descriptor on success.
-    let duplicate = unsafe { libc::dup(descriptor) };
-    if duplicate == -1 {
-        return Err(VerifiedDirectoryError::Io {
+    let duplicate = duplicate_directory_descriptor_cloexec(descriptor).map_err(|source| {
+        VerifiedDirectoryError::Io {
             operation: "duplicate verified directory handle",
+            source,
+        }
+    })?;
+    // SAFETY: duplicate is live and remains owned locally until fdopendir succeeds.
+    let stream = unsafe { libc::fdopendir(duplicate.as_raw_fd()) };
+    if stream.is_null() {
+        return Err(VerifiedDirectoryError::Io {
+            operation: "create verified directory stream",
             source: io::Error::last_os_error(),
         });
     }
-    // SAFETY: duplicate is a live descriptor transferred to fdopendir on success.
-    let stream = unsafe { libc::fdopendir(duplicate) };
-    if stream.is_null() {
-        let source = io::Error::last_os_error();
-        // SAFETY: fdopendir failed and therefore did not consume duplicate.
-        unsafe {
-            libc::close(duplicate);
-        }
-        return Err(VerifiedDirectoryError::Io {
-            operation: "create verified directory stream",
-            source,
-        });
-    }
+    let _transferred_descriptor = duplicate.into_raw_fd();
     let stream = OwnedDirectory(stream);
     let mut entries = Vec::new();
     loop {
@@ -849,6 +961,7 @@ mod tests {
     use super::{
         read_verified_contained_directory,
         read_verified_contained_directory_with_expected_identity,
+        read_verified_contained_directory_with_final_metadata_observer,
         read_verified_contained_directory_with_observer, VerifiedDirectoryEntryKind,
         VerifiedDirectoryError,
     };
@@ -929,6 +1042,65 @@ mod tests {
         .expect_err("replacement after enumeration must fail closed");
 
         assert!(matches!(error, VerifiedDirectoryError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn disappearance_during_final_directory_metadata_validation_is_an_identity_change() {
+        let root = fixture_root("disappear-during-final-directory-metadata");
+        let directory = root.join("Objects");
+        fs::create_dir(&directory).expect("directory fixture");
+
+        let error = read_verified_contained_directory_with_final_metadata_observer(
+            &root,
+            &directory,
+            || fs::remove_dir(&directory).expect("remove opened directory during validation"),
+        )
+        .expect_err("disappearance during final metadata validation must fail closed");
+
+        assert!(matches!(error, VerifiedDirectoryError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn unchanged_directory_candidate_preserves_a_final_handle_facility_failure() {
+        let root = fixture_root("unchanged-directory-final-handle-failure");
+        let directory = root.join("Objects");
+        fs::create_dir(&directory).expect("directory fixture");
+        let identity = super::directory_identity_at_path(&directory).expect("fixture identity");
+        let facility_failure = VerifiedDirectoryError::Io {
+            operation: "resolve opened Unix directory handle",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "procfd unavailable"),
+        };
+
+        let error =
+            super::reclassify_directory_final_path_error(&directory, identity, facility_failure);
+
+        assert!(matches!(
+            error,
+            VerifiedDirectoryError::Io {
+                operation: "resolve opened Unix directory handle",
+                ..
+            }
+        ));
+        cleanup(&root);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+    #[test]
+    fn duplicated_directory_descriptors_are_close_on_exec() {
+        use std::os::fd::AsRawFd;
+
+        let root = fixture_root("directory-descriptor-cloexec");
+        let directory = fs::File::open(&root).expect("open directory fixture");
+
+        let duplicate = super::duplicate_directory_descriptor_cloexec(directory.as_raw_fd())
+            .expect("duplicate directory descriptor");
+        // SAFETY: duplicate owns a live descriptor for the duration of this query.
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+
+        assert_ne!(flags, -1);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
         cleanup(&root);
     }
 

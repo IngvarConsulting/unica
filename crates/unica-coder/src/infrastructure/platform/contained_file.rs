@@ -110,7 +110,7 @@ pub(crate) fn read_contained_regular_file(
     path: &Path,
     max_bytes: u64,
 ) -> Result<VerifiedFile, ContainedFileError> {
-    read_contained_regular_file_observing(root, path, max_bytes, None, || {}, || {}, || {})
+    read_contained_regular_file_observing(root, path, max_bytes, None, || {}, || {}, || {}, || {})
 }
 
 pub(crate) fn read_contained_regular_file_with_expected_identity(
@@ -127,6 +127,7 @@ pub(crate) fn read_contained_regular_file_with_expected_identity(
         || {},
         || {},
         || {},
+        || {},
     )
 }
 
@@ -137,7 +138,16 @@ fn read_contained_regular_file_with_observer(
     max_bytes: u64,
     observer: impl FnOnce(),
 ) -> Result<VerifiedFile, ContainedFileError> {
-    read_contained_regular_file_observing(root, path, max_bytes, None, observer, || {}, || {})
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        observer,
+        || {},
+        || {},
+        || {},
+    )
 }
 
 #[cfg(test)]
@@ -147,7 +157,35 @@ fn read_contained_regular_file_with_post_open_observer(
     max_bytes: u64,
     observer: impl FnOnce(),
 ) -> Result<VerifiedFile, ContainedFileError> {
-    read_contained_regular_file_observing(root, path, max_bytes, None, || {}, observer, || {})
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        || {},
+        observer,
+        || {},
+        || {},
+    )
+}
+
+#[cfg(test)]
+fn read_contained_regular_file_with_final_metadata_observer(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    final_metadata_observer: impl FnOnce(),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        || {},
+        || {},
+        final_metadata_observer,
+        || {},
+    )
 }
 
 #[cfg(test)]
@@ -165,6 +203,7 @@ fn read_contained_regular_file_with_read_observer(
         None,
         || {},
         post_open_observer,
+        || {},
         read_observer,
     )
 }
@@ -176,6 +215,7 @@ fn read_contained_regular_file_observing(
     expected_identity: Option<VerifiedIdentity>,
     pre_open_observer: impl FnOnce(),
     post_open_observer: impl FnOnce(),
+    final_metadata_observer: impl FnOnce(),
     read_observer: impl FnOnce(),
 ) -> Result<VerifiedFile, ContainedFileError> {
     let canonical_root = std::fs::canonicalize(root)
@@ -234,7 +274,14 @@ fn read_contained_regular_file_observing(
         return Err(ContainedFileError::IdentityChanged);
     }
     post_open_observer();
-    validate_opened_regular_file(root, &candidate, &relative_path, &file, opened_identity)?;
+    validate_opened_regular_file_observing(
+        root,
+        &candidate,
+        &relative_path,
+        &file,
+        opened_identity,
+        final_metadata_observer,
+    )?;
     let metadata_exceeds_limit = opened_metadata.len() > max_bytes;
     let mut bytes = Vec::new();
     if !metadata_exceeds_limit {
@@ -271,6 +318,24 @@ fn validate_opened_regular_file(
     file: &File,
     opened_identity: VerifiedIdentity,
 ) -> Result<(), ContainedFileError> {
+    validate_opened_regular_file_observing(
+        root,
+        candidate,
+        relative_path,
+        file,
+        opened_identity,
+        || {},
+    )
+}
+
+fn validate_opened_regular_file_observing(
+    root: &Path,
+    candidate: &Path,
+    relative_path: &PortableRelativePath,
+    file: &File,
+    opened_identity: VerifiedIdentity,
+    final_metadata_observer: impl FnOnce(),
+) -> Result<(), ContainedFileError> {
     let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
         operation: "reinspect opened file",
         source,
@@ -281,14 +346,21 @@ fn validate_opened_regular_file(
     {
         return Err(ContainedFileError::IdentityChanged);
     }
-    let handle_path = final_opened_file_path(&file)?;
+    let handle_path = final_opened_file_path(file)
+        .map_err(|error| reclassify_file_final_path_error(candidate, opened_identity, error))?;
     let resolved_path = std::fs::canonicalize(&handle_path)
         .map(|path| {
             crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
         })
-        .map_err(|source| ContainedFileError::Io {
-            operation: "resolve opened file path",
-            source,
+        .map_err(|source| {
+            reclassify_file_final_path_error(
+                candidate,
+                opened_identity,
+                ContainedFileError::Io {
+                    operation: "resolve opened file path",
+                    source,
+                },
+            )
         })?;
     if !resolved_path.starts_with(root) {
         return Err(ContainedFileError::FinalPathOutsideRoot);
@@ -301,11 +373,17 @@ fn validate_opened_regular_file(
     if &final_portable != relative_path {
         return Err(ContainedFileError::FinalPathMismatch);
     }
-    let final_metadata =
-        std::fs::symlink_metadata(&resolved_path).map_err(|source| ContainedFileError::Io {
-            operation: "inspect resolved opened file",
-            source,
-        })?;
+    final_metadata_observer();
+    let final_metadata = std::fs::symlink_metadata(&resolved_path).map_err(|source| {
+        reclassify_file_final_path_error(
+            candidate,
+            opened_identity,
+            ContainedFileError::Io {
+                operation: "inspect resolved opened file",
+                source,
+            },
+        )
+    })?;
     validate_regular_metadata(&final_metadata)?;
     if identity_at_path(&resolved_path)? != opened_identity
         || identity_at_path(&candidate)? != opened_identity
@@ -313,6 +391,40 @@ fn validate_opened_regular_file(
         return Err(ContainedFileError::IdentityChanged);
     }
     Ok(())
+}
+
+fn reclassify_file_final_path_error(
+    candidate: &Path,
+    opened_identity: VerifiedIdentity,
+    final_path_error: ContainedFileError,
+) -> ContainedFileError {
+    match identity_at_path(candidate) {
+        Ok(candidate_identity) => {
+            if candidate_identity == opened_identity {
+                final_path_error
+            } else {
+                ContainedFileError::IdentityChanged
+            }
+        }
+        Err(
+            ContainedFileError::IdentityChanged
+            | ContainedFileError::SymlinkOrReparsePoint
+            | ContainedFileError::NotRegularFile,
+        ) => ContainedFileError::IdentityChanged,
+        Err(
+            ContainedFileError::RootNotCanonical
+            | ContainedFileError::RootNotDirectory
+            | ContainedFileError::PathOutsideRoot
+            | ContainedFileError::FinalPathOutsideRoot
+            | ContainedFileError::FinalPathMismatch
+            | ContainedFileError::AmbiguousHostPath
+            | ContainedFileError::InvalidRelativePath(_)
+            | ContainedFileError::SizeLimitExceeded { .. }
+            | ContainedFileError::LengthOverflow
+            | ContainedFileError::UnsupportedHost
+            | ContainedFileError::Io { .. },
+        ) => final_path_error,
+    }
 }
 
 #[cfg(unix)]
@@ -628,7 +740,8 @@ pub(crate) fn create_non_regular_fixture_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        read_contained_regular_file, read_contained_regular_file_with_observer,
+        read_contained_regular_file, read_contained_regular_file_with_final_metadata_observer,
+        read_contained_regular_file_with_observer,
         read_contained_regular_file_with_post_open_observer,
         read_contained_regular_file_with_read_observer, ContainedFileError,
     };
@@ -866,6 +979,45 @@ mod tests {
             .expect_err("post-open path replacement must fail closed");
 
         assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn disappearance_during_final_file_metadata_validation_is_an_identity_change() {
+        let root = fixture_root("disappear-during-final-file-metadata");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"first").expect("fixture file");
+
+        let error =
+            read_contained_regular_file_with_final_metadata_observer(&root, &path, 1_024, || {
+                fs::remove_file(&path).expect("remove opened file during final validation")
+            })
+            .expect_err("disappearance during final metadata validation must fail closed");
+
+        assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn unchanged_file_candidate_preserves_a_final_handle_facility_failure() {
+        let root = fixture_root("unchanged-file-final-handle-failure");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"first").expect("fixture file");
+        let identity = super::identity_at_path(&path).expect("fixture identity");
+        let facility_failure = ContainedFileError::Io {
+            operation: "resolve opened Unix file handle",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "procfd unavailable"),
+        };
+
+        let error = super::reclassify_file_final_path_error(&path, identity, facility_failure);
+
+        assert!(matches!(
+            error,
+            ContainedFileError::Io {
+                operation: "resolve opened Unix file handle",
+                ..
+            }
+        ));
         cleanup(&root);
     }
 
