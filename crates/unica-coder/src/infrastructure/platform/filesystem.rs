@@ -109,28 +109,50 @@ pub(crate) fn host_path_text(path: String) -> String {
 
 #[cfg(windows)]
 pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::path::PathBuf;
 
-    let path = path.as_os_str().to_string_lossy();
-    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{unc}"));
-    }
-    if let Some(regular) = path.strip_prefix(r"\\?\") {
-        let bytes = regular.as_bytes();
-        if bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'\\' | b'/')
-        {
-            return PathBuf::from(regular);
-        }
-    }
-    PathBuf::from(path.as_ref())
+    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    PathBuf::from(std::ffi::OsString::from_wide(
+        &strip_windows_extended_length_prefix_wide(&wide),
+    ))
 }
 
 #[cfg(not(windows))]
 pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::PathBuf {
     path.to_path_buf()
+}
+
+#[cfg(any(windows, test))]
+fn strip_windows_extended_length_prefix_wide(path: &[u16]) -> Vec<u16> {
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const VERBATIM_UNC_PREFIX: &[u16] = &[
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+
+    if let Some(unc) = path.strip_prefix(VERBATIM_UNC_PREFIX) {
+        let mut regular = Vec::with_capacity(unc.len().saturating_add(2));
+        regular.extend_from_slice(&[b'\\' as u16, b'\\' as u16]);
+        regular.extend_from_slice(unc);
+        return regular;
+    }
+    if let Some(regular) = path.strip_prefix(VERBATIM_PREFIX) {
+        if regular.len() >= 3
+            && matches!(regular[0], 0x41..=0x5a | 0x61..=0x7a)
+            && regular[1] == b':' as u16
+            && matches!(regular[2], value if value == b'\\' as u16 || value == b'/' as u16)
+        {
+            return regular.to_vec();
+        }
+    }
+    path.to_vec()
 }
 
 #[cfg(all(test, unix))]
@@ -300,7 +322,7 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::path_lock_identity_text;
+    use super::{path_lock_identity_text, strip_windows_extended_length_prefix_wide};
     use std::fs;
     use std::io;
     use std::path::PathBuf;
@@ -426,6 +448,59 @@ mod tests {
         } else {
             assert_eq!(identity, "/Workspace/Configuration.xml");
         }
+    }
+
+    #[test]
+    fn windows_prefix_stripping_preserves_unpaired_utf16_code_units() {
+        let verbatim_drive = [
+            b'\\' as u16,
+            b'\\' as u16,
+            b'?' as u16,
+            b'\\' as u16,
+            b'C' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            0xd800,
+        ];
+        let verbatim_unc = [
+            b'\\' as u16,
+            b'\\' as u16,
+            b'?' as u16,
+            b'\\' as u16,
+            b'U' as u16,
+            b'N' as u16,
+            b'C' as u16,
+            b'\\' as u16,
+            0xdfff,
+        ];
+
+        assert_eq!(
+            strip_windows_extended_length_prefix_wide(&verbatim_drive),
+            vec![b'C' as u16, b':' as u16, b'\\' as u16, 0xd800]
+        );
+        assert_eq!(
+            strip_windows_extended_length_prefix_wide(&verbatim_unc),
+            vec![b'\\' as u16, b'\\' as u16, 0xdfff]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ill_formed_windows_relative_names_are_rejected_without_lossy_conversion() {
+        use crate::domain::discovery::{PortableRelativePath, PortableRelativePathError};
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let ill_formed = std::ffi::OsString::from_wide(&[b'a' as u16, 0xd800]);
+        let relative = PathBuf::from(&ill_formed);
+
+        assert_eq!(
+            relative.as_os_str().encode_wide().collect::<Vec<_>>(),
+            vec![b'a' as u16, 0xd800]
+        );
+        assert!(matches!(
+            PortableRelativePath::parse(&relative),
+            Err(PortableRelativePathError::NonUtf8)
+        ));
     }
 
     #[cfg(windows)]

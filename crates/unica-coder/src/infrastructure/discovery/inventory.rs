@@ -5,10 +5,14 @@ use crate::domain::discovery::{
 };
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::infrastructure::platform::contained_file::{
-    read_contained_regular_file, ContainedFileError,
+    read_contained_regular_file, read_contained_regular_file_with_expected_identity,
+    ContainedFileError,
 };
-use std::collections::BTreeSet;
-use std::fs;
+use crate::infrastructure::platform::verified_directory::{
+    read_verified_contained_directory, read_verified_contained_directory_with_expected_identity,
+    VerifiedDirectoryEntryKind, VerifiedDirectoryError,
+};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct ContainedSourceInventoryPort {
@@ -21,63 +25,37 @@ impl ContainedSourceInventoryPort {
     }
 
     fn capture(&self, query: &DiscoveryQuery<'_>) -> Result<Capture, CaptureError> {
-        let canonical_root = fs::canonicalize(&self.canonical_root)
-            .map(|path| {
-                crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
-                    &path,
-                )
-            })
-            .map_err(|error| classify_inventory_io("inventory_resolve_root", error))?;
-        let supplied_root =
-            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
-                &self.canonical_root,
-            );
-        if canonical_root != supplied_root {
-            return Err(ProviderDiagnostic::material(
-                "source_inventory_noncanonical_root",
-                "source inventory root must be canonical",
-            )
-            .into());
-        }
         let max_files = usize::try_from(query.limits().max_files).map_err(|_| {
             ProviderDiagnostic::material(
                 "inventory_file_limit_overflow",
                 "source inventory maxFiles is not representable on this host",
             )
         })?;
-        let mut pending = BTreeSet::from([canonical_root]);
+        let mut pending = BTreeMap::from([(
+            self.canonical_root.clone(),
+            (VerifiedDirectoryEntryKind::Directory, None),
+        )]);
         let mut files = Vec::new();
         let mut files_seen = 0_u32;
         let mut bytes_analyzed = 0_u64;
         let mut bytes_read_budget = 0_u64;
-        while let Some(path) = pending.pop_first() {
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|error| classify_inventory_io("inventory_inspect_entry", error))?;
-            if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
-                &metadata,
-            ) {
-                return Err(ProviderDiagnostic::material(
-                    "source_inventory_unsafe_entry",
-                    "source inventory contains a symlink or reparse point",
-                )
-                .into());
-            }
-            if metadata.file_type().is_dir() {
-                let entries = fs::read_dir(&path)
-                    .map_err(|error| classify_inventory_io("inventory_read_directory", error))?;
+        while let Some((path, (kind, expected_identity))) = pending.pop_first() {
+            if kind == VerifiedDirectoryEntryKind::Directory {
+                let entries = match expected_identity {
+                    Some(expected_identity) => {
+                        read_verified_contained_directory_with_expected_identity(
+                            &self.canonical_root,
+                            &path,
+                            expected_identity,
+                        )
+                    }
+                    None => read_verified_contained_directory(&self.canonical_root, &path),
+                }
+                .map_err(classify_verified_directory_error)?;
                 for entry in entries {
-                    let entry = entry
-                        .map_err(|error| classify_inventory_io("inventory_read_entry", error))?;
-                    pending.insert(entry.path());
+                    pending.insert(entry.path, (entry.kind, Some(entry.identity)));
                 }
                 continue;
-            }
-            if !metadata.file_type().is_file() {
-                return Err(ProviderDiagnostic::material(
-                    "source_inventory_unsafe_entry",
-                    "source inventory contains a non-regular filesystem entry",
-                )
-                .into());
             }
             if !is_evidence_candidate(&path) {
                 continue;
@@ -105,45 +83,31 @@ impl ContainedSourceInventoryPort {
                         "source inventory byte accounting exceeded maxBytes",
                     )
                 })?;
-            let verified =
-                match read_contained_regular_file(&self.canonical_root, &path, remaining_bytes) {
-                    Ok(verified) => verified,
-                    Err(ContainedFileError::SizeLimitExceeded { limit: _ }) => {
-                        if needs_sidecar_classification && files.len() < max_files {
-                            files_seen = checked_increment_files_seen(files_seen)?;
-                        }
-                        return Ok(Capture::Bounded {
-                            inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
-                            diagnostic: ProviderDiagnostic::material(
-                                "source_inventory_byte_bound",
-                                "source inventory stopped at the maxBytes limit",
-                            ),
-                        });
+            let verified_result = match expected_identity {
+                Some(expected_identity) => read_contained_regular_file_with_expected_identity(
+                    &self.canonical_root,
+                    &path,
+                    remaining_bytes,
+                    expected_identity,
+                ),
+                None => read_contained_regular_file(&self.canonical_root, &path, remaining_bytes),
+            };
+            let verified = match verified_result {
+                Ok(verified) => verified,
+                Err(ContainedFileError::SizeLimitExceeded { limit: _ }) => {
+                    if needs_sidecar_classification && files.len() < max_files {
+                        files_seen = checked_increment_files_seen(files_seen)?;
                     }
-                    Err(
-                        error @ (ContainedFileError::RootNotCanonical
-                        | ContainedFileError::RootNotDirectory
-                        | ContainedFileError::PathOutsideRoot
-                        | ContainedFileError::FinalPathOutsideRoot
-                        | ContainedFileError::FinalPathMismatch
-                        | ContainedFileError::AmbiguousHostPath
-                        | ContainedFileError::InvalidRelativePath(_)
-                        | ContainedFileError::SymlinkOrReparsePoint
-                        | ContainedFileError::NotRegularFile
-                        | ContainedFileError::IdentityChanged
-                        | ContainedFileError::LengthOverflow
-                        | ContainedFileError::UnsupportedHost),
-                    ) => {
-                        return Err(ProviderDiagnostic::material(
-                            "inventory_verified_read",
-                            format!("verified source read failed: {error}"),
-                        )
-                        .into());
-                    }
-                    Err(ContainedFileError::Io { operation, source }) => {
-                        return Err(classify_inventory_io(operation, source));
-                    }
-                };
+                    return Ok(Capture::Bounded {
+                        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
+                        diagnostic: ProviderDiagnostic::material(
+                            "source_inventory_byte_bound",
+                            "source inventory stopped at the maxBytes limit",
+                        ),
+                    });
+                }
+                Err(error) => return Err(classify_contained_file_error(error)),
+            };
             bytes_read_budget = bytes_read_budget
                 .checked_add(verified.bytes_read)
                 .ok_or_else(|| {
@@ -216,6 +180,7 @@ enum Capture {
 }
 
 enum CaptureError {
+    Unavailable(ProviderDiagnostic),
     Failed(ProviderDiagnostic),
     ContractViolation(ProviderDiagnostic),
 }
@@ -255,6 +220,7 @@ impl SourceInventoryPort for ContainedSourceInventoryPort {
                 data: inventory,
                 diagnostic,
             },
+            Err(CaptureError::Unavailable(diagnostic)) => ProviderOutcome::Unavailable(diagnostic),
             Err(CaptureError::Failed(diagnostic)) => ProviderOutcome::Failed(diagnostic),
             Err(CaptureError::ContractViolation(diagnostic)) => {
                 ProviderOutcome::ContractViolation(diagnostic)
@@ -302,26 +268,69 @@ fn classify_inventory_io(operation: &'static str, error: std::io::Error) -> Capt
         operation,
         format!("source inventory I/O failed during {operation}: {error}"),
     );
-    match error.kind() {
-        std::io::ErrorKind::NotFound => CaptureError::ContractViolation(diagnostic),
-        _ => CaptureError::Failed(diagnostic),
+    CaptureError::Failed(diagnostic)
+}
+
+fn classify_contained_file_error(error: ContainedFileError) -> CaptureError {
+    match error {
+        ContainedFileError::UnsupportedHost => {
+            CaptureError::Unavailable(ProviderDiagnostic::material(
+                "source_inventory_unsupported_host",
+                "verified source reads are unavailable on this host",
+            ))
+        }
+        ContainedFileError::Io { operation, source } => classify_inventory_io(operation, source),
+        error => CaptureError::ContractViolation(ProviderDiagnostic::material(
+            "inventory_verified_read",
+            format!("verified source read failed: {error}"),
+        )),
+    }
+}
+
+fn classify_verified_directory_error(error: VerifiedDirectoryError) -> CaptureError {
+    match error {
+        VerifiedDirectoryError::UnsupportedHost => {
+            CaptureError::Unavailable(ProviderDiagnostic::material(
+                "source_inventory_unsupported_host",
+                "verified directory enumeration is unavailable on this host",
+            ))
+        }
+        VerifiedDirectoryError::Io { operation, source } => {
+            classify_inventory_io(operation, source)
+        }
+        error @ (VerifiedDirectoryError::SymlinkOrReparsePoint
+        | VerifiedDirectoryError::NonRegularEntry
+        | VerifiedDirectoryError::NotDirectory) => {
+            CaptureError::ContractViolation(ProviderDiagnostic::material(
+                "source_inventory_unsafe_entry",
+                format!("source inventory contains an unsafe filesystem entry: {error}"),
+            ))
+        }
+        error => CaptureError::ContractViolation(ProviderDiagnostic::material(
+            "inventory_verified_directory",
+            format!("verified source directory failed: {error}"),
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_inventory_io, CaptureError, ContainedSourceInventoryPort};
+    use super::{
+        classify_contained_file_error, classify_inventory_io, classify_verified_directory_error,
+        CaptureError, ContainedSourceInventoryPort,
+    };
     use crate::application::discovery::ports::SourceInventoryPort;
     use crate::domain::discovery::{
         DiscoveryQuery, DiscoveryQueryLimits, PortableRelativePath, ProviderCoverage,
         ProviderOutcome,
     };
     use crate::infrastructure::platform::contained_file::{
-        create_non_regular_fixture_for_test, NonRegularFixtureOutcome,
+        create_non_regular_fixture_for_test, ContainedFileError, NonRegularFixtureOutcome,
     };
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use crate::infrastructure::platform::verified_directory::VerifiedDirectoryError;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -488,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_io_failure_is_failed_but_disappearance_is_a_contract_violation() {
+    fn ordinary_io_failures_are_failed() {
         let denied = classify_inventory_io(
             "inventory_read_directory",
             std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
@@ -499,7 +508,34 @@ mod tests {
         );
 
         assert!(matches!(denied, CaptureError::Failed(_)));
-        assert!(matches!(disappeared, CaptureError::ContractViolation(_)));
+        assert!(matches!(disappeared, CaptureError::Failed(_)));
+    }
+
+    #[test]
+    fn unsupported_hosts_are_unavailable_but_security_failures_are_contract_violations() {
+        assert!(matches!(
+            classify_contained_file_error(ContainedFileError::UnsupportedHost),
+            CaptureError::Unavailable(_)
+        ));
+        assert!(matches!(
+            classify_verified_directory_error(VerifiedDirectoryError::UnsupportedHost),
+            CaptureError::Unavailable(_)
+        ));
+        assert!(matches!(
+            classify_contained_file_error(ContainedFileError::IdentityChanged),
+            CaptureError::ContractViolation(_)
+        ));
+        assert!(matches!(
+            classify_verified_directory_error(VerifiedDirectoryError::IdentityChanged),
+            CaptureError::ContractViolation(_)
+        ));
+        assert!(matches!(
+            classify_verified_directory_error(VerifiedDirectoryError::Io {
+                operation: "resolve opened directory path",
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+            }),
+            CaptureError::Failed(_)
+        ));
     }
 
     #[test]
