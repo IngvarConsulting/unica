@@ -131,4 +131,5 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 - `.github/workflows/publish-unica-marketplace.yml` — staging и promotion
   публичного каталога.
 
-Лицензия: LGPL-3.0-or-later.
+[Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md).
+Лицензия Unica: LGPL-3.0-or-later.

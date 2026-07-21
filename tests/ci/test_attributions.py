@@ -139,6 +139,20 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("tool other: repository link must match https://example.invalid/other", errors)
         self.assertIn("tool other: declared license MIT must appear in the section", errors)
 
+    def test_repository_attribution_page_is_complete_and_linked(self) -> None:
+        module = load_attribution_module()
+        repo_root = self.repo_root()
+
+        self.assertEqual(module.validate_attributions(repo_root), [])
+        self.assertIn(
+            "[Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md)",
+            (repo_root / "README.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "[Авторы, источники и лицензии](ATTRIBUTIONS.md)",
+            (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

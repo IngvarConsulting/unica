@@ -139,4 +139,5 @@ cargo test --workspace -- --test-threads=1
 git diff --check
 ```
 
+[Авторы, источники и лицензии](ATTRIBUTIONS.md).
 License: LGPL-3.0-or-later.
