@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::single_file_publisher::{publish, PublishEffect, PublishMode, PublishRequest};
 use super::{
     cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
@@ -1878,8 +1879,16 @@ mod metadata_kind_consumer_tests {
     }
 }
 
+struct CfEditRun {
+    stdout: String,
+    config_path: PathBuf,
+    artifacts: Vec<PathBuf>,
+    config_updated: bool,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, Vec<PathBuf>, bool), String> {
+    let edit_result = (|| -> Result<CfEditRun, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -1894,8 +1903,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| context.cwd.clone());
-        let source_text = read_utf8_sig(&config_path)?;
-        let mut text = lxml_parser_normalized_text(&source_text);
+        let source_snapshot = read_utf8_sig_snapshot(&config_path)?;
+        let mut text = lxml_parser_normalized_text(&source_snapshot.text);
         if !text.contains("<Configuration") {
             return Err("No <Configuration> element found".to_string());
         }
@@ -2063,9 +2072,40 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
             }
         }
 
+        let mut config_updated = false;
+        let mut warnings = Vec::new();
         if config_changed {
-            write_utf8_bom(&config_path, &cf_edit_serialized_text(&text, &source_text))?;
-            stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
+            let replacement =
+                utf8_bom_bytes(&cf_edit_serialized_text(&text, &source_snapshot.text));
+            let report = publish(PublishRequest {
+                target: &config_path,
+                replacement: &replacement,
+                mode: PublishMode::ReplaceExisting {
+                    expected_preimage: &source_snapshot.raw,
+                },
+            })
+            .map_err(|error| error.to_string())?;
+            warnings.extend(
+                report
+                    .cleanup_warnings
+                    .into_iter()
+                    .map(|warning| warning.to_string()),
+            );
+            match report.effect {
+                PublishEffect::Replaced => {
+                    config_updated = true;
+                    stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
+                }
+                PublishEffect::Unchanged => {
+                    stdout.push_str("[INFO] No Configuration.xml changes\n");
+                }
+                PublishEffect::Created => {
+                    return Err(format!(
+                        "internal invariant violated: replace-existing publication created {}",
+                        config_path.display()
+                    ));
+                }
+            }
         } else {
             stdout.push_str("[INFO] No Configuration.xml changes\n");
         }
@@ -2089,13 +2129,25 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         stdout.push_str(&format!("  Added:         {add_count}\n"));
         stdout.push_str(&format!("  Removed:       {remove_count}\n"));
         stdout.push_str(&format!("  Modified:      {modify_count}\n"));
-        Ok((stdout, config_path, artifacts, config_changed))
+        Ok(CfEditRun {
+            stdout,
+            config_path,
+            artifacts,
+            config_updated,
+            warnings,
+        })
     })();
 
     match edit_result {
-        Ok((stdout, config_path, artifacts, config_changed)) => {
+        Ok(CfEditRun {
+            stdout,
+            config_path,
+            artifacts,
+            config_updated,
+            warnings,
+        }) => {
             let mut changes = Vec::new();
-            if config_changed {
+            if config_updated {
                 changes.push(format!("updated {}", config_path.display()));
             }
             for artifact in &artifacts {
@@ -2107,7 +2159,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 ok: true,
                 summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
                 changes,
-                warnings: Vec::new(),
+                warnings,
                 errors: Vec::new(),
                 artifacts: artifacts
                     .into_iter()

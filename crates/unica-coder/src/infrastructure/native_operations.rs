@@ -13,12 +13,12 @@ pub(crate) mod meta;
 pub(crate) mod mxl;
 pub(crate) mod registry;
 pub(crate) mod role;
+pub(crate) mod single_file_publisher;
 pub(crate) mod subsystem;
 pub(crate) mod support;
 pub(crate) mod template;
 
-use crate::application::AdapterOutcome;
-use crate::domain::workspace::WorkspaceContext;
+use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};
 use std::fs;
 

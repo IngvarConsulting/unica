@@ -1275,8 +1275,16 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composition::testing::{
+        create_file_link_fixture_for_test, prepare_file_for_removal, set_unix_mode_for_test,
+        unix_mode_for_test, with_publication_lock_contention_signal, with_publication_lock_pause,
+        CompileTransaction, FileLinkFixtureOutcome,
+    };
     use serde_json::Map;
     use std::collections::HashSet;
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn lists_unica_orchestrator_scope() {
@@ -2394,6 +2402,277 @@ mod tests {
         args.insert("Value".to_string(), Value::String(value.to_string()));
         args.insert("NoValidate".to_string(), Value::Bool(true));
         args
+    }
+
+    fn cf_edit_mutation_workspace(
+        prefix: &str,
+        configuration: &[u8],
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let root = test_workspace_root(prefix);
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(&config_path, configuration).unwrap();
+        (root, workspace, config_path)
+    }
+
+    fn cf_edit_configuration_bytes() -> Vec<u8> {
+        let text = support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(text.as_bytes());
+        bytes
+    }
+
+    fn assert_no_cf_edit_stage_debris(config_path: &std::path::Path) {
+        let parent = config_path.parent().unwrap();
+        let debris = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".unica-stage-"))
+            .collect::<Vec<_>>();
+        assert!(debris.is_empty(), "staging debris remains: {debris:?}");
+    }
+
+    #[test]
+    fn cf_edit_preserves_unix_mode_0600() {
+        let before = cf_edit_configuration_bytes();
+        let (root, workspace, config_path) =
+            cf_edit_mutation_workspace("unica-cf-edit-mode-0600", &before);
+        if !set_unix_mode_for_test(&config_path, 0o600).unwrap() {
+            eprintln!("[SKIPPED FIXTURE] Unix permission modes are unsupported on this host");
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+            )
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(unix_mode_for_test(&config_path).unwrap(), Some(0o600));
+        assert_ne!(std::fs::read(&config_path).unwrap(), before);
+        assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_rejects_readonly_configuration_unchanged() {
+        let before = cf_edit_configuration_bytes();
+        let (root, workspace, config_path) =
+            cf_edit_mutation_workspace("unica-cf-edit-readonly", &before);
+        let exact_unix_mode = set_unix_mode_for_test(&config_path, 0o400).unwrap();
+        if !exact_unix_mode {
+            let mut permissions = std::fs::metadata(&config_path).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&config_path, permissions).unwrap();
+        }
+        let mode_before = unix_mode_for_test(&config_path).unwrap();
+        assert!(std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .readonly());
+        if exact_unix_mode {
+            assert_eq!(mode_before, Some(0o400));
+        } else {
+            assert_eq!(mode_before, None);
+        }
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+            )
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.errors.join("\n").contains("read-only"), "{result:?}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+        assert!(std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(unix_mode_for_test(&config_path).unwrap(), mode_before);
+        assert_no_cf_edit_stage_debris(&config_path);
+        prepare_file_for_removal(&config_path).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_rejects_symlink_configuration_without_touching_referent() {
+        let before = cf_edit_configuration_bytes();
+        let root = test_workspace_root("unica-cf-edit-symlink");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let referent = root.join("real-Configuration.xml");
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(&referent, &before).unwrap();
+        let outcome = create_file_link_fixture_for_test(&referent, &config_path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        match outcome {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported => {
+                eprintln!("[SKIPPED FIXTURE] file links are unsupported on this host");
+                std::fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
+                std::fs::remove_dir_all(root).unwrap();
+                return;
+            }
+        }
+        let link_before = std::fs::read_link(&config_path).unwrap();
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+            )
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.errors.join("\n").contains("link or reparse point"),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read_link(&config_path).unwrap(), link_before);
+        assert_eq!(std::fs::read(&referent).unwrap(), before);
+        assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_rejects_hard_linked_configuration_unchanged() {
+        let before = cf_edit_configuration_bytes();
+        let (root, workspace, config_path) =
+            cf_edit_mutation_workspace("unica-cf-edit-hard-link", &before);
+        let alias = config_path
+            .parent()
+            .unwrap()
+            .join("Configuration.alias.xml");
+        std::fs::hard_link(&config_path, &alias).unwrap();
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
+            )
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.errors.join("\n").contains("hard links"),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+        assert_eq!(std::fs::read(&alias).unwrap(), before);
+        assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_equal_serialized_result_is_a_public_noop() {
+        let before = cf_edit_configuration_bytes();
+        let (root, workspace, config_path) =
+            cf_edit_mutation_workspace("unica-cf-edit-equal-noop", &before);
+
+        let result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.edit",
+                &cf_edit_args(&workspace, "modify-property", "Version=1.0"),
+            )
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.changes.is_empty(), "{result:?}");
+        assert!(result.cache.events.is_empty(), "{result:?}");
+        let stdout = result.stdout.unwrap_or_default();
+        assert!(
+            stdout.contains("[INFO] No Configuration.xml changes"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+        assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compile_transaction_and_cf_edit_share_target_lock() {
+        let before = cf_edit_configuration_bytes();
+        let (root, workspace, config_path) =
+            cf_edit_mutation_workspace("unica-compile-cf-edit-lock", &before);
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config_path, "Role", "Reader")
+            .expect("compile transaction must plan a registration");
+
+        let acquired = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let acquired_in_compile = Arc::clone(&acquired);
+        let release_in_compile = Arc::clone(&release);
+        let compile_thread = thread::spawn(move || {
+            with_publication_lock_pause(acquired_in_compile, release_in_compile, || {
+                transaction.commit()
+            })
+        });
+        acquired.wait();
+
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let workspace_in_edit = workspace.clone();
+        let edit_thread = thread::spawn(move || {
+            with_publication_lock_contention_signal(contended_sender, || {
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.cf.edit",
+                        &cf_edit_args(&workspace_in_edit, "modify-property", "Version=1.0"),
+                    )
+                    .unwrap()
+            })
+        });
+
+        let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
+        release.wait();
+        let compile_result = compile_thread
+            .join()
+            .expect("compile transaction thread must not panic");
+        let edit_result = edit_thread.join().expect("cf-edit thread must not panic");
+
+        contention.expect("cf-edit must contend on the shared publisher lock");
+        compile_result.expect("compile transaction must commit");
+        assert!(!edit_result.ok, "{edit_result:?}");
+        assert!(
+            edit_result
+                .errors
+                .join("\n")
+                .contains("differs from the expected preimage"),
+            "{edit_result:?}"
+        );
+        let after = std::fs::read(&config_path).unwrap();
+        assert_ne!(after, before);
+        assert!(
+            String::from_utf8_lossy(&after).contains("<Role>Reader</Role>"),
+            "{}",
+            String::from_utf8_lossy(&after)
+        );
+        assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
