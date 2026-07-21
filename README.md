@@ -109,6 +109,14 @@ cd unica
 scripts/dev/install-local-unica.sh
 ```
 
+На Windows x64 запускайте этот скрипт из **Git Bash**, входящего в 64-битный
+Git for Windows. Для локальной сборки нужны Python 3.10 или новее, стабильный
+Rust с нативным toolchain MSVC, а также Microsoft C++ Build Tools и Windows SDK.
+Для установки и проверки видимости плагина нужен актуальный Codex CLI.
+
+WSL сохраняет Linux-семантику и собирает `linux-x64`. MSYS2 и Cygwin не входят
+в поддерживаемые shell для этого installer; используйте Git Bash.
+
 Исходный `.mcp.json` запускает `cargo run`; локальный скрипт собирает инструменты
 только для текущей машины. Официальный пакет остаётся тонким: skills, assets,
 три bootstrap-бинарника и `runtime-manifest.json`, без полного runtime.

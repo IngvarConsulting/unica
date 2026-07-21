@@ -100,6 +100,14 @@ marketplace with:
 scripts/dev/install-local-unica.sh
 ```
 
+On native Windows x64, run the script from **Git Bash** included with 64-bit Git
+for Windows. The local build requires Python 3.10 or newer, stable Rust with the
+native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
+Codex CLI is required for the install and fresh-prompt verification steps.
+
+WSL keeps Linux semantics and builds `linux-x64`. MSYS2 and Cygwin are not
+supported shells for this installer; use Git Bash.
+
 Useful flags:
 
 ```sh

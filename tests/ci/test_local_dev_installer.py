@@ -73,6 +73,24 @@ class LocalDevInstallerTests(unittest.TestCase):
                     f"Unsupported local Unica tool target: {system}-{machine}\n",
                 )
 
+    def test_windows_local_development_docs_name_shell_and_prerequisites(self) -> None:
+        required = (
+            "Git Bash",
+            "Python 3.10",
+            "MSVC",
+            "Microsoft C++ Build Tools",
+            "Windows SDK",
+            "scripts/dev/install-local-unica.sh",
+            "WSL",
+            "MSYS2",
+            "Cygwin",
+        )
+        for relative_path in ("README.md", "plugins/unica/README.md"):
+            text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+            for value in required:
+                with self.subTest(path=relative_path, value=value):
+                    self.assertIn(value, text)
+
 
 if __name__ == "__main__":
     unittest.main()
