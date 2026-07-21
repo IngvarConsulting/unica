@@ -668,6 +668,7 @@ struct ProviderContribution {
     )>,
     candidates: Vec<(ArtifactId, ArtifactKind, EvidenceId)>,
     support: Vec<(ArtifactId, SupportStateKind)>,
+    warnings: Vec<DiscoveryWarning>,
 }
 
 fn metadata_contribution(
@@ -675,6 +676,7 @@ fn metadata_contribution(
     matcher: &FactMatcher,
 ) -> Result<ProviderContribution, ProviderDiagnostic> {
     let mut contribution = ProviderContribution::default();
+    let mut evidence_by_artifact = BTreeMap::new();
     for fact in &batch.records {
         let evidence = evidence_for(
             ProviderKind::MetadataCatalog,
@@ -710,9 +712,80 @@ fn metadata_contribution(
                 evidence.0.id.clone(),
             ));
         }
+        evidence_by_artifact
+            .entry(fact.artifact.clone())
+            .or_insert_with(|| evidence.0.id.clone());
         contribution.evidence.push(evidence.0);
     }
+    contribution.warnings = separate_series_warnings(batch, matcher, &evidence_by_artifact);
     Ok(contribution)
+}
+
+fn separate_series_warnings(
+    batch: &FactBatch<MetadataFact>,
+    matcher: &FactMatcher,
+    evidence_by_artifact: &BTreeMap<ArtifactId, EvidenceId>,
+) -> Vec<DiscoveryWarning> {
+    let mut warnings = Vec::new();
+    for series_attribute in batch.records.iter().filter(|fact| {
+        fact.artifact_kind == ArtifactKind::Attribute
+            && fact.relation == StructuralRelationKind::Contains
+            && artifact_has_typed_name(&fact.artifact, "attribute", "серия")
+    }) {
+        let Some(goods_section_id) = series_attribute.container.as_ref() else {
+            continue;
+        };
+        let Some(goods_section) = batch.records.iter().find(|fact| {
+            fact.artifact == *goods_section_id
+                && fact.artifact_kind == ArtifactKind::TabularSection
+                && fact.relation == StructuralRelationKind::Contains
+                && artifact_has_typed_name(&fact.artifact, "tabularsection", "товары")
+        }) else {
+            continue;
+        };
+        let Some(document) = goods_section.container.as_ref() else {
+            continue;
+        };
+        if document.as_str().split('.').next() != Some("document") {
+            continue;
+        }
+        for separate_section in batch.records.iter().filter(|fact| {
+            fact.artifact_kind == ArtifactKind::TabularSection
+                && fact.relation == StructuralRelationKind::Contains
+                && fact.container.as_ref() == Some(document)
+                && fact.artifact != goods_section.artifact
+                && matcher.relevant(&fact.artifact, std::iter::empty::<&str>())
+        }) {
+            let Some(series_evidence) = evidence_by_artifact.get(&series_attribute.artifact) else {
+                continue;
+            };
+            let Some(section_evidence) = evidence_by_artifact.get(&separate_section.artifact)
+            else {
+                continue;
+            };
+            let mut evidence_ids = vec![series_evidence.clone(), section_evidence.clone()];
+            evidence_ids.sort();
+            warnings.push(DiscoveryWarning {
+                code: "separate_series_section".to_string(),
+                message: "A point limited to Товары.Серия lacks coverage: the same relevant document contains a distinct series-related tabular section."
+                    .to_string(),
+                blocking: true,
+                evidence_ids,
+            });
+        }
+    }
+    warnings.sort();
+    warnings.dedup();
+    warnings
+}
+
+fn artifact_has_typed_name(artifact: &ArtifactId, object_type: &str, name: &str) -> bool {
+    let mut segments = artifact.as_str().rsplit('.');
+    matches!(
+        (segments.next(), segments.next()),
+        (Some(actual_name), Some(actual_type))
+            if actual_name == name && actual_type == object_type
+    )
 }
 
 fn form_contribution(
@@ -1134,6 +1207,7 @@ impl ReportAccumulator {
         for (artifact, state) in contribution.support {
             self.support.entry(artifact).or_insert(state);
         }
+        self.warnings.extend(contribution.warnings);
         Ok(())
     }
 
@@ -1684,6 +1758,41 @@ mod tests {
         }
     }
 
+    fn separate_series_metadata(path: &str, raw: &[u8]) -> FactBatch<MetadataFact> {
+        let document = artifact("Document.ПриобретениеТоваровУслуг");
+        let goods = artifact("Document.ПриобретениеТоваровУслуг.TabularSection.Товары");
+        FactBatch {
+            records: vec![
+                MetadataFact {
+                    artifact: goods.clone(),
+                    artifact_kind: ArtifactKind::TabularSection,
+                    container: Some(document.clone()),
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 5),
+                },
+                MetadataFact {
+                    artifact: artifact(
+                        "Document.ПриобретениеТоваровУслуг.TabularSection.Товары.Attribute.Серия",
+                    ),
+                    artifact_kind: ArtifactKind::Attribute,
+                    container: Some(goods),
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 8),
+                },
+                MetadataFact {
+                    artifact: artifact("Document.ПриобретениеТоваровУслуг.TabularSection.Серии"),
+                    artifact_kind: ArtifactKind::TabularSection,
+                    container: Some(document),
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 13),
+                },
+            ],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 3),
+        }
+    }
+
     fn lexical_hit() -> FactBatch<BslFact> {
         let raw = b"procedure FindSeries()";
         FactBatch {
@@ -1764,6 +1873,53 @@ mod tests {
             .iter()
             .any(|item| item.provider == ProviderKind::MetadataCatalog));
         assert_eq!(report.structural_edges.len(), 1);
+    }
+
+    #[test]
+    fn actual_goods_series_and_relevant_separate_section_emit_structural_warning() {
+        let raw = b"actual metadata structure";
+        let path = "Documents/ПриобретениеТоваровУслуг.xml";
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(separate_series_metadata(path, raw));
+
+        let report = execute(
+            &fake,
+            request(
+                "Контролировать срок годности серий при поступлении товаров",
+                &[],
+            ),
+        )
+        .expect("structural discovery report");
+
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "separate_series_section")
+            .expect("separate-series structural warning");
+        let expected_evidence = report
+            .evidence
+            .iter()
+            .filter(|evidence| {
+                matches!(
+                    evidence.target.as_str(),
+                    "document.приобретениетоваровуслуг.tabularsection.товары.attribute.серия"
+                        | "document.приобретениетоваровуслуг.tabularsection.серии"
+                )
+            })
+            .map(|evidence| evidence.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            warning
+                .evidence_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_evidence
+        );
+        assert_eq!(warning.evidence_ids.len(), 2);
+        assert!(warning.message.contains("Товары.Серия"));
+        assert!(!warning.message.contains("отклон"));
     }
 
     #[test]

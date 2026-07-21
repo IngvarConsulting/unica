@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::common::{
     absolutize, find_support_config_dir, is_uuid_text, path_arg, read_support_state,
-    support_object_uuid_for_path, support_root_uuid,
+    support_object_uuid_for_path, support_root_uuid, SupportObjectRule,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,42 +33,6 @@ impl SupportCapability {
 
     fn enabled(self) -> bool {
         matches!(self, Self::On)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportObjectRule {
-    Locked,
-    Editable,
-    OffSupport,
-}
-
-impl SupportObjectRule {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "locked" => Some(Self::Locked),
-            "editable" => Some(Self::Editable),
-            "off-support" => Some(Self::OffSupport),
-            _ => None,
-        }
-    }
-
-    fn flag(self) -> u8 {
-        match self {
-            Self::Locked => 0,
-            Self::Editable => 1,
-            Self::OffSupport => 2,
-        }
-    }
-
-    fn state_text(self) -> &'static str {
-        match self {
-            Self::Locked => "на замке (правка запрещена)",
-            Self::Editable => {
-                "редактируется с сохранением поддержки (объект продолжит получать обновления вендора — возможны конфликты при обновлении)"
-            }
-            Self::OffSupport => "снят с поддержки (обновления вендора по этому объекту прекращаются)",
-        }
     }
 }
 

@@ -4,7 +4,7 @@ use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1287,8 +1287,11 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 }
 
 #[cfg(test)]
-mod mutation_tests {
-    use super::{read_utf8_sig_snapshot, utf8_bom_bytes};
+mod tests {
+    use super::{
+        parse_support_state_bytes, read_utf8_sig_snapshot, support_status_for_path, utf8_bom_bytes,
+        SupportObjectRule, SupportParseError,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1321,6 +1324,82 @@ mod mutation_tests {
         assert_eq!(snapshot.raw, raw);
         assert_eq!(snapshot.text, "<xml/>\r\n");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn support_bytes_parse_into_typed_object_rules() {
+        let bytes = support_bytes(0, &[("40000000-0000-0000-0000-000000000001", 1)]);
+
+        let state = parse_support_state_bytes(&bytes).expect("typed support state");
+
+        assert!(state.global_editing_enabled());
+        assert!(!state.removed());
+        assert_eq!(
+            state.object_rule("40000000-0000-0000-0000-000000000001"),
+            Some(SupportObjectRule::Editable)
+        );
+        let mut malformed = vec![0xff; 40];
+        malformed[0] = b'{';
+        assert!(matches!(
+            parse_support_state_bytes(&malformed),
+            Err(SupportParseError::InvalidUtf8)
+        ));
+        let invalid_rule = support_bytes(0, &[("40000000-0000-0000-0000-000000000001", 3)]);
+        assert!(matches!(
+            parse_support_state_bytes(&invalid_rule),
+            Err(SupportParseError::InvalidObjectRule(3))
+        ));
+    }
+
+    #[test]
+    fn existing_support_status_caller_preserves_exact_rule_text() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-support-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let object_path = root.join("Documents").join("Purchase.xml");
+        let support_path = root.join("Ext").join("ParentConfigurations.bin");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(support_path.parent().unwrap()).unwrap();
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        fs::write(
+            &object_path,
+            format!("<MetaDataObject><Document uuid=\"{uuid}\"/></MetaDataObject>"),
+        )
+        .unwrap();
+
+        let cases = [
+            (
+                SupportObjectRule::Locked,
+                "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
+            ),
+            (
+                SupportObjectRule::Editable,
+                "редактируется с сохранением поддержки",
+            ),
+            (
+                SupportObjectRule::OffSupport,
+                "снято с поддержки (правки свободны)",
+            ),
+        ];
+        for (rule, expected) in cases {
+            fs::write(&support_path, support_bytes(0, &[(uuid, rule.flag())])).unwrap();
+            assert_eq!(support_status_for_path(&object_path), expected);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn support_bytes(global_flag: u8, rules: &[(&str, u8)]) -> Vec<u8> {
+        let rules = rules
+            .iter()
+            .map(|(uuid, flag)| format!("{flag},0,{uuid}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{6,{global_flag},1,\"1.0\",\"Vendor\",\"Configuration\",{rules}}}").into_bytes()
     }
 }
 
@@ -1648,10 +1727,10 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         return "не на поддержке".to_string();
     };
     match state.object_rule(&object_uuid) {
-        Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        Some(1) => "редактируется с сохранением поддержки".to_string(),
-        Some(2) => "снято с поддержки (правки свободны)".to_string(),
-        _ => "не на поддержке".to_string(),
+        Some(SupportObjectRule::Locked) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+        Some(SupportObjectRule::Editable) => "редактируется с сохранением поддержки".to_string(),
+        Some(SupportObjectRule::OffSupport) => "снято с поддержки (правки свободны)".to_string(),
+        None => "не на поддержке".to_string(),
     }
 }
 
@@ -1692,7 +1771,9 @@ pub(crate) fn support_guard_violation(
         .as_deref()
         .and_then(|uuid| state.object_rule(uuid));
     match requirement {
-        SupportGuardRequirement::Removed if object_rule.is_some_and(|rule| rule != 2) => {
+        SupportGuardRequirement::Removed
+            if object_rule.is_some_and(|rule| rule != SupportObjectRule::OffSupport) =>
+        {
             Some(SupportGuardViolation {
                 code: "not-removed",
                 reason: "объект не снят с поддержки — удаление сломает обновления".to_string(),
@@ -1700,7 +1781,7 @@ pub(crate) fn support_guard_violation(
                 config_dir,
             })
         }
-        SupportGuardRequirement::Editable if object_rule == Some(0) => {
+        SupportGuardRequirement::Editable if object_rule == Some(SupportObjectRule::Locked) => {
             Some(SupportGuardViolation {
                 code: "locked",
                 reason: "объект на замке — редактирование сломает обновления".to_string(),
@@ -1713,17 +1794,17 @@ pub(crate) fn support_guard_violation(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SupportState {
+pub(crate) struct ParsedSupportState {
     global_editing_enabled: bool,
     vendor_count: usize,
     removed: bool,
     counts: [usize; 3],
-    object_rules: HashMap<String, u8>,
+    object_rules: BTreeMap<String, SupportObjectRule>,
     vendors: Vec<SupportVendor>,
 }
 
-impl SupportState {
-    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+impl ParsedSupportState {
+    pub(crate) fn object_rule(&self, object_uuid: &str) -> Option<SupportObjectRule> {
         self.object_rules
             .get(&object_uuid.to_ascii_lowercase())
             .copied()
@@ -1738,6 +1819,82 @@ impl SupportState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SupportObjectRule {
+    Locked,
+    Editable,
+    OffSupport,
+}
+
+impl SupportObjectRule {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "locked" => Some(Self::Locked),
+            "editable" => Some(Self::Editable),
+            "off-support" => Some(Self::OffSupport),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn from_flag(flag: u8) -> Option<Self> {
+        match flag {
+            0 => Some(Self::Locked),
+            1 => Some(Self::Editable),
+            2 => Some(Self::OffSupport),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn flag(self) -> u8 {
+        match self {
+            Self::Locked => 0,
+            Self::Editable => 1,
+            Self::OffSupport => 2,
+        }
+    }
+
+    pub(crate) const fn state_text(self) -> &'static str {
+        match self {
+            Self::Locked => "на замке (правка запрещена)",
+            Self::Editable => {
+                "редактируется с сохранением поддержки (объект продолжит получать обновления вендора — возможны конфликты при обновлении)"
+            }
+            Self::OffSupport => {
+                "снят с поддержки (обновления вендора по этому объекту прекращаются)"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupportParseError {
+    InvalidUtf8,
+    InvalidHeader,
+    InvalidGlobalFlag(u8),
+    InvalidObjectRule(u8),
+}
+
+impl std::fmt::Display for SupportParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUtf8 => formatter.write_str("ParentConfigurations.bin is not UTF-8"),
+            Self::InvalidHeader => {
+                formatter.write_str("ParentConfigurations.bin has an invalid header")
+            }
+            Self::InvalidGlobalFlag(flag) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid global support flag {flag}"
+            ),
+            Self::InvalidObjectRule(flag) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid object support rule {flag}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SupportParseError {}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SupportVendor {
     version: String,
@@ -1745,41 +1902,55 @@ pub(crate) struct SupportVendor {
     name: String,
 }
 
-pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
+pub(crate) fn read_support_state(bin_path: &Path) -> Option<ParsedSupportState> {
     if !bin_path.is_file() {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
+    parse_support_state_bytes(&data).ok()
+}
+
+pub(crate) fn parse_support_state_bytes(
+    data: &[u8],
+) -> Result<ParsedSupportState, SupportParseError> {
     if data.len() <= 32 {
-        return Some(SupportState {
+        return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count: 0,
             removed: true,
             counts: [0, 0, 0],
-            object_rules: HashMap::new(),
+            object_rules: BTreeMap::new(),
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
-    let (global_flag, vendor_count) = parse_support_header(&text)?;
+    let content = match data.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        Some(content) => content,
+        None => data,
+    };
+    let text = std::str::from_utf8(content).map_err(|_error| SupportParseError::InvalidUtf8)?;
+    let (global_flag, vendor_count) =
+        parse_support_header(text).ok_or(SupportParseError::InvalidHeader)?;
+    if !matches!(global_flag, 0 | 1) {
+        return Err(SupportParseError::InvalidGlobalFlag(global_flag));
+    }
     if vendor_count == 0 {
-        return Some(SupportState {
+        return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count,
             removed: true,
             counts: [0, 0, 0],
-            object_rules: HashMap::new(),
+            object_rules: BTreeMap::new(),
             vendors: Vec::new(),
         });
     }
-    let (counts, object_rules) = parse_support_object_rules(&text);
-    Some(SupportState {
+    let (counts, object_rules) = parse_support_object_rules(text)?;
+    Ok(ParsedSupportState {
         global_editing_enabled: global_flag == 0,
         vendor_count,
         removed: false,
         counts,
         object_rules,
-        vendors: parse_support_vendors(&text),
+        vendors: parse_support_vendors(text),
     })
 }
 
@@ -1798,26 +1969,33 @@ pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
     Some((global_flag, vendor_count))
 }
 
-pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8>) {
+pub(crate) fn parse_support_object_rules(
+    text: &str,
+) -> Result<([usize; 3], BTreeMap<String, SupportObjectRule>), SupportParseError> {
     let mut counts = [0usize; 3];
-    let mut object_rules = HashMap::<String, u8>::new();
+    let mut object_rules = BTreeMap::<String, SupportObjectRule>::new();
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i + 40 <= bytes.len() {
         let flag = bytes[i];
-        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
+        if flag.is_ascii_digit() && bytes.get(i + 1..i + 4) == Some(b",0,") {
             let uuid_start = i + 4;
             let uuid_end = uuid_start + 36;
             if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
+                if let Some(uuid) = text
+                    .get(uuid_start..uuid_end)
+                    .filter(|uuid| is_uuid_text(uuid))
+                {
                     let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
+                    let Some(rule) = SupportObjectRule::from_flag(flag_value) else {
+                        return Err(SupportParseError::InvalidObjectRule(flag_value));
+                    };
+                    counts[usize::from(flag_value)] += 1;
                     let entry = object_rules
                         .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
+                        .or_insert(rule);
+                    if rule < *entry {
+                        *entry = rule;
                     }
                     i = uuid_end;
                     continue;
@@ -1826,7 +2004,7 @@ pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<Str
         }
         i += 1;
     }
-    (counts, object_rules)
+    Ok((counts, object_rules))
 }
 
 pub(crate) fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
