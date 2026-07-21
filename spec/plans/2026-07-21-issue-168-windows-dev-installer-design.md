@@ -66,30 +66,27 @@ arm64, Linux x64, representative `MINGW64_NT-*` Windows x64, WSL's Linux
 identity, and an unsupported host. A separate negative assertion keeps
 `MSYS_NT-*` and `CYGWIN_NT-*` outside the declared contract.
 
-Extend the existing `build-tools` Windows matrix path rather than introducing a
-second expensive Windows build. That job already builds the real `win-x64`
-bundle and launches the bundled `unica.exe` through the MCP smoke. A
-Windows-only installer step will:
+Use the installer itself as the Windows `build-tools` matrix builder instead of
+building a bundle first and then calling it with `--skip-build`. The
+Windows-only path will:
 
-1. pass that real bundle directly through the internal
-   `UNICA_LOCAL_TOOL_BUNDLE` test seam used with `--skip-build`;
-2. use an isolated temporary `CODEX_HOME`;
-3. provide a deterministic fake only for the external `codex plugin` and
-   `codex debug prompt-input` boundary;
-4. run `install-local-unica.sh --skip-build` from Git Bash without skipping
-   install or verification.
+1. install an exact Codex CLI version from the official npm package;
+2. convert the isolated `CODEX_HOME` to a native forward-slash Windows path;
+3. run `install-local-unica.sh` from Git Bash without skip flags;
+4. build, package, launch, install, and verify through the real Codex CLI;
+5. stage the bundle produced by the installer under the existing
+   `.build/tool-bundles/win-x64` downstream pipeline path.
 
-The installer itself still packages the plugin, runs the real bundled
-`v8-runner.exe` and `unica.exe` help probes, installs the package into the
-isolated cache, enables it in the isolated config, and validates the generated
-prompt proof. The fake Codex boundary avoids coupling Unica CI to the release
-timing or authentication state of an external CLI package; it must not replace
-the real tool executables under test.
+The installer packages the plugin, runs the bundled `v8-runner.exe` and
+`unica.exe` help probes, registers the local marketplace, installs the cache,
+enables the plugin, and validates a real `codex debug prompt-input` result. The
+same bundle then continues through the existing tool-contract, MCP, runtime,
+and bootstrap checks, so the Rust workspace is compiled only once.
 
-Together, the pre-existing Windows build step and the new installer smoke cover
-build, package, executable launch, install, and verify in one Windows job
-without compiling the Rust workspace twice or reintroducing the removed
-`unica-tools-*` workflow artifact convention.
+No external bundle override is added to the installer. Its build output remains
+contained below the selected build root. Shell scripts are explicitly marked
+`text eol=lf` so a Git for Windows checkout with `core.autocrlf=true` cannot
+corrupt the executable shebang before host detection starts.
 
 ## Contributor Documentation
 
@@ -126,8 +123,9 @@ The pull request is ready for review only after:
 - the full Python source test suite passes;
 - the Rust workspace tests remain green;
 - the Windows `build-tools` job builds and launches the real `.exe` bundle;
-- the Windows installer smoke completes package/install/verify using the
-  isolated Codex boundary;
+- the Windows installer completes build/package/install/verify using a pinned
+  real Codex CLI and isolated `CODEX_HOME`;
+- a checkout with `core.autocrlf=true` retains an LF shell entrypoint;
 - documentation names the supported shell and prerequisites;
 - the final diff contains no MSYS2/Cygwin support claim and no change to the
   public `unica.*` MCP boundary.

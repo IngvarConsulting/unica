@@ -1,3 +1,5 @@
+*.sh text eol=lf
+
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace
 

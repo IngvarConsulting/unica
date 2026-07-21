@@ -110,78 +110,30 @@ class LocalDevInstallerTests(unittest.TestCase):
         self.assertIn("==> Unica local target: win-x64\n", completed.stdout)
         self.assertIn("--skip-build requested, but bundle is missing:", completed.stderr)
 
-    def test_prebuilt_bundle_override_controls_skip_build_check(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bundle = tmp_path / "prebuilt-bundle"
-            env = os.environ.copy()
-            env["UNICA_LOCAL_TOOL_BUNDLE"] = str(bundle)
-            completed = subprocess.run(
-                [
-                    str(INSTALLER),
-                    "--build-dir",
-                    str(tmp_path / "build"),
-                    "--skip-build",
-                    "--skip-install",
-                    "--skip-verify",
-                ],
-                cwd=REPO_ROOT,
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
+    def test_installer_does_not_expose_external_bundle_override(self) -> None:
+        installer = INSTALLER.read_text(encoding="utf-8")
+        self.assertNotIn("UNICA_LOCAL_TOOL_BUNDLE", installer)
 
-        self.assertEqual(completed.returncode, 66)
-        self.assertEqual(
-            completed.stderr,
-            f"--skip-build requested, but bundle is missing: {bundle}/tools.json\n",
+    def test_shell_scripts_are_forced_to_lf_in_windows_checkouts(self) -> None:
+        completed = subprocess.run(
+            [
+                "git",
+                "check-attr",
+                "text",
+                "eol",
+                "--",
+                "scripts/dev/install-local-unica.sh",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
         )
 
-    def test_prebuilt_bundle_override_is_passed_to_packager(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bundle = tmp_path / "prebuilt-bundle"
-            bundle.mkdir()
-            (bundle / "tools.json").write_text("{}\n", encoding="utf-8")
-            captured = tmp_path / "package-args"
-            python_wrapper = tmp_path / "python-wrapper"
-            self.write_executable(
-                python_wrapper,
-                "#!/usr/bin/env bash\n"
-                "if [[ \"$1\" == *package-unica-plugin.py ]]; then\n"
-                f"  printf '%s\\n' \"$@\" > {shlex.quote(str(captured))}\n"
-                "  exit 91\n"
-                "fi\n"
-                f"exec {shlex.quote(sys.executable)} \"$@\"\n",
-            )
-            env = os.environ.copy()
-            env["PYTHON"] = str(python_wrapper)
-            env["UNICA_LOCAL_TOOL_BUNDLE"] = str(bundle)
-
-            completed = subprocess.run(
-                [
-                    str(INSTALLER),
-                    "--build-dir",
-                    str(tmp_path / "build"),
-                    "--skip-build",
-                    "--skip-install",
-                    "--skip-verify",
-                ],
-                cwd=REPO_ROOT,
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-            package_args = captured.read_text(encoding="utf-8").splitlines()
-
-        self.assertEqual(completed.returncode, 91)
-        tools_root_index = package_args.index("--tools-root") + 1
-        self.assertEqual(package_args[tools_root_index], str(bundle))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("scripts/dev/install-local-unica.sh: text: set\n", completed.stdout)
+        self.assertIn("scripts/dev/install-local-unica.sh: eol: lf\n", completed.stdout)
 
     def test_unsupported_shells_and_hosts_keep_status_78(self) -> None:
         cases = (
@@ -223,18 +175,30 @@ class LocalDevInstallerTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
         ).read_text(encoding="utf-8")
         required = (
-            "Smoke local development installer on Windows",
+            "Build, install, and verify local development on Windows",
             "if: matrix.target == 'win-x64'",
-            'CODEX_HOME="$build_root/codex-home"',
-            'UNICA_LOCAL_TOOL_BUNDLE="$PWD/.build/tool-bundles/win-x64"',
-            'PATH="$fake_bin:$PATH"',
+            "uses: actions/setup-node@v7",
+            "npm install --global @openai/codex@0.145.0-alpha.18",
+            'codex_home="$(cygpath -m "$build_root/codex-home")"',
+            'CODEX_HOME="$codex_home"',
             "scripts/dev/install-local-unica.sh",
-            "--skip-build",
+            'if: matrix.target != \'win-x64\'',
+            'find "$build_root/tool-artifacts"',
+            'cp -R "$bundle_root" "$PWD/.build/tool-bundles/win-x64"',
         )
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, workflow)
-        self.assertNotIn("unica-tools-", workflow)
+        forbidden = (
+            "fake_bin",
+            "UNICA_LOCAL_TOOL_BUNDLE",
+            "--skip-build",
+            "'{\"skills\":[\"Unica\",\"v8-runner\",\"db-auth-check\"]}'",
+            "unica-tools-",
+        )
+        for value in forbidden:
+            with self.subTest(forbidden=value):
+                self.assertNotIn(value, workflow)
 
 
 if __name__ == "__main__":
