@@ -5,12 +5,11 @@ use crate::domain::discovery::{
 };
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, inventory_is_bounded,
-    parse_inventory_catalog, MetadataDescriptor,
+    parse_inventory_catalog, MetadataNode,
 };
 use crate::infrastructure::native_operations::common::{
     parse_support_state_bytes, ParsedSupportState, SupportObjectRule,
 };
-use std::collections::BTreeSet;
 
 pub(crate) struct SupportStateProvider;
 
@@ -44,9 +43,7 @@ fn collect_support_facts(
     inventory: &SourceInventory,
 ) -> Result<SupportCollection, ProviderDiagnostic> {
     let catalog = parse_inventory_catalog(inventory)?;
-    let descriptors = catalog.descriptors();
     let inventory_bounded = inventory_is_bounded(inventory);
-    validate_unique_support_artifacts(descriptors)?;
     let mut analyzed_files = analyzed_file_map(&catalog);
     let support_file = root_support_file(inventory)?;
     if let Some(file) = support_file {
@@ -68,9 +65,11 @@ fn collect_support_facts(
     let mut records = if support_file.is_none() && inventory_bounded {
         Vec::new()
     } else {
-        descriptors
-            .iter()
-            .map(|descriptor| support_fact(descriptor, support_file, parsed.as_ref()))
+        catalog
+            .nodes()
+            .into_iter()
+            .filter(|node| node.object_uuid.is_some())
+            .map(|node| support_fact(node, support_file, parsed.as_ref()))
             .collect::<Result<Vec<_>, _>>()?
     };
     records.sort();
@@ -102,21 +101,6 @@ fn collect_support_facts(
     }
 }
 
-fn validate_unique_support_artifacts(
-    descriptors: &[MetadataDescriptor],
-) -> Result<(), ProviderDiagnostic> {
-    let mut artifacts = BTreeSet::new();
-    for descriptor in descriptors {
-        if !artifacts.insert(descriptor.root.artifact.clone()) {
-            return Err(ProviderDiagnostic::material(
-                "support_artifact_identity_conflict",
-                "metadata descriptors contain duplicate canonical root identities",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn root_support_file(
     inventory: &SourceInventory,
 ) -> Result<Option<&SourceFile>, ProviderDiagnostic> {
@@ -140,14 +124,14 @@ fn root_support_file(
 }
 
 fn support_fact(
-    descriptor: &MetadataDescriptor,
+    node: &MetadataNode,
     support_file: Option<&SourceFile>,
     parsed: Option<&ParsedSupportState>,
 ) -> Result<SupportFact, ProviderDiagnostic> {
     let (state, location) = match (support_file, parsed) {
         (None, None) => (
             SupportStateKind::NotOnSupport,
-            descriptor.root.primary_location().cloned().ok_or_else(|| {
+            node.primary_location().cloned().ok_or_else(|| {
                 ProviderDiagnostic::material(
                     "support_metadata_location_missing",
                     "metadata artifact has no evidence location",
@@ -155,8 +139,7 @@ fn support_fact(
             })?,
         ),
         (Some(file), Some(state)) => {
-            let object_rule = descriptor
-                .root
+            let object_rule = node
                 .object_uuid
                 .as_deref()
                 .and_then(|uuid| state.object_rule(uuid));
@@ -171,10 +154,11 @@ fn support_fact(
                     Some(SupportObjectRule::OffSupport) | None => SupportStateKind::NotOnSupport,
                 }
             };
-            let line = match descriptor.root.object_uuid.as_deref() {
-                Some(uuid) => support_rule_line(&file.bytes, uuid)?,
-                None => 1,
-            };
+            let line = node
+                .object_uuid
+                .as_deref()
+                .and_then(|uuid| state.object_rule_line(uuid))
+                .unwrap_or(1);
             (
                 support_state,
                 EvidenceLocation {
@@ -199,35 +183,9 @@ fn support_fact(
         }
     };
     Ok(SupportFact {
-        artifact: descriptor.root.artifact.clone(),
+        artifact: node.artifact.clone(),
         state,
         location,
-    })
-}
-
-fn support_rule_line(bytes: &[u8], object_uuid: &str) -> Result<u32, ProviderDiagnostic> {
-    let content = match bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        Some(content) => content,
-        None => bytes,
-    };
-    let text = std::str::from_utf8(content).map_err(|_error| {
-        ProviderDiagnostic::material(
-            "support_state_malformed",
-            "support state is not valid UTF-8",
-        )
-    })?;
-    let Some(offset) = text
-        .to_ascii_lowercase()
-        .find(&object_uuid.to_ascii_lowercase())
-    else {
-        return Ok(1);
-    };
-    let line_count = text[..offset].bytes().filter(|byte| *byte == b'\n').count();
-    u32::try_from(line_count.saturating_add(1)).map_err(|_error| {
-        ProviderDiagnostic::material(
-            "support_state_location_overflow",
-            "support-state line number overflowed",
-        )
     })
 }
 
@@ -422,6 +380,55 @@ mod tests {
         assert_eq!(diagnostic.code, "support_state_inventory_bounded");
     }
 
+    #[test]
+    fn support_is_projected_to_recursive_and_subordinate_uuid_artifacts() {
+        let root_uuid = "60000000-0000-0000-0000-000000000001";
+        let section_uuid = "60000000-0000-0000-0000-000000000002";
+        let form_uuid = "60000000-0000-0000-0000-000000000003";
+        let parent = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Document uuid="{root_uuid}">
+    <Properties><Name>Purchase</Name></Properties>
+    <ChildObjects>
+      <TabularSection uuid="{section_uuid}">
+        <Properties><Name>Серии</Name></Properties>
+      </TabularSection>
+      <Form>Main</Form>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>"#
+        );
+        let form = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Form uuid="{form_uuid}"><Properties><Name>Main</Name></Properties></Form>
+</MetaDataObject>"#
+        );
+        let support = support_bytes(0, &[(root_uuid, 0), (section_uuid, 1), (form_uuid, 2)]);
+        let inventory = inventory(vec![
+            source_file("Documents/Purchase.xml", parent.as_bytes()),
+            source_file("Documents/Purchase/Forms/Main.xml", form.as_bytes()),
+            source_file("Ext/ParentConfigurations.bin", &support),
+        ]);
+
+        let outcome = SupportStateProvider.support(&query(100), &inventory);
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("recursive support catalog should be complete");
+        };
+        assert_eq!(
+            state_for(&batch.records, "Document.Purchase"),
+            Some(SupportStateKind::Locked)
+        );
+        assert_eq!(
+            state_for(&batch.records, "Document.Purchase.TabularSection.Серии"),
+            Some(SupportStateKind::Editable)
+        );
+        assert_eq!(
+            state_for(&batch.records, "Document.Purchase.Form.Main"),
+            Some(SupportStateKind::NotOnSupport)
+        );
+    }
+
     fn state_for(
         records: &[crate::domain::discovery::SupportFact],
         artifact: &str,
@@ -441,12 +448,18 @@ mod tests {
     }
 
     fn support_bytes(global_flag: u8, rules: &[(&str, u8)]) -> Vec<u8> {
+        let object_count = rules.len();
         let rules = rules
             .iter()
-            .map(|(uuid, flag)| format!("{flag},0,{uuid}"))
+            .map(|(uuid, flag)| format!("{flag},0,{uuid},{uuid}"))
             .collect::<Vec<_>>()
             .join(",");
-        format!("{{6,{global_flag},1,\"1.0\",\"Vendor\",\"Configuration\",{rules}}}").into_bytes()
+        let separator = if rules.is_empty() { "" } else { "," };
+        format!(
+            "{{6,{global_flag},1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",{}{separator}{rules}}}",
+            object_count
+        )
+        .into_bytes()
     }
 
     fn query(max_evidence: u16) -> DiscoveryQuery<'static> {

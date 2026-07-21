@@ -54,6 +54,14 @@ impl MetadataCatalog {
     pub(super) fn descriptors(&self) -> &[MetadataDescriptor] {
         &self.descriptors
     }
+
+    pub(super) fn nodes(&self) -> Vec<&MetadataNode> {
+        let mut nodes = Vec::new();
+        for descriptor in &self.descriptors {
+            collect_metadata_nodes(&descriptor.root, &mut nodes);
+        }
+        nodes
+    }
 }
 
 impl MetadataDescriptor {
