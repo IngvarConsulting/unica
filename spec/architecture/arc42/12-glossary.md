@@ -8,6 +8,11 @@
   property path, independent of raw XML file counts.
 - Coordination locator: owner-only non-overridable record that binds canonical
   project/target identities to one durable state root and unresolved history.
+- Reservation coordinator: authoritative linearizable target-plus-account
+  exclusion service required whenever an original or repository endpoint is
+  `multiHost`. Per-user files/mutexes remain local guards only.
+- Endpoint reachability: capability-row value `hostConfined` or `multiHost`;
+  an unproven network-mounted file endpoint is `multiHost`.
 - Distribution: full CF created by `/CreateDistributionFiles -cffile` and
   proven to establish vendor support when deployed.
 - CFU: configuration-update artifact that Unica may classify only to return a
@@ -22,6 +27,11 @@
   canonical delta, ownership, additions/deletions, and references.
 - Operation ID: caller-stable idempotency key bound to one canonical mutating
   request and durable result.
+- Canonical contract JSON: RFC 8785 JCS UTF-8 over schema-valid I-JSON, used
+  only for JSON-derived contract digests. Operation input records additionally
+  bind the exact tool and execution policy.
+- Observed barrier: fsynced policy-specific evidence/receipt barrier while an
+  operation remains `effectUnknown`; it is not an `OperationRecord` state.
 - Project ID: stable UUID in local Unica configuration used to locate durable
   task state across project relocation; it is not the mutable workspace epoch.
 - Repository transport: file or server access topology, included in a capability

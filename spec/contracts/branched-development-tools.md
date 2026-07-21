@@ -376,6 +376,23 @@ The companion contract for general mutations is producer-neutral:
   inference. Presence/equality requirements depend on the authorized manual
   target mode.
 - `Sha256`: 64 lowercase hexadecimal characters.
+- `canonical(value)` is the RFC 8785 JSON Canonicalization Scheme (JCS) UTF-8
+  octet sequence of a schema-valid I-JSON value. Object members use RFC 8785
+  ordering; array order, an explicit `null`, and the exact Unicode scalar value
+  are preserved. It adds no whitespace, BOM, trailing newline, or Unicode
+  normalization. Duplicate names, lone surrogates, non-finite or out-of-range
+  numbers, and every other non-I-JSON input fail before hashing.
+  `sha256(bytes)` is lowercase 64-hex. `record-without-x[-and-y]` removes only
+  the named top-level member(s): an absent member remains absent and an
+  explicit `null` remains present. This rule applies only to JSON-derived
+  contract digests, never to file/artifact bytes or topology-identity hashes.
+- `OperationInputDigestRecord`: closed `{ digestKind:
+  branchedOperationInputV1, toolName: TaskOperationToolName,
+  executionPolicy: ExecutionPolicy, request }`, where `request` is the complete
+  schema-valid tagged request and excludes only its top-level `operationId`.
+  `canonicalInputDigest == sha256(canonical(OperationInputDigestRecord))`.
+  Thus the same request payload under another tool or execution policy has a
+  different digest and cannot replay.
 - `CanonicalEmptyDeltaDigest`: the literal
   `sha256(canonical([]))`; it is used when a typed semantic delta is proven
   empty rather than omitted.
@@ -1212,11 +1229,13 @@ JSON `null` for the absent materialized plan.
 `SupportRecoveryGuardProof` is a closed tagged `oneOf`:
 
 - `blockedBeforeRoot { outcome: blockedBeforeRoot, guardReceiptId, manualTargetMode,
-  finalizationPlanDigest, plannedLockTargets, acquiredInOrder: [], failedTarget,
+  finalizationPlanDigest, plannedLockTargets, acquiredInOrder: [], failedTarget:
+  RepositoryTargetIdentity, failedTargetDisplay,
   lockedBy: RepositoryOwnerIdentity | null, authorizationOutcome: unchanged,
   releasedInReverseOrder: [], releaseVerified: true, proofDigest }`;
 - `blockedAfterPartial { outcome: blockedAfterPartial, guardReceiptId, manualTargetMode,
-  finalizationPlanDigest, plannedLockTargets, acquiredInOrder[], failedTarget,
+  finalizationPlanDigest, plannedLockTargets, acquiredInOrder[], failedTarget:
+  RepositoryTargetIdentity, failedTargetDisplay,
   lockedBy: RepositoryOwnerIdentity | null, authorizationOutcome: unchanged,
   releasedInReverseOrder[], releaseVerified: true, proofDigest }`;
 - `stoppedAfterCompleteGuard { outcome: stoppedAfterCompleteGuard, guardReceiptId, manualTargetMode,
@@ -1250,9 +1269,11 @@ selective update plan and, in separate mode, the working-IB closure plan is also
 materialized; `finalizationPlanDigest` always equals its current
 `planDigest`. The planned targets equal the persisted finalization lock set
 byte-for-byte and the root is first. For `blockedBeforeRoot`, `failedTarget` is
-that first root and `guardReceiptId` is the journaled attempt receipt, not an
+the `RepositoryTargetIdentity` of that first root and `failedTargetDisplay` is
+presentation only; `guardReceiptId` is the journaled attempt receipt, not an
 acquisition claim. For `blockedAfterPartial`, `acquiredInOrder` is a non-empty
-proper prefix and `failedTarget` is exactly the next target. In both blocked
+proper prefix and `failedTarget` is exactly the next
+`RepositoryTargetIdentity` with its presentation-only display. In both blocked
 variants the release list is the exact reverse acquired prefix. For both
 complete-guard variants, `acquiredInOrder` equals the whole planned list and the
 release list is its exact reverse. Only complete-guard variants may carry history/content/actor
@@ -1731,6 +1752,25 @@ abandonmentReady
 archivedAbandoned cleanedAbandoned
 ```
 
+`ReservationOwnerRef` is the closed tagged `oneOf` of `startAttempt {
+ownerKind: startAttempt, projectId: ProjectId, taskId: TaskId, operationId:
+OperationId }` or `unresolvedTask { ownerKind: unresolvedTask, projectId:
+ProjectId, taskId: TaskId, instanceId: UnicaId, phase: TaskPhase }`. It is a
+redacted ownership reference, never a state-root/work-root/credential locator.
+`NotCreatedData` is closed `{ exists: false, startAllowed: boolean, blockers:
+NotCreatedBlocker[] }`, where `NotCreatedBlocker` is the closed tagged union of
+`operationInProgress { code: operationInProgress, context: OperationErrorContext }`,
+`targetReservationBusy { code: targetReservationBusy, context:
+TargetReservationBusyContext }`, `repositoryAccountReservationBusy { code:
+repositoryAccountReservationBusy, context: RepositoryAccountReservationBusyContext }`,
+`projectIdentityCollision { code: projectIdentityCollision, context:
+ProfileStateErrorContext }`, and `stateRootRelocationRequired { code:
+stateRootRelocationRequired, context: ProfileStateErrorContext }`. `startAllowed
+== blockers.isEmpty`. It means only that authoritative coordination admits a
+new start attempt; profile, secret, topology, and capability preflight can
+still reject it. Reservation blocker contexts are byte-identical to the
+corresponding rejected-result contexts.
+
 ## Response Envelope
 
 Every task-bound success response contains:
@@ -1782,6 +1822,7 @@ is a schema change. `RejectedCode` is the closed subset
 `platformCapabilityUnproven`, `supportLayerAmbiguous`,
 `unsupportedChangeKind`, `projectIdentityCollision`,
 `stateRootRelocationRequired`, `exclusiveRepositoryUserRequired`,
+`targetReservationBusy`, `repositoryAccountReservationBusy`,
 `profileInvalid`, `secretUnavailable`, `stateCorrupt`,
 `operationInProgress`, `taskNotFound`, `taskWorkspaceContextInvalid`,
 `toolNotBranchedCompatible`, `commitCommentPolicyMismatch`, or
@@ -1832,6 +1873,16 @@ lifecycle tool.
   context: OperationErrorContext }`, closed `{ contextKind: operation,
   operationId, expectedInputDigest?: Sha256, observedInputDigest?: Sha256,
   activeOperationDigest?: Sha256 }`;
+- `reservationRejected { code: targetReservationBusy |
+  repositoryAccountReservationBusy, context: TargetReservationBusyContext |
+  RepositoryAccountReservationBusyContext }`, where
+  `TargetReservationBusyContext` is closed `{ contextKind: targetReservation,
+  repositoryIdentityDigest: Sha256, originalInfobaseIdentityDigest: Sha256,
+  reservationKeyDigest: Sha256, owner: ReservationOwnerRef }` and
+  `RepositoryAccountReservationBusyContext` is closed `{ contextKind:
+  repositoryAccountReservation, repositoryIdentityDigest: Sha256,
+  normalizedUsernameDigest: Sha256, reservationKeyDigest: Sha256,
+  owner: ReservationOwnerRef }`;
 - `digestRejected { code: approvalDigestMismatch | changeReceiptStale |
   adaptationDecisionAlreadyRecorded, context:
   DigestErrorContext }`, closed `{ contextKind: digest, expectedDigest?:
@@ -1910,6 +1961,8 @@ exactly `unica.repository.recover/recoverApply` for `exitKind: recovery`; and
 | `taskMutationBlocked` | `allowedPhases=[]`; blockers are non-empty; recovery digest/cancellation literal and legal-phase digest are absent. Any current recovery/unknown effect has higher-precedence `recoveryPlanPending` and cannot enter this row | `statusOnly` |
 | `operationReplayMismatch` | operation ID and unequal expected/observed input digests required; active digest absent | `none` |
 | `operationInProgress` | operation ID and active-operation digest required; input digests absent | `statusOnly` |
+| `targetReservationBusy` | exact target/repository/key digests and closed owner reference required; no task state exists | `statusOnly` |
+| `repositoryAccountReservationBusy` | exact repository/account/key digests and closed owner reference required; no task state exists | `statusOnly` |
 | `approvalDigestMismatch`, `changeReceiptStale`, `adaptationDecisionAlreadyRecorded` | expected/observed digests, producer selector, and producer ID required; digests unequal; selector branch carries a variant exactly for multi-variant producers | `producerRefresh` using that exact selector |
 | `commitCommentPolicyMismatch` | phase is exactly `mainValidated`; policy digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the frozen-template/task-metadata/render violation; producer/producer-ID, integration-set, lock-set, and recovery fields are forbidden | `commitSafeExit`; repeating commit or any producer is absent, and recovery is offered only after the abandoned-archive preview has published its exact plan |
 | `integrationSetMismatch` | lineage digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the plan/merge/verification/commit/lock-set disagreement. `exitKind: unlock` requires phase `locked`, both lock-set fields, proven no original-merge intent, and no recovery digest. `exitKind: recovery` requires phase `recoveryRequired` plus the exact recovery digest and forbids both lock-set fields | `integrationSetExit`; producer refresh and commit retry are absent; unlock and recovery actions are mutually exclusive |
@@ -1975,7 +2028,7 @@ Evidence-bearing domain stops are exhaustive:
 | `branched.archive(outcome="abandoned")` preview from `mainMerged`/`mainValidated` | `abandonmentRecoveryRequired` | `AbandonmentRecoveryStopData { recovery: RecoveryPlanStatus }`; it persists preview evidence only, leaves status unchanged, and requires `repository.recover` before archive can be previewed again |
 | `repository.lock` | `repositoryLockConflict` | `RepositoryLockConflictData` |
 | `repository.lock` | `repositoryLockRollbackFailed` | `RepositoryLockRollbackFailedData` |
-| `repository.update(routine)` while acquiring the selective guard set | `repositoryLockConflict` | `RepositoryUpdateLockConflictData { mode: routine, planDigest, failedTarget: RepositoryUpdateLockTarget, lockedBy: RepositoryOwnerIdentity | null, acquiredThenReleased: RepositoryUpdateLockTarget[], compensationVerified: true, requiredExternalAction: ReleaseRepositoryLocksInstruction }`; the released list is the exact reverse acquired prefix, no update runs, status is unchanged, and a fresh preview follows external release. Unverified compensation enters recovery |
+| `repository.update(routine)` while acquiring the selective guard set | `repositoryLockConflict` | `RepositoryUpdateLockConflictData { mode: routine, planDigest, failedTarget: RepositoryTargetIdentity, failedTargetDisplay, lockedBy: RepositoryOwnerIdentity | null, acquiredThenReleased: RepositoryUpdateLockTarget[], compensationVerified: true, requiredExternalAction: ReleaseRepositoryLocksInstruction }`; the released list is the exact reverse acquired prefix, no update runs, status is unchanged, and a fresh preview follows external release. Unverified compensation enters recovery |
 | any `repository.update` apply after acquiring its selective guard set | `repositoryUpdatePlanStale` | `RepositoryUpdatePlanStaleData { mode, expectedPlanDigest, guardReceiptId, expectedTargets: RepositoryTargetState[], observedTargets: RepositoryTargetState[], observedHistoryPartition: RepositoryHistoryPartition, acquiredThenReleased: RepositoryUpdateLockTarget[], compensationVerified: true, authorizationOutcome?: unchanged, supportRootLockProof?: SupportRootLockProof }`; the list is the exact reverse acquired prefix of the approved plan's lock targets. The target map changed before update, no update runs, every temporary guard is released, and a fresh preview is required. For support reconciliation/cancellation, `authorizationOutcome: unchanged` and the root proof are required, its guard receipt equals the top-level receipt, and its release equals the same root lock window; both fields are absent for routine, whose receipt identifies its temporary selective guard. Unverified compensation enters recovery |
 | `repository.update(supportPrerequisiteArm)` | `manualSupportRootLockRequired` | `SupportArmRootRequiredData { supportActionId, expectedSupportActionDigest, originPhase, observedRootLock: SupportRootLockObservation, requiredExternalAction: AcquireSupportRootInstruction | ReleaseRepositoryLocksInstruction }`; absent root returns the acquire instruction, a wrong proven owner returns release/coordination, no arming receipt or edit instruction exists, authorization remains `awaitingArm` |
 | `repository.update(supportPrerequisiteArm)` | `supportPrerequisiteArmStale` | `SupportArmStaleData { stage: preview | applyRecheck, supportActionId, expectedSupportActionDigest, originPhase, evidence: SupportArmStaleEvidence, authorizationOutcome: unchanged, requiredNextMode: supportPrerequisiteCancellation, requiredExternalAction?: ReleaseRepositoryLocksInstruction }`. Neither stage may arm or cancel. The release instruction is required iff a proven manual root owner remains; after release, only the exact cancellation flow can publish its full terminal proof/receipt before fresh preflight |
@@ -1993,10 +2046,10 @@ Evidence-bearing domain stops are exhaustive:
 | `repository.recover` after a valid correction/materialization changes the frozen plan | `supportRecoveryReapprovalRequired` | `SupportRecoveryReapprovalData { previousRecoveryDigest, recovery: RecoveryPlanStatus, reapprovalReasons: SupportRecoveryReapprovalReason[], materializedFinalizationPlan: SupportRecoveryFinalizationPlan, materializedManualWorkingInfobaseClosurePlan?: ManualWorkingInfobaseClosurePlan, priorSupportRecoveryGuardProof?: SupportRecoveryGuardProof }`; `previousRecoveryDigest` equals the approved request digest, the non-empty reasons identify exact appended history, ownership reclassification, and/or working-IB closure materialization, the top-level finalization plan is byte-identical to `recovery.supportRecoveryFinalizationPlan`, and its new `recoveryDigest` differs. The working-IB plan field is required exactly in separate mode, has literal state `materialized`, and is byte-identical to the nested recovery field; it is absent in reserved mode. Destination/history is now exact and no external action remains, but those materialized plans/digest have never been approved. No finalization effect occurs; status remains `recoveryRequired` and a fresh digest approval is mandatory. Any optional proof is the byte-identical released prior-plan attempt moved out of the recomputed plan's `latest` audit state |
 | `repository.recover` for `repositoryCommit/observeOutcome` after a conclusive observation | `recoveryReapprovalRequired` | `RecoveryReapprovalData { previousRecoveryDigest, observationOutcome: committed | notCommitted, observationReceiptId, observationDigest, recovery: RecoveryPlanStatus }`; the new plan is the exact tagged committed release-only or not-committed restore/full-release branch, its digest differs, no branch effect has started, and explicit approval is required. Unknown observation remains `operationEffectUnknown` with the current observation plan rather than inventing a branch |
 | `repository.recover` for `preArmSupportCancellation` when a fresh plan needs approval | `recoveryReapprovalRequired` | `PreArmCancellationRecoveryReapprovalData` is a closed `reapprovalCause`-tagged `oneOf`: `outcomeObserved { reapprovalCause: outcomeObserved, previousRecoveryDigest, effectObservation: PreArmCancellationEffectObservation, recovery: RecoveryPlanStatus }` or `finalizationRecheckChanged { reapprovalCause: finalizationRecheckChanged, previousRecoveryDigest, effectObservation: PreArmCancellationEffectObservation, recheckEvidence: PreArmCancellationFinalizationRecheckEvidence, compensatedAttempt: PreArmCancellationFinalizationAttemptAudit, recovery: RecoveryPlanStatus }`. The first new plan is exactly `preArmCancellationStage=finalize`, binds the conclusive original-operation observation and has begun no finalization effect. The second is legal only for `replannableBeforeUpdate` plus `recheckEvidence.outcome=replanRequired`: no update/cancellation occurred, the exact newly acquired guard prefix was released in reverse order, its immutable attempt audit is appended, and the new finalization attempt/digest differs. Unknown observation/compensation remains `operationEffectUnknown`; protected-update drift is a capability breach, not reapproval. No arming receipt or armed-support disposition is legal |
-| `repository.recover` for `preArmSupportCancellation/finalize` with a conclusive acquisition blocker | `preArmCancellationRecoveryBlocked` | `PreArmCancellationRecoveryBlockedData` is a closed `blockerKind`-tagged `oneOf`: `rootGuardConflict { blockerKind: rootGuardConflict, previousRecoveryDigest, compensatedAttempt: PreArmCancellationFinalizationAttemptAudit, knownBlocker: PreArmCancellationKnownBlocker, recovery: RecoveryPlanStatus, failedTarget: RepositoryUpdateLockTarget, lockedBy: RepositoryOwnerIdentity | null, requiredExternalAction: ReleaseRepositoryLocksInstruction }` or `modeLeaseUnavailable { blockerKind: modeLeaseUnavailable, previousRecoveryDigest, manualTargetMode: ManualSupportTargetMode, compensatedAttempt: PreArmCancellationFinalizationAttemptAudit, knownBlocker: PreArmCancellationKnownBlocker, recovery: RecoveryPlanStatus, workingInfobaseStop?: ManualWorkingInfobaseStopEvidence, reservedOriginalLeaseStop?: ReservedOriginalLeaseStopEvidence, requiredExternalAction: CleanManualWorkingInfobaseInstruction | CloseReservedOriginalDesignerInstruction }`. `knownBlocker` has the same discriminator and is byte-identical to the branch's previous digest, compensated-attempt audit digest, blocker evidence, and instruction; it is also byte-identical to `recovery.preArmCancellationKnownBlocker`, while `compensatedAttempt` is the fresh plan's last full prior-attempt audit. Root conflict has empty forward/compensation receipt lists and no guard to release. For mode blockage, reserved mode and `leaseBusy` have no mode acquisition; their forward list contains root acquisition only when the plan started root-released, and compensation contains the exact root release (including release of an inherited prior-operation root). Separate-mode `leaseAcquiredDirty` instead has a mode-acquisition receipt in the forward list and mode-release then root-release receipts in compensation; the stop evidence's lease receipt IDs match those effect receipts exactly. The stop/instruction fields follow the exclusive mode presence rule. Both append the compensated attempt and durable blocker to a fresh plan that starts both guards released, keep the authorization frozen without arming, and require blocker resolution plus explicit approval; status returns the same blocker/instruction after response loss. Unknown acquire/release effects keep effect-unknown recovery instead |
+| `repository.recover` for `preArmSupportCancellation/finalize` with a conclusive acquisition blocker | `preArmCancellationRecoveryBlocked` | `PreArmCancellationRecoveryBlockedData` is a closed `blockerKind`-tagged `oneOf`: `rootGuardConflict { blockerKind: rootGuardConflict, previousRecoveryDigest, compensatedAttempt: PreArmCancellationFinalizationAttemptAudit, knownBlocker: PreArmCancellationKnownBlocker, recovery: RecoveryPlanStatus, failedTarget: RepositoryTargetIdentity, failedTargetDisplay, lockedBy: RepositoryOwnerIdentity | null, requiredExternalAction: ReleaseRepositoryLocksInstruction }` or `modeLeaseUnavailable { blockerKind: modeLeaseUnavailable, previousRecoveryDigest, manualTargetMode: ManualSupportTargetMode, compensatedAttempt: PreArmCancellationFinalizationAttemptAudit, knownBlocker: PreArmCancellationKnownBlocker, recovery: RecoveryPlanStatus, workingInfobaseStop?: ManualWorkingInfobaseStopEvidence, reservedOriginalLeaseStop?: ReservedOriginalLeaseStopEvidence, requiredExternalAction: CleanManualWorkingInfobaseInstruction | CloseReservedOriginalDesignerInstruction }`. `knownBlocker` has the same discriminator and is byte-identical to the branch's previous digest, compensated-attempt audit digest, blocker evidence, and instruction; it is also byte-identical to `recovery.preArmCancellationKnownBlocker`, while `compensatedAttempt` is the fresh plan's last full prior-attempt audit. Root conflict has empty forward/compensation receipt lists and no guard to release. For mode blockage, reserved mode and `leaseBusy` have no mode acquisition; their forward list contains root acquisition only when the plan started root-released, and compensation contains the exact root release (including release of an inherited prior-operation root). Separate-mode `leaseAcquiredDirty` instead has a mode-acquisition receipt in the forward list and mode-release then root-release receipts in compensation; the stop evidence's lease receipt IDs match those effect receipts exactly. The stop/instruction fields follow the exclusive mode presence rule. Both append the compensated attempt and durable blocker to a fresh plan that starts both guards released, keep the authorization frozen without arming, and require blocker resolution plus explicit approval; status returns the same blocker/instruction after response loss. Unknown acquire/release effects keep effect-unknown recovery instead |
 | `repository.recover` for frozen external-support conflict | `supportConflictResolutionPending` | `SupportConflictResolutionPendingData { recovery: RecoveryPlanStatus, newlyObservedVersionObservations: SupportPrerequisiteVersionObservation[], conflicts: SupportTransitionConflict[], priorSupportRecoveryGuardProof?: SupportRecoveryGuardProof, requiredExternalAction: SupportConflictInstruction }`; the prior-plan proof exists iff finalization locking began before the newly observed conflict, is a stopped/blocked variant with unchanged authorization and verified release, and is absent from the recomputed plan's `latest` state. Status remains `recoveryRequired`, no automatic reversal/terminalization occurs, and the full chain plus recomputed digest is persisted until a valid external corrective sequence or immutable ownership receipt proves the disposition-bound external baseline |
 | `repository.recover` before publishing a corrective instruction when recovery distribution/handoff evidence is unavailable | `supportPreflightInconclusive` | `SupportRecoveryEvidencePendingData { recovery: RecoveryPlanStatus, evidenceGaps: SupportEvidenceGap[], requiredExternalAction: SupportEvidenceInstruction }`; gaps are non-empty recovery-artifact/handoff/retention/readability evidence, equal the instruction with empty blockers, no corrective instruction/finalization effect occurs, and status remains `recoveryRequired`. A retention-lease breach also invalidates the capability row and cannot be waved through |
-| `repository.recover` for frozen `supportPrerequisite` | `supportRecoveryBlockedByLock` | `SupportRecoveryLockBlockedData { recovery: RecoveryPlanStatus, supportRecoveryGuardProof: SupportRecoveryGuardProof, failedTarget: SupportRecoveryLockTarget, lockedBy: RepositoryOwnerIdentity | null, requiredExternalAction: ReleaseRepositoryLocksInstruction }`; the proof is `blockedBeforeRoot` or `blockedAfterPartial`, has unchanged authorization, matches the next failed target/owner, and proves compensation of the acquired prefix. Status remains `recoveryRequired`; unverified compensation uses the unknown-effect recovery path |
+| `repository.recover` for frozen `supportPrerequisite` | `supportRecoveryBlockedByLock` | `SupportRecoveryLockBlockedData { recovery: RecoveryPlanStatus, supportRecoveryGuardProof: SupportRecoveryGuardProof, failedTarget: RepositoryTargetIdentity, failedTargetDisplay, lockedBy: RepositoryOwnerIdentity | null, requiredExternalAction: ReleaseRepositoryLocksInstruction }`; the proof is `blockedBeforeRoot` or `blockedAfterPartial`, has unchanged authorization, matches the next failed target/owner, and proves compensation of the acquired prefix. Status remains `recoveryRequired`; unverified compensation uses the unknown-effect recovery path |
 | `repository.recover` for frozen `supportPrerequisite` in `separateWorkingInfobase` | `manualSupportLocalChangesRemain` | `FrozenSupportLocalChangesData { recovery: RecoveryPlanStatus, workingInfobaseStop: ManualWorkingInfobaseStopEvidence, supportRecoveryGuardProof: SupportRecoveryGuardProof, terminalizationPerformed: false, requiredExternalAction: CleanManualWorkingInfobaseInstruction }`; the guard proof is `stoppedAfterCompleteGuard`, the recovery plan remains current in `recoveryRequired`, every acquired guard is proven released with unchanged authorization, and a new approved recovery attempt is required after the human closes/cleans the IB |
 | `repository.recover` for frozen `supportPrerequisite` in `reservedOriginal` | `manualSupportLocalChangesRemain` | `FrozenReservedOriginalClosureData { recovery: RecoveryPlanStatus, reservedOriginalLeaseStop: ReservedOriginalLeaseStopEvidence, supportRecoveryGuardProof: SupportRecoveryGuardProof, terminalizationPerformed: false, requiredExternalAction: CloseReservedOriginalDesignerInstruction }`; the proof is `stoppedAfterCompleteGuard`, all repository guards are released with unchanged authorization, and no finalization occurs until a newly approved attempt acquires the exclusive original lease |
 | `repository.update(routine)` preview with a current deferred-advance handle in any phase | `supportPreflightInconclusive` | `DeferredAdvanceInconclusiveData { deferredRepositoryAdvance: DeferredRepositoryAdvance, currentPhase, expectedHistoryCursor: RepositoryHistoryCursor, observedHistoryCursor?: RepositoryHistoryCursor, historyPartition?: RepositoryHistoryPartition, evidenceGaps: SupportEvidenceGap[], requiredExternalAction: SupportEvidenceInstruction }`; the expected cursor equals the handle's `fromCursor`; gaps are non-empty `repositoryHistoryEvidence` records, use an exact first version only when known, and equal the instruction projection. No update or handle consumption occurs, phase is unchanged, and only a later routine preview with complete contiguous classification can proceed |
@@ -2014,6 +2067,12 @@ Evidence-bearing domain stops are exhaustive:
 
 Every stable code not listed in this matrix is a `rejected` result with its
 named `TaskErrorData.context`; it cannot carry a tool-success/stop data variant.
+
+Supported-update precedence is exact: if twice-changed properties and
+unresolved references coexist, the same `MergeSessionData` retains every
+conflict, `stopCode` is `twiceChangedProperties`, and `errors[0].code` equals
+that stop code. `unresolvedReferences` is primary only when no twice-changed
+conflict remains; supporting errors may report both conditions.
 
 Support-prerequisite code selection is deterministic. For reconciliation, the
 singleton `noAuthorizedVersionObserved` maps to `manualSupportActionPending`
@@ -2091,9 +2150,9 @@ for local-only arming versus external-effect modes.
 
 | Policy | Meaning |
 | --- | --- |
-| `readOnly` | No external or durable mutation; no `operationId` or `dryRun` |
+| `readOnly` | Creates no `OperationRecord`, `OperationLease`, start-attempt record, receipt, durable preview/evidence handle, or task/status mutation; any returned operation reference denotes a pre-existing mutating record. It has no `operationId` or `dryRun`; temporary process output is ephemeral and discarded after bounded termination |
 | `localJournaled` | Requires `operationId`; journals only owned local state/work-root creation or an atomic task decision; no external repository/infobase effect and no fake `dryRun` |
-| `contained` | Requires `operationId`; records the operation and mutates only an owned probe/sandbox/evidence area; external sandbox calls use intent/effect-unknown/observed/terminal barriers; no fake `dryRun` |
+| `contained` | Requires `operationId`; records the operation and mutates only an owned probe/sandbox/evidence area; external sandbox calls use the `intentWritten`/`effectUnknown`/terminal record states, with any observed receipt as an fsynced barrier inside `effectUnknown`; no fake `dryRun` |
 | `preparedJournaledEffect` | Requires `operationId` plus an exact prepared/session/status digest approval; journals intent before an authoritative infobase effect and verifies/reconciles its postcondition; no `dryRun` |
 | `journaledEffect` | Requires `operationId` plus an exact guard digest; writes intent before external effect and verifies postcondition; no `dryRun` |
 | `previewedJournaledEffect` | `dryRun: true` is target-effect-free, persists only its operation/preview evidence, and returns a preview-only data variant plus exact effect digest; a distinct applied operation binds that digest, journals intent, performs the owned/external effect, and verifies or reconciles postconditions |
@@ -2119,8 +2178,9 @@ for `terminal`; the recovery digest is required exactly for `effectUnknown`.
 `operationLease` is required for `registered`/`intentWritten` and absent for
 `effectUnknown`/`terminal`; `lastOperationLeaseDigest` is absent while a current
 lease exists and otherwise records its final generation for audit.
-The canonical input includes common fields, the exact tagged request variant,
-and every approval/guard digest, with `operationId` excluded from its own hash.
+The canonical input is exactly `OperationInputDigestRecord`; it includes the
+tool name, selected policy, common fields, exact tagged request variant, and
+every approval/guard digest, with only `operationId` excluded from its own hash.
 Replay dispatch occurs before current phase, pending-recovery, or descendant-
 evidence gates:
 
@@ -2150,8 +2210,14 @@ second worker.
 `terminalEnvelopeDigest == sha256(canonical(terminalEnvelope))`. The complete
 payload is stored inline or behind a content-addressed durable result record;
 `recentOperations` is only a bounded projection and is never the replay source.
-Schema/crash tests cover response loss at registration, intent, observed
-effect, terminal persistence, and after terminal persistence but before send.
+The durable state machine is exactly `registered -> intentWritten ->
+effectUnknown -> terminal`. “Observed” is a policy-specific fsynced
+evidence/receipt barrier while the common record remains `effectUnknown`, not a
+fifth `OperationRecord.state`; a crash after that barrier but before
+terminal-envelope persistence reconstructs the terminal result from the
+receipt and never repeats the effect. Schema/crash tests cover response loss at
+registration, intent, that observed barrier, terminal persistence, and after
+terminal persistence but before send.
 Coordination tests race two resumers against one expired generation and prove
 exactly one atomic generation increment; an old owner heartbeat/intent carrying
 the prior generation is rejected and cannot regain effect authority.
@@ -2180,7 +2246,22 @@ taskSummary: non-empty immutable task summary (required)
 
 Start validates config schema, secret availability (not values), exact
 platform and retention-provider capability rows plus their tracked evidence,
-target identity, leases, state/work paths, cleanup/comment policy, required manual target mode/conditional actor-history identity and
+target identity, and before task state/work-root creation atomically acquires
+the authoritative target reservation `(repository identity, original-infobase
+identity)` and repository-account reservation `(repository identity, normalized
+integration username)`. The coordinator fails closed and uses fenced,
+idempotent observe/renew/release receipts: persistent reservations survive
+process-lease loss, an unknown receipt effect blocks replay and a second start,
+and local mutexes remain process-local guards only. Missing/unproven required
+cross-host exclusion returns `platformCapabilityUnproven` before task creation.
+The validated platform topology row records `originalEndpointReachability` and
+`repositoryEndpointReachability`, each exactly `hostConfined` or `multiHost`,
+plus the required `crossHostReservationExclusion` case. An unproven
+network-mounted file endpoint is `multiHost`. If either endpoint is
+`multiHost`, that case proves a linearizable shared coordinator reachable by
+every Unica host/account that can access either endpoint and one atomic
+reservation over both keys; a per-user file or mutex cannot satisfy it.
+It then validates leases, state/work paths, cleanup/comment policy, required manual target mode/conditional actor-history identity and
 mode-specific service inspection/exclusive-lease endpoint and capability,
 the crash-stable pre-arm guard capability,
 pre-existing unresolved tasks before it creates the durable journal
@@ -3021,7 +3102,7 @@ original `PreArmCancellationEffectObservation` compensation chain.
 `PreArmCancellationKnownBlocker` is the closed `blockerKind`-tagged `oneOf`
 of `rootGuardConflict { blockerKind: rootGuardConflict,
 previousRecoveryDigest, compensatedAttemptAuditDigest,
-failedTarget: RepositoryUpdateLockTarget,
+failedTarget: RepositoryTargetIdentity, failedTargetDisplay,
 lockedBy: RepositoryOwnerIdentity | null,
 requiredExternalAction: ReleaseRepositoryLocksInstruction, blockerDigest }`
 or `modeLeaseUnavailable { blockerKind: modeLeaseUnavailable,
@@ -3864,13 +3945,21 @@ Request fields: `taskId`, `operationId`, `role`
 and `dryRun?: true` for preview; apply requires `dryRun: false` and
 `approvedPreviewDigest`. A baseline apply records
 `preflightPassed` only after revalidating that exact fresh clean inspection;
-a refresh apply instead requires `localVerified`/later synchronization state,
-or `blockedByForeignLock` with proven compensation, no owned lock/worker/unknown
-effect, and a fresh clean inspection digest. In the latter case successful
-creation atomically invalidates the old Dn, synchronization, main-session,
-verification, plan, lock, and preview evidence and returns `localVerified`.
-It does not claim the foreign lock disappeared; the later single bounded lock
-attempt observes that fact without polling.
+a refresh preview/apply is legal exactly from `localVerified`,
+`synchronizationPrepared`, `synchronizationConflicts`, `synchronized`,
+`integrationPlanned`, or `blockedByForeignLock`. Each stage requires current
+local-checkpoint verification, no pending/frozen support action or current
+recovery plan, no other live worker, owned repository lock, original
+difference, or unknown effect, and fresh inspection proving unchanged binding,
+main/database configuration equal repository head, distribution permission,
+and the current capability row. In `blockedByForeignLock` it additionally
+requires that exact conflict operation's verified compensation and an empty
+owned-lock set. Apply rechecks every gate, atomically invalidates every
+Dn-and-later artifact/session/decision/verification/gate/plan/preview evidence,
+and returns `localVerified`; every other phase is `taskPhaseMismatch` unless a
+safety blocker has higher precedence. It does not claim the foreign lock
+disappeared; the later single bounded lock attempt observes that fact without
+polling.
 Source is always the proven clean original; ordinary `make`/`DumpCfg` and CFU
 cannot satisfy the call. Preview `data` is `DistributionPreviewData { role,
 configurationIdentity, repositoryAnchor, platformVersion, inspectionDigest,
@@ -4293,7 +4382,8 @@ lastObservedConflicts[], conflictObservationCompleteness
 conflictsObservedAt?, activeOperation?, recovery?, statusDigest }`. This is not a
 promise of a global live-lock snapshot: without a separately proven read-only
 capability it reports only journal/conflict evidence observed by prior calls.
-Each `ObservedRepositoryConflict` requires `objectId`, object display,
+Each `ObservedRepositoryConflict` requires `target: RepositoryTargetIdentity`,
+target display,
 `lockedBy`, `computer`, `infobase`, and `lockedAt`; the last four are explicit
 typed values or `null`, never omitted or inferred.
 
@@ -4791,8 +4881,9 @@ integrationEntries[], integrationSetDigest, lockEntries[], relevantAnchors,
 compatibilityMode, referenceClosureDigest, settingsDigest,
 prevalidationDiagnosticsDigest, planDigest }`. Every integration entry contains
 the exact metadata object ID/name, repository action (`add`, `modify`, or
-`delete`), typed reasons, and required lock targets. Every lock entry names an
-existing development object to acquire. Added objects remain in the integration
+`delete`), typed reasons, and required lock targets. Every lock entry names a
+`RepositoryTargetIdentity` to acquire. The root guard is legal, mandatory, and
+first; following entries name existing development objects. Added objects remain in the integration
 set even when only the configuration root/parent can be locked; broad
 unexplained configuration locking fails. Every main-integration plan includes
 the root as an explained lock entry with reason `supportGraphGuard`, even when
@@ -4817,10 +4908,10 @@ are remaining locks acquired in deterministic order, so no object lock can be
 based on a support graph that changed before the root was frozen.
 
 A foreign lock returns the common `stopped` variant with
-`RepositoryLockConflictData { failedObject, lockedBy: RepositoryOwnerIdentity | null, diagnostic,
+`RepositoryLockConflictData { failedTarget: RepositoryTargetIdentity, failedTargetDisplay, lockedBy: RepositoryOwnerIdentity | null, diagnostic,
 requestedExternalAction, acquiredThenReleased[], compensationVerified: true,
 relevantAnchors }` and phase `blockedByForeignLock`. Failed compensation instead
-returns `RepositoryLockRollbackFailedData { failedObject, acquired[],
+returns `RepositoryLockRollbackFailedData { failedTarget: RepositoryTargetIdentity, failedTargetDisplay, acquired[],
 released[], retained[], retainedLockSetId?, retainedLockSetDigest?,
 recovery: RecoveryPlanStatus }` and phase `recoveryRequired`; retained lock fields are required
 together when non-empty. Partial/conflict data never uses the success variant.
@@ -5165,8 +5256,8 @@ because it did not exist as an independently lockable repository object.
 | `artifactNotDistribution` | Dn is ordinary/configuration-update/invalid; do not deploy or synchronize |
 | `platformWarningRejected` | A warning occurred in a delivery inspection/create/verification/deploy boundary; accept no delivery artifact/result. Configured merge-verification warnings instead become `invalid` and use `validationFailed` or `mainMergeValidationFailed` according to scope |
 | `vendorAncestryMismatch` | The selected IDs already passed input/digest checks, but the authoritative task vendor no longer matches its D0/Dn checkpoint; enter `recoveryRequired` with an exact task-checkpoint restore/recreate/fingerprint plan whose successful result is `localVerified` |
-| `twiceChangedProperties` | Explicit conflicts remain; enter `synchronizationConflicts` |
-| `unresolvedReferences` | Reviewed closure is incomplete; no implicit clearing |
+| `twiceChangedProperties` | Explicit conflicts remain; enter `synchronizationConflicts`. When it coexists with unresolved references it is the primary `stopCode` and `errors[0].code`, while the same `MergeSessionData` retains every conflict |
+| `unresolvedReferences` | Reviewed closure is incomplete; no implicit clearing. It is primary only when no twice-changed conflict remains |
 | `unexpectedDelta` | Delta is missing/extra/unapproved; no lock acquisition |
 | `adaptationDecisionAlreadyRecorded` | A different decision already binds the exact verification/difference; produce a fresh verification instead of overwriting audit history |
 | `conflictDecisionsIncomplete` | Resolved replay lacks decisions for one or more exact conflict IDs; stay `synchronizationConflicts`, return all missing IDs, and perform no replay or sandbox recreation |
@@ -5208,6 +5299,8 @@ because it did not exist as an independently lockable repository object.
 | `abandonmentRecoveryRequired` | Abandonment was requested after original merge; preview the exact rollback-checkpoint plus full-unlock plan, leave phase unchanged, and require approved `repository.recover` before archiving |
 | `unsafeTaskPath` | Marker/path/root/reparse guard failed; perform no destructive action |
 | `operationReplayMismatch` | Same operation ID has different canonical input; reject |
+| `targetReservationBusy` | Authoritative target reservation is held by the closed redacted owner reference; create no task and return its exact reservation context with `statusOnly` |
+| `repositoryAccountReservationBusy` | Authoritative repository-account reservation is held by the closed redacted owner reference; create no task and return its exact reservation context with `statusOnly` |
 | `operationEffectUnknown` | External effect is unresolved; only recovery may proceed |
 | `recoveryPlanPending` | One exact recovery plan is current; reject every mutation except its `repository.recover` apply, or the cancellation variant when it is a no-effect abandonment preview |
 | `taskPhaseMismatch` | A lifecycle/merge/repository precondition, or a clean bridge phase with no safety blocker, does not allow the tool; perform no effect and return exact allowed phases |

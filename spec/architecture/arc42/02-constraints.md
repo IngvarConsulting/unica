@@ -26,6 +26,12 @@
 - Target locators and start-attempt replay records live under a non-overridable
   per-user coordination root, so changing `UNICA_STATE_DIR` cannot hide an
   unresolved task.
+- That per-user root and its mutexes are local guards, not cross-host exclusion.
+  A platform row declares each endpoint `hostConfined` or `multiHost`; any
+  multi-host endpoint requires a reachable linearizable shared coordinator that
+  atomically reserves target and repository-account keys before task creation.
+  Unproven network-mounted file endpoints and missing coordinator evidence fail
+  closed.
 - Designer/repository behavior is an external platform capability. A version is
   supported only when an exact OS/platform/locale row has retained real-fixture
   evidence.

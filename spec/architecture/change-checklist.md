@@ -55,7 +55,10 @@ cache behavior, or packaging metadata.
 - [ ] Effecting mutating requests require stable `taskId` and `operationId`;
   replay input hashes and state transitions are covered by tests. The strictly
   read-only arm preview still has `taskId`, but omits `operationId` and
-  `dryRun` and creates no durable replay state.
+  `dryRun` and creates no operation/lease/start-attempt/receipt/durable-handle
+  or task-status state. JSON-derived digest vectors use RFC 8785 JCS and
+  domain-separated tool/policy input records; operation states are exactly
+  `registered`, `intentWritten`, `effectUnknown`, and `terminal`.
 - [ ] Compatible tools accept the original `cwd` plus opaque `branchedTask`,
   resolve the owned disposable workspace internally, and mutations return
   durable receipts/cache events for that context.
@@ -84,7 +87,11 @@ cache behavior, or packaging metadata.
 - [ ] Compensation touches only operation-owned locks; ambiguous ownership
   yields `recoveryRequired`.
 - [ ] Original-target and repository-account reservations independently prevent
-  concurrent tasks from confusing same-user lock ownership.
+  concurrent tasks from confusing same-user lock ownership. Local mutexes/files
+  are local only: any endpoint not capability-proven `hostConfined` uses the
+  platform row's reachable linearizable coordinator for one atomic target-plus-
+  account reservation, fenced response-loss reconciliation, and lease-loss
+  persistence; unproven network-mounted files are multi-host and fail closed.
 - [ ] Every recovery source resolves to its exact provider object below the
   canonical retention-provider root without traversal/symlink/reparse escape.
   Each provider root is disjoint from every work/instance/quarantine/original/

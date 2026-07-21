@@ -53,6 +53,12 @@
 - A final commit implementation without a proven immediate atomic no-force
   safety boundary can race with a new relevant/referrer repository version or
   report partial success.
+- Per-user coordination files and OS mutexes cannot exclude a second host that
+  reaches the same original or reserved repository account. Treating an
+  unproven network-mounted file endpoint as local would admit conflicting tasks.
+- A fifth durable `observed` operation state or a read-only durable handle would
+  make replay/status semantics ambiguous and could convert a target-effect-free
+  inspection into recoverable state.
 
 ## Mitigations
 
@@ -64,6 +70,11 @@
 - Use clean `CODEX_HOME` for visibility proof.
 - Gate repository automation on exact retained real-platform capability rows;
   keep unproven fields nullable and unproven mutations disabled.
+- Record endpoint reachability in that same platform row and, whenever either
+  endpoint is multi-host, require a reachable linearizable coordinator with
+  atomic target/account reservations, fenced idempotent receipt reconciliation,
+  two-host contention, and response-loss fixture evidence. Do not add a third
+  manifest or treat local mutexes as that proof.
 - Use a dedicated integration account, durable operation journal, exact
   compensation, and no-force unlock/recovery rules; gate the distinct
   repository-update add/delete confirmation on an approved plan and fixture.

@@ -67,7 +67,12 @@ Unica. Если изменение нарушает инвариант, снач
    strictly read-only `supportPrerequisiteArm` preview is the exception: it has
    no `operationId`, `dryRun`, or durable preview handle and is repeated after
    response loss; its apply is `localJournaled` and requires
-   `approvedArmingDigest`.
+   `approvedArmingDigest`. Read-only creates no operation/lease/start-attempt/
+   receipt/durable-handle/task-status record. Operation input digests are RFC
+   8785 JCS-based and domain-separated by exact tool and execution policy; the
+   durable operation states are only `registered`, `intentWritten`,
+   `effectUnknown`, and `terminal`, with an fsynced observed barrier inside
+   `effectUnknown` rather than a fifth state.
 3. The original infobase remains bound to the same repository and never receives
    task XML sources.
 4. Baselines are verified full distributions. An ordinary CF is legal only in
@@ -94,7 +99,11 @@ Unica. Если изменение нарушает инвариант, снач
     prompt-visible flows never pass the disposable path as `cwd`.
 13. Repository-account identity has its own persistent reservation across
     different originals; exclusive same-user lock ownership is never shared by
-    active tasks.
+    active tasks. Local per-user files/mutexes guard only local processes. If
+    either endpoint is not capability-proven `hostConfined`, a reachable
+    linearizable shared coordinator atomically reserves the target and account
+    keys before task state/work-root creation; unproven network-mounted file
+    endpoints are `multiHost`, and unproven coordination fails closed.
 14. Any changed ordinary task mutation after verification atomically returns to
     `developing` and invalidates exactly every descendant workflow proof; a
     no-change mutation selects an equal before/result pair from the exact closed

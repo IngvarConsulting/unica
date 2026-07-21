@@ -52,6 +52,12 @@ evidence-bearing domain stop and forbids it for safety rejection. Raw
 argv/stdout/stderr are omitted. Evidence is bounded, redacted, hash-addressed,
 and sufficient to distinguish success, block, unknown effect, safe abandonment,
 and completed cleanup.
+Read-only creates no operation/lease/start-attempt/receipt/durable evidence or
+preview handle/task-status mutation; any referenced operation already exists as
+a mutating record. JSON-derived digests use RFC 8785 JCS and operation input is
+domain-separated by exact tool and policy. The only durable operation states
+are `registered`, `intentWritten`, `effectUnknown`, and `terminal`; observed is
+an fsynced barrier within `effectUnknown`.
 
 ## Recoverability
 
@@ -94,6 +100,9 @@ versionless dirty-original recovery invents no repository version, ownership
 reclassification cannot rewrite positive evidence, and post-terminal tails
 cannot reopen the old authorization. Retention acquire/replay/release is
 idempotent; archive precedes release and an ambiguous release blocks cleanup.
+Cross-host recoverability additionally requires durable fenced reservation
+receipts: local files/mutexes are not global exclusion, and a multi-host
+endpoint requires retained coordinator proof before start.
 
 ## Fidelity
 

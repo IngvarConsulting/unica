@@ -91,7 +91,8 @@ state and, in future slices, trigger lazy refresh if a required cache is stale.
    only operation that persists reconciliation after an interrupted effect.
 2. `branched.start` validates the named local profile, task/operation IDs,
    capability row, state/work roots, exclusive original-infobase lease, and
-   dedicated repository-account reservation before creating a journal and owned
+   atomically reserved target plus dedicated repository-account reservation
+   before creating a journal and owned
    instance. It also validates each deny-unknown retention provider, exact
    provider-object/source/SHA mapping, actor readability, lease capability, and
    that the source resolves below its provider root while that root remains
@@ -100,6 +101,10 @@ state and, in future slices, trigger lazy refresh if a required cache is stale.
    and exclusive-lease capability for the exact original or working IB; none of
    those paths, object handles, endpoints, or secrets cross the public result
    boundary.
+   Local mutexes are host-local only. If either topology endpoint is multi-host,
+   the row first proves the reachable linearizable shared coordinator and its
+   fenced response-loss reservation receipts; otherwise start fails before task
+   state exists.
 3. Repository status and a digest-bound preview/apply update prove the
    still-bound original equals the approved repository object set. Apply uses
    root-first locking plus the exact existing target/parent/referrer closure,

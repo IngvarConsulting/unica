@@ -27,6 +27,10 @@
   complete semantic partitions, `staleSupportPreflight`, exact recovery lock
   targets/three dispositions, support layers, compensated locks, and terminal
   proofs without filesystem/process access.
+- The same models define RFC 8785 JSON contract digests and domain-separated
+  operation inputs, the exact four-state operation record, closed missing-task
+  reservation blockers, and `RepositoryTargetIdentity` for both root and
+  development-object lock/conflict targets.
 
 ## Application Blocks
 
@@ -79,6 +83,10 @@
 - `BranchedTargetLocator` persists the project/target-to-state-root registration
   and start-attempt replay records under a non-overridable owner-only
   coordination root.
+- `BranchedReservationCoordinator` owns atomic target-plus-account reservations.
+  The owner-only coordination root/mutex remains its host-local fast guard; a
+  capability-proven shared linearizable backend is mandatory whenever either
+  endpoint is multi-host.
 - `DesignerPort` is a typed platform-neutral boundary. Its OS-specific locator,
   process, encoding, service-message, and filesystem implementation lives under
   `infrastructure/platform/**`. Repository refresh locks root plus the exact
@@ -103,7 +111,8 @@
 - A detached branched-operation worker owns long `operationId`-bound contained
   or authoritative Designer calls across MCP disconnect and records effect
   barriers. Read-only inspections instead use bounded ephemeral processes and
-  never create durable operation state.
+  never create durable operation, lease, start-attempt, receipt, preview/evidence
+  handle, or task/status state.
 
 ## Target Native MCP Handlers
 

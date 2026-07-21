@@ -32,6 +32,12 @@ from cache freshness.
 A non-overridable per-user coordination locator binds canonical targets to the
 registered durable root and unresolved tasks. `UNICA_STATE_DIR` changes cannot
 create a second operational history for the same original/repository identity.
+Its files and mutexes protect only local processes. A topology row classifies
+both endpoints as `hostConfined` or `multiHost`; for multi-host use, a
+linearizable shared coordinator reachable by every eligible host/account
+atomically reserves the target and repository-account keys before task state
+exists. Fenced idempotent observe/renew/release receipts survive lease loss;
+unknown effects block replay and a second start.
 
 ## Internal Adapter Pattern
 
@@ -74,6 +80,8 @@ Lock compensation acts only on acquisitions attributable to the current
 operation. A dedicated integration account and one original-infobase lease are
 mandatory until stronger ownership discovery is proven. The account has its
 own repository-plus-username persistent reservation across original infobases.
+Reservation-busy rejection and missing-task status use the same closed redacted
+target/account context and owner union; busy reservation never creates a task.
 
 Repository history has two distinct identities. The global history cursor is
 an immutable scan position; task relevance comes only from a recomputed
@@ -92,7 +100,12 @@ derived only for exact approved incoming add/delete changes with its own
 capability evidence. An ordinary CF is accepted only as the registered
 ordinary-result artifact used by candidate comparison/no-force sandbox merge,
 never as D0/Dn. CFU is inspectable only so its typed rejection can be returned
-and never becomes a branched workflow input.
+and never becomes a branched workflow input. `refreshDistribution` is legal
+only from the exact current local/synchronization phases listed in the contract,
+rechecks clean checkpoint/inspection and every safety gate on apply, then
+returns `localVerified` after invalidating all Dn-and-later proof. Root and
+development-object conflicts both use `RepositoryTargetIdentity`, never an
+object-only shape.
 
 Main integration binds a complete no-force support-preflight digest. A manual
 editable-with-support prerequisite uses the profile-bound reserved original or

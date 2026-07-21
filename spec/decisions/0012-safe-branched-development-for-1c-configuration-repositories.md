@@ -1,7 +1,8 @@
 # ADR-0012: Safe branched development for 1C configuration repositories
 
 - Status: accepted
-- Implementation gate: confirmed by the owner on 2026-07-21
+- Implementation gate: reopened by this audit; fresh explicit owner approval is
+  required before any production implementation resumes
 - Date: 2026-07-21
 - Issue: [#137](https://github.com/IngvarConsulting/unica/issues/137)
 - Acceptance: [Branched development acceptance](../acceptance/branched-development.md)
@@ -434,10 +435,20 @@ Original-infobase identity is SHA-256 over canonical topology and endpoint
 Repository identity is SHA-256 over canonical transport/location plus the live
 binding identity when the platform exposes it. Full digests are used as keys;
 display values are separately redacted. An OS named mutex on Windows or an
-advisory lock under the non-overridable coordination root on Unix is keyed by
-these target identities. The target locator is checked while that lease is
-held, so two different `UNICA_STATE_DIR` overrides cannot concurrently or
-sequentially bypass an unresolved task.
+advisory lock under the non-overridable coordination root on Unix is a local
+process guard only; it is keyed by these target identities and prevents two
+processes of that OS account from bypassing an unresolved task or state-root
+override. It cannot enforce the global target/account invariant across hosts.
+Whenever either original or repository endpoint is not capability-proven
+`hostConfined`, start requires a linearizable shared coordinator reachable by
+every Unica host/account that can access either endpoint. It atomically reserves
+target key `(repository identity, original-infobase identity)` and account key
+`(repository identity, normalized integration username)` before task
+state/work-root creation, or fails closed with `platformCapabilityUnproven`.
+Unproven network-mounted file endpoints are `multiHost`. Persistent
+reservations outlive process leases and use fenced idempotent
+observe/renew/release receipts; an unknown receipt effect blocks replay and a
+second start. The target locator is still checked while the local lease is held.
 
 An external `taskId` is a display/tracker identifier and must match
 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Paths use a generated UUID `instanceId`, not
@@ -531,10 +542,14 @@ roots, home, Git repositories/worktrees, the original workspace, symlinks,
 junctions/reparse points, marker mismatch, root mismatch, and traversal at any
 depth. This policy is separate from ordinary workspace-write policy.
 
-Journal writes use write-ahead stages `intent -> effectUnknown -> observed ->
-terminal`, canonical input hashes, atomic replace, file sync, and parent-directory
-sync. Schema upgrades are explicit and monotonic. A process crash at any remote
-effect boundary yields reconciliation, never blind replay.
+The durable `OperationRecord` state machine is exactly `registered ->
+intentWritten -> effectUnknown -> terminal`, with canonical domain-separated
+input hashes, atomic replace, file sync, and parent-directory sync. “Observed”
+is a policy-specific fsynced receipt/evidence barrier while the record remains
+`effectUnknown`, not a fifth state. A crash after that barrier reconstructs the
+terminal envelope from the receipt and never repeats the effect. Schema upgrades
+are explicit and monotonic; a crash at any remote-effect boundary yields
+reconciliation, never blind replay.
 
 ### Leases and managed operations
 
@@ -564,10 +579,12 @@ returns to its recorded safe phase, while an authoritative or unproven effect
 requires recovery. Neither is blindly restarted.
 
 A strictly read-only tool may launch a bounded ephemeral inspection process but
-never creates a detached operation, durable mutation, or `operationId`. On MCP
-disconnect/timeout it kills the owned process tree, discards temporary output,
-and may be called again because it is target-effect-free; it cannot yield an
-unknown authoritative effect.
+creates no `OperationRecord`, operation lease, start-attempt record, receipt,
+durable preview/evidence handle, task/status mutation, or `operationId`. Any
+operation reference it returns denotes an already-existing mutating record. On
+MCP disconnect/timeout it kills the owned process tree, discards temporary
+output, and may be called again because it is target-effect-free; it cannot
+yield an unknown authoritative effect.
 
 Cancellation of a sandbox/read operation is bounded and safe. Cancellation of
 a repository or original-infobase mutation records intent and enters recovery
@@ -680,7 +697,7 @@ Blocking exits are normative:
 
 | Phase | Only allowed progress |
 | --- | --- |
-| `blockedByForeignLock` | after proven compensation/no owned locks and external coordination, a fresh clean inspection plus applied refresh distribution invalidates Dn-and-later evidence and returns `localVerified`; the next plan performs one bounded lock attempt and does not assume/poll release. Alternatively a task mutation abandons integration evidence and returns `developing` |
+| `blockedByForeignLock` | only `refreshDistribution` preview/apply may return to `localVerified`: it requires current local-checkpoint verification, no pending/frozen support action or recovery plan, no other live worker/owned lock/original difference/unknown effect, and fresh clean binding/main/database/head/permission/capability inspection; this phase additionally requires that exact conflict operation's verified compensation and an empty owned-lock set. Apply rechecks every gate and invalidates every Dn-and-later artifact/session/decision/verification/gate/plan/preview evidence. Every other phase is `taskPhaseMismatch` unless a safety blocker wins. The next plan performs one bounded lock attempt and does not assume/poll release. Alternatively a task mutation abandons integration evidence and returns `developing` |
 | `synchronizationConflicts` | record one current decision head for every conflict; a same-target edit after a decision moves the historical head to `replacementPending`, and its replacement must carry the exact `replacesDecisionId`. Then `merge.prepare(mode="resolvedReplay")` replays only current heads, recreates the checkpoint sandbox, and returns to `synchronizationPrepared` only with zero remaining conflicts and no selectable receipt. Accidental/unbindable workspace changes instead require a digest-bound `supportedUpdate` replacement that atomically invalidates the old workspace/receipts/decisions only after a fresh session is durable |
 | `staleRelevantBaseline` | original is still unchanged; `repository.unlock(reason="rollback")` must release the exact retained set and return `localVerified`, then a fresh Dn, synchronization, and plan are required |
 | `staleSupportPreflight` | no task merge started and the original is either unchanged or has capability-proven clean repository-refresh evidence; `repository.unlock(reason="rollback")` releases the exact retained set, invalidates the main session/verification/plan/lock and stale gate, returns `synchronized`, and requires fresh main preparation/support preflight without reusing old history evidence. An unowned/unclassified original delta enters recovery instead |
@@ -1352,6 +1369,15 @@ Each row is keyed by host OS/architecture, exact 1C platform version,
 locale/encoding, original-infobase kind (`file` or `clientServer`), and
 repository transport (`file` or `server`). Evidence lives as a redacted tracked
 summary under `tests/fixtures/branched_development/platform_evidence/<id>.json`.
+Its topology row additionally contains exact `originalEndpointReachability` and
+`repositoryEndpointReachability` values `hostConfined` or `multiHost`, plus a
+`crossHostReservationExclusion` case. An unproven network-mounted file endpoint
+is `multiHost`. When either endpoint is `multiHost`, this case proves a
+linearizable shared coordinator reachable by every relevant Unica host/account,
+one atomic target-plus-account reservation, response-loss observe/renew/release
+reconciliation, and durable exclusion after process-lease loss. A host-local
+coordination file/mutex is insufficient. This extends the existing platform row;
+it does not introduce a third capability manifest.
 
 A row contains schema/feature-contract versions, harness contract digest,
 implementation commit, run timestamp, topology key, all required case IDs,
@@ -1374,6 +1400,8 @@ row fails preflight.
     "encoding": "utf-8",
     "originalInfobaseKind": "file",
     "repositoryTransport": "file",
+    "originalEndpointReachability": "hostConfined",
+    "repositoryEndpointReachability": "hostConfined",
     "timeoutsSeconds": {
       "distributionCreate": 1800,
       "ordinaryConfigurationCreate": 1800,
@@ -1398,6 +1426,7 @@ row fails preflight.
     "harnessDigest": "1111111111111111111111111111111111111111111111111111111111111111",
     "passedAt": "2026-07-21T00:00:00Z",
     "caseIds": ["distribution-kind", "partial-lock", "same-user-lock",
+      "crossHostReservationExclusion",
       "commit-atomicity", "commit-concurrent-lineage-safety",
       "supported-update", "support-isolation", "support-preflight",
       "manual-support-prerequisite", "manual-working-infobase-lease",
@@ -1487,25 +1516,28 @@ A row is publishable only after a disposable real-platform fixture proves:
 1. distribution classification and vendor-support creation;
 2. partial lock diagnostics, owner availability, and compensation;
 3. same-user pre-existing lock behavior;
-4. commit failure/atomicity and unlock behavior;
-5. supported-update settings for scalar/module/add-add/delete-modify/reference
+4. two hosts racing both the same target and distinct targets sharing the same
+   repository account, with exactly one start admitted in each contention;
+   response-loss observation proves durable reservation exclusion and release;
+5. commit failure/atomicity and unlock behavior;
+6. supported-update settings for scalar/module/add-add/delete-modify/reference
    and vendor-rule conflicts without `-force`;
-6. final merge support isolation for unsupported and upstream-supported targets;
-7. rollback/restore/unlock for modify, add, delete, interruption, and disconnect;
-8. layer-aware multi-vendor support editing and round trip;
-9. reproducible manual conflict materialization and authoritative replay;
-10. previewed repository update with incoming add/delete and exact internal
+7. final merge support isolation for unsupported and upstream-supported targets;
+8. rollback/restore/unlock for modify, add, delete, interruption, and disconnect;
+9. layer-aware multi-vendor support editing and round trip;
+10. reproducible manual conflict materialization and authoritative replay;
+11. previewed repository update with incoming add/delete and exact internal
     structural-change confirmation;
-11. complete support-preflight classification for ready, human-editable,
+12. complete support-preflight classification for ready, human-editable,
     vendor-forbidden, and inconclusive cases without `-force`;
-12. both profile-bound manual target modes, root-only prerequisite attribution/
+13. both profile-bound manual target modes, root-only prerequisite attribution/
     cancellation/reconciliation, reserved-actor lock inventory, optional
     read-only root observation plus mandatory apply guard, separate-working-IB
     exclusive-lease busy/dirty/unknown outcomes, all three invalid-history
     recovery dispositions and finalization guards, inverse abandonment cleanup,
     full Dn refresh, first-acquired support-graph guard/recheck, and release of an
     unchanged guard without unrelated repository content;
-13. contiguous history-partition endpoint/digest binding, root-first exact
+14. contiguous history-partition endpoint/digest binding, root-first exact
     target locking plus selective `-Objects` repository refresh without a
     version-pinned selector, and atomic commit safety against a concurrently
     added deletion-blocking referrer or locked-target/root change while
