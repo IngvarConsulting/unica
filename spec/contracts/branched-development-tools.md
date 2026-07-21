@@ -113,16 +113,20 @@ The companion contract for general mutations is producer-neutral:
   returns to its bound cancelled/relevant-safe phase. It is not immutable action
   taint and never selects `restoreThenAbandon` by itself.
 - `ManualWorkingInfobaseIdentity`: closed `{ computer, infobase, digest }`;
-  both display fields are non-empty bounded history-visible values and `digest`
-  binds their canonical pair. It contains no connection string or credential.
+  both display fields are non-empty bounded history-visible values. The closed
+  `ManualWorkingInfobaseIdentityDigestRecord` is `{ computer, infobase }`, and
+  `digest == sha256(canonical(ManualWorkingInfobaseIdentityDigestRecord))`. It
+  contains no connection string or credential.
 - `ManualWorkingInfobaseBaseline`: closed `{ workingInfobaseIdentity,
   repositoryBaseCursor: RepositoryHistoryCursor,
   recordedObjectVersionMapDigest, baseFingerprint, currentFingerprint,
   currentEqualsBase: true, supportGraphDigest, baselineInspectionReceiptId,
   exclusiveLeaseCapabilityId, leaseReleasedVerified: true, baselineDigest }`.
-  It is captured under the service-held exclusive lease immediately before a
-  separate-mode authorization is exposed, proves a clean starting IB, and its
-  digest covers every field except itself.
+  `ManualWorkingInfobaseBaselineDigestRecord` is the same closed record with
+  only top-level `baselineDigest` removed, and `baselineDigest ==
+  sha256(canonical(ManualWorkingInfobaseBaselineDigestRecord))`. It is captured
+  under the service-held exclusive lease immediately before a separate-mode
+  authorization is exposed and proves a clean starting IB.
 - `ReservedOriginalTerminalizationProof`: closed `{
   reservedOriginalIdentityDigest, exclusiveLeaseCapabilityId,
   exclusiveLeaseReceiptId, exclusiveLeaseReleaseReceiptId,
@@ -132,18 +136,27 @@ The companion contract for general mutations is producer-neutral:
   expectedRepositoryFingerprint, observedOriginalFingerprint,
   originalEqualsClassifiedRepositoryState: true,
   noUncommittedConfigurationDelta: true, leaseReleased: true,
-  leaseReleaseVerified: true, proofDigest }`. The capability receipt, not a user
-  assertion or process-name snapshot, proves that no Designer/configuration
+  leaseReleaseVerified: true, proofDigest }`.
+  `ReservedOriginalTerminalizationProofDigestRecord` is the same closed record
+  with only top-level `proofDigest` removed, and `proofDigest ==
+  sha256(canonical(ReservedOriginalTerminalizationProofDigestRecord))`. The
+  capability receipt, not a user assertion or process-name snapshot, proves
+  that no Designer/configuration
   session can mutate the reserved original from the guarded inspection through
-  authorization consumption/cancellation/finalization. `proofDigest` covers
-  every other field. The acquisition/release receipt IDs name the exact
+  authorization consumption/cancellation/finalization. The acquisition/release receipt IDs name the exact
   capability-held lease window and cannot come from different attempts.
 - `VendorChangeRestriction`: closed `changesAllowed`,
   `changesNotRecommended`, `changesForbidden`, `unknown`, or `notApplicable`.
 - `CapabilityRowId`: 1-128 ASCII characters matching
   `[a-z0-9][a-z0-9._-]{0,127}`.
 - `RepositoryVersion`: 1-128 printable non-control Unicode characters; it is
-  opaque and never parsed as an integer by the domain.
+  opaque and never parsed, numerically compared, or lexically ordered by the
+  domain. Repository-history order, immediate-successor claims, and contiguous
+  coverage are supplied by an adapter under a capability-proven history API.
+  Given that ordered evidence, the `RepositoryHistoryOrderResolver`-backed
+  domain constructor rejects duplicate versions, endpoint disagreement, and
+  cursor/partition digest disagreement; it does not manufacture continuity from
+  the spelling of a version.
 - `NormalizedUtcInstant`: one RFC 3339 UTC instant serialized with uppercase
   `T` and terminal `Z` as `YYYY-MM-DDTHH:MM:SS[.fraction]Z`. The calendar and
   clock value are parsed and validated. A zero fraction is omitted; a non-zero
@@ -163,6 +176,17 @@ The companion contract for general mutations is producer-neutral:
   invalid/corrective
   entry invalidates the old baseline even when later history restores the same
   net digest; change-then-revert is not erased.
+- `RoutineRepositoryVersionClassificationEvidence`: closed `{
+  repositoryVersion: RepositoryVersion, relevance: unrelated | relevant,
+  repositoryActor: RepositoryActorIdentity | null, rootDeltaDigest: Sha256,
+  contentDeltaDigest: Sha256,
+  supportTransitionsDigest: CanonicalEmptyDeltaDigest,
+  supportGraphUnchanged: true, classificationDigest: Sha256 }`.
+  `classificationDigest ==
+  sha256(canonical(evidence-without-classificationDigest))`. This is the
+  capability-proven source for a routine partition entry when no overlapping
+  `SupportPrerequisiteVersionObservation` exists, including an unrelated
+  post-commit interleaving; nullable actor evidence remains an explicit `null`.
 - `NonConflictingConcurrentEvidence`: closed `{ repositoryVersion, reason:
   harmlessNonBlockingReferenceExpansion,
   atomicCommitSafetyCapabilityId: CapabilityRowId, lockedTargetSetDigest,
@@ -172,19 +196,121 @@ The companion contract for general mutations is producer-neutral:
   disjointFromIntegrationContent: true, supportGraphUnchanged: true,
   validationInputsUnaffected: true, rootUnchanged: true,
   lockedTargetsUnchanged: true, blocksApprovedDeletion: false,
-  evidenceDigest }`. All six safety literals are derived from the complete
+  evidenceDigest }`. All seven safety literals are derived from the complete
   capability-proven version delta/reference/validation-input scan; `evidenceDigest ==
   sha256(canonical(evidence-without-evidenceDigest))`.
-- `RepositoryHistoryPartition`: closed `{ fromExclusive:
-  RepositoryHistoryCursor, throughInclusive: RepositoryHistoryCursor, entries:
-  RepositoryHistoryPartitionEntry[], partitionDigest }`, where each entry is
-  closed `{ repositoryVersion, classification, semanticDeltaDigest,
-  nonConflictingConcurrentEvidence?: NonConflictingConcurrentEvidence }` and
+- `RepositoryHistorySourceEvidenceRef`: closed `{
+  sourceKind: contentAddressed, evidenceKind: routineClassification |
+  supportPrerequisiteObservation | nonConflictingConcurrent,
+  evidenceDigest: Sha256 }`. The tuple `(evidenceKind, evidenceDigest)` is the
+  one mandatory lookup key; there is no inline-only or implementation-selected
+  alternative. A deterministic content-addressed evidence resolver must load
+  the exact typed record selected by `evidenceKind`, recompute its digest, and
+  reject a missing record, wrong type, digest mismatch, or non-canonical record.
+  Task 7 registers only `RoutineRepositoryVersionClassificationEvidence` and
+  `NonConflictingConcurrentEvidence`; Task 8 registers
+  `SupportPrerequisiteVersionObservation` after that type exists. An unresolved
+  `supportPrerequisiteObservation` reference is unusable rather than partially
+  trusted.
+- `EvidenceSourceRegistry` is the internal typed registry of those loaders,
+  rehashers, and classification mappers. `EvidenceSourceRegistryEntry` is the
+  closed `{ evidenceKind, evidenceSchemaDigest: Sha256,
+  digestRecordSchemaDigest: Sha256, loaderRevisionDigest: Sha256,
+  classificationMapperRevisionDigest: Sha256 }`. The non-empty entry list is
+  unique and ordered by evidence-kind declaration order. Each digest is a
+  generated and committed contract artifact for, respectively, the exact typed
+  evidence `$defs` schema, its exact digest-input-record schema, the typed loader
+  revision, and the classification/semantic-mapping revision. Arbitrary version
+  strings, function pointers, debug names, or an invented profile/platform
+  capability row are forbidden. When a loader's evidence genuinely depends on
+  an existing authoritative platform capability row, that row remains inside
+  the typed evidence itself; the code registry does not manufacture a generic
+  loader `CapabilityRowId`.
+  `EvidenceSourceRegistryDigestRecord` is the closed `{ entries:
+  EvidenceSourceRegistryEntry[] }`, and `registryDigest ==
+  sha256(canonical(EvidenceSourceRegistryDigestRecord))`. Task 7's registry
+  contains exactly `routineClassification` and `nonConflictingConcurrent`; Task
+  8 extends that same registry with `supportPrerequisiteObservation`, changing
+  `registryDigest` and invalidating every older index proof. When Task 9 enables
+  the two previously rejected `corrective` mappings, it changes the affected
+  support-observation entry's `classificationMapperRevisionDigest`, recomputes
+  `registryDigest`, and invalidates every Task 8 index proof. Its
+  `evidenceSchemaDigest`, `digestRecordSchemaDigest`, and `loaderRevisionDigest`
+  remain byte-identical unless that schema/loader actually changes; mapping-only
+  enablement cannot falsify those revisions. `taskCommit` is not an evidence-
+  source kind and remains owned by its enclosing Task 13 constructor.
+  The capability-backed, version-indexed `EvidenceSourceIndex` produces one
+  internal, non-`Deserialize` `EvidenceSourceIndexProof` per queried
+  `repositoryVersion`: closed `{ repositoryVersion, registryDigest,
+  sourceIndexReceiptId: UnicaId, availability: EvidenceSourceAvailability[],
+  proofDigest }`.
+  `EvidenceSourceAvailability` is the closed tagged `oneOf` of `available {
+  evidenceKind, state: available, sourceEvidenceRef:
+  RepositoryHistorySourceEvidenceRef }` or `absent { evidenceKind, state:
+  absent }`. The availability list has exactly one row for every active registry
+  entry and no other row; for every index `i`,
+  `availability[i].evidenceKind == registry.entries[i].evidenceKind`, so its byte-
+  for-byte order is exactly the active evidence-kind declaration order. A
+  reordered row set is invalid and also changes `proofDigest`. An available
+  row's ref has the same `evidenceKind`. Each available row identifies exactly
+  one canonical ref. If
+  the index observes multiple refs for a kind, cannot establish absence, or
+  cannot cover the active registry, it produces no valid proof.
+  `EvidenceSourceIndexProofDigestRecord` is the same closed record with only
+  top-level `proofDigest` removed, and `proofDigest ==
+  sha256(canonical(EvidenceSourceIndexProofDigestRecord))`. The proof is adapter
+  evidence, not caller JSON; a proof from an older registry digest cannot omit a
+  newly registered source kind.
+- `RepositoryHistoryPartition` is the external schema name for the closed wire
+  record `{ fromExclusive: RepositoryHistoryCursor, throughInclusive:
+  RepositoryHistoryCursor, entries: RepositoryHistoryPartitionEntry[],
+  partitionDigest }`. Ordinary Rust deserialization produces only
+  `UnvalidatedRepositoryHistoryPartition`; that closed DTO has the same wire
+  fields but has no domain methods and cannot enter status, gate, merge, commit,
+  recovery, or other control flow. `entries` is empty if and only if
+  `fromExclusive` and `throughInclusive` are byte-identical; differing endpoints
+  require a non-empty list. Each entry is closed `{
+  repositoryVersion, classification, semanticDeltaDigest,
+  sourceEvidenceRef?: RepositoryHistorySourceEvidenceRef,
+  nonConflictingConcurrentEvidence?: NonConflictingConcurrentEvidence }`, and
   `classification` is `unrelatedRoutine`, `relevantRoutine`,
-  `authorizedSupport`, `externalSupport`, `preArmExternal`, `invalid`, `corrective`,
-  `nonConflictingConcurrent`, or `taskCommit`. Entries
-  are canonical, contain every version in the contiguous range exactly once,
-  and match every overlapping `SupportPrerequisiteVersionObservation`.
+  `authorizedSupport`, `externalSupport`, `preArmExternal`, `invalid`,
+  `corrective`, `nonConflictingConcurrent`, or `taskCommit`.
+  `sourceEvidenceRef` is required for every non-`taskCommit` entry and absent
+  exactly for `taskCommit`; `taskCommit` also forbids inline concurrent evidence.
+  Its evidence-kind mapping is closed:
+
+  - `routineClassification` is legal only for `unrelatedRoutine` or
+    `relevantRoutine` and resolves
+    `RoutineRepositoryVersionClassificationEvidence.classificationDigest`;
+  - `supportPrerequisiteObservation` is legal for an observation-backed routine,
+    `authorizedSupport`, `externalSupport`, `preArmExternal`, `invalid`, or
+    `corrective` entry and resolves
+    `SupportPrerequisiteVersionObservation.classificationDigest`;
+  - `nonConflictingConcurrent` is legal only for that same partition
+    classification and resolves
+    `NonConflictingConcurrentEvidence.evidenceDigest`.
+
+  `nonConflictingConcurrentEvidence` is required exactly for
+  `nonConflictingConcurrent`, is absent otherwise, and must be byte-identical to
+  the typed content-addressed record resolved by its mandatory reference. The
+  inline copy is never a substitute for lookup. Every later audit resolves and
+  revalidates the same typed record; hash presence alone is insufficient.
+  A capability-backed `RepositoryHistoryOrderResolver` consumes the unvalidated
+  DTO, the exact resolved source records, one authoritative
+  `EvidenceSourceIndexProof` for every non-`taskCommit` entry, and internal typed
+  `RepositoryHistoryOrderEvidence` from the proven history adapter. For an empty
+  DTO the resolver requires byte-identical endpoints and `entries: []`; there is
+  no immediate-successor claim to prove. For a non-empty DTO the evidence proves
+  the immediate successor after `fromExclusive`, every following successor,
+  complete coverage through `throughInclusive`, and the exact ordered version
+  sequence; it is not caller JSON. The resolver verifies the applicable case,
+  rejects duplicates, endpoint/emptiness/order/coverage disagreement,
+  revalidates source/classification/version mappings and all semantic/partition
+  digests, then constructs `ValidatedRepositoryHistoryPartition`. That domain
+  type has no `Deserialize` implementation and serializes back to the same
+  closed wire schema. No implementation compares or parses version strings to
+  replace the resolver.
   In support-recovery ranges, observation `authorized` maps to
   `authorizedSupport`; routine relevance maps
   to `unrelatedRoutine`/`relevantRoutine`; the remaining discriminator names
@@ -193,17 +319,81 @@ The companion contract for general mutations is producer-neutral:
   `nonConflictingConcurrent` requires capability evidence that the entry changed
   no integration content, validation input, support graph, locked target/root,
   and introduced only reference-closure expansion that cannot block an approved
-  deletion. The evidence field is required exactly for that classification,
-  its version/capability equal the entry/enclosing atomic-safety guard, and it is
-  absent for every other classification. For every entry except `taskCommit`, `semanticDeltaDigest` is exactly
-  `sha256(canonical({ repositoryVersion, partitionClassification,
-  rootDeltaDigest, contentDeltaDigest, classificationDigest,
-  externalSupportDisjointnessDigest, correctiveInstructionDigest,
-  nonConflictingConcurrentEvidenceDigest }))`, with
-  absent optional evidence encoded as JSON `null`; it equals the digest derived
-  from the matching observation when one exists, never an implementation-local
-  summary. `taskCommit` uses the exact integration/object-set formula specified
-  by `CommitData` below. No
+  deletion. The inline `nonConflictingConcurrentEvidence` field is required
+  exactly for that classification, its version/capability equal the
+  entry/enclosing atomic-safety guard, and it is absent for every other
+  classification. For every entry except `taskCommit`,
+  `semanticDeltaDigest` is exactly
+  `sha256(canonical(RepositorySemanticDeltaDigestRecord))`, where the closed
+  record is `{ repositoryVersion, partitionClassification,
+  rootDeltaDigest: Sha256 | null, contentDeltaDigest: Sha256 | null,
+  classificationDigest: Sha256 | null,
+  externalSupportDisjointnessDigest: Sha256 | null,
+  correctiveInstructionDigest: Sha256 | null,
+  nonConflictingConcurrentEvidenceDigest: Sha256 | null }`. All six digest
+  members after `partitionClassification` are physically present, so an unavailable or
+  inapplicable input is JSON `null`, never omitted. Their exact mapping is:
+
+  - `unrelatedRoutine`, `relevantRoutine`, `authorizedSupport`, and
+    `preArmExternal` copy the matching observation's root, content, and
+    classification digests; the remaining three evidence slots are `null`;
+  - `externalSupport` additionally copies the observation's
+    `externalSupportDisjointnessDigest`; both corrective/non-conflicting slots
+    are `null`;
+  - `invalid` copies the observation's root/content values, preserving explicit
+    `null` for unavailable unattributed deltas, and its classification digest;
+    the remaining three slots are `null`;
+  - `corrective` copies the observation's root, content, and classification
+    digests. Its `correctiveInstructionDigest` slot is the action-correction
+    variant's field of that name or the external-conflict-correction variant's
+    `supportConflictInstructionDigest`; the external-support and
+    non-conflicting slots are `null`;
+  - `nonConflictingConcurrent` sets the root, content, classification,
+    external-support, and corrective slots to `null`, and sets
+    `nonConflictingConcurrentEvidenceDigest` to the entry evidence's exact
+    `evidenceDigest`.
+
+  Source selection is authoritative and version-indexed, never an implementation
+  search for whichever record happens to exist. The total active-kind precedence
+  is `supportPrerequisiteObservation > nonConflictingConcurrent >
+  routineClassification`; `taskCommit` remains outside this selection path. The
+  index proof's `repositoryVersion` equals the entry version, its
+  `registryDigest` equals the active registry, and the entry's
+  `sourceEvidenceRef` must byte-equal the uniquely selected available ref.
+  `supportPrerequisiteObservation` is selected whenever available. A selected
+  `nonConflictingConcurrent` requires every active higher-precedence row
+  explicitly `absent` (the support-observation row after Task 8 registers it);
+  its inline copy equals that exact ref. A selected `routineClassification`
+  likewise requires every active higher-precedence row explicitly `absent`: in
+  Task 7 that is `nonConflictingConcurrent`, while after Task 8 it is both
+  `supportPrerequisiteObservation` and `nonConflictingConcurrent`. The active
+  `registryDigest`, rather than a fabricated absent row for an unregistered kind,
+  proves which set applies. An available higher-precedence source whose typed
+  classification does not match the partition entry is validation failure,
+  never permission to fall back to a lower kind. Every observation-backed class
+  requires the exact available support-observation ref. A missing registered-
+  kind row, missing legal source, multiple refs for one kind, stale/wrong-
+  registry proof, version/kind/ref mismatch, or any remaining ambiguous
+  selection produces no validated partition. The generic validated constructor
+  verifies the selected source's
+  repository version and classification mapping and recomputes
+  `semanticDeltaDigest` from it. It never invents digest inputs from an opaque
+  `RepositoryVersion`, accepts a caller-supplied semantic hash alone, or treats
+  index absence as an unproven filesystem/store search result.
+
+  The wire schema may name `taskCommit`, but Task 7's generic constructor rejects
+  every such entry: no partially validated partition is produced. `taskCommit`
+  does not use `RepositorySemanticDeltaDigestRecord`. Task 13 defines the closed
+  `CommittedRepositoryObject` element type used by `CommitData.committedObjects`
+  and owns the only crate-private task-commit partition constructor. That
+  constructor receives the enclosing validated `CommitData` inputs, uses the
+  same history-order resolver for the entire interval and the authoritative
+  source-index proof plus typed source resolver for every other entry, requires
+  exactly one task version, and
+  recomputes its `semanticDeltaDigest == committedObjectsDigest ==
+  sha256(canonical(CommittedObjectsDigestRecord))` after validating the exact
+  committed-object projection defined by `CommitData`. No generic/public
+  constructor or raw deserialization can bypass that enclosing validation. No
   version is inferred from a localized diagnostic. A root
   guard excludes new root/support versions only; it never claims to serialize
   commits of unrelated development objects.
@@ -244,9 +434,12 @@ The companion contract for general mutations is producer-neutral:
   relevantBaselineDigest: RelevantBaselineDigest, evidenceDigest }`. For a
   reusable current gate, every entry is `unrelatedRoutine`. The evidence is
   valid only when `partition.fromExclusive == gateObservedCursor` and
-  `partition.throughInclusive == classifiedThroughCursor`; `evidenceDigest`
-  covers both endpoint cursors, the complete partition digest, and the
-  recomputed relevant-baseline digest. The latter must equal the current gate
+  `partition.throughInclusive == classifiedThroughCursor`.
+  `SupportGateHistoryEvidenceDigestRecord` is the closed
+  `{ gateObservedCursor, classifiedThroughCursor, partitionDigest,
+  relevantBaselineDigest }`, with `partitionDigest` copied from `partition`;
+  `evidenceDigest == sha256(canonical(SupportGateHistoryEvidenceDigestRecord))`.
+  The recomputed relevant-baseline digest must equal the current gate
   baseline after applying that partition. The evidence is
   immutable and is carried through main verification, plan, lock, original
   merge receipt, and consumed-gate lineage; a cursor advance without it cannot
@@ -268,15 +461,29 @@ The companion contract for general mutations is producer-neutral:
   commit and enters restore/unlock recovery; every other post-boundary entry is
   classified explicitly rather than being called conflicting by default.
   It is valid only when `partition.fromExclusive == mergeReceiptCursor` and
-  `partition.throughInclusive == classifiedThroughCursor`; `evidenceDigest`
-  covers both cursors, the complete partition digest, recomputed closure digest,
-  relevant-tail literal, and capability row. No other range can be substituted.
+  `partition.throughInclusive == classifiedThroughCursor`.
+  `PostMergeHistoryGuardEvidenceDigestRecord` is the closed
+  `{ mergeReceiptCursor, classifiedThroughCursor, partitionDigest,
+  recomputedReferenceClosureDigest, relevantTailAbsent,
+  atomicCommitSafetyCapabilityId }`, with the partition digest copied from the
+  nested partition and `relevantTailAbsent: true` retained literally;
+  `evidenceDigest ==
+  sha256(canonical(PostMergeHistoryGuardEvidenceDigestRecord))`. No other range
+  can be substituted.
+- `RepositoryTargetKind`: the closed `configurationRoot` or
+  `developmentObject` repository-identity discriminator. It is distinct from
+  `TargetKind` (`task` or `original`), which chooses a merge/apply destination
+  and is never accepted as a repository target discriminator.
 - `RepositoryTargetState`: closed tagged `oneOf` of `rootPresent { targetKind:
   configurationRoot, state: present, repositoryVersion, targetFingerprint }`,
   `objectPresent { targetKind: developmentObject, state: present, objectId, repositoryVersion,
   targetFingerprint }`, or `objectAbsent { targetKind: developmentObject,
   state: absent, objectId, absenceEstablishedAtVersion: RepositoryVersion, expectedAbsent:
-  true }`. Lists are canonical by target identity; the root can never be absent.
+  true }`. Repository-target canonical order places a `configurationRoot`, when
+  present, uniquely first, followed by `developmentObject` entries in
+  ascending lexicographic order of their canonical lowercase `MetadataObjectId`
+  strings. Every target-state/planned-change/lock-target collection uses that
+  order and rejects duplicate identities; the root can never be absent.
 - `RepositoryTargetIdentity`: closed tagged `oneOf` of `configurationRoot {
   targetKind: configurationRoot }` or `developmentObject { targetKind:
   developmentObject, objectId: MetadataObjectId }`.
@@ -295,7 +502,9 @@ The companion contract for general mutations is producer-neutral:
   target identity; their version/fingerprint is the final folded state, never a
   duplicate per-history-event entry.
 - `RepositoryUpdateLockReason`: closed `supportGraphGuard`, `updateTarget`,
-  `parentClosure`, `referenceClosure`, or `structuralClosure`.
+  `parentClosure`, `referenceClosure`, or `structuralClosure`. A reason list is
+  non-empty, duplicate-free, and ordered exactly as that declaration; it is not
+  caller order or lexical enum order.
 - `RepositoryUpdateLockTarget`: closed tagged `oneOf` of
   `configurationRoot { targetKind: configurationRoot, objectDisplay, reasons:
   RepositoryUpdateLockReason[] }` or `developmentObject { targetKind:
@@ -326,11 +535,14 @@ The companion contract for general mutations is producer-neutral:
   capability row is then required; otherwise it is absent. `supportRoot` always
   uses `false` and has no structural capability field. Neither value is caller
   selectable.
-- `SelectiveRepositoryUpdateProof`: closed `{ planDigest, guardReceiptId,
+- `SelectiveRepositoryUpdateProof`: closed `{ planDigest: Sha256,
+  guardReceiptId: UnicaId,
   plannedTargets,
   appliedTargets: RepositoryTargetState[], expectedTargetRevisionMapDigest,
   appliedTargetRevisionMapDigest,
-  lockTargets, acquiredRootFirst[], releasedInReverseOrder[],
+  lockTargets: RepositoryUpdateLockTarget[],
+  acquiredRootFirst: RepositoryUpdateLockTarget[],
+  releasedInReverseOrder: RepositoryUpdateLockTarget[],
   releaseVerified: true,
   beforeOriginalTargetFingerprintMapDigest,
   updatePerformed, updateEffectReceiptId?, updateEffectReceiptDigest?,
@@ -342,6 +554,10 @@ The companion contract for general mutations is producer-neutral:
   `plannedTargets` and the expected digest equal the approved plan byte-for-byte;
   `appliedTargetRevisionMapDigest == sha256(canonical(appliedTargets))`, and a
   completed proof requires `appliedTargets == plannedTargets` byte-for-byte.
+  It also requires `lockTargets` to equal the approved plan's list,
+  `acquiredRootFirst == lockTargets` byte-for-byte, and
+  `releasedInReverseOrder` to equal the exact reverse of `lockTargets`; partial
+  acquisition belongs to stopped/recovery evidence, not this completed proof.
   Any target drift observed after locking releases the set and returns a stale
   plan before update; a post-update mismatch is an unknown/capability-breach
   recovery, not a completed proof. It proves the
@@ -366,9 +582,19 @@ The companion contract for general mutations is producer-neutral:
   defined below; a later matching recheck of an earlier non-empty stage is only
   a freshness result and does not substitute for that evidence, so its approved
   `perform` action still runs and records its receipt. This exception never applies to `supportRoot` or to any
-  merge/commit/unlock operation. `proofDigest` covers
-  the plan/capability IDs, both target lists/map digests, before-original digest,
-  lock/release proof, update receipt, both update/structural flags, verified result, and both cursor observations.
+  merge/commit/unlock operation.
+  `SelectiveRepositoryUpdateProofDigestRecord` is the closed
+  `{ planDigest, guardReceiptId, plannedTargets, appliedTargets,
+  expectedTargetRevisionMapDigest, appliedTargetRevisionMapDigest, lockTargets,
+  acquiredRootFirst, releasedInReverseOrder, releaseVerified,
+  beforeOriginalTargetFingerprintMapDigest, updatePerformed,
+  updateEffectReceiptId?, updateEffectReceiptDigest?,
+  structuralConfirmationUsed, structuralCapabilityRowId?,
+  verifiedOriginalTargetFingerprintDigest, observedBeforeCursor,
+  observedAfterCursor, selectiveObjectsCapabilityId }` with the same exact
+  conditional-presence rules as the proof; it is precisely the proof with only
+  top-level `proofDigest` removed. `proofDigest ==
+  sha256(canonical(SelectiveRepositoryUpdateProofDigestRecord))`.
   A read-update-read capability fixture must prove the mapping or mutation is
   disabled.
   For support reconciliation/cancellation, including no-arming cancellation
@@ -381,17 +607,24 @@ The companion contract for general mutations is producer-neutral:
   observedOriginalFingerprint, observedHistoryCursor:
   RepositoryHistoryCursor, repositoryCleanAtObservedCursor: true,
   taskMergeStarted: false, capabilityRowId: CapabilityRowId, proofDigest }`.
+  `OriginalCleanRefreshProofDigestRecord` is the closed
+  `{ expectedOriginalFingerprint, observedOriginalFingerprint,
+  observedHistoryCursor, repositoryCleanAtObservedCursor, taskMergeStarted,
+  capabilityRowId }`, retaining the two literal booleans;
+  `proofDigest == sha256(canonical(OriginalCleanRefreshProofDigestRecord))`.
   Only this evidence may classify a clean out-of-band refresh as
   `originalFingerprintChanged`; an unowned, local, or unclassified original
   delta enters recovery instead of merely staling a support gate.
 - `RepositoryOwnerIdentity`: closed `{ username, computer, infobase,
-  lockedAt }`; `username` is a proven non-empty repository username and the
-  other three required fields are a typed non-empty string/RFC 3339 timestamp
-  or explicit `null`. When no username is proven, the enclosing owner field is
-  `null`; diagnostics never infer one.
+  lockedAt }`; `username` is a proven 1-256 printable non-control Unicode-scalar
+  repository username. `computer` and `infobase` are each explicitly `null` or
+  1-256 printable non-control Unicode scalars, and `lockedAt` is explicitly
+  `null` or `NormalizedUtcInstant`; none of the four members is omitted. When no
+  username is proven, the enclosing owner field is `null`; diagnostics never
+  infer one.
 - `RepositoryActorIdentity`: closed `{ username, computer, infobase }` with the
-  same proven repository-username bounds and explicit non-empty string or
-  `null` for the other fields. It identifies a history/commit actor without
+  same 1-256 proven repository-username bound and explicit `null` or 1-256
+  printable non-control Unicode scalars for the other fields. It identifies a history/commit actor without
   inference. Presence/equality requirements depend on the authorized manual
   target mode.
 - `Sha256`: 64 lowercase hexadecimal characters.
@@ -405,6 +638,10 @@ The companion contract for general mutations is producer-neutral:
   the named top-level member(s): an absent member remains absent and an
   explicit `null` remains present. This rule applies only to JSON-derived
   contract digests, never to file/artifact bytes or topology-identity hashes.
+  Every production JSON-derived contract digest uses the same typed,
+  fail-closed JCS implementation; canonicalization/validation failure is an
+  error and no contract type may fall back to ordinary Serde text, debug output,
+  a local hasher, or a second canonicalizer.
 - `OperationInputDigestRecord`: closed `{ digestKind:
   branchedOperationInputV1, toolName: TaskOperationToolName,
   executionPolicy: DurableExecutionPolicy, request }`, where `request` is the complete
@@ -413,8 +650,10 @@ The companion contract for general mutations is producer-neutral:
   Thus the same request payload under another tool or execution policy has a
   different digest and cannot replay.
 - `CanonicalEmptyDeltaDigest`: the literal
-  `sha256(canonical([]))`; it is used when a typed semantic delta is proven
-  empty rather than omitted.
+  `sha256(canonical([]))` =
+  `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945`;
+  it is a closed value type, not an arbitrary `Sha256`, and is used when a typed
+  semantic delta is proven empty rather than omitted.
 - `DigestApproval`: `{ "digest": Sha256, "decision": "apply" }`.
 - `OwnedTargetLocator`: `{ projectId: ProjectId, instanceId: UnicaId, role }`,
   where `role` is `instanceRoot`, `taskInfobase`, `taskWorkspace`, `probe`,
@@ -424,15 +663,18 @@ The companion contract for general mutations is producer-neutral:
   latter is recovery evidence only: no public create request selects it and no
   deploy/compare/supported-update input accepts it.
 - `ArtifactKind`: `configurationDistribution`, `ordinaryConfiguration`,
-  `configurationUpdate`, or `invalidArtifact`. `configurationUpdate` exists only
-  so verification can classify/reject an out-of-scope CFU; no workflow input
-  accepts it.
+  `configurationUpdate`, or `invalidArtifact`. This is probe/classification
+  output, not a selectable workflow-input enum. `configurationUpdate` exists
+  only so verification can classify/reject an out-of-scope CFU, and neither it
+  nor `invalidArtifact` is accepted by any create/deploy/compare/update input.
 - `AcceptedArtifactKind`: `configurationDistribution` or
   `ordinaryConfiguration`.
 - `ConfigurationIdentity`: `{ metadataUuid: MetadataObjectId, name,
-  vendor, version }`; name is 1-256 characters and vendor/version are explicit
-  0-256 character strings rather than omitted/inferred fields.
-- `TargetKind`: `task` or `original`.
+  vendor, version }`; `name` is 1-256 printable non-control Unicode scalars.
+  `vendor` and `version` are each an explicit empty string or 1-256 printable
+  non-control Unicode scalars; they are never omitted, `null`, or inferred.
+- `TargetKind`: `task` or `original`; it selects a merge/apply destination and
+  is distinct from `RepositoryTargetKind`.
 - `OriginalInfobaseKind`: `file` or `clientServer`.
 - `RepositoryTransport`: `file` or `server`.
 
@@ -443,17 +685,33 @@ redacted diagnostics 0-8192. Control characters are rejected except normalized
 line feeds in narrative fields. General result arrays contain at most 1024
 items; metadata object/property/reference collections contain at most 100000.
 Every nested collection item is a named closed `$defs` record in the committed
-schema snapshot.
+schema snapshot. A collection with semantic invariants (canonical order,
+uniqueness, non-empty membership, endpoint coverage, or reverse-release order)
+is represented by a validated constructor/newtype whose deserializer enforces
+those invariants. A length-bounded `BoundedVec` alone is not a valid public or
+Serde construction path for such a collection. Rust represents a required key
+whose value is `T | null` with one shared `RequiredNullable<T>` wrapper: the
+closed containing record requires the key, and the wrapper serializes and
+deserializes exactly `T` or JSON `null`. An omitted key is not equivalent to
+`null` and is rejected.
 
 `SupportTransition` is a closed `oneOf` of
-`enableConfigurationChanges { configurationDisplay, layerId, fromEnabled:
-false, toEnabled: true }`, `restoreConfigurationChangesDisabled {
-configurationDisplay, layerId, fromEnabled: true, toEnabled: false }`,
-`makeObjectEditable { objectId, objectDisplay, layerId, fromState: locked,
-toState: editable }`, or `restoreObjectLocked { objectId, objectDisplay,
-layerId, fromState: editable, toState: locked }`. Display fields are bounded
-presentation data bound into the transition digest so status can reproduce
-exact human instructions after a lost response.
+`enableConfigurationChanges { transitionKind: enableConfigurationChanges,
+configurationDisplay, layerId, fromEnabled: false, toEnabled: true }`,
+`restoreConfigurationChangesDisabled { transitionKind:
+restoreConfigurationChangesDisabled, configurationDisplay, layerId,
+fromEnabled: true, toEnabled: false }`, `makeObjectEditable { transitionKind:
+makeObjectEditable, objectId, objectDisplay, layerId, fromState: locked,
+toState: editable }`, or `restoreObjectLocked { transitionKind:
+restoreObjectLocked, objectId, objectDisplay, layerId, fromState: editable,
+toState: locked }`. `transitionKind` is the required discriminator; field-shape
+guessing is forbidden. A transition list is ordered first by that declaration
+order, then by `layerId` for configuration transitions or canonical
+`MetadataObjectId` followed by `layerId` for object transitions. A duplicate
+kind/semantic target, or contradictory forward/restore entries for one target
+in the same semantic list, is rejected even when display text differs. Display
+fields are bounded presentation data bound into the transition digest so status
+can reproduce exact human instructions after a lost response.
 `SupportBlocker` is closed `{ objectId, objectDisplay, layerId?, reason,
 diagnostic }`, where `reason` is `configurationChangesDisabled`,
 `objectLocked`, `vendorRestriction`, `offSupportRequired`,
@@ -480,6 +738,12 @@ diagnostic is redacted. `SupportPrerequisiteMismatchKind` is closed
 `workingInfobaseIdentityUnavailable`, `rootDeltaUnavailable`,
 `contentDeltaUnavailable`, `ownershipEvidenceUnavailable`,
 `supportLayerIdentityUnavailable`, or `repositoryHistoryCoverageIncomplete`.
+Every Task 8 enum list/projection is duplicate-free and follows its enum's
+declaration order unless the contract gives a literal tuple. This applies in
+particular to `SupportPrerequisiteMismatchKind[]`,
+`SupportMissingEvidenceKind[]`, `SupportCandidateReason[]`,
+`SupportArmStaleKind[]`, and `VendorSupportDecision[]`; localized labels or
+lexical enum spelling never choose order.
 `SupportEvidenceGap` is a closed tagged `oneOf` of:
 
 - `candidateEvidence { gapKind: candidateEvidence, objectId, objectDisplay,
@@ -526,25 +790,47 @@ baseline, lease, repository successor, or global support-graph proof. In
 `repositoryHistoryEvidence`, `firstObservedVersion` is present exactly when the
 immediate successor is capability-proven and absent when the gap is
 `repositoryHistoryCoverageIncomplete`.
+Task 8 canonical collections use typed semantic keys, never presentation text.
+`SupportBlocker[]` is ordered by canonical `objectId`, nullable `layerId`
+(`null` first), then `reason` declaration order; duplicate semantic keys are
+rejected. `SupportEvidenceGap[]` is ordered by `gapKind` declaration order,
+then its typed identity (`objectId`/nullable layer, layer ID, layer-observation
+digest, working-IB identity digest, support-action/version, or history cursor),
+then `missingEvidenceKind` declaration order. Every nullable identity component
+sorts `null` before a typed value. Repository versions and cursors in those keys
+use capability-proven history order; their opaque strings are never lexically or
+numerically ordered. The global variant has no fabricated identity.
+Duplicate gap keys are rejected even when diagnostics differ.
 `SupportRootLockObservation` is closed `{ mode: readOnlySnapshot,
 completeness: readOnlySnapshotProven, owner: RepositoryOwnerIdentity | null,
-observationDigest }`; it is optional preview diagnostics and never closes a
-race. `SupportRootLockProof` is closed `{ mode:
-acquireRecheckReleaseGuard, guardReceiptId, rootGuardReleaseReceiptId,
+observationDigest }`. `SupportRootLockObservationDigestRecord` is the closed
+`{ mode, completeness, owner }`, retaining explicit owner `null`, and
+`observationDigest ==
+sha256(canonical(SupportRootLockObservationDigestRecord))`; it is optional
+preview diagnostics and never closes a race. `SupportRootLockProof` is closed `{ mode:
+acquireRecheckReleaseGuard, guardReceiptId: UnicaId,
+rootGuardReleaseReceiptId: UnicaId,
 acquiredByReservedAccount: true,
 historyRecheckedUnderGuard: true, supportGraphRecheckedUnderGuard: true,
 originalRecheckedUnderGuard: true, releaseVerified: true,
 authorizationOutcome: consumed | cancelled | unchanged,
-reservedOriginalTerminalizationProofDigest?, observationDigest }`.
+reservedOriginalTerminalizationProofDigest?: Sha256, observationDigest }`.
+`SupportRootLockProofDigestRecord` is the same closed record with only top-level
+`observationDigest` removed; `observationDigest ==
+sha256(canonical(SupportRootLockProofDigestRecord))`.
 Every support reconciliation/cancellation apply must
 journal and acquire the root, repeat all approved checks while holding it,
 and verify release. Completed reconciliation requires `consumed`; completed
 cancellation requires `cancelled`. A stopped guarded inspection may use
 `unchanged` only with explicit no-effect data. No read-only snapshot alone is
-terminal proof. The terminalization-proof digest is required exactly for a
-completed `reservedOriginal` reconciliation/cancellation and absent for
-`separateWorkingInfobase` or `authorizationOutcome: unchanged`; it equals the
-enclosing `ReservedOriginalTerminalizationProof.proofDigest`.
+terminal proof. The proof record itself requires the terminalization digest to
+be absent for `authorizationOutcome: unchanged`. For `consumed`/`cancelled`, its
+required-versus-absent rule cannot be decided by this nested record because it
+has no `manualTargetMode`: the outer completed or stopped result constructor
+validates it against the enclosing authorization. It is required exactly for
+`reservedOriginal`, absent for `separateWorkingInfobase`, and when present
+equals the enclosing `ReservedOriginalTerminalizationProof.proofDigest`; no
+nested mode is inferred.
 `rootGuardReleaseReceiptId` is the verified release receipt for the same
 acquisition identified by `guardReceiptId`; both are covered by
 `observationDigest` and cannot be spliced across attempts.
@@ -557,10 +843,12 @@ supportRecoveryDistributionSetDigest, originalFingerprint,
 manualTargetMode, rootLockObservation: SupportRootLockObservation,
 rootHeldByManualActor: true,
 authorizedVersionMustBeFirstRootSupportAfterCursor: true, receiptDigest }`.
+`SupportActionArmingReceiptDigestRecord` is the same closed record with only
+top-level `receiptDigest` removed; `receiptDigest ==
+sha256(canonical(SupportActionArmingReceiptDigestRecord))`.
 Its partition starts exactly at `expectedBeforeHistoryCursor`, ends at
 `armingCursor`, and contains only `unrelatedRoutine` entries. The root
-observation has the bound manual actor as owner. `receiptDigest ==
-sha256(canonical(receipt-without-receiptDigest))`; the receipt is immutable and
+observation has the bound manual actor as owner. The receipt is immutable and
 is carried by every later classification, reconciliation, cancellation, frozen
 recovery, and archive record for that action.
 `SupportArmStaleEvidence` is closed `{ expectedBeforeHistoryCursor,
@@ -584,7 +872,9 @@ An all-`unrelatedRoutine` cursor advance is a valid arming prefix and is never a
 stale mismatch by itself. The history partition starts at the authorization
 cursor, ends exactly at `observedHistoryCursor`, and is the complete contiguous
 range between those endpoints; a net-revert tail cannot be omitted.
-`evidenceDigest` covers the root observation with every other field. In
+`SupportArmStaleEvidenceDigestRecord` is the same closed record with only
+top-level `evidenceDigest` removed; `evidenceDigest ==
+sha256(canonical(SupportArmStaleEvidenceDigestRecord))`. In
 `SupportArmStaleData`, `requiredExternalAction` is present exactly when this
 observation names the bound manual actor as current root owner; its owner,
 repository username, target mode, and conditional working-IB identity are
@@ -593,7 +883,11 @@ cancellation performs its own guarded ownership checks.
 `ManualActorLockInventoryProof` is closed `{ username,
 completeness: readOnlySnapshotProven, baselineLockSetDigest,
 observedLockSetDigest, unchangedFromBaseline: true, rootAbsent: true,
-baselineWasEmpty: true, observationDigest }`. It is required only for
+baselineWasEmpty: true, observationDigest }`.
+`ManualActorLockInventoryProofDigestRecord` is the same closed record with only
+top-level `observationDigest` removed; `observationDigest ==
+sha256(canonical(ManualActorLockInventoryProofDigestRecord))`. It is required
+only for
 `reservedOriginal`: the authorization binds the reserved actor's proven empty
 baseline before the human window and the observed set must return to that empty
 baseline after root release, so a same-user candidate lock cannot hide behind a
@@ -604,12 +898,19 @@ locks for later planning/acquisition, while root release is still mandatory.
 `ReservedOriginalLeaseStopEvidence` is closed `{ cause:
 designerSessionOpenOrLeaseBusy, reservedOriginalIdentityDigest,
 exclusiveLeaseCapabilityId, leaseOwner: RepositoryOwnerIdentity | null,
-exclusiveLeaseAcquired: false, evidenceDigest }`. It is legal only for a
+exclusiveLeaseAcquired: false, evidenceDigest }`.
+`ReservedOriginalLeaseStopEvidenceDigestRecord` is the same closed record with
+only top-level `evidenceDigest` removed; `evidenceDigest ==
+sha256(canonical(ReservedOriginalLeaseStopEvidenceDigestRecord))`. It is legal
+only for a
 capability-proven clean lease rejection before inspection; an unknown acquire,
 inspection, or release outcome is never encoded as this retryable stop.
 
-`SupportCandidate` is closed `{ objectId, objectDisplay, layerId?,
-repositoryAction, currentState, vendorRestriction, requiredState, reasons[] }`.
+`SupportCandidateReason` is the closed declaration-order enum
+`platformComparison`, `canonicalDelta`, `ownership`, `addDelete`, or
+`referenceClosure`. `SupportCandidate` is closed `{ objectId, objectDisplay,
+layerId?, repositoryAction, currentState, vendorRestriction, requiredState,
+reasons: SupportCandidateReason[] }`.
 `repositoryAction` is `add`, `modify`, or `delete`; `currentState` is
 `notApplicable`, `locked`, `editable`, or observed `offSupport`, while
 `requiredState` is `notApplicable`, `editable`, `preserveOffSupport`, or
@@ -622,6 +923,15 @@ sandbox/result graph to preserve that exact pre-existing mode.
 `notApplicable`; otherwise it is required. `vendorRestriction: unknown`
 requires an inconclusive blocker and cannot appear in a more permissive
 outcome.
+`reasons` is non-empty, duplicate-free, and ordered exactly by
+`SupportCandidateReason` declaration order; every literal requires its matching
+typed producer evidence/digest and is never inferred from free-form diagnostics.
+A candidate list is ordered by canonical `objectId` then nullable `layerId`
+(`null` first) and contains exactly one record per semantic identity; duplicates
+with equal or differing state/action/reasons are rejected. The closed
+`SupportCandidateSetDigestRecord` is `{ candidateSetId: UnicaId, candidates:
+SupportCandidate[] }`, and `candidateSetDigest ==
+sha256(canonical(SupportCandidateSetDigestRecord))`.
 `SupportRecoveryDistributionHandoff` is closed `{ handoffId: UnicaId,
 profileArtifactRefId: ProfileArtifactRefId, profileArtifactDisplay,
 userVisibleFileName,
@@ -644,6 +954,10 @@ storageKind, storageVersion, harnessDigest, implementationCommit, passedAt,
 cases: RetentionProviderCapabilityCaseEvidence[], evidence { path, sha256 },
 passed: true }`, where each closed case is `{ caseId, resultDigest,
 postconditionDigest }`, case IDs are unique, and the list is canonical.
+Phase 1 Task 8 carries and validates only typed `CapabilityRowId` references in
+support records. Parsing and validating this manifest row and its case set stays
+owned by roadmap Phase 3; Task 8 must not add a second row parser or accept a
+profile string in place of the typed ID.
 The required exact case set proves idempotent acquire/replay, exact held-state
 observation, manual-actor readability of the bound SHA, rename/overwrite/delete
 denial while held, exact-once release/replay, unknown-effect reconciliation,
@@ -710,7 +1024,8 @@ and a missing capability/source is inconclusive. This role is explicitly
 rejected by `delivery.deploy`, `merge.compare`, and
 `merge.prepare(supportedUpdate)`.
 `SupportPreflightData` is closed
-`{ supportGateId, outcome, candidateSetId, candidateSetDigest, candidates:
+`{ supportGateId, outcome, candidateSetId, candidateSetDigest, gateInputs:
+SupportGateInputDigests, candidates:
 SupportCandidate[], blockers: SupportBlocker[], evidenceGaps:
 SupportEvidenceGap[], supportGraphDigest,
 requiredTransitions: SupportTransition[], surplusTransitions:
@@ -755,30 +1070,32 @@ sandbox proves graph preservation. A newly required detachment remains
 `requiredTransitions` is the full authorized list, including every surplus
 restore entry; in a surplus-only case it equals non-empty
 `surplusTransitions` rather than becoming empty.
+`gateInputs.candidateSetDigest`, `supportGraphDigest`,
+`supportRecoveryDistributionSetDigest`, `settingsDigest`, and the digests of the
+named canonical delta, ordinary-result artifact, sandbox result, capability row,
+and original fingerprint equal their same semantic sources byte-for-byte. The
+closed `SupportGateDigestRecord` is `{ supportGateId, outcome, candidateSetId,
+gateInputs, relevantBaselineDigest, ordinaryResultArtifactId, comparisonId,
+capabilityRowId, blockers, evidenceGaps, requiredTransitions,
+surplusTransitions }`, and `supportGateDigest ==
+sha256(canonical(SupportGateDigestRecord))`. It deliberately excludes
+`observedHistoryCursor`, replaceable `historyEvidence`, the digest field itself,
+and both support-action projection fields. Thus replacing only revalidated
+all-unrelated history evidence cannot create a digest cycle or mutate the
+semantic gate identity.
 At publication, `historyEvidence` has equal gate/classified cursors and an empty
 partition. A later consumer may atomically replace only that evidence with a
 longer all-`unrelatedRoutine` partition after revalidation; semantic gate inputs
 and `supportGateDigest` remain unchanged. The current evidence digest is a
 required downstream CAS input.
 
-When action fields are present in `SupportPreflightData`, they equal the nested
-authorization IDs/digests byte-for-byte. `authorizedTransitionsDigest` covers
-the canonical ordered `requiredTransitions` list. `supportActionDigest` covers
-the prior gate/candidate digests, expected history cursor/relevant-baseline
-digest/original fingerprint,
-purpose, transition digest, reserved integration username, and the authorized target
-mode plus its exact manual actor, conditional reserved-actor lock baseline, and
-conditional reserved-original lease capability or working-infobase baseline
-constraints, the literal `armingRequired: true`, phase destinations,
-phase-evidence digest, and recovery-distribution set digest. For
-`abandonmentCleanup` it additionally
-binds the complete accepted-prerequisite receipt chain and current support-graph
-digest from which the inverse-only cleanup gate was derived.
-No bound field may be
-omitted or replaced after a lost response.
-`supportGateDigest` also covers the canonical blocker/evidence-gap lists, so an
-inconclusive response cannot be replayed with fabricated or omitted missing
-evidence.
+The two action fields in `SupportPreflightData` are only a sibling projection;
+there is no nested authorization inside this record. Their byte-for-byte
+equality with the outer stopped result's `SupportActionAuthorizationData` is an
+outer `SupportPreflightStopData` invariant implemented with Task 15. No bound
+field may be omitted or replaced after a lost response, and the gate record's
+canonical blocker/evidence-gap lists prevent replay with fabricated or omitted
+missing evidence.
 For separate mode, publication first acquires the service-held exclusive lease,
 proves the working IB current equals its recorded repository base, persists the
 full `ManualWorkingInfobaseBaseline`, and verifies lease release. Its identity
@@ -814,6 +1131,24 @@ originPhase, cancelledPhase, relevantAdvancePhase, postReconcilePhase,
 phaseEvidenceDigest, state, freezeKind? }`, where `purpose` is
 `mainIntegrationPrerequisite` or `abandonmentCleanup` and `state` is
 `awaitingArm`, `armed`, `consumed`, `cancelled`, or `frozenForRecovery`.
+`authorizedTransitionsDigest == sha256(canonical(authorizedTransitions))` over
+the canonical transition list. `SupportActionDigestRecord` is the closed `{
+supportActionId, purpose, supportGateId, supportGateDigest, candidateSetDigest,
+expectedBeforeHistoryCursor, expectedRelevantBaselineDigest, armingRequired,
+authorizedTransitions, authorizedTransitionsDigest,
+supportRecoveryDistributions, supportRecoveryDistributionSetDigest,
+manualTargetMode, reservedIntegrationUsername, reservedOriginalIdentityDigest,
+reservedOriginalLeaseCapabilityId?, expectedOriginalFingerprint,
+manualActorUsername, manualActorLockBaselineDigest?,
+manualWorkingInfobaseIdentity?, manualWorkingInfobaseBaseline?, originPhase,
+cancelledPhase, relevantAdvancePhase, postReconcilePhase,
+phaseEvidenceDigest }` with the same exact purpose/mode presence rules as the
+authorization. `supportActionDigest ==
+sha256(canonical(SupportActionDigestRecord))`. This acyclic record is precisely
+the immutable authorization projection: it excludes `supportActionDigest`
+itself and the mutable/terminal `armingReceipt`, `state`, and `freezeKind`
+members. Those fields may evolve only under the bound digest and can never feed
+back into it.
 Publication creates `awaitingArm` with no arming receipt. Only the exact
 `repository.update(mode="supportPrerequisiteArm")` apply may change it to
 `armed` and attach the immutable receipt. The receipt is required for `armed`,
@@ -920,18 +1255,32 @@ authorized delta, with the accepted version as the first root/support version
 after `armingCursor`. Releasing and reacquiring the root is therefore not by
 itself a mismatch when no intervening root/support version exists; such an
 intervening version remains disqualifying regardless of a later net revert.
-`VendorSupportDecisionInstruction` is
-closed `{ kind: vendorSupportDecision, blockers: SupportBlocker[],
-allowedDecisions[] }`. `SupportEvidenceInstruction` is closed `{ kind:
+`VendorSupportDecision` is the closed declaration-order enum
+`changeTaskScope`, `useNewerVendorDelivery`, or `safeAbandonment`; the three
+literals map one-to-one to the ADR's only exits from `vendorForbidsChanges`.
+`VendorSupportDecisionInstruction` is closed `{ kind: vendorSupportDecision,
+blockers: SupportBlocker[], allowedDecisions: [changeTaskScope,
+useNewerVendorDelivery, safeAbandonment] }`. No fourth/free-form decision or
+different order is valid. `SupportEvidenceInstruction` is closed `{ kind:
 provideSupportEvidence, blockers: SupportBlocker[], evidenceGaps:
 SupportEvidenceGap[], missingEvidenceKinds: SupportMissingEvidenceKind[],
-resumeWith: branched.status }`. Its blockers/gaps reproduce the exact stopped
+resumeWith: branched.status, supportEvidenceInstructionDigest }`. Its
+`SupportEvidenceInstructionDigestRecord` is the same closed record with only
+top-level `supportEvidenceInstructionDigest` removed, and
+`supportEvidenceInstructionDigest ==
+sha256(canonical(SupportEvidenceInstructionDigestRecord))`. Its blockers/gaps reproduce the exact stopped
 inspection evidence, and `missingEvidenceKinds` is their canonical deduplicated
-projection. For an inconclusive support preflight, both lists equal the nested
+projection in `SupportMissingEvidenceKind` declaration order. For an inconclusive support preflight, both lists equal the nested
 preflight lists byte-for-byte.
 `ReleaseRepositoryLocksInstruction` is closed `{ kind:
 releaseRepositoryLocks, owner: RepositoryOwnerIdentity | null,
-objectDisplays[], coordinationRequired: true, resumeWith: branched.status }`.
+objectDisplays: RepositoryTargetDisplay[], coordinationRequired: true,
+resumeWith: branched.status, lockInstructionDigest }`.
+`objectDisplays` is Unicode-scalar ordered and duplicate-free presentation data,
+never lock identity. `ReleaseRepositoryLocksInstructionDigestRecord` is the same
+closed record with only top-level `lockInstructionDigest` removed, and
+`lockInstructionDigest ==
+sha256(canonical(ReleaseRepositoryLocksInstructionDigestRecord))`.
 An unknown owner remains explicit `null`; no username is inferred.
 `CleanManualWorkingInfobaseInstruction` is closed `{ kind:
 cleanManualWorkingInfobase, workingInfobaseIdentity,
@@ -953,6 +1302,11 @@ externalTransitionDigest, overlapKind: sameTarget | layerDependency | unknown,
 diagnostic }`. `objectId` is absent for configuration-level transitions and
 required/equal to `authorizedTransition.objectId` for object-level transitions;
 in both cases display/layer identity equals the authorized transition target.
+A conflict list is ordered by capability-proven repository history position,
+then the canonical `authorizedTransition` key, `externalTransitionDigest`, and
+`overlapKind` declaration order. It never lexically orders opaque
+`RepositoryVersion`; duplicate semantic conflict keys are rejected even when
+diagnostics differ.
 `SupportConflictInstruction` is closed `{ kind:
 coordinateExternalSupportChange, conflictResolutionId, conflicts:
 SupportTransitionConflict[], allowedEvidenceKinds:
@@ -977,7 +1331,10 @@ caller assertion.
 
 `SupportPrerequisiteVersionObservation` is a closed tagged `oneOf`. Every
 variant has `{ repositoryVersion, classification, classificationDigest,
-mismatchKinds[] }`. `authorized` additionally requires `repositoryActor`,
+mismatchKinds[] }`. A collection of observations is unique by
+`repositoryVersion` and ordered only by capability-proven repository-history
+position, never by the opaque version string. Each `mismatchKinds` list is the
+exact duplicate-free declaration-order projection. `authorized` additionally requires `repositoryActor`,
 `supportActionId`, `supportActionDigest`, `armingReceiptId`,
 `armingReceiptDigest`, `firstRootSupportAfterArming: true`,
 `actionAttributionEvidenceDigest`,
@@ -1031,10 +1388,27 @@ The positive `corrective` classification is a closed tagged `oneOf` of:
   delta exactly match the historical `SupportCorrectiveInstruction`; or
 - `externalConflictCorrection { correctionKind: externalConflictCorrection,
   repositoryActor, rootDeltaDigest, contentDeltaDigest, conflictResolutionId,
-  supportConflictInstructionDigest, finalBaselineProofDigest,
+  supportConflictInstructionDigest, finalBaselineDigest,
   externalOwnershipEvidence: ExternalSupportOwnershipEvidence }`, whose IDs,
   instruction digest, actor/delta, and final baseline equal the current frozen
   conflict instruction and immutable external evidence.
+
+Neither corrective subvariant is validated history evidence from its own shape
+or `classificationDigest` alone. For `actionCorrection`, typed source resolution
+loads and rehashes the exact historical `SupportCorrectiveInstruction` named by
+`correctiveInstructionDigest`, then proves the repository actor, manual target
+mode/working-IB presence, and complete root/content delta equal that instruction.
+For `externalConflictCorrection`, it loads and rehashes the Task 8
+`SupportConflictInstruction` named by `supportConflictInstructionDigest`, proves
+`conflictResolutionId` equality, requires `finalBaselineDigest ==
+requiredFinalBaselineDigest`, and validates `ExternalSupportOwnershipEvidence`
+as the immutable provenance of the same repository actor/version/root/content
+delta. In both leaves the selected source ref/index proof version equals the
+observation and partition-entry version, the observation discriminator maps only
+to partition classification `corrective`, its `classificationDigest` is
+recomputed, and `semanticDeltaDigest` uses that exact instruction digest. An
+unavailable, multiple, wrong-kind, wrong-action/conflict, cross-leaf, or digest-
+mismatched instruction/evidence source leaves the partition unvalidated.
 
 The second subvariant represents the allowed external corrective sequence for a
 conflicting support target. It is preserved and never automatically inversed;
@@ -1068,10 +1442,13 @@ covers every version in the exact contiguous recovery cursor range, including
 otherwise valid authorized/routine/external-support/corrective versions, and the canonical union
 of only invalid-version mismatches plus any versionless original mismatch equals
 the stop's top-level `mismatchKinds` exactly.
-For every variant, `classificationDigest` is
-`sha256(canonical(observation-without-classificationDigest))`; it therefore
-binds actor/mode/provenance, mismatch list, delta evidence, and every
-variant-specific ownership/correction field.
+For every top-level leaf and every `corrective`/`invalid` subleaf,
+`classificationDigest ==
+sha256(canonical(observation-without-classificationDigest))`; only that one
+top-level member is removed. The input contains no partition,
+`sourceEvidenceRef`, or `semanticDeltaDigest`, so this content address has no
+digest cycle. It binds actor/mode/provenance, mismatch list, delta evidence, and
+every variant-specific ownership/correction field.
 Observation classifications map exactly to partition entries: routine relevance
 selects `unrelatedRoutine`/`relevantRoutine`; `authorized` selects
 `authorizedSupport`; the other names map directly. Each observation derives the
@@ -1816,19 +2193,22 @@ The envelope is a closed three-way union:
 - `completed`: `ok: true`, `resultKind: "completed"`, empty `errors`, no
   `stopCode`, and tool-specific completed `data`;
 - `stopped`: `ok: false`, `resultKind: "stopped"`, a required stable
-  `stopCode`, a non-empty `errors` array whose primary code equals `stopCode`,
+  `stopCode`, an exact singleton `errors` array whose code equals `stopCode`,
   and the exact evidence-bearing stop `data` from the matrix below;
-- `rejected`: `ok: false`, `resultKind: "rejected"`, no `stopCode`, a non-empty
-  `errors` array, and `data: TaskErrorData { code, context,
+- `rejected`: `ok: false`, `resultKind: "rejected"`, no `stopCode`, an exact
+  singleton `errors` array, and `data: TaskErrorData { code, context,
   allowedNextActions[] }`.
 
 `resultKind` and its field invariants are the outer discriminator. A completed
 classification/session/verification and its evidence-bearing stopped outcome
 may intentionally use the same named domain-data schema, whose required outcome
 fields distinguish the observation. A `rejected` result never borrows either
-domain-data shape. Its primary `errors[0].code` equals `TaskErrorData.code`;
-remaining errors are supporting diagnostics and never encode a second domain
-outcome. `context` is a named redacted closed record selected by `code`.
+domain-data shape. `TaskErrorEntry` is the closed `{ code: StableErrorCode,
+diagnostic: Diagnostic }` record. Completed `errors` is exactly `[]`; stopped
+and rejected `errors` contain exactly one entry whose code respectively equals
+`stopCode` or `TaskErrorData.code`. No secondary error entry is legal.
+Coexisting conditions remain in typed `data`/`evidence`, never in another error
+element. `context` is a named redacted closed record selected by `code`.
 
 `StableErrorCode` is the closed enum generated from the unique literal values
 in the `Code` column of the Stable Error Contract below; adding/removing a row
@@ -1837,6 +2217,7 @@ is a schema change. `RejectedCode` is the closed subset
 `artifactNotDistribution`, `cleanupNotAllowed`, `taskAbandonmentNotSafe`,
 `operationReplayMismatch`, `recoveryPlanPending`, `taskPhaseMismatch`,
 `approvalDigestMismatch`, `changeReceiptStale`,
+`conflictResolutionNotAllowed`,
 `adaptationDecisionAlreadyRecorded`, `taskMutationBlocked`,
 `platformCapabilityUnproven`, `supportLayerAmbiguous`,
 `unsupportedChangeKind`, `projectIdentityCollision`,
@@ -1863,12 +2244,53 @@ branch per `TaskOperationToolName`: `{ toolName: <literal>, requestVariant:
 <that tool's literal variant> }` for multi-variant tools, or `{ toolName:
 <literal> }` for a single-variant tool. Thus compatible general variants are
 typed by their own descriptor and can never borrow lifecycle literals.
-`IncomingToolName` is a bounded 1-128-character ASCII `unica.*` identifier used
-only to report a rejected unregistered/incompatible incoming name, never to
-dispatch or advertise a next action. Optional request variants are permitted
-only by the named registered tool's request union. Every `allowedNextActions`
-array is canonical and duplicate-free; this does not add a 22nd branched
-lifecycle tool.
+The lifecycle selector vocabulary and canonical per-tool order are exactly:
+
+| Tool | `requestVariant` values |
+| --- | --- |
+| `unica.branched.start` | absent |
+| `unica.branched.status` | absent |
+| `unica.branched.archive` | `successPreview`, `successApply`, `abandonedPreview`, `abandonedApply` |
+| `unica.branched.cleanup` | `preview`, `apply` |
+| `unica.delivery.inspect` | absent |
+| `unica.delivery.create` | `baselineDistributionPreview`, `baselineDistributionApply`, `refreshDistributionPreview`, `refreshDistributionApply` |
+| `unica.delivery.verify` | absent |
+| `unica.delivery.deploy` | `preview`, `apply` |
+| `unica.merge.compare` | `projectDelta`, `mainIntegration` |
+| `unica.merge.prepare` | `supportedUpdate`, `supportedUpdateReplacement`, `resolvedReplay`, `mainIntegration` |
+| `unica.merge.conflicts` | absent |
+| `unica.merge.resolve` | `takeOurs`, `takeTheirs`, `combine`, `manual`, `adaptedDelta` |
+| `unica.merge.apply` | `task`, `original` |
+| `unica.merge.verify` | `localCheckpoint`, `synchronizedTask`, `synchronizedTaskAdapted`, `mainSandbox`, `mainIntegration` |
+| `unica.repository.status` | absent |
+| `unica.repository.update` | `routinePreview`, `routineApply`, `armPreview`, `armApply`, `prerequisitePreview`, `prerequisiteApply`, `cancellationPreview`, `cancellationApply` |
+| `unica.repository.planLocks` | absent |
+| `unica.repository.lock` | absent |
+| `unica.repository.unlock` | `compensation`, `rollback`, `abandonment` |
+| `unica.repository.commit` | `preview`, `apply` |
+| `unica.repository.recover` | `recoverApply`, `recoverCancel` |
+
+An omitted-`dryRun` preview and an explicit-`true` preview normalize to the same
+logical `*Preview` selector. The cancellation receipt pair being absent
+(`awaitingArm`) or present (`armed`) likewise does not create a caller-selectable
+variant; current authorization state validates the same cancellation action.
+Conversely, the supported-update replacement triple and synchronized-task
+adaptation pair select their explicit logical variants because they bind a
+different producer lineage. A single-variant selector rejects
+`requestVariant`; a multi-variant selector requires exactly one value from its
+own row. Table order is schema/snapshot order and no cross-tool alias is valid.
+`IncomingToolName` is a 7-128-character ASCII string matching
+`^unica\.[A-Za-z0-9][A-Za-z0-9._-]{0,121}$`, used only to report a rejected
+unregistered/incompatible incoming name, never to dispatch or advertise a next
+action. Optional request variants are permitted only by the named registered
+tool's request union. Every `allowedNextActions` array is canonical and
+duplicate-free: tool calls precede external instructions, tool calls follow the
+tool/variant table order above, and external instructions follow their literal
+order in the `NextAction` definition. The list is the exact safe action set
+advertised by that error branch, not an exhaustive replacement for a fresh
+status projection; for example a blocked abandonment may advertise status even
+when status then proves an exact unlock call legal. This does not add a 22nd
+branched lifecycle tool.
 
 `TaskErrorData` is a closed code/context tagged `oneOf`; every branch also has
 `allowedNextActions: NextAction[]`:
@@ -1878,16 +2300,19 @@ lifecycle tool.
   context is `{ contextKind: binding, expectedBindingDigest,
   observedBindingDigest, originalFingerprint?, repositoryFingerprint? }`;
 - `artifactRejected { code: artifactNotDistribution, context:
-  ArtifactInputErrorContext }`. `ArtifactKindRole` is the closed `{ kind:
-  AcceptedArtifactKind, role: ArtifactRole }` tuple; the closed context is `{
+  ArtifactInputErrorContext }`. `ArtifactKindRole` is the closed four-way
+  `oneOf` of `{ kind: configurationDistribution, role:
+  baselineDistribution }`, `{ kind: configurationDistribution, role:
+  refreshDistribution }`, `{ kind: configurationDistribution, role:
+  supportRecoveryDistribution }`, or `{ kind: ordinaryConfiguration, role:
+  ordinaryResult }`; no enum cross-product is accepted. The closed context is `{
   contextKind: artifactInput, artifactId, observedKind: ArtifactKind,
   observedRole: ArtifactRole, acceptedInputs: ArtifactKindRole[] }`;
 - `lifecycleRejected { code: cleanupNotAllowed | taskAbandonmentNotSafe |
   recoveryPlanPending | taskPhaseMismatch | taskMutationBlocked, context:
   LifecycleErrorContext }`, closed `{ contextKind: lifecycle, phase: TaskPhase,
   allowedPhases: TaskPhase[], blockerCodes: StableErrorCode[],
-  recoveryDigest?: Sha256, recoveryCancellationAllowed?: boolean,
-  legalPhaseActionDigest?: Sha256 }`;
+  recoveryDigest?: Sha256, recoveryCancellationAllowed?: boolean }`;
 - `operationRejected { code: operationReplayMismatch | operationInProgress,
   context: OperationErrorContext }`, closed `{ contextKind: operation,
   operationId, expectedInputDigest?: Sha256, observedInputDigest?: Sha256,
@@ -1902,11 +2327,21 @@ lifecycle tool.
   repositoryAccountReservation, repositoryIdentityDigest: Sha256,
   normalizedUsernameDigest: Sha256, reservationKeyDigest: Sha256,
   owner: ReservationOwnerRef }`;
-- `digestRejected { code: approvalDigestMismatch | changeReceiptStale |
-  adaptationDecisionAlreadyRecorded, context:
-  DigestErrorContext }`, closed `{ contextKind: digest, expectedDigest?:
-  Sha256, observedDigest?: Sha256, producer: TaskOperationSelector,
-  producerId?: UnicaId }`;
+- `digestRejected { code: approvalDigestMismatch | changeReceiptStale, context:
+  DigestErrorContext }`, closed `{ contextKind: digest, expectedDigest: Sha256,
+  observedDigest: Sha256, producerId: UnicaId }`;
+- `adaptationDecisionRejected { code: adaptationDecisionAlreadyRecorded,
+  context: AdaptationDecisionConflictContext }`, closed `{ contextKind:
+  adaptationDecision, verificationId: UnicaId, existingDecisionId: UnicaId,
+  existingAdaptationDecisionDigest: Sha256 }`; the request does not carry a
+  proposed decision digest, so this branch never fabricates unequal expected/
+  observed decision digests;
+- `conflictResolutionRejected { code: conflictResolutionNotAllowed, context:
+  ConflictResolutionErrorContext }`, closed `{ contextKind:
+  conflictResolution, sessionId, conflictId, conflictKind: ConflictKind,
+  requestedResolution: ConflictResolution, allowedResolutions:
+  ConflictResolution[] }`; the allowed list is non-empty, duplicate-free, in
+  canonical resolution order, and excludes the requested value;
 - `commitPolicyRejected { code: commitCommentPolicyMismatch, context:
   CommitCommentPolicyErrorContext }`, closed `{ contextKind:
   commitCommentPolicy, phase: mainValidated, expectedPolicyDigest: Sha256,
@@ -1924,11 +2359,14 @@ lifecycle tool.
 - `capabilityRejected { code: platformCapabilityUnproven |
   supportLayerAmbiguous | unsupportedChangeKind |
   exclusiveRepositoryUserRequired, context: CapabilityErrorContext }`, closed
-  `{ contextKind: capability, capabilityKind: platform | retentionProvider |
-  repositoryHistory | supportLayer | repositoryUserExclusivity |
-  changeSemantics,
+  `{ contextKind: capability, capabilityKind: platform | supportLayer |
+  repositoryUserExclusivity | changeSemantics,
   capabilityRowId?:
-  CapabilityRowId, evidenceDigest?: Sha256 }`;
+  CapabilityRowId, evidenceDigest?: Sha256 }`. Code/kind mapping is exact:
+  `platformCapabilityUnproven` uses `platform`, `supportLayerAmbiguous` uses
+  `supportLayer`, `exclusiveRepositoryUserRequired` uses
+  `repositoryUserExclusivity`, and `unsupportedChangeKind` uses
+  `changeSemantics`;
 - `profileStateRejected { code: projectIdentityCollision |
   stateRootRelocationRequired | profileInvalid | secretUnavailable |
   stateCorrupt, context: ProfileStateErrorContext }`, closed `{ contextKind:
@@ -1942,6 +2380,9 @@ lifecycle tool.
   leaseMissing | leaseInvalid)[], expectedProjectId?, observedProjectId?,
   expectedMarkerDigest?: Sha256, observedMarkerDigest?: Sha256 | null,
   expectedLeaseDigest?: Sha256, observedLeaseDigest?: Sha256 | null }`.
+  Mismatch kinds are canonical/duplicate-free in the listed order;
+  `markerMissing` and `markerMismatch` are mutually exclusive, as are
+  `leaseMissing` and `leaseInvalid`.
 
 For `commitPolicyRejected`, `expectedPolicyDigest` is the frozen start-time hash
 of canonical `{ template, taskId, taskSummary, projectId, renderedComment,
@@ -1957,16 +2398,18 @@ The generated schema splits those groups into literal-code branches with this
 exhaustive presence/action grammar. `none` is `[]`; `statusOnly` is exactly one
 `unica.branched.status` tool call; `recoveryResume` is status plus
 `unica.repository.recover/recoverApply` and additionally `recoverCancel` iff
-the context literal permits it; `producerRefresh` is status plus the exact
-producer call/variant named by context; `phaseLegal` is the exact projection of
-the phase table bound by `legalPhaseActionDigest`; `commitSafeExit` is status
-plus `unica.branched.archive/abandonedPreview`, the selector for exact request
+the context literal permits it; `adaptationRefresh` is status plus exactly
+`unica.merge.verify/synchronizedTask`; `commitSafeExit` is status plus
+`unica.branched.archive/abandonedPreview`, the selector for exact request
 literals `{ outcome: abandoned, dryRun: true }`; the request also supplies its
 required non-empty `reason`. Its stopped result must create the exact
 restore/full-unlock recovery plan before `recoverApply` becomes legal.
-`integrationSetExit` is status plus exactly
-`unica.repository.unlock/rollback` for `exitKind: unlock`, or status plus
-exactly `unica.repository.recover/recoverApply` for `exitKind: recovery`; and
+`conflictReview` is status plus exactly `unica.merge.conflicts`; the context's
+`sessionId` supplies the request selector and retrying `merge.resolve` is not
+advertised until the caller has reviewed the current list.
+`integrationSetExit` is status plus exactly `unica.repository.unlock/rollback`
+for `exitKind: unlock`, or status plus exactly
+`unica.repository.recover/recoverApply` for `exitKind: recovery`; and
 `statusAndStart` is status plus `unica.branched.start`.
 
 | Rejected code | Required/forbidden context | Exact allowed-action grammar |
@@ -1974,18 +2417,20 @@ exactly `unica.repository.recover/recoverApply` for `exitKind: recovery`; and
 | `repositoryBindingMismatch` | binding digests required and unequal; fingerprints are diagnostics only and cannot select this code | `statusOnly` |
 | `mainDiffersFromRepository` | binding digests required and equal; original/repository fingerprints required and unequal | `statusOnly` |
 | `artifactNotDistribution` | all artifact fields required; accepted input tuples are non-empty/canonical and exclude the exact observed kind/role tuple. A distribution in the wrong role remains truthfully a distribution and is rejected by role; `configurationUpdate`/`invalidArtifact` cannot appear in accepted tuples | `statusOnly` |
-| `cleanupNotAllowed`, `taskAbandonmentNotSafe` | `allowedPhases=[]`; blocker codes are non-empty; recovery fields and legal-phase digest are absent | `statusOnly` |
-| `recoveryPlanPending` | `allowedPhases=[]`, `blockerCodes=[]`; recovery digest and cancellation-allowed literal are required; legal-phase digest is absent | `recoveryResume` |
-| `taskPhaseMismatch` | allowed phases are non-empty; `blockerCodes=[]`; legal-phase-action digest is required; recovery fields are absent | `phaseLegal` |
-| `taskMutationBlocked` | `allowedPhases=[]`; blockers are non-empty; recovery digest/cancellation literal and legal-phase digest are absent. Any current recovery/unknown effect has higher-precedence `recoveryPlanPending` and cannot enter this row | `statusOnly` |
+| `cleanupNotAllowed`, `taskAbandonmentNotSafe` | `allowedPhases=[]`; blocker codes are non-empty; recovery fields are absent | `statusOnly` |
+| `recoveryPlanPending` | `allowedPhases=[]`, `blockerCodes=[]`; recovery digest and cancellation-allowed literal are required | `recoveryResume` |
+| `taskPhaseMismatch` | allowed phases are non-empty, canonical, duplicate-free, and ordered by `TaskPhase`; `blockerCodes=[]`; recovery fields are absent | `statusOnly` |
+| `taskMutationBlocked` | `allowedPhases=[]`; blockers are non-empty; recovery digest/cancellation literal are absent. Any current recovery/unknown effect has higher-precedence `recoveryPlanPending` and cannot enter this row | `statusOnly` |
 | `operationReplayMismatch` | operation ID and unequal expected/observed input digests required; active digest absent | `none` |
 | `operationInProgress` | operation ID and active-operation digest required; input digests absent | `statusOnly` |
 | `targetReservationBusy` | exact target/repository/key digests and closed owner reference required; no task state exists | `statusOnly` |
 | `repositoryAccountReservationBusy` | exact repository/account/key digests and closed owner reference required; no task state exists | `statusOnly` |
-| `approvalDigestMismatch`, `changeReceiptStale`, `adaptationDecisionAlreadyRecorded` | expected/observed digests, producer selector, and producer ID required; digests unequal; selector branch carries a variant exactly for multi-variant producers | `producerRefresh` using that exact selector |
+| `approvalDigestMismatch`, `changeReceiptStale` | expected/observed digests and producer ID are required; digests are unequal; no producer selector or adaptation fields exist | `statusOnly` |
+| `adaptationDecisionAlreadyRecorded` | verification ID, existing decision ID, and existing adaptation-decision digest are required; digest-comparison and generic producer fields are absent | `adaptationRefresh` |
+| `conflictResolutionNotAllowed` | session/conflict/kind/requested resolution are required; allowed resolutions are non-empty, canonical, duplicate-free, equal the persisted conflict list, and exclude the requested value; digest/capability/lifecycle fields are forbidden | `conflictReview` |
 | `commitCommentPolicyMismatch` | phase is exactly `mainValidated`; policy digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the frozen-template/task-metadata/render violation; producer/producer-ID, integration-set, lock-set, and recovery fields are forbidden | `commitSafeExit`; repeating commit or any producer is absent, and recovery is offered only after the abandoned-archive preview has published its exact plan |
-| `integrationSetMismatch` | lineage digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the plan/merge/verification/commit/lock-set disagreement. `exitKind: unlock` requires phase `locked`, both lock-set fields, proven no original-merge intent, and no recovery digest. `exitKind: recovery` requires phase `recoveryRequired` plus the exact recovery digest and forbids both lock-set fields | `integrationSetExit`; producer refresh and commit retry are absent; unlock and recovery actions are mutually exclusive |
-| `platformCapabilityUnproven`, `supportLayerAmbiguous`, `unsupportedChangeKind`, `exclusiveRepositoryUserRequired` | exact capability-kind and evidence digest required; row ID required only when a row was observed. `unsupportedChangeKind` requires `capabilityKind=changeSemantics`; the others reject it | `statusOnly` |
+| `integrationSetMismatch` | lineage digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the plan/merge/verification/commit/lock-set disagreement. `exitKind: unlock` requires phase `locked`, both lock-set fields, proven no original-merge intent, and no recovery digest. `exitKind: recovery` requires phase `recoveryRequired` plus the exact recovery digest and forbids both lock-set fields | `integrationSetExit`; adaptation refresh and commit retry are absent; unlock and recovery actions are mutually exclusive |
+| `platformCapabilityUnproven`, `supportLayerAmbiguous`, `unsupportedChangeKind`, `exclusiveRepositoryUserRequired` | exact code-to-kind mapping from `CapabilityErrorContext` and evidence digest are required; row ID required only when a row was observed | `statusOnly` |
 | `projectIdentityCollision`, `stateRootRelocationRequired`, `stateCorrupt` | project ID plus unequal expected/observed digests required | `statusOnly` |
 | `profileInvalid`, `secretUnavailable` | profile and property path required; digest fields absent | `statusOnly` |
 | `taskNotFound` | requested task/tool required; mismatch/project/marker/lease fields absent | `statusAndStart` |
@@ -1997,10 +2442,12 @@ diagnostics remain bounded/redacted. Schema tests instantiate every legal pair
 and reject every cross-branch code/context substitution, missing/extra field,
 or disallowed next-action injection. They additionally reject either
 `commitCommentPolicyMismatch` or `integrationSetMismatch` in
-`DigestErrorContext`, any producer/producer-ID or `producerRefresh` action for
-those codes, commit-policy actions other than exact `commitSafeExit`, an unlock
-integration exit with recovery fields/actions, and a recovery integration exit
-with lock fields/unlock/cancel actions. `StableErrorCode` and `RejectedCode`
+`DigestErrorContext`, any `TaskOperationSelector` field in a digest/adaptation
+context, any `adaptationRefresh` action outside
+`adaptationDecisionAlreadyRecorded`, commit-policy actions other than exact
+`commitSafeExit`, an unlock integration exit with recovery fields/actions, and
+a recovery integration exit with lock fields/unlock/cancel actions.
+`StableErrorCode` and `RejectedCode`
 contain the exact literals `commitCommentPolicyMismatch` and
 `integrationSetMismatch` once each and reject aliases or renamed spellings.
 
@@ -2091,7 +2538,8 @@ Supported-update precedence is exact: if twice-changed properties and
 unresolved references coexist, the same `MergeSessionData` retains every
 conflict, `stopCode` is `twiceChangedProperties`, and `errors[0].code` equals
 that stop code. `unresolvedReferences` is primary only when no twice-changed
-conflict remains; supporting errors may report both conditions.
+conflict remains; `MergeSessionData` retains both conditions without a
+secondary error entry.
 
 Support-prerequisite code selection is deterministic. For reconciliation, the
 singleton `noAuthorizedVersionObserved` maps to `manualSupportActionPending`
@@ -4052,10 +4500,12 @@ fingerprints. The task IB is always local File; deployment also creates guarded
 
 ### `unica.merge.compare` — `contained`
 
-Request fields: `taskId`, `operationId`, `left`, `right`, and `scope`.
-Each side is one of `originalCurrent`, `repository`, `taskCurrent`,
-`taskVendor`, or `{ artifactId }`; `scope` is `projectDelta` or
-`mainIntegration`. An artifact side must have a completed matching verification
+Request fields are the common mutation fields `cwd`, `taskId`, `operationId`
+plus `left`, `right`, and `scope`. Each side uses the exact heterogeneous JSON
+`oneOf` of the four bare string literals `originalCurrent`, `repository`,
+`taskCurrent`, and `taskVendor`, or the closed object `{ artifactId }`; the
+object has no discriminator or additional property. `scope` is `projectDelta`
+or `mainIntegration`. An artifact side must have a completed matching verification
 and one exact kind/role combination: `configurationDistribution` with
 `baselineDistribution` or `refreshDistribution` is allowed only for
 `projectDelta`; `ordinaryConfiguration` with `ordinaryResult` is allowed only
@@ -4069,14 +4519,17 @@ fails.
 
 ### `unica.merge.prepare` — variant policy
 
-Request is a strict tagged union. `supportedUpdate` requires `checkpointId`,
+Request is a strict closed union. `supportedUpdate` requires `checkpointId`,
 an `incomingDistributionId` whose completed matching verification proves kind
 `configurationDistribution` and role `refreshDistribution`, and a project-delta
 `comparisonId`. Every other kind/role, including a verified CFU or ordinary CF,
 is rejected as `artifactNotDistribution` before sandbox creation. A
 replacement subvariant used only from `synchronizationConflicts` additionally
 requires `replacesSessionId`, `expectedReplacedBaseSessionDigest`, and
-`expectedReplacedDecisionSetDigest`; all three are absent for a first prepare.
+`expectedReplacedDecisionSetDigest`. Both subvariants retain the literal
+`mode: supportedUpdate`: the replacement triple is either entirely present or
+entirely absent, and every partial combination is a request-schema error. No
+second discriminator is accepted. All three fields are absent for a first prepare.
 Its checkpoint/distribution/comparison must exactly match the replaced
 session's immutable inputs. It builds the fresh sandbox/session first, then
 atomically invalidates the old resolution workspace, decisions, and every
@@ -4218,7 +4671,17 @@ decisionId, causedByChangeReceiptId }`. It is the exact state hashed into
 are `twiceChanged`, `deleteModify`,
 `addAddNameCollision`, `uuidMismatch`, `unresolvedReference`,
 `supportRuleBlocked`, or `mergeSettingsRejected`; resolutions are `takeOurs`,
-`takeTheirs`, `combine`, or `manual` as allowed per kind.
+`takeTheirs`, `combine`, or `manual`. `allowedResolutions` is the persisted,
+non-empty, duplicate-free subset for that exact conflict, in the canonical
+order shown here. It is immutable conflict input covered by the session's
+`baseSessionDigest`; `decisionSetDigest` continues to cover only the evolving
+`undecided`/`current`/`replacementPending` state. Callers cannot supply or
+reorder the list. The current specification does not define a static seven-by-four
+kind matrix, so no handler may infer one from the enum names. Before
+`merge.prepare`/`merge.resolve` is registered, the platform conflict classifier
+must be fixed by real/fake fixtures which deterministically produce this exact
+per-conflict list, including the availability of the typed resolution workspace
+needed by `combine`/`manual`.
 
 ### `unica.merge.resolve` — `localJournaled`
 
@@ -4226,6 +4689,11 @@ Request is a strict `decisionKind` union. `conflict` requires `sessionId`,
 `conflictId`, `resolution`, non-empty `rationale`, and
 `expectedBaseSessionDigest` plus `expectedDecisionSetDigest`.
 Both digests are CAS preconditions checked before any decision/receipt change.
+After locating the current conflict and before inspecting or consuming a change
+receipt, the server requires the requested resolution to be a member of that
+conflict's persisted `allowedResolutions`. A non-member returns the rejected
+`conflictResolutionNotAllowed` result with the exact persisted list and performs
+no decision or receipt mutation.
 For the named conflict, the server derives one predecessor from the current
 closed state: the decision ID from `current` or `replacementPending`, or no ID
 from `undecided`. The caller cannot supply or suppress that predecessor.
@@ -4281,8 +4749,10 @@ baseSessionDigest, workspaceGenerationId, affectedTarget,
 expectedResultSha256, consumed: false, selectable: true,
 supersededByReceiptId: null }`; `observedDigest` hashes the same field set with
 the located receipt/handle values (using `null` for an absent handle). They are
-therefore unequal. `producer` names the exact compatible mutation selector that
-created the receipt and `producerId` is `changeReceiptId`.
+therefore unequal. `producerId` is the `changeReceiptId`. The rejection context
+intentionally contains no producer selector: its sole advertised action is
+status, whose current merge-conflict handle repeats the receipt's immutable
+producer fields for review before the caller recreates any compatible mutation.
 
 `adaptedDelta` requires an `unexpected` synchronized-task `verificationId`,
 `expectedVerificationDigest`, `canonicalDeltaDigest`,
@@ -4360,6 +4830,10 @@ Request is a strict scope union:
 - `synchronizedTask` requires `sessionId` and returns
   `equivalent|adapted|unexpected|invalid`; an adapted rerun additionally
   requires `adaptationDecisionId` and `expectedAdaptationDecisionDigest`.
+  Those two fields are either both absent or both present. When present they
+  must identify the current adaptation decision produced from the prior
+  `unexpected` verification of this session; a caller cannot introduce a new
+  decision/digest pair in the verification request.
   `equivalent|adapted` creates a new immutable synchronized checkpoint and
   requires `checkpointId` in success data; `unexpected|invalid` does not create
   one;
@@ -4440,18 +4914,32 @@ expectedStatusDigest, supportActionId, expectedSupportActionDigest }` has no
 supportPrerequisiteArm, stage: apply, operationId, expectedStatusDigest,
 supportActionId, expectedSupportActionDigest, approvedArmingDigest }` has no
 `dryRun`. Both require an `awaitingArm` authorization.
-`supportPrerequisite` requires those fields plus `expectedArmingReceiptId` and
-`expectedArmingReceiptDigest` for an `armed` authorization; the prior
-gate itself is expected to become stale when the external root version advances
-the repository anchor.
-`supportPrerequisiteCancellation` requires the same two authorization fields,
-`expectedStatusDigest`, the arming ID/digest together iff state is `armed`, and
-`reason` (`taskChanged`, `abandoned`, or
-`operatorCancelled`). It is the only public path for discarding an action the
-human did not start; arbitrary task/archive mutations never perform an implicit
-history or lock probe. The routine/reconciliation/cancellation variants use the
-ordinary preview/apply `dryRun` union and only read-only
-history/report/dump/compare evidence before approval.
+Every remaining update leaf has the common mutation fields `cwd`, `taskId`, and
+`operationId`; none accepts `stage`. Their exact mode-specific fields are:
+
+- `routine`: `mode: routine`, `expectedStatusDigest`;
+- `supportPrerequisite`: `mode: supportPrerequisite`,
+  `expectedStatusDigest`, `supportActionId`, `expectedSupportActionDigest`,
+  `expectedArmingReceiptId`, and `expectedArmingReceiptDigest`; the prior gate
+  itself is expected to become stale when the external root version advances
+  the repository anchor;
+- `supportPrerequisiteCancellation`: `mode:
+  supportPrerequisiteCancellation`, `expectedStatusDigest`, `supportActionId`,
+  `expectedSupportActionDigest`, and `reason` (`taskChanged`, `abandoned`, or
+  `operatorCancelled`). The `expectedArmingReceiptId` and
+  `expectedArmingReceiptDigest` pair is entirely absent for `awaitingArm` and
+  entirely present for `armed`; every partial pair is invalid.
+
+Each of these three modes has the ordinary exact preview/apply union. Preview
+omits `dryRun` or supplies the literal `true` and has no approval field. Apply
+requires literal `dryRun: false` plus exactly `approvedUpdateDigest` for
+`routine`/`supportPrerequisite`, or `approvedCancellationDigest` for
+`supportPrerequisiteCancellation`. Explicit `dryRun: null`, a preview approval,
+the wrong approval name, and an apply without its approval are request-schema
+errors. Cancellation is the only public path for discarding an action the human
+did not start; arbitrary task/archive mutations never perform an implicit
+history or lock probe. Preview performs only read-only history/report/dump/
+compare evidence before approval.
 `supportPrerequisiteArm(stage="preview")` is `readOnly` and its apply is
 `localJournaled`: it writes only the authorization/arming receipt after a final
 read-only recheck and performs no repository/original effect. The preview is not
@@ -4920,14 +5408,63 @@ current `ready` support gate. `data` is
 supportGateDigest, supportGateHistoryEvidence: SupportGateHistoryEvidence,
 verificationId,
 verificationDigest, integrationSetId,
-integrationEntries[], integrationSetDigest, lockEntries[], relevantAnchors,
+integrationEntries: RepositoryIntegrationEntry[], integrationSetDigest,
+lockEntries[], relevantAnchors,
 compatibilityMode, referenceClosureDigest, settingsDigest,
-prevalidationDiagnosticsDigest, planDigest }`. Every integration entry contains
-the exact metadata object ID/name, repository action (`add`, `modify`, or
-`delete`), typed reasons, and required lock targets. Every lock entry names a
-`RepositoryTargetIdentity` to acquire. The root guard is legal, mandatory, and
-first; following entries name existing development objects. Added objects remain in the integration
-set even when only the configuration root/parent can be locked; broad
+prevalidationDiagnosticsDigest, planDigest }`.
+`RepositoryIntegrationReason` is the closed declaration-order enum
+`canonicalDelta`, `ownershipClosure`, `referenceClosure`, or
+`addDeleteSemantics`. `RepositoryIntegrationEntry` is the named closed
+`$defs.RepositoryIntegrationEntry` tagged `oneOf` of:
+
+- `rootModify { target: { targetKind: configurationRoot }, objectDisplay:
+  RepositoryTargetDisplay, action: modify, reasons:
+  RepositoryIntegrationReason[], requiredLockTargets:
+  RepositoryTargetIdentity[] }`;
+- `objectAdd { target: { targetKind: developmentObject, objectId:
+  MetadataObjectId }, objectDisplay: RepositoryTargetDisplay, action: add,
+  reasons: RepositoryIntegrationReason[], requiredLockTargets:
+  RepositoryTargetIdentity[] }`;
+- `objectModify { target: { targetKind: developmentObject, objectId:
+  MetadataObjectId }, objectDisplay: RepositoryTargetDisplay, action: modify,
+  reasons: RepositoryIntegrationReason[], requiredLockTargets:
+  RepositoryTargetIdentity[] }`; or
+- `objectDelete { target: { targetKind: developmentObject, objectId:
+  MetadataObjectId }, objectDisplay: RepositoryTargetDisplay, action: delete,
+  reasons: RepositoryIntegrationReason[], requiredLockTargets:
+  RepositoryTargetIdentity[] }`.
+
+The nested `target` is exactly a `RepositoryTargetIdentity` leaf, not another
+identity vocabulary. `objectDisplay` may reproduce the metadata name but is
+presentation only and never selects identity, action, equality, or order. Every
+reason list is non-empty, duplicate-free, declaration-ordered, and backed by its
+matching canonical-delta/ownership/reference/add-delete producer evidence.
+Every `requiredLockTargets` list is canonical and unique in repository-target
+order and equals that entry's exact existing root/parent/referrer/target closure.
+An added target does not yet exist to lock. A deleted development object's own
+target is included if and only if capability evidence proves it still exists and
+is separately lockable at acquisition; its parent, subordinate-development-
+object, and every changed-referrer target remain mandatory. Absence of a proven
+delete self-lock never removes the `objectDelete` integration/commit entry.
+`integrationEntries` is non-empty, canonical, and unique by nested target in the
+same repository-target order.
+
+`CommitExactObject` is the named closed `$defs.CommitExactObject` tagged `oneOf`
+of `rootModify { target: { targetKind: configurationRoot }, action: modify }`,
+`objectAdd { target: { targetKind: developmentObject, objectId:
+MetadataObjectId }, action: add }`, `objectModify { target: { targetKind:
+developmentObject, objectId: MetadataObjectId }, action: modify }`, or
+`objectDelete { target: { targetKind: developmentObject, objectId:
+MetadataObjectId }, action: delete }`. It is exactly the nested target/action
+projection of `RepositoryIntegrationEntry`; no display, reason, lock target, or
+other planning field is representable. The projected list is non-empty,
+canonical, and unique by target.
+
+Every lock entry names a `RepositoryTargetIdentity` to acquire. The root guard
+is legal, mandatory, and first; following entries name existing development
+objects. Added and deleted objects remain in the integration set even when the
+target itself is not separately lockable; the exact conditional delete self-
+lock and mandatory surrounding closure above still apply. Broad
 unexplained configuration locking fails. Every main-integration plan includes
 the root as an explained lock entry with reason `supportGraphGuard`, even when
 the observed support graph is empty and it is not a task-content integration
@@ -4997,12 +5534,15 @@ Request fields: `taskId`, `operationId`, `integrationSetId`,
 `expectedSupportGateHistoryEvidenceDigest`,
 `expectedAuthorizedPostMergeFingerprint`, and `dryRun?: true` for
 preview. Preview derives the immutable profile-rendered comment and returns
-`CommitPreviewData { exactObjects[], guardLocks[], comment, integrationSetDigest,
+`CommitPreviewData { exactObjects: CommitExactObject[], guardLocks[], comment,
+integrationSetDigest,
 exactObjectsDigest, verificationDigest, lockSetDigest, mergeReceiptId, supportGateId,
 consumedSupportGateDigest, supportGateHistoryEvidenceDigest,
 authorizedPostMergeFingerprint, observedOriginalFingerprint,
-historyGuardEvidence: PostMergeHistoryGuardEvidence, commitDigest }`. The exact objects include
-additions and deletions even when they have no separately acquired lock;
+historyGuardEvidence: PostMergeHistoryGuardEvidence, commitDigest }`.
+`exactObjects` is byte-for-byte the non-empty canonical target/action projection
+of the approved `LockPlanData.integrationEntries`; additions and deletions remain
+present even when they have no separately acquired self-lock.
 `guardLocks` contains acquired lock-only entries such as an unchanged
 `supportGraphGuard` and is disjoint from task content unless the canonical
 delta also changes that object. A
@@ -5012,18 +5552,59 @@ distinct apply operation requires `dryRun: false` and
 beforeRepositoryCursor, afterRepositoryCursor,
 postMergeHistoryGuardEvidenceDigest, postCommitHistoryPartition:
 RepositoryHistoryPartition, atomicCommitSafetyCapabilityId,
-committedObjects[], committedObjectsDigest,
-contentVerified, releasedObjects[], releasedGuardLocks[], unlockVerified,
+committedObjects: CommittedRepositoryObject[], committedObjectsDigest,
+contentVerified: true, releasedObjects[], releasedGuardLocks[], unlockVerified,
 repositoryAnchor }`.
+`CommittedRepositoryObject` is the named closed
+`$defs.CommittedRepositoryObject` tagged `oneOf` of:
+
+- `rootModify { targetKind: configurationRoot, action: modify,
+  repositoryVersion: RepositoryVersion, targetFingerprint }`;
+- `objectPresent { targetKind: developmentObject, objectId: MetadataObjectId,
+  action: add | modify, repositoryVersion: RepositoryVersion,
+  targetFingerprint }`; or
+- `objectAbsent { targetKind: developmentObject, objectId: MetadataObjectId,
+  action: delete, absenceEstablishedAtVersion: RepositoryVersion,
+  expectedAbsent: true }`.
+
+No leaf accepts a display, relevance/reason/lock field, a root `objectId`, an
+absent-target fingerprint, or another leaf's version field. `committedObjects`
+is non-empty, uses canonical repository-target order (the optional unique root
+first, then lowercase canonical object UUID), and rejects duplicate target
+identities. Its exact `(targetKind, objectId-if-applicable, action)` projection
+produces the corresponding `CommitExactObject`. The required equality chain is
+`projectIdentityAction(LockPlanData.integrationEntries) ==
+CommitPreviewData.exactObjects ==
+projectIdentityAction(CommitData.committedObjects)` byte-for-byte and one-to-
+one; no target/action may be added, omitted, duplicated, reordered, or changed
+between plan, preview, and result. Only the final projection source adds
+authoritative version/fingerprint/absence post-state. Every present leaf's
+`repositoryVersion` and every absent leaf's `absenceEstablishedAtVersion` equal
+`CommitData.repositoryVersion`. Each `targetFingerprint` is the target's exact
+post-commit fingerprint at that version; `objectAbsent` instead proves absence
+at that same version, and `contentVerified: true` covers the complete post-state
+projection. Independently, `exactObjectsDigest` equals the approved
+`CommitPreviewData` identity/action-only digest and the equality chain above is
+mandatory. It does not replace full integration-set lineage.
+`CommittedObjectsDigestRecord` is the closed `{ integrationSetDigest,
+committedObjects: CommittedRepositoryObject[] }`, where `integrationSetDigest`
+equals the approved `LockPlanData`/`CommitPreviewData` value, and
+`committedObjectsDigest == sha256(canonical(CommittedObjectsDigestRecord))`.
+Thus the task-commit digest retains the established approved full integration-
+set binding, while `exactObjectsDigest` separately proves that no presentation,
+reason, or lock field entered the identity/action projection itself.
 Supplying a comment is rejected; changing task metadata/template after start or
 a render that is empty/not task-bound returns `commitCommentPolicyMismatch`.
 Release, no force, no reference clearing, and no `keepLocked` are invariants,
 not input switches. The adapter must prove that releasing an unchanged guard
 does not add it as unrelated repository content; an unproven topology returns
 `platformCapabilityUnproven` before lock acquisition.
-`exactObjectsDigest == sha256(canonical(exactObjects))`; `commitDigest ==
-sha256(canonical(preview-without-commitDigest))`, so the exact object/comment/
-lock/fingerprint/history-evidence inputs cannot be substituted. The history
+`exactObjectsDigest == sha256(canonical(exactObjects))`; because every element is
+a `CommitExactObject`, this semantic commit-object hash contains only canonical
+target identity/action and cannot absorb display, reason, or lock data.
+`commitDigest == sha256(canonical(preview-without-commitDigest))` separately
+binds `integrationSetDigest` and the full comment/lock/fingerprint/history-
+evidence approval inputs, so those cannot be substituted. The history
 guard's `mergeReceiptCursor` equals both the original merge receipt's
 `repositoryHistoryCursor` and the consumed gate evidence's
 `classifiedThroughCursor`.
@@ -5061,8 +5642,10 @@ digest/capability ID are reproduced exactly. `postCommitHistoryPartition` has
 `fromExclusive == beforeRepositoryCursor` and `throughInclusive ==
 afterRepositoryCursor`. It contains exactly one `taskCommit` entry whose
 `repositoryVersion` equals the result field and whose `semanticDeltaDigest ==
-committedObjectsDigest == sha256(canonical({ integrationSetDigest,
-committedObjects }))`; every other entry is `unrelatedRoutine` or
+committedObjectsDigest == sha256(canonical(CommittedObjectsDigestRecord))`;
+that entry has no source-evidence ref and its committed-object identity/action,
+version, and post-state equality is the exact enclosing `CommitData` validation
+above. Every other entry is `unrelatedRoutine` or
 capability-proven `nonConflictingConcurrent`. Any gap, duplicate/missing own
 version, other relevant/support entry, object-set mismatch, or endpoint/digest
 substitution is `committedUnverified`, never completed success.
@@ -5268,7 +5851,7 @@ stale, effect-started, or any other recovery plan is not cancellable.
 | Add top-level metadata object | Configuration root; the new object does not exist to lock yet |
 | Add subordinate development object | Parent development object owning the collection |
 | Add attribute/tabular section/dimension/resource/non-development child | Owning development object |
-| Delete development object | Deleted object, parent, subordinate development objects, and every changed referrer |
+| Delete development object | Parent, subordinate development objects, and every changed referrer are mandatory; include the deleted object's own target if and only if capability evidence proves it still exists and is separately lockable at acquisition. Lack of that self-lock never removes the `objectDelete` integration/commit entry |
 | Delete non-development child | Owning object plus changed reference-cleanup closure |
 | Change configuration-root property or top-level ordering | Configuration root |
 | Preserve an accepted target support graph during integration | Configuration root as `supportGraphGuard`; this is a lock-only guard unless the canonical task delta also changes root content |
@@ -5349,6 +5932,7 @@ because it did not exist as an independently lockable repository object.
 | `taskPhaseMismatch` | A lifecycle/merge/repository precondition, or a clean bridge phase with no safety blocker, does not allow the tool; perform no effect and return exact allowed phases |
 | `approvalDigestMismatch` | A syntactically present preview/session/plan/lock/recovery approval carries a stale or different digest; perform no effect and request a fresh producer call. Omission of a schema-required approval is an MCP request-schema error before task lookup/result and cannot use this code |
 | `changeReceiptStale` | A merge-resolution receipt is no-change, consumed, superseded, from a stale workspace/session generation, or mismatches the exact target/result hash; or ordinary descendant evidence invalidated a required receipt. Perform no decision/effect and recreate or review the exact producer result |
+| `conflictResolutionNotAllowed` | The requested closed resolution is not a member of the exact conflict's persisted non-empty `allowedResolutions`; reject before receipt inspection/consumption or decision mutation and require a fresh conflict-list review |
 | `taskMutationBlocked` | Exclusively for a compatible general mutation with no current recovery: worker, original difference, owned lock, or terminal phase is a safety blocker; this code wins over phase mismatch and requires status plus cleanup/closure or a new task. A current unknown effect always uses higher-precedence `recoveryPlanPending` |
 | `platformCapabilityUnproven` | Exact topology/platform row missing or stale; disable mutation |
 | `supportLayerAmbiguous` | Exact vendor layer cannot be selected/round-tripped; no edit |

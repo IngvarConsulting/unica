@@ -52,6 +52,51 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   committed generated schema selected by the schema catalog. No field is added
   to the stored record. Versioned state framing/path selection belongs to Phase
   2 and must stay outside the record payload.
+- Shared artifact vocabulary cannot first appear in Task 7: Task 2 already
+  needs `AcceptedArtifactKind`, and Task 6 needs the full kind/role tuple.
+  Task 2 therefore creates `contracts/artifacts.rs` with `ArtifactRole`,
+  `ArtifactKind`, `AcceptedArtifactKind`, and the closed `ArtifactKindRole`;
+  Task 7 extends that module with evidence records instead of redefining enums.
+- `SupportMissingEvidenceKind` cannot first appear in Task 8 because Task 7's
+  `DeferredRepositoryAdvance` already depends on it. Task 7 creates
+  `contracts/support.rs` with that closed shared enum before compiling
+  `repository.rs`; Task 8 modifies the module to add the remaining support
+  records and never defines a second enum.
+- Repository history has separate wire and domain types. Serde may create only
+  `UnvalidatedRepositoryHistoryPartition`; a capability-backed
+  `RepositoryHistoryOrderResolver` plus typed source resolution constructs the
+  non-`Deserialize` `ValidatedRepositoryHistoryPartition`. No downstream
+  control flow accepts the unvalidated DTO or infers order from opaque version
+  strings.
+- Task 7 creates the typed `EvidenceSourceRegistry` and capability-backed,
+  version-indexed `EvidenceSourceIndex`, but registers only
+  `routineClassification` and `nonConflictingConcurrent`. Its exact registry
+  digest binds the evidence/digest-record schema digests and committed loader/
+  mapper revision digests for every canonical entry; it does not invent a
+  `CapabilityRowId` for code. Its authoritative proof reports exactly one
+  available ref or explicit absence for every active kind. Selection uses the
+  total active-kind precedence `supportPrerequisiteObservation >
+  nonConflictingConcurrent > routineClassification`; every lower choice requires
+  all active higher rows explicitly absent, and a wrong-class higher source is
+  failure rather than fallback. Task 8 extends the same registry with
+  `supportPrerequisiteObservation`, changes the registry digest, invalidates old
+  proofs, owns the non-corrective mappings, and rejects `corrective` fail-closed.
+  Task 9 enables both corrective branches through their distinct historical
+  instruction/evidence validation. Although the wire enum already contains
+  `taskCommit`, Task 7 rejects it during validated construction; Task 13 owns
+  `RepositoryIntegrationEntry`, `CommitExactObject`,
+  `CommittedRepositoryObject`, and the only crate-private constructor that
+  validates a task commit inside its enclosing `CommitData`.
+- Task 8 owns exactly the eight instruction records represented by
+  `NextAction.externalInstruction`: acquire/release root locks, manual support,
+  manual-IB/reserved-original closure, support conflict/evidence, and vendor
+  decision. `SupportCorrectiveInstruction` and the closed
+  `SupportRecoveryExternalAction` union first appear in Task 9, which modifies
+  the same instruction module instead of creating a second vocabulary.
+- Task 8 carries retention/manual-readability `CapabilityRowId` values only.
+  Parsing and validating the retention-provider capability manifest remains
+  roadmap Phase 3 work; the contract layer neither parses a row nor substitutes
+  an arbitrary profile string.
 
 ## Global implementation rules
 
@@ -89,49 +134,53 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/scalars.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
 
-- [ ] RED: assert exact schema and Serde rejection for `TaskId`, `OperationId`,
+- [x] RED: assert exact schema and Serde rejection for `TaskId`, `OperationId`,
   `Sha256Digest`, `UnicaId`, `ProjectId`, `MetadataObjectId`,
   `OriginalProjectCwd`, `LocalProfileName`, `ProfileArtifactRefId`,
   `CapabilityRowId`, `SupportLayerId`, bounded names, summaries, reasons,
   displays, property paths, diagnostics,
   `RepositoryVersion`, normalized UTC instants, positive generations, and
   bounded typed vectors.
-- [ ] Enforce `NormalizedUtcInstant` as validated uppercase RFC 3339 UTC with
+- [x] Enforce `NormalizedUtcInstant` as validated uppercase RFC 3339 UTC with
   terminal `Z`, canonical optional nanosecond fraction, and no offset/lowercase/
   redundant-zero/leap-second spelling; serialization must preserve that one
   digest-stable representation.
-- [ ] GREEN: add validated transparent newtypes and manual `JsonSchema`
+- [x] GREEN: add validated transparent newtypes and manual `JsonSchema`
   implementations where derive annotations cannot express runtime validation.
-- [ ] Add a recursive schema audit helper that rejects an object schema without
+- [x] Add a recursive schema audit helper that rejects an object schema without
   explicit closure and rejects untyped object/array leaves.
-- [ ] Derive exact schemas for the existing task phase, execution policy,
+- [x] Derive exact schemas for the existing task phase, execution policy,
   durable policy, and 21-name lifecycle vocabulary without changing wire
   spellings.
-- [ ] Prove `readOnly` is absent from `DurableExecutionPolicy` schema.
-- [ ] Run focused tests, format, clippy, full domain tests; commit and review.
+- [x] Prove `readOnly` is absent from `DurableExecutionPolicy` schema.
+- [x] Run focused tests, format, clippy, full domain tests; commit and review.
 
 ## Task 2: Task and delivery request contracts
 
 **Files:**
+- Create: `crates/unica-coder/src/domain/branched_development/contracts/artifacts.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/requests/mod.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/requests/task.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/requests/delivery.rs`
 
-- [ ] RED: positive and missing/extra/cross-variant fixtures for start, status,
+- [x] RED: positive and missing/extra/cross-variant fixtures for start, status,
   archive, cleanup, inspect, create, verify, and deploy.
-- [ ] Encode the normative closed `CommonTaskRequest { cwd, taskId }` and
+- [x] Encode the normative closed `CommonTaskRequest { cwd, taskId }` and
   `CommonMutationRequest { cwd, taskId, operationId }` intersections explicitly
   in every branch. Start adds profile and immutable task summary; no request may
   substitute a task/disposable path for the original-project `cwd`.
-- [ ] Encode preview/apply as closed unions: preview omits `dryRun` or supplies
+- [x] Encode preview/apply as closed unions: preview omits `dryRun` or supplies
   the literal `true` and has no approval; apply requires literal `dryRun: false`
   plus its exact approved digest. No generic required boolean or implicit apply
   is accepted.
-- [ ] Encode archive's `reason` exactly for abandoned outcome and forbid it for
+- [x] Encode archive's `reason` exactly for abandoned outcome and forbid it for
   success; restrict delivery artifact roles/kinds to request-legal subsets.
-- [ ] Add per-type variant and policy methods; prove all eight tools have the
+- [x] Define the shared artifact kind/role vocabulary once in `artifacts.rs`;
+  request-only role literals remain narrower views and no later task may create
+  duplicate artifact enums.
+- [x] Add per-type variant and policy methods; prove all eight tools have the
   contract policy and malformed values select no policy.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 3: Merge request contracts
 
@@ -139,23 +188,29 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/requests/merge.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/requests/mod.rs`
 
-- [ ] RED: exact fixtures for compare, prepare, conflicts, resolve, apply, and
+- [x] RED: exact fixtures for compare, prepare, conflicts, resolve, apply, and
   verify, including every forbidden cross-scope ID and approval field.
-- [ ] Model comparison sides and scope as closed variants; never accept a raw
+- [x] Model comparison sides and scope as closed variants; never accept a raw
   artifact/path selector.
-- [ ] Intersect every branch with the exact common task/mutation record; do not
-  omit `cwd`/`taskId` merely because each tool section lists only its specific
-  fields.
-- [ ] Model prepare's supported-update first/replacement/resolved-replay and
+- [x] `merge.conflicts` is the sole read-only branch: intersect it with
+  `CommonTaskRequest` (`cwd`/`taskId`) and reject `operationId`. Intersect every
+  other merge branch with `CommonMutationRequest`; no tool may omit `cwd` or
+  `taskId` merely because its section lists only specific fields.
+- [x] Model prepare's supported-update first/replacement/resolved-replay and
   main-integration branches separately. Only main integration selects
   `journaledEffect`; the other branches select `contained`.
-- [ ] Model conflict and adapted-delta resolution separately. Manual/combine
+- [x] Model conflict and adapted-delta resolution separately. Manual/combine
   receipts are required exactly for the allowed conflict resolutions and absent
   elsewhere.
-- [ ] Model task/original apply separately so plan/integration/lock/support-gate
+- [x] Encode all four closed resolution request variants, but do not invent a
+  static kind-to-resolution matrix. A resolved request is later checked against
+  the persisted non-empty canonical `allowedResolutions`; schema generation may
+  proceed, while handler registration stays gated on the fixture-backed
+  classifier required by Phase 7.
+- [x] Model task/original apply separately so plan/integration/lock/support-gate
   fields are required only for original apply.
-- [ ] Model all four verify scopes and the adaptation pair presence rule.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Model all four verify scopes and the adaptation pair presence rule.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 4: Repository request contracts and policy selection
 
@@ -163,21 +218,21 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/requests/repository.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/requests/mod.rs`
 
-- [ ] RED: exact fixtures for status, update, planLocks, lock, unlock, commit,
+- [x] RED: exact fixtures for status, update, planLocks, lock, unlock, commit,
   and recover, including all update/recovery stage branches.
-- [ ] Preserve the special read-only `supportPrerequisiteArm/preview` branch:
+- [x] Preserve the special read-only `supportPrerequisiteArm/preview` branch:
   it retains `cwd`/`taskId` but has no operation ID, `dryRun`, or approval. Its
   apply retains the common mutation fields and approved arming digest but still
   has no `dryRun`.
-- [ ] Encode routine/prerequisite/cancellation preview/apply unions and armed
+- [x] Encode routine/prerequisite/cancellation preview/apply unions and armed
   arming-ID/digest pair presence exactly. Do not introduce a generic approval.
-- [ ] Encode digest approvals as typed records and validate the request-specific
+- [x] Encode digest approvals as typed records and validate the request-specific
   equality in constructors/domain validation rather than with caller flags.
-- [ ] Encode recover apply and cancel-pending-plan as separate decisions; cancel
+- [x] Encode recover apply and cancel-pending-plan as separate decisions; cancel
   is `localJournaled`, has no approval, and apply is `journaledEffect`.
-- [ ] Exhaustively test every request variant-to-policy mapping and prove no
+- [x] Exhaustively test every request variant-to-policy mapping and prove no
   unknown/default policy branch exists.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 5: Closed names, selectors, and descriptor registry skeleton
 
@@ -197,8 +252,10 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - [ ] Add descriptors with name, request schema factory, variant metadata,
   policy selector, mutation/preview classification, and a deliberately absent
   handler binding.
-- [ ] Prove the registry cannot be converted into current `ToolSpec` entries and
-  none of its names appears in source `tools/list` yet.
+- [ ] Expose no handler binding or registry-to-`ToolSpec` conversion API and
+  prove none of its names appears in `application::tools()` or actual MCP
+  `tools/list` yet. Do not claim absolute non-convertibility of a public-field
+  application struct.
 - [ ] Run focused/schema/MCP regression tests; commit and review.
 
 ## Task 6: Common result envelope and rejected error contract
@@ -208,65 +265,223 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/errors.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/actions.rs`
 
-- [ ] RED: prove the completed/stopped/rejected presence matrix, stable-code
-  cardinality, rejected-code subset, and all 11 literal code/context branches.
-- [ ] Define non-empty/canonical error and next-action collections; a stopped
-  primary error must equal `stopCode`, while rejected has no `stopCode`.
-- [ ] Encode the 12 named redacted contexts and exact allowed-action grammar.
+- [ ] RED: prove the completed/stopped/rejected presence matrix, all 75
+  `StableErrorCode` literals, all 30 `RejectedCode` literal leaves, and the 13
+  grouped `TaskErrorData` code/context branches.
+- [ ] Define `TaskErrorEntry`; completed has exactly zero errors, while stopped
+  and rejected each have exactly one error whose code respectively equals
+  `stopCode` or `TaskErrorData.code`. Secondary error entries are illegal.
+- [ ] Encode the 14 named redacted contexts, 53 lifecycle operation selectors,
+  eight external-instruction literals, and their exact canonical/duplicate-free
+  allowed-action grammar, including the singleton adaptation-refresh selector.
   Do not use a single code plus optional context bag.
 - [ ] Make `completed` require `ok: true` and empty errors; stopped/rejected
-  require `ok: false` and non-empty errors by construction.
+  require `ok: false` and the exact singleton error by construction.
 - [ ] Keep `changes`, `artifacts`, and cache fields in every task-bound envelope;
   command/stdout/stderr/path/credential fields are unrepresentable.
-- [ ] Add exhaustive cross-branch substitution negatives from contract lines
-  1941-1990.
+- [ ] Add exhaustive cross-branch substitution negatives from the normative
+  `TaskErrorData` and rejected-code presence/action table; do not rely on stale
+  source line numbers.
 - [ ] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 7: Repository and artifact evidence types
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/canonical_json.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/scalars.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/repository.rs`
-- Create: `crates/unica-coder/src/domain/branched_development/contracts/artifacts.rs`
+- Create: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/artifacts.rs`
 
 - [ ] RED: repository cursor/history/partition, target identity/state/display,
   planned change, lock/update plan/proof, gate-history, post-merge guard, deferred
-  advance/consumption, artifact/configuration identity and locator fixtures.
+  advance/consumption, artifact/configuration identity and locator fixtures;
+  include exact RFC 8785 vectors, invalid I-JSON inputs, Task 7-owned
+  `routineClassification`/`nonConflictingConcurrent` semantic-delta mappings,
+  each named evidence digest record, the exact `CanonicalEmptyDeltaDigest`
+  literal, equal-endpoint/empty-entry partition fixtures plus both invalid
+  endpoint/emptiness cross-pairs, and schema/Serde negatives that distinguish an
+  omitted required-nullable key from an explicit `null`. Prove the wire schema
+  can name later support/task-commit branches while Task 7 validation rejects
+  both. Cover source-index explicit absence, missing registry rows, multiple
+  refs, wrong registry/version/kind/ref/digest, and caller-selected-source
+  negatives. Assert `availability` is byte-for-byte aligned with registry-entry
+  evidence-kind order; any reorder is rejected and changes the proof digest.
+  Cover registry-entry missing/extra/duplicate/order and every
+  evidence-schema/digest-record-schema/loader-revision/mapper-revision digest
+  substitution.
+- [ ] Define `SupportMissingEvidenceKind` first in `support.rs`, re-export it
+  through `contracts/mod.rs`, and reuse it from repository and later support
+  records. Do not copy the literal vocabulary into either consumer.
 - [ ] Encode every tagged identity/state variant and optional-field matrix; root
   identity can never be absent and display text never substitutes for identity.
+  Keep `RepositoryTargetKind` distinct from merge/apply `TargetKind`, enforce
+  the exact target/reason order, and enforce the 0-or-1/null and scalar bounds
+  of owner, actor, vendor, and version fields.
+- [ ] Add the reusable `RequiredNullable<T>` scalar wrapper: a containing closed
+  record must require the member key, while the member value accepts and emits
+  exactly either `null` or `T`. Its Serde/schema behavior must reject an omitted
+  key and must not use `Option<T>` defaults or skip-serialization attributes;
+  Task 8 reuses the same wrapper for its required-nullable fields.
 - [ ] Represent lineage with typed IDs/digests, not recursive object graphs.
-- [ ] Add constructor/domain checks for canonical unique order and digest field
-  formulas where the contract defines them.
-- [ ] Prove CFU/invalid artifacts are classification evidence only and never
-  accepted workflow input kinds.
+- [ ] Define Task 7's reusable `CanonicalEmptyDeltaDigest` value type/constant
+  as exactly `sha256(canonical([]))`; its schema and deserializer accept only
+  that one lowercase digest. Task 8 imports it for positive support-version
+  observations rather than accepting an arbitrary `Sha256Digest` or recomputing
+  a second constant.
+- [ ] Treat `RepositoryVersion` as opaque. Ordinary Serde produces only the
+  closed `UnvalidatedRepositoryHistoryPartition`, which has no domain methods.
+  A capability-backed `RepositoryHistoryOrderResolver` with internal typed
+  order evidence accepts an empty partition if and only if its endpoints are
+  byte-identical and `entries` is empty. Only for a non-empty partition does it
+  prove immediate succession, complete coverage, endpoints, canonical adapter
+  order, and uniqueness before constructing the non-`Deserialize`
+  `ValidatedRepositoryHistoryPartition`; numeric/lexical version inference is
+  forbidden. Static assertions/compile-fail tests prove the validated type has
+  no `Deserialize` implementation and no domain API accepts the unvalidated DTO.
+- [ ] Add validated collection newtypes/private constructors for target states,
+  planned changes, lock targets/reasons, and acquire/release sequences. Their
+  Serde paths enforce self-contained canonical order, uniqueness, non-empty, and
+  reverse constraints; partition order/coverage instead requires the resolver
+  above. A bare length-bounded `BoundedVec` must not bypass either path.
+- [ ] Extend the existing production JCS implementation in the parent
+  `canonical_json.rs` with one typed, `pub(super)` fail-closed digest helper for
+  sibling contract modules; do not create a second contract-local JCS path. It
+  accepts only schema-valid I-JSON, emits RFC 8785 UTF-8 bytes, rejects duplicate
+  names/lone surrogates/non-finite or out-of-range numbers and every
+  canonicalization failure, and has no `serde_json::to_string`, debug-format,
+  local `sha2`, or fallback hashing path. Task 8 reuses this helper.
+- [ ] Add constructor/domain checks for the exact semantic-delta input/null
+  mapping and the named canonical digest records for gate-history, post-merge
+  guard, selective update proof, and original-clean refresh proof. Every
+  non-task-commit entry requires the closed content-addressed
+  `RepositoryHistorySourceEvidenceRef` plus an internal
+  `EvidenceSourceIndexProof` for the same version and active registry digest.
+  Implement the named closed registry entry and `{ entries }` digest record with
+  exact evidence/digest-record schema digests plus committed typed loader and
+  classification-mapper revision digests; entries are non-empty, unique, and in
+  evidence-kind declaration order. Do not use arbitrary version strings,
+  function/debug identities, or a synthetic `CapabilityRowId`. Task 7 registers
+  only routine-classification and non-conflicting-concurrent loaders; each
+  canonical proof has one available ref or explicit absence per registered kind.
+  Select non-conflicting-concurrent over routine; routine is legal only with an
+  explicit absent higher row, and a wrong-class available higher source fails.
+  Deterministic lookup resolves and rehashes the proof-selected typed record, and
+  the concurrent inline copy must match it. Missing/multiple/unregistered
+  sources, incomplete/stale index proofs, ref substitution, semantic mappings,
+  order evidence, or digests produce no validated partition. Late audit performs
+  the same lookup and index validation again.
+- [ ] Keep `taskCommit` in the wire classification enum but make Task 7's generic
+  validated constructor reject it. Do not introduce a placeholder committed-
+  object type, trust its opaque semantic digest, or expose a public bypass; Task
+  13 owns the enclosing validation.
+- [ ] Keep `ArtifactKind` as classification output and prove CFU/invalid
+  artifacts are never accepted by a selectable workflow input kind/role.
 - [ ] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 8: Support evidence, authorization, and instructions
 
 **Files:**
-- Create: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/instructions.rs`
 
 - [ ] RED: all support transition/candidate/blocker/gap, manual target identity,
   baseline, root observation/proof, authorization/arming, version observation,
-  recovery handoff/distribution and external instruction branches.
+  recovery handoff/distribution and the eight `NextAction` external-instruction
+  branches. Cover every exact digest record, discriminator, collection order,
+  duplicate, explicit-null, cross-mode, and omitted/extra-field negative.
+- [ ] Register `SupportPrerequisiteVersionObservation` as the exact typed
+  `supportPrerequisiteObservation` content-addressed history source and extend
+  the Task 7 registry/index proof with that exact third kind and its evidence-
+  schema, digest-record-schema, loader-revision, and mapper-revision digests.
+  Implement its
+  routine/authorized/external-support/pre-arm/invalid classification and
+  semantic-null mappings. Recompute the full registry digest so every old two-
+  kind proof fails. Enforce total precedence: select support whenever available;
+  select non-conflicting-concurrent only with support explicitly absent; select
+  routine only with both support and non-conflicting rows explicitly absent.
+  Reject any substituted registry-entry digest, missing/multiple refs, wrong-
+  kind/digest/version/ref, wrong-class available higher sources, and every
+  fallback that skips precedence. Keep the wire
+  `corrective` leaf structurally representable but reject it during validated
+  construction until Task 9 can bind it to the exact historical corrective
+  instruction. Until this Task 8 extension succeeds, every raw support-backed
+  partition remains unvalidated and unusable.
 - [ ] Preserve exact manual-mode presence rules and explicit null-versus-absent
-  fields. Do not fabricate object/layer IDs for global evidence gaps.
+  fields by reusing Task 7's `RequiredNullable<T>`. Do not fabricate object/layer
+  IDs for global evidence gaps. Treat `SupportRootLockProof` terminalization
+  presence as an outer authorization/result invariant because the nested proof
+  has no target mode; never infer one.
+- [ ] Give all four `SupportTransition` leaves the required `transitionKind`
+  discriminator. Implement the closed `SupportCandidateReason` and
+  `VendorSupportDecision` vocabularies and validated semantic collection types
+  for candidates, blockers, gaps, transitions, conflicts, mismatch/missing-kind
+  projections, and allowed decisions. Comparators use typed identities and
+  capability-proven history order, never displays or lexical/numeric ordering of
+  opaque `RepositoryVersion`.
+- [ ] Implement the acyclic named digest-input records for candidate set,
+  replaceable-history-independent support gate, immutable support action,
+  manual-IB identities/baselines, reserved-original/root observations/proofs,
+  arming/stale/inventory/lease evidence, and instruction digests. Reuse the
+  existing Task 7 `pub(super)` canonical helper; no local JCS/SHA path is legal.
 - [ ] Keep authorization terminal records distinct from active resume-handle
-  projections.
-- [ ] Encode instruction branches as closed data, never free-form prose or
-  user-selectable effect booleans.
+  projections. `supportActionDigest` excludes its own field plus mutable
+  arming/state/freeze members; `supportGateDigest` excludes the replaceable
+  history evidence/cursor and action projection.
+- [ ] Encode exactly `AcquireSupportRootInstruction`,
+  `ReleaseRepositoryLocksInstruction`, `ManualSupportInstruction`,
+  `CleanManualWorkingInfobaseInstruction`,
+  `CloseReservedOriginalDesignerInstruction`, `SupportConflictInstruction`,
+  `SupportEvidenceInstruction`, and `VendorSupportDecisionInstruction` as closed
+  data. Add and verify `lockInstructionDigest` and
+  `supportEvidenceInstructionDigest`; no free-form prose or user-selectable
+  effect boolean is legal.
+- [ ] Keep retention-provider and manual-readability fields as typed
+  `CapabilityRowId` references only. Do not implement the Phase 3 manifest-row
+  parser or duplicate its case vocabulary in Task 8.
 - [ ] Add negative mode/field splice tests and digest-lineage constructor checks.
 - [ ] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 9: Change receipts and support terminalization
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/instructions.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/change_receipts.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/support_terminalization.rs`
 
 - [ ] RED: all four `BranchedChangeReceipt` leaves, changed/no-change phase
   rules, target hashes/events/cache impact, recovery finalization plan/guard
-  proof, working-IB closure plan/proof, and both mode stop-evidence types.
+  proof, working-IB closure plan/proof, both mode stop-evidence types,
+  `SupportCorrectiveInstruction`, `SupportRecoveryExternalAction`, and both
+  instruction-bound corrective observation/source-resolution leaves.
+- [ ] Extend Task 8's instruction module with the corrective instruction and the
+  closed recovery-external-action union; reuse the existing eight instruction
+  records and their digests without redefining any `NextAction` vocabulary.
+- [ ] Extend the Task 8 support-observation source validator to accept
+  `corrective` only by its `correctionKind`. `actionCorrection` resolves and
+  rehashes the historical `SupportCorrectiveInstruction`, then proves exact
+  instruction digest, repository actor, target-mode/working-IB presence, and
+  root/content delta equality. `externalConflictCorrection` instead resolves and
+  rehashes Task 8's historical `SupportConflictInstruction`, then proves its
+  instruction digest, `conflictResolutionId`, `finalBaselineDigest ==
+  requiredFinalBaselineDigest`, and the exact `ExternalSupportOwnershipEvidence`
+  binding the same actor/version/root/content delta. Both leaves require the
+  authoritative source-index version/ref, partition class `corrective`,
+  recomputed classification and semantic-delta digests. Add missing/multiple,
+  wrong-kind/version/ref/digest, cross-action/conflict, and cross-leaf negatives;
+  structural observation validity alone must never authorize either branch.
+- [ ] Enabling those corrective mappings changes the support-observation
+  registry entry's `classificationMapperRevisionDigest`, recomputes
+  `registryDigest`, and rejects every Task 8 `EvidenceSourceIndexProof`. Keep the
+  evidence-schema, digest-record-schema, and loader revision digests unchanged
+  unless their actual schema/loader changes. Test stale Task 8 proof rejection,
+  mapper-digest substitution, and the recomputed Task 9 proof/order.
 - [ ] Ensure no-change receipts cannot invalidate evidence or supersede a
   decision; changed receipts bind the exact invalidation/supersession closure.
 - [ ] Keep conceptual workflow links as typed IDs/digests and ordinary owned
@@ -332,12 +547,51 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 ## Task 13: Completed merge and repository result data
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/results/merge.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/results/repository.rs`
 
 - [ ] RED then implement the remaining named completed data schemas for compare,
   prepare, conflicts, resolve, apply, verify, repository status/update/planLocks/
-  lock/unlock/commit/recover.
+  lock/unlock/commit/recover. For commit, cover all three
+  `CommittedRepositoryObject` leaves, forbidden cross-leaf fields, empty/
+  noncanonical/duplicate targets, plan/preview/result projection mismatch,
+  wrong result version/post-state, digest substitution, and task-commit
+  version/digest mismatch. Also cover every root/dev add/modify/delete
+  `RepositoryIntegrationEntry`/`CommitExactObject` leaf, cross-target/action
+  splice, empty/reordered/duplicate lists, empty/duplicate/reordered reasons,
+  noncanonical lock targets, and any presentation/reason/lock field leaked into
+  the exact-object schema/hash.
+- [ ] Define named closed `$defs.RepositoryIntegrationEntry` leaves with the
+  exact nested `RepositoryTargetIdentity`, presentation-only `objectDisplay`,
+  root-modify or dev add/modify/delete action, non-empty canonical typed
+  integration reasons, and canonical unique `requiredLockTargets`. Preserve
+  add/delete entries even when their target itself is not separately lockable.
+  For delete, include the self target iff capability evidence proves it still
+  exists and is separately lockable at acquisition; parent/subordinate/changed-
+  referrer targets remain mandatory. Test both capability branches and prove
+  absence of a self-lock never removes the delete integration/commit entry.
+- [ ] Define named closed `$defs.CommitExactObject` as only the four canonical
+  target/action projections, with no display/reason/lock field. Require
+  `CommitPreviewData.exactObjects` to be the non-empty canonical unique one-to-one
+  projection of approved `LockPlanData.integrationEntries`, and compute
+  `exactObjectsDigest` only from that projection.
+- [ ] Define named closed `$defs.CommittedRepositoryObject` as exactly root-
+  modify, development-object add/modify-present, and development-object delete-
+  absent leaves. Require a non-empty canonical unique target list and the exact
+  equality chain `project(integrationEntries) == exactObjects ==
+  project(committedObjects)`. Present-leaf versions and absent-leaf establishment
+  versions equal `CommitData.repositoryVersion`; fingerprints/absence equal the
+  verified post-state. Recompute `committedObjectsDigest` from the named closed
+  `{ integrationSetDigest, committedObjects }` record, with the digest equal to
+  the approved LockPlan/CommitPreview value. Keep `exactObjectsDigest` as the
+  separate identity/action projection check; it must not replace or weaken the
+  full integration-set lineage bound into the task-commit digest.
+- [ ] Implement the only crate-private task-commit partition constructor. It
+  validates the exact singleton task version and its semantic digest equality to
+  `committedObjectsDigest`, the whole capability-proven history range, and every
+  other entry through the authoritative source index/ref proof. No generic
+  constructor or raw DTO can accept that branch.
 - [ ] Preserve target/scope/mode-specific presence rules and the intentional
   reuse of `MergeSessionData`/`MergeVerificationData` in stopped outcomes.
 - [ ] Keep recovery apply and pending-plan cancellation outputs distinct.
@@ -370,8 +624,15 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   cancellation/correction/conflict/reapproval/blocker/evidence pending records.
 - [ ] Enforce target-mode and authorization-state presence rules, immutable prior
   attempt evidence, and exact required external instruction types.
-- [ ] Cover all remaining rows in the normative 55-name stop matrix and assert
-  there is no unmapped stable stop code.
+- [ ] In the outer `SupportPreflightStopData` constructor, require the sibling
+  `preflight.supportActionId`/`supportActionDigest` projection to equal the
+  `SupportActionAuthorizationData` record byte-for-byte. Do not look for a
+  nonexistent authorization nested inside `SupportPreflightData`. Validate
+  stopped `SupportRootLockProof` terminalization-digest presence against the
+  same outer authorization target mode.
+- [ ] Cover all remaining support/recovery rows. Combined Tasks 14 and 15 must
+  exhaust the current normative matrix's 45 stable stop-code names across 58
+  producer rows and assert there is no unmapped or duplicate code/row.
 - [ ] Run exhaustive schema negatives, format, clippy; commit and review.
 
 ## Task 16: Per-tool closed output unions and OperationResult projection

@@ -163,6 +163,11 @@ resume after interruption.
 
 - [ ] Implement `merge.compare`, `prepare`, `conflicts`, `resolve`, `apply`, and
   `verify` as supported three-way D0/D1/local operations.
+- [ ] Before registering `merge.prepare` or `merge.resolve`, freeze the exact
+  platform conflict classifier with fake and real fixtures. It must emit each
+  conflict's non-empty canonical `allowedResolutions`; no static seven-by-four
+  matrix may be inferred from enum names, and every non-member pair is rejected
+  before receipt or decision mutation.
 - [ ] Persist exact conflict decisions and adapted/equivalent delta evidence.
 - [ ] Prove no ordinary XML load touches the original repository-bound IB.
 - [ ] Run local validation and supported-update postconditions at every barrier.
