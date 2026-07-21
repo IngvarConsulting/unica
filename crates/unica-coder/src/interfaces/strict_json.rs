@@ -1,4 +1,4 @@
-use crate::domain::i_json::validate_i_json_number;
+use crate::domain::i_json::{validate_i_json_number, validate_i_json_string};
 use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
@@ -68,6 +68,8 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     where
         E: serde::de::Error,
     {
+        validate_i_json_string(value)
+            .map_err(|_| E::custom("I-JSON string contains forbidden Unicode scalar"))?;
         Ok(StrictValue(Value::String(value.to_owned())))
     }
 
@@ -75,6 +77,8 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     where
         E: serde::de::Error,
     {
+        validate_i_json_string(&value)
+            .map_err(|_| E::custom("I-JSON string contains forbidden Unicode scalar"))?;
         Ok(StrictValue(Value::String(value)))
     }
 
@@ -110,6 +114,8 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
         let mut keys = HashSet::new();
         let mut values = Map::new();
         while let Some(key) = map.next_key::<String>()? {
+            validate_i_json_string(&key)
+                .map_err(|_| A::Error::custom("I-JSON string contains forbidden Unicode scalar"))?;
             if !keys.insert(key.clone()) {
                 return Err(A::Error::custom("duplicate JSON object member"));
             }

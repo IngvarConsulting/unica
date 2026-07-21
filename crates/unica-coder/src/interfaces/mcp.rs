@@ -723,10 +723,6 @@ mod tests {
         output.responses()
     }
 
-    fn parse_raw_message_with_handler(message: &str, handler: Arc<ToolCallHandler>) -> Vec<Value> {
-        parse_raw_bytes_with_handler(format!("{message}\n").into_bytes(), handler)
-    }
-
     fn assert_parse_error_without_handler_call(message: &str) {
         assert_parse_error_bytes_without_handler_call(format!("{message}\n").into_bytes());
     }
@@ -810,6 +806,27 @@ mod tests {
     }
 
     #[test]
+    fn mcp_rejects_i_json_noncharacters_in_decoded_member_names_and_string_values() {
+        for (decoded, escaped) in [
+            ('\u{fdd0}', r#"\uFDD0"#),
+            ('\u{fdef}', r#"\uFDEF"#),
+            ('\u{fffe}', r#"\uFFFE"#),
+            ('\u{ffff}', r#"\uFFFF"#),
+            ('\u{1fffe}', r#"\uD83F\uDFFE"#),
+            ('\u{1ffff}', r#"\uD83F\uDFFF"#),
+        ] {
+            for member in [escaped.to_string(), decoded.to_string()] {
+                assert_parse_error_without_handler_call(&format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"unica.code.search","arguments":{{"value":"{member}"}}}}}}"#
+                ));
+                assert_parse_error_without_handler_call(&format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"unica.code.search","arguments":{{"{member}":true}}}}}}"#
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn mcp_preserves_serde_json_parse_rejections_before_dispatch() {
         let mut invalid_utf8 =
             b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"broken\":\"".to_vec();
@@ -877,20 +894,34 @@ mod tests {
 
     #[test]
     fn mcp_accepts_safe_and_fractional_numbers_and_equal_names_in_separate_scopes() {
+        let (sender, receiver) = mpsc::channel();
+        let writer = SharedWriter::default();
+        let output = writer.clone();
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
-        let responses = parse_raw_message_with_handler(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.code.search","arguments":{"name":"same","safeDecimal":9007199254740991.0,"safeExponent":9.007199254740991e15,"fraction":1.5}}}"#,
-            Arc::new(move |_, _, _| {
-                observed_calls.fetch_add(1, Ordering::SeqCst);
-                Ok("ran".to_string())
-            }),
-        );
+        let dispatcher = thread::spawn(move || {
+            run_stdio_with_handler(
+                BufReader::new(ChannelReader::new(receiver)),
+                writer,
+                Arc::new(UnicaApplication::new()),
+                Arc::new(move |_, _, _| {
+                    observed_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("ran".to_string())
+                }),
+            )
+        });
+        sender
+            .send(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"unica.code.search\",\"arguments\":{\"name\":\"same\",\"safeDecimal\":9007199254740991.0,\"safeExponent\":9.007199254740991e15,\"fraction\":1.5}}}\n".to_vec())
+            .unwrap();
 
+        let responses = output.wait_for_responses(1);
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["id"], 1);
         assert!(responses[0].get("result").is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        drop(sender);
+        dispatcher.join().unwrap();
     }
 
     #[test]

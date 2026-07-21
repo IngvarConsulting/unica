@@ -1,5 +1,7 @@
 use super::{BranchedLifecycleToolName, DurableExecutionPolicy, Sha256Digest};
-use crate::domain::i_json::validate_i_json_number;
+#[cfg(test)]
+use crate::domain::i_json::validate_i_json_value;
+use crate::domain::i_json::{validate_i_json_object, IJsonValidationError};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -11,6 +13,7 @@ const OPERATION_INPUT_DIGEST_KIND: &str = "branchedOperationInputV1";
 pub(super) enum CanonicalJsonError {
     RequestMustBeObject,
     NonInteroperableInteger,
+    NonInteroperableString,
     Canonicalization(serde_json::Error),
 }
 
@@ -23,6 +26,9 @@ impl fmt::Display for CanonicalJsonError {
             Self::NonInteroperableInteger => {
                 formatter.write_str("integer is outside the I-JSON interoperability range")
             }
+            Self::NonInteroperableString => {
+                formatter.write_str("string contains an I-JSON forbidden Unicode scalar")
+            }
             Self::Canonicalization(error) => {
                 write!(formatter, "JSON canonicalization failed: {error}")
             }
@@ -34,7 +40,9 @@ impl std::error::Error for CanonicalJsonError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Canonicalization(error) => Some(error),
-            Self::RequestMustBeObject | Self::NonInteroperableInteger => None,
+            Self::RequestMustBeObject
+            | Self::NonInteroperableInteger
+            | Self::NonInteroperableString => None,
         }
     }
 }
@@ -51,7 +59,7 @@ struct OperationInputDigestRecord<'a> {
 /// Returns RFC 8785 canonical UTF-8 JSON bytes for an already duplicate-free I-JSON value.
 #[cfg(test)]
 fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, CanonicalJsonError> {
-    validate_i_json_numbers(value)?;
+    validate_i_json_value(value).map_err(canonical_json_validation_error)?;
     canonical_json_bytes_for(value)
 }
 
@@ -72,9 +80,7 @@ pub(super) fn operation_input_digest(
     let request = request
         .as_object()
         .ok_or(CanonicalJsonError::RequestMustBeObject)?;
-    for value in request.values() {
-        validate_i_json_numbers(value)?;
-    }
+    validate_i_json_object(request).map_err(canonical_json_validation_error)?;
     let mut request = request.clone();
     request.remove("operationId");
 
@@ -96,23 +102,11 @@ fn sha256_digest(bytes: &[u8]) -> Sha256Digest {
     Sha256Digest::parse(&hex).expect("SHA-256 lower-hex output always satisfies Sha256Digest")
 }
 
-fn validate_i_json_numbers(value: &Value) -> Result<(), CanonicalJsonError> {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                validate_i_json_numbers(value)?;
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                validate_i_json_numbers(value)?;
-            }
-        }
-        Value::Number(number) => validate_i_json_number(number)
-            .map_err(|_| CanonicalJsonError::NonInteroperableInteger)?,
-        Value::Null | Value::Bool(_) | Value::String(_) => {}
+fn canonical_json_validation_error(error: IJsonValidationError) -> CanonicalJsonError {
+    match error {
+        IJsonValidationError::NonInteroperableNumber => CanonicalJsonError::NonInteroperableInteger,
+        IJsonValidationError::NonInteroperableString => CanonicalJsonError::NonInteroperableString,
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -121,7 +115,7 @@ mod tests {
         canonical_json_bytes, canonical_json_digest, operation_input_digest, CanonicalJsonError,
     };
     use crate::domain::branched_development::{BranchedLifecycleToolName, DurableExecutionPolicy};
-    use serde_json::json;
+    use serde_json::{json, Map, Value};
 
     #[test]
     fn canonical_json_matches_the_contract_golden_vectors() {
@@ -338,6 +332,41 @@ mod tests {
                 ),
                 Err(CanonicalJsonError::NonInteroperableInteger)
             ));
+        }
+    }
+
+    #[test]
+    fn canonical_json_and_operation_input_reject_i_json_noncharacters_in_keys_and_values() {
+        for character in [
+            '\u{fdd0}',
+            '\u{fdef}',
+            '\u{fffe}',
+            '\u{ffff}',
+            '\u{1fffe}',
+            '\u{1ffff}',
+        ] {
+            let value = Value::String(character.to_string());
+            let mut key = Map::new();
+            key.insert(character.to_string(), Value::Bool(true));
+
+            for value in [value, Value::Object(key)] {
+                assert!(matches!(
+                    canonical_json_bytes(&value),
+                    Err(CanonicalJsonError::NonInteroperableString)
+                ));
+                assert!(matches!(
+                    canonical_json_digest(&value),
+                    Err(CanonicalJsonError::NonInteroperableString)
+                ));
+                assert!(matches!(
+                    operation_input_digest(
+                        BranchedLifecycleToolName::MergeApply,
+                        DurableExecutionPolicy::JournaledEffect,
+                        &json!({ "request": value }),
+                    ),
+                    Err(CanonicalJsonError::NonInteroperableString)
+                ));
+            }
         }
     }
 }
