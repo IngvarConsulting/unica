@@ -5,6 +5,48 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// The provisional replay kernel is intentionally not public until Phase 1
+/// generates the closed task-operation tool union.
+///
+/// ```compile_fail
+/// use unica_coder::domain::branched_development::{
+///     classify_replay, BranchedLifecycleToolName, DurableExecutionPolicy,
+/// };
+///
+/// let _ = classify_replay(
+///     None,
+///     BranchedLifecycleToolName::MergeApply,
+///     DurableExecutionPolicy::JournaledEffect,
+///     &serde_json::json!({}),
+/// );
+/// ```
+///
+/// ```compile_fail
+/// use unica_coder::domain::branched_development::{
+///     classify_replay, BranchedLifecycleToolName, Sha256Digest,
+/// };
+///
+/// let caller_supplied_digest = Sha256Digest::parse(&"a".repeat(64)).unwrap();
+/// let _ = classify_replay::<BranchedLifecycleToolName>(None, &caller_supplied_digest);
+/// ```
+///
+/// ```compile_fail
+/// use unica_coder::domain::branched_development::{
+///     BranchedLifecycleToolName, ExecutionPolicy, OperationId, OperationReplayView,
+///     OperationState, Sha256Digest,
+/// };
+///
+/// let _ = OperationReplayView::new(
+///     OperationId::parse("123e4567-e89b-12d3-a456-426614174000").unwrap(),
+///     BranchedLifecycleToolName::MergeApply,
+///     ExecutionPolicy::ReadOnly,
+///     Sha256Digest::parse(&"a".repeat(64)).unwrap(),
+///     OperationState::Registered,
+///     None,
+///     None,
+///     None,
+/// );
+/// ```
 pub enum OperationState {
     Registered,
     IntentWritten,
@@ -154,7 +196,7 @@ impl ValidatedOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationReplayView {
+pub(super) struct OperationReplayView {
     operation_id: OperationId,
     tool_name: BranchedLifecycleToolName,
     policy: DurableExecutionPolicy,
@@ -197,25 +239,50 @@ impl OperationReplayView {
         })
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Task 6 status projection consumes the operation ID"
+        )
+    )]
+    pub(super) fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
-    pub fn tool_name(&self) -> BranchedLifecycleToolName {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Task 6 status projection consumes the tool name")
+    )]
+    pub(super) fn tool_name(&self) -> BranchedLifecycleToolName {
         self.tool_name
     }
 
-    pub fn policy(&self) -> DurableExecutionPolicy {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Task 6 status projection consumes the durable execution policy"
+        )
+    )]
+    pub(super) fn policy(&self) -> DurableExecutionPolicy {
         self.policy
     }
 
-    pub fn state(&self) -> OperationState {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Task 6 status projection consumes the operation state"
+        )
+    )]
+    pub(super) fn state(&self) -> OperationState {
         self.state.operation_state()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplayDisposition {
+pub(super) enum ReplayDisposition {
     DispatchNew {
         canonical_input_digest: Sha256Digest,
     },
@@ -234,50 +301,19 @@ pub enum ReplayDisposition {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplayClassificationError {
-    RequestMustBeObject,
-    NonInteroperableInteger,
-    NonInteroperableString,
-    Canonicalization,
-}
-
-impl fmt::Display for ReplayClassificationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RequestMustBeObject => {
-                formatter.write_str("operation request must be a JSON object")
-            }
-            Self::NonInteroperableInteger => {
-                formatter.write_str("integer is outside the I-JSON interoperability range")
-            }
-            Self::NonInteroperableString => {
-                formatter.write_str("string contains an I-JSON forbidden Unicode scalar")
-            }
-            Self::Canonicalization => formatter.write_str("JSON canonicalization failed"),
-        }
-    }
-}
-
-impl std::error::Error for ReplayClassificationError {}
-
-impl From<CanonicalJsonError> for ReplayClassificationError {
-    fn from(value: CanonicalJsonError) -> Self {
-        match value {
-            CanonicalJsonError::RequestMustBeObject => Self::RequestMustBeObject,
-            CanonicalJsonError::NonInteroperableInteger => Self::NonInteroperableInteger,
-            CanonicalJsonError::NonInteroperableString => Self::NonInteroperableString,
-            CanonicalJsonError::Canonicalization(_) => Self::Canonicalization,
-        }
-    }
-}
-
-pub fn classify_replay(
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task 5 durable replay dispatch calls the provisional classifier"
+    )
+)]
+pub(super) fn classify_replay(
     record: Option<&OperationReplayView>,
     incoming_tool_name: BranchedLifecycleToolName,
     incoming_policy: DurableExecutionPolicy,
     request: &Value,
-) -> Result<ReplayDisposition, ReplayClassificationError> {
+) -> Result<ReplayDisposition, CanonicalJsonError> {
     let observed_input_digest =
         operation_input_digest(incoming_tool_name, incoming_policy, request)?;
     let Some(record) = record else {
@@ -324,9 +360,10 @@ pub fn classify_replay(
 
 #[cfg(test)]
 mod tests {
+    use super::super::canonical_json::CanonicalJsonError;
     use super::{
         classify_replay, OperationOwnerState, OperationReplayView, OperationState,
-        ReplayClassificationError, ReplayDisposition,
+        ReplayDisposition,
     };
     use crate::domain::branched_development::{
         canonical_json::operation_input_digest, BranchedLifecycleToolName, DurableExecutionPolicy,
@@ -355,12 +392,9 @@ mod tests {
     #[test]
     fn no_record_returns_the_classifier_computed_digest_for_registration() {
         let request = request();
-        let expected = operation_input_digest(
-            BranchedLifecycleToolName::MergeApply,
-            DurableExecutionPolicy::JournaledEffect,
-            &request,
-        )
-        .unwrap();
+        let expected =
+            Sha256Digest::parse("9dc343ee7376e65fba54e648873fe0884fabb5214408d774027907204a0a774c")
+                .unwrap();
 
         assert_eq!(
             classify_replay(
@@ -368,48 +402,47 @@ mod tests {
                 BranchedLifecycleToolName::MergeApply,
                 DurableExecutionPolicy::JournaledEffect,
                 &request,
-            ),
-            Ok(ReplayDisposition::DispatchNew {
+            )
+            .unwrap(),
+            ReplayDisposition::DispatchNew {
                 canonical_input_digest: expected,
-            })
+            }
         );
     }
 
     #[test]
     fn invalid_request_is_rejected_before_dispatch_without_a_record() {
-        assert_eq!(
+        assert!(matches!(
             classify_replay(
                 None,
                 BranchedLifecycleToolName::MergeApply,
                 DurableExecutionPolicy::JournaledEffect,
                 &json!([]),
             ),
-            Err(ReplayClassificationError::RequestMustBeObject)
-        );
+            Err(CanonicalJsonError::RequestMustBeObject)
+        ));
     }
 
     #[test]
     fn non_i_json_requests_are_rejected_before_dispatch_without_a_record() {
-        for (request, expected) in [
-            (
-                json!({"taskId": "TASK-137", "forbidden": "\u{fdd0}"}),
-                ReplayClassificationError::NonInteroperableString,
+        assert!(matches!(
+            classify_replay(
+                None,
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &json!({"taskId": "TASK-137", "forbidden": "\u{fdd0}"}),
             ),
-            (
-                json!({"taskId": "TASK-137", "tooLarge": 9_007_199_254_740_992_u64}),
-                ReplayClassificationError::NonInteroperableInteger,
+            Err(CanonicalJsonError::NonInteroperableString)
+        ));
+        assert!(matches!(
+            classify_replay(
+                None,
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &json!({"taskId": "TASK-137", "tooLarge": 9_007_199_254_740_992_u64}),
             ),
-        ] {
-            assert_eq!(
-                classify_replay(
-                    None,
-                    BranchedLifecycleToolName::MergeApply,
-                    DurableExecutionPolicy::JournaledEffect,
-                    &request,
-                ),
-                Err(expected)
-            );
-        }
+            Err(CanonicalJsonError::NonInteroperableInteger)
+        ));
     }
 
     fn durable_record(
@@ -439,7 +472,7 @@ mod tests {
 
     fn classify(
         record: Option<&OperationReplayView>,
-    ) -> Result<ReplayDisposition, ReplayClassificationError> {
+    ) -> Result<ReplayDisposition, CanonicalJsonError> {
         let request = request();
         classify_replay(
             record,
@@ -461,6 +494,9 @@ mod tests {
         );
 
         assert_eq!(record.state(), OperationState::Registered);
+        assert_eq!(record.operation_id(), &operation_id());
+        assert_eq!(record.tool_name(), BranchedLifecycleToolName::MergeApply);
+        assert_eq!(record.policy(), DurableExecutionPolicy::JournaledEffect);
     }
 
     #[test]
@@ -510,8 +546,9 @@ mod tests {
                     operation_input_digest(different_tool, different_policy, &request).unwrap();
 
                 assert_eq!(
-                    classify_replay(Some(&record), different_tool, different_policy, &request),
-                    Ok(ReplayDisposition::ReplayMismatch {
+                    classify_replay(Some(&record), different_tool, different_policy, &request)
+                        .unwrap(),
+                    ReplayDisposition::ReplayMismatch {
                         expected: operation_input_digest(
                             BranchedLifecycleToolName::MergeApply,
                             DurableExecutionPolicy::JournaledEffect,
@@ -519,7 +556,7 @@ mod tests {
                         )
                         .unwrap(),
                         observed,
-                    })
+                    }
                 );
             }
         }
@@ -558,15 +595,15 @@ mod tests {
                 &stored_request,
             ),
         ] {
-            assert_eq!(
+            assert!(matches!(
                 classify_replay(
                     Some(&record),
                     BranchedLifecycleToolName::MergeApply,
                     DurableExecutionPolicy::JournaledEffect,
                     &json!({"taskId": "TASK-137", "forbidden": "\u{fdd0}"}),
                 ),
-                Err(ReplayClassificationError::NonInteroperableString)
-            );
+                Err(CanonicalJsonError::NonInteroperableString)
+            ));
         }
     }
 
@@ -593,10 +630,11 @@ mod tests {
                 BranchedLifecycleToolName::MergeApply,
                 DurableExecutionPolicy::JournaledEffect,
                 &reordered,
-            ),
-            Ok(ReplayDisposition::ReplayTerminal {
+            )
+            .unwrap(),
+            ReplayDisposition::ReplayTerminal {
                 terminal_envelope_digest: digest('d'),
-            })
+            }
         );
 
         for changed in [
@@ -648,22 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn no_record_dispatches_a_new_operation() {
-        let request = request();
-        assert_eq!(
-            classify(None),
-            Ok(ReplayDisposition::DispatchNew {
-                canonical_input_digest: operation_input_digest(
-                    BranchedLifecycleToolName::MergeApply,
-                    DurableExecutionPolicy::JournaledEffect,
-                    &request,
-                )
-                .unwrap(),
-            })
-        );
-    }
-
-    #[test]
     fn input_mismatch_precedes_every_state_specific_disposition() {
         let incoming = json!({"taskId": "TASK-137", "approval": {"digest": "different"}});
         for record in [
@@ -688,8 +710,9 @@ mod tests {
                     BranchedLifecycleToolName::MergeApply,
                     DurableExecutionPolicy::JournaledEffect,
                     &incoming,
-                ),
-                Ok(ReplayDisposition::ReplayMismatch {
+                )
+                .unwrap(),
+                ReplayDisposition::ReplayMismatch {
                     expected: operation_input_digest(
                         BranchedLifecycleToolName::MergeApply,
                         DurableExecutionPolicy::JournaledEffect,
@@ -702,7 +725,7 @@ mod tests {
                         &incoming,
                     )
                     .unwrap(),
-                })
+                }
             );
         }
     }
@@ -712,10 +735,10 @@ mod tests {
         let record = record(OperationState::Terminal, None, Some(digest('d')), None);
 
         assert_eq!(
-            classify(Some(&record)),
-            Ok(ReplayDisposition::ReplayTerminal {
+            classify(Some(&record)).unwrap(),
+            ReplayDisposition::ReplayTerminal {
                 terminal_envelope_digest: digest('d'),
-            })
+            }
         );
     }
 
@@ -735,7 +758,10 @@ mod tests {
                 None,
             ),
         ] {
-            assert_eq!(classify(Some(&record)), Ok(ReplayDisposition::InProgress));
+            assert_eq!(
+                classify(Some(&record)).unwrap(),
+                ReplayDisposition::InProgress
+            );
         }
     }
 
@@ -755,12 +781,12 @@ mod tests {
         );
 
         assert_eq!(
-            classify(Some(&registered)),
-            Ok(ReplayDisposition::ResumeRegistered)
+            classify(Some(&registered)).unwrap(),
+            ReplayDisposition::ResumeRegistered
         );
         assert_eq!(
-            classify(Some(&intent_written)),
-            Ok(ReplayDisposition::ObserveIntentWritten)
+            classify(Some(&intent_written)).unwrap(),
+            ReplayDisposition::ObserveIntentWritten
         );
     }
 
@@ -769,15 +795,15 @@ mod tests {
         let record = record(OperationState::EffectUnknown, None, None, Some(digest('c')));
 
         assert_eq!(
-            classify(Some(&record)),
-            Ok(ReplayDisposition::RecoveryRequired {
+            classify(Some(&record)).unwrap(),
+            ReplayDisposition::RecoveryRequired {
                 recovery_digest: digest('c'),
-            })
+            }
         );
     }
 
     #[test]
-    fn replay_view_preserves_the_public_state_projection() {
+    fn replay_view_preserves_the_state_projection() {
         for (record, expected_state) in [
             (
                 record(
