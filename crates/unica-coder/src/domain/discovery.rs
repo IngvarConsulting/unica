@@ -447,9 +447,13 @@ pub(crate) struct AnalyzedFile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderCoverage {
+    /// Provider-eligible files observed for this exact query.
     pub files_seen: u32,
+    /// Exact identity count returned as inventory files or analyzed fact files.
     pub files_analyzed: u32,
+    /// Exact byte sum of returned inventory or analyzed-file identities.
     pub bytes_analyzed: u64,
+    /// Exact number of returned inventory files or full pre-truncation facts.
     pub records: u32,
 }
 
@@ -491,6 +495,9 @@ impl SourceInventory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FactBatch<T> {
     pub records: Vec<T>,
+    /// Exact analyzed identities, normalized to sorted path order before promotion.
+    pub analyzed_files: Vec<AnalyzedFile>,
+    /// Evidence-only identities whose paths occur in `records`.
     pub contributors: Vec<AnalyzedFile>,
     pub coverage: ProviderCoverage,
 }
@@ -499,6 +506,7 @@ impl<T> FactBatch<T> {
     pub(crate) fn empty() -> Self {
         Self {
             records: Vec::new(),
+            analyzed_files: Vec::new(),
             contributors: Vec::new(),
             coverage: ProviderCoverage::empty(),
         }
@@ -1014,6 +1022,14 @@ mod tests {
 
         let diagnostic = ProviderDiagnostic::non_material("optional", "optional check");
         assert_eq!(diagnostic.materiality, MissingCheckMateriality::NonMaterial);
+    }
+
+    #[test]
+    fn empty_fact_batch_has_distinct_analyzed_and_evidence_contributor_sets() {
+        let batch = FactBatch::<MetadataFact>::empty();
+
+        assert!(batch.analyzed_files.is_empty());
+        assert!(batch.contributors.is_empty());
     }
 
     #[test]

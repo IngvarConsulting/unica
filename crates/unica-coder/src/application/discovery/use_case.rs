@@ -271,6 +271,9 @@ fn handle_batch<T, F>(
     let contribution = match evaluated.data.as_mut() {
         Some(batch) => {
             match normalize_batch(batch, evaluated.kind, limits, inventory).and_then(|()| {
+                accumulator.validate_file_identities(&batch.analyzed_files)?;
+                accumulator.validate_file_identities(&batch.contributors)?;
+                let analyzed_files = batch.analyzed_files.clone();
                 let remaining = accumulator.remaining_evidence();
                 if batch.records.len() > remaining {
                     batch.records.truncate(remaining);
@@ -285,7 +288,9 @@ fn handle_batch<T, F>(
                         supplemental_diagnostic = Some(diagnostic);
                     }
                 }
-                build(batch)
+                let mut contribution = build(batch)?;
+                contribution.analyzed_files = analyzed_files;
+                Ok(contribution)
             }) {
                 Ok(contribution) => Some(contribution),
                 Err(diagnostic) => {
@@ -417,6 +422,14 @@ where
         batch.contributors.len(),
         "provider_contributor_count_overflow",
     )?;
+    let analyzed_count = checked_count(
+        batch.analyzed_files.len(),
+        "provider_analyzed_file_count_overflow",
+    )?;
+    let analyzed_bytes = checked_bytes(
+        batch.analyzed_files.iter().map(|item| item.bytes),
+        "provider_analyzed_byte_count_overflow",
+    )?;
     let contributor_bytes = checked_bytes(
         batch.contributors.iter().map(|item| item.bytes),
         "provider_contributor_byte_count_overflow",
@@ -425,6 +438,8 @@ where
         || batch.coverage.files_seen > limits.max_files
         || batch.coverage.files_analyzed > limits.max_files
         || batch.coverage.bytes_analyzed > limits.max_bytes
+        || analyzed_count > limits.max_files
+        || analyzed_bytes > limits.max_bytes
         || contributor_count > limits.max_files
         || contributor_bytes > limits.max_bytes
     {
@@ -441,6 +456,7 @@ where
             "provider returned a duplicate typed fact",
         ));
     }
+    normalize_analyzed_files(&mut batch.analyzed_files)?;
     batch.contributors.sort();
 
     let mut normalized: Vec<AnalyzedFile> = Vec::with_capacity(batch.contributors.len());
@@ -479,9 +495,11 @@ where
     }
     batch.contributors = normalized;
 
+    validate_contributors_are_analyzed(&batch.contributors, &batch.analyzed_files)?;
+
     if batch.coverage.records != record_count
-        || batch.coverage.files_analyzed < contributor_count
-        || batch.coverage.bytes_analyzed < contributor_bytes
+        || batch.coverage.files_analyzed != analyzed_count
+        || batch.coverage.bytes_analyzed != analyzed_bytes
         || batch.coverage.files_seen < batch.coverage.files_analyzed
     {
         return Err(provider_contract_diagnostic(
@@ -490,86 +508,102 @@ where
         ));
     }
     if let Some(inventory) = inventory {
-        validate_inventory_membership(&batch.contributors, inventory)?;
+        validate_inventory_membership(&batch.analyzed_files, inventory)?;
         let inventory_count =
             checked_count(inventory.files.len(), "provider_inventory_count_overflow")?;
-        let inventory_bytes = checked_bytes(
-            inventory.files.iter().map(|file| file.bytes.len() as u64),
-            "provider_inventory_byte_count_overflow",
-        )?;
-        if batch.coverage.files_seen > inventory_count
-            || batch.coverage.files_analyzed > inventory_count
-            || batch.coverage.bytes_analyzed > inventory_bytes
-        {
+        if batch.coverage.files_seen > inventory_count {
             return Err(provider_contract_diagnostic(
                 "provider_coverage_outside_inventory",
-                "inventory-backed provider coverage exceeds the supplied inventory",
+                "inventory-backed provider saw more eligible files than the supplied inventory contains",
             ));
         }
-        match outcome {
-            ProviderOutcomeKind::Complete => {
-                if batch.coverage.files_seen != inventory_count
-                    || batch.coverage.files_analyzed != inventory_count
-                    || batch.coverage.bytes_analyzed != inventory_bytes
-                {
-                    return Err(provider_contract_diagnostic(
-                        "complete_provider_coverage_mismatch",
-                        "complete inventory-backed provider must analyze the full supplied inventory",
-                    ));
-                }
-            }
-            ProviderOutcomeKind::Bounded => {
-                let demonstrates_bound = batch.coverage.files_seen < inventory_count
-                    || batch.coverage.files_analyzed < inventory_count
-                    || batch.coverage.bytes_analyzed < inventory_bytes
-                    || record_count == u32::from(limits.max_evidence)
-                    || batch.coverage.files_seen == limits.max_files
-                    || batch.coverage.files_analyzed == limits.max_files
-                    || batch.coverage.bytes_analyzed == limits.max_bytes;
-                if !demonstrates_bound {
-                    return Err(provider_contract_diagnostic(
-                        "unsubstantiated_bounded_provider",
-                        "bounded inventory-backed provider coverage does not demonstrate a reached limit",
-                    ));
-                }
-            }
-            ProviderOutcomeKind::Unavailable
-            | ProviderOutcomeKind::Failed
-            | ProviderOutcomeKind::ContractViolation => {
+    }
+    match outcome {
+        ProviderOutcomeKind::Complete => {
+            if batch.coverage.files_seen != batch.coverage.files_analyzed {
                 return Err(provider_contract_diagnostic(
-                    "invalid_provider_outcome_data",
-                    "non-data provider outcome unexpectedly carried data",
+                    "complete_provider_coverage_mismatch",
+                    "complete provider coverage must analyze every provider-eligible file seen",
                 ));
             }
         }
-    } else {
-        match outcome {
-            ProviderOutcomeKind::Complete | ProviderOutcomeKind::Bounded => {}
-            ProviderOutcomeKind::Unavailable
-            | ProviderOutcomeKind::Failed
-            | ProviderOutcomeKind::ContractViolation => {
-                return Err(provider_contract_diagnostic(
-                    "invalid_provider_outcome_data",
-                    "non-data provider outcome unexpectedly carried data",
-                ));
-            }
+        ProviderOutcomeKind::Bounded => {}
+        ProviderOutcomeKind::Unavailable
+        | ProviderOutcomeKind::Failed
+        | ProviderOutcomeKind::ContractViolation => {
+            return Err(provider_contract_diagnostic(
+                "invalid_provider_outcome_data",
+                "non-data provider outcome unexpectedly carried data",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_analyzed_files(
+    analyzed_files: &mut Vec<AnalyzedFile>,
+) -> Result<(), ProviderDiagnostic> {
+    analyzed_files.sort();
+    for files in analyzed_files.windows(2) {
+        if files[0].relative_path == files[1].relative_path {
+            let (code, message) = if files[0] == files[1] {
+                (
+                    "duplicate_analyzed_file_path",
+                    "provider returned a duplicate canonical analyzed-file path",
+                )
+            } else {
+                (
+                    "analyzed_file_path_conflict",
+                    "provider returned conflicting analyzed-file identities for one path",
+                )
+            };
+            return Err(provider_contract_diagnostic(code, message));
+        }
+    }
+    Ok(())
+}
+
+fn validate_contributors_are_analyzed(
+    contributors: &[AnalyzedFile],
+    analyzed_files: &[AnalyzedFile],
+) -> Result<(), ProviderDiagnostic> {
+    for contributor in contributors {
+        let found = analyzed_files
+            .binary_search_by(|file| file.relative_path.cmp(&contributor.relative_path));
+        let Ok(index) = found else {
+            return Err(provider_contract_diagnostic(
+                "contributor_not_analyzed",
+                "provider evidence contributor is absent from its analyzed-file set",
+            ));
+        };
+        let Some(analyzed) = analyzed_files.get(index) else {
+            return Err(provider_contract_diagnostic(
+                "analyzed_file_index_contract_violation",
+                "provider analyzed-file binary-search result was not addressable",
+            ));
+        };
+        if analyzed != contributor {
+            return Err(provider_contract_diagnostic(
+                "contributor_analyzed_identity_mismatch",
+                "provider evidence contributor differs from its analyzed-file identity",
+            ));
         }
     }
     Ok(())
 }
 
 fn validate_inventory_membership(
-    contributors: &[AnalyzedFile],
+    analyzed_files: &[AnalyzedFile],
     inventory: &SourceInventory,
 ) -> Result<(), ProviderDiagnostic> {
-    for contributor in contributors {
+    for analyzed in analyzed_files {
         let found = inventory
             .files
-            .binary_search_by(|file| file.relative_path.cmp(&contributor.relative_path));
+            .binary_search_by(|file| file.relative_path.cmp(&analyzed.relative_path));
         let Ok(index) = found else {
             return Err(provider_contract_diagnostic(
-                "contributor_outside_inventory",
-                "provider contributor is absent from the supplied source inventory",
+                "analyzed_file_outside_inventory",
+                "provider analyzed file is absent from the supplied source inventory",
             ));
         };
         let Some(file) = inventory.files.get(index) else {
@@ -578,10 +612,10 @@ fn validate_inventory_membership(
                 "source inventory binary-search result was not addressable",
             ));
         };
-        if file.analyzed_file() != *contributor {
+        if file.analyzed_file() != *analyzed {
             return Err(provider_contract_diagnostic(
-                "contributor_inventory_identity_mismatch",
-                "provider contributor hash or byte count differs from source inventory identity",
+                "analyzed_file_inventory_identity_mismatch",
+                "provider analyzed-file hash or byte count differs from source inventory identity",
             ));
         }
     }
@@ -614,6 +648,7 @@ fn provider_contract_diagnostic(code: &str, message: &str) -> ProviderDiagnostic
 
 #[derive(Default)]
 struct ProviderContribution {
+    analyzed_files: Vec<AnalyzedFile>,
     evidence: Vec<Evidence>,
     contributors: Vec<AnalyzedFile>,
     related: Vec<(ArtifactId, ArtifactKind, EvidenceId)>,
@@ -942,6 +977,7 @@ struct ReportAccumulator {
     warnings: Vec<DiscoveryWarning>,
     missing_checks: Vec<MissingCheck>,
     evidence: BTreeMap<EvidenceId, Evidence>,
+    known_files: BTreeMap<PortableRelativePath, AnalyzedFile>,
     contributors: BTreeMap<PortableRelativePath, AnalyzedFile>,
     related: BTreeMap<(ArtifactId, ArtifactKind), BTreeSet<EvidenceId>>,
     structural_edges:
@@ -968,6 +1004,22 @@ impl ReportAccumulator {
 
     fn remaining_evidence(&self) -> usize {
         self.max_evidence.saturating_sub(self.evidence.len())
+    }
+
+    fn validate_file_identities(&self, files: &[AnalyzedFile]) -> Result<(), ProviderDiagnostic> {
+        for file in files {
+            if self
+                .known_files
+                .get(&file.relative_path)
+                .is_some_and(|known| known != file)
+            {
+                return Err(provider_contract_diagnostic(
+                    "cross_provider_file_identity_conflict",
+                    "provider file identity conflicts with an already accepted provider",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn record_outcome<T>(&mut self, evaluated: &EvaluatedOutcome<T>) {
@@ -1004,16 +1056,8 @@ impl ReportAccumulator {
     }
 
     fn merge(&mut self, contribution: ProviderContribution) -> Result<(), ProviderDiagnostic> {
-        for contributor in &contribution.contributors {
-            if let Some(previous) = self.contributors.get(&contributor.relative_path) {
-                if previous != contributor {
-                    return Err(provider_contract_diagnostic(
-                        "cross_provider_contributor_conflict",
-                        "providers returned conflicting raw hashes for one evidence path",
-                    ));
-                }
-            }
-        }
+        self.validate_file_identities(&contribution.analyzed_files)?;
+        self.validate_file_identities(&contribution.contributors)?;
         let mut contribution_support = BTreeMap::new();
         for (artifact, state) in &contribution.support {
             if let Some(previous) = contribution_support.insert(artifact, state) {
@@ -1034,6 +1078,11 @@ impl ReportAccumulator {
             }
         }
 
+        for analyzed in contribution.analyzed_files {
+            self.known_files
+                .entry(analyzed.relative_path.clone())
+                .or_insert(analyzed);
+        }
         for contributor in contribution.contributors {
             self.contributors
                 .entry(contributor.relative_path.clone())
@@ -1405,10 +1454,6 @@ mod tests {
         fn with_inventory(mut self, files: Vec<SourceFile>) -> Self {
             let bytes = files.iter().map(|file| file.bytes.len() as u64).sum();
             let count = files.len() as u32;
-            set_complete_empty_coverage(&mut self.metadata, count, bytes);
-            set_complete_empty_coverage(&mut self.forms, count, bytes);
-            set_complete_empty_coverage(&mut self.lexical, count, bytes);
-            set_complete_empty_coverage(&mut self.support, count, bytes);
             self.inventory = ProviderOutcome::Complete(SourceInventory {
                 files,
                 coverage: ProviderCoverage::new(count, count, bytes, count),
@@ -1445,18 +1490,6 @@ mod tests {
                 definitions: self,
                 runtime_flow: self,
                 support_state: self,
-            }
-        }
-    }
-
-    fn set_complete_empty_coverage<T>(
-        outcome: &mut ProviderOutcome<FactBatch<T>>,
-        files_seen: u32,
-        bytes_analyzed: u64,
-    ) {
-        if let ProviderOutcome::Complete(batch) = outcome {
-            if batch.records.is_empty() && batch.contributors.is_empty() {
-                batch.coverage = ProviderCoverage::new(files_seen, files_seen, bytes_analyzed, 0);
             }
         }
     }
@@ -1629,6 +1662,7 @@ mod tests {
                 relation: StructuralRelationKind::Contains,
                 location: location(path, 7),
             }],
+            analyzed_files: vec![contributor(path, raw)],
             contributors: vec![contributor(path, raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
         }
@@ -1643,6 +1677,7 @@ mod tests {
                 matched_text: "Series".to_string(),
                 location: location("Documents/Purchase/Ext/ObjectModule.bsl", 1),
             }],
+            analyzed_files: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             contributors: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
         }
@@ -1659,6 +1694,7 @@ mod tests {
                 relation: RuntimeFlowRelationKind::Calls,
                 location: location("Documents/Purchase/Ext/ObjectModule.bsl", 11),
             }],
+            analyzed_files: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             contributors: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
         }
@@ -1683,6 +1719,7 @@ mod tests {
                     location: location("Ext/ParentConfigurations.bin", 1),
                 },
             ],
+            analyzed_files: vec![contributor("Ext/ParentConfigurations.bin", raw)],
             contributors: vec![contributor("Ext/ParentConfigurations.bin", raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 2),
         }
@@ -1785,10 +1822,8 @@ mod tests {
 
     #[test]
     fn provider_contracts_are_validated_before_global_budget_truncation() {
-        let mut metadata = series_metadata_at("Documents/Purchase.xml", b"metadata");
-        metadata.coverage = ProviderCoverage::new(2, 2, 15, 1);
-        let mut support = conflicting_support_states();
-        support.coverage = ProviderCoverage::new(2, 2, 15, 2);
+        let metadata = series_metadata_at("Documents/Purchase.xml", b"metadata");
+        let support = conflicting_support_states();
         let mut fake = FakePorts::complete_empty()
             .with_inventory(vec![
                 source_file("Documents/Purchase.xml", b"metadata"),
@@ -1858,22 +1893,23 @@ mod tests {
     }
 
     #[test]
-    fn malicious_complete_empty_batch_cannot_claim_zero_coverage_of_nonempty_inventory() {
+    fn complete_empty_batch_can_report_no_eligible_files_in_nonempty_inventory() {
         let mut fake = FakePorts::complete_empty()
             .with_inventory(vec![source_file("Documents/Purchase.xml", b"metadata")]);
         fake.metadata = ProviderOutcome::Complete(FactBatch::empty());
 
-        let report = execute(&fake, task_only()).expect("partial report");
+        let report = execute(&fake, task_only()).expect("complete report");
 
         assert!(report.provider_outcomes.iter().any(|item| {
             item.provider == ProviderKind::MetadataCatalog
-                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Complete
+                && item.coverage == ProviderCoverage::empty()
         }));
-        assert_eq!(report.status, DiscoveryStatus::Partial);
+        assert_eq!(report.status, DiscoveryStatus::Complete);
     }
 
     #[test]
-    fn complete_empty_batch_is_negative_after_accounting_for_the_full_inventory() {
+    fn complete_empty_batch_is_negative_for_its_explicit_empty_eligible_scope() {
         let fake = FakePorts::complete_empty()
             .with_inventory(vec![source_file("Documents/Purchase.xml", b"metadata")]);
 
@@ -1884,6 +1920,68 @@ mod tests {
         assert!(report.missing_checks.is_empty());
         assert!(report.provider_outcomes.iter().all(|item| {
             item.outcome == crate::domain::discovery::ProviderOutcomeKind::Complete
+        }));
+    }
+
+    #[test]
+    fn complete_provider_scope_does_not_include_ineligible_mixed_inventory_files() {
+        let metadata = b"metadata";
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![
+                source_file("Documents/Purchase.xml", metadata),
+                source_file("Documents/Purchase/Ext/ObjectModule.bsl", b"bsl"),
+                source_file("Ext/ParentConfigurations.bin", b"support"),
+            ])
+            .with_metadata(series_metadata_at("Documents/Purchase.xml", metadata));
+
+        let report = execute(&fake, task_only()).expect("complete mixed-inventory report");
+
+        assert_eq!(report.status, DiscoveryStatus::Complete);
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::MetadataCatalog
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Complete
+                && item.coverage == ProviderCoverage::new(1, 1, metadata.len() as u64, 1)
+        }));
+    }
+
+    #[test]
+    fn inventory_independent_complete_batch_requires_exact_local_coverage() {
+        let mut fake = FakePorts::complete_empty();
+        let mut runtime = typed_runtime_flow();
+        runtime.coverage.files_seen += 1;
+        fake.runtime_flow = ProviderOutcome::Complete(runtime);
+
+        let report = execute(&fake, task_only()).expect("partial report");
+
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::RuntimeFlow
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+        }));
+        assert!(report.runtime_flow_edges.is_empty());
+    }
+
+    #[test]
+    fn bounded_provider_scope_may_leave_seen_eligible_files_unanalyzed() {
+        let mut fake = FakePorts::complete_empty().with_inventory(vec![
+            source_file("Documents/Purchase.xml", b"metadata"),
+            source_file("Documents/Purchase/Ext/ObjectModule.bsl", b"bsl"),
+        ]);
+        fake.metadata = ProviderOutcome::Bounded {
+            data: FactBatch {
+                records: Vec::new(),
+                analyzed_files: Vec::new(),
+                contributors: Vec::new(),
+                coverage: ProviderCoverage::new(1, 0, 0, 0),
+            },
+            diagnostic: diagnostic("metadata_limit_reached"),
+        };
+
+        let report = execute(&fake, task_only()).expect("bounded report");
+
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::MetadataCatalog
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Bounded
+                && item.coverage == ProviderCoverage::new(1, 0, 0, 0)
         }));
     }
 
@@ -1930,12 +2028,82 @@ mod tests {
     }
 
     #[test]
-    fn contributor_must_match_inventory_path_hash_and_byte_identity() {
+    fn analyzed_file_paths_are_an_exact_identity_set() {
+        let duplicate = {
+            let mut batch = series_metadata_at("Documents/Purchase.xml", b"metadata");
+            batch.analyzed_files.push(batch.analyzed_files[0].clone());
+            batch
+        };
+        let conflict = {
+            let mut batch = series_metadata_at("Documents/Purchase.xml", b"metadata");
+            let mut conflicting = batch.analyzed_files[0].clone();
+            conflicting.raw_hash = ContentHash::sha256(b"different");
+            batch.analyzed_files.push(conflicting);
+            batch
+        };
+
+        for (batch, expected_code) in [
+            (duplicate, "duplicate_analyzed_file_path"),
+            (conflict, "analyzed_file_path_conflict"),
+        ] {
+            let report = execute(
+                &FakePorts::complete_empty()
+                    .with_inventory(vec![source_file("Documents/Purchase.xml", b"metadata")])
+                    .with_metadata(batch),
+                task_only(),
+            )
+            .expect("partial report");
+
+            assert!(report.provider_outcomes.iter().any(|item| {
+                item.provider == ProviderKind::MetadataCatalog
+                    && item.outcome
+                        == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+                    && item
+                        .diagnostic
+                        .as_ref()
+                        .is_some_and(|diagnostic| diagnostic.code == expected_code)
+            }));
+        }
+    }
+
+    #[test]
+    fn contributor_must_match_its_analyzed_file_identity() {
         let inventory = vec![source_file("Documents/Purchase.xml", b"metadata")];
         let mut wrong_hash = series_metadata_at("Documents/Purchase.xml", b"metadata");
         wrong_hash.contributors[0].raw_hash = ContentHash::sha256(b"different");
         let mut wrong_bytes = series_metadata_at("Documents/Purchase.xml", b"metadata");
         wrong_bytes.contributors[0].bytes += 1;
+
+        for batch in [wrong_hash, wrong_bytes] {
+            let report = execute(
+                &FakePorts::complete_empty()
+                    .with_inventory(inventory.clone())
+                    .with_metadata(batch),
+                task_only(),
+            )
+            .expect("partial report");
+
+            assert!(report.provider_outcomes.iter().any(|item| {
+                item.provider == ProviderKind::MetadataCatalog
+                    && item.outcome
+                        == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+            }));
+            assert!(report
+                .evidence
+                .iter()
+                .all(|item| item.provider != ProviderKind::MetadataCatalog));
+        }
+    }
+
+    #[test]
+    fn analyzed_file_must_match_inventory_path_hash_and_byte_identity() {
+        let inventory = vec![source_file("Documents/Purchase.xml", b"metadata")];
+        let mut wrong_hash = series_metadata_at("Documents/Purchase.xml", b"metadata");
+        wrong_hash.analyzed_files[0].raw_hash = ContentHash::sha256(b"different");
+        wrong_hash.contributors[0] = wrong_hash.analyzed_files[0].clone();
+        let mut wrong_bytes = series_metadata_at("Documents/Purchase.xml", b"metadata");
+        wrong_bytes.analyzed_files[0].bytes += 1;
+        wrong_bytes.contributors[0] = wrong_bytes.analyzed_files[0].clone();
         wrong_bytes.coverage.bytes_analyzed += 1;
         let outside_inventory = series_metadata_at("Documents/Outside.xml", b"metadata");
 
@@ -1985,6 +2153,9 @@ mod tests {
         let contributing = b"metadata-a";
         let no_match = b"metadata-b";
         let mut batch = series_metadata_at("Documents/Purchase.xml", contributing);
+        batch
+            .analyzed_files
+            .push(contributor("Documents/Receipt.xml", no_match));
         batch.coverage =
             ProviderCoverage::new(2, 2, (contributing.len() + no_match.len()) as u64, 1);
         let fake = FakePorts::complete_empty()
@@ -2131,6 +2302,7 @@ mod tests {
                     location: location(path, 2),
                 },
             ],
+            analyzed_files: vec![contributor(path, raw)],
             contributors: vec![contributor(path, raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 2),
         };
@@ -2159,6 +2331,10 @@ mod tests {
 
         let mut forward_batch = FactBatch {
             records: vec![first.records[0].clone(), second.records[0].clone()],
+            analyzed_files: vec![
+                first.contributors[0].clone(),
+                second.contributors[0].clone(),
+            ],
             contributors: vec![
                 first.contributors[0].clone(),
                 second.contributors[0].clone(),
@@ -2167,6 +2343,7 @@ mod tests {
         };
         let mut reverse_batch = forward_batch.clone();
         reverse_batch.records.reverse();
+        reverse_batch.analyzed_files.reverse();
         reverse_batch.contributors.reverse();
 
         let forward = execute(
@@ -2231,6 +2408,10 @@ mod tests {
         second.records[0].container = Some(artifact("Document.Receipt"));
         let batch = FactBatch {
             records: vec![first.records[0].clone(), second.records[0].clone()],
+            analyzed_files: vec![
+                first.contributors[0].clone(),
+                second.contributors[0].clone(),
+            ],
             contributors: vec![
                 first.contributors[0].clone(),
                 second.contributors[0].clone(),
@@ -2282,5 +2463,56 @@ mod tests {
                     .as_ref()
                     .is_some_and(|diagnostic| diagnostic.code == "max_evidence_reached")
         }));
+    }
+
+    #[test]
+    fn exhausted_budget_still_rejects_later_conflicting_analyzed_identity() {
+        let metadata = b"metadata";
+        let no_match = b"receipt-metadata";
+        let flow = b"CheckSeries();";
+        let conflicting = b"changed-receipt-metadata";
+        let flow_path = "Documents/Purchase/Ext/ObjectModule.bsl";
+        let runtime = FactBatch {
+            records: vec![RuntimeFlowFact {
+                source: series_id(),
+                source_kind: ArtifactKind::TabularSection,
+                target: artifact("Document.Purchase.Module.ObjectModule.Method.CheckSeries"),
+                target_kind: ArtifactKind::Method,
+                relation: RuntimeFlowRelationKind::Calls,
+                location: location(flow_path, 11),
+            }],
+            analyzed_files: vec![
+                contributor("Documents/Receipt.xml", conflicting),
+                contributor(flow_path, flow),
+            ],
+            contributors: vec![contributor(flow_path, flow)],
+            coverage: ProviderCoverage::new(2, 2, (conflicting.len() + flow.len()) as u64, 1),
+        };
+        let mut metadata_batch = series_metadata_at("Documents/Purchase.xml", metadata);
+        metadata_batch
+            .analyzed_files
+            .push(contributor("Documents/Receipt.xml", no_match));
+        metadata_batch.coverage =
+            ProviderCoverage::new(2, 2, (metadata.len() + no_match.len()) as u64, 1);
+        let mut fake = FakePorts::complete_empty()
+            .with_inventory(vec![
+                source_file("Documents/Purchase.xml", metadata),
+                source_file("Documents/Receipt.xml", no_match),
+            ])
+            .with_metadata(metadata_batch);
+        fake.runtime_flow = ProviderOutcome::Complete(runtime);
+
+        let report = execute(&fake, request_with_evidence_limit(1)).expect("partial report");
+
+        assert_eq!(report.evidence.len(), 1);
+        assert_eq!(report.evidence[0].provider, ProviderKind::MetadataCatalog);
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::RuntimeFlow
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+                && item.diagnostic.as_ref().is_some_and(|diagnostic| {
+                    diagnostic.code == "cross_provider_file_identity_conflict"
+                })
+        }));
+        assert!(report.runtime_flow_edges.is_empty());
     }
 }
