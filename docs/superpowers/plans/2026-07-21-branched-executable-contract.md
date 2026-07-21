@@ -95,6 +95,10 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   summaries, reasons, displays, property paths, diagnostics,
   `RepositoryVersion`, normalized UTC instants, positive generations, and
   bounded typed vectors.
+- [ ] Enforce `NormalizedUtcInstant` as validated uppercase RFC 3339 UTC with
+  terminal `Z`, canonical optional nanosecond fraction, and no offset/lowercase/
+  redundant-zero/leap-second spelling; serialization must preserve that one
+  digest-stable representation.
 - [ ] GREEN: add validated transparent newtypes and manual `JsonSchema`
   implementations where derive annotations cannot express runtime validation.
 - [ ] Add a recursive schema audit helper that rejects an object schema without

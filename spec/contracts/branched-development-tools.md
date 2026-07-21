@@ -136,6 +136,13 @@ The companion contract for general mutations is producer-neutral:
   `[a-z0-9][a-z0-9._-]{0,127}`.
 - `RepositoryVersion`: 1-128 printable non-control Unicode characters; it is
   opaque and never parsed as an integer by the domain.
+- `NormalizedUtcInstant`: one RFC 3339 UTC instant serialized with uppercase
+  `T` and terminal `Z` as `YYYY-MM-DDTHH:MM:SS[.fraction]Z`. The calendar and
+  clock value are parsed and validated. A zero fraction is omitted; a non-zero
+  fraction has 1-9 digits and no trailing zero. Numeric offsets (including
+  `+00:00`), lowercase `t`/`z`, spaces, redundant fractional zeroes, and leap
+  seconds are rejected rather than normalized after durable input is accepted.
+  This exact representation is used by canonical JSON and digest inputs.
 - `RepositoryHistoryCursor`: closed `{ throughVersion: RepositoryVersion,
   historyPrefixDigest: Sha256 }`; it is the global immutable history scan
   position and is never used by itself as evidence that task-relevant content
