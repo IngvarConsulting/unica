@@ -1,4 +1,4 @@
-use crate::domain::discovery::ArtifactId;
+use crate::domain::discovery::{normalize_discovery_identity, ArtifactId, MAX_ARTIFACT_ID_BYTES};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -20,7 +20,6 @@ const MAX_CONCEPTS: usize = 64;
 const MAX_SEARCH_TERMS: usize = 128;
 const MAX_OBJECTS: usize = 128;
 const MAX_ARRAY_TEXT_BYTES: usize = 256;
-const MAX_OBJECT_BYTES: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiscoveryMode {
@@ -290,10 +289,8 @@ fn optional_source_dir(
     };
     let text = value
         .as_str()
-        .ok_or_else(|| invalid_type("sourceDir", "string", value))?
-        .trim();
-    if text.is_empty() || text.starts_with(['/', '\\']) || text.contains(':') || text.contains('\0')
-    {
+        .ok_or_else(|| invalid_type("sourceDir", "string", value))?;
+    if text.is_empty() || text.starts_with(['/', '\\']) {
         return Err(invalid_source_dir());
     }
 
@@ -303,7 +300,8 @@ fn optional_source_dir(
         match component {
             "" | ".." => return Err(invalid_source_dir()),
             "." => {}
-            normal => normalized.push(normal),
+            normal if portable_source_component_is_valid(normal) => normalized.push(normal),
+            _ => return Err(invalid_source_dir()),
         }
     }
     let normalized = if normalized.is_empty() {
@@ -314,10 +312,38 @@ fn optional_source_dir(
     Ok(Some(PathBuf::from(normalized)))
 }
 
+fn portable_source_component_is_valid(component: &str) -> bool {
+    !component.ends_with(['.', ' '])
+        && !component.chars().any(|character| {
+            character.is_ascii_control()
+                || matches!(character, '<' | '>' | '"' | '|' | '?' | '*' | ':')
+        })
+        && !is_reserved_win32_device_component(component)
+}
+
+fn is_reserved_win32_device_component(component: &str) -> bool {
+    let basename = match component.split_once('.') {
+        Some((basename, _extension)) => basename,
+        None => component,
+    };
+    let basename = basename.to_ascii_uppercase();
+    if matches!(basename.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    ["COM", "LPT"].iter().any(|prefix| {
+        basename.strip_prefix(prefix).is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    })
+}
+
 fn invalid_source_dir() -> DiscoveryContractError {
     DiscoveryContractError::new(
         DiscoveryContractErrorCode::InvalidSourceDir,
-        "unica.project.discover `sourceDir` must be a non-empty contained relative path",
+        "unica.project.discover `sourceDir` must be a portable contained relative path without escaping or Win32-invalid components",
     )
 }
 
@@ -367,7 +393,7 @@ fn parse_artifact_array(
                 .as_str()
                 .ok_or_else(|| invalid_type("objects", "string array item", value))?
                 .trim();
-            validate_text_bytes("objects", text, MAX_OBJECT_BYTES)?;
+            validate_text_bytes("objects", text, MAX_ARTIFACT_ID_BYTES)?;
             let artifact = ArtifactId::parse(text).map_err(|error| {
                 DiscoveryContractError::new(
                     DiscoveryContractErrorCode::InvalidArtifactId,
@@ -404,10 +430,7 @@ fn reject_duplicate(
     text: &str,
     normalized: &mut BTreeSet<String>,
 ) -> Result<(), DiscoveryContractError> {
-    let identity = text
-        .chars()
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
+    let identity = normalize_discovery_identity(text);
     if !normalized.insert(identity) {
         return Err(DiscoveryContractError::new(
             DiscoveryContractErrorCode::DuplicateValue,
@@ -516,7 +539,7 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Runtime validation trims each concept, requires 1..=256 UTF-8 bytes, and enforces array uniqueness ignoring case. JSON Schema uniqueItems covers exact JSON values only."
+                    "description": "Runtime validation trims each concept, requires 1..=256 UTF-8 bytes, and defines duplicate identity by trim plus Rust Unicode lowercase mapping (char::to_lowercase). JSON Schema uniqueItems covers exact JSON values only; no general Unicode caseless or canonical-equivalence claim is made."
                 }
             },
             "cwd": {"type": "string"},
@@ -539,7 +562,7 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Runtime validation requires a canonical dot-separated artifact identifier with at least a kind and name, no empty dot segments or path separators, and 1..=1024 UTF-8 bytes; normalized identities must be unique ignoring case."
+                    "description": "Runtime validation requires a canonical dot-separated artifact identifier with at least a kind and name, no empty dot segments or path separators, and 1..=1024 UTF-8 bytes before and after trim plus Rust Unicode lowercase mapping (char::to_lowercase); normalized identities must be unique. No general Unicode caseless or canonical-equivalence claim is made."
                 }
             },
             "searchTerms": {
@@ -549,13 +572,13 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Runtime validation trims each search term, requires 1..=256 UTF-8 bytes, and enforces array uniqueness ignoring case. JSON Schema uniqueItems covers exact JSON values only."
+                    "description": "Runtime validation trims each search term, requires 1..=256 UTF-8 bytes, and defines duplicate identity by trim plus Rust Unicode lowercase mapping (char::to_lowercase). JSON Schema uniqueItems covers exact JSON values only; no general Unicode caseless or canonical-equivalence claim is made."
                 }
             },
             "sourceDir": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Runtime validation accepts a non-empty contained portable relative path using / or \\ separators, normalizes it to /, and rejects absolute, prefixed, escaping, or ambiguous forms."
+                "description": "Runtime validation accepts a non-empty contained portable relative path using / or \\ separators, normalizes it to /, and rejects absolute, prefixed, escaping, ambiguous, or Win32-invalid components including reserved device basenames."
             },
             "task": {
                 "type": "string",
@@ -679,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn arrays_are_trimmed_bounded_and_unique_ignoring_case() {
+    fn arrays_trim_and_reject_rust_lowercase_identity_duplicates() {
         let request = parse(json!({
             "mode": "explore",
             "task": "x",
@@ -699,6 +722,21 @@ mod tests {
             } else {
                 json!(["Duplicate", " duplicate "])
             };
+            let error = parse(payload).unwrap_err();
+            assert_eq!(
+                error.code(),
+                DiscoveryContractErrorCode::DuplicateValue,
+                "{field}: {error}"
+            );
+        }
+
+        for (field, values) in [
+            ("concepts", json!(["Series", " series "])),
+            ("searchTerms", json!(["СЕРИИ", "серии"])),
+            ("objects", json!(["Document.Order", "document.order"])),
+        ] {
+            let mut payload = valid_request();
+            payload[field] = values;
             let error = parse(payload).unwrap_err();
             assert_eq!(
                 error.code(),
@@ -748,6 +786,13 @@ mod tests {
             error.code(),
             DiscoveryContractErrorCode::TextBytesOutOfRange
         );
+
+        let raw_at_limit = format!("K.{}", "\u{0130}".repeat(511));
+        assert_eq!(raw_at_limit.len(), 1_024);
+        let mut normalized_over_limit = valid_request();
+        normalized_over_limit["objects"] = json!([raw_at_limit]);
+        let error = parse(normalized_over_limit).unwrap_err();
+        assert_eq!(error.code(), DiscoveryContractErrorCode::InvalidArtifactId);
     }
 
     #[test]
@@ -810,6 +855,22 @@ mod tests {
             "src\\\\ambiguous",
             "src/",
             "src:",
+            "safe/.. ",
+            "dir.",
+            "dir ",
+            "CON",
+            "con.txt",
+            "NUL.txt",
+            "COM1.ext",
+            "lpt9.log",
+            "COM¹.txt",
+            "safe/control\u{001f}char",
+            "safe/less<than",
+            "safe/greater>than",
+            "safe/quote\"name",
+            "safe/pipe|name",
+            "safe/question?name",
+            "safe/star*name",
         ] {
             let mut payload = valid_request();
             payload["sourceDir"] = json!(source_dir);
@@ -960,8 +1021,14 @@ mod tests {
         let properties = schema["properties"].as_object().expect("properties object");
         for (field, required_words) in [
             ("task", &["Runtime validation", "UTF-8 bytes"][..]),
-            ("concepts", &["Runtime validation", "ignoring case"]),
-            ("searchTerms", &["Runtime validation", "ignoring case"]),
+            (
+                "concepts",
+                &["Runtime validation", "Rust Unicode lowercase mapping"],
+            ),
+            (
+                "searchTerms",
+                &["Runtime validation", "Rust Unicode lowercase mapping"],
+            ),
             (
                 "objects",
                 &[
@@ -969,9 +1036,10 @@ mod tests {
                     "kind and name",
                     "empty dot segments",
                     "path separators",
+                    "Rust Unicode lowercase mapping",
                 ],
             ),
-            ("sourceDir", &["Runtime validation", "contained"]),
+            ("sourceDir", &["Runtime validation", "contained", "Win32"]),
         ] {
             let description = if matches!(field, "concepts" | "searchTerms" | "objects") {
                 properties[field]["items"]["description"].as_str()
