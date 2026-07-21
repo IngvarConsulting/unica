@@ -182,8 +182,11 @@ The companion contract for general mutations is producer-neutral:
   contentDeltaDigest: Sha256,
   supportTransitionsDigest: CanonicalEmptyDeltaDigest,
   supportGraphUnchanged: true, classificationDigest: Sha256 }`.
-  `classificationDigest ==
-  sha256(canonical(evidence-without-classificationDigest))`. This is the
+  `RoutineRepositoryVersionClassificationEvidenceDigestRecord` is that exact
+  closed record with only top-level `classificationDigest` removed, preserving
+  the required explicit nullable actor. `classificationDigest ==
+  sha256(canonical(RoutineRepositoryVersionClassificationEvidenceDigestRecord))`.
+  This is the
   capability-proven source for a routine partition entry when no overlapping
   `SupportPrerequisiteVersionObservation` exists, including an unrelated
   post-commit interleaving; nullable actor evidence remains an explicit `null`.
@@ -197,8 +200,10 @@ The companion contract for general mutations is producer-neutral:
   validationInputsUnaffected: true, rootUnchanged: true,
   lockedTargetsUnchanged: true, blocksApprovedDeletion: false,
   evidenceDigest }`. All seven safety literals are derived from the complete
-  capability-proven version delta/reference/validation-input scan; `evidenceDigest ==
-  sha256(canonical(evidence-without-evidenceDigest))`.
+  capability-proven version delta/reference/validation-input scan.
+  `NonConflictingConcurrentEvidenceDigestRecord` is that exact closed record
+  with only top-level `evidenceDigest` removed; `evidenceDigest ==
+  sha256(canonical(NonConflictingConcurrentEvidenceDigestRecord))`.
 - `RepositoryHistorySourceEvidenceRef`: closed `{
   sourceKind: contentAddressed, evidenceKind: routineClassification |
   supportPrerequisiteObservation | nonConflictingConcurrent,
@@ -220,9 +225,56 @@ The companion contract for general mutations is producer-neutral:
   unique and ordered by evidence-kind declaration order. Each digest is a
   generated and committed contract artifact for, respectively, the exact typed
   evidence `$defs` schema, its exact digest-input-record schema, the typed loader
-  revision, and the classification/semantic-mapping revision. Arbitrary version
-  strings, function pointers, debug names, or an invented profile/platform
-  capability row are forbidden. When a loader's evidence genuinely depends on
+  revision, and the classification/semantic-mapping revision. The two schema
+  digests are `sha256(canonical(schema))` over the exact standalone Draft
+  2020-12 document emitted by the contract schema factory for the named evidence
+  or digest-record type, including its `$schema`, title, and every reachable
+  `$defs`, with no stripping, rewriting, or second normalization pass. Their
+  lowercase digest constants are committed beside recomputation tests, so a
+  schema-generator or reachable-definition change fails review rather than
+  silently changing the active registry.
+
+  `EvidenceLoaderRevisionDigestRecord` is the closed internal canonical record
+  `{ loaderKind: contentAddressedTypedEvidence, evidenceKind,
+  validationChecks: [lookupByEvidenceKindAndDigest, requireSingleRecord,
+  strictTypedDecode, requireCanonicalIJson, projectNamedDigestRecord,
+  recomputeAndMatchDigest] }`; the tuple order is exact and its tail is closed.
+  `loaderRevisionDigest ==
+  sha256(canonical(EvidenceLoaderRevisionDigestRecord))`.
+  `EvidenceClassificationMapperRevisionDigestRecord` is the closed tagged
+  internal record `{ mapperKind: repositoryHistoryPartitionClassification,
+  evidenceKind, validationChecks: [repositoryVersionMatch,
+  sourceClassificationMatch, semanticDeltaProjectionMatch], mappings }`, where
+  every mapping row is the closed `{ sourceCase, partitionClassification,
+  rootDeltaDigestProjection, contentDeltaDigestProjection,
+  classificationDigestProjection,
+  externalSupportDisjointnessDigestProjection,
+  correctiveInstructionDigestProjection,
+  nonConflictingConcurrentEvidenceDigestProjection }` record. Task 7 has
+  exactly two physical leaves with fixed-tuple `mappings` and no open tail:
+
+  - `routineClassification` has exactly the `unrelated` row followed by the
+    `relevant` row. Their `partitionClassification` values are respectively
+    `unrelatedRoutine` and `relevantRoutine`; both rows have literal projections
+    `copyRootDeltaDigest`, `copyContentDeltaDigest`,
+    `copyClassificationDigest`, `explicitNull`, `explicitNull`, and
+    `explicitNull` in the six projection fields above;
+  - `nonConflictingConcurrent` has exactly one row with `sourceCase:
+    harmlessNonBlockingReferenceExpansion`, `partitionClassification:
+    nonConflictingConcurrent`, and literal projections `explicitNull`,
+    `explicitNull`, `explicitNull`, `explicitNull`, `explicitNull`, and
+    `copyEvidenceDigest`.
+
+  Those named member strings and literal values are the canonical preimage;
+  `null` is not used inside the descriptor row because `explicitNull` describes
+  the mapper's output policy.
+  `classificationMapperRevisionDigest ==
+  sha256(canonical(EvidenceClassificationMapperRevisionDigestRecord))`.
+  These descriptor records and their lowercase digest constants are committed
+  and recomputed by tests; changing a check, legal mapping, mapping order, or
+  digest-slot projection changes the registry. They contain no arbitrary version
+  strings, source paths, function pointers, debug names, or invented
+  profile/platform capability row. When a loader's evidence genuinely depends on
   an existing authoritative platform capability row, that row remains inside
   the typed evidence itself; the code registry does not manufacture a generic
   loader `CapabilityRowId`.
@@ -423,11 +475,16 @@ The companion contract for general mutations is producer-neutral:
 - `DeferredRepositoryAdvanceConsumptionReceipt`: closed `{
   consumptionReceiptId: UnicaId, terminalReceiptId: UnicaId,
   advanceObservationDigest: Sha256, routineUpdateReceiptId: UnicaId,
-  resolvedHistoryPartitionDigest: Sha256, resultingPhase, receiptDigest }`.
+  resolvedHistoryPartitionDigest: Sha256, resultingPhase: TaskPhase,
+  receiptDigest }`.
   It is written atomically only after the approved routine apply reproduces the
   deferred observation, completes the no-force selective refresh, and verifies
   its postcondition. `receiptDigest ==
-  sha256(canonical(receipt-without-receiptDigest))`.
+  sha256(canonical(receipt-without-receiptDigest))`. Task 7 closes and hashes
+  the phase type but does not guess a narrower mode-specific set. The later
+  enclosing `RepositoryUpdateData` constructor requires this value to be
+  byte-identical to its own validated `resultingPhase` and enforces that update
+  mode's phase semantics.
 - `SupportGateHistoryEvidence`: closed `{ gateObservedCursor:
   RepositoryHistoryCursor, classifiedThroughCursor: RepositoryHistoryCursor,
   partition: RepositoryHistoryPartition,
@@ -641,7 +698,13 @@ The companion contract for general mutations is producer-neutral:
   Every production JSON-derived contract digest uses the same typed,
   fail-closed JCS implementation; canonicalization/validation failure is an
   error and no contract type may fall back to ordinary Serde text, debug output,
-  a local hasher, or a second canonicalizer.
+  a local hasher, or a second canonicalizer. RFC 8785 serializer conformance is
+  tested separately with the standard number-format vectors, including
+  `1E30 -> 1e+30`. The contract-digest helper intentionally rejects that input:
+  this contract's stricter I-JSON profile rejects every integer-valued number
+  whose magnitude exceeds `2^53 - 1`, regardless of exponent spelling. A raw
+  canonicalizer vector therefore proves formatting only and does not claim that
+  the same value is admissible contract data.
 - `OperationInputDigestRecord`: closed `{ digestKind:
   branchedOperationInputV1, toolName: TaskOperationToolName,
   executionPolicy: DurableExecutionPolicy, request }`, where `request` is the complete

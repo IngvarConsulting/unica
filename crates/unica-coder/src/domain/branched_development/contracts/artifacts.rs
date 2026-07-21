@@ -1,4 +1,6 @@
+use super::scalars::{EmptyOrName, Name};
 use super::schema::one_of_schema;
+use crate::domain::branched_development::{MetadataObjectId, ProjectId, UnicaId};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -32,6 +34,37 @@ pub(crate) enum ArtifactKind {
 pub(crate) enum AcceptedArtifactKind {
     ConfigurationDistribution,
     OrdinaryConfiguration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConfigurationIdentity {
+    metadata_uuid: MetadataObjectId,
+    name: Name,
+    vendor: EmptyOrName,
+    version: EmptyOrName,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum OwnedTargetRole {
+    InstanceRoot,
+    TaskInfobase,
+    TaskWorkspace,
+    Probe,
+    Sandbox,
+    Artifact,
+    Quarantine,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OwnedTargetLocator {
+    project_id: ProjectId,
+    instance_id: UnicaId,
+    role: OwnedTargetRole,
 }
 
 macro_rules! string_literal {
@@ -117,8 +150,15 @@ impl JsonSchema for ArtifactKindRole {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcceptedArtifactKind, ArtifactKind, ArtifactKindRole, ArtifactRole};
-    use crate::domain::branched_development::contracts::schema::audit_json_schema;
+    use super::{
+        AcceptedArtifactKind, ArtifactKind, ArtifactKindRole, ArtifactRole, ConfigurationIdentity,
+        OwnedTargetLocator,
+    };
+    use crate::domain::branched_development::contracts::schema::{
+        audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
+        is_normalized_utc_instant, I_JSON_LF_TEXT_FORMAT, I_JSON_SINGLE_LINE_TEXT_FORMAT,
+        NORMALIZED_UTC_INSTANT_FORMAT,
+    };
     use schemars::{schema_for, JsonSchema};
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
@@ -169,6 +209,11 @@ mod tests {
         let schema = serde_json::to_value(schema_for!(T)).unwrap();
         jsonschema::options()
             .with_draft(jsonschema::Draft::Draft202012)
+            .with_format(I_JSON_SINGLE_LINE_TEXT_FORMAT, is_i_json_single_line_text)
+            .with_format(I_JSON_LF_TEXT_FORMAT, is_i_json_lf_text)
+            .with_format(NORMALIZED_UTC_INSTANT_FORMAT, is_normalized_utc_instant)
+            .should_validate_formats(true)
+            .should_ignore_unknown_formats(false)
             .build(&schema)
             .expect("artifact vocabulary schema must compile")
             .is_valid(value)
@@ -292,5 +337,111 @@ mod tests {
                 "artifact schema accepted {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn configuration_identity_requires_exact_bounded_identity_fields() {
+        let valid = json!({
+            "metadataUuid": "123e4567-e89b-12d3-a456-426614174000",
+            "name": "Demo configuration",
+            "vendor": "",
+            "version": "8.3.27"
+        });
+        accepts::<ConfigurationIdentity>(valid.clone());
+        assert!(schema_accepts::<ConfigurationIdentity>(&valid));
+
+        for field in ["vendor", "version"] {
+            let mut boundary = valid.clone();
+            boundary[field] = json!("界".repeat(256));
+            accepts::<ConfigurationIdentity>(boundary.clone());
+            assert!(schema_accepts::<ConfigurationIdentity>(&boundary));
+        }
+
+        let mut invalid_values = vec![
+            json!({
+                "metadataUuid": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Demo configuration",
+                "version": "8.3.27"
+            }),
+            json!({
+                "metadataUuid": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Demo configuration",
+                "vendor": null,
+                "version": "8.3.27"
+            }),
+            json!({
+                "metadataUuid": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Demo configuration",
+                "vendor": "vendor\nname",
+                "version": "8.3.27"
+            }),
+            json!({
+                "metadataUuid": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Demo configuration",
+                "vendor": "",
+                "version": "8.3.27",
+                "path": "/forbidden"
+            }),
+        ];
+        for field in ["vendor", "version"] {
+            let mut omitted = valid.clone();
+            omitted.as_object_mut().unwrap().remove(field);
+            invalid_values.push(omitted);
+
+            let mut null = valid.clone();
+            null[field] = Value::Null;
+            invalid_values.push(null);
+
+            let mut too_long = valid.clone();
+            too_long[field] = json!("界".repeat(257));
+            invalid_values.push(too_long);
+
+            let mut control = valid.clone();
+            control[field] = json!("invalid\tvalue");
+            invalid_values.push(control);
+        }
+        for invalid in invalid_values {
+            rejects::<ConfigurationIdentity>(invalid.clone());
+            assert!(!schema_accepts::<ConfigurationIdentity>(&invalid));
+        }
+        assert_schema_is_closed::<ConfigurationIdentity>();
+    }
+
+    #[test]
+    fn owned_target_locator_is_logical_and_has_the_exact_roles() {
+        for role in [
+            "instanceRoot",
+            "taskInfobase",
+            "taskWorkspace",
+            "probe",
+            "sandbox",
+            "artifact",
+            "quarantine",
+        ] {
+            let locator = json!({
+                "projectId": "123e4567-e89b-12d3-a456-426614174000",
+                "instanceId": "123e4567-e89b-12d3-a456-426614174001",
+                "role": role
+            });
+            accepts::<OwnedTargetLocator>(locator.clone());
+            assert!(schema_accepts::<OwnedTargetLocator>(&locator));
+        }
+        for invalid in [
+            json!({
+                "projectId": "123e4567-e89b-12d3-a456-426614174000",
+                "instanceId": "123e4567-e89b-12d3-a456-426614174001",
+                "role": "stateRoot"
+            }),
+            json!({
+                "projectId": "123e4567-e89b-12d3-a456-426614174000",
+                "instanceId": "123e4567-e89b-12d3-a456-426614174001",
+                "role": "artifact",
+                "path": "/forbidden"
+            }),
+        ] {
+            rejects::<OwnedTargetLocator>(invalid.clone());
+            assert!(!schema_accepts::<OwnedTargetLocator>(&invalid));
+        }
+        assert_schema_is_closed::<OwnedTargetLocator>();
     }
 }

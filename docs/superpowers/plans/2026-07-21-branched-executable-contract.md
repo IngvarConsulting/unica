@@ -357,10 +357,13 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/artifacts.rs`
 
-- [ ] RED: repository cursor/history/partition, target identity/state/display,
+- [x] RED: repository cursor/history/partition, target identity/state/display,
   planned change, lock/update plan/proof, gate-history, post-merge guard, deferred
   advance/consumption, artifact/configuration identity and locator fixtures;
-  include exact RFC 8785 vectors, invalid I-JSON inputs, Task 7-owned
+  include exact RFC 8785 serializer vectors and invalid I-JSON inputs. Keep the
+  raw serializer assertion `1E30 -> 1e+30` separate from the typed contract
+  helper assertion that rejects that integer-valued number above `2^53 - 1`;
+  do not claim the raw RFC vector is admissible contract data. Cover Task 7-owned
   `routineClassification`/`nonConflictingConcurrent` semantic-delta mappings,
   each named evidence digest record, the exact `CanonicalEmptyDeltaDigest`
   literal, equal-endpoint/empty-entry partition fixtures plus both invalid
@@ -374,26 +377,40 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   Cover registry-entry missing/extra/duplicate/order and every
   evidence-schema/digest-record-schema/loader-revision/mapper-revision digest
   substitution.
-- [ ] Define `SupportMissingEvidenceKind` first in `support.rs`, re-export it
+- [x] Freeze the Draft 2020-12 structural-superset boundary. Schema tests reject
+  open/unknown fields, wrong tags, missing required or required-nullable keys,
+  wrong nullability, wrong physical leaves, scalar bounds, and every exact tuple
+  error. Serde/private constructors/resolvers additionally reject semantic-key
+  order/uniqueness, endpoint/emptiness and adapter-order disagreement, digest
+  recomputation failures, registry/index row misalignment, source-precedence and
+  nested-ref disagreement, plan/proof byte inequality, and non-reverse release.
+  Enumerate these unavoidable relational schema supersets in tests instead of
+  claiming JSON Schema compares sibling values or hashes preimages.
+- [x] Define `SupportMissingEvidenceKind` first in `support.rs`, re-export it
   through `contracts/mod.rs`, and reuse it from repository and later support
   records. Do not copy the literal vocabulary into either consumer.
-- [ ] Encode every tagged identity/state variant and optional-field matrix; root
+- [x] Encode every tagged identity/state variant and optional-field matrix; root
   identity can never be absent and display text never substitutes for identity.
   Keep `RepositoryTargetKind` distinct from merge/apply `TargetKind`, enforce
   the exact target/reason order, and enforce the 0-or-1/null and scalar bounds
   of owner, actor, vendor, and version fields.
-- [ ] Reuse Task 6's `RequiredNullable<T>` and shared required deserializer for
+- [x] Reuse Task 6's `RequiredNullable<T>` and shared required deserializer for
   every Task 7 required-nullable member. Each physical field carries the
   field-level `deserialize_with`, the containing closed record requires the key,
   and omission remains distinct from explicit `null`; do not redeclare the
   wrapper or add `Option<T>` defaults/skip attributes.
-- [ ] Represent lineage with typed IDs/digests, not recursive object graphs.
-- [ ] Define Task 7's reusable `CanonicalEmptyDeltaDigest` value type/constant
+- [x] Represent lineage with typed IDs/digests, not recursive object graphs.
+- [x] Define Task 7's reusable `CanonicalEmptyDeltaDigest` value type/constant
   as exactly `sha256(canonical([]))`; its schema and deserializer accept only
   that one lowercase digest. Task 8 imports it for positive support-version
   observations rather than accepting an arbitrary `Sha256Digest` or recomputing
   a second constant.
-- [ ] Treat `RepositoryVersion` as opaque. Ordinary Serde produces only the
+- [x] Type `DeferredRepositoryAdvanceConsumptionReceipt.resultingPhase` as the
+  closed `TaskPhase` and include it in the named receipt digest record. Task 7
+  does not invent a narrower standalone phase set; the later enclosing
+  `RepositoryUpdateData` constructor must bind it byte-for-byte to its validated
+  result phase and enforce the selected update mode's phase rules.
+- [x] Treat `RepositoryVersion` as opaque. Ordinary Serde produces only the
   closed `UnvalidatedRepositoryHistoryPartition`, which has no domain methods.
   A capability-backed `RepositoryHistoryOrderResolver` with internal typed
   order evidence accepts an empty partition if and only if its endpoints are
@@ -403,19 +420,31 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   `ValidatedRepositoryHistoryPartition`; numeric/lexical version inference is
   forbidden. Static assertions/compile-fail tests prove the validated type has
   no `Deserialize` implementation and no domain API accepts the unvalidated DTO.
-- [ ] Add validated collection newtypes/private constructors for target states,
+- [x] Add validated collection newtypes/private constructors for target states,
   planned changes, lock targets/reasons, and acquire/release sequences. Their
-  Serde paths enforce self-contained canonical order, uniqueness, non-empty, and
-  reverse constraints; partition order/coverage instead requires the resolver
-  above. A bare length-bounded `BoundedVec` must not bypass either path.
-- [ ] Extend the existing production JCS implementation in the parent
+  Serde paths enforce each applicable self-contained invariant: canonical order
+  and uniqueness for every identity collection; non-empty canonical reason
+  lists and completed lock/acquire/release sequences; and exact reverse release
+  through the enclosing constructor. Target-state and planned-change lists may
+  be empty, including the declared cancellation case. Partition order/coverage
+  instead requires the resolver above. A bare length-bounded `BoundedVec` must
+  not bypass either path.
+- [x] Extend the existing production JCS implementation in the parent
   `canonical_json.rs` with one typed, `pub(super)` fail-closed digest helper for
   sibling contract modules; do not create a second contract-local JCS path. It
+  accepts only types with an explicit internal `ContractDigestRecord` marker
+  implementation; arbitrary `Serialize`/`serde_json::Value` is not a production
+  call path. Private record fields and validated constructors provide the typed
+  schema boundary. Before hashing, the helper must both exercise the canonical
+  serializer on the original value (so NaN/infinity cannot become `null`) and
+  perform duplicate-preserving serialization followed by the shared strict
+  parser (so duplicate names and unsafe integers cannot be coalesced). It hashes
+  only the one canonical byte sequence after both views agree. It otherwise
   accepts only schema-valid I-JSON, emits RFC 8785 UTF-8 bytes, rejects duplicate
   names/lone surrogates/non-finite or out-of-range numbers and every
   canonicalization failure, and has no `serde_json::to_string`, debug-format,
   local `sha2`, or fallback hashing path. Task 8 reuses this helper.
-- [ ] Add constructor/domain checks for the exact semantic-delta input/null
+- [x] Add constructor/domain checks for the exact semantic-delta input/null
   mapping and the named canonical digest records for gate-history, post-merge
   guard, selective update proof, and original-clean refresh proof. Every
   non-task-commit entry requires the closed content-addressed
@@ -423,7 +452,15 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   `EvidenceSourceIndexProof` for the same version and active registry digest.
   Implement the named closed registry entry and `{ entries }` digest record with
   exact evidence/digest-record schema digests plus committed typed loader and
-  classification-mapper revision digests; entries are non-empty, unique, and in
+  classification-mapper revision digests. Schema-digest preimages are the exact
+  standalone Draft 2020-12 documents, including `$schema`, title, and reachable
+  `$defs`, with no postprocessing. Loader revision preimages are the closed
+  `EvidenceLoaderRevisionDigestRecord` with the exact six validation checks;
+  mapper revision preimages are the closed physical
+  `EvidenceClassificationMapperRevisionDigestRecord` leaves with exact ordered
+  source-to-partition rows and all six semantic digest-slot projections. Commit
+  every lowercase digest constant and recompute it from its named preimage in
+  tests. Entries are non-empty, unique, and in
   evidence-kind declaration order. Do not use arbitrary version strings,
   function/debug identities, or a synthetic `CapabilityRowId`. Task 7 registers
   only routine-classification and non-conflicting-concurrent loaders; each
@@ -435,13 +472,13 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   sources, incomplete/stale index proofs, ref substitution, semantic mappings,
   order evidence, or digests produce no validated partition. Late audit performs
   the same lookup and index validation again.
-- [ ] Keep `taskCommit` in the wire classification enum but make Task 7's generic
+- [x] Keep `taskCommit` in the wire classification enum but make Task 7's generic
   validated constructor reject it. Do not introduce a placeholder committed-
   object type, trust its opaque semantic digest, or expose a public bypass; Task
   13 owns the enclosing validation.
-- [ ] Keep `ArtifactKind` as classification output and prove CFU/invalid
+- [x] Keep `ArtifactKind` as classification output and prove CFU/invalid
   artifacts are never accepted by a selectable workflow input kind/role.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 8: Support evidence, authorization, and instructions
 

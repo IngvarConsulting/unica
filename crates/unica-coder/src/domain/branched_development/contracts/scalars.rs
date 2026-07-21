@@ -126,6 +126,22 @@ bounded_text!(Diagnostic, "redacted diagnostic", 0, 8192, true);
 bounded_text!(OriginalProjectCwd, "original project cwd", 1, 4096, false);
 bounded_text!(LocalProfileName, "local profile name", 1, 256, false);
 bounded_text!(RepositoryVersion, "repository version", 1, 128, false);
+bounded_text!(EmptyOrName, "empty-or-name value", 0, 256, false);
+bounded_text!(RepositoryUsername, "repository username", 1, 256, false);
+bounded_text!(
+    RepositoryIdentityComponent,
+    "repository identity component",
+    1,
+    256,
+    false
+);
+bounded_text!(
+    RepositoryTargetDisplay,
+    "repository target display",
+    1,
+    512,
+    false
+);
 
 /// A required object member whose value is either a typed value or JSON null.
 ///

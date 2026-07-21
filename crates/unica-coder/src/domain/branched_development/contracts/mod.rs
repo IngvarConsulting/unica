@@ -9,6 +9,8 @@ pub(crate) mod errors;
 #[allow(dead_code)]
 pub(crate) mod registry;
 #[allow(dead_code)]
+pub(crate) mod repository;
+#[allow(dead_code)]
 pub(crate) mod requests;
 #[allow(dead_code)]
 pub(crate) mod scalars;
@@ -16,6 +18,10 @@ pub(crate) mod scalars;
 pub(crate) mod schema;
 #[allow(dead_code)]
 pub(crate) mod selectors;
+#[allow(dead_code)]
+pub(crate) mod support;
+
+pub(crate) use support::SupportMissingEvidenceKind;
 
 #[cfg(test)]
 mod tests {

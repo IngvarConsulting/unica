@@ -7,6 +7,19 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
+pub(super) mod contract_digest_record_sealed {
+    pub trait Sealed {}
+}
+
+/// Marker for an exact closed contract digest preimage.
+///
+/// Only sibling modules in the branched-development domain can implement the
+/// sealed marker, so production callers cannot hash arbitrary JSON values.
+pub(super) trait ContractDigestRecord:
+    Serialize + contract_digest_record_sealed::Sealed
+{
+}
+
 const OPERATION_INPUT_DIGEST_KIND: &str = "branchedOperationInputV1";
 
 #[derive(Debug)]
@@ -14,6 +27,8 @@ pub(super) enum CanonicalJsonError {
     RequestMustBeObject,
     NonInteroperableInteger,
     NonInteroperableString,
+    RetainedEncodingMismatch,
+    TypedRoundTripMismatch,
     Canonicalization(serde_json::Error),
 }
 
@@ -29,6 +44,11 @@ impl fmt::Display for CanonicalJsonError {
             Self::NonInteroperableString => {
                 formatter.write_str("string contains an I-JSON forbidden Unicode scalar")
             }
+            Self::RetainedEncodingMismatch => formatter.write_str(
+                "retained contract bytes are not the exact canonical encoding of the typed record",
+            ),
+            Self::TypedRoundTripMismatch => formatter
+                .write_str("typed JSON serialization disagrees with its strict I-JSON round trip"),
             Self::Canonicalization(error) => {
                 write!(formatter, "JSON canonicalization failed: {error}")
             }
@@ -42,7 +62,9 @@ impl std::error::Error for CanonicalJsonError {
             Self::Canonicalization(error) => Some(error),
             Self::RequestMustBeObject
             | Self::NonInteroperableInteger
-            | Self::NonInteroperableString => None,
+            | Self::NonInteroperableString
+            | Self::RetainedEncodingMismatch
+            | Self::TypedRoundTripMismatch => None,
         }
     }
 }
@@ -95,6 +117,38 @@ fn canonical_json_bytes_for<T: Serialize>(value: &T) -> Result<Vec<u8>, Canonica
     serde_json_canonicalizer::to_vec(value).map_err(CanonicalJsonError::Canonicalization)
 }
 
+/// Hashes a schema-valid typed contract record using the one production JCS path.
+///
+/// The first serialization is validation-only: reparsing it through the strict
+/// I-JSON parser preserves and rejects duplicate object members before the JCS
+/// serializer can order members. Only the subsequently canonicalized bytes are
+/// hashed.
+pub(super) fn canonical_contract_digest<T: ContractDigestRecord>(
+    value: &T,
+    retained_canonical_encoding: Option<&[u8]>,
+) -> Result<Sha256Digest, CanonicalJsonError> {
+    // Running JCS on the original typed serializer first is significant:
+    // serde_json's ordinary serializer maps non-finite floats to `null`, while
+    // the RFC 8785 serializer rejects them.
+    let typed_canonical_bytes = canonical_json_bytes_for(value)?;
+    let validation_bytes =
+        serde_json::to_vec(value).map_err(CanonicalJsonError::Canonicalization)?;
+    let strict_value = crate::domain::i_json::from_slice(&validation_bytes)
+        .map_err(CanonicalJsonError::Canonicalization)?;
+    let strict_canonical_bytes = canonical_json_bytes_for(&strict_value)?;
+    if typed_canonical_bytes != strict_canonical_bytes {
+        return Err(CanonicalJsonError::TypedRoundTripMismatch);
+    }
+    if let Some(retained) = retained_canonical_encoding {
+        let retained_value = crate::domain::i_json::from_slice(retained)
+            .map_err(CanonicalJsonError::Canonicalization)?;
+        if retained_value != strict_value || retained != typed_canonical_bytes {
+            return Err(CanonicalJsonError::RetainedEncodingMismatch);
+        }
+    }
+    Ok(sha256_digest(&typed_canonical_bytes))
+}
+
 fn sha256_digest(bytes: &[u8]) -> Sha256Digest {
     let hex = format!("{:x}", Sha256::digest(bytes));
     Sha256Digest::parse(&hex).expect("SHA-256 lower-hex output always satisfies Sha256Digest")
@@ -110,10 +164,17 @@ fn canonical_json_validation_error(error: IJsonValidationError) -> CanonicalJson
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_json_bytes, canonical_json_digest, operation_input_digest, CanonicalJsonError,
+        canonical_contract_digest, canonical_json_bytes, canonical_json_bytes_for,
+        canonical_json_digest, contract_digest_record_sealed, operation_input_digest,
+        CanonicalJsonError, ContractDigestRecord,
     };
     use crate::domain::branched_development::{BranchedLifecycleToolName, DurableExecutionPolicy};
+    use serde::ser::SerializeMap;
+    use serde::{Serialize, Serializer};
     use serde_json::{json, Map, Value};
+
+    impl contract_digest_record_sealed::Sealed for Value {}
+    impl ContractDigestRecord for Value {}
 
     #[test]
     fn canonical_json_matches_the_contract_golden_vectors() {
@@ -142,6 +203,108 @@ mod tests {
                 expected_digest
             );
         }
+    }
+
+    #[test]
+    fn raw_jcs_matches_the_rfc_8785_serialization_vector() {
+        let value = json!({
+            "numbers": [333_333_333.333_333_3_f64, 1E30_f64, 4.50_f64, 2e-3_f64, 1e-27_f64],
+            "string": "€$\u{000f}\nA'B\"\\\\\"/",
+            "literals": [null, true, false]
+        });
+        let expected = concat!(
+            r#"{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"#,
+            r#""string":"€$\u000f\nA'B\"\\\\\"/"}"#
+        );
+        assert_eq!(
+            canonical_json_bytes_for(&value).unwrap(),
+            expected.as_bytes()
+        );
+
+        // The contract layer deliberately applies a stricter I-JSON safe-
+        // integer rule than the raw RFC serializer.
+        assert!(canonical_contract_digest(&json!(1E30_f64), None).is_err());
+    }
+
+    #[test]
+    fn raw_jcs_orders_object_properties_by_utf16_code_units() {
+        let value = json!({
+            "€": "Euro Sign",
+            "\r": "Carriage Return",
+            "דּ": "Hebrew Letter Dalet With Dagesh",
+            "1": "One",
+            "😀": "Emoji: Grinning Face",
+            "\u{0080}": "Control",
+            "ö": "Latin Small Letter O With Diaeresis"
+        });
+        let expected = concat!(
+            r#"{"\r":"Carriage Return","1":"One","":"Control","ö":"Latin Small Letter O With Diaeresis","#,
+            r#""€":"Euro Sign","😀":"Emoji: Grinning Face","דּ":"Hebrew Letter Dalet With Dagesh"}"#
+        );
+        assert_eq!(
+            canonical_json_bytes_for(&value).unwrap(),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn typed_contract_digest_uses_the_same_jcs_vectors() {
+        assert_eq!(
+            canonical_contract_digest(&json!([]), None)
+                .unwrap()
+                .as_str(),
+            "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        );
+        assert_eq!(
+            canonical_contract_digest(&json!({"b": 2, "a": 1}), None)
+                .unwrap()
+                .as_str(),
+            "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+        );
+    }
+
+    struct DuplicateMemberRecord;
+
+    impl contract_digest_record_sealed::Sealed for DuplicateMemberRecord {}
+    impl ContractDigestRecord for DuplicateMemberRecord {}
+
+    impl Serialize for DuplicateMemberRecord {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("a", &1_u8)?;
+            map.serialize_entry("a", &2_u8)?;
+            map.end()
+        }
+    }
+
+    #[test]
+    fn typed_contract_digest_rejects_duplicate_serialized_members() {
+        assert!(canonical_contract_digest(&DuplicateMemberRecord, None).is_err());
+    }
+
+    struct FloatingPointRecord(f64);
+
+    impl contract_digest_record_sealed::Sealed for FloatingPointRecord {}
+    impl ContractDigestRecord for FloatingPointRecord {}
+
+    impl Serialize for FloatingPointRecord {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_f64(self.0)
+        }
+    }
+
+    #[test]
+    fn typed_contract_digest_rejects_non_finite_and_unsafe_numbers() {
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(canonical_contract_digest(&FloatingPointRecord(number), None).is_err());
+        }
+        assert!(canonical_contract_digest(&json!(9_007_199_254_740_992_u64), None).is_err());
     }
 
     #[test]
