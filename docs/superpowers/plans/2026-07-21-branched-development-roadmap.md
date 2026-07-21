@@ -29,9 +29,12 @@ archive, and package integration. Legacy `WorkspaceStateRepository`,
 - Do not register any of the 21 handlers until request/result Rust types,
   strict generated schemas, committed snapshots, policy metadata, and source
   plus packaged contract tests exist for all 21 tools.
-- Preserve the source-compatible `OperationResult` public envelope. Enforce the
-  workflow presence rules internally with a closed result enum, then project
-  into typed optional workflow fields. Every task-bound result still carries
+- Preserve the serialized legacy `OperationResult` envelope and existing
+  fields. Literal Rust struct construction cannot remain source-compatible when
+  fields are added, so record and test that deliberate API expansion instead
+  of making an impossible claim. Enforce workflow presence rules internally
+  with a closed result enum, then project into typed optional workflow fields.
+  Every task-bound result still carries
   `changes`, `artifacts`, and `cache`; branched results expose no command,
   executable path, stdout, stderr, credential, or task filesystem path.
 - `readOnly` is never a durable operation policy. Durable records accept only
@@ -59,7 +62,7 @@ archive, and package integration. Legacy `WorkspaceStateRepository`,
 - [x] Rebase the reviewed identifier/lifecycle/replay kernel onto `1531d36`.
 - [x] Re-run the full workspace baseline and focused boundary checks.
 - [x] Complete durable-policy, strict JSON, JCS digest, and replay-kernel repair.
-- [ ] Complete the exact-byte forbidden-read-only poison preflight without
+- [x] Complete the exact-byte forbidden-read-only poison preflight without
   inventing the not-yet-generated operation-record schema.
 
 Exit: the pure kernel cannot represent durable `readOnly`, ambiguous canonical
@@ -79,7 +82,9 @@ input, or an illegal operation state; exact bytes carrying a stored top-level
   `ActiveOperationStatus`, terminal-envelope, and storage framing schemas,
   including how the current schema digest is selected without inventing an
   embedded field absent from ADR-0012.
-- [ ] Commit source snapshots and package-artifact snapshots for all 21 tools.
+- [ ] Commit source snapshots for all 21 tools plus a generated package manifest
+  of their exact digests; after handler registration, built-package
+  `tools/list` is compared against those same source fixtures.
 - [ ] Prove exact argument sets, `additionalProperties: false`, required fields,
   policy mappings, stable codes, and absence of raw-path/process fields.
 

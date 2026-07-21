@@ -135,8 +135,11 @@ Read-only calls do not manufacture operation IDs. Their response includes an
 operation ID only when reporting an active or completed operation.
 
 The existing `OperationResult` envelope gains typed workflow fields while
-remaining source-compatible for existing tools. Every task-bound branched,
-delivery, merge, and repository response contains `ok`, `resultKind`, `taskId`,
+remaining wire-compatible for existing tools: their serialized fields and
+values do not change. Adding Rust struct fields cannot preserve literal
+external struct construction, so that deliberate Rust API expansion is tested
+and documented rather than mislabeled source-compatible. Every task-bound
+branched, delivery, merge, and repository response contains `ok`, `resultKind`, `taskId`,
 task `status`, `summary`, `warnings`, `errors`, an `evidence` object, and typed
 domain `data` (an empty object when no payload is needed). A mutating response
 also contains the required request `operationId`; a read-only response omits it

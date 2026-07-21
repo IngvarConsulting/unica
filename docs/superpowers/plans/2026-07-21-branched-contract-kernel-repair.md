@@ -142,21 +142,21 @@ envelope, lease, and storage schemas. The normative record has no embedded
 schema-version field, so this plan must not invent one or fabricate an expected
 schema digest. Full validation is Task 5B in Phase 2.
 
-- [ ] Add failing tests proving exact source bytes are retained and hashed before
+- [x] Add failing tests proving exact source bytes are retained and hashed before
   parsing; whitespace/key-order changes produce different observed digests.
-- [ ] Move/share the duplicate-aware strict I-JSON parser under neutral
+- [x] Move/share the duplicate-aware strict I-JSON parser under neutral
   `domain::i_json`; keep MCP behavior byte-for-byte compatible.
-- [ ] Introduce a closed exact-byte preflight result: strict-JSON failure,
+- [x] Introduce a closed exact-byte preflight result: strict-JSON failure,
   non-object failure, forbidden top-level literal `policy:"readOnly"`, or an
   opaque candidate. Every result owns the exact bytes and observed byte digest.
-- [ ] Prove escaped top-level `readOnly` is forbidden, while nested `readOnly` is
+- [x] Prove escaped top-level `readOnly` is forbidden, while nested `readOnly` is
   not mistaken for the discriminator; duplicate/escape-equivalent policy names,
   invalid UTF-8/trailing data/noncharacters/non-I-JSON numbers fail strictly.
-- [ ] Prove a five-value durable policy yields only the opaque candidate and
+- [x] Prove a five-value durable policy yields only the opaque candidate and
   cannot construct or classify an `OperationReplayView`.
-- [ ] Expose no expected schema digest, migration coercion, deletion, replay,
+- [x] Expose no expected schema digest, migration coercion, deletion, replay,
   status, CAS, lease, worker, receipt, or effect API in this task.
-- [ ] Commit and obtain independent review.
+- [x] Commit and obtain independent review.
 
 ### Task 5B and Task 6: Deferred typed loader and active-operation status
 
