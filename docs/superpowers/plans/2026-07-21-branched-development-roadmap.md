@@ -58,11 +58,14 @@ archive, and package integration. Legacy `WorkspaceStateRepository`,
 
 - [x] Rebase the reviewed identifier/lifecycle/replay kernel onto `1531d36`.
 - [x] Re-run the full workspace baseline and focused boundary checks.
-- [ ] Complete the durable-policy, strict JSON, JCS digest, corrupt-record, and
-  active-operation-status repair plan.
+- [x] Complete durable-policy, strict JSON, JCS digest, and replay-kernel repair.
+- [ ] Complete the exact-byte forbidden-read-only poison preflight without
+  inventing the not-yet-generated operation-record schema.
 
 Exit: the pure kernel cannot represent durable `readOnly`, ambiguous canonical
-input, an illegal operation state, or a silently accepted corrupt record.
+input, or an illegal operation state; exact bytes carrying a stored top-level
+`readOnly` are retained and rejected before any full-record candidate. Complete
+`stateCorrupt` mapping waits for the real generated storage schema in Phase 2.
 
 ### Phase 1 — executable contract for all 21 tools
 
@@ -72,6 +75,10 @@ input, an illegal operation state, or a silently accepted corrupt record.
   `BranchedToolResult` that makes completed/stopped/rejected presence rules
   unrepresentable.
 - [ ] Generate strict JSON Schemas and policy metadata from Rust types.
+- [ ] Define and snapshot the complete operation-record, lease,
+  `ActiveOperationStatus`, terminal-envelope, and storage framing schemas,
+  including how the current schema digest is selected without inventing an
+  embedded field absent from ADR-0012.
 - [ ] Commit source snapshots and package-artifact snapshots for all 21 tools.
 - [ ] Prove exact argument sets, `additionalProperties: false`, required fields,
   policy mappings, stable codes, and absence of raw-path/process fields.
@@ -82,6 +89,9 @@ Exit: all 21 contracts exist and agree before the first handler is registered.
 
 - [ ] Implement owner-only state roots, non-overridable locators, schema-digest
   validation, atomic write/fsync/rename, and retained corrupt bytes.
+- [ ] Complete Task 5B: full typed operation-record loader and deterministic
+  `stateCorrupt` evidence from committed expected schema digest plus exact-byte
+  observed digest, before any status/replay/CAS/effect path.
 - [ ] Implement task records, start-attempt records, operation records, leases,
   heartbeats, receipts, effect journals, result envelopes, and gate history.
 - [ ] Implement persistent target/account reservations with atomic admission and
@@ -100,7 +110,9 @@ no duplicate effect possible under supported topology.
   retention provider, and general-writer capability manifest.
 - [ ] Fail closed for missing, stale, ambiguous, or uncertified capability rows.
 - [ ] Implement internal full `branched.status` projection for `notCreated` and
-  every existing-task field without writes.
+  every existing-task field without writes. Active operation status projects
+  only registered/intent-written/effect-unknown validated records; terminal
+  results use their separate evidence projection.
 - [ ] Implement `branched.start` preflight, canonical identities, task/admission
   reservations, owned roots, disposable File IB, D0, and initial durable state.
 - [ ] Register status/start only after Phase 1's all-tool contract gate passes.

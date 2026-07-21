@@ -125,49 +125,59 @@ via `serde_json_canonicalizer`, existing MCP protocol tests.
 - [x] Run the full domain suite, formatting, boundary check, and diff checks.
 - [x] Commit and obtain independent review.
 
-### Task 5: Fail closed on corrupt durable policy
+### Task 5A: Exact-byte durable-policy poison preflight
 
 **Files:**
-- Create: `crates/unica-coder/src/domain/branched_development/durable_operation.rs`
+- Create: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
+- Modify: `crates/unica-coder/src/domain/i_json.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
-- Test: `crates/unica-coder/src/domain/branched_development/durable_operation.rs`
+- Modify: `crates/unica-coder/src/interfaces/{mod.rs,mcp.rs}`
+- Remove: `crates/unica-coder/src/interfaces/strict_json.rs` after moving its
+  neutral parser into `domain::i_json`
+- Test: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
 
-- [ ] Define the versioned raw stored-operation projection required to validate
-  schema digest, tool, durable policy, canonical input, four-state fields, owner,
-  lease/heartbeat references, terminal envelope, and recovery digest.
-- [ ] Add failing tests for a byte-for-byte `policy:"readOnly"` record and each
-  illegal state/presence combination. Assert deterministic `stateCorrupt` data
-  with expected/observed schema digest and retained source bytes.
-- [ ] Introduce a pure loader result that cannot yield a replay view until schema,
-  policy, identifiers, digests, and state invariants all validate.
-- [ ] Use spy ports in the next storage task to prove corrupt input causes zero
-  CAS/worker/receipt/effect calls; this pure task must itself have no such ports.
+The original Task 5 was premature: the complete record depends on Phase 1's
+generated `TaskOperationToolName`, `UnicaId`, normalized UTC, typed result/error
+envelope, lease, and storage schemas. The normative record has no embedded
+schema-version field, so this plan must not invent one or fabricate an expected
+schema digest. Full validation is Task 5B in Phase 2.
+
+- [ ] Add failing tests proving exact source bytes are retained and hashed before
+  parsing; whitespace/key-order changes produce different observed digests.
+- [ ] Move/share the duplicate-aware strict I-JSON parser under neutral
+  `domain::i_json`; keep MCP behavior byte-for-byte compatible.
+- [ ] Introduce a closed exact-byte preflight result: strict-JSON failure,
+  non-object failure, forbidden top-level literal `policy:"readOnly"`, or an
+  opaque candidate. Every result owns the exact bytes and observed byte digest.
+- [ ] Prove escaped top-level `readOnly` is forbidden, while nested `readOnly` is
+  not mistaken for the discriminator; duplicate/escape-equivalent policy names,
+  invalid UTF-8/trailing data/noncharacters/non-I-JSON numbers fail strictly.
+- [ ] Prove a five-value durable policy yields only the opaque candidate and
+  cannot construct or classify an `OperationReplayView`.
+- [ ] Expose no expected schema digest, migration coercion, deletion, replay,
+  status, CAS, lease, worker, receipt, or effect API in this task.
 - [ ] Commit and obtain independent review.
 
-### Task 6: Complete active-operation status projection
+### Task 5B and Task 6: Deferred typed loader and active-operation status
 
-**Files:**
-- Create: `crates/unica-coder/src/domain/branched_development/status.rs`
-- Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
-- Test: `crates/unica-coder/src/domain/branched_development/status.rs`
-
-- [ ] Add failing tests for the exact active-operation fields, durable policy,
-  four operation states, owner/live-or-orphaned rules, nullable terminal data,
-  recovery requirement, and absence of an `observed` state.
-- [ ] Project only from the validated durable-operation type; do not deserialize a
-  second weaker status model from disk.
-- [ ] Make illegal field combinations unrepresentable with closed variants, then
-  serialize to the public tagged/optional-field contract.
-- [ ] Run all branched domain tests, full workspace tests, formatting, platform
-  boundary, and diff checks.
-- [ ] Commit and obtain independent review.
+Execute only after Phase 1 defines and snapshots the complete tool union,
+operation record, lease, result envelope, stable errors, and status schemas.
+Task 5B then maps strict/preflight/schema failures to `stateCorrupt` with
+`expectedDigest` from the committed current schema and `observedDigest` from
+the exact bytes, retains those bytes, validates the full presence/digest matrix,
+and proves zero CAS/lease/worker/receipt/effect calls. Task 6 projects only from
+that validated record plus validated lease/liveness evidence. Per the normative
+contract, `ActiveOperationStatus.state` is only `registered`, `intentWritten`,
+or `effectUnknown`; terminal records belong to recent/terminal result evidence.
 
 ## Completion evidence
 
-- Every task has a recorded RED command/output, GREEN command/output, commit, and
+- Every executed Phase 0 task has a recorded RED command/output, GREEN
+  command/output, commit, and
   independent review in `.superpowers/sdd/progress.md`.
 - `cargo test -p unica-coder domain::branched_development` passes.
 - MCP duplicate-key protocol tests pass.
 - `cargo fmt --all -- --check`, platform boundary check, `git diff --check`, and
   `cargo test --workspace -- --test-threads=1` pass on the final kernel commit.
-- No public branched handler is registered by this plan.
+- No public branched handler is registered by this plan. Task 5B/6 completion
+  evidence is recorded in their later Phase 2/3 plans, not claimed here.
