@@ -12,9 +12,14 @@ const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
 pub(crate) struct PlatformXmlMetadataProvider;
 
 #[derive(Debug, Clone)]
+pub(super) struct MetadataCatalog {
+    descriptors: Vec<MetadataDescriptor>,
+    analyzed_files: Vec<AnalyzedFile>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct MetadataDescriptor {
     pub relative_path: PortableRelativePath,
-    pub analyzed_file: AnalyzedFile,
     pub root: MetadataNode,
 }
 
@@ -24,8 +29,31 @@ pub(super) struct MetadataNode {
     pub artifact_kind: ArtifactKind,
     pub name: String,
     pub object_uuid: Option<String>,
-    pub location: EvidenceLocation,
+    pub locations: Vec<EvidenceLocation>,
     pub children: Vec<MetadataNode>,
+}
+
+#[derive(Debug)]
+struct RawMetadataDescriptor {
+    relative_path: PortableRelativePath,
+    analyzed_file: AnalyzedFile,
+    root: RawMetadataNode,
+}
+
+#[derive(Debug)]
+struct RawMetadataNode {
+    xml_kind: String,
+    artifact_kind: ArtifactKind,
+    name: String,
+    object_uuid: Option<String>,
+    location: EvidenceLocation,
+    children: Vec<RawMetadataNode>,
+}
+
+impl MetadataCatalog {
+    pub(super) fn descriptors(&self) -> &[MetadataDescriptor] {
+        &self.descriptors
+    }
 }
 
 impl MetadataDescriptor {
@@ -54,6 +82,18 @@ impl MetadataDescriptor {
     }
 }
 
+impl MetadataNode {
+    pub(super) fn primary_location(&self) -> Option<&EvidenceLocation> {
+        self.locations.first()
+    }
+
+    fn direct_child_mut(&mut self, artifact: &ArtifactId) -> Option<&mut MetadataNode> {
+        self.children
+            .iter_mut()
+            .find(|child| child.artifact == *artifact)
+    }
+}
+
 fn resolve_child_path<'a>(
     children: &'a [MetadataNode],
     names: &[&str],
@@ -76,15 +116,13 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
         query: &DiscoveryQuery<'_>,
         files: &SourceInventory,
     ) -> ProviderOutcome<FactBatch<crate::domain::discovery::MetadataFact>> {
-        let descriptors = match parse_inventory_descriptors(files) {
-            Ok(descriptors) => descriptors,
+        let catalog = match parse_inventory_catalog(files) {
+            Ok(catalog) => catalog,
             Err(diagnostic) => return ProviderOutcome::ContractViolation(diagnostic),
         };
-        let analyzed_files = descriptors
-            .iter()
-            .map(|descriptor| descriptor.analyzed_file.clone())
-            .collect::<Vec<_>>();
-        let mut records = descriptors
+        let analyzed_files = catalog.analyzed_files.clone();
+        let mut records = catalog
+            .descriptors
             .iter()
             .flat_map(metadata_facts)
             .collect::<Vec<_>>();
@@ -125,16 +163,16 @@ pub(super) fn inventory_is_bounded(inventory: &SourceInventory) -> bool {
     inventory.coverage.files_seen > inventory.coverage.files_analyzed
 }
 
-pub(super) fn parse_inventory_descriptors(
+pub(super) fn parse_inventory_catalog(
     inventory: &SourceInventory,
-) -> Result<Vec<MetadataDescriptor>, ProviderDiagnostic> {
-    let mut descriptors = Vec::new();
+) -> Result<MetadataCatalog, ProviderDiagnostic> {
+    let mut raw_descriptors = Vec::new();
     for file in inventory
         .files
         .iter()
         .filter(|file| is_metadata_descriptor_candidate(&file.relative_path))
     {
-        let descriptor = parse_descriptor(file).map_err(|message| {
+        let descriptor = parse_raw_descriptor(file).map_err(|message| {
             ProviderDiagnostic::material(
                 "metadata_descriptor_malformed",
                 format!(
@@ -143,10 +181,11 @@ pub(super) fn parse_inventory_descriptors(
                 ),
             )
         })?;
-        descriptors.push(descriptor);
+        raw_descriptors.push(descriptor);
     }
-    descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(descriptors)
+    raw_descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    build_catalog(raw_descriptors)
+        .map_err(|message| ProviderDiagnostic::material("metadata_catalog_invalid", message))
 }
 
 fn is_metadata_descriptor_candidate(path: &PortableRelativePath) -> bool {
@@ -160,7 +199,7 @@ fn is_metadata_descriptor_candidate(path: &PortableRelativePath) -> bool {
         && !components.any(|component| component.eq_ignore_ascii_case("Ext"))
 }
 
-fn parse_descriptor(file: &SourceFile) -> Result<MetadataDescriptor, String> {
+fn parse_raw_descriptor(file: &SourceFile) -> Result<RawMetadataDescriptor, String> {
     let text = decode_xml_bytes(&file.bytes)?;
     let document = Document::parse(text).map_err(|error| error.to_string())?;
     let root = document.root_element();
@@ -180,12 +219,224 @@ fn parse_descriptor(file: &SourceFile) -> Result<MetadataDescriptor, String> {
     if object_elements.next().is_some() {
         return Err("MetaDataObject has more than one root object element".to_string());
     }
-    let root = parse_metadata_node(&document, file, object, None)?;
-    Ok(MetadataDescriptor {
+    let root = parse_raw_metadata_node(&document, file, object)?;
+    Ok(RawMetadataDescriptor {
         relative_path: file.relative_path.clone(),
         analyzed_file: file.analyzed_file(),
         root,
     })
+}
+
+fn build_catalog(raw_descriptors: Vec<RawMetadataDescriptor>) -> Result<MetadataCatalog, String> {
+    let mut analyzed_files = raw_descriptors
+        .iter()
+        .map(|descriptor| descriptor.analyzed_file.clone())
+        .collect::<Vec<_>>();
+    analyzed_files.sort();
+    let mut descriptors = Vec::new();
+    let mut subordinate_forms = Vec::new();
+    for raw in raw_descriptors {
+        if subordinate_form_parent_path(&raw.relative_path)?.is_some() {
+            subordinate_forms.push(raw);
+            continue;
+        }
+        let root = materialize_metadata_node(raw.root, None)?;
+        descriptors.push(MetadataDescriptor {
+            relative_path: raw.relative_path,
+            root,
+        });
+    }
+    descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    validate_catalog_nodes(&descriptors)?;
+
+    for subordinate in subordinate_forms {
+        attach_subordinate_form(&mut descriptors, subordinate)?;
+    }
+    validate_catalog_nodes(&descriptors)?;
+    Ok(MetadataCatalog {
+        descriptors,
+        analyzed_files,
+    })
+}
+
+fn subordinate_form_parent_path(
+    path: &PortableRelativePath,
+) -> Result<Option<PortableRelativePath>, String> {
+    let components = path.as_str().split('/').collect::<Vec<_>>();
+    if components.len() < 3 || !components[components.len() - 2].eq_ignore_ascii_case("Forms") {
+        return Ok(None);
+    }
+    let Some((_stem, extension)) = components
+        .last()
+        .and_then(|file_name| file_name.rsplit_once('.'))
+    else {
+        return Err("subordinate form descriptor has no .xml extension".to_string());
+    };
+    if !extension.eq_ignore_ascii_case("xml") {
+        return Err("subordinate form descriptor does not end in .xml".to_string());
+    }
+    let parent_base = components[..components.len() - 2].join("/");
+    PortableRelativePath::parse_str(&format!("{parent_base}.xml"))
+        .map(Some)
+        .map_err(|error| format!("subordinate form parent path is invalid: {error}"))
+}
+
+fn materialize_metadata_node(
+    raw: RawMetadataNode,
+    container: Option<&ArtifactId>,
+) -> Result<MetadataNode, String> {
+    let artifact_text = match container {
+        Some(container) => format!("{}.{}.{}", container.as_str(), raw.xml_kind, raw.name),
+        None => format!("{}.{}", raw.xml_kind, raw.name),
+    };
+    let artifact = ArtifactId::parse(&artifact_text).map_err(|error| {
+        format!(
+            "{} object has invalid canonical identity {artifact_text}: {error}",
+            raw.xml_kind
+        )
+    })?;
+    let mut children = raw
+        .children
+        .into_iter()
+        .map(|child| materialize_metadata_node(child, Some(&artifact)))
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort_by(|left, right| left.artifact.cmp(&right.artifact));
+    Ok(MetadataNode {
+        artifact,
+        artifact_kind: raw.artifact_kind,
+        name: raw.name,
+        object_uuid: raw.object_uuid,
+        locations: vec![raw.location],
+        children,
+    })
+}
+
+fn attach_subordinate_form(
+    descriptors: &mut [MetadataDescriptor],
+    subordinate: RawMetadataDescriptor,
+) -> Result<(), String> {
+    if subordinate.root.xml_kind != "Form" || subordinate.root.artifact_kind != ArtifactKind::Form {
+        return Err(format!(
+            "subordinate form descriptor {} contains {} instead of Form",
+            subordinate.relative_path.as_str(),
+            subordinate.root.xml_kind
+        ));
+    }
+    let parent_path = subordinate_form_parent_path(&subordinate.relative_path)?
+        .ok_or_else(|| "subordinate form path classification diverged".to_string())?;
+    let descriptor = descriptors
+        .iter_mut()
+        .find(|descriptor| descriptor.relative_path == parent_path)
+        .ok_or_else(|| {
+            format!(
+                "subordinate form {} has no parent descriptor {}",
+                subordinate.relative_path.as_str(),
+                parent_path.as_str()
+            )
+        })?;
+    let artifact = ArtifactId::parse(&format!(
+        "{}.Form.{}",
+        descriptor.root.artifact.as_str(),
+        subordinate.root.name
+    ))
+    .map_err(|error| format!("subordinate form identity is invalid: {error}"))?;
+    let declared = descriptor
+        .root
+        .direct_child_mut(&artifact)
+        .filter(|child| child.artifact_kind == ArtifactKind::Form)
+        .ok_or_else(|| {
+            format!(
+                "subordinate form {} is not declared by {}",
+                subordinate.relative_path.as_str(),
+                parent_path.as_str()
+            )
+        })?;
+    let descriptor_base = descriptor
+        .relative_path
+        .as_str()
+        .strip_suffix(".xml")
+        .ok_or_else(|| "parent descriptor does not end in canonical .xml".to_string())?;
+    let expected_path =
+        PortableRelativePath::parse_str(&format!("{descriptor_base}/Forms/{}.xml", declared.name))
+            .map_err(|error| format!("declared subordinate form path is invalid: {error}"))?;
+    if subordinate.relative_path != expected_path {
+        return Err(format!(
+            "subordinate form path {} conflicts with declared canonical path {}",
+            subordinate.relative_path.as_str(),
+            expected_path.as_str()
+        ));
+    }
+    match (&declared.object_uuid, &subordinate.root.object_uuid) {
+        (Some(declared_uuid), Some(descriptor_uuid)) if declared_uuid != descriptor_uuid => {
+            return Err(format!(
+                "subordinate form {} conflicts with its declared uuid",
+                artifact.as_str()
+            ));
+        }
+        (None, Some(descriptor_uuid)) => declared.object_uuid = Some(descriptor_uuid.clone()),
+        (Some(_), Some(_)) | (Some(_), None) | (None, None) => {}
+    }
+    if declared.locations.contains(&subordinate.root.location) {
+        return Err(format!(
+            "subordinate form {} repeats an existing evidence location",
+            artifact.as_str()
+        ));
+    }
+    declared.locations.push(subordinate.root.location);
+    let mut subordinate_children = subordinate
+        .root
+        .children
+        .into_iter()
+        .map(|child| materialize_metadata_node(child, Some(&artifact)))
+        .collect::<Result<Vec<_>, _>>()?;
+    declared.children.append(&mut subordinate_children);
+    declared
+        .children
+        .sort_by(|left, right| left.artifact.cmp(&right.artifact));
+    Ok(())
+}
+
+fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), String> {
+    let mut artifacts = BTreeMap::new();
+    let mut uuids = BTreeMap::new();
+    for descriptor in descriptors {
+        let mut nodes = Vec::new();
+        collect_metadata_nodes(&descriptor.root, &mut nodes);
+        for node in nodes {
+            if let Some(previous_kind) = artifacts.insert(node.artifact.clone(), node.artifact_kind)
+            {
+                return Err(format!(
+                    "duplicate canonical metadata artifact {} ({previous_kind:?} and {:?})",
+                    node.artifact.as_str(),
+                    node.artifact_kind
+                ));
+            }
+            let unique_locations = node.locations.iter().collect::<BTreeSet<_>>();
+            if unique_locations.len() != node.locations.len() {
+                return Err(format!(
+                    "metadata artifact {} has duplicate evidence locations",
+                    node.artifact.as_str()
+                ));
+            }
+            if let Some(uuid) = &node.object_uuid {
+                if let Some(previous_artifact) = uuids.insert(uuid.clone(), node.artifact.clone()) {
+                    return Err(format!(
+                        "metadata uuid {uuid} maps to both {} and {}",
+                        previous_artifact.as_str(),
+                        node.artifact.as_str()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_metadata_nodes<'a>(node: &'a MetadataNode, output: &mut Vec<&'a MetadataNode>) {
+    output.push(node);
+    for child in &node.children {
+        collect_metadata_nodes(child, output);
+    }
 }
 
 pub(super) fn decode_xml_bytes(bytes: &[u8]) -> Result<&str, String> {
@@ -194,27 +445,21 @@ pub(super) fn decode_xml_bytes(bytes: &[u8]) -> Result<&str, String> {
         .map_err(|error| format!("input is not UTF-8: {error}"))
 }
 
-fn parse_metadata_node(
+fn parse_raw_metadata_node(
     document: &Document<'_>,
     file: &SourceFile,
     node: Node<'_, '_>,
-    container: Option<&ArtifactId>,
-) -> Result<MetadataNode, String> {
+) -> Result<RawMetadataNode, String> {
     let object_kind = node.tag_name().name();
     if node.tag_name().namespace() != Some(METADATA_NAMESPACE) {
         return Err(format!(
             "{object_kind} object is outside the metadata namespace"
         ));
     }
-    let name = metadata_node_name(node)
+    let name = metadata_node_name(node)?
         .ok_or_else(|| format!("{object_kind} object has no non-empty Name"))?;
-    let artifact_text = match container {
-        Some(container) => format!("{}.{object_kind}.{name}", container.as_str()),
-        None => format!("{object_kind}.{name}"),
-    };
-    let artifact = ArtifactId::parse(&artifact_text).map_err(|error| {
-        format!("{object_kind} object has invalid canonical identity {artifact_text}: {error}")
-    })?;
+    validate_platform_identifier(&name)
+        .map_err(|message| format!("{object_kind} object has invalid Name: {message}"))?;
     let artifact_kind = artifact_kind_for_xml_object(object_kind);
     let location = xml_location(document, file, node)?;
     let object_uuid = node
@@ -229,14 +474,18 @@ fn parse_metadata_node(
         return Err(format!("{object_kind} object has invalid uuid"));
     }
     let mut children = Vec::new();
-    if let Some(child_objects) = direct_child(node, "ChildObjects") {
+    if let Some(child_objects) = semantic_child(node, "ChildObjects")? {
         for child in child_objects.children().filter(Node::is_element) {
-            children.push(parse_metadata_node(document, file, child, Some(&artifact))?);
+            children.push(parse_raw_metadata_node(document, file, child)?);
         }
     }
-    children.sort_by(|left, right| left.artifact.cmp(&right.artifact));
-    Ok(MetadataNode {
-        artifact,
+    children.sort_by(|left, right| {
+        left.xml_kind
+            .cmp(&right.xml_kind)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(RawMetadataNode {
+        xml_kind: object_kind.to_string(),
         artifact_kind,
         name,
         object_uuid,
@@ -256,19 +505,56 @@ fn is_uuid_text(value: &str) -> bool {
         })
 }
 
-fn metadata_node_name(node: Node<'_, '_>) -> Option<String> {
-    direct_child(node, "Properties")
-        .and_then(|properties| direct_child(properties, "Name"))
-        .and_then(|name| name.text())
-        .or_else(|| node.text())
+fn metadata_node_name(node: Node<'_, '_>) -> Result<Option<String>, String> {
+    if let Some(properties) = semantic_child(node, "Properties")? {
+        let name = semantic_child(properties, "Name")?
+            .and_then(|name| name.text())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned);
+        return Ok(name);
+    }
+    if node.children().any(|child| child.is_element()) {
+        return Ok(None);
+    }
+    Ok(node
+        .text()
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
+        .map(ToOwned::to_owned))
 }
 
-fn direct_child<'a, 'input>(node: Node<'a, 'input>, local_name: &str) -> Option<Node<'a, 'input>> {
-    node.children()
-        .find(|child| child.is_element() && child.tag_name().name() == local_name)
+fn semantic_child<'a, 'input>(
+    node: Node<'a, 'input>,
+    local_name: &str,
+) -> Result<Option<Node<'a, 'input>>, String> {
+    let mut matches = node
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == local_name);
+    let first = matches.next();
+    if let Some(first) = first {
+        if first.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+            return Err(format!("{local_name} is outside the metadata namespace"));
+        }
+    }
+    if matches.next().is_some() {
+        return Err(format!("more than one {local_name} section"));
+    }
+    Ok(first)
+}
+
+pub(super) fn validate_platform_identifier(value: &str) -> Result<(), &'static str> {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return Err("identifier must not be empty");
+    };
+    if first != '_' && !first.is_alphabetic() {
+        return Err("identifier must start with a Unicode letter or underscore");
+    }
+    if characters.any(|character| character != '_' && !character.is_alphanumeric()) {
+        return Err("identifier may contain only Unicode letters, digits, or underscores");
+    }
+    Ok(())
 }
 
 fn artifact_kind_for_xml_object(object_kind: &str) -> ArtifactKind {
@@ -339,13 +625,17 @@ fn flatten_metadata_node(
     node: &MetadataNode,
     container: Option<&ArtifactId>,
 ) -> Vec<crate::domain::discovery::MetadataFact> {
-    let mut facts = vec![crate::domain::discovery::MetadataFact {
-        artifact: node.artifact.clone(),
-        artifact_kind: node.artifact_kind,
-        container: container.cloned(),
-        relation: StructuralRelationKind::Contains,
-        location: node.location.clone(),
-    }];
+    let mut facts = node
+        .locations
+        .iter()
+        .map(|location| crate::domain::discovery::MetadataFact {
+            artifact: node.artifact.clone(),
+            artifact_kind: node.artifact_kind,
+            container: container.cloned(),
+            relation: StructuralRelationKind::Contains,
+            location: location.clone(),
+        })
+        .collect::<Vec<_>>();
     for child in &node.children {
         facts.extend(flatten_metadata_node(child, Some(&node.artifact)));
     }
@@ -411,16 +701,12 @@ pub(super) fn build_batch<T>(
 }
 
 pub(super) fn analyzed_file_map(
-    descriptors: &[MetadataDescriptor],
+    catalog: &MetadataCatalog,
 ) -> BTreeMap<PortableRelativePath, AnalyzedFile> {
-    descriptors
+    catalog
+        .analyzed_files
         .iter()
-        .map(|descriptor| {
-            (
-                descriptor.relative_path.clone(),
-                descriptor.analyzed_file.clone(),
-            )
-        })
+        .map(|analyzed| (analyzed.relative_path.clone(), analyzed.clone()))
         .collect()
 }
 
@@ -553,6 +839,148 @@ mod tests {
         };
         assert!(!data.records.is_empty());
         assert_eq!(diagnostic.code, "metadata_inventory_bounded");
+    }
+
+    #[test]
+    fn subordinate_form_descriptor_uses_only_its_parent_declared_identity() {
+        let parent = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Report uuid="50000000-0000-0000-0000-000000000001">
+    <Properties><Name>Sales</Name></Properties>
+    <ChildObjects><Form>Main</Form></ChildObjects>
+  </Report>
+</MetaDataObject>"#;
+        let subordinate = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Form uuid="50000000-0000-0000-0000-000000000002">
+    <Properties><Name>Main</Name></Properties>
+  </Form>
+</MetaDataObject>"#;
+        let inventory = inventory(vec![
+            source_file("Reports/Sales.xml", parent.as_bytes()),
+            source_file("Reports/Sales/Forms/Main.xml", subordinate.as_bytes()),
+        ]);
+
+        let outcome = PlatformXmlMetadataProvider.metadata(&query(100), &inventory);
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("canonical subordinate metadata should be complete");
+        };
+        let canonical = artifact("Report.Sales.Form.Main");
+        assert!(batch.records.iter().any(|fact| {
+            fact.artifact == canonical && fact.artifact_kind == ArtifactKind::Form
+        }));
+        assert!(batch
+            .records
+            .iter()
+            .all(|fact| fact.artifact != artifact("Form.Main")));
+    }
+
+    #[test]
+    fn undeclared_subordinate_descriptor_invalidates_the_catalog_atomically() {
+        let parent = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Report uuid="51000000-0000-0000-0000-000000000001">
+    <Properties><Name>Sales</Name></Properties>
+  </Report>
+</MetaDataObject>"#;
+        let subordinate = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Form uuid="51000000-0000-0000-0000-000000000002">
+    <Properties><Name>Main</Name></Properties>
+  </Form>
+</MetaDataObject>"#;
+
+        assert_catalog_violation(vec![
+            source_file("Reports/Sales.xml", parent.as_bytes()),
+            source_file("Reports/Sales/Forms/Main.xml", subordinate.as_bytes()),
+        ]);
+    }
+
+    #[test]
+    fn duplicate_artifact_or_uuid_identity_invalidates_the_catalog_atomically() {
+        let duplicate_artifact = descriptor_xml(
+            "Document",
+            "Purchase",
+            "52000000-0000-0000-0000-000000000001",
+            "",
+        );
+        assert_catalog_violation(vec![
+            source_file("Documents/First.xml", duplicate_artifact.as_bytes()),
+            source_file("Documents/Second.xml", duplicate_artifact.as_bytes()),
+        ]);
+
+        let first = descriptor_xml(
+            "Document",
+            "Purchase",
+            "52000000-0000-0000-0000-000000000002",
+            "",
+        );
+        let second = descriptor_xml(
+            "Report",
+            "Sales",
+            "52000000-0000-0000-0000-000000000002",
+            "",
+        );
+        assert_catalog_violation(vec![
+            source_file("Documents/Purchase.xml", first.as_bytes()),
+            source_file("Reports/Sales.xml", second.as_bytes()),
+        ]);
+    }
+
+    #[test]
+    fn duplicate_children_and_semantic_sections_invalidate_the_catalog() {
+        let duplicate_child = descriptor_xml(
+            "Document",
+            "Purchase",
+            "53000000-0000-0000-0000-000000000001",
+            "<ChildObjects><Form>Main</Form><Form>Main</Form></ChildObjects>",
+        );
+        assert_catalog_violation(vec![source_file(
+            "Documents/Purchase.xml",
+            duplicate_child.as_bytes(),
+        )]);
+
+        let duplicate_properties = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Document uuid="53000000-0000-0000-0000-000000000002">
+    <Properties><Name>Purchase</Name></Properties>
+    <Properties><Name>Other</Name></Properties>
+  </Document>
+</MetaDataObject>"#;
+        assert_catalog_violation(vec![source_file(
+            "Documents/Purchase.xml",
+            duplicate_properties.as_bytes(),
+        )]);
+    }
+
+    #[test]
+    fn foreign_semantic_namespaces_and_invalid_identifiers_are_rejected() {
+        let foreign_properties = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:evil="urn:evil">
+  <Document uuid="54000000-0000-0000-0000-000000000001">
+    <evil:Properties><evil:Name>Purchase</evil:Name></evil:Properties>
+  </Document>
+</MetaDataObject>"#;
+        assert_catalog_violation(vec![source_file(
+            "Documents/Purchase.xml",
+            foreign_properties.as_bytes(),
+        )]);
+
+        for invalid in ["Bad Name", "Bad.Name", "9Bad", "Bad/Name", "Bad\nName"] {
+            let xml = descriptor_xml(
+                "Document",
+                invalid,
+                "54000000-0000-0000-0000-000000000002",
+                "",
+            );
+            assert_catalog_violation(vec![source_file("Documents/Invalid.xml", xml.as_bytes())]);
+        }
+    }
+
+    fn assert_catalog_violation(files: Vec<SourceFile>) {
+        let outcome = PlatformXmlMetadataProvider.metadata(&query(100), &inventory(files));
+        assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+    }
+
+    fn descriptor_xml(kind: &str, name: &str, uuid: &str, body: &str) -> String {
+        format!(
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><{kind} uuid=\"{uuid}\"><Properties><Name>{name}</Name></Properties>{body}</{kind}></MetaDataObject>"
+        )
     }
 
     fn query(max_evidence: u16) -> DiscoveryQuery<'static> {

@@ -5,7 +5,8 @@ use crate::domain::discovery::{
 };
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, decode_xml_bytes,
-    inventory_is_bounded, xml_location, MetadataDescriptor, MetadataNode,
+    inventory_is_bounded, parse_inventory_catalog, validate_platform_identifier, xml_location,
+    MetadataDescriptor, MetadataNode,
 };
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,10 +44,9 @@ fn collect_form_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<FormCollection, ProviderDiagnostic> {
-    let descriptors =
-        crate::infrastructure::discovery::metadata::parse_inventory_descriptors(inventory)?;
+    let catalog = parse_inventory_catalog(inventory)?;
     let inventory_bounded = inventory_is_bounded(inventory);
-    let mut analyzed_files = analyzed_file_map(&descriptors);
+    let mut analyzed_files = analyzed_file_map(&catalog);
     let inventory_files = inventory
         .files
         .iter()
@@ -55,7 +55,7 @@ fn collect_form_facts(
     let mut declared_paths = BTreeSet::new();
     let mut records = Vec::new();
 
-    for descriptor in &descriptors {
+    for descriptor in catalog.descriptors() {
         for form in descriptor.declared_forms() {
             let form_path = declared_form_path(descriptor, form)?;
             if !declared_paths.insert(form_path.clone()) {
@@ -173,6 +173,7 @@ fn parse_form(
             root.tag_name().namespace()
         ));
     }
+    validate_form_semantic_namespaces(root)?;
 
     let mut records = Vec::new();
     for data_path in root
@@ -186,6 +187,7 @@ fn parse_form(
         else {
             continue;
         };
+        validate_data_path(path)?;
         let Some(target) = descriptor.resolve_data_path(path) else {
             continue;
         };
@@ -210,8 +212,8 @@ fn parse_form(
         if events.tag_name().name() != "Events" {
             continue;
         }
-        let event_name = required_binding_text(event.attribute("name"), "event name")?;
-        let handler = required_binding_text(event.text(), "event handler")?;
+        let event_name = required_identifier_text(event.attribute("name"), "event name")?;
+        let handler = required_identifier_text(event.text(), "event handler")?;
         records.push(FormFact {
             form: declared_form.artifact.clone(),
             binding: FormBinding::Event {
@@ -234,12 +236,12 @@ fn parse_form(
         if commands.tag_name().name() != "Commands" {
             continue;
         }
-        let command_name = required_binding_text(command.attribute("name"), "command name")?;
+        let command_name = required_identifier_text(command.attribute("name"), "command name")?;
         for action in command
             .children()
             .filter(|node| node.is_element() && node.tag_name().name() == "Action")
         {
-            let handler = required_binding_text(action.text(), "command action")?;
+            let handler = required_identifier_text(action.text(), "command action")?;
             records.push(FormFact {
                 form: declared_form.artifact.clone(),
                 binding: FormBinding::Command {
@@ -263,11 +265,49 @@ fn is_active_form_element(node: Node<'_, '_>, local_name: &str) -> bool {
             .any(|ancestor| ancestor.is_element() && ancestor.tag_name().name() == "BaseForm")
 }
 
+fn validate_form_semantic_namespaces(root: Node<'_, '_>) -> Result<(), String> {
+    const SEMANTIC_NAMES: &[&str] = &[
+        "BaseForm", "DataPath", "Events", "Event", "Commands", "Command", "Action",
+    ];
+    for node in root.descendants().filter(Node::is_element) {
+        if SEMANTIC_NAMES.contains(&node.tag_name().name())
+            && node.tag_name().namespace() != Some(MANAGED_FORM_NAMESPACE)
+        {
+            return Err(format!(
+                "{} is outside the managed-form namespace",
+                node.tag_name().name()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_data_path(path: &str) -> Result<(), String> {
+    let mut found = false;
+    for segment in path.split('.') {
+        let segment = segment.trim();
+        validate_platform_identifier(segment)
+            .map_err(|message| format!("DataPath segment {segment:?} is invalid: {message}"))?;
+        found = true;
+    }
+    if !found {
+        return Err("DataPath must contain at least one identifier".to_string());
+    }
+    Ok(())
+}
+
 fn required_binding_text<'a>(value: Option<&'a str>, label: &str) -> Result<&'a str, String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{label} must not be empty"))
+}
+
+fn required_identifier_text<'a>(value: Option<&'a str>, label: &str) -> Result<&'a str, String> {
+    let value = required_binding_text(value, label)?;
+    validate_platform_identifier(value)
+        .map_err(|message| format!("{label} {value:?} is invalid: {message}"))?;
+    Ok(value)
 }
 
 fn handler_artifact(form: &ArtifactId, handler: &str) -> Result<ArtifactId, String> {
@@ -418,6 +458,61 @@ mod tests {
         };
         assert!(data.records.is_empty());
         assert_eq!(diagnostic.code, "managed_form_inventory_bounded");
+    }
+
+    #[test]
+    fn foreign_namespace_cannot_inject_or_suppress_form_semantics() {
+        let canonical_form_path = concat!(
+            "Documents/ПриобретениеТоваровУслуг/Forms/",
+            "ФормаДокумента/Ext/Form.xml"
+        );
+        let injected = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:evil="urn:evil">
+  <evil:Events><evil:Event name="OnOpen">Injected</evil:Event></evil:Events>
+</Form>"#;
+        let suppressed = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:evil="urn:evil">
+  <evil:BaseForm><Events><Event name="OnOpen">Suppressed</Event></Events></evil:BaseForm>
+</Form>"#;
+
+        for xml in [injected, suppressed] {
+            let outcome = ManagedFormProvider.forms(
+                &query(100),
+                &inventory(vec![
+                    source_file(
+                        "Documents/ПриобретениеТоваровУслуг.xml",
+                        DESCRIPTOR.as_bytes(),
+                    ),
+                    source_file(canonical_form_path, xml.as_bytes()),
+                ]),
+            );
+            assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+        }
+    }
+
+    #[test]
+    fn invalid_event_command_and_handler_identifiers_are_rejected() {
+        let canonical_form_path = concat!(
+            "Documents/ПриобретениеТоваровУслуг/Forms/",
+            "ФормаДокумента/Ext/Form.xml"
+        );
+        let cases = [
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Events><Event name="Bad Event">Handler</Event></Events></Form>"#,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Events><Event name="OnOpen">Bad.Handler</Event></Events></Form>"#,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Commands><Command name="9Bad"><Action>Handler</Action></Command></Commands></Form>"#,
+        ];
+
+        for xml in cases {
+            let outcome = ManagedFormProvider.forms(
+                &query(100),
+                &inventory(vec![
+                    source_file(
+                        "Documents/ПриобретениеТоваровУслуг.xml",
+                        DESCRIPTOR.as_bytes(),
+                    ),
+                    source_file(canonical_form_path, xml.as_bytes()),
+                ]),
+            );
+            assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+        }
     }
 
     fn query(max_evidence: u16) -> DiscoveryQuery<'static> {

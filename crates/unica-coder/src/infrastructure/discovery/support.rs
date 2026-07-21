@@ -5,7 +5,7 @@ use crate::domain::discovery::{
 };
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, inventory_is_bounded,
-    parse_inventory_descriptors, MetadataDescriptor,
+    parse_inventory_catalog, MetadataDescriptor,
 };
 use crate::infrastructure::native_operations::common::{
     parse_support_state_bytes, ParsedSupportState, SupportObjectRule,
@@ -43,10 +43,11 @@ fn collect_support_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<SupportCollection, ProviderDiagnostic> {
-    let descriptors = parse_inventory_descriptors(inventory)?;
+    let catalog = parse_inventory_catalog(inventory)?;
+    let descriptors = catalog.descriptors();
     let inventory_bounded = inventory_is_bounded(inventory);
-    validate_unique_support_artifacts(&descriptors)?;
-    let mut analyzed_files = analyzed_file_map(&descriptors);
+    validate_unique_support_artifacts(descriptors)?;
+    let mut analyzed_files = analyzed_file_map(&catalog);
     let support_file = root_support_file(inventory)?;
     if let Some(file) = support_file {
         analyzed_files.insert(file.relative_path.clone(), file.analyzed_file());
@@ -146,7 +147,12 @@ fn support_fact(
     let (state, location) = match (support_file, parsed) {
         (None, None) => (
             SupportStateKind::NotOnSupport,
-            descriptor.root.location.clone(),
+            descriptor.root.primary_location().cloned().ok_or_else(|| {
+                ProviderDiagnostic::material(
+                    "support_metadata_location_missing",
+                    "metadata artifact has no evidence location",
+                )
+            })?,
         ),
         (Some(file), Some(state)) => {
             let object_rule = descriptor
