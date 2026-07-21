@@ -8,7 +8,7 @@ const MAX_I_JSON_INTEROPERABLE_INTEGER: u64 = (1 << 53) - 1;
 const OPERATION_INPUT_DIGEST_KIND: &str = "branchedOperationInputV1";
 
 #[derive(Debug)]
-pub(crate) enum CanonicalJsonError {
+pub(super) enum CanonicalJsonError {
     RequestMustBeObject,
     NonInteroperableInteger { value: String },
     Canonicalization(serde_json::Error),
@@ -50,18 +50,22 @@ struct OperationInputDigestRecord<'a> {
 }
 
 /// Returns RFC 8785 canonical UTF-8 JSON bytes for an already duplicate-free I-JSON value.
+#[cfg(test)]
 fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, CanonicalJsonError> {
     validate_i_json_numbers(value)?;
     canonical_json_bytes_for(value)
 }
 
 /// Returns the SHA-256 digest of RFC 8785 canonical JSON for a duplicate-free I-JSON value.
+#[cfg(test)]
 fn canonical_json_digest(value: &Value) -> Result<Sha256Digest, CanonicalJsonError> {
     canonical_json_bytes(value).map(|bytes| sha256_digest(&bytes))
 }
 
 /// Returns the domain-separated digest for one durable branched operation request.
-pub(crate) fn operation_input_digest(
+// Remove this bridge when Task 4 wires its validated selector/policy producer.
+#[allow(dead_code)]
+pub(super) fn operation_input_digest(
     tool_name: BranchedLifecycleToolName,
     execution_policy: DurableExecutionPolicy,
     request: &Value,
