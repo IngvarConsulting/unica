@@ -1,5 +1,7 @@
-use super::schema::string_schema;
-use crate::domain::i_json;
+use super::schema::{
+    is_i_json_lf_text, is_i_json_single_line_text, is_normalized_utc_instant, string_schema,
+    I_JSON_LF_TEXT_FORMAT, I_JSON_SINGLE_LINE_TEXT_FORMAT, NORMALIZED_UTC_INSTANT_FORMAT,
+};
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de::Error as _;
 use std::borrow::Cow;
@@ -36,19 +38,15 @@ fn validate_text(
             reason: "has an invalid Unicode scalar length",
         });
     }
-    if i_json::validate_i_json_string(value).is_err() {
+    let characters_are_valid = if allow_line_feed {
+        is_i_json_lf_text(value)
+    } else {
+        is_i_json_single_line_text(value)
+    };
+    if !characters_are_valid {
         return Err(ScalarError {
             kind,
-            reason: "contains a forbidden I-JSON Unicode scalar",
-        });
-    }
-    if value
-        .chars()
-        .any(|character| character.is_control() && !(allow_line_feed && character == '\n'))
-    {
-        return Err(ScalarError {
-            kind,
-            reason: "contains a forbidden control character",
+            reason: "contains a forbidden I-JSON or control Unicode scalar",
         });
     }
     Ok(value.to_owned())
@@ -104,7 +102,12 @@ macro_rules! bounded_text {
             }
 
             fn json_schema(_: &mut SchemaGenerator) -> Schema {
-                string_schema($min, $max, None, None)
+                let format = if $allow_line_feed {
+                    I_JSON_LF_TEXT_FORMAT
+                } else {
+                    I_JSON_SINGLE_LINE_TEXT_FORMAT
+                };
+                string_schema($min, $max, None, Some(format))
             }
         }
     };
@@ -233,63 +236,12 @@ pub(crate) struct NormalizedUtcInstant(String);
 
 impl NormalizedUtcInstant {
     pub(crate) fn parse(value: &str) -> Result<Self, ScalarError> {
-        let bytes = value.as_bytes();
-        let base_is_well_formed = bytes.len() >= 20
-            && bytes.len() <= 30
-            && bytes[4] == b'-'
-            && bytes[7] == b'-'
-            && bytes[10] == b'T'
-            && bytes[13] == b':'
-            && bytes[16] == b':'
-            && bytes[19] != b'+'
-            && bytes[19] != b'-';
-        if !base_is_well_formed || bytes[19] != b'Z' && bytes[19] != b'.' {
-            return Err(ScalarError {
+        is_normalized_utc_instant(value)
+            .then(|| Self(value.to_owned()))
+            .ok_or(ScalarError {
                 kind: "normalized UTC instant",
-                reason: "must use canonical uppercase UTC RFC 3339 spelling",
-            });
-        }
-        if !bytes[..19]
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit())
-        {
-            return Err(ScalarError {
-                kind: "normalized UTC instant",
-                reason: "must contain a complete RFC 3339 calendar and clock",
-            });
-        }
-        match bytes[19] {
-            b'Z' if bytes.len() == 20 => {}
-            b'.' if bytes.last() == Some(&b'Z') => {
-                let fraction = &bytes[20..bytes.len() - 1];
-                if fraction.is_empty()
-                    || fraction.len() > 9
-                    || !fraction.iter().all(u8::is_ascii_digit)
-                    || fraction.last() == Some(&b'0')
-                {
-                    return Err(ScalarError {
-                        kind: "normalized UTC instant",
-                        reason: "must use a non-zero canonical nanosecond fraction",
-                    });
-                }
-            }
-            _ => {
-                return Err(ScalarError {
-                    kind: "normalized UTC instant",
-                    reason: "must use canonical uppercase UTC RFC 3339 spelling",
-                });
-            }
-        }
-        let format = time::format_description::parse_borrowed::<2>(
-            "[year]-[month]-[day]T[hour]:[minute]:[second]",
-        )
-        .expect("the fixed RFC 3339 UTC format must parse");
-        time::PrimitiveDateTime::parse(&value[..19], &format).map_err(|_| ScalarError {
-            kind: "normalized UTC instant",
-            reason: "contains an invalid calendar or clock value",
-        })?;
-        Ok(Self(value.to_owned()))
+                reason: "must be a canonical, calendar-valid uppercase UTC RFC 3339 instant",
+            })
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -335,7 +287,7 @@ impl JsonSchema for NormalizedUtcInstant {
             20,
             30,
             Some(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(?:\d{0,8}[1-9]))?Z$"),
-            None,
+            Some(NORMALIZED_UTC_INSTANT_FORMAT),
         )
     }
 }

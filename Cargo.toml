@@ -19,6 +19,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
+jsonschema = { version = "=0.48.2", default-features = false }
 regex = "=1.11.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = { version = "=1.2.1", features = ["derive"] }

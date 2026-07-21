@@ -10,7 +10,11 @@ mod tests {
         NormalizedUtcInstant, OriginalProjectCwd, PositiveGeneration, PropertyPath, Reason,
         RepositoryVersion, Summary,
     };
-    use super::schema::audit_json_schema;
+    use super::schema::{
+        audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
+        is_normalized_utc_instant, I_JSON_LF_TEXT_FORMAT, I_JSON_SINGLE_LINE_TEXT_FORMAT,
+        NORMALIZED_UTC_INSTANT_FORMAT,
+    };
     use crate::domain::branched_development::{
         BranchedLifecycleToolName, CapabilityRowId, DurableExecutionPolicy, ExecutionPolicy,
         MetadataObjectId, OperationId, ProfileArtifactRefId, ProjectId, Sha256Digest,
@@ -31,6 +35,18 @@ mod tests {
         assert_eq!(actual["minLength"], min);
         assert_eq!(actual["maxLength"], max);
         assert_eq!(actual.get("pattern").and_then(Value::as_str), pattern);
+    }
+
+    fn contract_validator<T: JsonSchema>() -> jsonschema::Validator {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .with_format(I_JSON_SINGLE_LINE_TEXT_FORMAT, is_i_json_single_line_text)
+            .with_format(I_JSON_LF_TEXT_FORMAT, is_i_json_lf_text)
+            .with_format(NORMALIZED_UTC_INSTANT_FORMAT, is_normalized_utc_instant)
+            .should_validate_formats(true)
+            .should_ignore_unknown_formats(false)
+            .build(&schema::<T>())
+            .expect("generated contract schema must compile")
     }
 
     #[test]
@@ -109,6 +125,26 @@ mod tests {
         assert!(serde_json::from_str::<RepositoryVersion>("\"version\\n1\"").is_err());
         assert!(serde_json::from_str::<OriginalProjectCwd>("\"/project\\tname\"").is_err());
         assert!(serde_json::from_str::<LocalProfileName>("\"profile\\rname\"").is_err());
+
+        let single_line = contract_validator::<Name>();
+        assert!(single_line.is_valid(&json!("界".repeat(256))));
+        assert!(!single_line.is_valid(&json!("界".repeat(257))));
+        for invalid in ["\u{0}", "line\nline", "\u{fdd0}", "\u{1fffe}"] {
+            assert!(
+                !single_line.is_valid(&json!(invalid)),
+                "single-line schema accepted {invalid:?}"
+            );
+        }
+        let narrative = contract_validator::<Narrative>();
+        assert!(narrative.is_valid(&json!("first\nsecond")));
+        for invalid in ["first\rsecond", "tab\t", "\u{ffff}", "\u{10ffff}"] {
+            assert!(
+                !narrative.is_valid(&json!(invalid)),
+                "LF-text schema accepted {invalid:?}"
+            );
+        }
+        let support_layer = contract_validator::<SupportLayerId>();
+        assert!(!support_layer.is_valid(&json!("layer\nname")));
     }
 
     #[test]
@@ -145,6 +181,10 @@ mod tests {
             30,
             Some(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(?:\d{0,8}[1-9]))?Z$"),
         );
+        assert_eq!(
+            schema::<NormalizedUtcInstant>()["format"],
+            NORMALIZED_UTC_INSTANT_FORMAT
+        );
         let instant_schema = schema::<NormalizedUtcInstant>();
         let pattern = instant_schema["pattern"].as_str().unwrap();
         let expression = Regex::new(pattern).unwrap();
@@ -157,6 +197,20 @@ mod tests {
             "2026-07-22T01:02:03.1234567890Z",
         ] {
             assert!(!expression.is_match(invalid), "schema accepted {invalid}");
+        }
+
+        let validator = contract_validator::<NormalizedUtcInstant>();
+        assert!(validator.is_valid(&json!("2024-02-29T23:59:59.123456789Z")));
+        for invalid in [
+            "2026-02-29T01:02:03Z",
+            "2026-13-01T01:02:03Z",
+            "2026-07-22T24:00:00Z",
+            "2026-07-22T01:02:60Z",
+        ] {
+            assert!(
+                !validator.is_valid(&json!(invalid)),
+                "timestamp schema accepted {invalid}"
+            );
         }
     }
 
@@ -257,6 +311,75 @@ mod tests {
             json!({"type": "array", "items": {}}),
         ] {
             assert!(audit_json_schema(&schema).is_err(), "accepted {schema}");
+        }
+    }
+
+    #[test]
+    fn schema_audit_resolves_local_refs_and_rejects_hidden_open_shapes() {
+        assert!(audit_json_schema(&json!({
+            "$defs": {
+                "Closed": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"],
+                    "additionalProperties": false
+                }
+            },
+            "$ref": "#/$defs/Closed"
+        }))
+        .is_ok());
+
+        for schema in [
+            json!({"not": {"type": "object"}}),
+            json!({"$defs": {}, "$ref": "#/$defs/Missing"}),
+            json!({
+                "$defs": {"Open": {"type": "object", "properties": {}}},
+                "$ref": "#/$defs/Open"
+            }),
+            json!({"$ref": "https://example.invalid/schema.json"}),
+            json!({"type": ["object", "null"], "properties": {}}),
+            json!({"type": ["array", "null"]}),
+            json!({
+                "type": "object",
+                "properties": {},
+                "patternProperties": {".*": {}},
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+                "unevaluatedProperties": false
+            }),
+            json!({"$defs": {"Loop": {"$ref": "#/$defs/Loop"}}, "$ref": "#/$defs/Loop"}),
+            json!({"type": "string", "unknownEscapeHatch": true}),
+        ] {
+            assert!(audit_json_schema(&schema).is_err(), "accepted {schema}");
+        }
+
+        assert!(audit_json_schema(&json!({
+            "type": ["object", "null"],
+            "properties": {},
+            "additionalProperties": false
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn generated_foundation_schemas_pass_the_fail_closed_audit() {
+        for generated in [
+            schema::<Name>(),
+            schema::<Narrative>(),
+            schema::<NormalizedUtcInstant>(),
+            schema::<BoundedVec<TaskId, 2>>(),
+            schema::<TaskPhase>(),
+            schema::<ExecutionPolicy>(),
+            schema::<DurableExecutionPolicy>(),
+            schema::<BranchedLifecycleToolName>(),
+        ] {
+            audit_json_schema(&generated).unwrap_or_else(|error| {
+                panic!("generated schema failed audit: {error}: {generated}")
+            });
         }
     }
 }

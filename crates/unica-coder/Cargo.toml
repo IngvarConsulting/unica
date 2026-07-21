@@ -28,6 +28,7 @@ ureq.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 regex.workspace = true
 
 [target.'cfg(unix)'.dependencies]

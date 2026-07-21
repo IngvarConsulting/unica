@@ -1,5 +1,6 @@
-use super::contracts::schema::string_schema;
-use crate::domain::i_json;
+use super::contracts::schema::{
+    is_i_json_single_line_text, string_schema, I_JSON_SINGLE_LINE_TEXT_FORMAT,
+};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use std::borrow::Cow;
 use std::fmt;
@@ -77,9 +78,7 @@ fn valid_capability_row_id(value: &str) -> bool {
 }
 
 fn valid_printable_non_control(value: &str, maximum_scalars: usize) -> bool {
-    (1..=maximum_scalars).contains(&value.chars().count())
-        && i_json::validate_i_json_string(value).is_ok()
-        && value.chars().all(|character| !character.is_control())
+    (1..=maximum_scalars).contains(&value.chars().count()) && is_i_json_single_line_text(value)
 }
 
 fn valid_support_layer_id(value: &str) -> bool {
@@ -246,7 +245,7 @@ identifier!(
     1,
     256,
     None,
-    None
+    Some(I_JSON_SINGLE_LINE_TEXT_FORMAT)
 );
 
 #[cfg(test)]
