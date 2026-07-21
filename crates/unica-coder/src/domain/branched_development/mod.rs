@@ -7,4 +7,7 @@ pub use operation::{
     classify_replay, OperationInvariantError, OperationOwnerState, OperationReplayView,
     OperationState, ReplayDisposition,
 };
-pub use vocabulary::{BranchedLifecycleToolName, ExecutionPolicy, TaskPhase};
+pub use vocabulary::{
+    BranchedLifecycleToolName, DurableExecutionPolicy, ExecutionPolicy,
+    NonDurableExecutionPolicyError, TaskPhase,
+};

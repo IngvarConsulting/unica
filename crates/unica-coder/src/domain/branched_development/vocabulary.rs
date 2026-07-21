@@ -140,6 +140,68 @@ impl ExecutionPolicy {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[serde(rename_all = "camelCase")]
+pub enum DurableExecutionPolicy {
+    LocalJournaled,
+    Contained,
+    PreparedJournaledEffect,
+    JournaledEffect,
+    PreviewedJournaledEffect,
+}
+
+impl DurableExecutionPolicy {
+    pub const ALL: &[Self] = &[
+        Self::LocalJournaled,
+        Self::Contained,
+        Self::PreparedJournaledEffect,
+        Self::JournaledEffect,
+        Self::PreviewedJournaledEffect,
+    ];
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::LocalJournaled => "localJournaled",
+            Self::Contained => "contained",
+            Self::PreparedJournaledEffect => "preparedJournaledEffect",
+            Self::JournaledEffect => "journaledEffect",
+            Self::PreviewedJournaledEffect => "previewedJournaledEffect",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonDurableExecutionPolicyError {
+    ReadOnly,
+}
+
+impl std::fmt::Display for NonDurableExecutionPolicyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadOnly => formatter.write_str("readOnly execution policy cannot be durable"),
+        }
+    }
+}
+
+impl std::error::Error for NonDurableExecutionPolicyError {}
+
+impl TryFrom<ExecutionPolicy> for DurableExecutionPolicy {
+    type Error = NonDurableExecutionPolicyError;
+
+    fn try_from(value: ExecutionPolicy) -> Result<Self, Self::Error> {
+        match value {
+            ExecutionPolicy::ReadOnly => Err(NonDurableExecutionPolicyError::ReadOnly),
+            ExecutionPolicy::LocalJournaled => Ok(Self::LocalJournaled),
+            ExecutionPolicy::Contained => Ok(Self::Contained),
+            ExecutionPolicy::PreparedJournaledEffect => Ok(Self::PreparedJournaledEffect),
+            ExecutionPolicy::JournaledEffect => Ok(Self::JournaledEffect),
+            ExecutionPolicy::PreviewedJournaledEffect => Ok(Self::PreviewedJournaledEffect),
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum BranchedLifecycleToolName {
     #[serde(rename = "unica.branched.start")]
     BranchedStart,
@@ -334,6 +396,58 @@ mod tests {
             assert_eq!(serde_json::to_string(&parsed).unwrap(), encoded);
         }
         assert!(serde_json::from_str::<ExecutionPolicy>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn durable_execution_policy_has_the_exact_five_value_serialized_list() {
+        let actual = DurableExecutionPolicy::ALL
+            .iter()
+            .map(DurableExecutionPolicy::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [
+                "localJournaled",
+                "contained",
+                "preparedJournaledEffect",
+                "journaledEffect",
+                "previewedJournaledEffect",
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(DurableExecutionPolicy::ALL).unwrap(),
+            r#"["localJournaled","contained","preparedJournaledEffect","journaledEffect","previewedJournaledEffect"]"#
+        );
+    }
+
+    #[test]
+    fn durable_execution_policy_rejects_read_only_json() {
+        assert!(serde_json::from_str::<DurableExecutionPolicy>("\"readOnly\"").is_err());
+    }
+
+    #[test]
+    fn durable_execution_policy_converts_every_durable_execution_policy() {
+        let converted = [
+            ExecutionPolicy::LocalJournaled,
+            ExecutionPolicy::Contained,
+            ExecutionPolicy::PreparedJournaledEffect,
+            ExecutionPolicy::JournaledEffect,
+            ExecutionPolicy::PreviewedJournaledEffect,
+        ]
+        .into_iter()
+        .map(DurableExecutionPolicy::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+        assert_eq!(converted.as_slice(), DurableExecutionPolicy::ALL);
+    }
+
+    #[test]
+    fn durable_execution_policy_rejects_read_only_with_a_typed_error() {
+        assert_eq!(
+            DurableExecutionPolicy::try_from(ExecutionPolicy::ReadOnly),
+            Err(NonDurableExecutionPolicyError::ReadOnly)
+        );
     }
 
     #[test]
