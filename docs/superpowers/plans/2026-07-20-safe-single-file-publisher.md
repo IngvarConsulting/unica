@@ -693,7 +693,7 @@ Set:
 
 Delete the Superpowers workflow line and the Rust-review workflow line added by commit `91f1fa8`. Do not alter any other instruction.
 
-- [ ] **Step 3: Apply `rust-expert-best-practices-code-review`**
+- [ ] **Step 3: Apply the repository-defined Rust safety checklist**
 
 Check exhaustive enums, typed errors with `io::Error` sources, no runtime-input panics, cfg boundary, single-consumption ownership states, stable lock order, post-commit warning semantics, and localized Windows unsafe safety comment. For every behavioral correction, write and run a failing regression first.
 

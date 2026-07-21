@@ -238,7 +238,10 @@ Run focused tests while developing, then:
 - run the full `unica-coder` test suite;
 - run repository platform-boundary checks;
 - run `cargo clippy` with warnings denied for the affected workspace scope;
-- apply the `rust-expert-best-practices-code-review` checklist before final verification;
+- review the Rust safety invariants explicitly: exhaustive enums, typed errors retaining
+  `io::Error` sources, no runtime-input panics, cfg boundaries, single-consumption
+  ownership states, stable lock ordering, post-commit warning semantics, and localized
+  Windows `unsafe` blocks with safety comments;
 - inspect `git diff --check` and confirm the PR contains no unrelated `AGENTS.md` change.
 
 ## Delivery and GitHub updates
