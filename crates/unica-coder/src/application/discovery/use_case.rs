@@ -58,6 +58,9 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                 inventory.invalidate(diagnostic);
             }
         }
+        if let Some(files) = inventory.data.as_ref() {
+            accumulator.seed_inventory_identities(files);
+        }
         accumulator.record_outcome(&inventory);
 
         match inventory.data.as_ref() {
@@ -1004,6 +1007,15 @@ impl ReportAccumulator {
 
     fn remaining_evidence(&self) -> usize {
         self.max_evidence.saturating_sub(self.evidence.len())
+    }
+
+    /// Seeds coherence checks only; snapshot contributors remain evidence-only.
+    fn seed_inventory_identities(&mut self, inventory: &SourceInventory) {
+        for file in &inventory.files {
+            let analyzed = file.analyzed_file();
+            self.known_files
+                .insert(analyzed.relative_path.clone(), analyzed);
+        }
     }
 
     fn validate_file_identities(&self, files: &[AnalyzedFile]) -> Result<(), ProviderDiagnostic> {
@@ -2514,5 +2526,71 @@ mod tests {
                 })
         }));
         assert!(report.runtime_flow_edges.is_empty());
+    }
+
+    #[test]
+    fn exhausted_runtime_conflicts_with_validated_inventory_only_identity() {
+        let inventory_path = "Documents/InventoryOnly.xml";
+        let inventory_raw = b"inventory";
+        let definition_path = "External/Definitions.bsl";
+        let definition_raw = b"procedure FindSeries()";
+        let flow_path = "External/Flow.bsl";
+        let flow_raw = b"CheckSeries();";
+
+        let definitions = FactBatch {
+            records: vec![DefinitionFact {
+                owner: artifact("CommonModule.Series"),
+                definition: artifact("CommonModule.Series.Method.FindSeries"),
+                name: "FindSeries".to_string(),
+                location: location(definition_path, 1),
+            }],
+            analyzed_files: vec![contributor(definition_path, definition_raw)],
+            contributors: vec![contributor(definition_path, definition_raw)],
+            coverage: ProviderCoverage::new(1, 1, definition_raw.len() as u64, 1),
+        };
+        let runtime = FactBatch {
+            records: vec![RuntimeFlowFact {
+                source: series_id(),
+                source_kind: ArtifactKind::TabularSection,
+                target: artifact("CommonModule.Series.Method.FindSeries"),
+                target_kind: ArtifactKind::Method,
+                relation: RuntimeFlowRelationKind::Calls,
+                location: location(flow_path, 1),
+            }],
+            analyzed_files: vec![
+                contributor(inventory_path, b"conflicting-inventory"),
+                contributor(flow_path, flow_raw),
+            ],
+            contributors: vec![contributor(flow_path, flow_raw)],
+            coverage: ProviderCoverage::new(
+                2,
+                2,
+                (b"conflicting-inventory".len() + flow_raw.len()) as u64,
+                1,
+            ),
+        };
+        let mut fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(inventory_path, inventory_raw)]);
+        fake.definitions = ProviderOutcome::Complete(definitions);
+        fake.runtime_flow = ProviderOutcome::Complete(runtime);
+
+        let report = execute(&fake, request_with_evidence_limit(1)).expect("partial report");
+
+        assert_eq!(report.evidence.len(), 1);
+        assert_eq!(report.evidence[0].provider, ProviderKind::Definitions);
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::RuntimeFlow
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+                && item.diagnostic.as_ref().is_some_and(|diagnostic| {
+                    diagnostic.code == "cross_provider_file_identity_conflict"
+                })
+        }));
+        assert!(report.runtime_flow_edges.is_empty());
+        assert_eq!(report.analysis_snapshot.contributors.len(), 1);
+        assert!(report
+            .analysis_snapshot
+            .contributors
+            .iter()
+            .all(|file| file.relative_path.as_str() != inventory_path));
     }
 }
