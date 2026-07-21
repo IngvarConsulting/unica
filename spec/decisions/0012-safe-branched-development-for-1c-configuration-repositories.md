@@ -84,12 +84,17 @@ reference closure, multi-vendor support isolation, interruption recovery, and
 the full acceptance matrix are proven. A smaller vertical slice is an
 implementation milestone, not completion of issue #137.
 
-The packaged workflow also requires the general native `unica.code.patch` tool
-tracked by [issue #73](https://github.com/IngvarConsulting/unica/issues/73).
-It is a separately owned prerequisite rather than one of the 21 lifecycle
-tools. Issue #137 is publishable only after that exact tool and its own contract
-tests are present on the base branch or integrated here; direct shell/file
-scripts are not an acceptable substitute for the prompt-visible full cycle.
+BSL authoring is a package capability, not a global prerequisite for this
+lifecycle. The native `unica.code.patch` proposed by
+[issue #73](https://github.com/IngvarConsulting/unica/issues/73) is one intended
+writer, but issue #137 does not depend on that exact tool and can ship without
+it. Any general writer used inside a task or manual/combine resolution workspace
+must declare the exact `supportsBranchedTask` variant and return the durable
+target/hash/event receipt required by this decision. If no compatible BSL
+writer is advertised, only a task or conflict requiring BSL text mutation is
+unavailable; metadata/form/other typed development and the repository lifecycle
+remain valid. Direct shell/file scripts are never a fallback for the
+prompt-visible workflow.
 
 Repository creation/administration, administrative unlock, extension
 repositories, production database restructuring, separate technical-project
@@ -1544,9 +1549,12 @@ The new skill is product-owned. `skill-upstreams.json` and its validator gain
 not fabricate upstream `trackingRef` or baseline commits. Official
 platform/standard links remain references, not donor provenance, and the skill
 must not be attributed to `v8-runner`. Package tests cover both provenance
-variants, add the skill scenario, its separately required `unica.code.patch`,
-all 21 lifecycle tools, ordered transcript guards, and generated-package smoke
-while preserving the single server named `unica`.
+variants, add the skill scenario, all 21 lifecycle tools, ordered transcript
+guards, and generated-package smoke while preserving the single server named
+`unica`. A package that advertises a compatible BSL writer additionally proves
+its branched-task schema, receipt, no-op/replay, and manual-conflict binding; a
+package without one proves that only BSL-writing scenarios stop and that the
+skill never substitutes shell/direct-file mutation.
 
 ## Verification
 

@@ -20,17 +20,24 @@ and is resolved by normal workspace policy. Designer executables, repository
 locations, task roots, artifacts, checkpoints, and sandboxes come only from
 local profile or registered IDs.
 
-`unica.code.patch` and layer-aware `unica.support.edit` are separately owned
-general developer tools required by the packaged workflow. They are not counted
-among these 21 lifecycle tools.
+Layer-aware `unica.support.edit` is a separately owned general developer tool
+required by the packaged workflow. Other general developer mutations,
+including BSL writing, are package capabilities rather than global
+prerequisites. None is counted among these 21 lifecycle tools.
 
-Their minimum companion contract is explicit:
+The companion contract for general mutations is producer-neutral:
 
-- `unica.code.patch` is the tool owned by issue #73. In a task workspace it
-  returns a durable `changeReceiptId`, affected object/property identity, before
-  and after SHA-256, and cache/event evidence. The branched workflow rejects a
-  code-patch implementation that cannot bind a manual merge decision to that
-  receipt.
+- Every general mutation operation advertised for `branchedTask`, regardless
+  of tool name or change kind, returns the closed `BranchedChangeReceipt` plus
+  `cacheImpact`; changed/no-change target, hash, event, and invalidation
+  evidence follows the four closed receipt leaves defined below. A
+  manual/combine decision can consume only the exact selectable changed receipt
+  for its target. A BSL writer is optional: `unica.code.patch`, proposed by
+  issue #73, is one possible implementation and is not a dependency of issue
+  #137 or package release. If no compatible BSL writer is advertised, only a
+  task or conflict that actually requires BSL text mutation stops before
+  mutation; metadata/form/other typed tasks and the repository lifecycle remain
+  available. The skill never falls back to shell or direct file editing.
 - `unica.support.edit` accepts `mode: "layer"`, `layerId`, and exactly one of
   `{ operation: "setCapability", enabled }` or
   `{ operation: "setObjectState", objectId, state }`, where state is `locked`,
@@ -1689,10 +1696,16 @@ supersession. Reusing the ID with different canonical input returns
 `operationReplayMismatch`, including when the first result was `noChange`.
 
 The packaged full-cycle transcript requires compatible project/configuration
-reads, typed code/support/metadata/form mutations, configuration build/load,
-syntax/diagnostics, and configured test execution. Each selected concrete tool
-or operation appears in the registry snapshot; generic family-name claims do
-not satisfy compatibility.
+reads, layer-aware support mutation, the concrete typed development mutations
+selected by its fixture, configuration build/load, syntax/diagnostics, and
+configured test execution. It covers every general mutation category that the
+package advertises and the skill selects. Every compatible BSL writer advertised
+by the package is selected and exercised in a with-writer transcript; this is a
+conditional package test and does not make a BSL writer a prerequisite for
+package release. The without-writer transcript instead proves that the skill
+stops on the missing capability before attempting BSL mutation and uses no
+fallback. Each selected concrete tool or operation appears in the registry
+snapshot; generic family-name claims do not satisfy compatibility.
 
 The registry also classifies each compatible mutation as either an atomic
 workspace-source mutation or an `authoritativeTaskConfigurationMutation`.
