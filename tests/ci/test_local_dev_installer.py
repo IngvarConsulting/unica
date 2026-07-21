@@ -122,6 +122,28 @@ class LocalDevInstallerTests(unittest.TestCase):
         )
         self.assertLess(create_home, first_codex_call)
 
+    def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:
+        installer = INSTALLER.read_text(encoding="utf-8")
+        workflow = (
+            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('WORK_DIR="$BUILD_ROOT/tool-work"', installer)
+        self.assertIn(
+            'METRICS_FILE="$BUILD_ROOT/cargo-metrics/$TARGET.json"', installer
+        )
+        self.assertIn('--metrics-file "$METRICS_FILE"', installer)
+        self.assertNotIn('rm -rf "$TOOL_BUNDLE" "$WORK_DIR"', installer)
+
+        self.assertIn('build_root="$PWD/.build"', workflow)
+        self.assertNotIn('rm -rf "$build_root"', workflow)
+        self.assertIn(
+            "path: .build/tool-work/${{ matrix.target }}/cargo-target", workflow
+        )
+        self.assertIn(
+            "METRICS_FILE: .build/cargo-metrics/${{ matrix.target }}.json", workflow
+        )
+
     def test_shell_scripts_are_forced_to_lf_in_windows_checkouts(self) -> None:
         completed = subprocess.run(
             [

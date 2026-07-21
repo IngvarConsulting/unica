@@ -44,6 +44,7 @@ PACKAGE_PATHS = {
     "scripts/ci/verify-release-assets.py",
 }
 CI_CONTRACT_PATHS = {
+    "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",
     "scripts/ci/evaluate-ci-gate.py",
     "tests/ci/test_classify_workflow_changes.py",

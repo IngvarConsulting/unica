@@ -113,7 +113,8 @@ TARGET="$(detect_target)"
 BUILD_ROOT="$(cd "$REPO_ROOT" && mkdir -p "$BUILD_ROOT" && cd "$BUILD_ROOT" && pwd)"
 TOOLS_ROOT="$BUILD_ROOT/tool-artifacts"
 TOOL_BUNDLE="$TOOLS_ROOT/unica-tools-$TARGET"
-WORK_DIR="$BUILD_ROOT/tool-work/$TARGET"
+WORK_DIR="$BUILD_ROOT/tool-work"
+METRICS_FILE="$BUILD_ROOT/cargo-metrics/$TARGET.json"
 PACKAGE_OUT="$BUILD_ROOT/package"
 MARKETPLACE_DIR="$PACKAGE_OUT/marketplace"
 PROMPT_PROOF="$BUILD_ROOT/prompt-input.json"
@@ -174,12 +175,13 @@ echo "==> Build root: $BUILD_ROOT"
 echo "==> Marketplace: $MARKETPLACE_NAME"
 
 if [ "$DO_BUILD" -eq 1 ]; then
-  rm -rf "$TOOL_BUNDLE" "$WORK_DIR"
+  rm -rf "$TOOL_BUNDLE"
   "$PYTHON_BIN" scripts/ci/build-unica-tools.py \
     --target "$TARGET" \
     --lock-file plugins/unica/third-party/tools.lock.json \
     --out-dir "$TOOL_BUNDLE" \
-    --work-dir "$WORK_DIR"
+    --work-dir "$WORK_DIR" \
+    --metrics-file "$METRICS_FILE"
 else
   if [ ! -f "$TOOL_BUNDLE/tools.json" ]; then
     echo "--skip-build requested, but bundle is missing: $TOOL_BUNDLE/tools.json" >&2

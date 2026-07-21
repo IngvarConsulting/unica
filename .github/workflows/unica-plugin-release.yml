@@ -171,9 +171,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          build_root="$PWD/.build/local-installer-smoke"
+          build_root="$PWD/.build"
           codex_home="$(cygpath -m "$build_root/codex-home")"
-          rm -rf "$build_root"
           CODEX_HOME="$codex_home" \
             scripts/dev/install-local-unica.sh \
               --build-dir "$build_root"

@@ -115,6 +115,12 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_classification([path], **expected)
 
+    def test_local_installer_change_requires_ci_contour(self) -> None:
+        self.assert_classification(
+            ["scripts/dev/install-local-unica.sh"],
+            ci_changed=True,
+        )
+
     def test_mixed_changes_union_their_contours(self) -> None:
         self.assert_classification(
             [
