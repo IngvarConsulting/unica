@@ -26,7 +26,11 @@ impl ArtifactId {
             return Err(ArtifactIdError::InvalidFormat);
         }
 
-        Ok(Self(trimmed.to_string()))
+        let normalized = trimmed
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        Ok(Self(normalized))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -43,3 +47,30 @@ impl fmt::Display for ArtifactIdError {
 }
 
 impl std::error::Error for ArtifactIdError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_identity_is_trimmed_and_case_normalized() {
+        let mixed = ArtifactId::parse(" Document.Order ").expect("mixed-case artifact");
+        let lower = ArtifactId::parse("document.order").expect("lowercase artifact");
+
+        assert_eq!(mixed.as_str(), "document.order");
+        assert_eq!(mixed, lower);
+    }
+
+    #[test]
+    fn artifact_order_uses_the_normalized_identity() {
+        let mut artifacts = [
+            ArtifactId::parse("Document.Zed").expect("zed artifact"),
+            ArtifactId::parse("document.Alpha").expect("alpha artifact"),
+        ];
+
+        artifacts.sort();
+
+        assert_eq!(artifacts[0].as_str(), "document.alpha");
+        assert_eq!(artifacts[1].as_str(), "document.zed");
+    }
+}

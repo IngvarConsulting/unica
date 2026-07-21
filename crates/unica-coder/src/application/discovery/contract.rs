@@ -2,7 +2,7 @@ use crate::domain::discovery::ArtifactId;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 const DISCOVER_ALLOWED_ARGS: &[&str] = &[
     "concepts",
@@ -292,19 +292,26 @@ fn optional_source_dir(
         .as_str()
         .ok_or_else(|| invalid_type("sourceDir", "string", value))?
         .trim();
-    let path = Path::new(text);
-    if text.is_empty() || text.contains('\\') || text.contains(':') || path.is_absolute() {
+    if text.is_empty() || text.starts_with(['/', '\\']) || text.contains(':') || text.contains('\0')
+    {
         return Err(invalid_source_dir());
     }
-    for component in path.components() {
+
+    let portable = text.replace('\\', "/");
+    let mut normalized = Vec::new();
+    for component in portable.split('/') {
         match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(invalid_source_dir());
-            }
+            "" | ".." => return Err(invalid_source_dir()),
+            "." => {}
+            normal => normalized.push(normal),
         }
     }
-    Ok(Some(path.to_path_buf()))
+    let normalized = if normalized.is_empty() {
+        ".".to_string()
+    } else {
+        normalized.join("/")
+    };
+    Ok(Some(PathBuf::from(normalized)))
 }
 
 fn invalid_source_dir() -> DiscoveryContractError {
@@ -361,13 +368,19 @@ fn parse_artifact_array(
                 .ok_or_else(|| invalid_type("objects", "string array item", value))?
                 .trim();
             validate_text_bytes("objects", text, MAX_OBJECT_BYTES)?;
-            reject_duplicate("objects", text, &mut normalized)?;
-            ArtifactId::parse(text).map_err(|error| {
+            let artifact = ArtifactId::parse(text).map_err(|error| {
                 DiscoveryContractError::new(
                     DiscoveryContractErrorCode::InvalidArtifactId,
                     format!("unica.project.discover object `{text}` is invalid: {error}"),
                 )
-            })
+            })?;
+            if !normalized.insert(artifact.clone()) {
+                return Err(DiscoveryContractError::new(
+                    DiscoveryContractErrorCode::DuplicateValue,
+                    format!("unica.project.discover `objects` contains duplicate value `{text}`"),
+                ));
+            }
+            Ok(artifact)
         })
         .collect()
 }
@@ -503,7 +516,7 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Non-empty concept containing at most 256 UTF-8 bytes; values must be unique ignoring case."
+                    "description": "Runtime validation trims each concept, requires 1..=256 UTF-8 bytes, and enforces array uniqueness ignoring case. JSON Schema uniqueItems covers exact JSON values only."
                 }
             },
             "cwd": {"type": "string"},
@@ -526,7 +539,7 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Canonical artifact identifier containing 1..=1024 UTF-8 bytes; values must be unique ignoring case."
+                    "description": "Runtime validation requires a canonical dot-separated artifact identifier with at least a kind and name, no empty dot segments or path separators, and 1..=1024 UTF-8 bytes; normalized identities must be unique ignoring case."
                 }
             },
             "searchTerms": {
@@ -536,18 +549,18 @@ pub(crate) fn discover_input_schema() -> Value {
                 "items": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Non-empty search term containing at most 256 UTF-8 bytes; values must be unique ignoring case."
+                    "description": "Runtime validation trims each search term, requires 1..=256 UTF-8 bytes, and enforces array uniqueness ignoring case. JSON Schema uniqueItems covers exact JSON values only."
                 }
             },
             "sourceDir": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Non-empty contained workspace-relative source path."
+                "description": "Runtime validation accepts a non-empty contained portable relative path using / or \\ separators, normalizes it to /, and rejects absolute, prefixed, escaping, or ambiguous forms."
             },
             "task": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Non-empty task containing at most 8192 UTF-8 bytes."
+                "description": "Runtime validation trims the task and requires 1..=8192 UTF-8 bytes. JSON Schema maxLength is omitted because it counts characters."
             }
         },
         "required": ["mode", "task"]
@@ -677,7 +690,7 @@ mod tests {
         .expect("normalized arrays");
         assert_eq!(request.concepts(), &["Series"]);
         assert_eq!(request.search_terms(), &["FindMe"]);
-        assert_eq!(request.objects()[0].as_str(), "Document.Order");
+        assert_eq!(request.objects()[0].as_str(), "document.order");
 
         for field in ["concepts", "searchTerms", "objects"] {
             let mut payload = valid_request();
@@ -759,21 +772,44 @@ mod tests {
     }
 
     #[test]
-    fn source_dir_accepts_only_non_empty_relative_contained_components() {
-        let mut accepted = valid_request();
-        accepted["sourceDir"] = json!("src/./configuration");
-        let request = parse(accepted).expect("contained source dir");
-        assert_eq!(
-            request.source_dir(),
-            Some(std::path::Path::new("src/./configuration"))
-        );
+    fn source_dir_normalizes_portable_relative_paths() {
+        for (source_dir, expected) in [
+            ("src/./configuration", "src/configuration"),
+            ("src\\configuration", "src/configuration"),
+            ("./src\\nested/./configuration", "src/nested/configuration"),
+            (".", "."),
+        ] {
+            let mut payload = valid_request();
+            payload["sourceDir"] = json!(source_dir);
+            let request = parse(payload).expect("portable contained source dir");
+            assert_eq!(
+                request.source_dir(),
+                Some(std::path::Path::new(expected)),
+                "{source_dir}"
+            );
+        }
+    }
 
+    #[test]
+    fn source_dir_rejects_portable_absolute_escaping_and_ambiguous_paths() {
         for source_dir in [
             "",
             "/absolute",
+            "\\rooted",
+            "//server/share",
+            "\\\\server\\share",
+            "C:\\absolute",
+            "C:/absolute",
+            "C:drive-relative",
+            "\\\\?\\C:\\device",
+            "\\\\.\\device",
             "../escape",
             "src/../escape",
-            "C:\\absolute",
+            "src\\..\\escape",
+            "src//ambiguous",
+            "src\\\\ambiguous",
+            "src/",
+            "src:",
         ] {
             let mut payload = valid_request();
             payload["sourceDir"] = json!(source_dir);
@@ -863,7 +899,39 @@ mod tests {
     }
 
     #[test]
-    fn schema_structure_and_runtime_parser_agree_for_representative_payloads() {
+    fn local_schema_evaluator_enforces_expressible_keywords() {
+        let schema = json!({
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 3,
+                "enum": ["aa", "bbb"]
+            }
+        });
+
+        assert!(schema_structurally_accepts(&schema, &json!(["aa", "bbb"])));
+        for rejected in [
+            json!([]),
+            json!(["aa", "bbb", "aa"]),
+            json!(["aa", "aa"]),
+            json!(["a"]),
+            json!(["bbbb"]),
+            json!(["cc"]),
+            json!([1]),
+        ] {
+            assert!(
+                !schema_structurally_accepts(&schema, &rejected),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn expressible_schema_structure_and_runtime_parser_agree() {
         let schema = discover_input_schema();
         let cases = [
             valid_request(),
@@ -873,18 +941,66 @@ mod tests {
             json!({"mode": "explore", "task": ""}),
             json!({"mode": "explore", "task": "x", "extra": true}),
             json!({"mode": "explore", "task": "x", "concepts": "a"}),
+            json!({"mode": "explore", "task": "x", "concepts": [""]}),
+            json!({"mode": "explore", "task": "x", "concepts": ["a", "a"]}),
             json!({"mode": "explore", "task": "x", "concepts": vec!["a"; 65]}),
             json!({"mode": "explore", "task": "x", "limits": {"maxFiles": 20_001}}),
             json!({"mode": "explore", "task": "x", "limits": {"unknown": 1}}),
         ];
         for payload in cases {
-            let schema_accepts = structurally_valid(&schema, &payload);
+            let schema_accepts = schema_structurally_accepts(&schema, &payload);
             let runtime_accepts = parse(payload.clone()).is_ok();
             assert_eq!(schema_accepts, runtime_accepts, "payload: {payload}");
         }
     }
 
-    fn structurally_valid(schema: &Value, value: &Value) -> bool {
+    #[test]
+    fn runtime_only_semantics_are_documented_and_runtime_authoritative() {
+        let schema = discover_input_schema();
+        let properties = schema["properties"].as_object().expect("properties object");
+        for (field, required_words) in [
+            ("task", &["Runtime validation", "UTF-8 bytes"][..]),
+            ("concepts", &["Runtime validation", "ignoring case"]),
+            ("searchTerms", &["Runtime validation", "ignoring case"]),
+            (
+                "objects",
+                &[
+                    "Runtime validation",
+                    "kind and name",
+                    "empty dot segments",
+                    "path separators",
+                ],
+            ),
+            ("sourceDir", &["Runtime validation", "contained"]),
+        ] {
+            let description = if matches!(field, "concepts" | "searchTerms" | "objects") {
+                properties[field]["items"]["description"].as_str()
+            } else {
+                properties[field]["description"].as_str()
+            }
+            .expect("runtime-authoritative description");
+            for word in required_words {
+                assert!(description.contains(word), "{field}: {description}");
+            }
+        }
+
+        for payload in [
+            json!({"mode": "explore", "task": "x", "concepts": ["Series", " series "]}),
+            json!({"mode": "explore", "task": "x", "searchTerms": ["Find", "find"]}),
+            json!({"mode": "explore", "task": "x", "objects": ["Document"]}),
+            json!({"mode": "explore", "task": "x", "objects": ["Document.Order", "document.order"]}),
+            json!({"mode": "explore", "task": "x", "sourceDir": "../escape"}),
+            request_with_task("я".repeat(4_097)),
+        ] {
+            assert!(
+                schema_structurally_accepts(&schema, &payload),
+                "standard JSON Schema remains structural for {payload}"
+            );
+            assert!(parse(payload.clone()).is_err(), "runtime rejects {payload}");
+        }
+    }
+
+    fn schema_structurally_accepts(schema: &Value, value: &Value) -> bool {
         match schema["type"].as_str() {
             Some("object") => {
                 let Some(object) = value.as_object() else {
@@ -907,23 +1023,34 @@ mod tests {
                     return false;
                 }
                 object.iter().all(|(key, nested)| {
-                    properties
-                        .get(key)
-                        .is_some_and(|nested_schema| structurally_valid(nested_schema, nested))
+                    properties.get(key).is_some_and(|nested_schema| {
+                        schema_structurally_accepts(nested_schema, nested)
+                    })
                 })
             }
             Some("array") => value.as_array().is_some_and(|array| {
-                schema["maxItems"]
+                schema["minItems"]
                     .as_u64()
-                    .is_none_or(|maximum| array.len() as u64 <= maximum)
+                    .is_none_or(|minimum| array.len() as u64 >= minimum)
+                    && schema["maxItems"]
+                        .as_u64()
+                        .is_none_or(|maximum| array.len() as u64 <= maximum)
                     && array
                         .iter()
-                        .all(|item| structurally_valid(&schema["items"], item))
+                        .all(|item| schema_structurally_accepts(&schema["items"], item))
+                    && (schema["uniqueItems"] != true
+                        || array
+                            .iter()
+                            .enumerate()
+                            .all(|(index, item)| !array[..index].contains(item)))
             }),
             Some("string") => value.as_str().is_some_and(|text| {
                 schema["minLength"]
                     .as_u64()
                     .is_none_or(|minimum| text.chars().count() as u64 >= minimum)
+                    && schema["maxLength"]
+                        .as_u64()
+                        .is_none_or(|maximum| text.chars().count() as u64 <= maximum)
                     && schema["enum"]
                         .as_array()
                         .is_none_or(|values| values.iter().any(|value| value == text))
