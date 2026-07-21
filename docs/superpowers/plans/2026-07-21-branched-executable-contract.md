@@ -91,8 +91,9 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 
 - [ ] RED: assert exact schema and Serde rejection for `TaskId`, `OperationId`,
   `Sha256Digest`, `UnicaId`, `ProjectId`, `MetadataObjectId`,
-  `ProfileArtifactRefId`, `CapabilityRowId`, `SupportLayerId`, bounded names,
-  summaries, reasons, displays, property paths, diagnostics,
+  `OriginalProjectCwd`, `LocalProfileName`, `ProfileArtifactRefId`,
+  `CapabilityRowId`, `SupportLayerId`, bounded names, summaries, reasons,
+  displays, property paths, diagnostics,
   `RepositoryVersion`, normalized UTC instants, positive generations, and
   bounded typed vectors.
 - [ ] Enforce `NormalizedUtcInstant` as validated uppercase RFC 3339 UTC with

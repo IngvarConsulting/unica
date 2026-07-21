@@ -51,6 +51,14 @@ The companion contract for general mutations is producer-neutral:
 
 - `TaskId`: 1-64 ASCII characters matching
   `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+- `OriginalProjectCwd`: a 1-4096-Unicode-scalar non-empty string with no control
+  characters. It is a workspace selector interpreted by the existing workspace
+  path policy, not a persisted/canonical identity and never a task workspace,
+  artifact, state-root, executable, or connection path. Resolution must prove
+  that its local project configuration owns the requested `projectId`/task.
+- `LocalProfileName`: 1-256 printable non-control Unicode scalar values. It is
+  the exact key of a local branched-development profile and is distinct from
+  `ProfileArtifactRefId`, which names an artifact entry inside that profile.
 - `OperationId`: canonical UUID string.
 - `ProjectId`: canonical UUID from local project configuration.
 - `UnicaId`: canonical UUID allocated by Unica and scoped to one task. This is
@@ -3776,7 +3784,8 @@ reconcile a journal.
 
 Request fields: `taskId`, `operationId`, `outcome` (`success` or `abandoned`),
 `reason` (required and non-empty for `abandoned`), and `dryRun?: true` for
-preview; apply requires `dryRun: false` and `approvedPreviewDigest`.
+preview; `reason` is forbidden for `success`. Apply requires `dryRun: false`
+and `approvedPreviewDigest`.
 `PreArmCancellationArchiveEntry` is the closed `{
 supportActionId, effectObservation: PreArmCancellationEffectObservation,
 finalizationPlan: PreArmCancellationFinalizationPlan,
