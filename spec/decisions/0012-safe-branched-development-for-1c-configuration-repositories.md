@@ -550,6 +550,13 @@ is a policy-specific fsynced receipt/evidence barrier while the record remains
 terminal envelope from the receipt and never repeats the effect. Schema upgrades
 are explicit and monotonic; a crash at any remote-effect boundary yields
 reconciliation, never blind replay.
+The stored policy is the non-read-only `DurableExecutionPolicy`; `readOnly`
+cannot be represented by the operation-record schema, its canonical input, or
+`ActiveOperationStatus` projection. Storage validation runs before status or
+replay classification. A persisted/legacy record claiming
+`readOnly` deterministically returns `stateCorrupt`, is retained for offline
+repair, and permits no lease/CAS, worker, receipt, replay, migration coercion,
+or external effect.
 
 ### Leases and managed operations
 
@@ -584,7 +591,8 @@ durable preview/evidence handle, task/status mutation, or `operationId`. Any
 operation reference it returns denotes an already-existing mutating record. On
 MCP disconnect/timeout it kills the owned process tree, discards temporary
 output, and may be called again because it is target-effect-free; it cannot
-yield an unknown authoritative effect.
+yield an unknown authoritative effect. A stored record whose policy says
+`readOnly` is corruption, not read-only recovery evidence.
 
 Cancellation of a sandbox/read operation is bounded and safe. Cancellation of
 a repository or original-infobase mutation records intent and enters recovery
@@ -1378,6 +1386,15 @@ one atomic target-plus-account reservation, response-loss observe/renew/release
 reconciliation, and durable exclusion after process-lease loss. A host-local
 coordination file/mutex is insufficient. This extends the existing platform row;
 it does not introduce a third capability manifest.
+The case contains two separately reset race subcases. `targetKeyExclusion`
+runs on two hosts against the same canonical target with different normalized
+integration accounts: exactly one start wins and the loser is
+`targetReservationBusy`. `accountKeyExclusion` runs on two hosts against
+different canonical targets with the same normalized integration account:
+exactly one start wins and the loser is
+`repositoryAccountReservationBusy`. Because the non-contended key differs in
+each race, neither an account-only nor a target-only implementation can satisfy
+the retained evidence.
 
 A row contains schema/feature-contract versions, harness contract digest,
 implementation commit, run timestamp, topology key, all required case IDs,
@@ -1516,9 +1533,13 @@ A row is publishable only after a disposable real-platform fixture proves:
 1. distribution classification and vendor-support creation;
 2. partial lock diagnostics, owner availability, and compensation;
 3. same-user pre-existing lock behavior;
-4. two hosts racing both the same target and distinct targets sharing the same
-   repository account, with exactly one start admitted in each contention;
-   response-loss observation proves durable reservation exclusion and release;
+4. two independent, freshly isolated two-host races: the same canonical target
+   with different normalized integration accounts admits exactly one start and
+   rejects the loser as `targetReservationBusy`, then different canonical
+   targets with the same normalized integration account admits exactly one
+   start and rejects the loser as `repositoryAccountReservationBusy`;
+   response-loss observation proves durable reservation exclusion and release
+   in both subcases;
 5. commit failure/atomicity and unlock behavior;
 6. supported-update settings for scalar/module/add-add/delete-modify/reference
    and vendor-rule conflicts without `-force`;

@@ -72,7 +72,10 @@ Unica. Если изменение нарушает инвариант, снач
    8785 JCS-based and domain-separated by exact tool and execution policy; the
    durable operation states are only `registered`, `intentWritten`,
    `effectUnknown`, and `terminal`, with an fsynced observed barrier inside
-   `effectUnknown` rather than a fifth state.
+   `effectUnknown` rather than a fifth state. Durable records and their status
+   projections use `DurableExecutionPolicy`, which excludes `readOnly`; a
+   persisted read-only record is rejected as `stateCorrupt` before replay or
+   any effect and is never coerced during migration.
 3. The original infobase remains bound to the same repository and never receives
    task XML sources.
 4. Baselines are verified full distributions. An ordinary CF is legal only in
@@ -103,7 +106,10 @@ Unica. Если изменение нарушает инвариант, снач
     either endpoint is not capability-proven `hostConfined`, a reachable
     linearizable shared coordinator atomically reserves the target and account
     keys before task state/work-root creation; unproven network-mounted file
-    endpoints are `multiHost`, and unproven coordination fails closed.
+    endpoints are `multiHost`, and unproven coordination fails closed. Its
+    evidence separately races the same target under different normalized
+    accounts and different targets under the same normalized account, proving
+    exactly one winner and the matching target/account loser code in each case.
 14. Any changed ordinary task mutation after verification atomically returns to
     `developing` and invalidates exactly every descendant workflow proof; a
     no-change mutation selects an equal before/result pair from the exact closed

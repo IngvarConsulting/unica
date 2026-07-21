@@ -58,7 +58,11 @@ cache behavior, or packaging metadata.
   `dryRun` and creates no operation/lease/start-attempt/receipt/durable-handle
   or task-status state. JSON-derived digest vectors use RFC 8785 JCS and
   domain-separated tool/policy input records; operation states are exactly
-  `registered`, `intentWritten`, `effectUnknown`, and `terminal`.
+  `registered`, `intentWritten`, `effectUnknown`, and `terminal`. Durable
+  records/input digests/status projections use `DurableExecutionPolicy` and
+  cannot represent `readOnly`; storage and fake-replay negatives inject that
+  legacy value and require `stateCorrupt` before CAS/dispatch/effect, without
+  migration coercion.
 - [ ] Compatible tools accept the original `cwd` plus opaque `branchedTask`,
   resolve the owned disposable workspace internally, and mutations return
   durable receipts/cache events for that context.
@@ -86,12 +90,20 @@ cache behavior, or packaging metadata.
   `/ConfigurationRepositoryUpdateCfg -v` to pin a repository version.
 - [ ] Compensation touches only operation-owned locks; ambiguous ownership
   yields `recoveryRequired`.
+- [ ] Repository conflict/status schemas carry `target:
+  RepositoryTargetIdentity` plus literal presentation-only `targetDisplay:
+  RepositoryTargetDisplay`; omission/renaming is rejected and display never
+  affects identity, ordering, or control flow.
 - [ ] Original-target and repository-account reservations independently prevent
   concurrent tasks from confusing same-user lock ownership. Local mutexes/files
   are local only: any endpoint not capability-proven `hostConfined` uses the
   platform row's reachable linearizable coordinator for one atomic target-plus-
   account reservation, fenced response-loss reconciliation, and lease-loss
   persistence; unproven network-mounted files are multi-host and fail closed.
+  The retained fixture runs two isolated races: same target with different
+  normalized accounts must yield one winner plus `targetReservationBusy`, and
+  different targets with the same normalized account must yield one winner plus
+  `repositoryAccountReservationBusy`.
 - [ ] Every recovery source resolves to its exact provider object below the
   canonical retention-provider root without traversal/symlink/reparse escape.
   Each provider root is disjoint from every work/instance/quarantine/original/

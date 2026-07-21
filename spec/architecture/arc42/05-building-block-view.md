@@ -28,9 +28,10 @@
   targets/three dispositions, support layers, compensated locks, and terminal
   proofs without filesystem/process access.
 - The same models define RFC 8785 JSON contract digests and domain-separated
-  operation inputs, the exact four-state operation record, closed missing-task
-  reservation blockers, and `RepositoryTargetIdentity` for both root and
-  development-object lock/conflict targets.
+  operation inputs, `DurableExecutionPolicy` without `readOnly`, the exact
+  four-state operation record, closed missing-task reservation blockers, and
+  `RepositoryTargetIdentity` plus presentation-only `RepositoryTargetDisplay`
+  for both root and development-object lock/conflict targets.
 
 ## Application Blocks
 
@@ -80,13 +81,17 @@
   cache root.
 - `BranchedTaskRepository` persists schema-versioned operational records under
   the durable state root; it is not an extension of `WorkspaceStateRepository`.
+  It validates storage before status/replay projection and rejects a legacy
+  read-only operation record as `stateCorrupt` without migration or dispatch.
 - `BranchedTargetLocator` persists the project/target-to-state-root registration
   and start-attempt replay records under a non-overridable owner-only
   coordination root.
 - `BranchedReservationCoordinator` owns atomic target-plus-account reservations.
   The owner-only coordination root/mutex remains its host-local fast guard; a
   capability-proven shared linearizable backend is mandatory whenever either
-  endpoint is multi-host.
+  endpoint is multi-host. Its capability evidence independently proves target
+  exclusion with distinct normalized accounts and account exclusion with
+  distinct targets, each with one winner and its key-specific loser code.
 - `DesignerPort` is a typed platform-neutral boundary. Its OS-specific locator,
   process, encoding, service-message, and filesystem implementation lives under
   `infrastructure/platform/**`. Repository refresh locks root plus the exact
