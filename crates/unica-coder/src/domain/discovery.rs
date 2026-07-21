@@ -61,6 +61,97 @@ impl fmt::Display for ArtifactIdError {
 
 impl std::error::Error for ArtifactIdError {}
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub(crate) struct PortableRelativePath(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PortableRelativePathError {
+    NonUtf8,
+    Empty,
+    Absolute,
+    AmbiguousComponent,
+    UnsafeComponent,
+}
+
+impl PortableRelativePath {
+    pub(crate) fn parse(path: &Path) -> Result<Self, PortableRelativePathError> {
+        let value = path.to_str().ok_or(PortableRelativePathError::NonUtf8)?;
+        Self::parse_str(value)
+    }
+
+    pub(crate) fn parse_str(value: &str) -> Result<Self, PortableRelativePathError> {
+        if value.is_empty() {
+            return Err(PortableRelativePathError::Empty);
+        }
+        if value.starts_with(['/', '\\']) {
+            return Err(PortableRelativePathError::Absolute);
+        }
+
+        let portable = value.replace('\\', "/");
+        let mut components = Vec::new();
+        for component in portable.split('/') {
+            match component {
+                "" | "." | ".." => {
+                    return Err(PortableRelativePathError::AmbiguousComponent);
+                }
+                normal if portable_path_component_is_valid(normal) => components.push(normal),
+                _ => return Err(PortableRelativePathError::UnsafeComponent),
+            }
+        }
+        Ok(Self(components.join("/")))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PortableRelativePathError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonUtf8 => formatter.write_str("evidence path must be valid UTF-8"),
+            Self::Empty => formatter.write_str("evidence path must not be empty"),
+            Self::Absolute => formatter.write_str("evidence path must be relative"),
+            Self::AmbiguousComponent => formatter
+                .write_str("evidence path must not contain empty, current, or parent components"),
+            Self::UnsafeComponent => {
+                formatter.write_str("evidence path contains a non-portable component")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PortableRelativePathError {}
+
+fn portable_path_component_is_valid(component: &str) -> bool {
+    !component.ends_with(['.', ' '])
+        && !component.chars().any(|character| {
+            character.is_ascii_control()
+                || matches!(character, '<' | '>' | '"' | '|' | '?' | '*' | ':')
+        })
+        && !is_reserved_win32_path_component(component)
+}
+
+fn is_reserved_win32_path_component(component: &str) -> bool {
+    let basename = match component.split_once('.') {
+        Some((basename, _extension)) => basename,
+        None => component,
+    };
+    let basename = basename.to_ascii_uppercase();
+    if matches!(basename.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    ["COM", "LPT"].iter().any(|prefix| {
+        basename.strip_prefix(prefix).is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    })
+}
+
 macro_rules! digest_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -114,7 +205,7 @@ impl EvidenceId {
         hasher.field(kind.stable_name().as_bytes());
         hasher.field(target.as_str().as_bytes());
         hasher.field(relation.stable_name().as_bytes());
-        hasher.field(location.relative_path.to_string_lossy().as_bytes());
+        hasher.field(location.relative_path.as_str().as_bytes());
         hasher.optional_u32(location.line);
         hasher.optional_u32(location.column);
         hasher.optional_str(location.xml_path.as_deref());
@@ -135,7 +226,7 @@ impl SnapshotFingerprint {
         let mut hasher = StableHasher::new("unica.discovery.snapshot.v1");
         hasher.field(mapping.as_str().as_bytes());
         for contributor in sorted {
-            hasher.field(contributor.relative_path.to_string_lossy().as_bytes());
+            hasher.field(contributor.relative_path.as_str().as_bytes());
             hasher.field(contributor.raw_hash.as_str().as_bytes());
             hasher.field(&contributor.bytes.to_be_bytes());
         }
@@ -330,7 +421,7 @@ impl EvidenceRelation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceFile {
-    pub relative_path: PathBuf,
+    pub relative_path: PortableRelativePath,
     pub bytes: Vec<u8>,
     pub raw_hash: ContentHash,
 }
@@ -348,7 +439,7 @@ impl SourceFile {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalyzedFile {
-    pub relative_path: PathBuf,
+    pub relative_path: PortableRelativePath,
     pub raw_hash: ContentHash,
     pub bytes: u64,
 }
@@ -487,7 +578,7 @@ pub(crate) struct SupportFact {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EvidenceLocation {
-    pub relative_path: PathBuf,
+    pub relative_path: PortableRelativePath,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -895,7 +986,8 @@ mod tests {
         assert_ne!(form, target);
 
         let source = SourceFile {
-            relative_path: PathBuf::from("Documents/Order.xml"),
+            relative_path: PortableRelativePath::parse_str("Documents/Order.xml")
+                .expect("source path"),
             bytes: b"raw".to_vec(),
             raw_hash: ContentHash::sha256(b"raw"),
         };
@@ -928,7 +1020,8 @@ mod tests {
     fn digest_newtypes_are_stable_and_domain_separated() {
         let mapping = MappingFingerprint::from_identity("configuration:src");
         let contributor = AnalyzedFile {
-            relative_path: PathBuf::from("Document.xml"),
+            relative_path: PortableRelativePath::parse_str("Document.xml")
+                .expect("contributor path"),
             raw_hash: ContentHash::sha256(b"raw"),
             bytes: 3,
         };
@@ -960,6 +1053,127 @@ mod tests {
         assert_eq!(
             evidence.as_str(),
             "fe36f47ed429c5b84ced6892e52af0a8b5ba96113507f7507613c2fe965d7939"
+        );
+    }
+
+    #[test]
+    fn portable_relative_path_canonicalizes_cross_platform_separators() {
+        let slash = PortableRelativePath::parse_str("Documents/Order/Ext/ObjectModule.bsl")
+            .expect("slash path");
+        let backslash = PortableRelativePath::parse_str("Documents\\Order\\Ext\\ObjectModule.bsl")
+            .expect("backslash path");
+
+        assert_eq!(slash, backslash);
+        assert_eq!(slash.as_str(), "Documents/Order/Ext/ObjectModule.bsl");
+        assert_eq!(
+            serde_json::to_string(&slash).expect("serialize path"),
+            "\"Documents/Order/Ext/ObjectModule.bsl\""
+        );
+    }
+
+    #[test]
+    fn canonical_path_bytes_make_cross_separator_hashes_identical() {
+        let target = ArtifactId::parse("Document.Order").expect("artifact");
+        let raw_hash = ContentHash::sha256(b"raw");
+        let slash_path =
+            PortableRelativePath::parse_str("Documents/Order.xml").expect("slash path");
+        let backslash_path =
+            PortableRelativePath::parse_str("Documents\\Order.xml").expect("backslash path");
+        let slash_location = EvidenceLocation {
+            relative_path: slash_path.clone(),
+            line: Some(1),
+            column: None,
+            xml_path: None,
+        };
+        let backslash_location = EvidenceLocation {
+            relative_path: backslash_path.clone(),
+            line: Some(1),
+            column: None,
+            xml_path: None,
+        };
+        let slash_evidence = EvidenceId::from_fact(
+            ProviderKind::MetadataCatalog,
+            EvidenceKind::Metadata,
+            &target,
+            &EvidenceRelation::Structural(StructuralRelationKind::Contains),
+            &slash_location,
+            &raw_hash,
+        );
+        let backslash_evidence = EvidenceId::from_fact(
+            ProviderKind::MetadataCatalog,
+            EvidenceKind::Metadata,
+            &target,
+            &EvidenceRelation::Structural(StructuralRelationKind::Contains),
+            &backslash_location,
+            &raw_hash,
+        );
+        let mapping = MappingFingerprint::from_identity("configuration:src");
+        let slash_snapshot = SnapshotFingerprint::from_manifest(
+            &mapping,
+            &[AnalyzedFile {
+                relative_path: slash_path,
+                raw_hash: raw_hash.clone(),
+                bytes: 3,
+            }],
+        );
+        let backslash_snapshot = SnapshotFingerprint::from_manifest(
+            &mapping,
+            &[AnalyzedFile {
+                relative_path: backslash_path,
+                raw_hash,
+                bytes: 3,
+            }],
+        );
+
+        assert_eq!(slash_evidence, backslash_evidence);
+        assert_eq!(slash_snapshot, backslash_snapshot);
+    }
+
+    #[test]
+    fn portable_relative_path_rejects_ambiguous_or_unsafe_spellings() {
+        for unsafe_path in [
+            "",
+            "/absolute",
+            "\\absolute",
+            "C:\\absolute",
+            "dir//file.xml",
+            "dir\\\\file.xml",
+            "dir/./file.xml",
+            "dir/../file.xml",
+            "dir/file.xml/",
+            "dir./file.xml",
+            "dir /file.xml",
+            "dir/NUL.xml",
+            "dir/file?.xml",
+        ] {
+            assert!(
+                PortableRelativePath::parse_str(unsafe_path).is_err(),
+                "unsafe path was accepted: {unsafe_path:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_relative_path_rejects_non_utf8_without_lossy_collisions() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let first = PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xff]));
+        let second = PathBuf::from(OsString::from_vec(vec![b'a', b'/', 0xfe]));
+
+        assert_eq!(
+            String::from_utf8_lossy(first.as_os_str().as_bytes()),
+            String::from_utf8_lossy(second.as_os_str().as_bytes()),
+            "lossy conversion would collide distinct paths"
+        );
+        assert_eq!(
+            PortableRelativePath::parse(&first),
+            Err(PortableRelativePathError::NonUtf8)
+        );
+        assert_eq!(
+            PortableRelativePath::parse(&second),
+            Err(PortableRelativePathError::NonUtf8)
         );
     }
 }
