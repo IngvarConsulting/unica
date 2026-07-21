@@ -30,6 +30,28 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
+    def test_extension_point_discovery_decision_is_registered_and_narrow(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        index = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+        adr = repo_root / "spec/decisions/0012-read-only-extension-point-discovery.md"
+        architecture = repo_root / "spec/architecture/extension-point-discovery.md"
+
+        self.assertIn("ADR-0012", index)
+        self.assertTrue(adr.is_file())
+        self.assertTrue(architecture.is_file())
+        joined = adr.read_text(encoding="utf-8") + architecture.read_text(encoding="utf-8")
+        for token in (
+            "unica.project.discover",
+            "OperationResult.data.discovery",
+            "ProviderOutcome",
+            "analysis snapshot",
+            "extension-point-discovery",
+            "Slice C",
+            "Slice D",
+        ):
+            self.assertIn(token, joined)
+        self.assertNotIn("discovery authorizes mutation", joined)
+
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin = json.loads(
