@@ -192,6 +192,38 @@ jobs:
           python scripts/ci/smoke-unica-mcp.py \
             --binary "$executable" \
             --plugin-root ".build/tool-bundles/${{ matrix.target }}"
+      - name: Smoke local development installer on Windows
+        if: matrix.target == 'win-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_root="$PWD/.build/local-installer-smoke"
+          bundle_root="$build_root/tool-artifacts/unica-tools-win-x64"
+          fake_bin="$build_root/fake-bin"
+          CODEX_HOME="$build_root/codex-home"
+          rm -rf "$build_root"
+          mkdir -p "$(dirname "$bundle_root")" "$fake_bin"
+          cp -R ".build/tool-bundles/win-x64" "$bundle_root"
+          cat > "$fake_bin/codex" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "$*" in
+            plugin\ marketplace\ remove\ *) exit 0 ;;
+            plugin\ marketplace\ add\ *) exit 0 ;;
+            debug\ prompt-input\ test)
+              printf '%s\n' '{"skills":["Unica","v8-runner","db-auth-check"]}'
+              ;;
+            *)
+              printf 'unexpected fake codex invocation: %s\n' "$*" >&2
+              exit 64
+              ;;
+          esac
+          EOF
+          chmod +x "$fake_bin/codex"
+          CODEX_HOME="$CODEX_HOME" PATH="$fake_bin:$PATH" \
+            scripts/dev/install-local-unica.sh \
+              --build-dir "$build_root" \
+              --skip-build
       - name: Package deterministic runtime
         run: >
           python scripts/ci/package-unica-runtime.py

@@ -79,7 +79,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 select_python() {
-  for candidate in "${PYTHON:-}" python3.12 python3.11 python3.10 python3; do
+  for candidate in "${PYTHON:-}" python3.12 python3.11 python3.10 python3 python; do
     if [ -z "$candidate" ]; then
       continue
     fi

@@ -15,6 +15,7 @@
 - Keep `MSYS_NT-*` and `CYGWIN_NT-*` unsupported.
 - Keep WSL on `linux-x64` through its existing `Linux` identity.
 - Preserve unsupported-target exit status 78 and diagnostic wording.
+- Accept the standard Windows `python` executable name after the existing `python3.*` candidates.
 - Do not change package metadata, release targets, public MCP tools, or prompt-visible skills.
 - Do not add a PowerShell installer, cross-compilation, or fallback downloads.
 - Use the real Windows tool bundle in CI; fake only the external Codex CLI command boundary.
@@ -38,7 +39,10 @@ Create `tests/ci/test_local_dev_installer.py` with:
 ```python
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +53,11 @@ INSTALLER = REPO_ROOT / "scripts/dev/install-local-unica.sh"
 
 
 class LocalDevInstallerTests(unittest.TestCase):
+    @staticmethod
+    def write_executable(path: Path, body: str) -> None:
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+
     def target_for_host(self, system: str, machine: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             return subprocess.run(
@@ -94,6 +103,52 @@ class LocalDevInstallerTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, "linux-x64\n")
 
+    def test_windows_host_accepts_python_executable_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            self.write_executable(
+                fake_bin / "uname",
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in\n"
+                "  -s) printf '%s\\n' 'MINGW64_NT-10.0-22631' ;;\n"
+                "  -m) printf '%s\\n' 'x86_64' ;;\n"
+                "  *) exit 64 ;;\n"
+                "esac\n",
+            )
+            for name in ("python3.12", "python3.11", "python3.10", "python3"):
+                self.write_executable(fake_bin / name, "#!/usr/bin/env bash\nexit 1\n")
+            self.write_executable(
+                fake_bin / "python",
+                "#!/usr/bin/env bash\n"
+                f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+            )
+            env = os.environ.copy()
+            env.pop("PYTHON", None)
+            env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+
+            completed = subprocess.run(
+                [
+                    str(INSTALLER),
+                    "--build-dir",
+                    str(tmp_path / "build"),
+                    "--skip-build",
+                    "--skip-install",
+                    "--skip-verify",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 66, completed.stderr)
+        self.assertIn("==> Unica local target: win-x64\n", completed.stdout)
+        self.assertIn("--skip-build requested, but bundle is missing:", completed.stderr)
+
     def test_unsupported_shells_and_hosts_keep_status_78(self) -> None:
         cases = (
             ("MSYS_NT-10.0-19045", "x86_64"),
@@ -124,10 +179,10 @@ Run:
 python3.12 -m unittest tests.ci.test_local_dev_installer -v
 ```
 
-Expected: FAIL safely with status 66 because sourcing the current installer
-reaches the missing temporary `--skip-build` bundle before `target_for_host` can
-run. The RED path must not build tools, install a marketplace, or modify the
-real Codex home.
+Expected: FAIL safely: sourceable mapping cases stop with status 66 at the
+missing temporary `--skip-build` bundle, and the Windows Python-name case stops
+with status 69 because `python` is not yet a candidate. The RED path must not
+build tools, install a marketplace, or modify the real Codex home.
 
 - [ ] **Step 3: Add the pure mapping functions**
 
@@ -184,6 +239,12 @@ This is a wrapper-only move: do not rewrite the argument parser, Python
 selection, package commands, Codex cache logic, or final output while placing
 them inside `main`.
 
+Append the standard Windows executable name to the existing Python selector:
+
+```bash
+for candidate in "${PYTHON:-}" python3.12 python3.11 python3.10 python3 python; do
+```
+
 - [ ] **Step 4: Run shell syntax and focused tests to verify GREEN**
 
 Run:
@@ -193,7 +254,8 @@ bash -n scripts/dev/install-local-unica.sh
 python3.12 -m unittest tests.ci.test_local_dev_installer -v
 ```
 
-Expected: shell syntax exits 0; all three test methods pass, including MINGW x64 and explicit MSYS2/Cygwin rejection.
+Expected: shell syntax exits 0; all four test methods pass, including MINGW x64,
+the standard `python` executable name, and explicit MSYS2/Cygwin rejection.
 
 - [ ] **Step 5: Verify unchanged Darwin direct execution reaches the existing bundle check**
 
@@ -408,10 +470,11 @@ Run:
 
 ```bash
 python3.12 -m unittest tests.ci.test_local_dev_installer -v
-python3.12 -c 'import yaml; yaml.safe_load(open(".github/workflows/unica-plugin-release.yml", encoding="utf-8"))'
+actionlint .github/workflows/unica-plugin-release.yml
 ```
 
-Expected: all five installer test methods pass and PyYAML parses the workflow.
+Expected: all five installer test methods pass and `actionlint` reports no
+workflow, expression, or embedded-shell errors.
 
 - [ ] **Step 5: Commit the Windows integration smoke**
 
@@ -436,7 +499,7 @@ bash -n scripts/dev/install-local-unica.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 python3.12 -m py_compile scripts/ci/*.py tests/ci/*.py
-python3.12 -c 'import yaml; yaml.safe_load(open(".github/workflows/unica-plugin-release.yml", encoding="utf-8"))'
+actionlint .github/workflows/unica-plugin-release.yml
 git diff --check origin/main...HEAD
 ```
 
