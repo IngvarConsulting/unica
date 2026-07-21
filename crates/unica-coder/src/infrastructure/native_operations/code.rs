@@ -50,6 +50,8 @@ fn patch_inner(
         let postimage = std::str::from_utf8(&after)
             .map_err(|_| "patched Module.bsl must remain UTF-8".to_string())?;
         methods(postimage).map_err(|error| format!("validate patched Module.bsl: {error}"))?;
+        let (start_line, start_column) = line_column(postimage, offset);
+        let (end_line, end_column) = line_column(postimage, offset + insertion.len());
         let relative = target
             .strip_prefix(&context.workspace_root)
             .unwrap_or(&target)
@@ -60,7 +62,14 @@ fn patch_inner(
             "preHash": hash(&before),
             "postHash": hash(&after),
             "noOp": no_op,
-            "changedRanges": if no_op { Vec::<Value>::new() } else { vec![json!({"startByte": offset, "endByte": offset + insertion.len()})] },
+            "changedRanges": if no_op { Vec::<Value>::new() } else { vec![json!({
+                "startByte": offset,
+                "endByte": offset + insertion.len(),
+                "startLine": start_line,
+                "startColumn": start_column,
+                "endLine": end_line,
+                "endColumn": end_column,
+            })] },
             "diff": unified_diff(&relative, &before, offset, &insertion, no_op),
         });
         if !dry_run && !no_op {
@@ -288,6 +297,18 @@ fn line_end(text: &str, from: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let prefix = &text[..offset];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = prefix
+        .rsplit_once('\n')
+        .map_or(prefix, |(_, current)| current)
+        .chars()
+        .count()
+        + 1;
+    (line, column)
+}
+
 fn local_eol(text: &str) -> &'static str {
     if text.contains("\r\n") {
         "\r\n"
@@ -352,7 +373,8 @@ fn unified_diff(path: &str, before: &[u8], offset: usize, insertion: &[u8], no_o
 #[cfg(test)]
 mod tests {
     use super::{
-        insertion_is_present, locate_insertion, methods, normalized_content, unified_diff,
+        insertion_is_present, line_column, locate_insertion, methods, normalized_content,
+        unified_diff,
     };
     use serde_json::{json, Map, Value};
 
@@ -422,6 +444,16 @@ mod tests {
     #[test]
     fn index_rejects_an_unclosed_method() {
         assert!(methods("Procedure Run()\n").is_err());
+    }
+
+    #[test]
+    fn line_column_reports_utf8_character_columns() {
+        assert_eq!(line_column("Процедура Run()\n", 0), (1, 1));
+        assert_eq!(
+            line_column("Процедура Run()\n", "Процедура ".len()),
+            (1, 11)
+        );
+        assert_eq!(line_column("A\nBC", 3), (2, 2));
     }
 
     fn arguments(selector: Value, position: &str) -> Map<String, Value> {
