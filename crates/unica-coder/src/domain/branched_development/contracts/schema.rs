@@ -93,6 +93,14 @@ pub(crate) fn string_schema(
     Schema::from(schema)
 }
 
+pub(crate) fn one_of_schema(variants: Vec<Schema>) -> Schema {
+    assert!(
+        !variants.is_empty(),
+        "a closed contract union must contain at least one branch"
+    );
+    schemars::json_schema!({ "oneOf": variants })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SchemaAuditError {
     path: String,
