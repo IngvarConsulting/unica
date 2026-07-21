@@ -60,15 +60,104 @@ impl fmt::Display for OperationInvariantError {
 impl std::error::Error for OperationInvariantError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum ValidatedOperationState {
+    Registered {
+        owner_state: OperationOwnerState,
+    },
+    IntentWritten {
+        owner_state: OperationOwnerState,
+    },
+    EffectUnknown {
+        recovery_digest: Sha256Digest,
+    },
+    Terminal {
+        terminal_envelope_digest: Sha256Digest,
+    },
+}
+
+impl ValidatedOperationState {
+    fn new(
+        state: OperationState,
+        owner_state: Option<OperationOwnerState>,
+        terminal_envelope_digest: Option<Sha256Digest>,
+        recovery_digest: Option<Sha256Digest>,
+    ) -> Result<Self, OperationInvariantError> {
+        match (
+            state,
+            owner_state,
+            terminal_envelope_digest,
+            recovery_digest,
+        ) {
+            (OperationState::Registered, None, _, _) => {
+                Err(OperationInvariantError::MissingOwnerState { state })
+            }
+            (OperationState::Registered, Some(_), _, Some(_)) => {
+                Err(OperationInvariantError::RecoveryDigestNotAllowed { state })
+            }
+            (OperationState::Registered, Some(_), Some(_), None) => {
+                Err(OperationInvariantError::TerminalEnvelopeDigestNotAllowed { state })
+            }
+            (OperationState::Registered, Some(owner_state), None, None) => {
+                Ok(Self::Registered { owner_state })
+            }
+            (OperationState::IntentWritten, None, _, _) => {
+                Err(OperationInvariantError::MissingOwnerState { state })
+            }
+            (OperationState::IntentWritten, Some(_), _, Some(_)) => {
+                Err(OperationInvariantError::RecoveryDigestNotAllowed { state })
+            }
+            (OperationState::IntentWritten, Some(_), Some(_), None) => {
+                Err(OperationInvariantError::TerminalEnvelopeDigestNotAllowed { state })
+            }
+            (OperationState::IntentWritten, Some(owner_state), None, None) => {
+                Ok(Self::IntentWritten { owner_state })
+            }
+            (OperationState::EffectUnknown, Some(_), _, _) => {
+                Err(OperationInvariantError::OwnerStateNotAllowed { state })
+            }
+            (OperationState::EffectUnknown, None, _, None) => {
+                Err(OperationInvariantError::MissingRecoveryDigest)
+            }
+            (OperationState::EffectUnknown, None, Some(_), Some(_)) => {
+                Err(OperationInvariantError::TerminalEnvelopeDigestNotAllowed { state })
+            }
+            (OperationState::EffectUnknown, None, None, Some(recovery_digest)) => {
+                Ok(Self::EffectUnknown { recovery_digest })
+            }
+            (OperationState::Terminal, Some(_), _, _) => {
+                Err(OperationInvariantError::OwnerStateNotAllowed { state })
+            }
+            (OperationState::Terminal, None, _, Some(_)) => {
+                Err(OperationInvariantError::RecoveryDigestNotAllowed { state })
+            }
+            (OperationState::Terminal, None, None, None) => {
+                Err(OperationInvariantError::MissingTerminalEnvelopeDigest)
+            }
+            (OperationState::Terminal, None, Some(terminal_envelope_digest), None) => {
+                Ok(Self::Terminal {
+                    terminal_envelope_digest,
+                })
+            }
+        }
+    }
+
+    fn operation_state(&self) -> OperationState {
+        match self {
+            Self::Registered { .. } => OperationState::Registered,
+            Self::IntentWritten { .. } => OperationState::IntentWritten,
+            Self::EffectUnknown { .. } => OperationState::EffectUnknown,
+            Self::Terminal { .. } => OperationState::Terminal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationReplayView<TTool> {
     operation_id: OperationId,
     tool_name: TTool,
     policy: ExecutionPolicy,
     canonical_input_digest: Sha256Digest,
-    state: OperationState,
-    owner_state: Option<OperationOwnerState>,
-    terminal_envelope_digest: Option<Sha256Digest>,
-    recovery_digest: Option<Sha256Digest>,
+    state: ValidatedOperationState,
 }
 
 impl<TTool> OperationReplayView<TTool> {
@@ -83,43 +172,12 @@ impl<TTool> OperationReplayView<TTool> {
         terminal_envelope_digest: Option<Sha256Digest>,
         recovery_digest: Option<Sha256Digest>,
     ) -> Result<Self, OperationInvariantError> {
-        match state {
-            OperationState::Registered | OperationState::IntentWritten if owner_state.is_none() => {
-                return Err(OperationInvariantError::MissingOwnerState { state });
-            }
-            OperationState::EffectUnknown | OperationState::Terminal if owner_state.is_some() => {
-                return Err(OperationInvariantError::OwnerStateNotAllowed { state });
-            }
-            _ => {}
-        }
-
-        match state {
-            OperationState::EffectUnknown if recovery_digest.is_none() => {
-                return Err(OperationInvariantError::MissingRecoveryDigest);
-            }
-            OperationState::Registered
-            | OperationState::IntentWritten
-            | OperationState::Terminal
-                if recovery_digest.is_some() =>
-            {
-                return Err(OperationInvariantError::RecoveryDigestNotAllowed { state });
-            }
-            _ => {}
-        }
-
-        match state {
-            OperationState::Terminal if terminal_envelope_digest.is_none() => {
-                return Err(OperationInvariantError::MissingTerminalEnvelopeDigest);
-            }
-            OperationState::Registered
-            | OperationState::IntentWritten
-            | OperationState::EffectUnknown
-                if terminal_envelope_digest.is_some() =>
-            {
-                return Err(OperationInvariantError::TerminalEnvelopeDigestNotAllowed { state });
-            }
-            _ => {}
-        }
+        let state = ValidatedOperationState::new(
+            state,
+            owner_state,
+            terminal_envelope_digest,
+            recovery_digest,
+        )?;
 
         Ok(Self {
             operation_id,
@@ -127,9 +185,6 @@ impl<TTool> OperationReplayView<TTool> {
             policy,
             canonical_input_digest,
             state,
-            owner_state,
-            terminal_envelope_digest,
-            recovery_digest,
         })
     }
 
@@ -146,7 +201,7 @@ impl<TTool> OperationReplayView<TTool> {
     }
 
     pub fn state(&self) -> OperationState {
-        self.state
+        self.state.operation_state()
     }
 }
 
@@ -183,33 +238,29 @@ pub fn classify_replay<TTool>(
         };
     }
 
-    match (record.state, record.owner_state) {
-        (OperationState::Registered, Some(OperationOwnerState::Live))
-        | (OperationState::IntentWritten, Some(OperationOwnerState::Live)) => {
-            ReplayDisposition::InProgress
+    match &record.state {
+        ValidatedOperationState::Registered {
+            owner_state: OperationOwnerState::Live,
         }
-        (OperationState::Registered, Some(OperationOwnerState::Orphaned)) => {
-            ReplayDisposition::ResumeRegistered
+        | ValidatedOperationState::IntentWritten {
+            owner_state: OperationOwnerState::Live,
+        } => ReplayDisposition::InProgress,
+        ValidatedOperationState::Registered {
+            owner_state: OperationOwnerState::Orphaned,
+        } => ReplayDisposition::ResumeRegistered,
+        ValidatedOperationState::IntentWritten {
+            owner_state: OperationOwnerState::Orphaned,
+        } => ReplayDisposition::ObserveIntentWritten,
+        ValidatedOperationState::EffectUnknown { recovery_digest } => {
+            ReplayDisposition::RecoveryRequired {
+                recovery_digest: recovery_digest.clone(),
+            }
         }
-        (OperationState::IntentWritten, Some(OperationOwnerState::Orphaned)) => {
-            ReplayDisposition::ObserveIntentWritten
-        }
-        (OperationState::EffectUnknown, None) => ReplayDisposition::RecoveryRequired {
-            recovery_digest: record
-                .recovery_digest
-                .clone()
-                .expect("invariant-checked effect-unknown record has a recovery digest"),
+        ValidatedOperationState::Terminal {
+            terminal_envelope_digest,
+        } => ReplayDisposition::ReplayTerminal {
+            terminal_envelope_digest: terminal_envelope_digest.clone(),
         },
-        (OperationState::Terminal, None) => ReplayDisposition::ReplayTerminal {
-            terminal_envelope_digest: record
-                .terminal_envelope_digest
-                .clone()
-                .expect("invariant-checked terminal record has a terminal envelope digest"),
-        },
-        (OperationState::Registered, None)
-        | (OperationState::IntentWritten, None)
-        | (OperationState::EffectUnknown, Some(_))
-        | (OperationState::Terminal, Some(_)) => unreachable!("operation replay view invariants"),
     }
 }
 
@@ -357,6 +408,40 @@ mod tests {
                 recovery_digest: digest('c'),
             }
         );
+    }
+
+    #[test]
+    fn replay_view_preserves_the_public_state_projection() {
+        for (record, expected_state) in [
+            (
+                record(
+                    OperationState::Registered,
+                    Some(OperationOwnerState::Live),
+                    None,
+                    None,
+                ),
+                OperationState::Registered,
+            ),
+            (
+                record(
+                    OperationState::IntentWritten,
+                    Some(OperationOwnerState::Orphaned),
+                    None,
+                    None,
+                ),
+                OperationState::IntentWritten,
+            ),
+            (
+                record(OperationState::EffectUnknown, None, None, Some(digest('c'))),
+                OperationState::EffectUnknown,
+            ),
+            (
+                record(OperationState::Terminal, None, Some(digest('d')), None),
+                OperationState::Terminal,
+            ),
+        ] {
+            assert_eq!(record.state(), expected_state);
+        }
     }
 
     #[test]
