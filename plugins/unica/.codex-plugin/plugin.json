@@ -30,7 +30,7 @@
   "interface": {
     "displayName": "Unica",
     "shortDescription": "1C developer workflows for Codex",
-    "longDescription": "Unica teaches Codex practical 1C:Enterprise development operations: creating and editing metadata, forms, roles, SKD and MXL layouts, building EPF/ERF artifacts, creating and updating infobases, debugging autonomous web-client/runtime contours, and searching, reviewing, diagnosing, testing, and optimizing BSL code. Pinned bundled tools and MCP servers are kept as internal infrastructure behind checksum-verifying launchers.",
+    "longDescription": "Unica teaches Codex practical 1C:Enterprise development operations: creating and editing metadata, forms, roles, DCS and MXL layouts, building EPF/ERF artifacts, creating and updating infobases, debugging autonomous web-client/runtime contours, and searching, reviewing, diagnosing, testing, and optimizing BSL code. Pinned bundled tools and MCP servers are kept as internal infrastructure behind checksum-verifying launchers.",
     "developerName": "Ingvar Consulting, LLC",
     "category": "Coding",
     "capabilities": [

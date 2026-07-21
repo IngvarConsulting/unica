@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::common::*;
 use super::single_file_publisher::{publish, PublishEffect, PublishMode, PublishRequest};
 use super::{
-    cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
+    cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
 
 const CF_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";

@@ -575,22 +575,6 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["definition"]}
         ]);
     }
-    if tool.name == "unica.code.diagnostics" {
-        schema["oneOf"] = json!([
-            {
-                "properties": {
-                    "mode": {"enum": ["analyze"]}
-                }
-            },
-            {
-                "required": ["mode"],
-                "properties": {
-                    "mode": {"enum": ["status", "catalog", "file", "workspace"]}
-                },
-                "not": {"required": ["timeoutSeconds"]}
-            }
-        ]);
-    }
     schema
 }
 
@@ -2230,13 +2214,13 @@ mod tests {
     }
 
     #[test]
-    fn skd_info_contract_exposes_raw_query_export() {
-        let skd_info = tools()
+    fn dcs_info_contract_exposes_raw_query_export() {
+        let dcs_info = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.skd.info")
-            .expect("unica.skd.info must be registered");
+            .find(|tool| tool.name == "unica.dcs.info")
+            .expect("unica.dcs.info must be registered");
 
-        let schema = input_schema_for_tool(&skd_info);
+        let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
         assert_eq!(schema["required"], json!(["TemplatePath"]));
@@ -2249,7 +2233,7 @@ mod tests {
         args.insert("Mode".to_string(), json!("query"));
         args.insert("Name".to_string(), json!("Sales"));
         args.insert("Raw".to_string(), json!(true));
-        validate_tool_arguments(skd_info, &args, false).unwrap();
+        validate_tool_arguments(dcs_info, &args, false).unwrap();
     }
 
     #[test]
@@ -2323,13 +2307,15 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"].get("args").is_none());
         assert!(schema["properties"].get("argv").is_none());
+        assert!(schema["properties"].get("cwd").is_some());
+        assert!(schema["properties"].get("sourceDir").is_some());
         assert_eq!(schema["properties"]["codes"]["type"], "array");
         assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
         assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
         assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
-        assert_eq!(schema["oneOf"][1]["not"]["required"][0], "timeoutSeconds");
+        assert!(schema.get("oneOf").is_none());
         assert!(schema["properties"]["mode"]["enum"]
             .as_array()
             .unwrap()

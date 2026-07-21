@@ -8,7 +8,7 @@ description: "Разделение данных 1С. Используй когд
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.role.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
-- Use `unica.skd.info` when reports/SKD queries may bypass tenant filters.
+- Use `unica.dcs.info` when reports/DCS queries may bypass tenant filters.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## References
@@ -30,7 +30,7 @@ description: "Разделение данных 1С. Используй когд
 - Code writes objects without setting separator attributes.
 - Background job runs under a broad user context and processes all tenants.
 - Exchange or integration payload omits tenant/external owner id.
-- Report/SKD query uses privileged access without a documented reason.
+- Report/DCS query uses privileged access without a documented reason.
 - Temporary storage or files are shared across tenant/session boundaries.
 
 ## Contract gaps

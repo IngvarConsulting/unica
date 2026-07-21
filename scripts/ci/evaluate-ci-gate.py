@@ -26,7 +26,6 @@ ALWAYS_JOBS = (
 )
 PACKAGE_JOBS = (
     "build-tools",
-    "package-runtime",
     "package-thin",
     "release-assessment",
 )

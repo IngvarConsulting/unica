@@ -18,7 +18,7 @@ use super::form_event_registry::{
     MainAttributeKind, MainAttributeProvenance,
 };
 use super::{
-    cf::*, cfe::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
+    cf::*, cfe::*, dcs::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
 
 const FORM_LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";

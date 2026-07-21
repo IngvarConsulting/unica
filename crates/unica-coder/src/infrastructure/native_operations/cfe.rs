@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
 use super::{
-    cf::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*, template::*,
+    cf::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
 pub(crate) struct CfeValidationReporter {
     pub(crate) errors: usize,
@@ -2797,11 +2797,11 @@ pub(crate) fn cfe_diff_form_interceptors(form_xml_path: &Path) -> Option<(bool, 
     let text = read_utf8_sig(form_xml_path).ok()?;
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
     let root = doc.root_element();
-    let is_borrowed = skd_child(root, "BaseForm", FORM_NS).is_some();
+    let is_borrowed = dcs_child(root, "BaseForm", FORM_NS).is_some();
     let mut interceptors = Vec::<String>::new();
 
-    if let Some(events) = skd_child(root, "Events", FORM_NS) {
-        for event in skd_children(events, "Event", FORM_NS) {
+    if let Some(events) = dcs_child(root, "Events", FORM_NS) {
+        for event in dcs_children(events, "Event", FORM_NS) {
             let call_type = event.attribute("callType").unwrap_or("");
             if !call_type.is_empty() {
                 let event_name = event.attribute("name").unwrap_or("");
@@ -2811,16 +2811,16 @@ pub(crate) fn cfe_diff_form_interceptors(form_xml_path: &Path) -> Option<(bool, 
         }
     }
 
-    if let Some(child_items) = skd_child(root, "ChildItems", FORM_NS) {
+    if let Some(child_items) = dcs_child(root, "ChildItems", FORM_NS) {
         for element in child_items.descendants().filter(|node| node.is_element()) {
             let element_name = element.attribute("name").unwrap_or("");
             if element_name.is_empty() {
                 continue;
             }
-            let Some(events) = skd_child(element, "Events", FORM_NS) else {
+            let Some(events) = dcs_child(element, "Events", FORM_NS) else {
                 continue;
             };
-            for event in skd_children(events, "Event", FORM_NS) {
+            for event in dcs_children(events, "Event", FORM_NS) {
                 let call_type = event.attribute("callType").unwrap_or("");
                 if !call_type.is_empty() {
                     let event_name = event.attribute("name").unwrap_or("");
@@ -2833,10 +2833,10 @@ pub(crate) fn cfe_diff_form_interceptors(form_xml_path: &Path) -> Option<(bool, 
         }
     }
 
-    if let Some(commands) = skd_child(root, "Commands", FORM_NS) {
-        for command in skd_children(commands, "Command", FORM_NS) {
+    if let Some(commands) = dcs_child(root, "Commands", FORM_NS) {
+        for command in dcs_children(commands, "Command", FORM_NS) {
             let command_name = command.attribute("name").unwrap_or("");
-            for action in skd_children(command, "Action", FORM_NS) {
+            for action in dcs_children(command, "Action", FORM_NS) {
                 let call_type = action.attribute("callType").unwrap_or("");
                 if !call_type.is_empty() {
                     let action_text = action.text().unwrap_or("");

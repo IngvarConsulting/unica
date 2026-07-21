@@ -19,7 +19,7 @@ description: Создать пустой make-ready scaffold внешнего о
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.project.map`: `kind=external_report`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`; пустая СКД автоматически не добавляется.
 6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
-7. Добавлять СКД позже через `skd-*`/`template-*`, затем собрать `.erf` через `unica.runtime.execute operation=make`. Для make в `v8project.yaml` должна быть доступная `infobase.connection`.
+7. Добавлять СКД позже через `dcs-*`/`template-*`, затем собрать `.erf` через `unica.runtime.execute operation=make`. Для make в `v8project.yaml` должна быть доступная `infobase.connection`.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
 

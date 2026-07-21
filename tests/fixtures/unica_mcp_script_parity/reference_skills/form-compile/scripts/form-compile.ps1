@@ -1617,7 +1617,7 @@ if ($FromObject) {
 	$def = $json | ConvertFrom-Json
 }
 
-# Базовая директория для @file-ссылок в query динсписка (зеркало skd-compile)
+# Базовая директория для @file-ссылок в query динсписка (зеркало dcs-compile)
 $script:queryBaseDir = if ($JsonPath) { [System.IO.Path]::GetDirectoryName((Resolve-Path $JsonPath).Path) } else { (Get-Location).Path }
 function Resolve-QueryValue {
 	param([string]$val, [string]$baseDir)
@@ -1747,7 +1747,7 @@ $script:CANON_ITEMS_ID  = '911b6018-f537-43e8-a417-da56b22f9aec'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Настройки компоновщика ListSettings: filter/order/conditionalAppearance.
-# Грамматика DSL и эмиссия dcsset скопированы из skd-compile (навыки автономны).
+# Грамматика DSL и эмиссия dcsset скопированы из dcs-compile (навыки автономны).
 # ─────────────────────────────────────────────────────────────────────────────
 function New-Guid-String { return [System.Guid]::NewGuid().ToString() }
 
@@ -2148,7 +2148,7 @@ function Emit-ConditionalAppearance {
 
 # === Группировка строк динамического списка (DCS-структура ListSettings) ===
 # Линейная цепочка <dcsset:item StructureItemGroup> (каждый уровень = одно поле в groupItems;
-# вложенность — через дочерний <dcsset:item>). Зеркало skd Emit-GroupItems/Emit-StructureItem,
+# вложенность — через дочерний <dcsset:item>). Зеркало dcs Emit-GroupItems/Emit-StructureItem,
 # но плоская модель уровней (список всегда линеен, без selection/order/children).
 function Get-ListGroupingValue {
 	param($st)
@@ -2208,7 +2208,7 @@ function Emit-ListGrouping {
 }
 
 # === Вычисляемые поля DataSet динамического списка (<CalculatedField>) ===
-# Зеркало skd: shorthand "Имя [Заголовок]: тип = Выражение #noField #noFilter #noGroup #noOrder"
+# Зеркало dcs: shorthand "Имя [Заголовок]: тип = Выражение #noField #noFilter #noGroup #noOrder"
 # или объект. Форм-специфика: dcssch:-теги + presentationExpression/orderExpression (dcscommon ns).
 $script:calcRestrictMap = @{ 'noField'='field'; 'noFilter'='condition'; 'noCondition'='condition'; 'noGroup'='group'; 'noOrder'='order' }
 $script:dcsCommonNs = 'http://v8.1c.ru/8.1/data-composition-system/common'
@@ -5286,7 +5286,7 @@ function Emit-AttrColumn {
 }
 
 # --- Schema-параметры динамического списка (DataCompositionSchemaParameter) ---
-# Та же сущность, что параметры СКД (см. skd-compile), но в форме: обёртка <Parameter>
+# Та же сущность, что параметры СКД (см. dcs-compile), но в форме: обёртка <Parameter>
 # + дети с префиксом dcssch:. DSL переиспользует грамматику параметров СКД (shorthand +
 # объект). Контекстные дефолты дин-списка (паттерн «умный дефолт у всегда-эмитируемого тега»):
 #   useRestriction — эмитим ВСЕГДА, дефолт TRUE (в СКД дефолт false);
@@ -5414,7 +5414,7 @@ function Emit-DLAvailableValue {
 	X "$indent</dcssch:availableValue>"
 }
 
-# <dcssch:inputParameters> — ChoiceParameters / ChoiceParameterLinks / простое значение (порт из skd).
+# <dcssch:inputParameters> — ChoiceParameters / ChoiceParameterLinks / простое значение (порт из dcs).
 function Emit-DLInputParameters {
 	param($ip, [string]$indent)
 	if ($null -eq $ip) { return }
@@ -5476,7 +5476,7 @@ function Emit-DLInputParameters {
 	X "$indent</dcssch:inputParameters>"
 }
 
-# ── dataParameters (значения параметров запроса в настройках компоновки) — порт из skd-compile ──
+# ── dataParameters (значения параметров запроса в настройках компоновки) — порт из dcs-compile ──
 # Грамматика идентична СКД: shorthand "Имя = Значение @off @user" или объект
 # {parameter, value?, valueType?, use?, nilValue?, viewMode?, userSettingID?, userSettingPresentation?}.
 function Test-EmptyValue {
@@ -5562,7 +5562,7 @@ function Emit-DataParameters {
 			Emit-EmptyValue -type "$($dp.valueType)" -indent "$indent`t`t" -tagPrefix "dcscor:" -valueListAllowed $false
 		} elseif (Test-EmptyValue $dp.value) {
 			# Нет значения и нет valueType → НЕ эмитим value-узел (form дин-список: use=false плейсхолдер).
-			# (В отличие от skd-settings, где значение всегда присутствует.)
+			# (В отличие от dcs-settings, где значение всегда присутствует.)
 		} elseif ($null -ne $dp.value) {
 			$vtype = "$($dp.valueType)"
 			if (($dp.value -is [PSCustomObject] -or $dp.value -is [hashtable] -or $dp.value -is [System.Collections.IDictionary]) -and ($dp.value.variant)) {
@@ -5945,7 +5945,7 @@ function Emit-Attributes {
 			if ($null -ne $st.getInvisibleFieldPresentations) { X "$si<GetInvisibleFieldPresentations>$(if ($st.getInvisibleFieldPresentations){'true'}else{'false'})</GetInvisibleFieldPresentations>" }
 			# AutoSaveUserSettings — после MainTable (дефолт true; эмитим только при заданном ключе = отклонении).
 			if ($null -ne $st.autoSaveUserSettings) { X "$si<AutoSaveUserSettings>$(if ($st.autoSaveUserSettings){'true'}else{'false'})</AutoSaveUserSettings>" }
-			# ListSettings: filter/order/conditionalAppearance (skd-грамматика) + каноничные блок-GUID.
+			# ListSettings: filter/order/conditionalAppearance (dcs-грамматика) + каноничные блок-GUID.
 			# Нет items → контейнеры всё равно эмитятся (blockMeta) = каноничный пустой скелет платформы.
 			$lsi = "$si`t"
 			$lsOpenLen = $script:xml.Length

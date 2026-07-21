@@ -136,7 +136,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - id: rust-toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - id: cargo-cache
+        name: Restore Cargo target cache
+        continue-on-error: true
+        uses: actions/cache@v5
+        with:
+          path: .build/tool-work/${{ matrix.target }}/cargo-target
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
       - name: Build target bundle and bootstrap
         run: >
           python scripts/ci/build-unica-tools.py
@@ -144,7 +152,33 @@ jobs:
           --target "${{ matrix.target }}"
           --lock-file plugins/unica/third-party/tools.lock.json
           --out-dir ".build/tool-bundles/${{ matrix.target }}"
-          --work-dir ".build/tool-work/${{ matrix.target }}"
+          --work-dir .build/tool-work
+          --metrics-file ".build/cargo-metrics/${{ matrix.target }}.json"
+      - name: Report Cargo cache and build metrics
+        if: always()
+        shell: bash
+        env:
+          CACHE_STEP_OUTCOME: ${{ steps.cargo-cache.outcome }}
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+          METRICS_FILE: .build/cargo-metrics/${{ matrix.target }}.json
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -u
+          cache_outcome=miss
+          if [ "$CACHE_STEP_OUTCOME" != "success" ]; then
+            cache_outcome=error
+          elif [ "$CACHE_HIT" = "true" ]; then
+            cache_outcome=exact-hit
+          fi
+          cargo_seconds="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["cargoBuildSeconds"])' "$METRICS_FILE" 2>/dev/null || true)"
+          if [ -z "$cargo_seconds" ]; then cargo_seconds=unavailable; fi
+          {
+            echo "### Cargo build ($TARGET)"
+            echo
+            echo "- Target: \`$TARGET\`"
+            echo "- Cache outcome: \`$cache_outcome\`"
+            echo "- Cargo build duration: \`$cargo_seconds\` seconds"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Check bundled tool contracts
         run: >
           python scripts/ci/check-tool-contracts.py
@@ -158,51 +192,56 @@ jobs:
           python scripts/ci/smoke-unica-mcp.py \
             --binary "$executable" \
             --plugin-root ".build/tool-bundles/${{ matrix.target }}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: unica-tools-${{ matrix.target }}
-          path: .build/tool-bundles/${{ matrix.target }}
-          if-no-files-found: error
-
-  package-runtime:
-    name: Package runtime (${{ matrix.target }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: build-tools
-    if: ${{ always() && needs.build-tools.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [darwin-arm64, linux-x64, win-x64]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - uses: actions/download-artifact@v8
-        with:
-          name: unica-tools-${{ matrix.target }}
-          path: .build/bundle
-      - run: >
+      - name: Package deterministic runtime
+        run: >
           python scripts/ci/package-unica-runtime.py
-          --bundle-root .build/bundle
-          --out-dir dist
-      - uses: actions/upload-artifact@v7
+          --bundle-root ".build/tool-bundles/${{ matrix.target }}"
+          --out-dir ".build/runtime-assets/${{ matrix.target }}"
+      - name: Verify local runtime asset pair
+        run: >
+          python scripts/ci/verify-release-assets.py
+          --asset-dir ".build/runtime-assets/${{ matrix.target }}"
+          --target "${{ matrix.target }}"
+      - name: Stage exact bootstrap payload
+        shell: bash
+        run: |
+          bootstrap_name=unica-bootstrap
+          if [ "${{ matrix.target }}" = "win-x64" ]; then bootstrap_name="${bootstrap_name}.exe"; fi
+          destination=".build/bootstrap-artifacts/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}"
+          mkdir -p "$destination"
+          cp ".build/tool-bundles/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}/${bootstrap_name}" "$destination/"
+      - name: Upload runtime metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-runtime-metadata-${{ matrix.target }}
+          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload bootstrap payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-bootstrap-${{ matrix.target }}
+          path: .build/bootstrap-artifacts/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload required runtime archive
+        if: ${{ matrix.target == 'linux-x64' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+        uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-${{ matrix.target }}
-          path: |
-            dist/unica-runtime-${{ matrix.target }}.tar.gz
-            dist/unica-runtime-${{ matrix.target }}.json
+          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   package-thin:
     name: Package thin marketplace payload
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: package-runtime
-    if: ${{ always() && needs.package-runtime.result == 'success' }}
+    needs: build-tools
+    if: ${{ always() && needs.build-tools.result == 'success' }}
     env:
-      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.8.1' }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.8.1' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -210,12 +249,12 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@v8
         with:
-          pattern: unica-runtime-*
+          pattern: unica-runtime-metadata-*
           path: .build/runtime-metadata
           merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
-          pattern: unica-tools-*
+          pattern: unica-bootstrap-*
           path: .build/bootstrap-root
           merge-multiple: true
       - run: >
@@ -232,6 +271,7 @@ jobs:
           path: dist/thin/marketplace
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 90
 
   probe-thin-bootstrap:
     name: Probe thin bootstrap (${{ matrix.target }})
@@ -274,8 +314,8 @@ jobs:
     name: Assess Linux runtime on BSP
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: package-runtime
-    if: ${{ always() && needs.package-runtime.result == 'success' }}
+    needs: build-tools
+    if: ${{ always() && needs.build-tools.result == 'success' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -300,16 +340,18 @@ jobs:
           name: unica-release-assessment
           path: dist/release-assessment
           if-no-files-found: warn
+          retention-days: 1
 
   publish-release-assets:
     name: Publish runtime assets
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: package-runtime
+    needs: build-tools
     if: >-
       ${{
         always() &&
-        needs.package-runtime.result == 'success' &&
+        needs.build-tools.result == 'success' &&
+        github.event_name == 'push' &&
         startsWith(github.ref, 'refs/tags/')
       }}
     permissions:
@@ -338,6 +380,7 @@ jobs:
         always() &&
         needs.package-thin.result == 'success' &&
         needs.publish-release-assets.result == 'success' &&
+        github.event_name == 'push' &&
         startsWith(github.ref, 'refs/tags/')
       }}
     strategy:
@@ -377,6 +420,7 @@ jobs:
         always() &&
         needs.package-thin.result == 'success' &&
         needs.publish-release-assets.result == 'success' &&
+        github.event_name == 'push' &&
         startsWith(github.ref, 'refs/tags/')
       }}
     permissions:
@@ -403,7 +447,6 @@ jobs:
       - test-rust-primary
       - test-rust-platforms
       - build-tools
-      - package-runtime
       - package-thin
       - probe-thin-bootstrap
       - release-assessment

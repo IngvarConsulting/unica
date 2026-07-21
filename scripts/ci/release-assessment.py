@@ -564,7 +564,7 @@ def first_existing(root: Path, patterns: list[str]) -> str | None:
 def template_kind(path: Path) -> str:
     text = path.read_text(encoding="utf-8", errors="ignore")[:8192]
     if "DataCompositionSchema" in text or "dataCompositionSchema" in text:
-        return "skd"
+        return "dcs"
     if "SpreadsheetDocument" in text or "spreadsheet" in text.lower():
         return "mxl"
     return "unknown"
@@ -587,13 +587,13 @@ def optional_sample_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[
         )
 
     templates = sorted(bsp_root.glob(f"{SOURCE_DIR}/**/Templates/*/Ext/Template.xml"))
-    skd = next((path for path in templates if template_kind(path) == "skd"), None)
+    dcs = next((path for path in templates if template_kind(path) == "dcs"), None)
     mxl = next((path for path in templates if template_kind(path) == "mxl"), None)
-    if skd:
-        skd_rel = relpath(skd, bsp_root)
-        scenarios.append(("skd-info-sample", "Sample SKD info", "unica.skd.info", {"TemplatePath": skd_rel, "Limit": 80}, True))
+    if dcs:
+        dcs_rel = relpath(dcs, bsp_root)
+        scenarios.append(("dcs-info-sample", "Sample DCS info", "unica.dcs.info", {"TemplatePath": dcs_rel, "Limit": 80}, True))
         scenarios.append(
-            ("skd-validate-sample", "Sample SKD validation", "unica.skd.validate", {"TemplatePath": skd_rel, "MaxErrors": 30}, False)
+            ("dcs-validate-sample", "Sample DCS validation", "unica.dcs.validate", {"TemplatePath": dcs_rel, "MaxErrors": 30}, False)
         )
     if mxl:
         mxl_rel = relpath(mxl, bsp_root)

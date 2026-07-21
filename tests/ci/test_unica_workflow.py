@@ -57,7 +57,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "test-rust-primary",
             "test-rust-platforms",
             "build-tools",
-            "package-runtime",
             "package-thin",
             "probe-thin-bootstrap",
             "release-assessment",
@@ -115,14 +114,32 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
 
+    def test_only_tag_pushes_enable_release_behavior(self) -> None:
+        text = self.release_text()
+        build = job_block(text, "build-tools")
+        thin = job_block(text, "package-thin")
+
+        self.assertIn(
+            "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+            build,
+        )
+        self.assertIn(
+            "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')",
+            thin,
+        )
+        for job_id in ("publish-release-assets", "smoke-thin-plugin", "verify-published-assets"):
+            with self.subTest(job_id=job_id):
+                job = job_block(text, job_id)
+                self.assertIn("github.event_name == 'push'", job)
+                self.assertIn("startsWith(github.ref, 'refs/tags/')", job)
+
     def test_conditional_pipeline_breaks_transitive_skip_propagation(self) -> None:
         text = self.release_text()
         dependencies = {
-            "package-runtime": ("needs.build-tools.result == 'success'",),
-            "package-thin": ("needs.package-runtime.result == 'success'",),
+            "package-thin": ("needs.build-tools.result == 'success'",),
             "probe-thin-bootstrap": ("needs.package-thin.result == 'success'",),
-            "release-assessment": ("needs.package-runtime.result == 'success'",),
-            "publish-release-assets": ("needs.package-runtime.result == 'success'",),
+            "release-assessment": ("needs.build-tools.result == 'success'",),
+            "publish-release-assets": ("needs.build-tools.result == 'success'",),
             "smoke-thin-plugin": (
                 "needs.package-thin.result == 'success'",
                 "needs.publish-release-assets.result == 'success'",
@@ -147,12 +164,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("actions/checkout@v7", combined)
         self.assertIn("actions/setup-python@v7", release)
+        self.assertIn("actions/cache@v5", release)
         self.assertIn("actions/upload-artifact@v7", release)
         self.assertIn("actions/download-artifact@v8", release)
         self.assertIn("softprops/action-gh-release@v3", release)
         for stale in (
             "actions/checkout@v4",
             "actions/setup-python@v5",
+            "actions/cache@v4",
             "actions/upload-artifact@v4",
             "actions/download-artifact@v4",
             "softprops/action-gh-release@v2",
@@ -170,7 +189,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "test-rust-primary": 60,
             "test-rust-platforms": 60,
             "build-tools": 90,
-            "package-runtime": 30,
             "package-thin": 30,
             "probe-thin-bootstrap": 30,
             "release-assessment": 60,
@@ -187,23 +205,86 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn("timeout-minutes: 20", job_block(publish, job_id))
 
-    def test_runtime_matrix_builds_deterministic_assets_and_thin_payload(self) -> None:
+    def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()
+        build = job_block(text, "build-tools")
+
+        self.assertIn("id: rust-toolchain", build)
+        self.assertIn("id: cargo-cache", build)
+        self.assertIn("continue-on-error: true", build)
+        self.assertIn("uses: actions/cache@v5", build)
+        self.assertIn("path: .build/tool-work/${{ matrix.target }}/cargo-target", build)
+        self.assertIn(
+            "key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ "
+            "steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}",
+            build,
+        )
+        self.assertNotIn("restore-keys:", build)
+        self.assertLess(build.index("id: cargo-cache"), build.index("scripts/ci/build-unica-tools.py"))
+        self.assertIn("--metrics-file", build)
+        self.assertIn("if: always()", build)
+        self.assertIn("steps.cargo-cache.outcome", build)
+        self.assertIn("steps.cargo-cache.outputs.cache-hit", build)
+        for outcome in ("exact-hit", "miss", "error"):
+            with self.subTest(outcome=outcome):
+                self.assertIn(outcome, build)
+        self.assertIn("cargoBuildSeconds", build)
+        self.assertIn("GITHUB_STEP_SUMMARY", build)
+
+    def test_runtime_matrix_builds_verifies_and_exports_narrow_artifacts(self) -> None:
+        text = self.release_text()
+        build = job_block(text, "build-tools")
 
         for target in ("darwin-arm64", "linux-x64", "win-x64"):
             self.assertIn(f"target: {target}", text)
+        self.assertNotIn("  package-runtime:\n", text)
+        self.assertNotIn("unica-tools-", text)
+        self.assertIn("scripts/ci/build-unica-tools.py", build)
+        self.assertIn("scripts/ci/package-unica-runtime.py", build)
+        self.assertIn("scripts/ci/verify-release-assets.py", build)
+        self.assertIn('--target "${{ matrix.target }}"', build)
+        self.assertIn("name: unica-runtime-metadata-${{ matrix.target }}", build)
+        self.assertIn("name: unica-bootstrap-${{ matrix.target }}", build)
         self.assertIn("name: unica-runtime-${{ matrix.target }}", text)
-        self.assertIn("dist/unica-runtime-${{ matrix.target }}.tar.gz", text)
-        self.assertIn("scripts/ci/build-unica-tools.py", text)
-        self.assertIn("scripts/ci/package-unica-runtime.py", text)
+        self.assertIn(
+            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json",
+            build,
+        )
+        self.assertIn(
+            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz",
+            build,
+        )
+        self.assertIn(
+            ".build/bootstrap-artifacts/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}",
+            build,
+        )
+        self.assertIn("matrix.target == 'linux-x64'", build)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", build)
+        self.assertGreaterEqual(build.count("retention-days: 1"), 3)
+
+    def test_thin_payload_downloads_only_metadata_and_bootstrap(self) -> None:
+        text = self.release_text()
+        thin = job_block(text, "package-thin")
+
+        self.assertIn("needs: build-tools", thin)
+        self.assertIn("pattern: unica-runtime-metadata-*", thin)
+        self.assertIn("pattern: unica-bootstrap-*", thin)
+        self.assertNotIn("pattern: unica-tools-*", thin)
+        self.assertNotIn("pattern: unica-runtime-*\n", thin)
         self.assertIn("scripts/ci/package-unica-plugin.py", text)
-        self.assertIn("scripts/ci/smoke-unica-mcp.py", text)
-        self.assertIn("--runtime-metadata-root", text)
-        self.assertIn("--bootstrap-root", text)
-        self.assertIn("name: unica-thin-marketplace", text)
-        thin_upload = text[text.index("name: unica-thin-marketplace") :]
-        self.assertIn("include-hidden-files: true", thin_upload)
+        self.assertIn("--runtime-metadata-root", thin)
+        self.assertIn("--bootstrap-root", thin)
+        self.assertIn("name: unica-thin-marketplace", thin)
+        self.assertIn("include-hidden-files: true", thin)
+        self.assertIn("retention-days: 90", thin)
         self.assertNotIn("unica-codex-marketplace-${{ matrix.target }}", text)
+
+    def test_intermediate_non_marketplace_artifacts_expire_after_one_day(self) -> None:
+        text = self.release_text()
+        assessment = job_block(text, "release-assessment")
+
+        self.assertIn("name: unica-release-assessment", assessment)
+        self.assertIn("retention-days: 1", assessment)
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
         text = self.release_text()
@@ -260,7 +341,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         verify = text[text.index("  verify-published-assets:") :]
 
         self.assertNotIn("publish-assessment-pages", publish)
-        self.assertIn("needs: package-runtime", publish)
+        self.assertIn("needs: build-tools", publish)
         self.assertIn("softprops/action-gh-release@v3", publish)
         self.assertIn("unica-runtime-*.tar.gz", publish)
         self.assertIn("unica-runtime-*.json", publish)

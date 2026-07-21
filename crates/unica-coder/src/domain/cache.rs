@@ -56,8 +56,8 @@ impl CacheImpact {
                 self.invalidate(["metadata_graph", "rights_graph", "bsl_diagnostics"]);
                 self.refresh(["metadata_graph", "rights_graph"]);
             }
-            DomainEventKind::SkdChanged => {
-                self.invalidate(["metadata_graph", "skd_graph", "bsl_diagnostics"]);
+            DomainEventKind::DcsChanged => {
+                self.invalidate(["metadata_graph", "dcs_graph", "bsl_diagnostics"]);
                 self.refresh(["metadata_graph"]);
             }
             DomainEventKind::MxlChanged => {

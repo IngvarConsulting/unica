@@ -285,7 +285,7 @@
         {
           "skill": "erf-init",
           "status": "ported-to-unica",
-          "notes": "Ported the current donor ERF scaffold contract into native typed Unica MCP. Unica adds workspace path policy, source-set kind validation, dry-run artifact preview, no-clobber publication, and an optional canonical managed form while preserving the make-ready ExternalReport descriptor and ObjectModule layout; optional SKD remains a follow-up through existing SKD/template tools.",
+          "notes": "Ported the current donor ERF scaffold contract into native typed Unica MCP. Unica adds workspace path policy, source-set kind validation, dry-run artifact preview, no-clobber publication, and an optional canonical managed form while preserving the make-ready ExternalReport descriptor and ObjectModule layout; optional DCS remains a follow-up through existing DCS/template tools.",
           "upstreamPaths": [
             ".claude/skills/erf-init/**",
             "docs/1c-erf-spec.md"
@@ -838,9 +838,9 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "skd-compile",
+          "skill": "dcs-compile",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/skd.rs) behind unica.skd.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/skd-compile/**",
             "docs/skd-guide.md",
@@ -848,9 +848,9 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/skd-compile",
-            "tests/fixtures/unica_mcp_script_parity/reference_skills/skd-compile",
-            "plugins/unica/references/specs/skd-dsl-spec.md",
+            "plugins/unica/skills/dcs-compile",
+            "tests/fixtures/unica_mcp_script_parity/reference_skills/dcs-compile",
+            "plugins/unica/references/specs/dcs-dsl-spec.md",
             "plugins/unica/references/specs/1c-dcs-spec.md"
           ],
           "contractPaths": [
@@ -858,16 +858,16 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/skd.rs"
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "skd-edit",
+          "skill": "dcs-edit",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/skd.rs) behind unica.skd.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/skd-edit/**",
             "docs/skd-guide.md",
@@ -875,9 +875,9 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/skd-edit",
-            "tests/fixtures/unica_mcp_script_parity/reference_skills/skd-edit",
-            "plugins/unica/references/specs/skd-dsl-spec.md",
+            "plugins/unica/skills/dcs-edit",
+            "tests/fixtures/unica_mcp_script_parity/reference_skills/dcs-edit",
+            "plugins/unica/references/specs/dcs-dsl-spec.md",
             "plugins/unica/references/specs/1c-dcs-spec.md"
           ],
           "contractPaths": [
@@ -885,16 +885,16 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/skd.rs"
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
           ],
           "decision": "ported",
           "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
-          "decisionReason": "Ported documented donor skd-edit command semantics into native Rust runtime; Python remains only the parity reference fixture."
+          "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture."
         },
         {
-          "skill": "skd-info",
+          "skill": "dcs-info",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/skd.rs) behind unica.skd.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/skd-info/**",
             "docs/skd-guide.md",
@@ -902,9 +902,9 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/skd-info",
-            "tests/fixtures/unica_mcp_script_parity/reference_skills/skd-info",
-            "plugins/unica/references/specs/skd-dsl-spec.md",
+            "plugins/unica/skills/dcs-info",
+            "tests/fixtures/unica_mcp_script_parity/reference_skills/dcs-info",
+            "plugins/unica/references/specs/dcs-dsl-spec.md",
             "plugins/unica/references/specs/1c-dcs-spec.md"
           ],
           "contractPaths": [
@@ -913,16 +913,16 @@
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/skd.rs"
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "skd-validate",
+          "skill": "dcs-validate",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/skd.rs) behind unica.skd.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; donor script behavior is kept only as fixture parity under tests/fixtures/unica_mcp_script_parity/reference_skills. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/skd-validate/**",
             "docs/skd-guide.md",
@@ -930,9 +930,9 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/skd-validate",
-            "tests/fixtures/unica_mcp_script_parity/reference_skills/skd-validate",
-            "plugins/unica/references/specs/skd-dsl-spec.md",
+            "plugins/unica/skills/dcs-validate",
+            "tests/fixtures/unica_mcp_script_parity/reference_skills/dcs-validate",
+            "plugins/unica/references/specs/dcs-dsl-spec.md",
             "plugins/unica/references/specs/1c-dcs-spec.md"
           ],
           "contractPaths": [
@@ -940,7 +940,7 @@
             "tests/ci/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/skd.rs"
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",

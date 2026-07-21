@@ -1,0 +1,17 @@
+{
+  "script": "dcs-compile/scripts/dcs-compile",
+  "setup": "none",
+  "args": [
+    { "flag": "-DefinitionFile", "from": "inputFile" },
+    { "flag": "-OutputPath", "from": "workPath", "field": "outputPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": {
+    "script": "dcs-validate/scripts/dcs-validate",
+    "flag": "-TemplatePath",
+    "pathFrom": "validatePath"
+  }
+}

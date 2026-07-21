@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, skd::*, subsystem::*,
+    cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*,
     template::*,
 };
 pub(crate) fn resolve_form_info_path(mut form_path: PathBuf) -> PathBuf {
@@ -1423,7 +1423,7 @@ pub(crate) fn resolve_target(
             &["subsystemPath", "SubsystemPath", "path", "Path"],
             "SubsystemPath",
         )?
-    } else if operation.starts_with("skd-") || operation.starts_with("mxl-") {
+    } else if operation.starts_with("dcs-") || operation.starts_with("mxl-") {
         required_path(
             args,
             &["templatePath", "TemplatePath", "path", "Path"],
@@ -1481,7 +1481,7 @@ pub(crate) fn directory_candidates(operation: &str, path: &Path, leaf: &str) -> 
         vec![path.join("Ext").join("Form.xml")]
     } else if operation.starts_with("interface-") {
         vec![path.join("Ext").join("CommandInterface.xml")]
-    } else if operation.starts_with("skd-") || operation.starts_with("mxl-") {
+    } else if operation.starts_with("dcs-") || operation.starts_with("mxl-") {
         vec![path.join("Ext").join("Template.xml")]
     } else if operation.starts_with("role-") {
         vec![path.join("Ext").join("Rights.xml")]

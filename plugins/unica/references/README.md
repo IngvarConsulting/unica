@@ -10,7 +10,7 @@ Use this index when a skill needs background guidance beyond its own `SKILL.md`.
 | Create a workspace, configure `v8project.yaml`, build/dump/load, publish CF/CFE/EPF/ERF | `references/use-cases/workspace-runtime.md` |
 | Create, inspect, edit, validate, or remove metadata objects and configuration roots | `references/use-cases/metadata-modeling.md` |
 | Design or modify managed forms and form modules | `references/use-cases/forms-ui.md` |
-| Build reports, SKD/DCS schemas, MXL layouts, print forms, and external report artifacts | `references/use-cases/reports-printing.md` |
+| Build reports, DCS/DCS schemas, MXL layouts, print forms, and external report artifacts | `references/use-cases/reports-printing.md` |
 | Create or inspect extensions, borrow objects, and generate method interceptors | `references/use-cases/extensions-cfe.md` |
 | Create, validate, or audit roles and access rights | `references/use-cases/rights-access.md` |
 | Prepare an autonomous debug contour and test through the web client | `references/use-cases/autonomous-server-debug.md` |
@@ -27,7 +27,7 @@ XML formats, DSL contracts, and reusable layout patterns live in
 - `references/platform/development-standards.md` — coding, architecture, and form-module standards.
 - `references/platform/platform-solutions.md` — common platform pitfalls and fix templates.
 - `references/platform/runtime-diagnostics.md` — ЖР/ТЖ, startup, web-client, HTTP, background-job, and process/session diagnostics.
-- `references/platform/db-performance.md` — query, SKD, indexes, locks, virtual tables, and DBMS evidence.
+- `references/platform/db-performance.md` — query, DCS, indexes, locks, virtual tables, and DBMS evidence.
 - `references/platform/integration-contracts.md` — HTTP/SOAP/OData/JSON/XML/file-exchange contracts and error semantics.
 - `references/platform/platform-mechanics.md` — background jobs, temp storage, auth/crypto, data separation, and platform runtime boundaries.
 - `references/tooling/v8project.md` — project configuration contract.

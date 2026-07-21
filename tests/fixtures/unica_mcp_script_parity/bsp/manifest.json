@@ -131,25 +131,25 @@
       "target": "roles/Администрирование/Rights.xml"
     },
     {
-      "category": "skd",
+      "category": "dcs",
       "sha256": "c24b087c863b7376c97098dc4e9b7c61504541fdcab788ee670a19f0d3c4cd0c",
       "size": 7131,
       "source": "src/cf/Catalogs/ПравилаОбработкиЭлектроннойПочты/Templates/СхемаПравилаОбработкиЭлектроннойПочты/Ext/Template.xml",
-      "target": "skd/Catalogs__ПравилаОбработкиЭлектроннойПочты__СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
+      "target": "dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
     },
     {
-      "category": "skd",
+      "category": "dcs",
       "sha256": "97db2c387bb669f1c7f9a74dad05a8206dd563a9f334d74bf61c31ce1aded1f2",
       "size": 8488,
       "source": "src/cf/DataProcessors/ВыгрузкаЗагрузкаEnterpriseData/Templates/СхемаКомпоновкиДанных/Ext/Template.xml",
-      "target": "skd/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml"
+      "target": "dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml"
     },
     {
-      "category": "skd",
+      "category": "dcs",
       "sha256": "f83a74cca1da547275a1b460e59b1ef28d173b6ef752e64839e36dc8699ff850",
       "size": 10357,
       "source": "src/cf/DataProcessors/ЗаменаИОбъединениеЭлементов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-      "target": "skd/DataProcessors__ЗаменаИОбъединениеЭлементов__ОсновнаяСхемаКомпоновкиДанных/Template.xml"
+      "target": "dcs/DataProcessors__ЗаменаИОбъединениеЭлементов__ОсновнаяСхемаКомпоновкиДанных/Template.xml"
     },
     {
       "category": "subsystems",

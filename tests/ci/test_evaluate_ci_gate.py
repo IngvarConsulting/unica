@@ -29,7 +29,6 @@ OUTPUT_NAMES = (
 ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
 PACKAGE_SUCCESS = {
     "build-tools": "success",
-    "package-runtime": "success",
     "package-thin": "success",
     "release-assessment": "success",
 }
@@ -50,7 +49,6 @@ def source_results() -> dict[str, str]:
         "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
         "build-tools": "skipped",
-        "package-runtime": "skipped",
         "package-thin": "skipped",
         "probe-thin-bootstrap": "skipped",
         "release-assessment": "skipped",
@@ -143,6 +141,28 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertTrue(tag_evaluation.ok)
         self.assertEqual("release", tag_evaluation.contour)
 
+    def test_manual_dispatch_on_tag_ref_remains_non_publishing_full_contour(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            **PACKAGE_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate(
+            "workflow_dispatch",
+            "refs/tags/v0.8.1",
+            outputs,
+            results,
+        )
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("full", evaluation.contour)
+        for job in PUBLISH_SKIPPED:
+            self.assertEqual("skipped", evaluation.expected[job])
+
     def test_missing_invalid_or_inconsistent_classification_fails_closed(self) -> None:
         module = load_gate_module()
         invalid_cases = (
@@ -167,7 +187,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "verify-source": "cancelled",
             "test-rust-platforms": "failure",
             **PACKAGE_SUCCESS,
-            "package-runtime": "skipped",
+            "package-thin": "skipped",
             "probe-thin-bootstrap": "success",
         }
 
@@ -178,7 +198,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             {
                 "verify-source": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
-                "package-runtime": ("skipped", "success"),
+                "package-thin": ("skipped", "success"),
             },
             {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
         )

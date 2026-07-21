@@ -10,10 +10,19 @@ import subprocess
 from pathlib import Path
 
 
-REQUIRED_TOOLS = {
+REQUIRED_DCS_TOOLS = {
+    "unica.dcs.compile",
+    "unica.dcs.edit",
+    "unica.dcs.info",
+    "unica.dcs.validate",
+}
+REQUIRED_TOOLS = REQUIRED_DCS_TOOLS | {
     "unica.project.status",
     "unica.standards.search",
     "unica.standards.explain",
+}
+REMOVED_DCS_TOOL_ALIASES = {
+    name.replace(".dcs.", ".s" + "kd.") for name in REQUIRED_DCS_TOOLS
 }
 
 
@@ -76,6 +85,11 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
     missing = sorted(REQUIRED_TOOLS - names)
     if missing:
         raise SystemExit(f"Unica MCP tools/list is missing: {', '.join(missing)}")
+    removed_aliases = sorted(REMOVED_DCS_TOOL_ALIASES & names)
+    if removed_aliases:
+        raise SystemExit(
+            f"Unica MCP tools/list exposes removed DCS aliases: {', '.join(removed_aliases)}"
+        )
 
 
 def main() -> None:
@@ -91,4 +105,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

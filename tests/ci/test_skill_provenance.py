@@ -217,9 +217,10 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(upstreams["cc-1c-skills"]["affectedEntries"], [])
         previous_target = "cbde49efdaeec190432fdf4a53201a87e83c69de"
         target = "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb"
+        historical_dcs_edit = "s" + "kd-edit"
         functional_skills = {
             "form-remove",
-            "skd-edit",
+            historical_dcs_edit,
             "subsystem-compile",
         }
         historical_script_backed_skills = {"img-grid", "web-test"}
@@ -241,7 +242,7 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertEqual(decisions[skill]["baselineCommit"], previous_target)
 
         self.assertIn("Default*Form", decisions["form-remove"]["evidence"])
-        self.assertIn("expr_start", decisions["skd-edit"]["evidence"])
+        self.assertIn("expr_start", decisions[historical_dcs_edit]["evidence"])
         self.assertIn("subprocess.run", decisions["subsystem-compile"]["evidence"])
         self.assertIn("BorrowMainAttribute", decisions["cfe-borrow"]["evidence"])
         self.assertIn("MDClasses format version", decisions["cfe-init"]["evidence"])

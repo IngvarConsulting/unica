@@ -38,10 +38,10 @@ IN_SCOPE_TOOLS = {
     "subsystem-validate": "unica.subsystem.validate",
     "template-add": "unica.template.add",
     "template-remove": "unica.template.remove",
-    "skd-compile": "unica.skd.compile",
-    "skd-edit": "unica.skd.edit",
-    "skd-info": "unica.skd.info",
-    "skd-validate": "unica.skd.validate",
+    "dcs-compile": "unica.dcs.compile",
+    "dcs-edit": "unica.dcs.edit",
+    "dcs-info": "unica.dcs.info",
+    "dcs-validate": "unica.dcs.validate",
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
     "mxl-info": "unica.mxl.info",
@@ -96,7 +96,7 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.outline",
         "unica.code.grep",
-        "unica.skd.info",
+        "unica.dcs.info",
         "unica.meta.info",
         "unica.meta.profile",
         "unica.standards.search",
@@ -174,7 +174,7 @@ SCENARIO_SKILLS = {
         "unica.code.grep",
         "unica.meta.info",
         "unica.meta.profile",
-        "unica.skd.info",
+        "unica.dcs.info",
         "unica.code.diagnostics",
         "unica.standards.search",
         "unica.standards.explain",
@@ -295,10 +295,10 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "subsystem-validate": ["SubsystemPath"],
     "template-add": ["ObjectName", "TemplateName", "TemplateType", "SrcDir"],
     "template-remove": ["ObjectName", "TemplateName", "SrcDir"],
-    "skd-compile": ["DefinitionFile", "OutputPath"],
-    "skd-edit": ["TemplatePath", "Operation", "Value"],
-    "skd-info": ["TemplatePath"],
-    "skd-validate": ["TemplatePath"],
+    "dcs-compile": ["DefinitionFile", "OutputPath"],
+    "dcs-edit": ["TemplatePath", "Operation", "Value"],
+    "dcs-info": ["TemplatePath"],
+    "dcs-validate": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
     "mxl-decompile": ["TemplatePath", "OutputPath"],
     "mxl-info": ["TemplatePath", "WithText"],
@@ -332,13 +332,13 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "subsystem-info": 8,
     "subsystem-validate": 2,
     "template-add": 2,
-    "skd-compile": 5,
-    "skd-info": 12,
-    "skd-validate": 2,
+    "dcs-compile": 5,
+    "dcs-info": 12,
+    "dcs-validate": 2,
     "mxl-info": 6,
     "mxl-validate": 2,
     "role-info": 2,
-    "skd-edit": 4,
+    "dcs-edit": 4,
     "role-compile": 3,
 }
 
@@ -352,8 +352,8 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "interface-edit": {"unica.interface.validate"},
     "meta-edit": {"unica.meta.info", "unica.meta.validate"},
     "role-compile": {"unica.role.info", "unica.role.validate"},
-    "skd-compile": {"unica.skd.info", "unica.skd.validate"},
-    "skd-edit": {"unica.skd.info", "unica.skd.validate"},
+    "dcs-compile": {"unica.dcs.info", "unica.dcs.validate"},
+    "dcs-edit": {"unica.dcs.info", "unica.dcs.validate"},
 }
 
 SCENARIO_PRESERVING_TOKENS = {
@@ -481,20 +481,20 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.role.validate"',
         '"name": "unica.role.info"',
     ],
-    "skd-compile": [
+    "dcs-compile": [
         '"DefinitionFile": "<json>"',
         '"Value": "<json-string>"',
-        '"name": "unica.skd.validate"',
-        '"name": "unica.skd.info"',
+        '"name": "unica.dcs.validate"',
+        '"name": "unica.dcs.info"',
         '"Mode": "variant"',
     ],
-    "skd-edit": [
+    "dcs-edit": [
         '"Operation": "add-field"',
         '"Value": "Цена: decimal(15,2) ;; Количество: decimal(15,3) ;; Сумма: decimal(15,2)"',
-        '"name": "unica.skd.validate"',
-        '"name": "unica.skd.info"',
+        '"name": "unica.dcs.validate"',
+        '"name": "unica.dcs.info"',
     ],
-    "skd-info": [
+    "dcs-info": [
         '"Mode": "query"',
         '"Name": "НоменклатураСЦенами"',
         '"Batch": 3',
@@ -776,16 +776,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertNotIn(token, text)
 
     def test_reference_fixtures_track_upstream_runtime_portability_fixes(self) -> None:
-        skd_scripts = [
+        dcs_scripts = [
             self.parity_reference_root()
-            / "skd-edit"
+            / "dcs-edit"
             / "scripts"
-            / "skd-edit.py",
+            / "dcs-edit.py",
         ]
-        for path in skd_scripts:
+        for path in dcs_scripts:
             with self.subTest(path=path.relative_to(self.repo_root())):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("skd-edit v1.28", text)
+                self.assertIn("dcs-edit v1.28", text)
                 self.assertIn("expr_start = esc_xml", text)
                 self.assertIn("expr_end = esc_xml", text)
                 self.assertNotRegex(text, r"<expression>\{esc_xml\('&' \+ param_name")
@@ -803,20 +803,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("powershell.exe", subsystem_compile)
         self.assertNotIn("subsystem-validate.ps1", subsystem_compile)
 
-    def test_skd_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
-        skd_compile = (self.skill_root() / "skd-compile" / "SKILL.md").read_text(
+    def test_dcs_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
+        dcs_compile = (self.skill_root() / "dcs-compile" / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        skd_edit = (self.skill_root() / "skd-edit" / "SKILL.md").read_text(encoding="utf-8")
-        skd_info = (self.skill_root() / "skd-info" / "SKILL.md").read_text(encoding="utf-8")
-        skd_dsl = (self.reference_root() / "specs" / "skd-dsl-spec.md").read_text(
+        dcs_edit = (self.skill_root() / "dcs-edit" / "SKILL.md").read_text(encoding="utf-8")
+        dcs_info = (self.skill_root() / "dcs-info" / "SKILL.md").read_text(encoding="utf-8")
+        dcs_dsl = (self.reference_root() / "specs" / "dcs-dsl-spec.md").read_text(
             encoding="utf-8"
         )
         dcs_spec = (self.reference_root() / "specs" / "1c-dcs-spec.md").read_text(
             encoding="utf-8"
         )
 
-        for text in [skd_compile, skd_edit, skd_info]:
+        for text in [dcs_compile, dcs_edit, dcs_info]:
             self.assertIn("MCP `unica`", text)
             self.assertNotIn("CLAUDE_SKILL_DIR", text)
             self.assertNotIn("powershell.exe", text)
@@ -840,17 +840,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "placement",
         ]:
             with self.subTest(token=token):
-                self.assertIn(token, skd_dsl)
+                self.assertIn(token, dcs_dsl)
 
         self.assertIn("Значение-список", dcs_spec)
         self.assertIn("valueListAllowed", dcs_spec)
-        self.assertIn('"Raw": true', skd_info)
-        self.assertIn("сырой текст запроса целиком", skd_info)
-        self.assertIn("unica.skd.edit", skd_info)
-        self.assertIn("patch-query", skd_edit)
-        self.assertIn("@once", skd_edit)
-        self.assertIn("availableValue=", skd_edit)
-        self.assertIn("value=", skd_edit)
+        self.assertIn('"Raw": true', dcs_info)
+        self.assertIn("сырой текст запроса целиком", dcs_info)
+        self.assertIn("unica.dcs.edit", dcs_info)
+        self.assertIn("patch-query", dcs_edit)
+        self.assertIn("@once", dcs_edit)
+        self.assertIn("availableValue=", dcs_edit)
+        self.assertIn("value=", dcs_edit)
 
     def test_form_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
         form_compile = (self.skill_root() / "form-compile" / "SKILL.md").read_text(
@@ -932,7 +932,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "cf-info",
             "meta-info",
             "form-info",
-            "skd-info",
+            "dcs-info",
             "mxl-info",
             "role-info",
             "subsystem-info",
