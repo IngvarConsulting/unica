@@ -29,7 +29,9 @@
 
 Имя: `unica.code.patch`.
 
-Общие поля остаются единообразными для public tools: `cwd` и `dryRun`.
+Общие поля остаются единообразными для public tools: `cwd`, `sourceDir` и
+`dryRun`. `sourceDir` выбирает один настроенный Configuration source set и
+обязателен при неоднозначном выборе.
 
 | Поле | Тип | Правило v1 |
 | --- | --- | --- |
@@ -38,6 +40,7 @@
 | `selector` | object | Ровно один selector `method` или `anchor`. |
 | `content` | string | Непустой BSL-фрагмент для вставки. |
 | `position` | string | `before` или `after`; для `method` — граница метода, для `anchor` — граница совпавшего anchor. |
+| `sourceDir` | string | Необязательный путь к настроенному source set; разрешает неоднозначность. |
 
 `selector.method` — точное имя процедуры или функции. Scanner распознаёт
 `Процедура`/`Функция` и `КонецПроцедуры`/`КонецФункции` только как структурные
@@ -51,7 +54,7 @@ selector — ошибка, а не no-op.
 
 `OperationResult.data` должен включать:
 
-- canonical `path` и выбранный `sourceSet`;
+- canonical `path`, выбранный `sourceSet` и `affectedTarget` с module role;
 - `preHash` и `postHash` SHA-256 по исходным байтам;
 - `changedRanges` в байтовых и line/column координатах postimage;
 - unified diff, построенный из той же postimage, что и `postHash`;

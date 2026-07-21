@@ -26,6 +26,7 @@ allowed-tools:
 | `selector` | yes | Exactly one of `{ "method": "Name" }` or `{ "anchor": "text" }` |
 | `content` | yes | Non-empty BSL text to insert |
 | `position` | yes | `before` or `after` |
+| `sourceDir` | no | Configured Configuration source set; required when the workspace is ambiguous |
 
 Method selectors match an entire procedure or function. Anchor selectors must match exactly once and be located inside one BSL method. Read the returned pre/post hashes, changed range, and diff before applying.
 
