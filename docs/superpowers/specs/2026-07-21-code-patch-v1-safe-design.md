@@ -10,16 +10,17 @@ Related: `Refs #73`. This slice does not close #73.
 a selected platform-XML Configuration source set. It is a source mutation tool,
 not a general BSL editor.
 
-The target may be any existing `*Module.bsl` in that source set, including
-`Module.bsl`, `ObjectModule.bsl`, and `ManagerModule.bsl`. Empty modules,
+The target may be any existing regular `*Module.bsl` in a supported canonical
+platform-XML layout in that source set, including `Module.bsl`,
+`ObjectModule.bsl`, and `ManagerModule.bsl`. Empty modules,
 `replace`/`delete`, batches, external processors/reports, EDT, extensions,
 platform syntax execution, and durable runtime-delivery events remain follow-up
 work for #73.
 
 ## Public contract
 
-The tool accepts the normal workspace/source selection and support-policy
-arguments, plus:
+The tool accepts the normal workspace/source selection arguments and applies
+the project support guard internally, plus:
 
 | Argument | Rule |
 | --- | --- |
@@ -48,9 +49,9 @@ error before staging or mutation.
 5. Compute SHA-256 pre/post hashes, byte and line/column changed ranges, and a
    valid unified diff from those exact two images. A repeated identical request
    is a no-op with equal hashes, empty diff/ranges, and no changed target.
-6. Validate the staged postimage with the same structural BSL parser before
-   publication. Return a terminal source-validation status; this v1 does not
-   claim a 1C platform syntax check.
+6. Validate the exact in-memory postimage with the pinned `bsl-analyzer` parser
+   before staging or publication. Return a terminal source-validation status;
+   this v1 does not claim a 1C platform syntax check.
 7. For an applied, non-no-op call, publish through the shared
    `single_file_publisher` with an exact preimage. This preserves its existing
    permissions, symlink/reparse, cleanup, locking, and concurrent-change

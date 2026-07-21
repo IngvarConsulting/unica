@@ -4378,6 +4378,13 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 КонецПроцедуры\n""",
                         encoding="utf-8",
                     )
+                    owner_directory = module_path.parent.parent
+                    descriptor_path = (
+                        owner_directory.parent / f"{owner_directory.name}.xml"
+                    )
+                    descriptor_path.write_text(
+                        "<MetaDataObject/>\n", encoding="utf-8"
+                    )
                     (workspace / "src" / "cf" / "Configuration.xml").write_text(
                         "<MetaDataObject/>\n", encoding="utf-8"
                     )

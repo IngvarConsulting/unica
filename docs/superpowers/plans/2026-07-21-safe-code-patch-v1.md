@@ -4,9 +4,9 @@
 
 **Goal:** Deliver a safe, honest `Refs #73` MCP tool that inserts into existing BSL modules without weakening Unica's publication contract.
 
-**Architecture:** A native `code-patch` operation parses bytes into a small BSL structural index, resolves one typed selector, creates and validates a byte-exact postimage, then publishes only through `single_file_publisher`. The contract and runtime use one selector model; public MCP tests exercise the end-to-end result.
+**Architecture:** A native `code-patch` operation uses the parser/syntax crates from the bundled `bsl-analyzer` commit, resolves one typed selector, creates and validates a byte-exact postimage, then publishes only through `single_file_publisher`. The contract and runtime use one selector model; public MCP tests exercise the end-to-end result.
 
-**Tech Stack:** Rust, serde_json, SHA-256, existing workspace/source/support guards, `single_file_publisher`.
+**Tech Stack:** Rust, serde_json, SHA-256, pinned `bsl-analyzer` parser/syntax, `diffy`, existing workspace/source/support guards, `single_file_publisher`.
 
 ---
 
@@ -27,7 +27,7 @@ Expected: the examples fail schema validation or the tool is unknown.
 
 - [ ] **Step 3: Register `unica.code.patch` and implement one shared selector schema.**
 
-The schema declares both `method` and `anchor` in `properties`, has `additionalProperties: false`, and uses `oneOf` to require exactly one. The allowlist includes `path`, `operation`, `selector`, `content`, `position`, `sourceDir`, and `supportPolicy`.
+The schema declares both `method` and `anchor` in `properties`, has `additionalProperties: false`, and uses `oneOf` to require exactly one. The allowlist includes `path`, `operation`, `selector`, `content`, `position`, and `sourceDir`; the existing project support guard is applied internally and has no public `supportPolicy` override.
 
 - [ ] **Step 4: Run GREEN** with the command from Step 2; commit as `feat: register typed code patch contract`.
 
@@ -44,9 +44,11 @@ Run: `cargo test -p unica-coder native_operations::code::tests::index -- --nocap
 
 Expected: the index does not yet exist.
 
-- [ ] **Step 3: Implement `BslModuleIndex`, `MethodRange`, and typed `PatchSelector`.**
+- [ ] **Step 3: Implement the AST-backed method index and typed `PatchSelector`.**
 
-Use a byte scanner with string/comment state. Recognize Russian and English open/close declarations only as line-leading tokens; retain borrowed byte ranges. Return typed errors for malformed UTF-8 or impossible structural state.
+Use `parser`/`syntax` from the exact bundled `bsl-analyzer` source commit and
+pin that alignment with a contract test. Retain parser byte ranges and return
+typed errors for malformed UTF-8 or invalid BSL syntax.
 
 - [ ] **Step 4: Run GREEN** with the command from Step 2; commit as `feat: index BSL method boundaries for code patch`.
 

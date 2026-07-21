@@ -18,10 +18,12 @@ pub(crate) mod single_file_publisher;
 pub(crate) mod subsystem;
 pub(crate) mod support;
 pub(crate) mod template;
+pub(crate) mod typed_result;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};
 use std::fs;
+
 pub struct NativeOperationAdapter;
 impl NativeOperationAdapter {
     pub fn invoke(
@@ -32,15 +34,17 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
+        if registry::typed_mutation_handler(operation).is_some() {
+            return Err(format!(
+                "{operation} requires the typed native-operation result path"
+            ));
+        }
         if dry_run {
             if let Some(outcome) = external::preview(operation, tool_name, args, context) {
                 return Ok(outcome);
             }
             if operation == "form-edit" && form::has_edit_payload(args) {
                 return Ok(form::preview_form_edit(args, context));
-            }
-            if operation == "code-patch" {
-                return Ok(code::preview(args, context));
             }
             let mut fallback = AdapterOutcome {
                 ok: true,
@@ -101,99 +105,4 @@ impl NativeOperationAdapter {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::NativeOperationAdapter;
-    use crate::infrastructure::workspace::discover_workspace;
-    use serde_json::Map;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    #[test]
-    fn missing_native_mutation_handler_is_contract_error() {
-        let root = temp_root("missing-mutation-handler");
-        fs::create_dir_all(root.join("src")).unwrap();
-        let context = discover_workspace(Some(root.clone())).unwrap();
-
-        let result = NativeOperationAdapter::invoke(
-            "definitely-missing-operation",
-            "unica.definitely.missing",
-            &Map::new(),
-            &context,
-            false,
-            true,
-        );
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("native mutation handler is not registered"));
-    }
-
-    #[test]
-    fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
-        let root = temp_root("compile-preview-fallback");
-        let context = discover_workspace(Some(root.clone())).unwrap();
-
-        let result = NativeOperationAdapter::invoke(
-            "meta-compile",
-            "unica.meta.compile",
-            &Map::new(),
-            &context,
-            true,
-            true,
-        )
-        .expect("a missing preview payload must preserve the legacy dry-run contract");
-
-        assert!(result.ok);
-        assert!(result.summary.contains("dry run"));
-        assert_eq!(
-            result.changes,
-            vec!["no files changed because dryRun is true".to_string()]
-        );
-        assert!(result.artifacts.is_empty());
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("detailed compile preview is unavailable")));
-        assert!(fs::read_dir(&root).unwrap().next().is_none());
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
-        let root = temp_root("subsystem-preview-parent-fallback");
-        let context = discover_workspace(Some(root.clone())).unwrap();
-        let args = serde_json::from_value(serde_json::json!({
-            "OutputDir": root.display().to_string(),
-            "Value": r#"{"name":"Child"}"#,
-            "Parent": "Subsystems/Missing.xml"
-        }))
-        .unwrap();
-
-        let result = NativeOperationAdapter::invoke(
-            "subsystem-compile",
-            "unica.subsystem.compile",
-            &args,
-            &context,
-            true,
-            true,
-        )
-        .unwrap();
-
-        assert!(result.ok);
-        assert!(result.summary.contains("dry run"));
-        assert!(result.warnings[0].contains("parent subsystem is unavailable"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    fn temp_root(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-native-ops-{name}-{nanos}"));
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-}
+mod tests;
