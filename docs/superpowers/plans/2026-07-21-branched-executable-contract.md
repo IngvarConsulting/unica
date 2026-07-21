@@ -242,21 +242,21 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/vocabulary.rs`
 
-- [ ] RED: require descriptor cardinality/order/name equality with all 21 values
+- [x] RED: require descriptor cardinality/order/name equality with all 21 values
   of `BranchedLifecycleToolName::ALL` and fail if a second name list drifts.
-- [ ] Define `TaskOperationToolName` as a closed lifecycle/general union without
+- [x] Define `TaskOperationToolName` as a closed lifecycle/general union without
   a string catch-all; the general branch is an explicit empty registry in this
   phase.
-- [ ] Define exact `TaskOperationSelector` branches and request-variant literals
+- [x] Define exact `TaskOperationSelector` branches and request-variant literals
   used by next actions and digest errors.
-- [ ] Add descriptors with name, request schema factory, variant metadata,
+- [x] Add descriptors with name, request schema factory, variant metadata,
   policy selector, mutation/preview classification, and a deliberately absent
   handler binding.
-- [ ] Expose no handler binding or registry-to-`ToolSpec` conversion API and
+- [x] Expose no handler binding or registry-to-`ToolSpec` conversion API and
   prove none of its names appears in `application::tools()` or actual MCP
   `tools/list` yet. Do not claim absolute non-convertibility of a public-field
   application struct.
-- [ ] Run focused/schema/MCP regression tests; commit and review.
+- [x] Run focused/schema/MCP regression tests; commit and review.
 
 ## Task 6: Common result envelope and rejected error contract
 
