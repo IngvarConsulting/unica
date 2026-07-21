@@ -1,4 +1,6 @@
-use super::{ExecutionPolicy, OperationId, Sha256Digest};
+use super::canonical_json::{operation_input_digest, CanonicalJsonError};
+use super::{BranchedLifecycleToolName, DurableExecutionPolicy, OperationId, Sha256Digest};
+use serde_json::Value;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,20 +154,27 @@ impl ValidatedOperationState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationReplayView<TTool> {
+pub struct OperationReplayView {
     operation_id: OperationId,
-    tool_name: TTool,
-    policy: ExecutionPolicy,
+    tool_name: BranchedLifecycleToolName,
+    policy: DurableExecutionPolicy,
     canonical_input_digest: Sha256Digest,
     state: ValidatedOperationState,
 }
 
-impl<TTool> OperationReplayView<TTool> {
+impl OperationReplayView {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Task 5 validated loader is the production record-parts consumer"
+        )
+    )]
+    pub(super) fn from_validated_record_parts(
         operation_id: OperationId,
-        tool_name: TTool,
-        policy: ExecutionPolicy,
+        tool_name: BranchedLifecycleToolName,
+        policy: DurableExecutionPolicy,
         canonical_input_digest: Sha256Digest,
         state: OperationState,
         owner_state: Option<OperationOwnerState>,
@@ -192,11 +201,11 @@ impl<TTool> OperationReplayView<TTool> {
         &self.operation_id
     }
 
-    pub fn tool_name(&self) -> &TTool {
-        &self.tool_name
+    pub fn tool_name(&self) -> BranchedLifecycleToolName {
+        self.tool_name
     }
 
-    pub fn policy(&self) -> ExecutionPolicy {
+    pub fn policy(&self) -> DurableExecutionPolicy {
         self.policy
     }
 
@@ -207,7 +216,9 @@ impl<TTool> OperationReplayView<TTool> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayDisposition {
-    DispatchNew,
+    DispatchNew {
+        canonical_input_digest: Sha256Digest,
+    },
     ReplayMismatch {
         expected: Sha256Digest,
         observed: Sha256Digest,
@@ -223,22 +234,69 @@ pub enum ReplayDisposition {
     },
 }
 
-pub fn classify_replay<TTool>(
-    record: Option<&OperationReplayView<TTool>>,
-    observed_input_digest: &Sha256Digest,
-) -> ReplayDisposition {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayClassificationError {
+    RequestMustBeObject,
+    NonInteroperableInteger,
+    NonInteroperableString,
+    Canonicalization,
+}
+
+impl fmt::Display for ReplayClassificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RequestMustBeObject => {
+                formatter.write_str("operation request must be a JSON object")
+            }
+            Self::NonInteroperableInteger => {
+                formatter.write_str("integer is outside the I-JSON interoperability range")
+            }
+            Self::NonInteroperableString => {
+                formatter.write_str("string contains an I-JSON forbidden Unicode scalar")
+            }
+            Self::Canonicalization => formatter.write_str("JSON canonicalization failed"),
+        }
+    }
+}
+
+impl std::error::Error for ReplayClassificationError {}
+
+impl From<CanonicalJsonError> for ReplayClassificationError {
+    fn from(value: CanonicalJsonError) -> Self {
+        match value {
+            CanonicalJsonError::RequestMustBeObject => Self::RequestMustBeObject,
+            CanonicalJsonError::NonInteroperableInteger => Self::NonInteroperableInteger,
+            CanonicalJsonError::NonInteroperableString => Self::NonInteroperableString,
+            CanonicalJsonError::Canonicalization(_) => Self::Canonicalization,
+        }
+    }
+}
+
+pub fn classify_replay(
+    record: Option<&OperationReplayView>,
+    incoming_tool_name: BranchedLifecycleToolName,
+    incoming_policy: DurableExecutionPolicy,
+    request: &Value,
+) -> Result<ReplayDisposition, ReplayClassificationError> {
+    let observed_input_digest =
+        operation_input_digest(incoming_tool_name, incoming_policy, request)?;
     let Some(record) = record else {
-        return ReplayDisposition::DispatchNew;
+        return Ok(ReplayDisposition::DispatchNew {
+            canonical_input_digest: observed_input_digest,
+        });
     };
 
-    if record.canonical_input_digest != *observed_input_digest {
-        return ReplayDisposition::ReplayMismatch {
+    if record.tool_name != incoming_tool_name
+        || record.policy != incoming_policy
+        || record.canonical_input_digest != observed_input_digest
+    {
+        return Ok(ReplayDisposition::ReplayMismatch {
             expected: record.canonical_input_digest.clone(),
-            observed: observed_input_digest.clone(),
-        };
+            observed: observed_input_digest,
+        });
     }
 
-    match &record.state {
+    Ok(match &record.state {
         ValidatedOperationState::Registered {
             owner_state: OperationOwnerState::Live,
         }
@@ -261,18 +319,20 @@ pub fn classify_replay<TTool>(
         } => ReplayDisposition::ReplayTerminal {
             terminal_envelope_digest: terminal_envelope_digest.clone(),
         },
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         classify_replay, OperationOwnerState, OperationReplayView, OperationState,
-        ReplayDisposition,
+        ReplayClassificationError, ReplayDisposition,
     };
     use crate::domain::branched_development::{
-        BranchedLifecycleToolName, ExecutionPolicy, OperationId, Sha256Digest,
+        canonical_json::operation_input_digest, BranchedLifecycleToolName, DurableExecutionPolicy,
+        OperationId, Sha256Digest,
     };
+    use serde_json::json;
     use std::str::FromStr;
 
     fn operation_id() -> OperationId {
@@ -283,17 +343,92 @@ mod tests {
         Sha256Digest::from_str(&value.to_string().repeat(64)).unwrap()
     }
 
-    fn record(
+    fn request() -> serde_json::Value {
+        json!({
+            "operationId": "123e4567-e89b-12d3-a456-426614174000",
+            "taskId": "TASK-137",
+            "approval": {"digest": "approved", "decision": "apply"},
+            "guard": {"digest": "guarded"},
+        })
+    }
+
+    #[test]
+    fn no_record_returns_the_classifier_computed_digest_for_registration() {
+        let request = request();
+        let expected = operation_input_digest(
+            BranchedLifecycleToolName::MergeApply,
+            DurableExecutionPolicy::JournaledEffect,
+            &request,
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_replay(
+                None,
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &request,
+            ),
+            Ok(ReplayDisposition::DispatchNew {
+                canonical_input_digest: expected,
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_request_is_rejected_before_dispatch_without_a_record() {
+        assert_eq!(
+            classify_replay(
+                None,
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &json!([]),
+            ),
+            Err(ReplayClassificationError::RequestMustBeObject)
+        );
+    }
+
+    #[test]
+    fn non_i_json_requests_are_rejected_before_dispatch_without_a_record() {
+        for (request, expected) in [
+            (
+                json!({"taskId": "TASK-137", "forbidden": "\u{fdd0}"}),
+                ReplayClassificationError::NonInteroperableString,
+            ),
+            (
+                json!({"taskId": "TASK-137", "tooLarge": 9_007_199_254_740_992_u64}),
+                ReplayClassificationError::NonInteroperableInteger,
+            ),
+        ] {
+            assert_eq!(
+                classify_replay(
+                    None,
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &request,
+                ),
+                Err(expected)
+            );
+        }
+    }
+
+    fn durable_record(
         state: OperationState,
         owner_state: Option<OperationOwnerState>,
         terminal_envelope_digest: Option<Sha256Digest>,
         recovery_digest: Option<Sha256Digest>,
-    ) -> OperationReplayView<BranchedLifecycleToolName> {
-        OperationReplayView::new(
+        stored_request: &serde_json::Value,
+    ) -> OperationReplayView {
+        OperationReplayView::from_validated_record_parts(
             operation_id(),
-            BranchedLifecycleToolName::BranchedStart,
-            ExecutionPolicy::LocalJournaled,
-            digest('a'),
+            BranchedLifecycleToolName::MergeApply,
+            DurableExecutionPolicy::JournaledEffect,
+            operation_input_digest(
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                stored_request,
+            )
+            .unwrap(),
             state,
             owner_state,
             terminal_envelope_digest,
@@ -302,16 +437,235 @@ mod tests {
         .unwrap()
     }
 
+    fn classify(
+        record: Option<&OperationReplayView>,
+    ) -> Result<ReplayDisposition, ReplayClassificationError> {
+        let request = request();
+        classify_replay(
+            record,
+            BranchedLifecycleToolName::MergeApply,
+            DurableExecutionPolicy::JournaledEffect,
+            &request,
+        )
+    }
+
+    #[test]
+    fn stored_replay_view_needs_only_validated_record_parts_not_the_original_request() {
+        let stored_request = request();
+        let record = durable_record(
+            OperationState::Registered,
+            Some(OperationOwnerState::Live),
+            None,
+            None,
+            &stored_request,
+        );
+
+        assert_eq!(record.state(), OperationState::Registered);
+    }
+
+    #[test]
+    fn different_incoming_tool_and_policy_mismatch_before_every_state_disposition() {
+        let request = request();
+        for record in [
+            durable_record(
+                OperationState::Registered,
+                Some(OperationOwnerState::Live),
+                None,
+                None,
+                &request,
+            ),
+            durable_record(
+                OperationState::IntentWritten,
+                Some(OperationOwnerState::Orphaned),
+                None,
+                None,
+                &request,
+            ),
+            durable_record(
+                OperationState::EffectUnknown,
+                None,
+                None,
+                Some(digest('c')),
+                &request,
+            ),
+            durable_record(
+                OperationState::Terminal,
+                None,
+                Some(digest('d')),
+                None,
+                &request,
+            ),
+        ] {
+            for (different_tool, different_policy) in [
+                (
+                    BranchedLifecycleToolName::MergeVerify,
+                    DurableExecutionPolicy::JournaledEffect,
+                ),
+                (
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::Contained,
+                ),
+            ] {
+                let observed =
+                    operation_input_digest(different_tool, different_policy, &request).unwrap();
+
+                assert_eq!(
+                    classify_replay(Some(&record), different_tool, different_policy, &request),
+                    Ok(ReplayDisposition::ReplayMismatch {
+                        expected: operation_input_digest(
+                            BranchedLifecycleToolName::MergeApply,
+                            DurableExecutionPolicy::JournaledEffect,
+                            &request,
+                        )
+                        .unwrap(),
+                        observed,
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_i_json_request_precedes_every_state_disposition() {
+        let stored_request = request();
+        for record in [
+            durable_record(
+                OperationState::Registered,
+                Some(OperationOwnerState::Live),
+                None,
+                None,
+                &stored_request,
+            ),
+            durable_record(
+                OperationState::IntentWritten,
+                Some(OperationOwnerState::Orphaned),
+                None,
+                None,
+                &stored_request,
+            ),
+            durable_record(
+                OperationState::EffectUnknown,
+                None,
+                None,
+                Some(digest('c')),
+                &stored_request,
+            ),
+            durable_record(
+                OperationState::Terminal,
+                None,
+                Some(digest('d')),
+                None,
+                &stored_request,
+            ),
+        ] {
+            assert_eq!(
+                classify_replay(
+                    Some(&record),
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &json!({"taskId": "TASK-137", "forbidden": "\u{fdd0}"}),
+                ),
+                Err(ReplayClassificationError::NonInteroperableString)
+            );
+        }
+    }
+
+    #[test]
+    fn replay_binds_reordered_equivalent_input_and_every_non_top_level_field() {
+        let stored_request = request();
+        let record = durable_record(
+            OperationState::Terminal,
+            None,
+            Some(digest('d')),
+            None,
+            &stored_request,
+        );
+        let reordered = json!({
+            "guard": {"digest": "guarded"},
+            "taskId": "TASK-137",
+            "approval": {"decision": "apply", "digest": "approved"},
+            "operationId": "123e4567-e89b-12d3-a456-426614174001",
+        });
+
+        assert_eq!(
+            classify_replay(
+                Some(&record),
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &reordered,
+            ),
+            Ok(ReplayDisposition::ReplayTerminal {
+                terminal_envelope_digest: digest('d'),
+            })
+        );
+
+        for changed in [
+            json!({
+                "operationId": "123e4567-e89b-12d3-a456-426614174000",
+                "taskId": "TASK-137",
+                "approval": {"digest": "changed", "decision": "apply"},
+                "guard": {"digest": "guarded"},
+            }),
+            json!({
+                "operationId": "123e4567-e89b-12d3-a456-426614174000",
+                "taskId": "TASK-137",
+                "approval": {"digest": "approved", "decision": "apply"},
+                "guard": {"operationId": "nested-change", "digest": "guarded"},
+            }),
+            json!({
+                "operationId": "123e4567-e89b-12d3-a456-426614174000",
+                "taskId": "TASK-137",
+                "approval": {"digest": "approved", "decision": "deny"},
+                "guard": {"digest": "guarded"},
+            }),
+        ] {
+            assert!(matches!(
+                classify_replay(
+                    Some(&record),
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &changed,
+                ),
+                Ok(ReplayDisposition::ReplayMismatch { .. })
+            ));
+        }
+    }
+
+    fn record(
+        state: OperationState,
+        owner_state: Option<OperationOwnerState>,
+        terminal_envelope_digest: Option<Sha256Digest>,
+        recovery_digest: Option<Sha256Digest>,
+    ) -> OperationReplayView {
+        let request = request();
+        durable_record(
+            state,
+            owner_state,
+            terminal_envelope_digest,
+            recovery_digest,
+            &request,
+        )
+    }
+
     #[test]
     fn no_record_dispatches_a_new_operation() {
+        let request = request();
         assert_eq!(
-            classify_replay::<BranchedLifecycleToolName>(None, &digest('a')),
-            ReplayDisposition::DispatchNew
+            classify(None),
+            Ok(ReplayDisposition::DispatchNew {
+                canonical_input_digest: operation_input_digest(
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &request,
+                )
+                .unwrap(),
+            })
         );
     }
 
     #[test]
     fn input_mismatch_precedes_every_state_specific_disposition() {
+        let incoming = json!({"taskId": "TASK-137", "approval": {"digest": "different"}});
         for record in [
             record(
                 OperationState::Registered,
@@ -329,11 +683,26 @@ mod tests {
             record(OperationState::Terminal, None, Some(digest('d')), None),
         ] {
             assert_eq!(
-                classify_replay(Some(&record), &digest('b')),
-                ReplayDisposition::ReplayMismatch {
-                    expected: digest('a'),
-                    observed: digest('b'),
-                }
+                classify_replay(
+                    Some(&record),
+                    BranchedLifecycleToolName::MergeApply,
+                    DurableExecutionPolicy::JournaledEffect,
+                    &incoming,
+                ),
+                Ok(ReplayDisposition::ReplayMismatch {
+                    expected: operation_input_digest(
+                        BranchedLifecycleToolName::MergeApply,
+                        DurableExecutionPolicy::JournaledEffect,
+                        &request(),
+                    )
+                    .unwrap(),
+                    observed: operation_input_digest(
+                        BranchedLifecycleToolName::MergeApply,
+                        DurableExecutionPolicy::JournaledEffect,
+                        &incoming,
+                    )
+                    .unwrap(),
+                })
             );
         }
     }
@@ -343,10 +712,10 @@ mod tests {
         let record = record(OperationState::Terminal, None, Some(digest('d')), None);
 
         assert_eq!(
-            classify_replay(Some(&record), &digest('a')),
-            ReplayDisposition::ReplayTerminal {
+            classify(Some(&record)),
+            Ok(ReplayDisposition::ReplayTerminal {
                 terminal_envelope_digest: digest('d'),
-            }
+            })
         );
     }
 
@@ -366,10 +735,7 @@ mod tests {
                 None,
             ),
         ] {
-            assert_eq!(
-                classify_replay(Some(&record), &digest('a')),
-                ReplayDisposition::InProgress
-            );
+            assert_eq!(classify(Some(&record)), Ok(ReplayDisposition::InProgress));
         }
     }
 
@@ -389,12 +755,12 @@ mod tests {
         );
 
         assert_eq!(
-            classify_replay(Some(&registered), &digest('a')),
-            ReplayDisposition::ResumeRegistered
+            classify(Some(&registered)),
+            Ok(ReplayDisposition::ResumeRegistered)
         );
         assert_eq!(
-            classify_replay(Some(&intent_written), &digest('a')),
-            ReplayDisposition::ObserveIntentWritten
+            classify(Some(&intent_written)),
+            Ok(ReplayDisposition::ObserveIntentWritten)
         );
     }
 
@@ -403,10 +769,10 @@ mod tests {
         let record = record(OperationState::EffectUnknown, None, None, Some(digest('c')));
 
         assert_eq!(
-            classify_replay(Some(&record), &digest('a')),
-            ReplayDisposition::RecoveryRequired {
+            classify(Some(&record)),
+            Ok(ReplayDisposition::RecoveryRequired {
                 recovery_digest: digest('c'),
-            }
+            })
         );
     }
 
@@ -501,13 +867,18 @@ mod tests {
         owner_state: Option<OperationOwnerState>,
         terminal_envelope_digest: Option<Sha256Digest>,
         recovery_digest: Option<Sha256Digest>,
-    ) -> Result<OperationReplayView<BranchedLifecycleToolName>, super::OperationInvariantError>
-    {
-        OperationReplayView::new(
+    ) -> Result<OperationReplayView, super::OperationInvariantError> {
+        let request = request();
+        OperationReplayView::from_validated_record_parts(
             operation_id(),
-            BranchedLifecycleToolName::BranchedStart,
-            ExecutionPolicy::LocalJournaled,
-            digest('a'),
+            BranchedLifecycleToolName::MergeApply,
+            DurableExecutionPolicy::JournaledEffect,
+            operation_input_digest(
+                BranchedLifecycleToolName::MergeApply,
+                DurableExecutionPolicy::JournaledEffect,
+                &request,
+            )
+            .unwrap(),
             state,
             owner_state,
             terminal_envelope_digest,

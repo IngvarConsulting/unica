@@ -70,8 +70,6 @@ fn canonical_json_digest(value: &Value) -> Result<Sha256Digest, CanonicalJsonErr
 }
 
 /// Returns the domain-separated digest for one durable branched operation request.
-// Remove this bridge when Task 4 wires its validated selector/policy producer.
-#[allow(dead_code)]
 pub(super) fn operation_input_digest(
     tool_name: BranchedLifecycleToolName,
     execution_policy: DurableExecutionPolicy,
