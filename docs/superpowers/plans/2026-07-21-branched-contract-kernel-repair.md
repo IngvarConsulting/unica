@@ -99,16 +99,28 @@ via `serde_json_canonicalizer`, existing MCP protocol tests.
 ### Task 4: Bind replay to durable policy and computed input
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/canonical_json.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/operation.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/mod.rs`
 - Test: `crates/unica-coder/src/domain/branched_development/operation.rs`
 
 - [ ] Add failing compile/runtime coverage showing a replay view cannot contain
-  `readOnly` and all replay decisions compare the centrally computed digest.
-- [ ] Change `OperationReplayView` to `DurableExecutionPolicy` and expose no
-  constructor that accepts the broad `ExecutionPolicy`.
+  `readOnly`, no classifier accepts an arbitrary observed SHA, and incoming
+  request/tool/policy are all bound before any state-specific decision.
+- [ ] Change `OperationReplayView` to concrete `BranchedLifecycleToolName` plus
+  `DurableExecutionPolicy` for this milestone. Do not retain the unconstrained
+  `TTool` generic: Phase 1 replaces the concrete type with the generated closed
+  `TaskOperationToolName` union before handlers, never a `String` or open trait.
+- [ ] Replace the public raw-parts constructor with a sibling-only
+  `from_validated_record_parts` that accepts the stored canonical digest for
+  Task 5's validated loader but cannot be called as a public request shortcut.
+- [ ] Make replay classification accept exact incoming tool, durable policy, and
+  request; compute the observed digest internally. Explicitly compare incoming
+  tool/policy to stored fields as well as the digest. Return the computed digest
+  in `DispatchNew` so registration cannot recompute it differently.
 - [ ] Replace arbitrary test digests for canonical input with Task 2's producer;
-  retain distinct validated digests only for terminal/recovery envelopes.
+  retain distinct validated digests only for terminal/recovery envelopes. Add
+  invalid-I-JSON and different-tool/different-policy precedence regressions.
 - [ ] Preserve the four-state exhaustive classifier and all illegal-field tests.
 - [ ] Run the full domain suite, formatting, boundary check, and diff checks.
 - [ ] Commit and obtain independent review.
