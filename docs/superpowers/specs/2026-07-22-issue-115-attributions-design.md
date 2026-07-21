@@ -1,4 +1,4 @@
-# Issue 115: Packaged Attribution Page
+# Issue 115: Manually Maintained Attribution Page
 
 ## Goal
 
@@ -7,8 +7,9 @@ repositories behind Unica's shipped tools, external service adapters, and
 adapted skill behavior; thanks those authors; and explains the applicable
 license chain.
 
-The page must remain consistent with package-contract metadata. It must not
-become a second manually maintained inventory.
+The page is a manually written editorial document. Automated checks protect
+its inventory coverage, while human review remains responsible for the
+accuracy and quality of its prose.
 
 ## Scope
 
@@ -27,7 +28,7 @@ transitive Rust or Python dependencies are outside this issue. Their license
 obligations remain governed by their own dependency and distribution
 mechanisms.
 
-## Source-of-truth model
+## Source and ownership model
 
 Existing package metadata remains authoritative:
 
@@ -38,19 +39,19 @@ Existing package metadata remains authoritative:
 - the packaged source manifest owns external service adapter identity and URL;
 - `.codex-plugin/plugin.json` owns Unica author, homepage, and license identity.
 
-Those records will gain only the attribution fields that cannot be derived
-reliably, such as a human-readable project/author name, author URL,
-acknowledgement text, and an upstream license reference. The design does not
-introduce a new unified manifest or duplicate version and commit data.
+`plugins/unica/ATTRIBUTIONS.md` owns the human-readable author names,
+acknowledgements, explanations, and license-chain narrative. The design does
+not introduce a new unified manifest or duplicate machine-readable version and
+commit data in another JSON file.
 
 Authorship and license values must be verified against the upstream repository
 and then recorded explicitly. A repository owner inferred from its GitHub URL
 is not sufficient evidence of authorship.
 
-## Generated page
+## Attribution page
 
-A deterministic repository script will render
-`plugins/unica/ATTRIBUTIONS.md`. The generated page will contain:
+Maintainers will write `plugins/unica/ATTRIBUTIONS.md` manually. It will
+contain:
 
 1. Unica copyright, homepage, and LGPL-3.0-or-later license;
 2. bundled tools grouped by upstream project, with authors, repository, pinned
@@ -65,9 +66,8 @@ A deterministic repository script will render
 5. a concise license-chain explanation and acknowledgements.
 
 Repeated tools from one repository and repeated skill entries from one donor
-will be grouped. Lists and groups will use stable sorting so regeneration is
-reproducible. The page will label itself as generated and point maintainers to
-the authoritative metadata and generator.
+will be grouped. The page will point maintainers to the authoritative package
+metadata that must be consulted when it is edited.
 
 The plugin README and the repository root README will link to the page. The
 existing packaging process must copy it into the marketplace artifact without
@@ -87,32 +87,40 @@ automatically replaces another:
 - remote services are referenced integrations, not redistributed components.
 
 Full upstream license texts continue to live under `third-party/licenses/`
-when redistribution requires or warrants inclusion. The generated page links
+when redistribution requires or warrants inclusion. The attribution page links
 to those files; it does not duplicate complete license texts.
 
 ## Validation and failure behavior
 
-The generator has a check mode that renders in memory and fails when the
-checked-in page differs. CI tests will also fail when:
+An offline CI checker will compare scoped component identifiers from the
+authoritative metadata with explicit machine-readable markers embedded in the
+manually written Markdown. It will fail when:
 
-- a scoped tool, adapter, or donor lacks required attribution metadata;
-- an attribution URL is absent or is not an absolute HTTPS URL;
+- a scoped tool, adapter, or donor has no matching attribution entry;
+- a required repository, author, or license URL is absent or is not an
+  absolute HTTPS URL;
 - a declared bundled-license path does not exist in the packaged tree;
-- a tool or donor disappears from the generated page;
-- output ordering is nondeterministic.
+- an attribution marker is duplicated or refers to a component outside the
+  authoritative inventories.
 
 Checks are offline and deterministic. They validate recorded URLs and paths,
 not live network availability. Upstream facts are verified during metadata
 changes and reviewed in source control.
 
+CI cannot prove that free-form prose remains factually current. This is an
+accepted consequence of choosing a manually authored page. Reviewers must
+compare author, acknowledgement, and license wording with upstream sources
+when components or their metadata change.
+
 ## Testing strategy
 
 Implementation follows test-first development:
 
-1. add failing unit/contract tests for complete source coverage, grouping,
-   deterministic rendering, URL/path validation, and stale-output detection;
-2. add the smallest metadata extensions and generator needed to pass them;
-3. generate the page and add README links;
+1. add failing unit/contract tests for complete source coverage, unique
+   markers, URL validation, and license-path validation;
+2. write the attribution page and add the smallest checker needed to pass the
+   tests;
+3. add README links;
 4. run the focused attribution tests, provenance validation, packaging tests,
    and the relevant repository test suite.
 
@@ -125,6 +133,6 @@ present.
 - replacing the existing provenance or tool-lock contracts;
 - producing an SBOM for every transitive dependency;
 - making CI query GitHub or other upstream hosts;
+- generating or rewriting the attribution page from metadata;
 - adding attribution prose to prompt-visible skills;
 - changing the public MCP server or `unica.*` tool boundary.
-
