@@ -397,9 +397,12 @@ fn unified_diff(path: &str, before: &[u8], offset: usize, insertion: &[u8], no_o
 mod tests {
     use super::{
         insertion_is_present, line_column, locate_insertion, methods, normalized_content,
-        unified_diff,
+        patch_inner, unified_diff,
     };
+    use crate::domain::workspace::WorkspaceContext;
     use serde_json::{json, Map, Value};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const MODULE: &str = "Процедура Первая()\n    Сообщить(\"один\");\nКонецПроцедуры\n\nФункция Вторая()\n    Возврат Истина;\nКонецФункции\n";
 
@@ -479,11 +482,71 @@ mod tests {
         assert_eq!(line_column("A\nBC", 3), (2, 2));
     }
 
+    #[test]
+    fn applied_patch_reports_typed_target_and_repeated_apply_is_noop() {
+        let context = temp_context("applied-patch");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "\u{feff}Procedure Run()\r\nEndProcedure\r\n").unwrap();
+        let args = patch_args(
+            "src/CommonModules/Sample/Ext/Module.bsl",
+            "Run",
+            "Message(\"ok\");",
+        );
+
+        let applied = patch_inner(&args, &context, false);
+        assert!(applied.ok, "{:?}", applied.errors);
+        let details: Value = serde_json::from_str(applied.stdout.as_deref().unwrap()).unwrap();
+        assert_eq!(details["sourceSet"], "main");
+        assert_eq!(details["affectedTarget"]["moduleRole"], "Module");
+        assert_eq!(details["changedRanges"][0]["startLine"], 3);
+        assert!(details["diff"].as_str().unwrap().starts_with("--- a/"));
+
+        let repeated = patch_inner(&args, &context, false);
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert!(repeated.changes.is_empty());
+        let details: Value = serde_json::from_str(repeated.stdout.as_deref().unwrap()).unwrap();
+        assert_eq!(details["preHash"], details["postHash"]);
+        assert!(details["changedRanges"].as_array().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
     fn arguments(selector: Value, position: &str) -> Map<String, Value> {
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("insert"));
         args.insert("selector".to_string(), selector);
         args.insert("position".to_string(), json!(position));
         args
+    }
+
+    fn patch_args(path: &str, method: &str, content: &str) -> Map<String, Value> {
+        let mut args = arguments(json!({"method": method}), "after");
+        args.insert("path".to_string(), json!(path));
+        args.insert("content".to_string(), json!(content));
+        args.insert("sourceDir".to_string(), json!("src"));
+        args
+    }
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-code-patch-{name}-{nonce}"));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
     }
 }
