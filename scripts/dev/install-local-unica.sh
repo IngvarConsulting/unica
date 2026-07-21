@@ -18,6 +18,25 @@ Options:
 EOF
 }
 
+target_for_host() {
+  local host_os="$1"
+  local host_arch="$2"
+  case "${host_os}-${host_arch}" in
+    Darwin-arm64) printf '%s\n' "darwin-arm64" ;;
+    Linux-x86_64|Linux-amd64) printf '%s\n' "linux-x64" ;;
+    MINGW*_NT-*-x86_64|MINGW*_NT-*-amd64) printf '%s\n' "win-x64" ;;
+    *)
+      echo "Unsupported local Unica tool target: ${host_os}-${host_arch}" >&2
+      return 78
+      ;;
+  esac
+}
+
+detect_target() {
+  target_for_host "$(uname -s)" "$(uname -m)"
+}
+
+main() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MARKETPLACE_NAME="${UNICA_CODEX_MARKETPLACE_NAME:-unica-dev}"
 BUILD_ROOT="${UNICA_LOCAL_BUILD_DIR:-$REPO_ROOT/.build/local-codex-unica}"
@@ -78,20 +97,6 @@ PY
   done
   echo "Python >= 3.10 is required. Set PYTHON=/path/to/python if needed." >&2
   return 69
-}
-
-detect_target() {
-  local host_os host_arch
-  host_os="$(uname -s)"
-  host_arch="$(uname -m)"
-  case "${host_os}-${host_arch}" in
-    Darwin-arm64) printf '%s\n' "darwin-arm64" ;;
-    Linux-x86_64|Linux-amd64) printf '%s\n' "linux-x64" ;;
-    *)
-      echo "Unsupported local Unica tool target: ${host_os}-${host_arch}" >&2
-      return 78
-      ;;
-  esac
 }
 
 tool_binary() {
@@ -236,4 +241,9 @@ if [ "$DO_INSTALL" -eq 1 ]; then
   if [ "$DO_VERIFY" -eq 1 ]; then
     echo "==> Fresh prompt proof: $PROMPT_PROOF"
   fi
+fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

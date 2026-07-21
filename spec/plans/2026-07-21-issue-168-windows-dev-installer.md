@@ -56,8 +56,10 @@ class LocalDevInstallerTests(unittest.TestCase):
                     "bash",
                     "-c",
                     (
-                        'set -- --build-dir "$4" --skip-build --skip-install '
-                        '--skip-verify; source "$1"; target_for_host "$2" "$3"'
+                        'installer="$1"; system="$2"; machine="$3"; tmp="$4"; '
+                        'set -- --build-dir "$tmp" --skip-build --skip-install '
+                        '--skip-verify; source "$installer"; '
+                        'target_for_host "$system" "$machine"'
                     ),
                     "bash",
                     str(INSTALLER),
@@ -205,9 +207,9 @@ scripts/dev/install-local-unica.sh \
   --skip-build \
   --skip-install \
   --skip-verify >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
-status=$?
+exit_code=$?
 set -e
-test "$status" -eq 66
+test "$exit_code" -eq 66
 grep -F "==> Unica local target: darwin-arm64" "$tmp_dir/stdout"
 grep -F -- "--skip-build requested, but bundle is missing:" "$tmp_dir/stderr"
 ```
