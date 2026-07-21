@@ -114,6 +114,14 @@ class LocalDevInstallerTests(unittest.TestCase):
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertNotIn("UNICA_LOCAL_TOOL_BUNDLE", installer)
 
+    def test_installer_creates_codex_home_before_invoking_cli(self) -> None:
+        installer = INSTALLER.read_text(encoding="utf-8")
+        create_home = installer.index('mkdir -p "$CODEX_HOME_DIR"')
+        first_codex_call = installer.index(
+            'codex plugin marketplace remove "$MARKETPLACE_NAME"'
+        )
+        self.assertLess(create_home, first_codex_call)
+
     def test_shell_scripts_are_forced_to_lf_in_windows_checkouts(self) -> None:
         completed = subprocess.run(
             [

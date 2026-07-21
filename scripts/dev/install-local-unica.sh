@@ -212,6 +212,7 @@ if [ "$DO_INSTALL" -eq 1 ]; then
     exit 69
   fi
 
+  mkdir -p "$CODEX_HOME_DIR"
   codex plugin marketplace remove "$MARKETPLACE_NAME" >/dev/null 2>&1 || true
   if [ -d "$CODEX_PLUGIN_CACHE_DIR" ]; then
     echo "==> Removing stale Codex plugin cache: $CODEX_PLUGIN_CACHE_DIR"
