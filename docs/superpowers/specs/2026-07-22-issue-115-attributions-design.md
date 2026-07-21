@@ -20,7 +20,7 @@ The attribution page covers the public Unica plugin artifact:
   duplicate presentation of the Unica executable itself;
 - every external service adapter declared in the packaged source manifest;
 - every distinct upstream repository represented in
-  `provenance/skill-upstreams.json` whose behavior or guidance was adapted into
+  `provenance/skill-upstreams.json` whose behavior, guidance, or ideas informed
   packaged skills.
 
 Development-only dependencies, CI actions, test fixtures, build tools, and
@@ -48,6 +48,15 @@ Authorship and license values must be verified against the upstream repository
 and then recorded explicitly. A repository owner inferred from its GitHub URL
 is not sufficient evidence of authorship.
 
+`ai_rules_1c` is inspiration only: Unica used ideas from that repository, not
+copied or adapted material. Its baseline publishes no license, so the page must
+not imply that it grants redistribution rights or forms part of Unica's
+license chain. Provenance metadata must state this boundary explicitly.
+
+The pinned `v8-runner` source is AGPL-3.0. The incorrect MIT declaration in
+`third-party/tools.lock.json` must be corrected and the corresponding license
+text must be packaged.
+
 ## Attribution page
 
 Maintainers will write `plugins/unica/ATTRIBUTIONS.md` manually. It will
@@ -63,6 +72,8 @@ contain:
 4. adapted skill sources grouped by donor repository, with author links,
    affected packaged skills, upstream license, and an explanation that the
    behavior was adapted behind Unica's typed `unica.*` MCP boundary;
+   inspiration-only sources are labelled separately and make no redistribution
+   or adaptation claim;
 5. a concise license-chain explanation and acknowledgements.
 
 Repeated tools from one repository and repeated skill entries from one donor
@@ -85,6 +96,8 @@ automatically replaces another:
   terms;
 - separately invoked or aggregated binaries retain their declared licenses;
 - remote services are referenced integrations, not redistributed components.
+- inspiration-only sources contribute ideas rather than copied expression and
+  do not enter the redistribution license chain.
 
 Full upstream license texts continue to live under `third-party/licenses/`
 when redistribution requires or warrants inclusion. The attribution page links
