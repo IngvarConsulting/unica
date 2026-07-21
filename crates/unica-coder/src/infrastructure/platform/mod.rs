@@ -1,3 +1,4 @@
+pub(crate) mod contained_file;
 mod entrypoint;
 pub(crate) mod filesystem;
 mod process;
