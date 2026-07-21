@@ -386,6 +386,13 @@ fn normalize_inventory(
             }
         }
         ProviderOutcomeKind::Bounded => {
+            let max_files_seen = limits.max_files.checked_add(1).unwrap_or(u32::MAX);
+            if inventory.coverage.files_seen > max_files_seen {
+                return Err(provider_contract_diagnostic(
+                    "inventory_files_seen_limit_violation",
+                    "bounded source inventory observed more than the triggering N+1 file",
+                ));
+            }
             let demonstrates_bound = inventory.coverage.files_seen > file_count
                 || file_count == limits.max_files
                 || byte_count == limits.max_bytes;
@@ -1921,6 +1928,31 @@ mod tests {
                 && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Bounded
                 && item.coverage == ProviderCoverage::new(2, 1, byte_count, 1)
         }));
+    }
+
+    #[test]
+    fn bounded_inventory_rejects_u32_max_files_seen_when_it_exceeds_n_plus_one() {
+        let file = source_file("Documents/Purchase.xml", b"metadata");
+        let byte_count = file.bytes.len() as u64;
+        let mut inventory = SourceInventory {
+            files: vec![file],
+            coverage: ProviderCoverage::new(u32::MAX, 1, byte_count, 1),
+        };
+
+        let error = normalize_inventory(
+            &mut inventory,
+            ProviderOutcomeKind::Bounded,
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: u64::MAX,
+                max_evidence: u16::MAX,
+                max_candidates: u16::MAX,
+                max_graph_depth: u8::MAX,
+            },
+        )
+        .expect_err("filesSeen beyond N+1 must violate the bounded contract");
+
+        assert_eq!(error.code, "inventory_files_seen_limit_violation");
     }
 
     #[test]

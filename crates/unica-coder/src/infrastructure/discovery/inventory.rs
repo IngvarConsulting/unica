@@ -95,7 +95,7 @@ impl ContainedSourceInventoryPort {
             let verified = match verified_result {
                 Ok(verified) => verified,
                 Err(ContainedFileError::SizeLimitExceeded { limit: _ }) => {
-                    if needs_sidecar_classification && files.len() < max_files {
+                    if needs_sidecar_classification {
                         files_seen = checked_increment_files_seen(files_seen)?;
                     }
                     return Ok(Capture::Bounded {
@@ -405,6 +405,28 @@ mod tests {
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].bytes, b"123");
         assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 3, 1));
+        assert_eq!(diagnostic.code, "source_inventory_byte_bound");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn byte_bound_during_sidecar_classification_counts_the_n_plus_one_observation() {
+        let root = fixture_root("sidecar-byte-bound-after-file-bound");
+        write(&root.join("a.xml"), b"a");
+        write(
+            &root.join("z/ConfigDumpInfo.xml"),
+            b"<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let outcome = provider.inventory(&query(1, 1));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("expected bounded inventory");
+        };
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.files[0].bytes, b"a");
+        assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 1, 1));
         assert_eq!(diagnostic.code, "source_inventory_byte_bound");
         cleanup(&root);
     }
