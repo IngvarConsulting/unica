@@ -19,7 +19,10 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
+regex = "=1.11.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+schemars = { version = "=1.2.1", features = ["derive"] }
+time = { version = "=0.3.54", features = ["parsing", "formatting"] }
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [

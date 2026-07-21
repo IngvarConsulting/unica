@@ -1,3 +1,7 @@
+use super::contracts::schema::string_schema;
+use crate::domain::i_json;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
@@ -48,8 +52,42 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn valid_uuid(value: &str) -> bool {
+    valid_operation_id(value)
+}
+
+fn valid_profile_artifact_ref_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_capability_row_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn valid_printable_non_control(value: &str, maximum_scalars: usize) -> bool {
+    (1..=maximum_scalars).contains(&value.chars().count())
+        && i_json::validate_i_json_string(value).is_ok()
+        && value.chars().all(|character| !character.is_control())
+}
+
+fn valid_support_layer_id(value: &str) -> bool {
+    valid_printable_non_control(value, 256)
+}
+
 macro_rules! identifier {
-    ($name:ident, $kind:literal, $reason:literal, $valid:ident) => {
+    ($name:ident, $kind:literal, $reason:literal, $valid:ident, $min:literal, $max:literal, $pattern:expr, $format:expr) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
@@ -103,6 +141,20 @@ macro_rules! identifier {
                 deserializer.deserialize_str(IdentifierVisitor)
             }
         }
+
+        impl JsonSchema for $name {
+            fn inline_schema() -> bool {
+                true
+            }
+
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                string_schema($min, $max, $pattern, $format)
+            }
+        }
     };
 }
 
@@ -110,19 +162,91 @@ identifier!(
     TaskId,
     "task id",
     "must be a bounded ASCII task identifier",
-    valid_task_id
+    valid_task_id,
+    1,
+    64,
+    Some("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"),
+    None
 );
 identifier!(
     OperationId,
     "operation id",
     "must be a canonical lowercase hyphenated UUID",
-    valid_operation_id
+    valid_operation_id,
+    36,
+    36,
+    Some("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+    Some("uuid")
 );
 identifier!(
     Sha256Digest,
     "SHA-256 digest",
     "must be an exact lowercase SHA-256 hex digest",
-    valid_sha256
+    valid_sha256,
+    64,
+    64,
+    Some("^[0-9a-f]{64}$"),
+    None
+);
+identifier!(
+    UnicaId,
+    "Unica id",
+    "must be a canonical lowercase hyphenated UUID",
+    valid_uuid,
+    36,
+    36,
+    Some("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+    Some("uuid")
+);
+identifier!(
+    ProjectId,
+    "project id",
+    "must be a canonical lowercase hyphenated UUID",
+    valid_uuid,
+    36,
+    36,
+    Some("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+    Some("uuid")
+);
+identifier!(
+    MetadataObjectId,
+    "metadata object id",
+    "must be a canonical lowercase hyphenated UUID",
+    valid_uuid,
+    36,
+    36,
+    Some("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+    Some("uuid")
+);
+identifier!(
+    ProfileArtifactRefId,
+    "profile artifact reference id",
+    "must be a bounded ASCII profile artifact reference identifier",
+    valid_profile_artifact_ref_id,
+    1,
+    128,
+    Some("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+    None
+);
+identifier!(
+    CapabilityRowId,
+    "capability row id",
+    "must be a bounded lowercase ASCII capability row identifier",
+    valid_capability_row_id,
+    1,
+    128,
+    Some("^[a-z0-9][a-z0-9._-]{0,127}$"),
+    None
+);
+identifier!(
+    SupportLayerId,
+    "support layer id",
+    "must be a bounded printable non-control Unicode identifier",
+    valid_support_layer_id,
+    1,
+    256,
+    None,
+    None
 );
 
 #[cfg(test)]
