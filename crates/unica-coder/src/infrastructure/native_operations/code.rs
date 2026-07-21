@@ -473,6 +473,20 @@ mod tests {
     }
 
     #[test]
+    fn index_ignores_declaration_words_in_comments_and_strings() {
+        let module =
+            "// Procedure Fake()\n\"Function AlsoFake()\"\nProcedure Run()\nEndProcedure\n";
+        let args = arguments(json!({"method": "Run"}), "after");
+
+        assert!(locate_insertion(module, &args).is_ok());
+    }
+
+    #[test]
+    fn index_rejects_a_mismatched_method_closing_token() {
+        assert!(methods("Procedure Run()\nEndFunction\n").is_err());
+    }
+
+    #[test]
     fn line_column_reports_utf8_character_columns() {
         assert_eq!(line_column("Процедура Run()\n", 0), (1, 1));
         assert_eq!(
