@@ -61,17 +61,17 @@ impl ContainedSourceInventoryPort {
                 continue;
             }
             let needs_sidecar_classification = has_config_dump_info_filename(&path);
-            if !needs_sidecar_classification && files.len() >= max_files {
-                return Ok(Capture::Bounded {
-                    inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
-                    diagnostic: ProviderDiagnostic::material(
-                        "source_inventory_file_bound",
-                        "source inventory stopped at the maxFiles limit",
-                    ),
-                });
-            }
             if !needs_sidecar_classification {
                 files_seen = checked_increment_files_seen(files_seen)?;
+                if files.len() >= max_files {
+                    return Ok(Capture::Bounded {
+                        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
+                        diagnostic: ProviderDiagnostic::material(
+                            "source_inventory_file_bound",
+                            "source inventory stopped at the maxFiles limit",
+                        ),
+                    });
+                }
             }
             let remaining_bytes = query
                 .limits()
@@ -129,6 +129,7 @@ impl ContainedSourceInventoryPort {
                 }
             }
             if needs_sidecar_classification {
+                files_seen = checked_increment_files_seen(files_seen)?;
                 if files.len() >= max_files {
                     return Ok(Capture::Bounded {
                         inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
@@ -138,7 +139,6 @@ impl ContainedSourceInventoryPort {
                         ),
                     });
                 }
-                files_seen = checked_increment_files_seen(files_seen)?;
             }
             bytes_analyzed = bytes_analyzed
                 .checked_add(verified.bytes_read)
@@ -385,7 +385,7 @@ mod tests {
             data.files[0].relative_path,
             PortableRelativePath::parse_str("a.xml").expect("portable path")
         );
-        assert_eq!(data.coverage, ProviderCoverage::new(1, 1, 1, 1));
+        assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 1, 1));
         assert_eq!(diagnostic.code, "source_inventory_file_bound");
         cleanup(&root);
     }

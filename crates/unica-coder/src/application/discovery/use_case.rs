@@ -326,10 +326,7 @@ fn normalize_inventory(
         inventory.files.iter().map(|file| file.bytes.len() as u64),
         "inventory_byte_count_overflow",
     )?;
-    if inventory.coverage.files_seen > limits.max_files
-        || file_count > limits.max_files
-        || byte_count > limits.max_bytes
-    {
+    if file_count > limits.max_files || byte_count > limits.max_bytes {
         return Err(provider_contract_diagnostic(
             "inventory_limit_violation",
             "source inventory exceeded the validated discovery query limits",
@@ -1896,6 +1893,70 @@ mod tests {
             source_file("Documents/Purchase.xml", b"metadata-a"),
             source_file("Documents/Receipt.xml", b"metadata-b"),
         ]);
+        let report = execute(&fake, request_with_file_limit(1)).expect("partial report");
+
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::SourceInventory
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+        }));
+    }
+
+    #[test]
+    fn bounded_inventory_may_report_the_triggering_n_plus_one_file_seen() {
+        let file = source_file("Documents/Purchase.xml", b"metadata");
+        let byte_count = file.bytes.len() as u64;
+        let mut fake = FakePorts::complete_empty();
+        fake.inventory = ProviderOutcome::Bounded {
+            data: SourceInventory {
+                files: vec![file],
+                coverage: ProviderCoverage::new(2, 1, byte_count, 1),
+            },
+            diagnostic: diagnostic("inventory_file_limit_reached"),
+        };
+
+        let report = execute(&fake, request_with_file_limit(1)).expect("bounded report");
+
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::SourceInventory
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Bounded
+                && item.coverage == ProviderCoverage::new(2, 1, byte_count, 1)
+        }));
+    }
+
+    #[test]
+    fn bounded_inventory_still_cannot_return_more_than_max_files() {
+        let files = vec![
+            source_file("Documents/Purchase.xml", b"metadata-a"),
+            source_file("Documents/Receipt.xml", b"metadata-b"),
+        ];
+        let byte_count = files.iter().map(|file| file.bytes.len() as u64).sum();
+        let mut fake = FakePorts::complete_empty();
+        fake.inventory = ProviderOutcome::Bounded {
+            data: SourceInventory {
+                files,
+                coverage: ProviderCoverage::new(3, 2, byte_count, 2),
+            },
+            diagnostic: diagnostic("inventory_file_limit_reached"),
+        };
+
+        let report = execute(&fake, request_with_file_limit(1)).expect("partial report");
+
+        assert!(report.provider_outcomes.iter().any(|item| {
+            item.provider == ProviderKind::SourceInventory
+                && item.outcome == crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+        }));
+    }
+
+    #[test]
+    fn complete_inventory_still_requires_exact_files_seen_coverage() {
+        let file = source_file("Documents/Purchase.xml", b"metadata");
+        let byte_count = file.bytes.len() as u64;
+        let mut fake = FakePorts::complete_empty();
+        fake.inventory = ProviderOutcome::Complete(SourceInventory {
+            files: vec![file],
+            coverage: ProviderCoverage::new(2, 1, byte_count, 1),
+        });
+
         let report = execute(&fake, request_with_file_limit(1)).expect("partial report");
 
         assert!(report.provider_outcomes.iter().any(|item| {
