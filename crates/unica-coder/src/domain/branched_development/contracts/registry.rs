@@ -425,6 +425,13 @@ pub(crate) const fn branched_lifecycle_descriptors() -> &'static [BranchedToolDe
     &BRANCHED_LIFECYCLE_DESCRIPTORS
 }
 
+pub(crate) fn canonical_selector_count() -> usize {
+    branched_lifecycle_descriptors()
+        .iter()
+        .map(|descriptor| descriptor.variants.len())
+        .sum()
+}
+
 pub(crate) fn canonical_selector_ordinal(selector: &TaskOperationSelector) -> usize {
     let mut offset = 0;
     for descriptor in branched_lifecycle_descriptors() {
@@ -443,7 +450,7 @@ pub(crate) fn canonical_selector_ordinal(selector: &TaskOperationSelector) -> us
 
 #[cfg(test)]
 mod tests {
-    use super::{branched_lifecycle_descriptors, HandlerBindingState};
+    use super::{branched_lifecycle_descriptors, canonical_selector_count, HandlerBindingState};
     use crate::domain::branched_development::contracts::requests::{
         delivery, merge, repository, task,
     };
@@ -862,6 +869,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual, EXPECTED_VARIANTS);
+        assert_eq!(canonical_selector_count(), 53);
     }
 
     #[test]

@@ -57,6 +57,15 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   Task 2 therefore creates `contracts/artifacts.rs` with `ArtifactRole`,
   `ArtifactKind`, `AcceptedArtifactKind`, and the closed `ArtifactKindRole`;
   Task 7 extends that module with evidence records instead of redefining enums.
+- Required-nullable Serde behavior cannot first appear in Task 7: Task 6's
+  rejected contexts already need it. Task 6 creates the shared
+  `RequiredNullable<T>` in `contracts/scalars.rs` and requires field-level
+  `deserialize_with` on every physical required-nullable member. Tasks 7 and 8
+  reuse that exact wrapper and deserializer.
+- Exact action arrays require Draft 2020-12 positional schemas in Task 6. Task 6
+  extends `contracts/schema.rs` with fail-closed `prefixItems` plus
+  `items: false` support; later fixed tuples reuse it and never fall back to
+  legacy array-valued `items`/`additionalItems`.
 - `SupportMissingEvidenceKind` cannot first appear in Task 8 because Task 7's
   `DeferredRepositoryAdvance` already depends on it. Task 7 creates
   `contracts/support.rs` with that closed shared enum before compiling
@@ -261,28 +270,82 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 ## Task 6: Common result envelope and rejected error contract
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/schema.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/scalars.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/selectors.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/envelope.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/errors.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/actions.rs`
 
-- [ ] RED: prove the completed/stopped/rejected presence matrix, all 75
-  `StableErrorCode` literals, all 30 `RejectedCode` literal leaves, and the 13
+- [x] RED: prove the completed/stopped/rejected presence matrix, all 75
+  `StableErrorCode` literals, all 30 `RejectedCode` literal leaves, and the 14
   grouped `TaskErrorData` code/context branches.
-- [ ] Define `TaskErrorEntry`; completed has exactly zero errors, while stopped
+- [x] RED: reject an omitted required-nullable member while accepting explicit
+  `null`/`T`, and reject every fixed tuple with a missing, extra, reordered, or
+  cross-branch item. Snapshot exact Draft 2020-12 `prefixItems`, `items: false`,
+  and equal tuple-length bounds; reject legacy/open-tail schemas in the recursive
+  audit.
+- [x] Add the shared `RequiredNullable<T>` in `scalars.rs`. Every physical field
+  with required `T | null` wire semantics in Task 6 carries a field-level
+  `#[serde(deserialize_with = "RequiredNullable::deserialize_required")]`, has
+  no default/skip behavior, and distinguishes omission from explicit `null`.
+  Tasks 7 and 8 must import this implementation rather than redefine it.
+- [x] Extend `schema.rs` with fail-closed Draft 2020-12 fixed-tuple generation
+  and recursive audit: require non-empty `prefixItems`, `items: false`, and
+  `minItems == maxItems == prefixItems.length`; reject array-valued `items`,
+  `additionalItems`, open tails, and length mismatches.
+- [x] Define the closed generic envelope schema algebra over
+  `C, W, A, K, E, D` as six distinct physical read-only/mutating ×
+  completed/stopped/rejected structs. Keep their role-specific macro definitions
+  and test byte-for-byte common property-set equality across all six; do not use
+  `serde(flatten)` or invent a shared flattened `TaskResultFields` Rust struct.
+  Later owner tasks bind
+  `C`/`W`/`A` to exact named bounded item schemas and `K`/`E`/`D` to exact named
+  recursively closed payload schemas before a concrete result schema exists.
+  Do not add `Value`, untyped maps/arrays, free-form objects, or Task 6-invented
+  placeholder payload records.
+- [x] Define `TaskErrorEntry`; completed has exactly zero errors, while stopped
   and rejected each have exactly one error whose code respectively equals
   `stopCode` or `TaskErrorData.code`. Secondary error entries are illegal.
-- [ ] Encode the 14 named redacted contexts, 53 lifecycle operation selectors,
+- [x] Add crate-private typed selector constructors in `selectors.rs`; action
+  construction accepts concrete selector/variant enums and creates
+  `TaskOperationSelector` directly. No raw strings, `serde_json::Value`, parsing,
+  or JSON serialize/deserialize round trip is an internal construction path.
+  Derive canonical ordinals from the global selector table.
+- [x] Encode the 15 named redacted contexts, 53 lifecycle operation selectors,
   eight external-instruction literals, and their exact canonical/duplicate-free
-  allowed-action grammar, including the singleton adaptation-refresh selector.
-  Do not use a single code plus optional context bag.
-- [ ] Make `completed` require `ok: true` and empty errors; stopped/rejected
+  allowed-action grammar, including the singleton adaptation-refresh selector
+  and exact `taskNotFound` actions `[branched.start, branched.status]`. Name that
+  grammar `startAndStatus`; array order is canonical set order, not an execution
+  instruction. Do not use a single code plus optional context bag. Task 6 closes
+  the 30 rejected leaves only; it does not assign a common producer set.
+- [x] Give `stateCorrupt` its exact trusted five-way state reference and closed
+  observation union: read bytes use `exactBytes { observedDigest }`, while an
+  absent or ACL-inaccessible expected object uses `unavailable { reason:
+  missing | permissionDenied }`. Forbid sentinel/metadata digests and loose
+  optional fields; retain existing bytes untouched, while missing state has no
+  fabricated object to retain.
+- [x] Make `completed` require `ok: true` and empty errors; stopped/rejected
   require `ok: false` and the exact singleton error by construction.
-- [ ] Keep `changes`, `artifacts`, and cache fields in every task-bound envelope;
+- [x] Require top-level `operationId` in every completed/stopped/rejected result
+  for a `DurableExecutionPolicy` and require it to equal the request value;
+  forbid it for every `readOnly` result. A typed `data` reference to a
+  pre-existing operation does not create a top-level read-only exception.
+- [x] Keep `changes`, `warnings`, `artifacts`, `cache`, `evidence`, and `data` in
+  every task-bound envelope with their exact generic bindings;
   command/stdout/stderr/path/credential fields are unrepresentable.
-- [ ] Add exhaustive cross-branch substitution negatives from the normative
-  `TaskErrorData` and rejected-code presence/action table; do not rely on stale
-  source line numbers.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Add exhaustive cross-branch substitution negatives from the normative
+  `TaskErrorData` and rejected-code presence/action table. Runtime validation
+  rejects every invalid relational substitution whose compared values are in
+  the wire context; schema validation rejects all structurally expressible
+  substitutions. Exact-projection lists whose authoritative component
+  preimages are intentionally not on the wire remain producer/replay-validator
+  invariants owned by Task 16 and Phase 2. Enumerate and freeze the narrow
+  Draft 2020-12 schema supersets for cross-field equality/inequality/membership
+  rather than inventing a hidden discriminator. Do not rely on stale source
+  line numbers.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 7: Repository and artifact evidence types
 
@@ -319,11 +382,11 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   Keep `RepositoryTargetKind` distinct from merge/apply `TargetKind`, enforce
   the exact target/reason order, and enforce the 0-or-1/null and scalar bounds
   of owner, actor, vendor, and version fields.
-- [ ] Add the reusable `RequiredNullable<T>` scalar wrapper: a containing closed
-  record must require the member key, while the member value accepts and emits
-  exactly either `null` or `T`. Its Serde/schema behavior must reject an omitted
-  key and must not use `Option<T>` defaults or skip-serialization attributes;
-  Task 8 reuses the same wrapper for its required-nullable fields.
+- [ ] Reuse Task 6's `RequiredNullable<T>` and shared required deserializer for
+  every Task 7 required-nullable member. Each physical field carries the
+  field-level `deserialize_with`, the containing closed record requires the key,
+  and omission remains distinct from explicit `null`; do not redeclare the
+  wrapper or add `Option<T>` defaults/skip attributes.
 - [ ] Represent lineage with typed IDs/digests, not recursive object graphs.
 - [ ] Define Task 7's reusable `CanonicalEmptyDeltaDigest` value type/constant
   as exactly `sha256(canonical([]))`; its schema and deserializer accept only
@@ -411,10 +474,11 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   instruction. Until this Task 8 extension succeeds, every raw support-backed
   partition remains unvalidated and unusable.
 - [ ] Preserve exact manual-mode presence rules and explicit null-versus-absent
-  fields by reusing Task 7's `RequiredNullable<T>`. Do not fabricate object/layer
-  IDs for global evidence gaps. Treat `SupportRootLockProof` terminalization
-  presence as an outer authorization/result invariant because the nested proof
-  has no target mode; never infer one.
+  fields by reusing Task 6's `RequiredNullable<T>` and its field-level required
+  deserializer on every physical required-nullable member. Do not fabricate
+  object/layer IDs for global evidence gaps. Treat `SupportRootLockProof`
+  terminalization presence as an outer authorization/result invariant because
+  the nested proof has no target mode; never infer one.
 - [ ] Give all four `SupportTransition` leaves the required `transitionKind`
   discriminator. Implement the closed `SupportCandidateReason` and
   `VendorSupportDecision` vocabularies and validated semantic collection types
@@ -513,20 +577,45 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Modify: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
 
 - [ ] RED: complete status projections, resume handles, recent terminal results,
-  archive/cleanup status, operation lease, operation record, terminal envelope,
-  and schema catalog snapshots.
+  archive/cleanup status, operation lease, and the generic operation-record
+  presence matrix. RED also substitutes every lease digest/input and the
+  terminal-envelope digest; JSON Schema shape success must not bypass semantic
+  hashing. Instantiate storage tests only with one private recursively
+  closed `TestTerminalEnvelope`; assert that no production terminal alias,
+  terminal catalog, operation-record snapshot, or expected digest exists yet.
 - [ ] `ActiveOperationStatus.state` accepts only registered/intent-written/
-  effect-unknown; terminal evidence is separate.
-- [ ] `OperationRecord` uses only `DurableExecutionPolicy`, the exact four state
-  variants, and the lease/terminal/recovery presence matrix. It has no embedded
-  schema version/digest.
-- [ ] Bind Task 5A opaque candidates to full typed deserialization and schema
-  validation. Only this validated type may construct the replay view.
-- [ ] Generate the expected operation-record schema digest from the committed
-  normalized schema and prove exact stored byte hash remains the observed
-  digest. Full filesystem/error mapping stays in Phase 2.
-- [ ] Prove schema/status/storage reject `policy: readOnly` and no preflight
-  failure can reach replay/status construction.
+  effect-unknown; terminal evidence is separate. Status projects the exact typed
+  `operation: TaskOperationSelector`, not a variant-losing `toolName` field.
+- [ ] Define only crate-private `OperationRecord<TerminalEnvelope>`. Its generic
+  structure uses `DurableExecutionPolicy`, the exact four state variants, and
+  the lease/terminal/recovery presence matrix; it has no embedded schema
+  version/digest. Persist exactly one typed `operation: TaskOperationSelector`
+  producer discriminator and forbid sibling `toolName`/`requestVariant` fields;
+  the one-way `canonicalInputDigest` cannot recover a physical variant.
+  Production code cannot instantiate or alias it in this task.
+- [ ] Add the closed `OperationScope` union: pre-task, original-workspace-scoped `startAttempt`
+  contains the canonical original-workspace identity digest and `taskId`, while
+  normal `task` scope contains `projectId`, `taskId`, and `instanceId`. The
+  generic loader compares the complete scope with the start-attempt storage key
+  or authoritative parent task record/locator before constructing any status or
+  replay view; copied/cross-scope records fail. Do not persist a path or hash the
+  caller's unnormalized `cwd` spelling.
+- [ ] Validate `heartbeatDigest` and `leaseDigest` from their exact canonical
+  records, and validate
+  `terminalEnvelopeDigest == sha256(canonical(terminalEnvelope))` generically.
+  These value checks are mandatory after shape validation and before any replay
+  view; no caller-supplied digest is trusted merely because its scalar schema is
+  valid.
+- [ ] Keep Task 5A opaque candidates unbound to a production record. A test-only
+  typed loader may validate `OperationRecord<TestTerminalEnvelope>` and construct
+  a test replay view; the production opaque-loader binding waits for Task 16.
+- [ ] Prove the generic schema/status/storage foundation rejects
+  `policy: readOnly` and no poison/preflight failure can reach replay/status
+  construction. Read-only selector-variant and terminal-producer binding waits
+  for the real result union in Task 16.
+- [ ] Do not generate or commit the final operation-record schema, expected
+  digest, schema catalog, or storage snapshots. Task 17 first does so after
+  Tasks 12-16 close and bind every production terminal variant.
 - [ ] Run focused/schema/doc compile-fail tests, format, clippy; commit and review.
 
 ## Task 12: Completed lifecycle and delivery result data
@@ -594,6 +683,10 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   constructor or raw DTO can accept that branch.
 - [ ] Preserve target/scope/mode-specific presence rules and the intentional
   reuse of `MergeSessionData`/`MergeVerificationData` in stopped outcomes.
+- [ ] Define the exact canonical `CommitCommentPolicyDigestRecord` and
+  `IntegrationSetLineageDigestRecord` preimage types used by rejected mismatch
+  proofs; do not leave either as an opaque digest producer or reconstruct a
+  historical observed policy record from current mutable profile state.
 - [ ] Keep recovery apply and pending-plan cancellation outputs distinct.
 - [ ] Run focused/schema tests, format, clippy; commit and review.
 
@@ -640,14 +733,74 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 **Files:**
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/envelope.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/registry.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/storage.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/operation.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
 - Modify: `crates/unica-coder/src/application/mod.rs`
 - Test: `crates/unica-coder/src/application/mod.rs`
 
-- [ ] RED: each of 21 descriptors must have an exact completed set, stopped
-  code/data set, and common rejected set; mismatched stop/data/primary error is
-  impossible in Rust and rejected by schema.
+- [ ] RED first: derive from the stated per-variant precondition semantics and
+  freeze an explicit normative 53-by-30 `RejectedProducerMatrix`: one row for
+  every physical lifecycle selector variant, one column for every Task 6
+  `RejectedCode` leaf, and an exact legal/illegal value for all 1590 cells.
+  Tests enumerate every cell and prove missing-task status is completed
+  `notCreated`, while start, status, and other read-only variants have their own
+  subsets. Production result schemas and registration remain forbidden until
+  this matrix is fixed and exact.
+- [ ] Give each of the 21 descriptors, and each physical variant within it, its
+  exact completed set, stopped code/data set, and matrix-derived rejected
+  subset. There is no common rejected set; mismatched producer/code/context,
+  stop/data, or primary error is impossible in Rust and rejected by schema.
+- [ ] Create the sole production
+  `TaskResultEnvelope` as exactly
+  `ReadOnlyTaskResultEnvelope | MutatingTaskResultEnvelope`. The read-only side
+  physically forbids top-level `operationId`; the mutating side requires the
+  request's exact value. Bind all generic change/warning/artifact/cache/evidence/
+  data slots to the exact named schemas owned by Tasks 12-15; no placeholder
+  payload record survives.
+- [ ] Create the sole production
+  `CurrentOperationRecord = OperationRecord<MutatingTaskResultEnvelope>` and
+  bind its exact typed `operation: TaskOperationSelector` to the legal durable
+  policy and matching terminal producer. Do not add duplicate
+  `toolName`/`requestVariant` fields. Reject `policy: readOnly`, every physical
+  selector variant mapped to `readOnly` (including one inside a mixed-policy
+  tool), every operation/policy mismatch, every read-only terminal envelope,
+  every operation/policy/terminal-envelope mismatch, and every terminal record
+  whose `terminalEnvelope.operationId` differs from the record `operationId` or
+  whose `terminalEnvelope.taskId` differs from `scope.taskId`. Require
+  `startAttempt` scope exactly for `branched.start` and `task` scope for every
+  other durable selector. Successful start additionally binds returned
+  project/instance IDs, the created task record, and locator; early failed start
+  requires neither identity.
+  Invoke Task 11's lease and terminal-envelope digest validators before
+  constructing the replay view. Classify each such stored mismatch or digest-
+  validation failure as a retained corrupt candidate and block
+  replay without fabricating `stateCorrupt` evidence yet: Task 17 supplies the
+  committed expected schema digest, and Phase 2/Task 5B then maps either the
+  exact retained bytes when readable or an `unavailable` observation for a
+  missing/permission-denied object to the final `stateCorrupt` context. Derive `operation`
+  from the validated closed request before registration and require replay to
+  derive the same selector; never accept it as an extra caller field.
+- [ ] Bind Task 5A's opaque candidate loader to `CurrentOperationRecord` only;
+  only a fully typed/schema-valid current record may construct the replay view.
+  Keep the normalized production schema/digest/catalog snapshots absent until
+  Task 17.
 - [ ] Define internal `BranchedToolResult` variants and projection into the
   serialized application envelope without command/stdout/stderr leaks.
+- [ ] Every production result constructor takes the validated physical request
+  and copies its exact `taskId`; no handler-facing API accepts an independent
+  response task ID. Test all 53 variants plus cross-task substitution.
+- [ ] Construct `commitCommentPolicyMismatch.mismatchKinds` and
+  `integrationSetMismatch.mismatchKinds` only from their two authoritative typed
+  preimage records, deriving every unequal component in canonical order. Create
+  the two closed content-addressed mismatch-proof records and typed wire
+  evidence refs; expose no constructor that accepts a caller-provided
+  projection. Define the replay semantic validator that resolves and rehashes
+  the immutable proof, matches both context digests and the projection, and
+  never reconstructs historical observed policy state from a current profile.
+  Phase 2 must invoke it before replaying a stored terminal. Standalone wire
+  deserialization can prove only unequal opaque record digests plus non-empty/
+  canonical kinds.
 - [ ] Preserve every legacy serialized field/value for existing tools.
 - [ ] Add compile/serialization tests documenting the deliberate Rust struct API
   expansion and wire compatibility; do not claim struct-literal compatibility.
@@ -667,12 +820,23 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   missing/extra, registry order drifts, or a schema contains an open/untyped
   object/array.
 - [ ] Generate one deterministic combined request/result schema document per
-  tool, the exhaustive variant-policy manifest, and storage/status schemas.
+  tool and the exhaustive variant-policy manifest. This is the first task that
+  generates the normalized fully bound `CurrentOperationRecord` schema,
+  computes its expected digest, records the externally selected schema-catalog
+  entry, and writes operation/lease/terminal/status storage snapshots; no digest
+  is embedded in the stored record.
 - [ ] Add an explicit ignored regeneration test guarded by an environment flag;
   ordinary tests never write.
 - [ ] Assert exact count/name/error/policy sets, recursive closure, bounds,
-  required fields, read-only durability exclusion, and raw path/process/secret
-  field absence.
+  required fields, read-only durability exclusion, rejection of every physical
+  operation selector whose variant policy is `readOnly`,
+  operation/policy/terminal-envelope mismatches, absence of duplicate durable
+  `toolName`/`requestVariant` fields, exact equality between record and terminal-
+  envelope operation/task IDs, exact scope/container and scope/selector
+  binding (including original-workspace-scoped start attempts), rejection of every
+  substituted heartbeat/lease/terminal-envelope/mismatch-proof digest or proof
+  kind/context binding, and raw
+  path/process/secret field absence.
 - [ ] Run the fixture check twice and prove a clean worktree on the second run.
 - [ ] Commit generated artifacts and obtain independent review.
 

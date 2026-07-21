@@ -119,9 +119,9 @@ fragments, repository passwords, CFU, raw `-force`, `-revised`,
 `-ClearUnresolvedRefs`, and `-keepLocked` controls.
 
 Every effecting mutating call requires a caller-stable `taskId` and
-`operationId`. The strictly read-only
-`repository.update(mode="supportPrerequisiteArm")` preview is the explicit
-exception: it accepts neither `operationId` nor `dryRun`, creates no durable
+`operationId`. Separately, the strictly read-only
+`repository.update(mode="supportPrerequisiteArm")` preview accepts neither
+`operationId` nor `dryRun`, creates no durable
 preview handle, and is repeated after response loss. Its separate
 `localJournaled` apply requires a stable operation ID plus
 `approvedArmingDigest`.
@@ -131,8 +131,10 @@ status without spawning another effect. Replaying `effectUnknown` refuses the
 effect and requires `repository.recover`. Reusing the ID with different input
 fails `operationReplayMismatch`.
 `operationId` is a canonical UUID string and is safe as an operation-record key.
-Read-only calls do not manufacture operation IDs. Their response includes an
-operation ID only when reporting an active or completed operation.
+Read-only calls do not manufacture operation IDs and always omit the top-level
+`operationId`. When reporting an already-existing active or completed mutating
+operation, they place its typed operation reference inside `data`; that nested
+reference does not change the read-only envelope family.
 
 The existing `OperationResult` envelope gains typed workflow fields while
 remaining wire-compatible for existing tools: their serialized fields and
@@ -142,8 +144,9 @@ and documented rather than mislabeled source-compatible. Every task-bound
 branched, delivery, merge, and repository response contains `ok`, `resultKind`, `taskId`,
 task `status`, `summary`, `warnings`, `errors`, an `evidence` object, and typed
 domain `data` (an empty object when no payload is needed). A mutating response
-also contains the required request `operationId`; a read-only response omits it
-unless it is describing an active/completed operation. Existing `changes`,
+also contains the required request `operationId`; a read-only response always
+omits that top-level field. Any reference to an active/completed mutating
+operation is a separate typed member inside `data`. Existing `changes`,
 `artifacts`, and `cache` remain present.
 
 The result is a closed union. `completed` has `ok: true`, empty errors,
@@ -462,7 +465,10 @@ Start records configuration/repository identity, platform/standard versions,
 cleanup and commit-comment policy, plus optional Git branch/commit evidence.
 Git evidence is diagnostic only and never becomes the 1C merge base.
 Before task-directory creation, the coordination root records the canonical
-start input/result by workspace digest, task ID, and operation ID. Failed
+start input/result under a `startAttempt` operation scope keyed by canonical
+original-workspace identity digest, task ID, and operation ID. The digest is
+produced after workspace resolution and before profile/project validation; it
+does not hash the caller's `cwd` spelling or persist a path. Failed
 preflight therefore creates no disposable task but still has deterministic
 replay and input-mismatch behavior.
 
@@ -560,6 +566,10 @@ replay classification. A persisted/legacy record claiming
 `readOnly` deterministically returns `stateCorrupt`, is retained for offline
 repair, and permits no lease/CAS, worker, receipt, replay, migration coercion,
 or external effect.
+If expected durable state is missing or permission-denied, the same closed
+error uses an explicit unavailable observation and never fabricates an observed
+digest; only actually read bytes carry an exact observed digest and retention
+claim.
 
 ### Leases and managed operations
 

@@ -689,11 +689,24 @@ schema snapshot. A collection with semantic invariants (canonical order,
 uniqueness, non-empty membership, endpoint coverage, or reverse-release order)
 is represented by a validated constructor/newtype whose deserializer enforces
 those invariants. A length-bounded `BoundedVec` alone is not a valid public or
-Serde construction path for such a collection. Rust represents a required key
-whose value is `T | null` with one shared `RequiredNullable<T>` wrapper: the
-closed containing record requires the key, and the wrapper serializes and
-deserializes exactly `T` or JSON `null`. An omitted key is not equivalent to
-`null` and is rejected.
+Serde construction path for such a collection. Task 6 creates the one shared
+`RequiredNullable<T>` wrapper for a required key whose value is `T | null`.
+Every physical containing field with those wire semantics carries a field-level
+`#[serde(deserialize_with = "RequiredNullable::deserialize_required")]`; the
+closed containing record requires the key, the wrapper serializes and
+deserializes exactly `T` or JSON `null`, and neither `default` nor a
+skip-serialization attribute is legal. An omitted key is not equivalent to
+`null` and is rejected before domain construction. Tasks 7 and 8 reuse this
+wrapper and deserializer rather than defining local nullable types or relying on
+`Option<T>` behavior.
+
+Task 6 also owns fail-closed Draft 2020-12 positional-array support in
+`contracts/schema.rs`. Every exact tuple schema uses non-empty `prefixItems`,
+`items: false`, and `minItems == maxItems == prefixItems.length`. The recursive
+schema audit rejects an open tuple tail, a length mismatch, legacy array-valued
+`items`, `additionalItems`, or any attempt to interpret the tuple under an older
+dialect. Later tasks reuse this support for fixed action/decision tuples; they
+do not emit a second tuple-schema dialect.
 
 `SupportTransition` is a closed `oneOf` of
 `enableConfigurationChanges { transitionKind: enableConfigurationChanges,
@@ -2169,35 +2182,68 @@ corresponding rejected-result contexts.
 
 ## Response Envelope
 
-Every task-bound success response contains:
+Every task-bound response is one concrete instantiation of the closed generic
+field contract `TaskResultFields<C, W, A, K, E, D>`. In schema algebra, not
+additional wire syntax, its fields are exactly:
 
-```json
+```text
 {
-  "ok": true,
-  "resultKind": "completed",
-  "taskId": "TASK-142",
-  "status": "developing",
-  "summary": "Task workspace is ready",
-  "changes": [],
-  "warnings": [],
-  "errors": [],
-  "artifacts": [],
-  "cache": {},
-  "evidence": {},
-  "data": {}
+  ok,
+  resultKind,
+  taskId: TaskId,
+  status: "notCreated" | TaskPhase,
+  summary: Summary,
+  operationId?: OperationId,
+  changes: C[],
+  warnings: W[],
+  errors: TaskErrorEntry[],
+  artifacts: A[],
+  cache: K,
+  evidence: E,
+  data: D,
+  stopCode?: StableErrorCode
 }
 ```
 
-The envelope is a closed three-way union:
+The generic parameters are compile-time/schema-generation slots and never
+appear on the wire. Before a concrete result schema exists, its later owner must
+bind `C`, `W`, and `A` to exact named recursively closed item schemas and bind
+`K`, `E`, and `D` to exact named recursively closed, schema-bounded payload
+schemas. Task 6 defines only this envelope family and its branch invariants; it
+does not invent placeholder change, warning, artifact, cache, evidence, or data
+records. A concrete binding may use neither `serde_json::Value`, an untyped map
+or array, nor a free-form object. The three general arrays are bounded to at
+most 1024 items and use their semantic validated newtype whenever they have
+ordering, uniqueness, membership, or non-empty invariants. The substituted
+outer and nested schemas remain closed after every `$ref` is resolved.
+
+The final production `TaskResultEnvelope` is exactly
+`ReadOnlyTaskResultEnvelope | MutatingTaskResultEnvelope`. Each side is the same
+closed three-way result union and the policy distinction is physical, not an
+optional-field convention:
+`ReadOnlyTaskResultEnvelope` forbids top-level `operationId`, while
+`MutatingTaskResultEnvelope` requires it and binds it to the request. The three
+result branches are:
 
 - `completed`: `ok: true`, `resultKind: "completed"`, empty `errors`, no
-  `stopCode`, and tool-specific completed `data`;
+  `stopCode`, and the exact later-owned tool/variant completed-data binding for
+  `D`;
 - `stopped`: `ok: false`, `resultKind: "stopped"`, a required stable
   `stopCode`, an exact singleton `errors` array whose code equals `stopCode`,
-  and the exact evidence-bearing stop `data` from the matrix below;
+  and the exact later-owned evidence-bearing stop-data binding for `D` from the
+  matrix below;
 - `rejected`: `ok: false`, `resultKind: "rejected"`, no `stopCode`, an exact
-  singleton `errors` array, and `data: TaskErrorData { code, context,
+  singleton `errors` array, and `D = TaskErrorData { code, context,
   allowedNextActions[] }`.
+
+All three branches physically retain `changes`, `warnings`, `artifacts`,
+`cache`, `evidence`, and `data`; result kind cannot erase one or replace its
+bound type with an anonymous empty object. A read-only payload may contain a
+separately named, typed reference to a pre-existing active or terminal operation
+inside `D`, but that never permits a top-level `operationId`.
+Every concrete production constructor copies `taskId` from the validated
+request; it never accepts an independently chosen response task ID. Task 16
+proves `response.taskId == request.taskId` for every physical selector variant.
 
 `resultKind` and its field invariants are the outer discriminator. A completed
 classification/session/verification and its evidence-bearing stopped outcome
@@ -2229,6 +2275,18 @@ is a schema change. `RejectedCode` is the closed subset
 `integrationSetMismatch`. Stable codes outside this subset are legal only as
 typed `stopped` results, not generic rejections.
 
+Task 6 owns only this closed 30-leaf rejected vocabulary and each leaf's
+code/context/action invariants; it does not make those leaves a common rejected
+set for every producer. Before any production result schema or handler
+registration, Task 16 fixes an explicit normative 53-by-30 matrix whose rows are
+the physical lifecycle selector variants and whose columns are these rejected
+leaves. Every cell is legal/illegal from that variant's stated precondition
+semantics, and exact tests compare each descriptor variant's rejected union with
+its row. In particular, missing-task `branched.status` is a completed
+`notCreated` result, not `taskNotFound`, and start, status, and other read-only
+variants do not inherit all 30 leaves. No inferred “common” fallback row is
+legal.
+
 `NextAction` is the closed tagged `oneOf` of `toolCall { actionKind: toolCall,
 operation: TaskOperationSelector }` or
 `externalInstruction { actionKind: externalInstruction, instructionKind:
@@ -2244,6 +2302,13 @@ branch per `TaskOperationToolName`: `{ toolName: <literal>, requestVariant:
 <that tool's literal variant> }` for multi-variant tools, or `{ toolName:
 <literal> }` for a single-variant tool. Thus compatible general variants are
 typed by their own descriptor and can never borrow lifecycle literals.
+Task 6 adds the only action-construction API in `selectors.rs`: crate-private
+constructors accept concrete typed selector/variant enums and construct
+`TaskOperationSelector` values directly. Raw tool-name/request-variant strings,
+`serde_json::Value`, string parsing, and serialize-then-deserialize round trips
+are not legal internal construction paths; Serde remains a wire-boundary path.
+The constructor match is exhaustive over the registry vocabulary and derives
+its canonical ordinal from the table below rather than from lexical spelling.
 The lifecycle selector vocabulary and canonical per-tool order are exactly:
 
 | Tool | `requestVariant` values |
@@ -2290,7 +2355,10 @@ order in the `NextAction` definition. The list is the exact safe action set
 advertised by that error branch, not an exhaustive replacement for a fresh
 status projection; for example a blocked abandonment may advertise status even
 when status then proves an exact unlock call legal. This does not add a 22nd
-branched lifecycle tool.
+branched lifecycle tool. Array order is canonical set serialization only, never
+an instruction to execute every member in sequence; grammar names and prose use
+table order, while a caller chooses one safe action and re-queries authoritative
+state as that action requires.
 
 `TaskErrorData` is a closed code/context tagged `oneOf`; every branch also has
 `allowedNextActions: NextAction[]`:
@@ -2368,10 +2436,34 @@ branched lifecycle tool.
   `repositoryUserExclusivity`, and `unsupportedChangeKind` uses
   `changeSemantics`;
 - `profileStateRejected { code: projectIdentityCollision |
-  stateRootRelocationRequired | profileInvalid | secretUnavailable |
-  stateCorrupt, context: ProfileStateErrorContext }`, closed `{ contextKind:
+  stateRootRelocationRequired | profileInvalid | secretUnavailable,
+  context: ProfileStateErrorContext }`, closed `{ contextKind:
   profileState, projectId?, profile?, propertyPath?, expectedDigest?: Sha256,
   observedDigest?: Sha256 }`; or
+- `stateCorruptRejected { code: stateCorrupt, context:
+  StateCorruptErrorContext }`, where `StateCorruptStateRef` is the closed tagged
+  `oneOf` of `workspace { stateRefKind: workspace,
+  workspaceIdentityDigest: Sha256 }`, `startAttempt { stateRefKind:
+  startAttempt, workspaceIdentityDigest: Sha256, taskId: TaskId, operationId:
+  OperationId }`, `project { stateRefKind: project, projectId: ProjectId }`,
+  `task { stateRefKind: task, projectId: ProjectId, taskId: TaskId, instanceId:
+  UnicaId }`, or `taskOperation { stateRefKind: taskOperation, projectId:
+  ProjectId, taskId: TaskId, instanceId: UnicaId, operationId: OperationId }`.
+  The reference comes from the authenticated incoming request, storage key, and
+  parent container, never from the corrupt bytes. Pre-project locators use
+  `workspace`; start replay uses `startAttempt`; project locators/reservations
+  use `project`; task journals/decisions/evidence/archive use `task`; operation
+  records/receipts use `taskOperation`. The first two leaves remain
+  representable before a valid `projectId` exists. `StateCorruptObservation` is
+  the closed tagged `oneOf` of `exactBytes { observationKind: exactBytes,
+  observedDigest: Sha256 }` or `unavailable { observationKind: unavailable,
+  reason: missing | permissionDenied }`. The context therefore contains `{
+  contextKind: stateCorrupt, stateRef, expectedDigest: Sha256, observation:
+  StateCorruptObservation }`, not a flat optional digest bag. `exactBytes`
+  requires its digest to differ from `expectedDigest`; `unavailable` has no
+  observed/metadata/sentinel digest. Existing bytes/object state is retained
+  untouched when present; a missing object has no fabricated bytes to retain;
+  or
 - `taskContextRejected { code: taskNotFound | taskWorkspaceContextInvalid |
   toolNotBranchedCompatible, context: TaskContextErrorContext }`, closed `{
   contextKind: taskContext, requestedTaskId,
@@ -2393,6 +2485,26 @@ unequal and `mismatchKinds` is their exact semantic projection. For
 record `{ planSetDigest, mergeSetDigest, verificationSetDigest,
 commitSetDigest, lockSetDigest }`; they are unequal and `mismatchKinds` exactly
 names every unequal member, with no net-digest/change-then-revert erasure.
+For both branches, exact projection is a typed producer and replay-validation
+invariant. `CommitCommentPolicyMismatchProofRecord` is the closed `{
+proofKind: commitCommentPolicyMismatch, expected:
+CommitCommentPolicyDigestRecord, observed: CommitCommentPolicyDigestRecord,
+mismatchKinds }`; `IntegrationSetMismatchProofRecord` is the closed `{
+proofKind: integrationSetMismatch, expected: IntegrationSetLineageDigestRecord,
+observed: IntegrationSetLineageDigestRecord, mismatchKinds }`. Each list is
+derived from its two records, never accepted as input, and each `proofDigest ==
+sha256(canonical(proof-record))`. Before publishing the terminal rejection, the
+producer atomically persists that exact content-addressed proof and the terminal
+envelope's typed `evidence` contains only the closed `{ proofKind, proofDigest
+}` reference. The context digests equal the canonical hashes of the proof's two
+records and its kinds equal the proof projection. Replay resolves and rehashes
+the immutable proof by that reference rather than consulting a possibly changed
+current profile/render result. A missing, multiple, wrong-kind, wrong-digest, or
+context-divergent proof makes the retained terminal a corrupt candidate before
+replay. The wire context intentionally carries only opaque digests and the
+derived list, so standalone JSON Schema/deserialization can enforce unequal
+digests plus non-empty/canonical kinds but cannot reconstruct the projection.
+No API accepts a caller-supplied projection as authoritative.
 
 The generated schema splits those groups into literal-code branches with this
 exhaustive presence/action grammar. `none` is `[]`; `statusOnly` is exactly one
@@ -2410,7 +2522,9 @@ advertised until the caller has reviewed the current list.
 `integrationSetExit` is status plus exactly `unica.repository.unlock/rollback`
 for `exitKind: unlock`, or status plus exactly
 `unica.repository.recover/recoverApply` for `exitKind: recovery`; and
-`statusAndStart` is status plus `unica.branched.start`.
+`startAndStatus` is exactly the canonical selector array
+`[unica.branched.start, unica.branched.status]`. These grammar descriptions name
+set membership in canonical table order, not a prescribed execution sequence.
 
 | Rejected code | Required/forbidden context | Exact allowed-action grammar |
 | --- | --- | --- |
@@ -2419,7 +2533,7 @@ for `exitKind: unlock`, or status plus exactly
 | `artifactNotDistribution` | all artifact fields required; accepted input tuples are non-empty/canonical and exclude the exact observed kind/role tuple. A distribution in the wrong role remains truthfully a distribution and is rejected by role; `configurationUpdate`/`invalidArtifact` cannot appear in accepted tuples | `statusOnly` |
 | `cleanupNotAllowed`, `taskAbandonmentNotSafe` | `allowedPhases=[]`; blocker codes are non-empty; recovery fields are absent | `statusOnly` |
 | `recoveryPlanPending` | `allowedPhases=[]`, `blockerCodes=[]`; recovery digest and cancellation-allowed literal are required | `recoveryResume` |
-| `taskPhaseMismatch` | allowed phases are non-empty, canonical, duplicate-free, and ordered by `TaskPhase`; `blockerCodes=[]`; recovery fields are absent | `statusOnly` |
+| `taskPhaseMismatch` | allowed phases are non-empty, canonical, duplicate-free, ordered by `TaskPhase`, and exclude the current `phase`; `blockerCodes=[]`; recovery fields are absent | `statusOnly` |
 | `taskMutationBlocked` | `allowedPhases=[]`; blockers are non-empty; recovery digest/cancellation literal are absent. Any current recovery/unknown effect has higher-precedence `recoveryPlanPending` and cannot enter this row | `statusOnly` |
 | `operationReplayMismatch` | operation ID and unequal expected/observed input digests required; active digest absent | `none` |
 | `operationInProgress` | operation ID and active-operation digest required; input digests absent | `statusOnly` |
@@ -2431,16 +2545,24 @@ for `exitKind: unlock`, or status plus exactly
 | `commitCommentPolicyMismatch` | phase is exactly `mainValidated`; policy digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the frozen-template/task-metadata/render violation; producer/producer-ID, integration-set, lock-set, and recovery fields are forbidden | `commitSafeExit`; repeating commit or any producer is absent, and recovery is offered only after the abandoned-archive preview has published its exact plan |
 | `integrationSetMismatch` | lineage digests are required and unequal; mismatch kinds are non-empty/canonical and exactly project the plan/merge/verification/commit/lock-set disagreement. `exitKind: unlock` requires phase `locked`, both lock-set fields, proven no original-merge intent, and no recovery digest. `exitKind: recovery` requires phase `recoveryRequired` plus the exact recovery digest and forbids both lock-set fields | `integrationSetExit`; adaptation refresh and commit retry are absent; unlock and recovery actions are mutually exclusive |
 | `platformCapabilityUnproven`, `supportLayerAmbiguous`, `unsupportedChangeKind`, `exclusiveRepositoryUserRequired` | exact code-to-kind mapping from `CapabilityErrorContext` and evidence digest are required; row ID required only when a row was observed | `statusOnly` |
-| `projectIdentityCollision`, `stateRootRelocationRequired`, `stateCorrupt` | project ID plus unequal expected/observed digests required | `statusOnly` |
+| `projectIdentityCollision`, `stateRootRelocationRequired` | project ID plus unequal expected/observed digests required | `statusOnly` |
+| `stateCorrupt` | exact trusted `StateCorruptStateRef`, expected schema digest, and either unequal exact-byte observed digest or exact `missing`/`permissionDenied` unavailability required; no sentinel digest, path, or identity recovered from corrupt bytes | `statusOnly` |
 | `profileInvalid`, `secretUnavailable` | profile and property path required; digest fields absent | `statusOnly` |
-| `taskNotFound` | requested task/tool required; mismatch/project/marker/lease fields absent | `statusAndStart` |
+| `taskNotFound` | requested task/tool required; mismatch/project/marker/lease fields absent | `startAndStatus` |
 | `taskWorkspaceContextInvalid` | non-empty mismatch kinds; project IDs required iff project mismatch; expected marker/lease digest plus observed digest-or-null required iff the matching kind is present, with null exactly for missing; unrelated fields absent | `none` |
 | `toolNotBranchedCompatible` | requested task/tool required; mismatch/project/marker/lease fields absent | `none` |
 
 Each code is legal in exactly one branch; contexts reject extra fields and all
-diagnostics remain bounded/redacted. Schema tests instantiate every legal pair
-and reject every cross-branch code/context substitution, missing/extra field,
-or disallowed next-action injection. They additionally reject either
+diagnostics remain bounded/redacted. Tests instantiate every legal pair. The
+wire schema rejects every structurally distinguishable cross-branch
+code/context substitution, missing/extra field, or disallowed next-action
+injection; validated deserialization additionally rejects the enumerated
+equality, inequality, and membership predicates whose compared values are
+present, while typed producer/replay validators reject exact-projection
+violations that require authoritative preimages intentionally absent from the
+wire context. Standard Draft 2020-12 cannot compare sibling values or recover
+hash preimages. Tests freeze that explicit schema/deserializer-superset list so
+no structural hole is mislabeled a relational limitation. They additionally reject either
 `commitCommentPolicyMismatch` or `integrationSetMismatch` in
 `DigestErrorContext`, any `TaskOperationSelector` field in a digest/adaptation
 context, any `adaptationRefresh` action outside
@@ -2451,11 +2573,13 @@ a recovery integration exit with lock fields/unlock/cancel actions.
 contain the exact literals `commitCommentPolicyMismatch` and
 `integrationSetMismatch` once each and reject aliases or renamed spellings.
 
-A mutating request and response additionally contain the same `operationId`.
-A read-only response omits `operationId` unless `data` reports a referenced
-active/terminal operation. `data` is one of the tool-specific variants below;
-`evidence` contains only bounded redacted identities, hashes, receipts, and
-diagnostics. `command`, raw `stdout`, and raw `stderr` are always absent.
+The envelope's top-level `operationId` presence is fixed solely by the selected
+descriptor policy: every `MutatingTaskResultEnvelope` carries the request's
+exact value, while every `ReadOnlyTaskResultEnvelope` forbids the field. A
+nested operation reference never changes that choice. `data` is one of the
+exact tool-specific bound variants below, and `evidence` contains only its exact
+bounded redacted identities, hashes, receipts, and diagnostics. `command`, raw
+`stdout`, and raw `stderr` are always absent.
 
 Stops/rejections after task lookup return their exact variant with the
 unchanged/blocking/recovery task status. Schema/unknown-tool errors remain
@@ -2464,7 +2588,7 @@ application/MCP errors before a task result exists.
 `branched.status` for a missing task is a successful read with
 `status: "notCreated"` and `NotCreatedData { exists: false, startAllowed,
 blockers[] }`. A failed `branched.start` preflight returns the `rejected` variant
-with `status: "notCreated"`; its project-scoped start-attempt record preserves
+with `status: "notCreated"`; its original-workspace-scoped start-attempt record preserves
 replay without creating a task directory. Every other tool returns stable
 `taskNotFound` when no task record exists.
 
@@ -2634,28 +2758,80 @@ effect.
 
 `OperationLease` is the closed `{ ownerInstanceId: UnicaId, generation,
 acquiredAt, heartbeatAt, expiresAt, heartbeatDigest, leaseDigest }`; generation
-is a positive monotonic integer, timestamps are normalized UTC instants,
-`heartbeatDigest` binds owner/generation/heartbeat/expiry, and `leaseDigest ==
-sha256(canonical(lease-without-leaseDigest))`. Every mutating request first
-creates or reads a closed durable
-`OperationRecord { operationId, toolName: TaskOperationToolName, policy:
-DurableExecutionPolicy,
-canonicalInputDigest,
+is a positive monotonic integer and timestamps are normalized UTC instants.
+`heartbeatDigest == sha256(canonical({ ownerInstanceId, generation,
+heartbeatAt, expiresAt }))` with exactly those four members; `acquiredAt` is
+instead bound by the outer `leaseDigest ==
+sha256(canonical(lease-without-leaseDigest))`.
+
+`OperationScope` is the closed tagged `oneOf` of `startAttempt { scopeKind:
+startAttempt, workspaceIdentityDigest: Sha256, taskId: TaskId }` or `task {
+scopeKind: task, projectId: ProjectId, taskId: TaskId, instanceId: UnicaId }`.
+The start digest is issued by the canonical original-workspace identity
+boundary after resolving `cwd` and before profile/project validation; it is
+never a hash of the caller's spelling of `cwd`, a persisted path, or a
+caller-supplied identity. Aliases of the same canonical workspace yield the
+same digest. The start-attempt storage key is the exact tuple
+`(workspaceIdentityDigest, taskId, operationId)`. A task-scoped loader instead
+requires every scope member to equal the authoritative parent task record and
+coordination locator. Thus moving a schema-valid record between workspaces,
+projects, tasks, or instances is detectable before replay.
+
+The storage foundation is the closed generic
+`OperationRecord<TerminalEnvelope> { operationId, scope: OperationScope,
+operation: TaskOperationSelector, policy: DurableExecutionPolicy, canonicalInputDigest,
 registeredAt, operationLease?: OperationLease,
-lastOperationLeaseDigest?: Sha256,
-state: registered | intentWritten | effectUnknown | terminal,
-terminalEnvelopeDigest?: Sha256, terminalEnvelope?: TaskResultEnvelope,
-recoveryDigest?: Sha256 }`. The terminal fields are required together exactly
-for `terminal`; the recovery digest is required exactly for `effectUnknown`.
+lastOperationLeaseDigest?: Sha256, state: registered | intentWritten |
+effectUnknown | terminal, terminalEnvelopeDigest?: Sha256,
+terminalEnvelope?: TerminalEnvelope, recoveryDigest?: Sha256 }`. Task 11 may
+instantiate this shape only with a private closed test terminal type; it creates
+no production alias, final terminal catalog, normalized storage snapshot, or
+schema digest before Tasks 12-16 define the real result variants.
+`operation` is the sole durable producer discriminator. Its typed selector
+already contains the exact tool and physical request variant, so sibling
+`toolName` or `requestVariant` fields are forbidden; `canonicalInputDigest` is
+one-way evidence and cannot reconstruct a missing variant. The descriptor
+derives `operation` from the validated closed request before registration; it is
+never an additional caller-selected request field. Replay must derive the same
+selector as well as the same canonical input digest.
+The `startAttempt` scope is legal exactly for `unica.branched.start`; every
+other durable selector requires `task` scope. A successful start terminal also
+requires its `StartData.projectId`/`instanceId`, newly created task record, and
+coordination locator to agree exactly; an early failed start remains replayable
+without inventing either identity.
+
+Task 16 creates the sole production binding
+`CurrentOperationRecord = OperationRecord<MutatingTaskResultEnvelope>`. The
+durable field `terminalEnvelope` MUST therefore be a
+`MutatingTaskResultEnvelope`; `ReadOnlyTaskResultEnvelope` and the wider
+`TaskResultEnvelope` union are never legal terminal type arguments. Every
+mutating request creates or reads only `CurrentOperationRecord`. Its closed
+schema/typed loader binds the exact `operation` selector to its legal durable
+policy and matching mutating terminal-envelope producer. For a terminal record,
+it also requires `terminalEnvelope.operationId == OperationRecord.operationId`;
+`terminalEnvelope.taskId == OperationRecord.scope.taskId`; the envelope can
+never be replayed under another operation or task key. It rejects every
+selector for a physical `readOnly` variant, including a read-only branch of a
+mixed-policy tool, not merely the impossible `policy: readOnly` literal. Task 17
+is the first task that normalizes this fully bound schema, computes its expected
+digest, and commits the catalog/storage snapshots.
+
+The terminal fields are required together exactly for `terminal`; the recovery
+digest is required exactly for `effectUnknown`.
 `operationLease` is required for `registered`/`intentWritten` and absent for
 `effectUnknown`/`terminal`; `lastOperationLeaseDigest` is absent while a current
 lease exists and otherwise records its final generation for audit.
 Storage schema validation runs before lease acquisition, status projection, or
-replay classification. A persisted or legacy `OperationRecord` with
-`policy: readOnly` is invalid and deterministically returns rejected
-`stateCorrupt`: `expectedDigest` is the current operation-record schema digest
-and `observedDigest` is the SHA-256 of the exact stored bytes. The record is
-retained for offline repair; no CAS, lease, worker, receipt, dispatch, replay,
+replay classification. A persisted or legacy operation record with
+`policy: readOnly`, a `readOnly` physical `operation` selector, an
+operation/policy mismatch, an operation/policy/terminal-envelope mismatch, or a
+record/envelope operation-ID or task-ID mismatch, scope/container mismatch, or
+scope/selector mismatch is invalid and deterministically returns rejected
+`stateCorrupt`: `expectedDigest` is the current operation-record schema digest.
+When bytes were read, `observation` is `exactBytes` with their SHA-256 and the
+record is retained for offline repair; when the expected object is absent or
+cannot be read because of permissions, `observation` is the exact `unavailable`
+leaf and no sentinel/metadata digest is fabricated. No CAS, lease, worker, receipt, dispatch, replay,
 or external effect is allowed. Migration may never coerce that record to a
 mutating policy or silently delete it.
 The canonical input is exactly `OperationInputDigestRecord`; it includes the
@@ -2754,7 +2930,7 @@ mode-specific service inspection/exclusive-lease endpoint and capability,
 the crash-stable pre-arm guard capability,
 pre-existing unresolved tasks before it creates the durable journal
 and owned instance. It has no repository/infobase effect and no fabricated
-preview. Before task creation it writes a project-scoped start-attempt record,
+preview. Before task creation it writes an original-workspace-scoped start-attempt record,
 so failed preflight is replayable without a disposable directory. `data` is
 `StartData { instanceId, projectId,
 profile, originalInfobaseKind, repositoryTransport, capabilityRowId,
@@ -2797,7 +2973,7 @@ cleanupReceipt?: CleanupReceipt,
 cleanupEligibility: CleanupEligibilityStatus }`.
 The named status records are closed:
 
-- `ActiveOperationStatus { operationId, toolName: TaskOperationToolName,
+- `ActiveOperationStatus { operationId, operation: TaskOperationSelector,
   policy: DurableExecutionPolicy, state: registered | intentWritten | effectUnknown,
   canonicalInputDigest, registeredAt, operationLease?: OperationLease,
   ownerState: live | orphaned,
@@ -4222,8 +4398,9 @@ recover cancellation variant below. Cancellation atomically invalidates the
 plan before normal main verification/commit can resume; an effect/recovery plan
 that has entered `recoveryRequired` is never cancellable.
 
-`recentOperations` contains bounded `{ operationId, toolName, terminalKind,
-resultDigest }` records. Together the current phase and tagged handles provide
+`recentOperations` contains bounded `{ operationId, operation:
+TaskOperationSelector, terminalKind, resultDigest }` records. Together the
+current phase and tagged handles provide
 every ID/digest required by the next legal request after a response is lost;
 callers never reconstruct IDs or paths. Status does not write observations or
 reconcile a journal.
@@ -5944,9 +6121,9 @@ because it did not exist as an independently lockable repository object.
 | `taskAbandonmentNotSafe` | Worker/lock/difference/unknown effect remains; no abandoned archive |
 | `profileInvalid` | Local schema, topology, path, or inline-secret rule failed; create no task |
 | `secretUnavailable` | A referenced secret is absent/empty; create no process or durable secret derivative |
-| `stateCorrupt` | Durable schema/hash/permissions are invalid, including any stored `OperationRecord` whose policy is `readOnly`; reject before storage projection/replay dispatch and perform no external effect |
+| `stateCorrupt` | Durable schema/hash/permissions are invalid, including any stored operation record whose policy is `readOnly`, whose physical `operation` selector is read-only, or whose operation/policy/terminal-envelope binding disagrees; reject before storage projection/replay dispatch and perform no external effect |
 | `operationInProgress` | A live recorded operation/lease owns the target; attach/status instead of spawning |
-| `taskNotFound` | A non-start lifecycle tool references `notCreated`; call status/start first |
+| `taskNotFound` | A non-start lifecycle tool references `notCreated`; advertise the exact canonical safe-action set `[branched.start, branched.status]`, whose order is not an execution sequence |
 | `taskWorkspaceContextInvalid` | `branchedTask` ID, marker, project binding, or lease authenticity does not match; do not expose or use a path |
 | `toolNotBranchedCompatible` | A general tool has not declared `supportsBranchedTask`; reject before dispatch |
 | `commitCommentPolicyMismatch` | Frozen template/task metadata cannot produce the exact task-bound comment; do not commit or refresh a producer. Return status plus the safe abandoned-archive preview, which must publish the exact restore/full-unlock plan before recovery apply |

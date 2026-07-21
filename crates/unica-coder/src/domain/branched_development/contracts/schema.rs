@@ -186,17 +186,50 @@ impl SchemaAuditor<'_> {
         if object.keys().any(|keyword| {
             matches!(
                 keyword.as_str(),
-                "items" | "minItems" | "maxItems" | "uniqueItems"
+                "items" | "prefixItems" | "minItems" | "maxItems" | "uniqueItems"
             )
         }) && !array_typed
         {
             return Err(error(path, "array keywords require an explicit array type"));
         }
         if array_typed {
-            let items = object
-                .get("items")
-                .ok_or_else(|| error(path, "array schemas must define typed items"))?;
-            self.audit(items, &format!("{path}.items"))?;
+            match object.get("prefixItems") {
+                Some(prefix_items) => {
+                    let prefix_items = prefix_items.as_array().ok_or_else(|| {
+                        error(path, "prefixItems must be a non-empty schema array")
+                    })?;
+                    if prefix_items.is_empty() {
+                        return Err(error(path, "prefixItems must not be empty"));
+                    }
+                    for (index, item) in prefix_items.iter().enumerate() {
+                        self.audit(item, &format!("{path}.prefixItems[{index}]"))?;
+                    }
+                    if object.get("items") != Some(&Value::Bool(false)) {
+                        return Err(error(
+                            path,
+                            "positional arrays must close their tail with items false",
+                        ));
+                    }
+                    let exact_length = Value::Number(Number::from(prefix_items.len()));
+                    if object.get("minItems") != Some(&exact_length)
+                        || object.get("maxItems") != Some(&exact_length)
+                    {
+                        return Err(error(
+                            path,
+                            "positional arrays must fix minItems and maxItems to prefix length",
+                        ));
+                    }
+                }
+                None => {
+                    let items = object
+                        .get("items")
+                        .ok_or_else(|| error(path, "array schemas must define typed items"))?;
+                    if !items.is_object() {
+                        return Err(error(path, "non-positional array items must be a schema"));
+                    }
+                    self.audit(items, &format!("{path}.items"))?;
+                }
+            }
             audit_non_negative_integer(object.get("minItems"), path, "minItems")?;
             audit_non_negative_integer(object.get("maxItems"), path, "maxItems")?;
             audit_boolean(object.get("uniqueItems"), path, "uniqueItems")?;
@@ -416,6 +449,7 @@ fn is_supported_keyword(keyword: &str) -> bool {
             | "minProperties"
             | "maxProperties"
             | "items"
+            | "prefixItems"
             | "minItems"
             | "maxItems"
             | "uniqueItems"

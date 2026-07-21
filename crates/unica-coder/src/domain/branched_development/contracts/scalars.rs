@@ -127,6 +127,72 @@ bounded_text!(OriginalProjectCwd, "original project cwd", 1, 4096, false);
 bounded_text!(LocalProfileName, "local profile name", 1, 256, false);
 bounded_text!(RepositoryVersion, "repository version", 1, 128, false);
 
+/// A required object member whose value is either a typed value or JSON null.
+///
+/// Unlike `Option<T>`, a field of this type has no Serde default and therefore
+/// cannot be omitted from its containing record.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub(crate) struct RequiredNullable<T>(Option<T>);
+
+impl<'de, T> serde::Deserialize<'de> for RequiredNullable<T>
+where
+    T: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::deserialize_required(deserializer)
+    }
+}
+
+impl<T> RequiredNullable<T> {
+    pub(crate) const fn null() -> Self {
+        Self(None)
+    }
+
+    pub(crate) const fn value(value: T) -> Self {
+        Self(Some(value))
+    }
+
+    pub(crate) const fn as_ref(&self) -> Option<&T> {
+        self.0.as_ref()
+    }
+
+    pub(crate) fn deserialize_required<'de, D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: serde::Deserialize<'de>,
+    {
+        <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Self)
+    }
+}
+
+impl<T> JsonSchema for RequiredNullable<T>
+where
+    T: JsonSchema,
+{
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        format!("RequiredNullableOf{}", T::schema_name()).into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        format!("RequiredNullable<{}>", T::schema_id()).into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        super::schema::one_of_schema(vec![
+            generator.subschema_for::<T>(),
+            json_schema!({ "type": "null" }),
+        ])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub(crate) struct PositiveGeneration(u64);

@@ -1,5 +1,11 @@
 #[allow(dead_code)]
+pub(crate) mod actions;
+#[allow(dead_code)]
 pub(crate) mod artifacts;
+#[allow(dead_code)]
+pub(crate) mod envelope;
+#[allow(dead_code)]
+pub(crate) mod errors;
 #[allow(dead_code)]
 pub(crate) mod registry;
 #[allow(dead_code)]
@@ -16,7 +22,7 @@ mod tests {
     use super::scalars::{
         BoundedVec, Diagnostic, DisplayPath, LocalProfileName, Name, Narrative,
         NormalizedUtcInstant, OriginalProjectCwd, PositiveGeneration, PropertyPath, Reason,
-        RepositoryVersion, Summary,
+        RepositoryVersion, RequiredNullable, Summary,
     };
     use super::schema::{
         audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
@@ -371,6 +377,49 @@ mod tests {
             "additionalProperties": false
         }))
         .is_ok());
+    }
+
+    #[test]
+    fn positional_array_audit_accepts_only_exact_typed_draft_2020_arrays() {
+        let exact = json!({
+            "type": "array",
+            "prefixItems": [
+                { "type": "string", "const": "first" },
+                { "type": "integer", "const": 2 }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+        });
+        assert!(audit_json_schema(&exact).is_ok());
+
+        for invalid in [
+            json!({"type": "array", "prefixItems": [], "items": false}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}]}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}], "items": true}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}], "items": false, "minItems": 0, "maxItems": 1}),
+            json!({"type": "array", "prefixItems": [{"type": "object", "properties": {}}], "items": false, "minItems": 1, "maxItems": 1}),
+        ] {
+            assert!(audit_json_schema(&invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn required_nullable_distinguishes_an_omitted_key_from_null() {
+        #[derive(Debug, serde::Deserialize, JsonSchema)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Record {
+            #[serde(deserialize_with = "RequiredNullable::deserialize_required")]
+            value: RequiredNullable<TaskId>,
+        }
+
+        assert!(serde_json::from_value::<Record>(json!({"value": null})).is_ok());
+        assert!(serde_json::from_value::<Record>(json!({"value": "TASK-1"})).is_ok());
+        assert!(serde_json::from_value::<Record>(json!({})).is_err());
+        let generated = schema::<Record>();
+        assert_eq!(generated["required"], json!(["value"]));
+        audit_json_schema(&generated).unwrap();
     }
 
     #[test]

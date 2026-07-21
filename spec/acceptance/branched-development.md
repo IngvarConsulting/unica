@@ -78,8 +78,8 @@ tool contract are required, not optional implementation detail.
 | `unica.repository.recover` | Journaled recovery target | No new merge decision; frozen support plans remain anchored at the authorization cursor, preserve complete routine/external history, one of three dispositions, the mode-specific IB lease proof, and root-first exact finalization guard/receipt. Unknown separate-IB lease effects after authorization freeze armed `supportPrerequisite` lineage or awaiting-cancellation `preArmSupportCancellation` lineage; known blockers remain typed stops and ambiguity remains `recoveryRequired` |
 
 All effecting mutating requests require `taskId` and caller-stable
-`operationId`. The strictly read-only `supportPrerequisiteArm` preview is the
-explicit exception: it accepts neither `operationId` nor `dryRun` and creates no
+`operationId`. Separately, the strictly read-only `supportPrerequisiteArm`
+preview accepts neither `operationId` nor `dryRun` and creates no
 durable preview handle; only its `localJournaled` apply requires the operation
 ID and `approvedArmingDigest`. Constant
 safety behavior is not represented by user-selectable booleans. Every schema

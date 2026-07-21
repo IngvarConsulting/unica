@@ -74,14 +74,17 @@ input, or an illegal operation state; exact bytes carrying a stored top-level
 
 - [ ] Define the complete closed tool-name, request, result-data, stop-data,
   rejection-data, stable-error, phase, action, instruction, and receipt types.
-- [ ] Extend `OperationResult` source-compatibly and introduce an internal
+- [ ] Preserve the serialized legacy `OperationResult` fields and values,
+  deliberately expand and document/test the Rust API where new fields make
+  external struct literals source-incompatible, and introduce an internal
   `BranchedToolResult` that makes completed/stopped/rejected presence rules
   unrepresentable.
 - [ ] Generate strict JSON Schemas and policy metadata from Rust types.
-- [ ] Define and snapshot the complete operation-record, lease,
-  `ActiveOperationStatus`, terminal-envelope, and storage framing schemas,
-  including how the current schema digest is selected without inventing an
-  embedded field absent from ADR-0012.
+- [ ] After the completed/stopped/rejected result variants are closed, define and
+  snapshot the complete operation-record, lease, `ActiveOperationStatus`,
+  mutating terminal-envelope, and storage framing schemas, including how the
+  current schema digest is selected without inventing an embedded field absent
+  from ADR-0012.
 - [ ] Commit source snapshots for all 21 tools plus a generated package manifest
   of their exact digests; after handler registration, built-package
   `tools/list` is compared against those same source fixtures.
@@ -94,15 +97,31 @@ Exit: all 21 contracts exist and agree before the first handler is registered.
 
 - [ ] Implement owner-only state roots, non-overridable locators, schema-digest
   validation, atomic write/fsync/rename, and retained corrupt bytes.
+- [ ] Implement one canonical original-workspace identity adapter that alone
+  issues `workspaceIdentityDigest`. Prove symlink, relative, and supported
+  case aliases of one root resolve to the same digest and different roots do
+  not; forbid caller spelling, persisted/raw paths, lossy `Path::display`,
+  `DefaultHasher`, or a second local hashing path.
 - [ ] Complete Task 5B: full typed operation-record loader and deterministic
   `stateCorrupt` evidence from committed expected schema digest plus exact-byte
   observed digest, before any status/replay/CAS/effect path.
+- [ ] Map missing and permission-denied durable objects to the closed
+  `stateCorrupt.unavailable` observation without a sentinel digest; retain
+  untouched bytes/object state whenever it exists and is readable.
 - [ ] Implement task records, start-attempt records, operation records, leases,
   heartbeats, receipts, effect journals, result envelopes, and gate history.
+- [ ] Persist commit-policy and integration-set mismatch projection proofs
+  atomically before their terminal envelopes; content-address and rehash them on
+  replay, retaining a missing/wrong/divergent proof as corrupt state rather than
+  consulting current mutable profile/render state.
 - [ ] Implement persistent target/account reservations with atomic admission and
   exact-key busy results.
 - [ ] Implement one-writer CAS, generation fencing, owner liveness, response-loss
   replay, orphan recovery, and the complete crash matrix.
+- [ ] Before terminal replay, invoke the Task 16 semantic validators against
+  authoritative persisted preimages, including commit-policy/integration-set
+  mismatch projections and record/scope/envelope identity equality; standalone
+  schema-valid bytes are not sufficient replay authority.
 - [ ] Prove state-root overrides cannot hide an unresolved task/start attempt.
 
 Exit: every durable barrier is replayable or explicitly recovery-required, with

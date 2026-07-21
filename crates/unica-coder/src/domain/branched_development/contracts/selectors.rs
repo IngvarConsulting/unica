@@ -89,6 +89,14 @@ macro_rules! selector_single {
         pub(crate) struct $selector {
             tool_name: $tool_name,
         }
+
+        impl $selector {
+            pub(crate) const fn new() -> Self {
+                Self {
+                    tool_name: $tool_name::Value,
+                }
+            }
+        }
     };
 }
 
@@ -126,6 +134,15 @@ macro_rules! selector_multi {
         pub(crate) struct $selector {
             tool_name: $tool_name,
             request_variant: $request_variant,
+        }
+
+        impl $selector {
+            pub(crate) const fn new(request_variant: $request_variant) -> Self {
+                Self {
+                    tool_name: $tool_name::Value,
+                    request_variant,
+                }
+            }
         }
     };
 }
