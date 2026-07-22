@@ -1001,6 +1001,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("Обычный `<Title>` поля и `<ToolTip>`", form_dsl)
         self.assertRegex(form_dsl, r"передавать им `\{text, formatted\}`\s+нельзя")
         self.assertIn("приоритетом `command` → `commandName` → `stdCommand`", form_dsl)
+        self.assertIn("`popup` и `buttonGroup` зарезервированы", form_dsl)
+        self.assertNotRegex(form_dsl, r'"(?:popup|buttonGroup)"\s*:')
 
     def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")

@@ -277,6 +277,9 @@ git -c commit.gpgsign=false commit -m "fix: emit documented input column propert
   precedence `command` → `commandName` → `stdCommand`.
 - Standalone command-bar `commandSource` emits `<CommandSource>` before
   `<Autofill>` and child items.
+- Nested command-bar buttons use platform context types: the default is
+  `<Type>CommandBarButton</Type>`, while `type: "hyperlink"` emits
+  `<Type>CommandBarHyperlink</Type>`.
 - Element tooltip accepts string and `{ru, en}` values; language/content values
   are XML-escaped. The DSL spec is narrowed explicitly: ordinary `<ToolTip>` is
   multilingual but has no `formatted` attribute, while `{text, formatted}` is
@@ -285,6 +288,8 @@ git -c commit.gpgsign=false commit -m "fix: emit documented input column propert
   distinguishes supported command source/global-command keys from the current
   inability to deduplicate standard commands automatically when a table is
   split across pages.
+- The active DSL spec marks `popup` and `buttonGroup` as reserved instead of
+  presenting JSON examples that the native element enum rejects.
 
 - [ ] **Step 1: Add failing Rust regressions**
 

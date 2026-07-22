@@ -6248,6 +6248,16 @@ pub(crate) fn emit_form_element(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
+    emit_form_element_with_context(lines, element, indent, ids, false)
+}
+
+fn emit_form_element_with_context(
+    lines: &mut Vec<String>,
+    element: &Value,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+    in_command_bar: bool,
+) -> Result<(), String> {
     let Some(object) = element.as_object() else {
         return Ok(());
     };
@@ -6262,7 +6272,14 @@ pub(crate) fn emit_form_element(
             Ok(())
         }
         FormEditElementDefinitionKind::Button => {
-            emit_form_button(lines, object, kind.name(object)?, indent, ids);
+            emit_form_button(
+                lines,
+                object,
+                kind.name(object)?,
+                indent,
+                ids,
+                in_command_bar,
+            );
             Ok(())
         }
         FormEditElementDefinitionKind::CommandBar => {
@@ -6679,6 +6696,7 @@ pub(crate) fn emit_form_button(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    in_command_bar: bool,
 ) {
     let id = ids.next();
     lines.push(format!(
@@ -6686,13 +6704,28 @@ pub(crate) fn emit_form_button(
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
-    if let Some(button_type) = element.get("type").and_then(Value::as_str) {
-        let mapped = match button_type {
-            "usual" => "UsualButton",
-            "hyperlink" => "Hyperlink",
-            "commandBar" => "CommandBarButton",
-            other => other,
-        };
+    let button_type = element.get("type").and_then(Value::as_str);
+    if let Some(mapped) = button_type
+        .map(|button_type| {
+            if in_command_bar {
+                match button_type {
+                    "usual" | "UsualButton" | "commandBar" | "CommandBarButton" => {
+                        "CommandBarButton"
+                    }
+                    "hyperlink" | "Hyperlink" | "CommandBarHyperlink" => "CommandBarHyperlink",
+                    other => other,
+                }
+            } else {
+                match button_type {
+                    "usual" => "UsualButton",
+                    "hyperlink" => "Hyperlink",
+                    "commandBar" => "CommandBarButton",
+                    other => other,
+                }
+            }
+        })
+        .or(in_command_bar.then_some("CommandBarButton"))
+    {
         lines.push(format!("{inner}<Type>{}</Type>", escape_xml(mapped)));
     }
     let command_name = element
@@ -6809,7 +6842,7 @@ pub(crate) fn emit_form_command_bar_element(
         if !children.is_empty() {
             lines.push(format!("{inner}<ChildItems>"));
             for child in children {
-                emit_form_element(lines, child, &format!("{inner}\t"), ids)?;
+                emit_form_element_with_context(lines, child, &format!("{inner}\t"), ids, true)?;
             }
             lines.push(format!("{inner}</ChildItems>"));
         }
@@ -9918,6 +9951,11 @@ mod tests {
                         {
                             "button": "Standard",
                             "stdCommand": "Table.Add"
+                        },
+                        {
+                            "button": "Help",
+                            "type": "hyperlink",
+                            "commandName": "CommonCommand.Help"
                         }
                     ]
                 },
@@ -9960,6 +9998,13 @@ mod tests {
             xml.contains("<CommandName>Form.Item.Table.StandardCommand.Add</CommandName>"),
             "{xml}"
         );
+        assert_eq!(
+            xml.matches("<Type>CommandBarButton</Type>").count(),
+            4,
+            "{xml}"
+        );
+        assert!(xml.contains("<Type>CommandBarHyperlink</Type>"), "{xml}");
+        assert!(!xml.contains("<Type>Hyperlink</Type>"), "{xml}");
         assert!(
             !xml.contains("<CommandName>Form.Command.</CommandName>"),
             "{xml}"
