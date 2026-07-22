@@ -1528,12 +1528,8 @@ fn search_rlm_index(db_path: &Path, args: &Map<String, Value>) -> Result<Option<
     if query.is_empty() {
         return Ok(None);
     }
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|value| u16::try_from(value).map_or(u16::MAX, std::convert::identity))
-        .map_or(20, std::convert::identity);
-    let lines = search_indexed_methods(db_path, query, usize::from(limit))
+    let limit = rlm_query_limit(args, 20);
+    let lines = search_indexed_methods(db_path, query, limit)
         .map_err(|error| error.to_string())?
         .iter()
         .map(search_result_line)
@@ -2025,14 +2021,13 @@ impl ProfileIdentity {
 
 fn find_definitions(db_path: &Path, args: &Map<String, Value>) -> Result<String, String> {
     let name = required_string(args, "name")?;
-    let limit = u16::try_from(read_limit(args, 50)).map_or(u16::MAX, std::convert::identity);
+    let limit = rlm_query_limit(args, 50);
     let module_hint = args.get("moduleHint").and_then(Value::as_str);
-    let lines =
-        find_indexed_definitions_with_module_hint(db_path, name, module_hint, usize::from(limit))
-            .map_err(|error| error.to_string())?
-            .iter()
-            .map(definition_line)
-            .collect::<Vec<_>>();
+    let lines = find_indexed_definitions_with_module_hint(db_path, name, module_hint, limit)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(definition_line)
+        .collect::<Vec<_>>();
 
     if lines.is_empty() {
         Ok(format!("No RLM definitions found for `{name}`."))
@@ -2634,6 +2629,10 @@ fn read_limit(args: &Map<String, Value>, default: usize) -> usize {
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn rlm_query_limit(args: &Map<String, Value>, default: usize) -> usize {
+    read_limit(args, default)
 }
 
 fn index_path_candidates(
@@ -4971,6 +4970,15 @@ mod tests {
             .iter()
             .any(|warning| warning.contains("rlm index unavailable")));
         cleanup_context(&context);
+    }
+
+    #[test]
+    fn rlm_search_and_definition_limits_preserve_values_above_u16() {
+        let mut args = Map::new();
+        args.insert("limit".to_string(), json!(70_000_u64));
+
+        assert_eq!(rlm_query_limit(&args, 20), 70_000);
+        assert_eq!(rlm_query_limit(&args, 50), 70_000);
     }
 
     #[test]

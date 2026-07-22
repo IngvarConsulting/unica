@@ -1542,6 +1542,24 @@ mod tests {
     }
 
     #[test]
+    fn typed_method_queries_accept_limits_above_u16_without_clamping() {
+        let context = test_context("typed-method-large-limit");
+        let db_path = context.cache_root.join("typed-method-large-limit.db");
+        create_method_index(&db_path);
+
+        let search =
+            search_indexed_methods(&db_path, "Рассчитать", 70_000).expect("large search limit");
+        let definitions = find_indexed_definitions(&db_path, "ПолучитьСерию", 70_000)
+            .expect("large definition limit");
+
+        assert_eq!(search.hits.len(), 1);
+        assert!(!search.has_more);
+        assert_eq!(definitions.hits.len(), 1);
+        assert!(!definitions.has_more);
+        cleanup(&context);
+    }
+
+    #[test]
     fn typed_definition_page_rejects_duplicate_at_n_plus_one_before_hidden_row() {
         let context = test_context("typed-method-page-duplicate");
         let db_path = context.cache_root.join("typed-method-page-duplicate.db");

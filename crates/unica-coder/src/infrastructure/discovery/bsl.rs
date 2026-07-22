@@ -818,7 +818,13 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
                 ),
             })
         } else {
-            Ok(BslCollection::Complete(batch))
+            Ok(BslCollection::Bounded {
+                batch,
+                diagnostic: ProviderDiagnostic::material(
+                    "bsl_definition_freshness_unverified",
+                    "ready RLM status does not bind the index to the captured source snapshot",
+                ),
+            })
         }
     }
 
@@ -1453,9 +1459,14 @@ mod tests {
             ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
                 .definitions(&query("ПолучитьСерию", &[], 10));
 
-        let ProviderOutcome::Complete(batch) = outcome else {
+        let ProviderOutcome::Bounded {
+            data: batch,
+            diagnostic,
+        } = outcome
+        else {
             panic!("expected validated multiline indexed definition");
         };
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
         assert_eq!(batch.records.len(), 1);
         assert_eq!(
             batch.records[0].owner,
@@ -1493,9 +1504,14 @@ mod tests {
         let ProviderOutcome::Complete(lexical) = lexical else {
             panic!("expected common-form lexical evidence");
         };
-        let ProviderOutcome::Complete(definitions) = definitions else {
+        let ProviderOutcome::Bounded {
+            data: definitions,
+            diagnostic,
+        } = definitions
+        else {
             panic!("expected common-form definition evidence");
         };
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
         assert_eq!(lexical.records.len(), 1);
         assert_eq!(definitions.records.len(), 1);
         assert_eq!(
@@ -1566,9 +1582,14 @@ mod tests {
 
         let outcome = provider.definitions(&query("Найти серию", &search_terms, 10));
 
-        let ProviderOutcome::Complete(batch) = outcome else {
+        let ProviderOutcome::Bounded {
+            data: batch,
+            diagnostic,
+        } = outcome
+        else {
             panic!("expected complete definition evidence");
         };
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
         assert_eq!(batch.records.len(), 1);
         assert_eq!(
             batch.records[0].owner,
@@ -1596,9 +1617,14 @@ mod tests {
 
         let outcome = provider.definitions(&query("получитьсерию", &search_terms, 10));
 
-        let ProviderOutcome::Complete(batch) = outcome else {
+        let ProviderOutcome::Bounded {
+            data: batch,
+            diagnostic,
+        } = outcome
+        else {
             panic!("expected exact Cyrillic search term to remain queryable");
         };
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
         assert_eq!(batch.records.len(), 1);
     }
 
@@ -1651,6 +1677,48 @@ mod tests {
             ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&stale))
                 .definitions(&query("Найти", &[], 10));
         assert!(matches!(stale, ProviderOutcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn ready_index_hits_are_bounded_without_snapshot_generation_proof() {
+        let fixture = Fixture::new("definition-freshness-hit");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("ПолучитьСерию", &[], 10));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("ready index evidence must remain freshness-bounded");
+        };
+        assert_eq!(data.records.len(), 1);
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
+        assert_eq!(
+            diagnostic.materiality,
+            crate::domain::discovery::MissingCheckMateriality::Material
+        );
+    }
+
+    #[test]
+    fn ready_index_empty_result_is_not_negative_complete_without_snapshot_proof() {
+        let fixture = Fixture::new("definition-freshness-empty");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_empty_index(&db_path);
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("НесуществующийМетод", &[], 10));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("empty ready index result must remain freshness-bounded");
+        };
+        assert!(data.records.is_empty());
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
     }
 
     #[test]
