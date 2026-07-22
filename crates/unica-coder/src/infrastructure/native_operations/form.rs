@@ -6552,23 +6552,35 @@ pub(crate) fn emit_form_input(
         };
         lines.push(format!("{inner}<TitleLocation>{location}</TitleLocation>"));
     }
-    for (key, tag) in [
-        ("multiLine", "MultiLine"),
-        ("passwordMode", "PasswordMode"),
-        ("clearButton", "ClearButton"),
-        ("spinButton", "SpinButton"),
-        ("dropListButton", "DropListButton"),
-        ("markIncomplete", "AutoMarkIncomplete"),
-        ("skipOnInput", "SkipOnInput"),
-        ("horizontalStretch", "HorizontalStretch"),
-        ("verticalStretch", "VerticalStretch"),
-    ] {
+    for (key, tag) in [("multiLine", "MultiLine"), ("passwordMode", "PasswordMode")] {
         if element.get(key).and_then(Value::as_bool) == Some(true) {
             lines.push(format!("{inner}<{tag}>true</{tag}>"));
         }
     }
     if let Some(value) = element.get("choiceButton").and_then(Value::as_bool) {
         lines.push(format!("{inner}<ChoiceButton>{value}</ChoiceButton>"));
+    }
+    for (key, tag) in [
+        ("clearButton", "ClearButton"),
+        ("spinButton", "SpinButton"),
+        ("dropListButton", "DropListButton"),
+        ("markIncomplete", "AutoMarkIncomplete"),
+    ] {
+        if element.get(key).and_then(Value::as_bool) == Some(true) {
+            lines.push(format!("{inner}<{tag}>true</{tag}>"));
+        }
+    }
+    if element.get("skipOnInput").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<SkipOnInput>true</SkipOnInput>"));
+    }
+    if let Some(value) = element.get("showInHeader").and_then(Value::as_bool) {
+        lines.push(format!("{inner}<ShowInHeader>{value}</ShowInHeader>"));
+    }
+    if let Some(value) = element.get("headerHorizontalAlign").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<HeaderHorizontalAlign>{}</HeaderHorizontalAlign>",
+            escape_xml(value)
+        ));
     }
     for (key, tag) in [
         ("autoMaxWidth", "AutoMaxWidth"),
@@ -6584,16 +6596,19 @@ pub(crate) fn emit_form_input(
     if let Some(height) = element.get("height").and_then(json_i64_value) {
         lines.push(format!("{inner}<Height>{height}</Height>"));
     }
-    if let Some(value) = element.get("showInHeader").and_then(Value::as_bool) {
-        lines.push(format!("{inner}<ShowInHeader>{value}</ShowInHeader>"));
-    }
     for (key, tag) in [
-        ("headerHorizontalAlign", "HeaderHorizontalAlign"),
-        ("horizontalAlign", "HorizontalAlign"),
+        ("horizontalStretch", "HorizontalStretch"),
+        ("verticalStretch", "VerticalStretch"),
     ] {
-        if let Some(value) = element.get(key).and_then(Value::as_str) {
-            lines.push(format!("{inner}<{tag}>{}</{tag}>", escape_xml(value)));
+        if element.get(key).and_then(Value::as_bool) == Some(true) {
+            lines.push(format!("{inner}<{tag}>true</{tag}>"));
         }
+    }
+    if let Some(value) = element.get("horizontalAlign").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<HorizontalAlign>{}</HorizontalAlign>",
+            escape_xml(value)
+        ));
     }
     if let Some(hint) = element.get("inputHint").and_then(Value::as_str) {
         emit_form_mltext(lines, &inner, "InputHint", hint);
@@ -9733,10 +9748,22 @@ mod tests {
                 {
                     "input": "Заполнитель",
                     "title": "",
-                    "showInHeader": false,
+                    "multiLine": true,
+                    "passwordMode": true,
                     "choiceButton": false,
-                    "horizontalAlign": "Right<&",
+                    "clearButton": true,
+                    "spinButton": true,
+                    "dropListButton": true,
+                    "markIncomplete": true,
+                    "skipOnInput": true,
+                    "showInHeader": false,
                     "headerHorizontalAlign": "Right",
+                    "autoMaxWidth": false,
+                    "width": 40,
+                    "height": 3,
+                    "horizontalStretch": true,
+                    "verticalStretch": true,
+                    "horizontalAlign": "Right<&",
                     "inputHint": "Меньше < и & больше"
                 }
             ]
@@ -9768,9 +9795,21 @@ mod tests {
             xml.contains(concat!(
                 "<InputField name=\"Заполнитель\" id=\"7\">",
                 "\n\t\t\t<Title/>\n",
+                "\t\t\t<MultiLine>true</MultiLine>\n",
+                "\t\t\t<PasswordMode>true</PasswordMode>\n",
                 "\t\t\t<ChoiceButton>false</ChoiceButton>\n",
+                "\t\t\t<ClearButton>true</ClearButton>\n",
+                "\t\t\t<SpinButton>true</SpinButton>\n",
+                "\t\t\t<DropListButton>true</DropListButton>\n",
+                "\t\t\t<AutoMarkIncomplete>true</AutoMarkIncomplete>\n",
+                "\t\t\t<SkipOnInput>true</SkipOnInput>\n",
                 "\t\t\t<ShowInHeader>false</ShowInHeader>\n",
                 "\t\t\t<HeaderHorizontalAlign>Right</HeaderHorizontalAlign>\n",
+                "\t\t\t<AutoMaxWidth>false</AutoMaxWidth>\n",
+                "\t\t\t<Width>40</Width>\n",
+                "\t\t\t<Height>3</Height>\n",
+                "\t\t\t<HorizontalStretch>true</HorizontalStretch>\n",
+                "\t\t\t<VerticalStretch>true</VerticalStretch>\n",
                 "\t\t\t<HorizontalAlign>Right&lt;&amp;</HorizontalAlign>\n",
                 "\t\t\t<InputHint>\n",
                 "\t\t\t\t<v8:item>\n",
