@@ -214,13 +214,15 @@ fn support_guard_blocked_outcome(
     let target = violation.target_path.display();
     let head = "[support-guard] Редактирование отклонено: это объект типовой конфигурации на поддержке поставщика, прямое редактирование молча сломает будущие обновления.";
     let cfe = "Рекомендуемый путь: внести доработку в расширение (навыки cfe-borrow / cfe-patch-method) — состояние поддержки менять не нужно, обновления вендора сохраняются.";
-    let off_note =
+    let override_note =
         "Снять проверку для этой базы: editingAllowedCheck = warn|off в .v8-project.json.";
-    let (state, fix) = match violation.code {
+    let invalid_state_note = "Параметр editingAllowedCheck = warn|off не отключает эту fail-closed проверку существующего повреждённого или нечитаемого файла.";
+    let (state, fix, policy_note) = match violation.code {
         "support-state-invalid" => (
             format!("Состояние поддержки не подтверждено: {}.", violation.reason),
             "Исправьте или восстановите Ext/ParentConfigurations.bin перед любой мутацией конфигурации. Отсутствующий файл означает собственную конфигурацию, но существующий повреждённый или нечитаемый файл небезопасно считать отсутствующим."
                 .to_string(),
+            invalid_state_note,
         ),
         "capability-off" => (
             format!(
@@ -230,6 +232,7 @@ fn support_guard_blocked_outcome(
                 "Либо снять защиту явно (навык support-edit, два шага):\n  support-edit -Path \"{}\" -Capability on — включить возможность изменения (объекты пока остаются на замке);\n  support-edit -Path \"{target}\" -Set editable — открыть этот объект для редактирования.\n  Изменение применяется в базу полной загрузкой выгрузки и обходит механизм обновлений вендора.",
                 violation.config_dir.display()
             ),
+            override_note,
         ),
         "not-removed" if requirement == SupportGuardRequirement::Removed => (
             format!(
@@ -238,6 +241,7 @@ fn support_guard_blocked_outcome(
             format!(
                 "Либо сначала снять объект с поддержки, затем удалять:\n  support-edit -Path \"{target}\" -Set off-support — объект уходит из-под обновлений, после этого удаление безопасно."
             ),
+            override_note,
         ),
         _ => (
             format!(
@@ -246,9 +250,10 @@ fn support_guard_blocked_outcome(
             format!(
                 "Либо разрешить редактирование этого объекта (навык support-edit, выбрать одно):\n  support-edit -Path \"{target}\" -Set editable — редактировать и дальше получать обновления вендора (возможны конфликты слияния);\n  support-edit -Path \"{target}\" -Set off-support — снять с поддержки: обновления по объекту больше не приходят."
             ),
+            override_note,
         ),
     };
-    let message = format!("{head}\n{state}\n{cfe}\n{fix}\n{off_note}");
+    let message = format!("{head}\n{state}\n{cfe}\n{fix}\n{policy_note}");
     AdapterOutcome {
         ok: false,
         summary: format!("{} blocked by support guard", spec.name),

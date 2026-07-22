@@ -2447,10 +2447,12 @@ mod tests {
 
         assert!(!result.ok);
         assert!(result.summary.contains("support guard"));
-        assert!(result
-            .errors
-            .join("\n")
-            .contains("ParentConfigurations.bin"));
+        let message = result.errors.join("\n");
+        assert!(message.contains("ParentConfigurations.bin"));
+        assert!(message.contains(
+            "Параметр editingAllowedCheck = warn|off не отключает эту fail-closed проверку существующего повреждённого или нечитаемого файла."
+        ));
+        assert!(!message.contains("Снять проверку для этой базы"));
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
