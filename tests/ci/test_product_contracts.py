@@ -30,6 +30,19 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
+    def test_local_1ci_corpus_is_ignored_and_agent_discoverable(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        ignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        package_script = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("docs-local/", ignore.splitlines())
+        self.assertIn("docs-local/1ci/8.3.27/en/", agents)
+        self.assertIn("python3.12 scripts/dev/download-1ci-guides.py", agents)
+        self.assertNotIn("docs-local", package_script)
+
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin = json.loads(

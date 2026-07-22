@@ -5,6 +5,7 @@ its/
 .superpowers/
 target/
 dist/
+docs-local/
 .DS_Store
 __pycache__/
 *.pyc
