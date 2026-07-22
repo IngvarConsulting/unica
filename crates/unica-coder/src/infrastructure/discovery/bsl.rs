@@ -9,7 +9,7 @@ use crate::infrastructure::discovery::metadata::{
 };
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::contained_file::{
-    read_contained_regular_file, ContainedFileError,
+    read_contained_regular_file_cancellable, ContainedFileError, VerifiedFile,
 };
 use crate::infrastructure::workspace_index::{
     find_indexed_definitions, BslIndexStatus, IndexQueryError, IndexedMethodHit, IndexedMethodKind,
@@ -1097,7 +1097,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
             let analyzed = match validated_files.get(&relative_path) {
                 Some(analyzed) => analyzed.clone(),
                 None => {
-                    let analyzed = self.validate_indexed_file(&relative_path, &inventory)?;
+                    let analyzed = self.validate_indexed_file(&relative_path, &inventory, query)?;
                     validated_files.insert(relative_path.clone(), analyzed.clone());
                     analyzed
                 }
@@ -1284,6 +1284,27 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         &self,
         relative_path: &PortableRelativePath,
         inventory: &BTreeMap<PortableRelativePath, &SourceFile>,
+        query: &DiscoveryQuery<'_>,
+    ) -> Result<AnalyzedFile, DefinitionCollectionError> {
+        check_definition_cancellation(query)?;
+        let result = self.validate_indexed_file_with_reader(
+            relative_path,
+            inventory,
+            |root, path, max_bytes| {
+                read_contained_regular_file_cancellable(root, path, max_bytes, || {
+                    query.is_cancelled()
+                })
+            },
+        );
+        check_definition_cancellation(query)?;
+        result
+    }
+
+    fn validate_indexed_file_with_reader(
+        &self,
+        relative_path: &PortableRelativePath,
+        inventory: &BTreeMap<PortableRelativePath, &SourceFile>,
+        reader: impl FnOnce(&Path, &Path, u64) -> Result<VerifiedFile, ContainedFileError>,
     ) -> Result<AnalyzedFile, DefinitionCollectionError> {
         let Some(expected) = inventory.get(relative_path) else {
             return Err(DefinitionCollectionError::Unavailable(
@@ -1303,7 +1324,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
             ))
         })?;
         let full_path = self.selected_root.join(relative_path.as_str());
-        let verified = read_contained_regular_file(self.selected_root, &full_path, max_bytes)
+        let verified = reader(self.selected_root, &full_path, max_bytes)
             .map_err(classify_indexed_file_error)?;
         if verified.relative_path != expected.relative_path
             || verified.bytes_read != max_bytes
@@ -1416,6 +1437,12 @@ fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectio
                 "indexed module grew after inventory capture",
             ))
         }
+        ContainedFileError::IdentityChanged => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_stale",
+                "indexed module identity changed after inventory capture",
+            ))
+        }
         ContainedFileError::Io { operation, source } if source.kind() == ErrorKind::NotFound => {
             DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
                 "bsl_index_stale",
@@ -1437,7 +1464,6 @@ fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectio
         | ContainedFileError::InvalidRelativePath(_)
         | ContainedFileError::SymlinkOrReparsePoint
         | ContainedFileError::NotRegularFile
-        | ContainedFileError::IdentityChanged
         | ContainedFileError::LengthOverflow) => {
             DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
                 "bsl_index_file_contract",
@@ -1660,6 +1686,62 @@ mod tests {
         };
         assert_eq!(lexical_diagnostic.code, "discovery_cancelled");
         assert_eq!(definition_diagnostic.code, "discovery_cancelled");
+    }
+
+    #[test]
+    fn indexed_file_revalidation_cancels_between_verified_read_chunks() {
+        let fixture = Fixture::new("definition-cancelled-during-reread");
+        let bytes = vec![
+            b'x';
+            crate::infrastructure::platform::contained_file::VERIFIED_READ_CHUNK_BYTES
+                * 3
+        ];
+        let source = fixture.write_source(MODULE_PATH, &bytes);
+        let inventory = inventory(vec![source]);
+        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let Ok(inventory_files) = provider.inventory_files() else {
+            panic!("expected inventory map");
+        };
+        let relative_path = PortableRelativePath::parse_str(MODULE_PATH).unwrap();
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        let mut chunks = 0_u8;
+
+        let error = provider
+            .validate_indexed_file_with_reader(
+                &relative_path,
+                &inventory_files,
+                |root, path, max_bytes| {
+                    crate::infrastructure::platform::contained_file::read_contained_regular_file_with_chunk_observer_cancellable(
+                        root,
+                        path,
+                        max_bytes,
+                        || cancellation.is_cancelled(),
+                        |_| {
+                            chunks += 1;
+                            cancellation.cancel();
+                        },
+                    )
+                },
+            )
+            .expect_err("indexed-file reread must stop between chunks");
+
+        let super::DefinitionCollectionError::Failed(diagnostic) = error else {
+            panic!("cancellation must be a failed provider outcome");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
+        assert_eq!(chunks, 1);
+    }
+
+    #[test]
+    fn indexed_file_identity_change_is_staleness_not_a_contract_violation() {
+        let error = super::classify_indexed_file_error(
+            crate::infrastructure::platform::contained_file::ContainedFileError::IdentityChanged,
+        );
+
+        let super::DefinitionCollectionError::Unavailable(diagnostic) = error else {
+            panic!("post-inventory replacement must be classified as stale");
+        };
+        assert_eq!(diagnostic.code, "bsl_index_stale");
     }
 
     #[test]
