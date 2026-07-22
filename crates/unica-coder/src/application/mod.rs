@@ -510,7 +510,7 @@ fn call_project_discover(
     ports.validate_tool_context(spec, args, false, &context)?;
     let discovery = ports
         .discover_extension_points(&request, &context, cancellation)
-        .map_err(|error| format!("project discovery failed: {error}"))?;
+        .map_err(|error| format!("{}: {error}", error.code()))?;
     let summary = match discovery.status {
         crate::domain::discovery::DiscoveryStatus::Complete => {
             "extension-point discovery completed".to_string()
@@ -1546,6 +1546,32 @@ mod tests {
             .iter()
             .any(|check| check.code == "runtime_flow_unavailable"));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_discovery_preserves_machine_error_code_at_string_boundary() {
+        let root = test_workspace_root("discovery-error-code");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect_err("unknown source format must fail");
+
+        assert!(
+            error.starts_with("discovery_invalid_source_format:"),
+            "unexpected discovery error: {error}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

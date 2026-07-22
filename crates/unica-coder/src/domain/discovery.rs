@@ -782,6 +782,21 @@ pub(crate) enum DiscoveryError {
     InvalidSourceFormat(String),
 }
 
+impl DiscoveryError {
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::EmptySourceRoot => "discovery_empty_source_root",
+            Self::Cancelled => "discovery_cancelled",
+            Self::ProjectSources(_) => "discovery_project_sources",
+            Self::NoConfigurationSource => "discovery_no_configuration_source",
+            Self::AmbiguousConfigurationSources(_) => "discovery_ambiguous_configuration_sources",
+            Self::InvalidSourceRoot(_) => "discovery_invalid_source_root",
+            Self::UnsupportedSourceFormat(_) => "discovery_unsupported_source_format",
+            Self::InvalidSourceFormat(_) => "discovery_invalid_source_format",
+        }
+    }
+}
+
 impl fmt::Display for DiscoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -934,6 +949,45 @@ pub(crate) struct DiscoveryReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_errors_expose_stable_machine_codes() {
+        let cases = [
+            (
+                DiscoveryError::EmptySourceRoot,
+                "discovery_empty_source_root",
+            ),
+            (DiscoveryError::Cancelled, "discovery_cancelled"),
+            (
+                DiscoveryError::ProjectSources("invalid manifest".to_string()),
+                "discovery_project_sources",
+            ),
+            (
+                DiscoveryError::NoConfigurationSource,
+                "discovery_no_configuration_source",
+            ),
+            (
+                DiscoveryError::AmbiguousConfigurationSources(vec!["a".to_string()]),
+                "discovery_ambiguous_configuration_sources",
+            ),
+            (
+                DiscoveryError::InvalidSourceRoot("outside workspace".to_string()),
+                "discovery_invalid_source_root",
+            ),
+            (
+                DiscoveryError::UnsupportedSourceFormat("edt".to_string()),
+                "discovery_unsupported_source_format",
+            ),
+            (
+                DiscoveryError::InvalidSourceFormat("unknown".to_string()),
+                "discovery_invalid_source_format",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.code(), expected, "{error}");
+        }
+    }
 
     #[test]
     fn artifact_identity_uses_trim_plus_rust_unicode_lowercase_mapping() {
