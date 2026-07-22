@@ -118,6 +118,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         let selected = crate::infrastructure::source_roots::resolve_discovery_source_root(
             context,
             request.source_dir(),
+            request.limits().max_files().get(),
+            cancellation,
         )?;
         if cancellation.is_cancelled() {
             return Err(DiscoveryError::Cancelled);

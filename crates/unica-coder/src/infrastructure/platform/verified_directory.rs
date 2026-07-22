@@ -19,6 +19,12 @@ pub(crate) struct VerifiedDirectoryEntry {
     pub identity: VerifiedIdentity,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct VerifiedDirectoryReadOptions {
+    expected_identity: Option<VerifiedIdentity>,
+    entry_limit: Option<usize>,
+}
+
 #[derive(Debug)]
 pub(crate) enum VerifiedDirectoryError {
     RootNotCanonical,
@@ -33,6 +39,9 @@ pub(crate) enum VerifiedDirectoryError {
     NonRegularEntry,
     IdentityChanged,
     Cancelled,
+    EntryLimitExceeded {
+        limit: usize,
+    },
     #[cfg_attr(not(windows), allow(dead_code, reason = "used by Windows handle APIs"))]
     LengthOverflow,
     #[cfg_attr(
@@ -76,6 +85,12 @@ impl fmt::Display for VerifiedDirectoryError {
                 formatter.write_str("directory identity changed during verified enumeration")
             }
             Self::Cancelled => formatter.write_str("verified directory enumeration cancelled"),
+            Self::EntryLimitExceeded { limit } => {
+                write!(
+                    formatter,
+                    "verified directory entry limit exceeded: {limit}"
+                )
+            }
             Self::LengthOverflow => {
                 formatter.write_str("directory data length is not representable")
             }
@@ -103,6 +118,7 @@ impl std::error::Error for VerifiedDirectoryError {
             | Self::NonRegularEntry
             | Self::IdentityChanged
             | Self::Cancelled
+            | Self::EntryLimitExceeded { .. }
             | Self::LengthOverflow
             | Self::UnsupportedHost => None,
         }
@@ -113,7 +129,15 @@ pub(crate) fn read_verified_contained_directory(
     root: &Path,
     path: &Path,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
-    read_verified_contained_directory_observing(root, path, None, || {}, || {}, || {}, || false)
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        VerifiedDirectoryReadOptions::default(),
+        || {},
+        || {},
+        || {},
+        || false,
+    )
 }
 
 pub(crate) fn read_verified_contained_directory_cancellable(
@@ -121,7 +145,35 @@ pub(crate) fn read_verified_contained_directory_cancellable(
     path: &Path,
     is_cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
-    read_verified_contained_directory_observing(root, path, None, || {}, || {}, || {}, is_cancelled)
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        VerifiedDirectoryReadOptions::default(),
+        || {},
+        || {},
+        || {},
+        is_cancelled,
+    )
+}
+
+pub(crate) fn read_verified_contained_directory_bounded_cancellable(
+    root: &Path,
+    path: &Path,
+    entry_limit: usize,
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        VerifiedDirectoryReadOptions {
+            entry_limit: Some(entry_limit),
+            ..VerifiedDirectoryReadOptions::default()
+        },
+        || {},
+        || {},
+        || {},
+        is_cancelled,
+    )
 }
 
 pub(crate) fn read_verified_contained_directory_with_expected_identity(
@@ -132,7 +184,10 @@ pub(crate) fn read_verified_contained_directory_with_expected_identity(
     read_verified_contained_directory_observing(
         root,
         path,
-        Some(expected_identity),
+        VerifiedDirectoryReadOptions {
+            expected_identity: Some(expected_identity),
+            ..VerifiedDirectoryReadOptions::default()
+        },
         || {},
         || {},
         || {},
@@ -149,7 +204,31 @@ pub(crate) fn read_verified_contained_directory_with_expected_identity_cancellab
     read_verified_contained_directory_observing(
         root,
         path,
-        Some(expected_identity),
+        VerifiedDirectoryReadOptions {
+            expected_identity: Some(expected_identity),
+            ..VerifiedDirectoryReadOptions::default()
+        },
+        || {},
+        || {},
+        || {},
+        is_cancelled,
+    )
+}
+
+pub(crate) fn read_verified_contained_directory_with_expected_identity_bounded_cancellable(
+    root: &Path,
+    path: &Path,
+    expected_identity: VerifiedIdentity,
+    entry_limit: usize,
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
+    read_verified_contained_directory_observing(
+        root,
+        path,
+        VerifiedDirectoryReadOptions {
+            expected_identity: Some(expected_identity),
+            entry_limit: Some(entry_limit),
+        },
         || {},
         || {},
         || {},
@@ -167,7 +246,7 @@ fn read_verified_contained_directory_with_observer(
     read_verified_contained_directory_observing(
         root,
         path,
-        None,
+        VerifiedDirectoryReadOptions::default(),
         post_open_observer,
         enumeration_observer,
         || {},
@@ -184,7 +263,7 @@ fn read_verified_contained_directory_with_final_metadata_observer(
     read_verified_contained_directory_observing(
         root,
         path,
-        None,
+        VerifiedDirectoryReadOptions::default(),
         || {},
         || {},
         final_metadata_observer,
@@ -195,7 +274,7 @@ fn read_verified_contained_directory_with_final_metadata_observer(
 fn read_verified_contained_directory_observing(
     root: &Path,
     path: &Path,
-    expected_identity: Option<VerifiedIdentity>,
+    options: VerifiedDirectoryReadOptions,
     post_open_observer: impl FnOnce(),
     enumeration_observer: impl FnOnce(),
     final_metadata_observer: impl FnOnce(),
@@ -238,7 +317,10 @@ fn read_verified_contained_directory_observing(
     let expected_relative = portable_directory_relative(relative)?;
 
     let pre_open_identity = directory_identity_at_path(&candidate)?;
-    if expected_identity.is_some_and(|expected| expected != pre_open_identity) {
+    if options
+        .expected_identity
+        .is_some_and(|expected| expected != pre_open_identity)
+    {
         return Err(VerifiedDirectoryError::IdentityChanged);
     }
     let directory = open_directory_no_follow(&candidate)?;
@@ -263,7 +345,12 @@ fn read_verified_contained_directory_observing(
         final_metadata_observer,
     )?;
     enumeration_observer();
-    let entries = enumerate_directory_handle(&directory, &candidate, &mut is_cancelled)?;
+    let entries = enumerate_directory_handle(
+        &directory,
+        &candidate,
+        options.entry_limit,
+        &mut is_cancelled,
+    )?;
     let mut ordered_entries = BTreeMap::new();
     for entry in entries {
         if is_cancelled() {
@@ -431,6 +518,7 @@ fn reclassify_directory_final_path_error(
             | VerifiedDirectoryError::AmbiguousHostPath
             | VerifiedDirectoryError::InvalidRelativePath(_)
             | VerifiedDirectoryError::Cancelled
+            | VerifiedDirectoryError::EntryLimitExceeded { .. }
             | VerifiedDirectoryError::LengthOverflow
             | VerifiedDirectoryError::UnsupportedHost
             | VerifiedDirectoryError::Io { .. },
@@ -715,6 +803,7 @@ fn duplicate_directory_descriptor_cloexec(
 fn enumerate_directory_handle(
     directory: &File,
     path: &Path,
+    entry_limit: Option<usize>,
     is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     use std::ffi::{CStr, CString};
@@ -773,6 +862,11 @@ fn enumerate_directory_handle(
         }
         if is_cancelled() {
             return Err(VerifiedDirectoryError::Cancelled);
+        }
+        if let Some(limit) = entry_limit {
+            if entries.len() >= limit {
+                return Err(VerifiedDirectoryError::EntryLimitExceeded { limit });
+            }
         }
         let c_name = CString::new(name).map_err(|source| VerifiedDirectoryError::Io {
             operation: "validate directory entry name",
@@ -846,6 +940,7 @@ fn set_errno(value: i32) {
 fn enumerate_directory_handle(
     _directory: &File,
     _path: &Path,
+    _entry_limit: Option<usize>,
     _is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     Err(VerifiedDirectoryError::UnsupportedHost)
@@ -855,6 +950,7 @@ fn enumerate_directory_handle(
 fn enumerate_directory_handle(
     directory: &File,
     path: &Path,
+    entry_limit: Option<usize>,
     is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     use std::mem::{offset_of, size_of};
@@ -954,6 +1050,11 @@ fn enumerate_directory_handle(
                 if is_cancelled() {
                     return Err(VerifiedDirectoryError::Cancelled);
                 }
+                if let Some(limit) = entry_limit {
+                    if entries.len() >= limit {
+                        return Err(VerifiedDirectoryError::EntryLimitExceeded { limit });
+                    }
+                }
                 if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                     return Err(VerifiedDirectoryError::SymlinkOrReparsePoint);
                 }
@@ -1006,6 +1107,7 @@ fn enumerate_directory_handle(
 fn enumerate_directory_handle(
     _directory: &File,
     _path: &Path,
+    _entry_limit: Option<usize>,
     _is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
     Err(VerifiedDirectoryError::UnsupportedHost)
@@ -1014,7 +1116,8 @@ fn enumerate_directory_handle(
 #[cfg(test)]
 mod tests {
     use super::{
-        read_verified_contained_directory, read_verified_contained_directory_cancellable,
+        read_verified_contained_directory, read_verified_contained_directory_bounded_cancellable,
+        read_verified_contained_directory_cancellable,
         read_verified_contained_directory_with_expected_identity,
         read_verified_contained_directory_with_final_metadata_observer,
         read_verified_contained_directory_with_observer, VerifiedDirectoryEntryKind,
@@ -1060,6 +1163,24 @@ mod tests {
 
         assert!(matches!(error, VerifiedDirectoryError::Cancelled));
         assert_eq!(entries_observed, 2);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn bounded_enumeration_stops_before_retaining_the_extra_entry() {
+        let root = fixture_root("bounded-flat-enumeration");
+        fs::write(root.join("a.xml"), b"a").expect("first file fixture");
+        fs::write(root.join("b.xml"), b"b").expect("second file fixture");
+        fs::write(root.join("c.xml"), b"c").expect("third file fixture");
+
+        let error =
+            read_verified_contained_directory_bounded_cancellable(&root, &root, 2, || false)
+                .expect_err("enumeration must stop at N+1");
+
+        assert!(matches!(
+            error,
+            VerifiedDirectoryError::EntryLimitExceeded { limit: 2 }
+        ));
         cleanup(&root);
     }
 

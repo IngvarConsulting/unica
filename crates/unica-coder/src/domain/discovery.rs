@@ -780,6 +780,7 @@ pub(crate) enum DiscoveryError {
     InvalidSourceRoot(String),
     UnsupportedSourceFormat(String),
     InvalidSourceFormat(String),
+    SourceFormatBound { limit: u32 },
 }
 
 impl DiscoveryError {
@@ -793,6 +794,7 @@ impl DiscoveryError {
             Self::InvalidSourceRoot(_) => "discovery_invalid_source_root",
             Self::UnsupportedSourceFormat(_) => "discovery_unsupported_source_format",
             Self::InvalidSourceFormat(_) => "discovery_invalid_source_format",
+            Self::SourceFormatBound { .. } => "discovery_source_format_bound",
         }
     }
 }
@@ -824,6 +826,10 @@ impl fmt::Display for DiscoveryError {
             Self::InvalidSourceFormat(format) => {
                 write!(formatter, "invalid discovery source format: {format}")
             }
+            Self::SourceFormatBound { limit } => write!(
+                formatter,
+                "discovery source format marker scan exceeded maxFiles: {limit}"
+            ),
         }
     }
 }
@@ -981,6 +987,10 @@ mod tests {
             (
                 DiscoveryError::InvalidSourceFormat("unknown".to_string()),
                 "discovery_invalid_source_format",
+            ),
+            (
+                DiscoveryError::SourceFormatBound { limit: 20_000 },
+                "discovery_source_format_bound",
             ),
         ];
 

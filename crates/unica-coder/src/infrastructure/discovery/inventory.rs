@@ -356,6 +356,7 @@ fn classify_verified_directory_error(error: VerifiedDirectoryError) -> CaptureEr
         | VerifiedDirectoryError::AmbiguousHostPath
         | VerifiedDirectoryError::InvalidRelativePath(_)
         | VerifiedDirectoryError::IdentityChanged
+        | VerifiedDirectoryError::EntryLimitExceeded { .. }
         | VerifiedDirectoryError::LengthOverflow) => {
             CaptureError::ContractViolation(ProviderDiagnostic::material(
                 "inventory_verified_directory",
