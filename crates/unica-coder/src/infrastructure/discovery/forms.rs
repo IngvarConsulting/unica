@@ -360,6 +360,12 @@ mod tests {
   </Commands>
 </Form>"#;
 
+    const FORM_DESCRIPTOR_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Form uuid="30000000-0000-0000-0000-000000000004">
+    <Properties><Name>ФормаДокумента</Name></Properties>
+  </Form>
+</MetaDataObject>"#;
+
     #[test]
     fn enumerates_only_declared_canonical_forms_and_keeps_typed_bindings() {
         let canonical_form_path = concat!(
@@ -371,6 +377,7 @@ mod tests {
                 "Documents/ПриобретениеТоваровУслуг.xml",
                 DESCRIPTOR.as_bytes(),
             ),
+            metadata_form_descriptor_file(),
             source_file(canonical_form_path, FORM_XML.as_bytes()),
             source_file(
                 "Decoy/Forms/ФормаДокумента/Ext/Form.xml",
@@ -409,7 +416,7 @@ mod tests {
                 if event == "OnOpen" && handler == "ПроверитьСрокГодности"
         )));
         assert_eq!(batch.records.len(), 3);
-        assert_eq!(batch.analyzed_files.len(), 2);
+        assert_eq!(batch.analyzed_files.len(), 3);
         assert_eq!(batch.contributors.len(), 1);
         assert_eq!(
             batch.contributors[0].relative_path.as_str(),
@@ -417,7 +424,12 @@ mod tests {
         );
         assert_eq!(
             batch.coverage,
-            ProviderCoverage::new(2, 2, (DESCRIPTOR.len() + FORM_XML.len()) as u64, 3)
+            ProviderCoverage::new(
+                3,
+                3,
+                (DESCRIPTOR.len() + FORM_DESCRIPTOR_XML.len() + FORM_XML.len()) as u64,
+                3,
+            )
         );
     }
 
@@ -432,6 +444,7 @@ mod tests {
                 "Documents/ПриобретениеТоваровУслуг.xml",
                 DESCRIPTOR.as_bytes(),
             ),
+            metadata_form_descriptor_file(),
             source_file(canonical_form_path, b"<Form><Events>"),
         ]);
 
@@ -481,6 +494,7 @@ mod tests {
                         "Documents/ПриобретениеТоваровУслуг.xml",
                         DESCRIPTOR.as_bytes(),
                     ),
+                    metadata_form_descriptor_file(),
                     source_file(canonical_form_path, xml.as_bytes()),
                 ]),
             );
@@ -508,6 +522,7 @@ mod tests {
                         "Documents/ПриобретениеТоваровУслуг.xml",
                         DESCRIPTOR.as_bytes(),
                     ),
+                    metadata_form_descriptor_file(),
                     source_file(canonical_form_path, xml.as_bytes()),
                 ]),
             );
@@ -541,6 +556,13 @@ mod tests {
             bytes: bytes.to_vec(),
             raw_hash: ContentHash::sha256(bytes),
         }
+    }
+
+    fn metadata_form_descriptor_file() -> SourceFile {
+        source_file(
+            "Documents/ПриобретениеТоваровУслуг/Forms/ФормаДокумента.xml",
+            FORM_DESCRIPTOR_XML.as_bytes(),
+        )
     }
 
     fn inventory(files: Vec<SourceFile>) -> SourceInventory {

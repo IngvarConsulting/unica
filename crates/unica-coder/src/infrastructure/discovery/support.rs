@@ -454,6 +454,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tracked_template_support_uuid_maps_only_to_its_parent_canonical_identity() {
+        let mut inventory = inventory(vec![
+            source_file(
+                "Reports/ParityReport.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/template-remove/ParityReport.xml"
+                )),
+            ),
+            source_file(
+                "Reports/ParityReport/Templates/MainSchema.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/template-remove/",
+                    "ParityReport/Templates/MainSchema.xml"
+                )),
+            ),
+            source_file(
+                "Ext/ParentConfigurations.bin",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+                )),
+            ),
+        ]);
+        inventory.coverage.files_seen += 1;
+
+        let outcome = SupportStateProvider.support(&query(100), &inventory);
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("unresolved tracked sibling must keep support discovery bounded");
+        };
+        assert_eq!(diagnostic.code, "support_state_inventory_bounded");
+        assert_eq!(
+            state_for(&data.records, "Report.ParityReport.Template.MainSchema"),
+            Some(SupportStateKind::Locked)
+        );
+        assert_eq!(state_for(&data.records, "Template.MainSchema"), None);
+    }
+
+    #[test]
+    fn unresolved_declaration_never_yields_complete_support_absence() {
+        let parent = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Report uuid="61000000-0000-0000-0000-000000000001">
+    <Properties><Name>Sales</Name></Properties>
+    <ChildObjects><Template>Main</Template></ChildObjects>
+  </Report>
+</MetaDataObject>"#;
+        let complete = inventory(vec![source_file("Reports/Sales.xml", parent.as_bytes())]);
+        let mut bounded = complete.clone();
+        bounded.coverage.files_seen += 1;
+
+        let complete_outcome = SupportStateProvider.support(&query(100), &complete);
+        let bounded_outcome = SupportStateProvider.support(&query(100), &bounded);
+
+        assert!(matches!(
+            complete_outcome,
+            ProviderOutcome::ContractViolation(_)
+        ));
+        let ProviderOutcome::Bounded { data, diagnostic } = bounded_outcome else {
+            panic!("bounded inventory must not invent complete support absence");
+        };
+        assert!(data.records.is_empty());
+        assert_eq!(diagnostic.code, "support_state_inventory_bounded");
+    }
+
     fn state_for(
         records: &[crate::domain::discovery::SupportFact],
         artifact: &str,
