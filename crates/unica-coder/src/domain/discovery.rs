@@ -1159,7 +1159,8 @@ mod tests {
             raw_hash: ContentHash::sha256(b"raw"),
             bytes: 3,
         };
-        let snapshot = SnapshotFingerprint::from_manifest(&mapping, &[contributor.clone()]);
+        let snapshot =
+            SnapshotFingerprint::from_manifest(&mapping, std::slice::from_ref(&contributor));
         let target = ArtifactId::parse("Document.Order").expect("artifact");
         let location = EvidenceLocation {
             relative_path: contributor.relative_path,

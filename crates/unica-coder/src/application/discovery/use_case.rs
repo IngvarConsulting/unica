@@ -480,7 +480,7 @@ fn normalize_inventory(
             }
         }
         ProviderOutcomeKind::Bounded => {
-            let max_files_seen = limits.max_files.checked_add(1).unwrap_or(u32::MAX);
+            let max_files_seen = limits.max_files.saturating_add(1);
             if inventory.coverage.files_seen > max_files_seen {
                 return Err(provider_contract_diagnostic(
                     "inventory_files_seen_limit_violation",
@@ -641,9 +641,7 @@ where
     Ok(())
 }
 
-fn normalize_analyzed_files(
-    analyzed_files: &mut Vec<AnalyzedFile>,
-) -> Result<(), ProviderDiagnostic> {
+fn normalize_analyzed_files(analyzed_files: &mut [AnalyzedFile]) -> Result<(), ProviderDiagnostic> {
     analyzed_files.sort();
     for files in analyzed_files.windows(2) {
         if files[0].relative_path == files[1].relative_path {

@@ -515,7 +515,7 @@ fn validate_opened_regular_file_observing(
     })?;
     validate_regular_metadata(&final_metadata)?;
     if identity_at_path(&resolved_path)? != opened_identity
-        || identity_at_path(&candidate)? != opened_identity
+        || identity_at_path(candidate)? != opened_identity
     {
         return Err(ContainedFileError::IdentityChanged);
     }

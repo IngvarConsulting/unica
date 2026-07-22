@@ -910,7 +910,7 @@ fn enumerate_directory_handle(
             kind,
             identity: VerifiedIdentity {
                 storage: status.st_dev as u64,
-                object: status.st_ino as u64,
+                object: status.st_ino,
             },
         });
     }
