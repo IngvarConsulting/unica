@@ -406,18 +406,31 @@ fn lexical_facts_for_file(
     work_budget: &mut LexicalWorkBudget,
     observe_work: &mut dyn FnMut(u64),
 ) -> Result<BTreeSet<BslFact>, BslParseError> {
+    lexical_facts_for_file_observing_method_artifacts(
+        file,
+        terms,
+        query,
+        max_evidence,
+        work_budget,
+        observe_work,
+        &mut |_: &str| {},
+    )
+}
+
+fn lexical_facts_for_file_observing_method_artifacts(
+    file: &SourceFile,
+    terms: &[String],
+    query: &DiscoveryQuery<'_>,
+    max_evidence: usize,
+    work_budget: &mut LexicalWorkBudget,
+    observe_work: &mut dyn FnMut(u64),
+    observe_method_artifact: &mut dyn FnMut(&str),
+) -> Result<BTreeSet<BslFact>, BslParseError> {
     let text = std::str::from_utf8(&file.bytes)
         .map_err(|error| BslParseError::Malformed(format!("input is not UTF-8: {error}")))?;
     let text = strip_source_bom(text);
     let module = module_artifact_for_path(&file.relative_path)?;
     let parsed = parse_bsl_source_cancellable(text, query)?;
-    let mut method_artifacts = Vec::new();
-    for method in &parsed.methods {
-        if query.is_cancelled() {
-            return Err(BslParseError::Cancelled);
-        }
-        method_artifacts.push(method_artifact(&module, &method.name)?);
-    }
     let mut facts = BTreeSet::new();
     let mut offset = 0_usize;
     let mut zero_based_line = 0_usize;
@@ -446,12 +459,20 @@ fn lexical_facts_for_file(
         if !matches.is_empty() {
             let artifact = match method_index_for_line(&parsed.method_ranges, line_number) {
                 Some(method_index) => {
-                    let method = method_artifacts
+                    let method = parsed
+                        .methods
                         .get(method_index)
                         .ok_or_else(|| "BSL method line ownership is invalid".to_string())?;
-                    (method, ArtifactKind::Method)
+                    if query.is_cancelled() {
+                        return Err(BslParseError::Cancelled);
+                    }
+                    observe_method_artifact(&method.name);
+                    (
+                        method_artifact(&module, &method.name)?,
+                        ArtifactKind::Method,
+                    )
                 }
-                None => (&module, ArtifactKind::Module),
+                None => (module.clone(), ArtifactKind::Module),
             };
             for (term, column) in matches {
                 insert_bounded_fact(
@@ -1974,6 +1995,68 @@ mod tests {
             Some(1)
         );
         assert_eq!(super::method_index_for_line(&parsed.method_ranges, 2), None);
+    }
+
+    #[test]
+    fn absent_term_does_not_construct_artifacts_for_many_parsed_methods() {
+        let source = "Процедура Method()\nКонецПроцедуры\n".repeat(5_000);
+        let file = source_file(
+            "CommonModules/LongModuleNameForDeferredIdentity/Ext/Module.bsl",
+            source.as_bytes(),
+        );
+        let terms = vec!["definitelyabsent".to_string()];
+        let query = query("definitelyabsent", &[], 10);
+        let mut work_budget = super::LexicalWorkBudget::new(u64::MAX);
+        let mut observe_work = |_| {};
+        let mut constructed = 0_usize;
+        let mut observe_method_artifact = |_: &str| constructed += 1;
+
+        let facts = super::lexical_facts_for_file_observing_method_artifacts(
+            &file,
+            &terms,
+            &query,
+            10,
+            &mut work_budget,
+            &mut observe_work,
+            &mut observe_method_artifact,
+        )
+        .expect("valid many-method source");
+
+        assert!(facts.is_empty());
+        assert_eq!(constructed, 0);
+    }
+
+    #[test]
+    fn matching_method_line_constructs_only_its_needed_artifact() {
+        let file = source_file(
+            MODULE_PATH,
+            b"Procedure NoMatch()\n    // nothing\nEndProcedure\n\
+Procedure Matched()\n    // needle\nEndProcedure\n",
+        );
+        let terms = vec!["needle".to_string()];
+        let query = query("needle", &[], 10);
+        let mut work_budget = super::LexicalWorkBudget::new(u64::MAX);
+        let mut observe_work = |_| {};
+        let mut constructed = Vec::new();
+        let mut observe_method_artifact = |name: &str| constructed.push(name.to_string());
+
+        let facts = super::lexical_facts_for_file_observing_method_artifacts(
+            &file,
+            &terms,
+            &query,
+            10,
+            &mut work_budget,
+            &mut observe_work,
+            &mut observe_method_artifact,
+        )
+        .expect("valid matching source");
+
+        assert_eq!(constructed, vec!["Matched"]);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts.first().map(|fact| &fact.artifact),
+            Some(&artifact("CommonModule.Серии.Module.Module.Method.Matched"))
+        );
     }
 
     #[test]
