@@ -39,7 +39,9 @@ Add tests beside existing `form_compile_xml` coverage. Compile an input and a bu
 Run:
 
 ```bash
-cargo test -p unica-coder form_compile_emits_tooltip_and_button_appearance -- --exact --nocapture
+cargo test -p unica-coder \
+  infrastructure::native_operations::form::tests::form_compile_emits_tooltip_and_button_appearance \
+  -- --exact --nocapture
 ```
 
 Expected: FAIL because the current emitter silently drops the properties.
@@ -51,7 +53,9 @@ Add small helpers for tooltip and font emission. Reuse the existing localized-te
 - [ ] **Step 4: Run focused and module tests**
 
 ```bash
-cargo test -p unica-coder form_compile_emits_tooltip_and_button_appearance -- --exact --nocapture
+cargo test -p unica-coder \
+  infrastructure::native_operations::form::tests::form_compile_emits_tooltip_and_button_appearance \
+  -- --exact --nocapture
 cargo test -p unica-coder infrastructure::native_operations::form -- --nocapture
 cargo fmt --check
 ```
