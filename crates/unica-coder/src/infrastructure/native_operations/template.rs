@@ -423,15 +423,7 @@ pub(crate) fn template_content_xml(
         )
         .to_string()),
         "Text" => Ok(String::new()),
-        "SpreadsheetDocument" => Ok(concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"",
-            " xmlns:ss=\"http://v8.1c.ru/spreadsheet/document\"",
-            " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
-            " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">\n",
-            "</SpreadsheetDocument>"
-        )
-        .to_string()),
+        "SpreadsheetDocument" => Ok(super::mxl::empty_spreadsheet_document_xml()),
         "DataCompositionSchema" => Ok(concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
             "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"\n",
@@ -657,5 +649,18 @@ mod tests {
 
         assert!(!uuid.is_nil(), "{value}");
         assert_eq!(uuid.get_version(), Some(uuid::Version::Random), "{value}");
+    }
+
+    #[test]
+    fn template_add_spreadsheet_matches_mxl_contract() {
+        let xml = template_content_xml("SpreadsheetDocument", ".xml").unwrap();
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let root = document.root_element();
+
+        assert_eq!(root.tag_name().name(), "document");
+        assert_eq!(
+            root.tag_name().namespace(),
+            Some("http://v8.1c.ru/8.2/data/spreadsheet")
+        );
     }
 }

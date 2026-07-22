@@ -11,6 +11,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+
+pub(crate) const MXL_DOCUMENT_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+
+pub(crate) fn empty_spreadsheet_document_xml() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"{MXL_DOCUMENT_NS}\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n\t<languageSettings>\n\t\t<currentLanguage>ru</currentLanguage>\n\t\t<defaultLanguage>ru</defaultLanguage>\n\t\t<languageInfo>\n\t\t\t<id>ru</id>\n\t\t\t<code>Русский</code>\n\t\t\t<description>Русский</description>\n\t\t</languageInfo>\n\t</languageSettings>\n\t<columns><size>0</size></columns>\n\t<rows><size>0</size></rows>\n</document>"
+    )
+}
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, role::*, subsystem::*, template::*,
 };

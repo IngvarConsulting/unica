@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
@@ -1721,6 +1722,28 @@ mod metadata_kind_consumer_tests {
     use std::collections::HashSet;
 
     #[test]
+    fn cf_edit_home_page_uses_active_format() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-home-page-format-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root).unwrap();
+        let xml = fs::read_to_string(path).unwrap();
+        let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+
+        assert_eq!(
+            document.root_element().attribute("version"),
+            Some(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cf_consumers_share_the_canonical_metadata_kind_order() {
         let validate_kinds = cf_validate_child_object_types();
 
@@ -2910,11 +2933,12 @@ pub(crate) fn cf_edit_set_home_page(value: &Value, config_dir: &Path) -> Result<
          <HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" \
          xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" \
          xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
-         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.17\">\r\n\
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
          {left_xml}\r\n\
          {right_xml}\r\n\
-         </HomePageWorkArea>"
+         </HomePageWorkArea>",
+        format_version = ACTIVE_FORMAT_PROFILE.export_format
     );
     let ext_dir = config_dir.join("Ext");
     fs::create_dir_all(&ext_dir)
