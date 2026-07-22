@@ -9,14 +9,16 @@ use crate::infrastructure::platform::contained_file::{
     read_contained_regular_file_with_expected_identity_cancellable, ContainedFileError,
 };
 use crate::infrastructure::platform::verified_directory::{
-    read_verified_contained_directory_cancellable,
-    read_verified_contained_directory_with_expected_identity_cancellable,
+    read_verified_contained_directory_bounded_cancellable,
+    read_verified_contained_directory_with_expected_identity_bounded_cancellable,
     VerifiedDirectoryEntryKind, VerifiedDirectoryError,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const MAX_DISCOVERY_SOURCE_FILE_BYTES: u64 = 16 * 1_024 * 1_024;
+const TRAVERSAL_BASE_ENTRY_ALLOWANCE: u32 = 1_024;
+const TRAVERSAL_ENTRIES_PER_REQUEST_FILE: u32 = 8;
 
 pub(crate) struct ContainedSourceInventoryPort {
     canonical_root: PathBuf,
@@ -34,6 +36,28 @@ impl ContainedSourceInventoryPort {
     fn capture_observing(
         &self,
         query: &DiscoveryQuery<'_>,
+        observe_visit: impl FnMut(),
+    ) -> Result<Capture, CaptureError> {
+        self.capture_with_traversal_limit_observing(
+            query,
+            inventory_traversal_entry_limit(query.limits().max_files),
+            observe_visit,
+        )
+    }
+
+    #[cfg(test)]
+    fn capture_with_traversal_limit(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        traversal_limit: usize,
+    ) -> Result<Capture, CaptureError> {
+        self.capture_with_traversal_limit_observing(query, traversal_limit, || {})
+    }
+
+    fn capture_with_traversal_limit_observing(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        traversal_limit: usize,
         mut observe_visit: impl FnMut(),
     ) -> Result<Capture, CaptureError> {
         check_inventory_cancellation(query)?;
@@ -51,27 +75,42 @@ impl ContainedSourceInventoryPort {
         let mut files_seen = 0_u32;
         let mut bytes_analyzed = 0_u64;
         let mut bytes_read_budget = 0_u64;
+        let mut traversal_entries = 0_usize;
         while let Some((path, (kind, expected_identity))) = pending.pop_first() {
             observe_visit();
             check_inventory_cancellation(query)?;
             match kind {
                 VerifiedDirectoryEntryKind::Directory => {
-                    let entries = match expected_identity {
+                    let remaining_traversal = traversal_limit.saturating_sub(traversal_entries);
+                    let entries_result = match expected_identity {
                         Some(expected_identity) => {
-                            read_verified_contained_directory_with_expected_identity_cancellable(
+                            read_verified_contained_directory_with_expected_identity_bounded_cancellable(
                                 &self.canonical_root,
                                 &path,
                                 expected_identity,
+                                remaining_traversal,
                                 || query.is_cancelled(),
                             )
                         }
-                        None => read_verified_contained_directory_cancellable(
+                        None => read_verified_contained_directory_bounded_cancellable(
                             &self.canonical_root,
                             &path,
+                            remaining_traversal,
                             || query.is_cancelled(),
                         ),
-                    }
-                    .map_err(classify_verified_directory_error)?;
+                    };
+                    check_inventory_cancellation(query)?;
+                    let entries = match entries_result {
+                        Ok(entries) => entries,
+                        Err(VerifiedDirectoryError::EntryLimitExceeded { .. }) => {
+                            return traversal_bounded_capture(files, files_seen, bytes_analyzed)
+                        }
+                        Err(error) => return Err(classify_verified_directory_error(error)),
+                    };
+                    let Some(observed) = traversal_entries.checked_add(entries.len()) else {
+                        return traversal_bounded_capture(files, files_seen, bytes_analyzed);
+                    };
+                    traversal_entries = observed;
                     for entry in entries {
                         check_inventory_cancellation(query)?;
                         pending.insert(entry.path, (entry.kind, Some(entry.identity)));
@@ -203,6 +242,30 @@ impl ContainedSourceInventoryPort {
             bytes_analyzed,
         )?))
     }
+}
+
+/// Caps all directory children observed by one inventory request, including
+/// irrelevant files and directories. The accepted maxFiles contract (at most
+/// 20,000) therefore permits at most 161,024 pending/enumerated entries.
+fn inventory_traversal_entry_limit(max_files: u32) -> usize {
+    let limit = max_files
+        .saturating_mul(TRAVERSAL_ENTRIES_PER_REQUEST_FILE)
+        .saturating_add(TRAVERSAL_BASE_ENTRY_ALLOWANCE);
+    usize::try_from(limit).unwrap_or(usize::MAX)
+}
+
+fn traversal_bounded_capture(
+    files: Vec<SourceFile>,
+    files_seen: u32,
+    bytes_analyzed: u64,
+) -> Result<Capture, CaptureError> {
+    Ok(Capture::Bounded {
+        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
+        diagnostic: ProviderDiagnostic::material(
+            "source_inventory_traversal_bound",
+            "source inventory stopped at the cumulative traversal entry limit",
+        ),
+    })
 }
 
 fn check_inventory_cancellation(query: &DiscoveryQuery<'_>) -> Result<(), CaptureError> {
@@ -394,7 +457,7 @@ fn classify_verified_directory_error(error: VerifiedDirectoryError) -> CaptureEr
 mod tests {
     use super::{
         classify_contained_file_error, classify_inventory_io, classify_verified_directory_error,
-        CaptureError, ContainedSourceInventoryPort,
+        Capture, CaptureError, ContainedSourceInventoryPort,
     };
     use crate::application::discovery::ports::SourceInventoryPort;
     use crate::domain::discovery::{
@@ -464,6 +527,98 @@ mod tests {
         );
         assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 1, 1));
         assert_eq!(diagnostic.code, "source_inventory_file_bound");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn irrelevant_fanout_hits_the_cumulative_traversal_bound_with_prior_evidence() {
+        let root = fixture_root("traversal-fanout-bound");
+        write(&root.join("a.xml"), b"prior");
+        for index in 0..3 {
+            write(&root.join(format!("z/ignored-{index}.txt")), b"ignored");
+        }
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let Ok(capture) = provider.capture_with_traversal_limit(&query(10, 1_024), 4) else {
+            panic!("expected bounded capture");
+        };
+
+        let Capture::Bounded {
+            inventory: data,
+            diagnostic,
+        } = capture
+        else {
+            panic!("irrelevant fanout must be bounded");
+        };
+        assert_eq!(diagnostic.code, "source_inventory_traversal_bound");
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.files[0].bytes.as_ref(), b"prior");
+        assert_eq!(data.coverage, ProviderCoverage::new(1, 1, 5, 1));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn irrelevant_nesting_consumes_the_same_cumulative_traversal_budget() {
+        let root = fixture_root("traversal-nesting-bound");
+        write(&root.join("a.xml"), b"prior");
+        write(&root.join("z/one/two/three/ignored.txt"), b"ignored");
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let Ok(capture) = provider.capture_with_traversal_limit(&query(10, 1_024), 4) else {
+            panic!("expected bounded capture");
+        };
+
+        let Capture::Bounded {
+            inventory: data,
+            diagnostic,
+        } = capture
+        else {
+            panic!("irrelevant nesting must be bounded");
+        };
+        assert_eq!(diagnostic.code, "source_inventory_traversal_bound");
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.files[0].bytes.as_ref(), b"prior");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn traversal_exactly_at_the_internal_limit_completes() {
+        let root = fixture_root("traversal-exact-limit");
+        write(&root.join("Configuration.xml"), b"xml");
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let Ok(capture) = provider.capture_with_traversal_limit(&query(10, 1_024), 1) else {
+            panic!("expected exact traversal capture");
+        };
+
+        let Capture::Complete(data) = capture else {
+            panic!("exact traversal limit must complete");
+        };
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.coverage, ProviderCoverage::new(1, 1, 3, 1));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cancellation_wins_when_the_next_directory_would_exhaust_traversal() {
+        let root = fixture_root("traversal-cancellation-precedence");
+        write(&root.join("z/ignored.txt"), b"ignored");
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        let query = query(10, 1_024).with_cancellation(&cancellation);
+        let mut visits = 0_u8;
+
+        let outcome = provider.capture_with_traversal_limit_observing(&query, 1, || {
+            visits += 1;
+            if visits == 2 {
+                cancellation.cancel();
+            }
+        });
+
+        let Err(CaptureError::Failed(diagnostic)) = outcome else {
+            panic!("cancellation must win over traversal exhaustion");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
         cleanup(&root);
     }
 

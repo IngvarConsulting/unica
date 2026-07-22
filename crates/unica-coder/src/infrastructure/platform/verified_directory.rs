@@ -195,26 +195,6 @@ pub(crate) fn read_verified_contained_directory_with_expected_identity(
     )
 }
 
-pub(crate) fn read_verified_contained_directory_with_expected_identity_cancellable(
-    root: &Path,
-    path: &Path,
-    expected_identity: VerifiedIdentity,
-    is_cancelled: impl FnMut() -> bool,
-) -> Result<Vec<VerifiedDirectoryEntry>, VerifiedDirectoryError> {
-    read_verified_contained_directory_observing(
-        root,
-        path,
-        VerifiedDirectoryReadOptions {
-            expected_identity: Some(expected_identity),
-            ..VerifiedDirectoryReadOptions::default()
-        },
-        || {},
-        || {},
-        || {},
-        is_cancelled,
-    )
-}
-
 pub(crate) fn read_verified_contained_directory_with_expected_identity_bounded_cancellable(
     root: &Path,
     path: &Path,
