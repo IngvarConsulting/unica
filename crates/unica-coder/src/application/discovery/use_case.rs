@@ -1545,9 +1545,15 @@ impl FactMatcher {
             let normalized = crate::domain::discovery::normalize_discovery_identity(value);
             self.terms
                 .iter()
-                .any(|term| normalized_prefix_matches(term, &normalized))
+                .any(|term| normalized_embedded_prefix_matches(term, &normalized))
         })
     }
+}
+
+fn normalized_embedded_prefix_matches(left: &str, right: &str) -> bool {
+    right
+        .char_indices()
+        .any(|(index, _character)| normalized_prefix_matches(left, &right[index..]))
 }
 
 fn normalized_prefix_matches(left: &str, right: &str) -> bool {
@@ -2771,6 +2777,37 @@ mod tests {
             .candidates
             .iter()
             .any(|item| item.target == artifact("DataProcessor.РасчетHandler")));
+    }
+
+    #[test]
+    fn task_segment_selects_a_concatenated_platform_identifier_without_a_dictionary() {
+        let raw = b"metadata";
+        let path = "DataProcessors/Series.xml";
+        let target = artifact("DataProcessor.ПодборСерийВДокументы");
+        let batch = FactBatch {
+            records: vec![MetadataFact {
+                artifact: target.clone(),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Contains,
+                location: location(path, 1),
+            }],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+
+        let report = execute(
+            &fake,
+            request("При поступлении контролировать срок годности серий", &[]),
+        )
+        .expect("candidate report");
+
+        assert!(report.candidates.iter().any(|item| item.target == target));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use crate::domain::discovery::DiscoveryError;
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
@@ -15,6 +17,76 @@ pub(crate) fn resolve_source_root(
         resolve_default(context)
     };
     result.map_err(invalid_source_root)
+}
+
+pub(crate) fn resolve_discovery_source_root(
+    context: &WorkspaceContext,
+    explicit: Option<&Path>,
+) -> Result<ResolvedSourceRoot, DiscoveryError> {
+    let map = discover_project_source_map(&context.workspace_root)
+        .map_err(DiscoveryError::ProjectSources)?;
+    let selected = match explicit {
+        Some(path) => {
+            if path.is_absolute() {
+                return Err(DiscoveryError::InvalidSourceRoot(
+                    "sourceDir must be relative to the workspace root".to_string(),
+                ));
+            }
+            let resolved = normalize_contained_source_root(&context.workspace_root, path)
+                .map_err(DiscoveryError::InvalidSourceRoot)?;
+            let source_set = map.source_sets.iter().find_map(|source_set| {
+                normalize_contained_source_root(&context.workspace_root, &source_set.path)
+                    .ok()
+                    .filter(|candidate| candidate == &resolved)
+                    .map(|_| source_set.name.clone())
+            });
+            ResolvedSourceRoot {
+                source_set,
+                path: resolved,
+            }
+        }
+        None => {
+            let configurations = map
+                .source_sets
+                .iter()
+                .filter(|source_set| source_set.kind == SourceSetKind::Configuration)
+                .collect::<Vec<_>>();
+            let source_set = match configurations.as_slice() {
+                [source_set] => *source_set,
+                [] => return Err(DiscoveryError::NoConfigurationSource),
+                multiple => {
+                    let mut candidates = multiple
+                        .iter()
+                        .map(|source_set| source_set.name.clone())
+                        .collect::<Vec<_>>();
+                    candidates.sort();
+                    return Err(DiscoveryError::AmbiguousConfigurationSources(candidates));
+                }
+            };
+            let path = normalize_contained_source_root(
+                &context.workspace_root,
+                Path::new(&source_set.path),
+            )
+            .map_err(DiscoveryError::InvalidSourceRoot)?;
+            ResolvedSourceRoot {
+                source_set: Some(source_set.name.clone()),
+                path,
+            }
+        }
+    };
+    let metadata = fs::metadata(&selected.path).map_err(|error| {
+        DiscoveryError::InvalidSourceRoot(format!(
+            "failed to inspect {}: {error}",
+            selected.path.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(DiscoveryError::InvalidSourceRoot(format!(
+            "selected source root is not a directory: {}",
+            selected.path.display()
+        )));
+    }
+    Ok(selected)
 }
 
 pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
@@ -142,7 +214,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_path_identity, resolve_source_root};
+    use super::{normalize_path_identity, resolve_discovery_source_root, resolve_source_root};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::workspace::discover_workspace;
     use std::fs;
@@ -194,6 +266,67 @@ mod tests {
             selected.path,
             normalize_path_identity(&context.workspace_root.join("extensions/main")).unwrap()
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn discovery_selects_the_only_configuration_instead_of_main_extension() {
+        let context = fixture(&[
+            ("main", "EXTENSION", "extensions/main"),
+            ("app", "CONFIGURATION", "src/configuration"),
+        ]);
+
+        let selected = resolve_discovery_source_root(&context, None).unwrap();
+
+        assert_eq!(selected.source_set.as_deref(), Some("app"));
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("src/configuration")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn discovery_rejects_zero_or_multiple_configuration_roots_with_typed_errors() {
+        let no_configuration = fixture(&[("main", "EXTENSION", "extensions/main")]);
+        assert_eq!(
+            resolve_discovery_source_root(&no_configuration, None).unwrap_err(),
+            crate::domain::discovery::DiscoveryError::NoConfigurationSource
+        );
+        cleanup(&no_configuration);
+
+        let ambiguous = fixture(&[
+            ("tests", "CONFIGURATION", "tests"),
+            ("app", "CONFIGURATION", "app"),
+        ]);
+        assert_eq!(
+            resolve_discovery_source_root(&ambiguous, None).unwrap_err(),
+            crate::domain::discovery::DiscoveryError::AmbiguousConfigurationSources(vec![
+                "app".to_string(),
+                "tests".to_string(),
+            ])
+        );
+        cleanup(&ambiguous);
+    }
+
+    #[test]
+    fn discovery_explicit_source_dir_is_workspace_relative_and_contained() {
+        let mut context = fixture(&[("main", "CONFIGURATION", "src/configuration")]);
+        context.cwd = context.workspace_root.join("nested/working/directory");
+
+        let selected =
+            resolve_discovery_source_root(&context, Some(Path::new("src/configuration"))).unwrap();
+
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("src/configuration")).unwrap()
+        );
+        assert!(matches!(
+            resolve_discovery_source_root(&context, Some(Path::new("../outside"))),
+            Err(crate::domain::discovery::DiscoveryError::InvalidSourceRoot(
+                _
+            ))
+        ));
         cleanup(&context);
     }
 

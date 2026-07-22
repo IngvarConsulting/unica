@@ -754,15 +754,37 @@ impl DiscoveryEnvironment {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DiscoveryError {
     EmptySourceRoot,
+    Cancelled,
+    ProjectSources(String),
+    NoConfigurationSource,
+    AmbiguousConfigurationSources(Vec<String>),
+    InvalidSourceRoot(String),
 }
 
 impl fmt::Display for DiscoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySourceRoot => formatter.write_str("discovery source root must not be empty"),
+            Self::Cancelled => formatter.write_str("discovery cancelled before provider execution"),
+            Self::ProjectSources(message) => {
+                write!(
+                    formatter,
+                    "could not discover project source sets: {message}"
+                )
+            }
+            Self::NoConfigurationSource => formatter
+                .write_str("sourceDir is required because no configuration source set was found"),
+            Self::AmbiguousConfigurationSources(candidates) => write!(
+                formatter,
+                "sourceDir is required because configuration source sets are ambiguous: {}",
+                candidates.join(", ")
+            ),
+            Self::InvalidSourceRoot(message) => {
+                write!(formatter, "invalid discovery source root: {message}")
+            }
         }
     }
 }

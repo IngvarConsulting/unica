@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -102,12 +103,165 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("unica.project.status", tools)
         self.assertIn("unica.project.map", tools)
+        self.assertIn("unica.project.discover", tools)
         self.assertIn("unica.form.edit", tools)
         self.assertIn("unica.epf.init", tools)
         self.assertIn("unica.erf.init", tools)
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
+
+    def test_task_only_extension_point_discovery_returns_stable_ut115_evidence(self) -> None:
+        fixture = Path("tests/fixtures/extension-point-discovery/ut115")
+        arguments = {
+            "cwd": str(fixture),
+            "mode": "explore",
+            "task": "При поступлении товаров контролировать остаточный срок годности серий",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            responses = self.call_mcp(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.project.discover",
+                            "arguments": arguments,
+                        },
+                    }
+                    for request_id in (1, 2)
+                ],
+                cache_dir=Path(tmp) / "cache",
+            )
+
+        payloads = {
+            response["id"]: json.loads(response["result"]["content"][0]["text"])
+            for response in responses
+        }
+        first = payloads[1]["data"]["discovery"]
+        second = payloads[2]["data"]["discovery"]
+
+        self.assertNotIn("stdout", payloads[1])
+        self.assertEqual(payloads[1]["changes"], [])
+        self.assertEqual(payloads[1]["cache"]["mode"], "read")
+        self.assertEqual(payloads[1]["cache"]["events"], [])
+        self.assertEqual(payloads[1]["cache"]["invalidated"], [])
+        self.assertEqual(payloads[1]["cache"]["refreshed"], [])
+        self.assertEqual(payloads[1]["cache"]["lazy_rebuilt"], [])
+        self.assertEqual(first["status"], "partial")
+        outcomes = {
+            outcome["provider"]: outcome for outcome in first["providerOutcomes"]
+        }
+        self.assertEqual(outcomes["metadata_catalog"]["outcome"], "complete")
+        self.assertEqual(outcomes["managed_forms"]["outcome"], "complete")
+        missing_codes = {check["code"] for check in first["missingChecks"]}
+        self.assertIn("bsl_index_missing", missing_codes)
+        self.assertIn("runtime_flow_unavailable", missing_codes)
+        self.assertFalse(
+            any(edge["relation"] == "calls" for edge in first["runtimeFlowEdges"]),
+            "lexical BSL evidence must not be promoted to a call-graph edge",
+        )
+
+        required_targets = {
+            "document.приобретениетоваровуслуг.tabularsection.серии",
+            "dataprocessor.подборсерийвдокументы",
+            "document.приобретениетоваровуслуг.form.регистрацияиподборсерийпооднойстрокетоваров",
+        }
+        candidate_targets = {candidate["target"] for candidate in first["candidates"]}
+        self.assertTrue(required_targets <= candidate_targets, candidate_targets)
+        warning = next(
+            warning
+            for warning in first["warnings"]
+            if warning["code"] == "separate_series_section"
+        )
+        self.assertTrue(warning["blocking"])
+        self.assertIn("Товары.Серия", warning["message"])
+
+        evidence_kinds = {evidence["kind"] for evidence in first["evidence"]}
+        self.assertIn("metadata", evidence_kinds)
+        self.assertIn("form_binding", evidence_kinds)
+        locations = {
+            evidence["location"]["relativePath"] for evidence in first["evidence"]
+        }
+        self.assertIn("Documents/ПриобретениеТоваровУслуг.xml", locations)
+        self.assertIn(
+            "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+            locations,
+        )
+        self.assertIn(
+            "DataProcessors/ПодборСерийВДокументы/Ext/ManagerModule.bsl",
+            locations,
+        )
+        form_locations = {
+            (
+                evidence["location"]["xmlPath"],
+                evidence["location"]["line"],
+                evidence["location"]["column"],
+            )
+            for evidence in first["evidence"]
+            if evidence["kind"] == "form_binding"
+        }
+        self.assertEqual(
+            form_locations,
+            {
+                ("/Form/Events/Event", 3, 5),
+                ("/Form/ChildItems/InputField/DataPath", 7, 7),
+                ("/Form/Commands/Command/Action", 12, 7),
+            },
+        )
+        series_evidence = next(
+            evidence
+            for evidence in first["evidence"]
+            if evidence["target"]
+            == "document.приобретениетоваровуслуг.tabularsection.серии"
+        )
+        self.assertEqual(series_evidence["location"]["line"], 19)
+        self.assertEqual(
+            series_evidence["location"]["xmlPath"],
+            "/MetaDataObject/Document/ChildObjects/TabularSection[2]",
+        )
+        bsl_evidence = next(
+            evidence for evidence in first["evidence"] if evidence["kind"] == "lexical"
+        )
+        self.assertEqual(bsl_evidence["location"]["line"], 2)
+
+        fixture_root = self.repo_root() / fixture / "src"
+        contributors = first["analysisSnapshot"]["contributors"]
+        contributor_hashes = {
+            contributor["relativePath"]: contributor["rawHash"]
+            for contributor in contributors
+        }
+        self.assertEqual(
+            set(contributor_hashes),
+            {
+                "Configuration.xml",
+                "DataProcessors/ПодборСерийВДокументы.xml",
+                "DataProcessors/ПодборСерийВДокументы/Ext/ManagerModule.bsl",
+                "Documents/ПриобретениеТоваровУслуг.xml",
+                "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров.xml",
+                "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+                "Ext/ParentConfigurations.bin",
+            },
+        )
+        for relative_path, raw_hash in contributor_hashes.items():
+            expected = hashlib.sha256((fixture_root / relative_path).read_bytes()).hexdigest()
+            self.assertEqual(raw_hash, expected, relative_path)
+        for evidence in first["evidence"]:
+            relative_path = evidence["location"]["relativePath"]
+            expected = hashlib.sha256((fixture_root / relative_path).read_bytes()).hexdigest()
+            self.assertEqual(evidence["rawContentHash"], expected, relative_path)
+
+        self.assertEqual(
+            first["analysisSnapshot"]["fingerprint"],
+            second["analysisSnapshot"]["fingerprint"],
+        )
+        self.assertEqual(
+            [evidence["id"] for evidence in first["evidence"]],
+            [evidence["id"] for evidence in second["evidence"]],
+        )
+        serialized = json.dumps(first, ensure_ascii=False)
+        self.assertNotIn("ExactExpectedNames", serialized)
 
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(

@@ -1,5 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::discovery::DiscoveryReport;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -37,6 +38,7 @@ pub enum ToolHandler {
     },
     ProjectStatus,
     ProjectMap,
+    ProjectDiscover,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
@@ -64,6 +66,12 @@ pub enum RuntimeJobAction {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationData {
+    discovery: DiscoveryReport,
+}
+
+#[derive(Debug, Serialize)]
 pub struct OperationResult {
     pub ok: bool,
     pub summary: String,
@@ -82,6 +90,8 @@ pub struct OperationResult {
     pub diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<OperationData>,
 }
 
 pub struct UnicaApplication {
@@ -139,6 +149,17 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::ProjectMap,
+        },
+        ToolSpec {
+            name: "unica.project.discover",
+            description:
+                "Discover evidence-backed extension points without mutating the workspace.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph", "bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::ProjectDiscover,
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -363,6 +384,9 @@ fn call_tool(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
 ) -> Result<OperationResult, String> {
+    if matches!(spec.handler, ToolHandler::ProjectDiscover) {
+        return call_project_discover(spec, args, ports, cancellation);
+    }
     let dry_run = args
         .get("dryRun")
         .and_then(Value::as_bool)
@@ -386,6 +410,7 @@ fn call_tool(
             command: outcome.command,
             diagnostics: None,
             job: None,
+            data: None,
         });
     }
     let mut support_guard_warning = if spec.mutating && !dry_run {
@@ -407,6 +432,7 @@ fn call_tool(
                     command: outcome.command,
                     diagnostics: None,
                     job: None,
+                    data: None,
                 });
             }
         }
@@ -435,6 +461,7 @@ fn call_tool(
                     command: blocked.command,
                     diagnostics: None,
                     job: None,
+                    data: None,
                 });
             }
         }
@@ -466,6 +493,48 @@ fn call_tool(
         command: outcome.command,
         diagnostics,
         job: handler_outcome.job,
+        data: None,
+    })
+}
+
+fn call_project_discover(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+) -> Result<OperationResult, String> {
+    let request = discovery::contract::parse_discover_request(args)
+        .map_err(|error| format!("invalid discovery request: {error}"))?;
+    debug_assert_eq!(request.mode(), discovery::contract::DiscoveryMode::Explore);
+    let context = ports.discover_workspace(request.cwd().map(PathBuf::from))?;
+    ports.validate_tool_context(spec, args, false, &context)?;
+    let discovery = ports
+        .discover_extension_points(&request, &context, cancellation)
+        .map_err(|error| format!("project discovery failed: {error}"))?;
+    let summary = match discovery.status {
+        crate::domain::discovery::DiscoveryStatus::Complete => {
+            "extension-point discovery completed".to_string()
+        }
+        crate::domain::discovery::DiscoveryStatus::Partial => {
+            "extension-point discovery completed with missing checks".to_string()
+        }
+    };
+    let cache = ports.cache_report(&context, &[], false, spec.cache_access)?;
+
+    Ok(OperationResult {
+        ok: true,
+        summary,
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        cache,
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        job: None,
+        data: Some(OperationData { discovery }),
     })
 }
 
@@ -1318,6 +1387,161 @@ mod tests {
         assert!(names.contains(&"unica.meta.profile"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn registers_one_read_only_project_discovery_tool() {
+        let discovery_tools = tools()
+            .into_iter()
+            .filter(|tool| tool.name == "unica.project.discover")
+            .collect::<Vec<_>>();
+
+        let [tool] = discovery_tools.as_slice() else {
+            panic!("expected exactly one unica.project.discover tool");
+        };
+        assert!(!tool.mutating);
+        assert!(tool.cache_access.writes.is_empty());
+        assert!(matches!(tool.handler, ToolHandler::ProjectDiscover));
+    }
+
+    #[test]
+    fn operation_result_serializes_discovery_only_under_typed_data() {
+        use crate::domain::discovery::{
+            AnalysisSnapshot, DiscoveryReport, DiscoverySource, DiscoveryStatus,
+            MappingFingerprint, SnapshotFingerprint,
+        };
+
+        let mapping = MappingFingerprint::from_identity("configuration:src");
+        let discovery = DiscoveryReport {
+            schema_version: 1,
+            status: DiscoveryStatus::Partial,
+            source: DiscoverySource {
+                root: PathBuf::from("src"),
+                mapping_fingerprint: mapping.clone(),
+            },
+            analysis_snapshot: AnalysisSnapshot {
+                mapping_fingerprint: mapping.clone(),
+                fingerprint: SnapshotFingerprint::from_manifest(&mapping, &[]),
+                contributors: Vec::new(),
+            },
+            concepts: Vec::new(),
+            provider_outcomes: Vec::new(),
+            related_artifacts: Vec::new(),
+            structural_edges: Vec::new(),
+            runtime_flow_edges: Vec::new(),
+            candidates: Vec::new(),
+            warnings: Vec::new(),
+            missing_checks: Vec::new(),
+            evidence: Vec::new(),
+        };
+        let result = OperationResult {
+            ok: true,
+            summary: "discovery complete".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            cache: CacheReport {
+                mode: "read".to_string(),
+                root: ".build/unica".to_string(),
+                workspace_epoch: 1,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+            },
+            stdout: None,
+            stderr: None,
+            command: None,
+            diagnostics: None,
+            job: None,
+            data: Some(OperationData { discovery }),
+        };
+
+        let payload = serde_json::to_value(result).expect("typed result serializes");
+        assert_eq!(payload["data"]["discovery"]["schemaVersion"], 1);
+        assert!(payload.get("stdout").is_none());
+    }
+
+    #[test]
+    fn project_discovery_uses_typed_dispatch_and_returns_typed_data() {
+        let root = test_workspace_root("typed-discovery-dispatch");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("raw handler must not be invoked"),
+        }));
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let result = app
+            .call_tool("unica.project.discover", &args)
+            .expect("typed discovery dispatch");
+        let payload = serde_json::to_value(result).expect("typed result serializes");
+
+        assert_eq!(payload["data"]["discovery"]["schemaVersion"], 1);
+        assert!(payload.get("stdout").is_none());
+        assert_eq!(payload["changes"], json!([]));
+        assert_eq!(payload["cache"]["mode"], "read");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discovery_parser_rejects_forbidden_fields_before_any_port_call() {
+        let ports = Arc::new(NoCallPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!("/must/not/be/resolved")),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("dryRun".to_string(), json!(true)),
+        ]);
+
+        let error = app
+            .call_tool("unica.project.discover", &args)
+            .expect_err("forbidden field must be rejected");
+
+        assert!(error.contains("does not accept argument `dryRun`"));
+        assert_eq!(ports.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn default_application_composes_read_only_discovery_providers() {
+        use crate::domain::discovery::{DiscoveryStatus, ProviderKind, ProviderOutcomeKind};
+
+        let root = test_workspace_root("real-discovery-dispatch");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect("real discovery providers execute");
+        let report = result.data.expect("typed discovery data").discovery;
+
+        assert_eq!(report.status, DiscoveryStatus::Partial);
+        assert!(report.provider_outcomes.iter().any(|outcome| {
+            outcome.provider == ProviderKind::RuntimeFlow
+                && outcome.outcome == ProviderOutcomeKind::Unavailable
+        }));
+        assert!(report
+            .missing_checks
+            .iter()
+            .any(|check| check.code == "runtime_flow_unavailable"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3556,6 +3780,15 @@ mod tests {
                 Ok(())
             }
 
+            fn discover_extension_points(
+                &self,
+                _request: &discovery::contract::DiscoverRequest,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+            ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+                Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
+            }
+
             fn evaluate_support_guard(
                 &self,
                 _spec: ToolSpec,
@@ -3668,6 +3901,15 @@ mod tests {
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
+            }
+
+            fn discover_extension_points(
+                &self,
+                _request: &discovery::contract::DiscoverRequest,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+            ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+                Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
             }
 
             fn evaluate_support_guard(
@@ -5832,6 +6074,113 @@ mod tests {
         (root, catalog_path)
     }
 
+    #[derive(Default)]
+    struct NoCallPorts {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl NoCallPorts {
+        fn unexpected<T>(&self) -> Result<T, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("unexpected port call".to_string())
+        }
+    }
+
+    impl ports::ApplicationPorts for NoCallPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            self.unexpected()
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            self.unexpected()
+        }
+
+        fn discover_extension_points(
+            &self,
+            _request: &discovery::contract::DiscoverRequest,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            self.unexpected()
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.unexpected()
+        }
+
+        fn cache_report(
+            &self,
+            _context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _dry_run: bool,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            self.unexpected()
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn empty_discovery_report(source_root: &std::path::Path) -> DiscoveryReport {
+        use crate::domain::discovery::{
+            AnalysisSnapshot, DiscoverySource, DiscoveryStatus, MappingFingerprint,
+            SnapshotFingerprint,
+        };
+
+        let mapping =
+            MappingFingerprint::from_identity(&format!("configuration:{}", source_root.display()));
+        DiscoveryReport {
+            schema_version: 1,
+            status: DiscoveryStatus::Partial,
+            source: DiscoverySource {
+                root: source_root.to_path_buf(),
+                mapping_fingerprint: mapping.clone(),
+            },
+            analysis_snapshot: AnalysisSnapshot {
+                mapping_fingerprint: mapping.clone(),
+                fingerprint: SnapshotFingerprint::from_manifest(&mapping, &[]),
+                contributors: Vec::new(),
+            },
+            concepts: Vec::new(),
+            provider_outcomes: Vec::new(),
+            related_artifacts: Vec::new(),
+            structural_edges: Vec::new(),
+            runtime_flow_edges: Vec::new(),
+            candidates: Vec::new(),
+            warnings: Vec::new(),
+            missing_checks: Vec::new(),
+            evidence: Vec::new(),
+        }
+    }
+
     struct FixedOutcomePorts {
         outcome: AdapterOutcome,
     }
@@ -5858,6 +6207,15 @@ mod tests {
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
+        }
+
+        fn discover_extension_points(
+            &self,
+            _request: &discovery::contract::DiscoverRequest,
+            context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+            Ok(empty_discovery_report(&context.workspace_root))
         }
 
         fn evaluate_support_guard(

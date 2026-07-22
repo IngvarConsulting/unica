@@ -1,0 +1,27 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Document uuid="10000000-0000-0000-0000-000000000002">
+    <Properties>
+      <Name>ПриобретениеТоваровУслуг</Name>
+    </Properties>
+    <ChildObjects>
+      <TabularSection uuid="10000000-0000-0000-0000-000000000003">
+        <Properties>
+          <Name>Товары</Name>
+        </Properties>
+        <ChildObjects>
+          <Attribute uuid="10000000-0000-0000-0000-000000000004">
+            <Properties>
+              <Name>Серия</Name>
+            </Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+      <TabularSection uuid="10000000-0000-0000-0000-000000000005">
+        <Properties>
+          <Name>Серии</Name>
+        </Properties>
+      </TabularSection>
+      <Form>РегистрацияИПодборСерийПоОднойСтрокеТоваров</Form>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>

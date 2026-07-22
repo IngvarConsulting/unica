@@ -4,7 +4,9 @@ use crate::domain::project_sources::{
 };
 use crate::domain::source_roots::select_default_source_set;
 use crate::infrastructure::platform::filesystem::host_path_text;
-use crate::infrastructure::source_roots::normalize_contained_source_root;
+use crate::infrastructure::source_roots::{
+    normalize_contained_source_root, normalize_path_identity,
+};
 use serde_yaml::Value as YamlValue;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -186,9 +188,33 @@ fn detect_source_set_format(
     workspace_root: &Path,
     source_set: ConfigSourceSet,
 ) -> ProjectSourceSet {
-    let source_root = workspace_root.join(&source_set.path);
-    let platform_evidence = platform_xml_evidence(workspace_root, &source_root, source_set.kind);
-    let edt_evidence = edt_evidence(workspace_root, &source_root);
+    let normalized_workspace_root = match normalize_path_identity(workspace_root) {
+        Ok(root) => root,
+        Err(_error) => {
+            return ProjectSourceSet {
+                name: source_set.name,
+                kind: source_set.kind,
+                path: source_set.path,
+                source_format: SourceFormat::Invalid,
+                format_evidence: Vec::new(),
+            };
+        }
+    };
+    let source_root = match normalize_contained_source_root(workspace_root, &source_set.path) {
+        Ok(source_root) => source_root,
+        Err(_error) => {
+            return ProjectSourceSet {
+                name: source_set.name,
+                kind: source_set.kind,
+                path: source_set.path,
+                source_format: SourceFormat::Invalid,
+                format_evidence: Vec::new(),
+            };
+        }
+    };
+    let platform_evidence =
+        platform_xml_evidence(&normalized_workspace_root, &source_root, source_set.kind);
+    let edt_evidence = edt_evidence(&normalized_workspace_root, &source_root);
     let source_format = match (platform_evidence.is_empty(), edt_evidence.is_empty()) {
         (false, false) => SourceFormat::Invalid,
         (false, true) => SourceFormat::PlatformXml,
@@ -424,6 +450,39 @@ source-set:
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn escaping_configured_source_is_not_probed_for_format_evidence() {
+        let root = temp_workspace("unica-source-map-contained-probe");
+        let outside = temp_workspace("unica-source-map-outside-probe");
+        write(
+            &root.join("v8project.yaml"),
+            &format!(
+                "source-set:\n  - name: escaped\n    type: CONFIGURATION\n    path: {}\n",
+                outside.display()
+            ),
+        );
+        write(
+            &outside.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "escaped",
+            SourceSetKind::Configuration,
+            SourceFormat::Invalid,
+            &[],
+        );
+        assert!(map
+            .source_selection_error
+            .as_deref()
+            .is_some_and(|error| error.contains("workspace")));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

@@ -793,6 +793,13 @@ mod tests {
         assert!(listed
             .iter()
             .any(|tool| tool["name"] == "unica.project.map"));
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|tool| tool["name"] == "unica.project.discover")
+                .count(),
+            1
+        );
         assert!(listed
             .iter()
             .any(|tool| tool["name"] == "unica.standards.explain"));

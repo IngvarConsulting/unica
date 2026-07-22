@@ -1235,7 +1235,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
+        ToolHandler::ProjectStatus | ToolHandler::ProjectMap | ToolHandler::ProjectDiscover => {}
     }
     names.sort_unstable();
     names.dedup();
