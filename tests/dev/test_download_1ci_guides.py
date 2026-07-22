@@ -125,6 +125,24 @@ class ExtractionTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_link_check_ignores_syntax_placeholders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "index.md").write_text(
+                "[HIERARCHY](<Query description>)\n"
+                "```\n[User](SessionNumber)\n```\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(guides._check_links(root), [])
+
+    def test_link_check_still_reports_missing_links_outside_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "index.md").write_text("[Missing](missing.md)\n", encoding="utf-8")
+
+            self.assertEqual(guides._check_links(root), ["index.md -> missing.md"])
+
     def test_limited_manifest_is_not_complete(self):
         manifest = guides.build_manifest([], [], max_pages=3)
         self.assertFalse(manifest["complete"])

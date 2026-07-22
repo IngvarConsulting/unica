@@ -622,9 +622,15 @@ def build_manifest(
 def _check_links(root: Path) -> list[str]:
     broken: list[str] = []
     pattern = re.compile(r"!?\[[^]]*]\(([^)]+)\)")
+    fenced_code = re.compile(r"^\s*```.*?^\s*```\s*$", re.MULTILINE | re.DOTALL)
     for markdown in root.rglob("*.md"):
-        for target in pattern.findall(markdown.read_text(encoding="utf-8")):
-            if urlsplit(target).scheme or target.startswith("#"):
+        content = fenced_code.sub("", markdown.read_text(encoding="utf-8"))
+        for target in pattern.findall(content):
+            if (
+                urlsplit(target).scheme
+                or target.startswith("#")
+                or (target.startswith("<") and target.endswith(">"))
+            ):
                 continue
             path = (markdown.parent / unquote(target.split("#", 1)[0])).resolve()
             if not path.exists():
