@@ -2961,32 +2961,7 @@ pub(crate) fn validate_cfe(
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<CfeValidationRun, String> {
-        let raw_path = required_path(
-            args,
-            &["extensionPath", "ExtensionPath", "path", "Path"],
-            "ExtensionPath",
-        )?;
-        let mut extension_path = absolutize(raw_path, &context.cwd);
-        if extension_path.is_dir() {
-            let candidate = extension_path.join("Configuration.xml");
-            if candidate.exists() {
-                extension_path = candidate;
-            } else {
-                return Err(format!(
-                    "[ERROR] No Configuration.xml found in directory: {}",
-                    extension_path.display()
-                ));
-            }
-        }
-        if !extension_path.exists() {
-            return Err(format!(
-                "[ERROR] File not found: {}",
-                extension_path.display()
-            ));
-        }
-        let resolved_path = extension_path
-            .canonicalize()
-            .unwrap_or_else(|_| extension_path.clone());
+        let resolved_path = resolve_cfe_validate_config_path(args, context)?;
         let config_dir = resolved_path.parent().unwrap_or(context.cwd.as_path());
         let out_file =
             path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));

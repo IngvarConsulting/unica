@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::operation_descriptors::CF_PATH;
+use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -1121,6 +1121,17 @@ pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
     rights_path
 }
 
+pub(crate) fn resolve_role_read_rights_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let raw = required_path(args, RIGHTS_PATH, "RightsPath")?;
+    Ok(resolve_role_validate_rights_path(absolutize(
+        raw,
+        &context.cwd,
+    )))
+}
+
 pub(crate) fn is_valid_uuid(value: &str) -> bool {
     let parts = value.split('-').collect::<Vec<_>>();
     let expected = [8usize, 4, 4, 4, 12];
@@ -1181,6 +1192,45 @@ pub(crate) fn resolve_cf_edit_config_path(
         return Err(format!("File not found: {}", config_path.display()));
     }
     Ok(config_path)
+}
+
+pub(crate) fn resolve_cf_read_config_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
+}
+
+pub(crate) fn resolve_cfe_validate_config_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    resolve_configuration_read_path(args, CFE_VALIDATE_PATH, "ExtensionPath", context)
+}
+
+fn resolve_configuration_read_path(
+    args: &Map<String, Value>,
+    names: &[&str],
+    label: &str,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let raw = required_path(args, names, label)?;
+    let mut path = absolutize(raw, &context.cwd);
+    if path.is_dir() {
+        let candidate = path.join("Configuration.xml");
+        if candidate.is_file() {
+            path = candidate;
+        } else {
+            return Err(format!(
+                "[ERROR] No Configuration.xml found in directory: {}",
+                path.display()
+            ));
+        }
+    }
+    if !path.is_file() {
+        return Err(format!("[ERROR] File not found: {}", path.display()));
+    }
+    Ok(path.canonicalize().unwrap_or(path))
 }
 
 pub(crate) fn ensure_trailing_lf(text: &str) -> String {

@@ -8,7 +8,8 @@ use crate::domain::format_profile::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    resolve_cf_edit_config_path, resolve_form_add_object_path, resolve_subsystem_edit_xml,
+    resolve_cf_edit_config_path, resolve_cf_read_config_path, resolve_cfe_validate_config_path,
+    resolve_form_add_object_path, resolve_role_read_rights_path, resolve_subsystem_edit_xml,
 };
 use crate::infrastructure::native_operations::dcs::resolve_dcs_validate_path;
 use crate::infrastructure::native_operations::form::{
@@ -203,6 +204,8 @@ fn handler_resolved_format_paths(
     let resolved =
         match descriptor.operation {
             "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
+            "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
+            "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
             "meta-edit" => raw
                 .and_then(|path| resolve_meta_edit_object_path(Path::new(path), &context.cwd).ok()),
             "form-add" => raw
@@ -211,6 +214,7 @@ fn handler_resolved_format_paths(
                 raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
             }
             "dcs-edit" => resolve_dcs_validate_path(args, context).ok(),
+            "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
             _ => None,
         };
     resolved.or(fallback).into_iter().collect()
@@ -685,6 +689,57 @@ mod tests {
                 panic!("{tool} alias {alias} must resolve the old owner and warn");
             };
             assert_eq!(diagnostic["actualFormat"], "2.19", "{tool}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_handler_resolved_paths_match_directory_inputs() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-read-handler-paths-{}",
+            std::process::id()
+        ));
+        let configuration = config(&root, Some("2.19"));
+        let src = configuration.parent().unwrap().to_path_buf();
+        let extension = root.join("extension");
+        std::fs::create_dir_all(&extension).unwrap();
+        let extension_configuration = extension.join("Configuration.xml");
+        std::fs::write(&extension_configuration, "extension").unwrap();
+        let role_dir = src.join("Roles/Reader");
+        let rights = role_dir.join("Ext/Rights.xml");
+        std::fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        std::fs::write(&rights, "rights").unwrap();
+
+        for (operation, alias, directory, expected) in [
+            (
+                "cf-info",
+                "Path",
+                src.clone(),
+                configuration.canonicalize().unwrap(),
+            ),
+            (
+                "cf-validate",
+                "path",
+                src.clone(),
+                configuration.canonicalize().unwrap(),
+            ),
+            (
+                "cfe-validate",
+                "Path",
+                extension,
+                extension_configuration.canonicalize().unwrap(),
+            ),
+            ("role-info", "path", role_dir.clone(), rights.clone()),
+            ("role-validate", "Path", role_dir, rights),
+        ] {
+            let mut args = Map::new();
+            args.insert(alias.into(), Value::String(directory.display().to_string()));
+            let descriptor = native_operation_descriptor(operation).unwrap();
+            assert_eq!(
+                effective_format_paths(descriptor, &args, &context(&root)),
+                vec![expected],
+                "{operation} must guard the same resolved file as its handler"
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }

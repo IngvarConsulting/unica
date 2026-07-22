@@ -4058,6 +4058,84 @@ mod tests {
     }
 
     #[test]
+    fn read_only_path_aliases_warn_for_older_directory_owned_inputs() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-application-read-format-aliases-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let extension = root.join("extension");
+        let role_dir = src.join("Roles/Reader");
+        let rights = role_dir.join("Ext/Rights.xml");
+        std::fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&extension).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: extension\n    type: EXTENSION\n    path: extension\n",
+        )
+        .unwrap();
+        let configuration = src.join("Configuration.xml");
+        std::fs::write(
+            &configuration,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let extension_configuration = extension.join("Configuration.xml");
+        std::fs::write(
+            &extension_configuration,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Extension</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Roles/Reader.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &rights,
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
+        )
+        .unwrap();
+        let protected = [
+            configuration.clone(),
+            extension_configuration.clone(),
+            rights.clone(),
+        ];
+        let before = protected
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+
+        for (tool, alias, directory) in [
+            ("unica.cf.info", "Path", src.clone()),
+            ("unica.cf.validate", "path", src.clone()),
+            ("unica.cfe.validate", "Path", extension.clone()),
+            ("unica.role.info", "path", role_dir.clone()),
+            ("unica.role.validate", "Path", role_dir.clone()),
+        ] {
+            let mut args = Map::new();
+            args.insert("cwd".into(), Value::String(root.display().to_string()));
+            args.insert(alias.into(), Value::String(directory.display().to_string()));
+            args.insert("dryRun".into(), Value::Bool(true));
+
+            let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
+            assert!(
+                !result.warnings.is_empty(),
+                "{tool} {alias} must preserve the old-format warning: {result:?}"
+            );
+            assert_eq!(
+                result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
+                "2.19",
+                "{tool} {alias}"
+            );
+        }
+        for (path, expected) in protected.iter().zip(before) {
+            assert_eq!(std::fs::read(path).unwrap(), expected, "{}", path.display());
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic() {
         let root = std::env::temp_dir().join(format!(
             "unica-application-format-guard-mxl-old-{}",

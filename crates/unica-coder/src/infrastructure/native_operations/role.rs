@@ -48,12 +48,7 @@ pub(crate) fn analyze_role_info(
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
     let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
-        let rights_path_raw = required_path(
-            args,
-            &["rightsPath", "RightsPath", "path", "Path"],
-            "RightsPath",
-        )?;
-        let rights_path = absolutize(rights_path_raw, &context.cwd);
+        let rights_path = resolve_role_read_rights_path(args, context)?;
         if !rights_path.is_file() {
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
         }
@@ -451,13 +446,7 @@ pub(crate) fn validate_role(
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
     let result = (|| -> Result<(bool, String, PathBuf, Option<PathBuf>, String), String> {
-        let rights_path_raw = required_path(
-            args,
-            &["rightsPath", "RightsPath", "path", "Path"],
-            "RightsPath",
-        )?;
-        let rights_path =
-            resolve_role_validate_rights_path(absolutize(rights_path_raw, &context.cwd));
+        let rights_path = resolve_role_read_rights_path(args, context)?;
         let out_file =
             path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);

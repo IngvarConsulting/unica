@@ -47,11 +47,11 @@ pub(crate) enum SupportGuardPolicy {
 
 const EMPTY: &[&str] = &[];
 pub(crate) const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
-const CONFIG_PATH: &[&str] = &["ConfigPath", "configPath"];
 const CONFIG_DIR: &[&str] = &["ConfigDir", "configDir"];
 const OUTPUT_DIR: &[&str] = &["OutputDir", "outputDir"];
 const OUT_FILE: &[&str] = &["OutFile", "outFile"];
 const EXTENSION_PATH: &[&str] = &["ExtensionPath", "extensionPath"];
+pub(crate) const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
 const CFE_BORROW_SOURCE: &[&str] = &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"];
 const CFE_INIT_BASE: &[&str] = &["ConfigPath", "configPath"];
 pub(crate) const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
@@ -67,7 +67,7 @@ const SUBSYSTEM_COMPILE_WRITE: &[&str] = &["OutputDir", "outputDir", "Parent", "
 const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
 pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
 const TEMPLATE_PATH_REQUIRED: &[&str] = &["TemplatePath"];
-const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath"];
+pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
 const RIGHTS_PATH_REQUIRED: &[&str] = &["RightsPath"];
 const SUPPORT_PATH: &[&str] = &["Path", "path", "TargetPath", "targetPath"];
 const META_REMOVE_REQUIRED: &[&str] = EMPTY;
@@ -118,7 +118,15 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatPathPolicy::HandlerResolved,
         Some(path_guard(CF_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor("cf-info", &["ConfigPath"], OUT_FILE, CONFIG_PATH, None),
+    descriptor_with_paths(
+        "cf-info",
+        &["ConfigPath"],
+        OUT_FILE,
+        CF_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        None,
+    ),
     descriptor_with_format(
         "cf-init",
         EMPTY,
@@ -127,7 +135,15 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatGuardPolicy::NewDump,
         None,
     ),
-    descriptor("cf-validate", &["ConfigPath"], OUT_FILE, CONFIG_PATH, None),
+    descriptor_with_paths(
+        "cf-validate",
+        &["ConfigPath"],
+        OUT_FILE,
+        CF_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        None,
+    ),
     descriptor("support-edit", EMPTY, SUPPORT_PATH, SUPPORT_PATH, None),
     descriptor(
         "cfe-borrow",
@@ -174,11 +190,13 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EXTENSION_PATH,
         None,
     ),
-    descriptor(
+    descriptor_with_paths(
         "cfe-validate",
         CFE_VALIDATE_REQUIRED,
         OUT_FILE,
-        EXTENSION_PATH,
+        CFE_VALIDATE_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
         None,
     ),
     descriptor(
@@ -394,18 +412,22 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OUTPUT_DIR,
         Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
     ),
-    descriptor(
+    descriptor_with_paths(
         "role-info",
         RIGHTS_PATH_REQUIRED,
         OUT_FILE,
         RIGHTS_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
         None,
     ),
-    descriptor(
+    descriptor_with_paths(
         "role-validate",
         RIGHTS_PATH_REQUIRED,
         OUT_FILE,
         RIGHTS_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
         None,
     ),
 ];

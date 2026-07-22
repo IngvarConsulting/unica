@@ -118,29 +118,7 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
     const HP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
     let result = (|| -> Result<CfValidationRun, String> {
-        let raw_path = required_path(
-            args,
-            &["configPath", "ConfigPath", "path", "Path"],
-            "ConfigPath",
-        )?;
-        let mut config_path = absolutize(raw_path, &context.cwd);
-        if config_path.is_dir() {
-            let candidate = config_path.join("Configuration.xml");
-            if candidate.exists() {
-                config_path = candidate;
-            } else {
-                return Err(format!(
-                    "[ERROR] No Configuration.xml found in directory: {}",
-                    config_path.display()
-                ));
-            }
-        }
-        if !config_path.exists() {
-            return Err(format!("[ERROR] File not found: {}", config_path.display()));
-        }
-        let resolved_path = config_path
-            .canonicalize()
-            .unwrap_or_else(|_| config_path.clone());
+        let resolved_path = resolve_cf_read_config_path(args, context)?;
         let config_dir = resolved_path.parent().unwrap_or(context.cwd.as_path());
         let out_file =
             path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
@@ -876,26 +854,7 @@ pub(crate) fn analyze_cf_info(
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
-        let raw_path = required_path(
-            args,
-            &["configPath", "ConfigPath", "path", "Path"],
-            "ConfigPath",
-        )?;
-        let mut config_path = absolutize(raw_path, &context.cwd);
-        if config_path.is_dir() {
-            let candidate = config_path.join("Configuration.xml");
-            if candidate.is_file() {
-                config_path = candidate;
-            } else {
-                return Err(format!(
-                    "[ERROR] No Configuration.xml found in directory: {}",
-                    config_path.display()
-                ));
-            }
-        }
-        if !config_path.is_file() {
-            return Err(format!("[ERROR] File not found: {}", config_path.display()));
-        }
+        let config_path = resolve_cf_read_config_path(args, context)?;
 
         let text = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
