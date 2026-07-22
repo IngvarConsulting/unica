@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import queue
@@ -119,6 +118,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             "task": "При поступлении товаров контролировать остаточный срок годности серий",
         }
         with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
             responses = self.call_mcp(
                 [
                     {
@@ -132,8 +132,10 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     }
                     for request_id in (1, 2)
                 ],
-                cache_dir=Path(tmp) / "cache",
+                cache_dir=cache_dir,
             )
+            cache_residual = list(cache_dir.rglob("*")) if cache_dir.exists() else []
+            self.assertEqual(cache_residual, [], cache_residual)
 
         payloads = {
             response["id"]: json.loads(response["result"]["content"][0]["text"])
@@ -163,20 +165,36 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             "lexical BSL evidence must not be promoted to a call-graph edge",
         )
 
-        required_targets = {
+        expected_targets = {
+            "document.приобретениетоваровуслуг",
             "document.приобретениетоваровуслуг.tabularsection.серии",
+            "document.приобретениетоваровуслуг.tabularsection.товары",
+            "document.приобретениетоваровуслуг.tabularsection.товары.attribute.серия",
             "dataprocessor.подборсерийвдокументы",
             "document.приобретениетоваровуслуг.form.регистрацияиподборсерийпооднойстрокетоваров",
         }
         candidate_targets = {candidate["target"] for candidate in first["candidates"]}
-        self.assertTrue(required_targets <= candidate_targets, candidate_targets)
+        self.assertEqual(candidate_targets, expected_targets)
         warning = next(
             warning
             for warning in first["warnings"]
             if warning["code"] == "separate_series_section"
         )
-        self.assertTrue(warning["blocking"])
-        self.assertIn("Товары.Серия", warning["message"])
+        self.assertEqual(
+            warning,
+            {
+                "code": "separate_series_section",
+                "message": (
+                    "A point limited to Товары.Серия lacks coverage: the same relevant "
+                    "document contains a distinct series-related tabular section."
+                ),
+                "blocking": True,
+                "evidenceIds": [
+                    "1cd2a4e528117a3b288f6e0774d007d34e6c44fcb1107a43710e32cf444e6a4d",
+                    "975181c0218292f4f50500f0b4fe72a48f047a88032e478f1521a11d0ecedf40",
+                ],
+            },
+        )
 
         evidence_kinds = {evidence["kind"] for evidence in first["evidence"]}
         self.assertIn("metadata", evidence_kinds)
@@ -226,39 +244,266 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         )
         self.assertEqual(bsl_evidence["location"]["line"], 2)
 
-        fixture_root = self.repo_root() / fixture / "src"
         contributors = first["analysisSnapshot"]["contributors"]
-        contributor_hashes = {
-            contributor["relativePath"]: contributor["rawHash"]
-            for contributor in contributors
-        }
         self.assertEqual(
-            set(contributor_hashes),
-            {
-                "Configuration.xml",
-                "DataProcessors/ПодборСерийВДокументы.xml",
-                "DataProcessors/ПодборСерийВДокументы/Ext/ManagerModule.bsl",
-                "Documents/ПриобретениеТоваровУслуг.xml",
-                "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров.xml",
-                "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
-                "Ext/ParentConfigurations.bin",
-            },
+            contributors,
+            [
+                {
+                    "relativePath": "Configuration.xml",
+                    "rawHash": "2a1d11ac5e65afe2ae599c237ef4fa78c9ebf39777e6815b09fb1f9c2f927702",
+                    "bytes": 409,
+                },
+                {
+                    "relativePath": "DataProcessors/ПодборСерийВДокументы.xml",
+                    "rawHash": "fe394f08071bbd84f5298c50d11c88c456ef59b91c380832219de4d176c10d29",
+                    "bytes": 251,
+                },
+                {
+                    "relativePath": "DataProcessors/ПодборСерийВДокументы/Ext/ManagerModule.bsl",
+                    "rawHash": "424f23ef54e78aa09c5634041ec47d37f8a5222160ce421584b20a342adacf1b",
+                    "bytes": 195,
+                },
+                {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "rawHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+                    "bytes": 955,
+                },
+                {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров.xml",
+                    "rawHash": "975b2be2f5bf8f6f61547c0cc1ad593f5be777b5dc34552fdf5f0088b3ef86ed",
+                    "bytes": 277,
+                },
+                {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+                    "rawHash": "049d0a56fc6f06703821a3dfbc290ea67bb5462ea44f7871b372ee2a30331a61",
+                    "bytes": 470,
+                },
+                {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "rawHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+                    "bytes": 284,
+                },
+            ],
         )
-        for relative_path, raw_hash in contributor_hashes.items():
-            expected = hashlib.sha256((fixture_root / relative_path).read_bytes()).hexdigest()
-            self.assertEqual(raw_hash, expected, relative_path)
-        for evidence in first["evidence"]:
-            relative_path = evidence["location"]["relativePath"]
-            expected = hashlib.sha256((fixture_root / relative_path).read_bytes()).hexdigest()
-            self.assertEqual(evidence["rawContentHash"], expected, relative_path)
+
+        expected_evidence_identity = [
+            {
+                "id": "033f28d52b17975e01f8d3e4e76368b231e551d25b1825d3de75be90435edcc7",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+                    "line": 3,
+                    "column": 5,
+                    "xmlPath": "/Form/Events/Event",
+                },
+                "rawContentHash": "049d0a56fc6f06703821a3dfbc290ea67bb5462ea44f7871b372ee2a30331a61",
+            },
+            {
+                "id": "1cd2a4e528117a3b288f6e0774d007d34e6c44fcb1107a43710e32cf444e6a4d",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "line": 12,
+                    "column": 11,
+                    "xmlPath": "/MetaDataObject/Document/ChildObjects/TabularSection[1]/ChildObjects/Attribute",
+                },
+                "rawContentHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+            },
+            {
+                "id": "2005aa4bd315cba6fdebd54d4733cc01a1d2d50115119b7fe0a190a90db2e332",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+                    "line": 12,
+                    "column": 7,
+                    "xmlPath": "/Form/Commands/Command/Action",
+                },
+                "rawContentHash": "049d0a56fc6f06703821a3dfbc290ea67bb5462ea44f7871b372ee2a30331a61",
+            },
+            {
+                "id": "24ccea36889c2a5b65316e641f7293de212adf0a1a4c53a30bf3a0b249300b67",
+                "location": {
+                    "relativePath": "DataProcessors/ПодборСерийВДокументы/Ext/ManagerModule.bsl",
+                    "line": 2,
+                    "column": 15,
+                },
+                "rawContentHash": "424f23ef54e78aa09c5634041ec47d37f8a5222160ce421584b20a342adacf1b",
+            },
+            {
+                "id": "253ec2c7df7052fda499bf36ddd7ce46f422e323a4874652da975acef53a3fba",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 2,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "373f5af4c1d6833740daaf3bf655c44fb88f68a37ec2a8dc696e9984db89209b",
+                "location": {
+                    "relativePath": "Configuration.xml",
+                    "line": 8,
+                    "column": 7,
+                    "xmlPath": "/MetaDataObject/Configuration/ChildObjects/DataProcessor",
+                },
+                "rawContentHash": "2a1d11ac5e65afe2ae599c237ef4fa78c9ebf39777e6815b09fb1f9c2f927702",
+            },
+            {
+                "id": "48c118bd9d715fe45d507f07d74c6b533fdba58ffcdd2fb5b1e4f831f403f16e",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "line": 24,
+                    "column": 7,
+                    "xmlPath": "/MetaDataObject/Document/ChildObjects/Form",
+                },
+                "rawContentHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+            },
+            {
+                "id": "548b7db14fc2d29475fbefd37f4bc13e53de9218fe54a714b00a1bb92b2c11a5",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "line": 2,
+                    "column": 3,
+                    "xmlPath": "/MetaDataObject/Document",
+                },
+                "rawContentHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+            },
+            {
+                "id": "54ba130bf9d59d04e4c5b163244e8fd2b3b40ba15328cfd02a1e79eb07cfa1a2",
+                "location": {
+                    "relativePath": "DataProcessors/ПодборСерийВДокументы.xml",
+                    "line": 2,
+                    "column": 3,
+                    "xmlPath": "/MetaDataObject/DataProcessor",
+                },
+                "rawContentHash": "fe394f08071bbd84f5298c50d11c88c456ef59b91c380832219de4d176c10d29",
+            },
+            {
+                "id": "5f14e0586ccab79867afef46ada53575fd5d347d3722bec8cfebdfe20c7f1474",
+                "location": {
+                    "relativePath": "Configuration.xml",
+                    "line": 7,
+                    "column": 7,
+                    "xmlPath": "/MetaDataObject/Configuration/ChildObjects/Document",
+                },
+                "rawContentHash": "2a1d11ac5e65afe2ae599c237ef4fa78c9ebf39777e6815b09fb1f9c2f927702",
+            },
+            {
+                "id": "6baf2f986475dcbdcc8f6dec57026024ee8a00bf7e7ffa82c549d0baa60ffbc1",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 2,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "6bda895d8a458ab1733087bfd85c3ad1020f69e03da46bd731f9677f7600c295",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров.xml",
+                    "line": 2,
+                    "column": 3,
+                    "xmlPath": "/MetaDataObject/Form",
+                },
+                "rawContentHash": "975b2be2f5bf8f6f61547c0cc1ad593f5be777b5dc34552fdf5f0088b3ef86ed",
+            },
+            {
+                "id": "7beea8cd4895cd07c1643396f269c6ce8774f0837effb3d565cb1295c9301442",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг/Forms/РегистрацияИПодборСерийПоОднойСтрокеТоваров/Ext/Form.xml",
+                    "line": 7,
+                    "column": 7,
+                    "xmlPath": "/Form/ChildItems/InputField/DataPath",
+                },
+                "rawContentHash": "049d0a56fc6f06703821a3dfbc290ea67bb5462ea44f7871b372ee2a30331a61",
+            },
+            {
+                "id": "975181c0218292f4f50500f0b4fe72a48f047a88032e478f1521a11d0ecedf40",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "line": 19,
+                    "column": 7,
+                    "xmlPath": "/MetaDataObject/Document/ChildObjects/TabularSection[2]",
+                },
+                "rawContentHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+            },
+            {
+                "id": "994c8a9d6c5a4aff5157e8a1ce3918853fc76c1737de84a5772b7a5e24e3bf6d",
+                "location": {
+                    "relativePath": "Documents/ПриобретениеТоваровУслуг.xml",
+                    "line": 7,
+                    "column": 7,
+                    "xmlPath": "/MetaDataObject/Document/ChildObjects/TabularSection[1]",
+                },
+                "rawContentHash": "c107c0ab9f5b429ee61f8838780dfef4caf6e7753268461c3770dbed5431bbad",
+            },
+            {
+                "id": "9a8cf55287152c9deb5d20b83f2d38d26fdf7ad29988c4d681e10904b40cc804",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 2,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "a0806b98d993150e8bba41c2f67b0893e18690e27d4d72ce0c2b98d4da22a550",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 2,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "b907eedfbce198e7f7e26d288913beac37ca626ac657d76ccf282c96148db23a",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 16,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "bbfc19ea78b2cae1a007d085225bb72ab3b0b2255623eeb05becac5278332b0c",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 12,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "e749078c33c5eda3d989a416e0196551a975b4523f2c7aef213a0fb8d357cb31",
+                "location": {
+                    "relativePath": "Ext/ParentConfigurations.bin",
+                    "line": 2,
+                },
+                "rawContentHash": "696c7c22cf43a508b281104e6f03060980c1e496e094c91783db843d09d80c2a",
+            },
+            {
+                "id": "f4a33542a429c060d669a73cd26cc0d725b81c5fedf83aa959dec0b6eb6df5bf",
+                "location": {
+                    "relativePath": "Configuration.xml",
+                    "line": 2,
+                    "column": 3,
+                    "xmlPath": "/MetaDataObject/Configuration",
+                },
+                "rawContentHash": "2a1d11ac5e65afe2ae599c237ef4fa78c9ebf39777e6815b09fb1f9c2f927702",
+            },
+        ]
+        actual_evidence_identity = [
+            {
+                "id": evidence["id"],
+                "location": evidence["location"],
+                "rawContentHash": evidence["rawContentHash"],
+            }
+            for evidence in first["evidence"]
+        ]
+        self.assertEqual(actual_evidence_identity, expected_evidence_identity)
 
         self.assertEqual(
             first["analysisSnapshot"]["fingerprint"],
-            second["analysisSnapshot"]["fingerprint"],
+            "cdcb541428fe80db6733d5ab97afab4d29b27246ae420d9aa322eb0a029c4f2a",
         )
         self.assertEqual(
-            [evidence["id"] for evidence in first["evidence"]],
+            second["analysisSnapshot"]["fingerprint"],
+            first["analysisSnapshot"]["fingerprint"],
+        )
+        self.assertEqual(
             [evidence["id"] for evidence in second["evidence"]],
+            [item["id"] for item in expected_evidence_identity],
         )
         serialized = json.dumps(first, ensure_ascii=False)
         self.assertNotIn("ExactExpectedNames", serialized)
