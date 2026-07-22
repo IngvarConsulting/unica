@@ -683,19 +683,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 "analysisSnapshot",
             },
         )
-        selected_keys = set(selection_record["selectedPoint"])
-        self.assertTrue(
-            {"target", "kind", "evidenceIds", "evidenceLocations"}.issubset(
-                selected_keys
-            )
+        self.assertEqual(
+            set(selection_record["selectedPoint"]),
+            {"target", "kind", "evidenceIds", "evidenceLocations", "supportState"},
         )
-        self.assertTrue(
-            selected_keys.issubset(
-                {"target", "kind", "evidenceIds", "evidenceLocations", "supportState"}
-            )
-        )
-        self.assertIn("copy `supportState` verbatim", text)
-        self.assertIn("omit it", text)
+        for support_rule in [
+            "Always include `supportState`",
+            "Copy the reported value verbatim",
+            'use literal `"unknown"` only',
+            "retain that gap in `unresolvedNonMaterialChecks`",
+            "stop and do not record a selection",
+            "Never infer `editable` or `locked`",
+        ]:
+            with self.subTest(support_rule=support_rule):
+                self.assertIn(support_rule, text)
+
+        for outcome_rule in [
+            "Only an empty `complete` result is negative evidence",
+            "`bounded`, `unavailable`, and `failed` are incomplete",
+            "`contract_violation` invalidates its provider records",
+            "must not be used for selection or graph promotion",
+        ]:
+            with self.subTest(outcome_rule=outcome_rule):
+                self.assertIn(outcome_rule, text)
         self.assertEqual(
             set(selection_record["rejectedAlternatives"][0]),
             {"target", "reason", "evidenceIds"},
@@ -760,6 +770,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "policy:\n"
             "  allow_implicit_invocation: true\n",
         )
+
+    def test_extension_point_acceptance_requires_exact_series_tabular_section(self) -> None:
+        acceptance = (
+            self.repo_root() / "spec" / "acceptance" / "unica-mcp-validation.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
+            acceptance,
+        )
+        self.assertNotIn("retain document, processor, and form candidates", acceptance)
 
     def test_ai_rules_guidance_refresh_is_adapted_to_unica_surface(self) -> None:
         docs = {

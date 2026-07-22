@@ -40,7 +40,7 @@ DISCOVERY_FIXTURE = (
 )
 DISCOVERY_TASK = "При поступлении товаров контролировать остаточный срок годности серий"
 REQUIRED_DISCOVERY_TARGETS = {
-    "document.приобретениетоваровуслуг",
+    "document.приобретениетоваровуслуг.tabularsection.серии",
     "dataprocessor.подборсерийвдокументы",
     (
         "document.приобретениетоваровуслуг.form."
@@ -136,6 +136,8 @@ def operation_payload(response: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit(f"Unica MCP discovery response text is invalid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise SystemExit("Unica MCP discovery operation result must be an object")
+    if payload.get("ok") is not True:
+        raise SystemExit("Unica MCP discovery OperationResult.ok must be true")
     return payload
 
 
@@ -189,7 +191,10 @@ def validate_discovery(response: dict[str, Any]) -> None:
 
 def close_process(process: subprocess.Popen[str], timeout_seconds: float) -> None:
     if process.stdin is not None and not process.stdin.closed:
-        process.stdin.close()
+        try:
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
     try:
         process.wait(timeout=max(timeout_seconds, 0.1))
     except subprocess.TimeoutExpired:
@@ -217,6 +222,8 @@ def run_protocol(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             cwd=workspace,
             env=environment,
         )
@@ -289,10 +296,15 @@ def run_protocol(
 
     detail = "".join(stderr_lines).strip()
     if protocol_failure is not None:
-        if process.returncode != 0 and detail:
+        failure_context: list[str] = []
+        if process.returncode != 0:
+            failure_context.append(f"Unica MCP exited with {process.returncode}")
+        if detail:
+            failure_context.append(f"stderr: {detail}")
+        if failure_context:
             raise SystemExit(
-                f"Unica MCP exited with {process.returncode}: {detail}"
-            ) from protocol_failure
+                f"{protocol_failure}; {'; '.join(failure_context)}"
+            ) from None
         raise protocol_failure
     if process.returncode != 0:
         raise SystemExit(

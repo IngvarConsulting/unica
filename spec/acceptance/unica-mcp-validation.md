@@ -107,8 +107,10 @@ sections, the skill must make a valid task-only `unica.project.discover` call
 before planning and before mutation or manual XML/BSL edits.
 
 Acceptance inspects only `OperationResult.data.discovery`. The task-only UT 11.5
-fixture must return `partial`, retain document, processor, and form candidates,
-report a blocking insufficient-coverage warning, and include
+fixture must return `partial`, retain the exact
+`Document.ПриобретениеТоваровУслуг.TabularSection.Серии`,
+`DataProcessor.ПодборСерийВДокументы`, and registration/selection form
+candidates, report a blocking insufficient-coverage warning, and include
 `bsl_index_missing`. Skill routing tests require evidence-ID/location
 dereferencing, public read-only gap closure, stop-on-material-gap behavior, the
 selection record, and the analysis-snapshot boundary. The snapshot is not
