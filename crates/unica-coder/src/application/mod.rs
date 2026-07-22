@@ -1516,6 +1516,11 @@ mod tests {
         let root = test_workspace_root("real-discovery-dispatch");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
             root.join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )

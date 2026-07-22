@@ -19,6 +19,34 @@ struct ConfigSourceSet {
     kind: SourceSetKind,
     path: String,
     default_format: Option<SourceFormat>,
+    discovery_path_is_safe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectSourceDeclaration {
+    pub name: String,
+    pub kind: SourceSetKind,
+    pub path: String,
+    pub discovery_path_is_safe: bool,
+}
+
+pub(crate) fn discover_project_source_declarations(
+    workspace_root: &Path,
+) -> Result<Vec<ProjectSourceDeclaration>, String> {
+    let Some(config_path) = find_project_config(workspace_root) else {
+        return Ok(Vec::new());
+    };
+    let (source_sets, _configured_format_raw) =
+        read_config_source_sets(workspace_root, &config_path)?;
+    Ok(source_sets
+        .into_iter()
+        .map(|source_set| ProjectSourceDeclaration {
+            name: source_set.name,
+            kind: source_set.kind,
+            path: source_set.path,
+            discovery_path_is_safe: source_set.discovery_path_is_safe,
+        })
+        .collect())
 }
 
 pub(crate) fn discover_project_source_map(
@@ -121,6 +149,7 @@ fn read_config_source_sets(
     }
 
     for source_set in &mut source_sets {
+        source_set.discovery_path_is_safe &= discovery_path_is_safe(&base_path);
         source_set.path = normalize_configured_path(workspace_root, &base_path, &source_set.path);
     }
 
@@ -145,12 +174,27 @@ fn config_source_set_from_named_yaml(
         .unwrap_or_else(|| "CONFIGURATION".to_string());
     let kind = source_set_kind_from_config(&source_type)?;
     let path = yaml_string(entry, "path").unwrap_or_else(|| ".".to_string());
+    let discovery_path_is_safe = discovery_path_is_safe(&path);
     Ok(ConfigSourceSet {
         name: name.to_string(),
         kind,
         path,
         default_format,
+        discovery_path_is_safe,
     })
+}
+
+fn discovery_path_is_safe(raw: &str) -> bool {
+    let path = Path::new(raw);
+    !path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
 }
 
 fn normalize_configured_path(workspace_root: &Path, base_path: &str, raw_path: &str) -> String {
@@ -178,6 +222,7 @@ fn autodetect_source_sets(workspace_root: &Path) -> Vec<ConfigSourceSet> {
                 kind: SourceSetKind::Configuration,
                 path: path.to_string(),
                 default_format: None,
+                discovery_path_is_safe: true,
             }];
         }
     }
@@ -483,6 +528,28 @@ source-set:
             .is_some_and(|error| error.contains("workspace")));
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn declaration_only_source_reader_does_not_classify_any_source_root() {
+        let root = temp_workspace("unica-source-declarations-only");
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
+        );
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("epf")).unwrap();
+
+        let declarations = discover_project_source_declarations(&root).unwrap();
+
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].name, "app");
+        assert_eq!(declarations[0].kind, SourceSetKind::Configuration);
+        assert_eq!(declarations[0].path, "src");
+        assert_eq!(declarations[1].name, "external");
+        assert_eq!(declarations[1].kind, SourceSetKind::ExternalProcessor);
+        assert_eq!(declarations[1].path, "epf");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -777,6 +777,8 @@ pub(crate) enum DiscoveryError {
     NoConfigurationSource,
     AmbiguousConfigurationSources(Vec<String>),
     InvalidSourceRoot(String),
+    UnsupportedSourceFormat(String),
+    InvalidSourceFormat(String),
 }
 
 impl fmt::Display for DiscoveryError {
@@ -799,6 +801,12 @@ impl fmt::Display for DiscoveryError {
             ),
             Self::InvalidSourceRoot(message) => {
                 write!(formatter, "invalid discovery source root: {message}")
+            }
+            Self::UnsupportedSourceFormat(format) => {
+                write!(formatter, "unsupported discovery source format: {format}")
+            }
+            Self::InvalidSourceFormat(format) => {
+                write!(formatter, "invalid discovery source format: {format}")
             }
         }
     }

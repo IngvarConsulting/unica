@@ -3,7 +3,13 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
-use crate::infrastructure::project_sources::discover_project_source_map;
+use crate::infrastructure::platform::verified_directory::{
+    read_verified_contained_directory, read_verified_contained_directory_with_expected_identity,
+    VerifiedDirectoryEntryKind,
+};
+use crate::infrastructure::project_sources::{
+    discover_project_source_declarations, discover_project_source_map,
+};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -23,21 +29,20 @@ pub(crate) fn resolve_discovery_source_root(
     context: &WorkspaceContext,
     explicit: Option<&Path>,
 ) -> Result<ResolvedSourceRoot, DiscoveryError> {
-    let map = discover_project_source_map(&context.workspace_root)
+    let declarations = discover_project_source_declarations(&context.workspace_root)
         .map_err(DiscoveryError::ProjectSources)?;
     let selected = match explicit {
         Some(path) => {
-            if path.is_absolute() {
-                return Err(DiscoveryError::InvalidSourceRoot(
-                    "sourceDir must be relative to the workspace root".to_string(),
-                ));
-            }
+            validate_discovery_relative_path(path)?;
             let resolved = normalize_contained_source_root(&context.workspace_root, path)
                 .map_err(DiscoveryError::InvalidSourceRoot)?;
-            let source_set = map.source_sets.iter().find_map(|source_set| {
-                normalize_contained_source_root(&context.workspace_root, &source_set.path)
-                    .ok()
-                    .filter(|candidate| candidate == &resolved)
+            let explicit_identity = normalize_lexically(path);
+            let source_set = declarations.iter().find_map(|source_set| {
+                let configured = Path::new(&source_set.path);
+                validate_discovery_relative_path(configured)
+                    .is_ok()
+                    .then(|| normalize_lexically(configured))
+                    .filter(|configured| configured == &explicit_identity)
                     .map(|_| source_set.name.clone())
             });
             ResolvedSourceRoot {
@@ -46,8 +51,7 @@ pub(crate) fn resolve_discovery_source_root(
             }
         }
         None => {
-            let configurations = map
-                .source_sets
+            let configurations = declarations
                 .iter()
                 .filter(|source_set| source_set.kind == SourceSetKind::Configuration)
                 .collect::<Vec<_>>();
@@ -63,6 +67,13 @@ pub(crate) fn resolve_discovery_source_root(
                     return Err(DiscoveryError::AmbiguousConfigurationSources(candidates));
                 }
             };
+            if !source_set.discovery_path_is_safe {
+                return Err(DiscoveryError::InvalidSourceRoot(
+                    "configured source path must be workspace-relative and must not contain parent components"
+                        .to_string(),
+                ));
+            }
+            validate_discovery_relative_path(Path::new(&source_set.path))?;
             let path = normalize_contained_source_root(
                 &context.workspace_root,
                 Path::new(&source_set.path),
@@ -86,7 +97,111 @@ pub(crate) fn resolve_discovery_source_root(
             selected.path.display()
         )));
     }
-    Ok(selected)
+    match classify_discovery_source_format(&selected.path)? {
+        DiscoverySelectedFormat::PlatformXml => Ok(selected),
+        DiscoverySelectedFormat::Edt => {
+            Err(DiscoveryError::UnsupportedSourceFormat("edt".to_string()))
+        }
+        DiscoverySelectedFormat::Conflict => {
+            Err(DiscoveryError::InvalidSourceFormat("conflict".to_string()))
+        }
+        DiscoverySelectedFormat::Unknown => {
+            Err(DiscoveryError::InvalidSourceFormat("unknown".to_string()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoverySelectedFormat {
+    PlatformXml,
+    Edt,
+    Conflict,
+    Unknown,
+}
+
+fn classify_discovery_source_format(
+    source_root: &Path,
+) -> Result<DiscoverySelectedFormat, DiscoveryError> {
+    let platform = verified_marker_exists(source_root, "Configuration.xml")?;
+    let mut edt = false;
+    for marker in [
+        ".project",
+        "DT-INF/PROJECT.PMF",
+        "Configuration/Configuration.mdo",
+        "src/Configuration/Configuration.mdo",
+    ] {
+        edt |= verified_marker_exists(source_root, marker)?;
+    }
+    Ok(match (platform, edt) {
+        (true, false) => DiscoverySelectedFormat::PlatformXml,
+        (false, true) => DiscoverySelectedFormat::Edt,
+        (true, true) => DiscoverySelectedFormat::Conflict,
+        (false, false) => DiscoverySelectedFormat::Unknown,
+    })
+}
+
+fn verified_marker_exists(source_root: &Path, marker: &str) -> Result<bool, DiscoveryError> {
+    let components = marker.split('/').collect::<Vec<_>>();
+    let mut directory = source_root.to_path_buf();
+    let mut expected_identity = None;
+    for (index, component) in components.iter().enumerate() {
+        let entries = match expected_identity {
+            Some(identity) => read_verified_contained_directory_with_expected_identity(
+                source_root,
+                &directory,
+                identity,
+            ),
+            None => read_verified_contained_directory(source_root, &directory),
+        }
+        .map_err(|error| {
+            DiscoveryError::InvalidSourceFormat(format!(
+                "unsafe selected source marker boundary while checking {marker}: {error}"
+            ))
+        })?;
+        let Some(entry) = entries.into_iter().find(|entry| {
+            entry
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(component))
+        }) else {
+            return Ok(false);
+        };
+        let is_last = index + 1 == components.len();
+        match (is_last, entry.kind) {
+            (true, VerifiedDirectoryEntryKind::RegularFile) => return Ok(true),
+            (false, VerifiedDirectoryEntryKind::Directory) => {
+                directory = entry.path;
+                expected_identity = Some(entry.identity);
+            }
+            (true, VerifiedDirectoryEntryKind::Directory)
+            | (false, VerifiedDirectoryEntryKind::RegularFile) => {
+                return Err(DiscoveryError::InvalidSourceFormat(format!(
+                    "selected source marker has an invalid filesystem kind: {marker}"
+                )));
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn validate_discovery_relative_path(path: &Path) -> Result<(), DiscoveryError> {
+    if path.is_absolute() {
+        return Err(DiscoveryError::InvalidSourceRoot(
+            "sourceDir must be relative to the workspace root".to_string(),
+        ));
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(DiscoveryError::InvalidSourceRoot(
+            "sourceDir must not contain parent or root path components".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
@@ -216,6 +331,9 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 mod tests {
     use super::{normalize_path_identity, resolve_discovery_source_root, resolve_source_root};
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use crate::infrastructure::workspace::discover_workspace;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -327,6 +445,121 @@ mod tests {
                 _
             ))
         ));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn discovery_rejects_edt_for_implicit_and_explicit_selection() {
+        let context = fixture(&[("app", "CONFIGURATION", "src")]);
+        fs::remove_file(context.workspace_root.join("src/Configuration.xml")).unwrap();
+        write(
+            &context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        );
+        fs::create_dir_all(context.workspace_root.join("src/Configuration")).unwrap();
+        write(
+            &context
+                .workspace_root
+                .join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        );
+
+        for explicit in [None, Some(Path::new("src"))] {
+            assert_eq!(
+                resolve_discovery_source_root(&context, explicit).unwrap_err(),
+                crate::domain::discovery::DiscoveryError::UnsupportedSourceFormat(
+                    "edt".to_string()
+                )
+            );
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn discovery_fails_closed_for_unknown_or_conflicting_selected_format() {
+        let unknown = fixture(&[("app", "CONFIGURATION", "src")]);
+        fs::remove_file(unknown.workspace_root.join("src/Configuration.xml")).unwrap();
+        assert_eq!(
+            resolve_discovery_source_root(&unknown, None).unwrap_err(),
+            crate::domain::discovery::DiscoveryError::InvalidSourceFormat("unknown".to_string())
+        );
+        cleanup(&unknown);
+
+        let conflict = fixture(&[("app", "CONFIGURATION", "src")]);
+        write(
+            &conflict.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        );
+        assert_eq!(
+            resolve_discovery_source_root(&conflict, None).unwrap_err(),
+            crate::domain::discovery::DiscoveryError::InvalidSourceFormat("conflict".to_string())
+        );
+        cleanup(&conflict);
+    }
+
+    #[test]
+    fn implicit_discovery_rejects_absolute_or_parented_declaration_paths_lexically() {
+        let root = temp_workspace("unica-discovery-lexical-source-paths");
+        fs::create_dir_all(root.join("src")).unwrap();
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("v8project.yaml"),
+            &format!(
+                "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: {}\n",
+                root.join("src").display()
+            ),
+        );
+        let absolute = discover_workspace(Some(root.clone())).unwrap();
+        assert!(matches!(
+            resolve_discovery_source_root(&absolute, None),
+            Err(crate::domain::discovery::DiscoveryError::InvalidSourceRoot(
+                _
+            ))
+        ));
+
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src/../src\n",
+        );
+        let parented = discover_workspace(Some(root)).unwrap();
+        assert!(matches!(
+            resolve_discovery_source_root(&parented, None),
+            Err(crate::domain::discovery::DiscoveryError::InvalidSourceRoot(
+                _
+            ))
+        ));
+        cleanup(&parented);
+    }
+
+    #[test]
+    fn explicit_discovery_does_not_probe_an_unrelated_escaping_config_dump_link() {
+        let context = fixture(&[
+            ("app", "CONFIGURATION", "src"),
+            ("external", "EXTERNAL_DATA_PROCESSORS", "epf"),
+        ]);
+        let outside = temp_workspace("unica-unrelated-config-dump-outside");
+        write(&outside.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>");
+        let link = context.workspace_root.join("epf/ConfigDumpInfo.xml");
+        match create_file_link_fixture_for_test(outside.join("ConfigDumpInfo.xml"), &link)
+            .expect("escaping link fixture")
+        {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                let _ = fs::remove_dir_all(outside);
+                cleanup(&context);
+                return;
+            }
+        }
+
+        let selected = resolve_discovery_source_root(&context, Some(Path::new("src"))).unwrap();
+
+        assert_eq!(selected.source_set.as_deref(), Some("app"));
+        assert_eq!(
+            selected.path,
+            normalize_path_identity(&context.workspace_root.join("src")).unwrap()
+        );
+        let _ = fs::remove_dir_all(outside);
         cleanup(&context);
     }
 
@@ -453,6 +686,14 @@ mod tests {
         );
         for (_, _, path) in source_sets {
             fs::create_dir_all(root.join(path)).unwrap();
+        }
+        for (_, kind, path) in source_sets {
+            if *kind == "CONFIGURATION" {
+                write(
+                    &root.join(path).join("Configuration.xml"),
+                    "<MetaDataObject/>",
+                );
+            }
         }
         fs::create_dir_all(root.join("outside")).unwrap();
         discover_workspace(Some(root)).unwrap()
