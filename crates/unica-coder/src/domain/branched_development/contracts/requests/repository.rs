@@ -1479,6 +1479,133 @@ pub(crate) enum RepositoryRecoverRequestVariant {
     RecoverCancel,
 }
 
+/// Owned, non-wire proof that the exact recovery request was the apply leaf
+/// and that its approval digest matched the request-bound recovery digest.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRecoverApplyRequest {
+    request: RepositoryRecoverRequest,
+}
+
+/// Owned, non-wire proof that the exact recovery request was the approval-free
+/// cancel leaf.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRecoverCancelRequest {
+    request: RepositoryRecoverRequest,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RepositoryRecoverRequestValidationCause {
+    WrongVariant {
+        expected: RepositoryRecoverRequestVariant,
+    },
+    ApprovalDigestMismatch(DigestApprovalMismatch),
+}
+
+/// A consuming recovery-request validation failure. It retains the exact wire
+/// request so callers can report or retry without reconstructing its lineage.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryRecoverRequestValidationFailure {
+    request: RepositoryRecoverRequest,
+    cause: RepositoryRecoverRequestValidationCause,
+}
+
+impl RepositoryRecoverRequestValidationFailure {
+    pub(crate) const fn request(&self) -> &RepositoryRecoverRequest {
+        &self.request
+    }
+
+    pub(crate) const fn cause(&self) -> &RepositoryRecoverRequestValidationCause {
+        &self.cause
+    }
+
+    pub(crate) fn into_request(self) -> RepositoryRecoverRequest {
+        self.request
+    }
+}
+
+impl ValidatedRecoverApplyRequest {
+    pub(crate) const fn request(&self) -> &RepositoryRecoverRequest {
+        &self.request
+    }
+
+    pub(crate) fn into_request(self) -> RepositoryRecoverRequest {
+        self.request
+    }
+
+    pub(crate) fn cwd(&self) -> &OriginalProjectCwd {
+        let RepositoryRecoverRequest::Apply(request) = &self.request else {
+            unreachable!("validated recover apply contains a cancel request")
+        };
+        &request.cwd
+    }
+
+    pub(crate) fn task_id(&self) -> &TaskId {
+        let RepositoryRecoverRequest::Apply(request) = &self.request else {
+            unreachable!("validated recover apply contains a cancel request")
+        };
+        &request.task_id
+    }
+
+    pub(crate) fn operation_id(&self) -> &OperationId {
+        let RepositoryRecoverRequest::Apply(request) = &self.request else {
+            unreachable!("validated recover apply contains a cancel request")
+        };
+        &request.operation_id
+    }
+
+    pub(crate) fn expected_recovery_digest(&self) -> &Sha256Digest {
+        let RepositoryRecoverRequest::Apply(request) = &self.request else {
+            unreachable!("validated recover apply contains a cancel request")
+        };
+        &request.expected_recovery_digest
+    }
+
+    pub(super) fn approval(&self) -> &DigestApproval {
+        let RepositoryRecoverRequest::Apply(request) = &self.request else {
+            unreachable!("validated recover apply contains a cancel request")
+        };
+        &request.approval
+    }
+}
+
+impl ValidatedRecoverCancelRequest {
+    pub(crate) const fn request(&self) -> &RepositoryRecoverRequest {
+        &self.request
+    }
+
+    pub(crate) fn into_request(self) -> RepositoryRecoverRequest {
+        self.request
+    }
+
+    pub(crate) fn cwd(&self) -> &OriginalProjectCwd {
+        let RepositoryRecoverRequest::Cancel(request) = &self.request else {
+            unreachable!("validated recover cancel contains an apply request")
+        };
+        &request.cwd
+    }
+
+    pub(crate) fn task_id(&self) -> &TaskId {
+        let RepositoryRecoverRequest::Cancel(request) = &self.request else {
+            unreachable!("validated recover cancel contains an apply request")
+        };
+        &request.task_id
+    }
+
+    pub(crate) fn operation_id(&self) -> &OperationId {
+        let RepositoryRecoverRequest::Cancel(request) = &self.request else {
+            unreachable!("validated recover cancel contains an apply request")
+        };
+        &request.operation_id
+    }
+
+    pub(crate) fn expected_recovery_digest(&self) -> &Sha256Digest {
+        let RepositoryRecoverRequest::Cancel(request) = &self.request else {
+            unreachable!("validated recover cancel contains an apply request")
+        };
+        &request.expected_recovery_digest
+    }
+}
+
 impl RepositoryRecoverRequest {
     pub(crate) const fn request_variant(&self) -> RepositoryRecoverRequestVariant {
         match self {
@@ -1498,15 +1625,41 @@ impl RepositoryRecoverRequest {
         execution_policy_for_json::<Self>(value, Self::execution_policy)
     }
 
-    // Cancel has no approval. Apply is shape-valid even with a stale digest so
-    // that this validation failure can be mapped to approvalDigestMismatch.
-    pub(crate) fn validate_approval_digest(&self) -> Result<(), DigestApprovalMismatch> {
-        match self {
-            Self::Apply(request) => request
-                .approval
-                .validate_digest(&request.expected_recovery_digest),
-            Self::Cancel(_) => Ok(()),
+    pub(crate) fn into_validated_apply(
+        self,
+    ) -> Result<ValidatedRecoverApplyRequest, Box<RepositoryRecoverRequestValidationFailure>> {
+        let Self::Apply(request) = &self else {
+            return Err(Box::new(RepositoryRecoverRequestValidationFailure {
+                request: self,
+                cause: RepositoryRecoverRequestValidationCause::WrongVariant {
+                    expected: RepositoryRecoverRequestVariant::RecoverApply,
+                },
+            }));
+        };
+        if let Err(mismatch) = request
+            .approval
+            .validate_digest(&request.expected_recovery_digest)
+        {
+            return Err(Box::new(RepositoryRecoverRequestValidationFailure {
+                request: self,
+                cause: RepositoryRecoverRequestValidationCause::ApprovalDigestMismatch(mismatch),
+            }));
         }
+        Ok(ValidatedRecoverApplyRequest { request: self })
+    }
+
+    pub(crate) fn into_validated_cancel(
+        self,
+    ) -> Result<ValidatedRecoverCancelRequest, Box<RepositoryRecoverRequestValidationFailure>> {
+        if !matches!(&self, Self::Cancel(_)) {
+            return Err(Box::new(RepositoryRecoverRequestValidationFailure {
+                request: self,
+                cause: RepositoryRecoverRequestValidationCause::WrongVariant {
+                    expected: RepositoryRecoverRequestVariant::RecoverCancel,
+                },
+            }));
+        }
+        Ok(ValidatedRecoverCancelRequest { request: self })
     }
 }
 
@@ -1516,9 +1669,11 @@ mod tests {
         RepositoryCommitRequest, RepositoryCommitRequestValidationFailure,
         RepositoryCommitRequestVariant, RepositoryLockRequest, RepositoryLockRequestVariant,
         RepositoryPlanLocksRequest, RepositoryPlanLocksRequestVariant, RepositoryRecoverRequest,
+        RepositoryRecoverRequestValidationCause, RepositoryRecoverRequestValidationFailure,
         RepositoryRecoverRequestVariant, RepositoryStatusRequest, RepositoryStatusRequestVariant,
         RepositoryUnlockRequest, RepositoryUnlockRequestVariant, RepositoryUpdateRequest,
-        RepositoryUpdateRequestVariant, ValidatedRepositoryCommitApplyRequest,
+        RepositoryUpdateRequestVariant, ValidatedRecoverApplyRequest,
+        ValidatedRecoverCancelRequest, ValidatedRepositoryCommitApplyRequest,
         ValidatedRepositoryCommitPreviewRequest,
     };
     use crate::domain::branched_development::contracts::schema::{
@@ -1593,6 +1748,15 @@ mod tests {
     assert_not_deserialize_owned!(ValidatedRepositoryCommitPreviewRequest);
     assert_not_deserialize_owned!(ValidatedRepositoryCommitApplyRequest);
     assert_not_deserialize_owned!(RepositoryCommitRequestValidationFailure);
+    assert_not_clone!(ValidatedRecoverApplyRequest);
+    assert_not_clone!(ValidatedRecoverCancelRequest);
+    assert_not_clone!(RepositoryRecoverRequestValidationFailure);
+    assert_not_serialize!(ValidatedRecoverApplyRequest);
+    assert_not_serialize!(ValidatedRecoverCancelRequest);
+    assert_not_serialize!(RepositoryRecoverRequestValidationFailure);
+    assert_not_deserialize_owned!(ValidatedRecoverApplyRequest);
+    assert_not_deserialize_owned!(ValidatedRecoverCancelRequest);
+    assert_not_deserialize_owned!(RepositoryRecoverRequestValidationFailure);
 
     const _: fn(
         RepositoryCommitRequest,
@@ -1606,6 +1770,18 @@ mod tests {
         ValidatedRepositoryCommitApplyRequest,
         Box<RepositoryCommitRequestValidationFailure>,
     > = RepositoryCommitRequest::into_validated_apply;
+    const _: fn(
+        RepositoryRecoverRequest,
+    ) -> Result<
+        ValidatedRecoverApplyRequest,
+        Box<RepositoryRecoverRequestValidationFailure>,
+    > = RepositoryRecoverRequest::into_validated_apply;
+    const _: fn(
+        RepositoryRecoverRequest,
+    ) -> Result<
+        ValidatedRecoverCancelRequest,
+        Box<RepositoryRecoverRequestValidationFailure>,
+    > = RepositoryRecoverRequest::into_validated_cancel;
 
     fn task() -> Value {
         json!({ "cwd": CWD, "taskId": TASK_ID })
@@ -2562,6 +2738,132 @@ mod tests {
     }
 
     #[test]
+    fn recover_request_apply_validation_consumes_and_retains_the_exact_request() {
+        let wire = recover_apply();
+        let request = assert_accept::<RepositoryRecoverRequest>(wire.clone());
+        let request_bytes = serde_json::to_vec(&request).unwrap();
+        let validated = request.into_validated_apply().unwrap();
+
+        assert_eq!(
+            validated.request().request_variant(),
+            RepositoryRecoverRequestVariant::RecoverApply
+        );
+        assert_eq!(serde_json::to_value(validated.cwd()).unwrap(), json!(CWD));
+        assert_eq!(
+            serde_json::to_value(validated.task_id()).unwrap(),
+            json!(TASK_ID)
+        );
+        assert_eq!(
+            serde_json::to_value(validated.operation_id()).unwrap(),
+            json!(OPERATION_ID)
+        );
+        assert_eq!(validated.expected_recovery_digest().as_str(), DIGEST);
+        assert_eq!(
+            serde_json::to_value(validated.approval()).unwrap(),
+            approval()
+        );
+        assert_eq!(
+            serde_json::to_vec(validated.request()).unwrap(),
+            request_bytes
+        );
+        assert_eq!(
+            serde_json::to_vec(&validated.into_request()).unwrap(),
+            request_bytes
+        );
+    }
+
+    #[test]
+    fn recover_request_cancel_validation_consumes_and_retains_the_exact_request() {
+        let wire = recover_cancel();
+        let request = assert_accept::<RepositoryRecoverRequest>(wire.clone());
+        let request_bytes = serde_json::to_vec(&request).unwrap();
+        let validated = request.into_validated_cancel().unwrap();
+
+        assert_eq!(
+            validated.request().request_variant(),
+            RepositoryRecoverRequestVariant::RecoverCancel
+        );
+        assert_eq!(serde_json::to_value(validated.cwd()).unwrap(), json!(CWD));
+        assert_eq!(
+            serde_json::to_value(validated.task_id()).unwrap(),
+            json!(TASK_ID)
+        );
+        assert_eq!(
+            serde_json::to_value(validated.operation_id()).unwrap(),
+            json!(OPERATION_ID)
+        );
+        assert_eq!(validated.expected_recovery_digest().as_str(), DIGEST);
+        assert_eq!(
+            serde_json::to_vec(validated.request()).unwrap(),
+            request_bytes
+        );
+        assert_eq!(
+            serde_json::to_vec(&validated.into_request()).unwrap(),
+            request_bytes
+        );
+    }
+
+    #[test]
+    fn recover_request_wrong_variant_failure_retains_the_exact_request_and_cause() {
+        let cancel = assert_accept::<RepositoryRecoverRequest>(recover_cancel());
+        let cancel_bytes = serde_json::to_vec(&cancel).unwrap();
+        let blocked = cancel.into_validated_apply().unwrap_err();
+        assert_eq!(
+            blocked.cause(),
+            &RepositoryRecoverRequestValidationCause::WrongVariant {
+                expected: RepositoryRecoverRequestVariant::RecoverApply,
+            }
+        );
+        assert_eq!(serde_json::to_vec(blocked.request()).unwrap(), cancel_bytes);
+        assert_eq!(
+            serde_json::to_vec(&blocked.into_request()).unwrap(),
+            cancel_bytes
+        );
+
+        let apply = assert_accept::<RepositoryRecoverRequest>(recover_apply());
+        let apply_bytes = serde_json::to_vec(&apply).unwrap();
+        let blocked = apply.into_validated_cancel().unwrap_err();
+        assert_eq!(
+            blocked.cause(),
+            &RepositoryRecoverRequestValidationCause::WrongVariant {
+                expected: RepositoryRecoverRequestVariant::RecoverCancel,
+            }
+        );
+        assert_eq!(serde_json::to_vec(blocked.request()).unwrap(), apply_bytes);
+        assert_eq!(
+            serde_json::to_vec(&blocked.into_request()).unwrap(),
+            apply_bytes
+        );
+    }
+
+    #[test]
+    fn recover_request_stale_apply_digest_retains_the_exact_request_and_mismatch() {
+        let wire = with(
+            recover_apply(),
+            &[("approval", approval_with_digest(OTHER_DIGEST))],
+        );
+        let request = assert_accept::<RepositoryRecoverRequest>(wire.clone());
+        let request_bytes = serde_json::to_vec(&request).unwrap();
+        let blocked = request.into_validated_apply().unwrap_err();
+
+        let RepositoryRecoverRequestValidationCause::ApprovalDigestMismatch(mismatch) =
+            blocked.cause()
+        else {
+            panic!("stale apply digest reported the wrong validation cause");
+        };
+        assert_eq!(mismatch.expected().as_str(), DIGEST);
+        assert_eq!(mismatch.observed().as_str(), OTHER_DIGEST);
+        assert_eq!(
+            serde_json::to_vec(blocked.request()).unwrap(),
+            request_bytes
+        );
+        assert_eq!(
+            serde_json::to_vec(&blocked.into_request()).unwrap(),
+            request_bytes
+        );
+    }
+
+    #[test]
     fn recovery_apply_and_cancel_are_separate_closed_decisions_and_policies() {
         let apply = assert_accept::<RepositoryRecoverRequest>(recover_apply());
         assert_eq!(
@@ -2569,7 +2871,6 @@ mod tests {
             RepositoryRecoverRequestVariant::RecoverApply
         );
         assert_eq!(apply.execution_policy(), ExecutionPolicy::JournaledEffect);
-        assert!(apply.validate_approval_digest().is_ok());
 
         let cancel = assert_accept::<RepositoryRecoverRequest>(recover_cancel());
         assert_eq!(
@@ -2577,7 +2878,6 @@ mod tests {
             RepositoryRecoverRequestVariant::RecoverCancel
         );
         assert_eq!(cancel.execution_policy(), ExecutionPolicy::LocalJournaled);
-        assert!(cancel.validate_approval_digest().is_ok());
 
         for invalid in [
             without(recover_apply(), "approval"),
@@ -2597,10 +2897,7 @@ mod tests {
             recover_apply(),
             &[("approval", approval_with_digest(OTHER_DIGEST))],
         );
-        let parsed = assert_accept::<RepositoryRecoverRequest>(mismatched_apply.clone());
-        let mismatch = parsed.validate_approval_digest().unwrap_err();
-        assert_eq!(mismatch.expected().as_str(), DIGEST);
-        assert_eq!(mismatch.observed().as_str(), OTHER_DIGEST);
+        assert_accept::<RepositoryRecoverRequest>(mismatched_apply.clone());
         assert_eq!(
             RepositoryRecoverRequest::execution_policy_for_json(&mismatched_apply),
             Some(ExecutionPolicy::JournaledEffect)
