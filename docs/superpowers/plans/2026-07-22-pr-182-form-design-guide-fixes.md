@@ -102,6 +102,14 @@ Register repository, tracking ref, pinned commit, upstream and local paths, test
 
 - [ ] **Step 4: Verify all offline contracts**
 
+Stage the new license path before the package test. The packager deliberately
+copies only paths returned by `git ls-files`, so an untracked license cannot be
+validated as part of the artifact:
+
+```bash
+git add plugins/unica/third-party/licenses/1c-design-guide/LICENSE
+```
+
 ```bash
 python3.12 -m unittest tests.ci.test_attributions tests.ci.test_skill_provenance tests.ci.test_package_unica_plugin -v
 python3.12 scripts/ci/check-attributions.py
