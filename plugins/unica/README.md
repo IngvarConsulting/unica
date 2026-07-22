@@ -89,6 +89,14 @@ workflows, BSL search and diagnostics, integrations, background jobs,
 performance, security, data separation, release support, autonomous runtime,
 and platform help.
 
+`extension-point-discovery` is an implicit mandatory preflight for planning or
+implementing changes in existing typical or supported configurations, CFE,
+forms, documents, processors, handlers, and tabular sections. It calls the
+read-only `unica.project.discover` tool first and bases the selected extension
+point on `OperationResult.data.discovery` evidence. An unresolved material gap
+stops planning and mutation; the analysis snapshot is neither mutation
+authorization, a freshness guarantee, nor a mutation receipt.
+
 ## Local development
 
 The source tree intentionally contains no generated tool binaries. Source

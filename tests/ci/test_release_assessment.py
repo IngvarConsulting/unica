@@ -31,6 +31,11 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_expected_public_tools_include_task_only_discovery(self) -> None:
+        module = load_assessment_module()
+
+        self.assertIn("unica.project.discover", module.EXPECTED_PUBLIC_TOOLS)
+
     def write_response_id_mcp(self, path: Path, response_ids: list[int]) -> None:
         path.write_text(
             f"""#!/usr/bin/env python3
@@ -100,6 +105,7 @@ import sys
 TOOLS = [
     "unica.project.status",
     "unica.project.map",
+    "unica.project.discover",
     "unica.cf.info",
     "unica.cf.validate",
     "unica.code.diagnostics",

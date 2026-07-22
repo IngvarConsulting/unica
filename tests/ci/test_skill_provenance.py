@@ -127,6 +127,35 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertIn("Unica-owned", api_design["decisionReason"])
         self.assertIn("secondary guidance", api_design["notes"])
 
+    def test_extension_point_discovery_is_unica_owned(self) -> None:
+        data = self.load_provenance()
+        matches = [
+            entry
+            for upstream in data["upstreams"]
+            for entry in upstream["entries"]
+            if entry["skill"] == "extension-point-discovery"
+        ]
+
+        self.assertEqual(len(matches), 1)
+        entry = matches[0]
+        self.assertEqual(entry["primarySource"], "unica")
+        self.assertIn(
+            "plugins/unica/skills/extension-point-discovery",
+            entry["localPaths"],
+        )
+        for contract_path in [
+            "crates/unica-coder/src/application/discovery/contract.rs",
+            "crates/unica-coder/src/domain/discovery.rs",
+            "tests/ci/test_unica_skills.py",
+            "tests/ci/test_smoke_unica_mcp.py",
+        ]:
+            with self.subTest(contract_path=contract_path):
+                self.assertIn(contract_path, entry["contractPaths"])
+        self.assertIn("PR #83", entry["notes"])
+        self.assertIn("historical research", entry["notes"])
+        self.assertIn("not an upstream code baseline", entry["notes"])
+        self.assertNotIn("baselineCommit", entry)
+
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(

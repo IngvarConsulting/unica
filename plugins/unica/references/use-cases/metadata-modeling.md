@@ -12,7 +12,17 @@ runtime workflows handled by `v8-runner`.
 
 ## Primary path
 
-Before selecting XML metadata tools, inspect the project with
+Before selecting XML metadata tools or planning changes in an existing typical
+or supported configuration, run the implicit `extension-point-discovery`
+preflight. Its first inspection call is the task-only
+`unica.project.discover`; inspect `OperationResult.data.discovery` candidates,
+evidence locations, provider outcomes, warnings, missing checks, and analysis
+snapshot. Resolve architecture-changing gaps only with the public read-only
+tools named by that skill, and stop while a material gap remains unresolved.
+The snapshot is analysis evidence, not mutation authorization, a freshness
+guarantee, or a mutation receipt.
+
+After the preflight, inspect the project with
 `unica.project.map` and choose the target source-set. Native metadata tools work
 with platform XML source-sets (`sourceFormat=platform_xml`). If the selected
 source-set is EDT (`sourceFormat=edt`), do not apply platform XML edits directly;
@@ -25,6 +35,7 @@ source-set. The format decision belongs to the selected source-set.
 
 Use native MCP tools exposed by the public `unica` server:
 
+- `unica.project.discover` for the mandatory task-only extension-point preflight.
 - `unica.cf.*` for `Configuration.xml`, languages, roles, and child-object registration.
 - `unica.meta.*` for metadata object info/compile/edit/remove/validate.
 - `unica.subsystem.*` and `unica.interface.*` for sections and command interface.
