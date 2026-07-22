@@ -939,7 +939,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "`Группа.Скрыть()`",
             "только в коде формы",
             "Всплывающая группа",
-            '"representation": "Picture"',
+            "DSL пока не может настроить `ControlRepresentation`",
             "как подсказку",
             "подобно гиперссылке",
             "Командная панель",
@@ -972,6 +972,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("RGB(", reference_section)
         self.assertNotRegex(reference_section, r'"radio"\s*:')
         self.assertNotRegex(reference_section, r'"(?:leftIndent|showLeftIndent)"\s*:')
+        self.assertNotIn('"representation": "Picture"', reference_section)
         self.assertNotIn("Кнопки действий внизу", reference_section)
         whitespace_check = subprocess.run(
             [
