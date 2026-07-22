@@ -97,3 +97,19 @@
 - [x] Append RED/GREEN evidence, SHAs, bounds, and counts to the Task 7 report.
 - [x] Dispatch a fresh independent review; fix all Critical/Important findings with another TDD cycle.
 - [x] Confirm tracked-clean status and no Task 8 changes.
+
+### Task 6: Final Rust review follow-up
+
+**Files:**
+- Modify: `crates/unica-coder/src/infrastructure/discovery/bsl.rs`
+- Modify: `.superpowers/sdd/task-7-report.md` (ignored evidence report)
+
+**Interfaces:**
+- Consumes: parsed BSL method metadata and contained-file errors raised while revalidating an inventory-captured regular file.
+- Produces: method identities allocated only for confirmed lexical matches, plus stable `Unavailable(bsl_index_stale)` results when the captured file is replaced by a link/reparse point or non-regular file.
+
+- [x] Add an observable many-method regression proving absent terms construct zero method artifacts and matching lines construct only their needed method identity.
+- [x] Run the artifact-allocation regressions RED against eager preallocation, then defer construction until a matched line has an owning parsed method.
+- [x] Add classification and real directory/link replacement regressions for post-inventory file-kind changes.
+- [x] Run the replacement regressions RED against `ContractViolation`, then map only symlink/reparse and non-regular replacements to typed staleness.
+- [x] Run focused/full acceptance, strict Clippy, formatting, diff/status checks, update evidence, and self-review both commits.
