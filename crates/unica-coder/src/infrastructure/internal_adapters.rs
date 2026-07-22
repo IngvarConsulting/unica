@@ -1528,7 +1528,7 @@ fn search_rlm_index(db_path: &Path, args: &Map<String, Value>) -> Result<Option<
     if query.is_empty() {
         return Ok(None);
     }
-    let limit = rlm_query_limit(args, 20);
+    let limit = rlm_search_limit(args, 20);
     let lines = search_indexed_methods(db_path, query, limit)
         .map_err(|error| error.to_string())?
         .iter()
@@ -2021,7 +2021,7 @@ impl ProfileIdentity {
 
 fn find_definitions(db_path: &Path, args: &Map<String, Value>) -> Result<String, String> {
     let name = required_string(args, "name")?;
-    let limit = rlm_query_limit(args, 50);
+    let limit = read_limit(args, 50);
     let module_hint = args.get("moduleHint").and_then(Value::as_str);
     let lines = find_indexed_definitions_with_module_hint(db_path, name, module_hint, limit)
         .map_err(|error| error.to_string())?
@@ -2631,8 +2631,11 @@ fn read_limit(args: &Map<String, Value>, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn rlm_query_limit(args: &Map<String, Value>, default: usize) -> usize {
-    read_limit(args, default)
+fn rlm_search_limit(args: &Map<String, Value>, default: usize) -> usize {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
 }
 
 fn index_path_candidates(
@@ -4977,8 +4980,38 @@ mod tests {
         let mut args = Map::new();
         args.insert("limit".to_string(), json!(70_000_u64));
 
-        assert_eq!(rlm_query_limit(&args, 20), 70_000);
-        assert_eq!(rlm_query_limit(&args, 50), 70_000);
+        assert_eq!(rlm_search_limit(&args, 20), 70_000);
+        assert_eq!(read_limit(&args, 50), 70_000);
+    }
+
+    #[test]
+    fn rlm_search_explicit_zero_limit_returns_no_matches() {
+        let context = temp_context("rlm-search-zero-limit");
+        let db_path = context.cache_root.join("rlm-search.db");
+        create_rlm_search_db(&db_path);
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("ОбработкаПроведения"));
+        args.insert("limit".to_string(), json!(0));
+
+        let output = search_rlm_index(&db_path, &args).unwrap();
+
+        assert_eq!(output.as_deref(), Some("No RLM method matches."));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn rlm_definition_explicit_zero_limit_keeps_default_behavior() {
+        let context = temp_context("rlm-definition-zero-limit");
+        let db_path = context.cache_root.join("rlm-navigation.db");
+        create_rlm_navigation_db(&db_path);
+        let mut args = Map::new();
+        args.insert("name".to_string(), json!("SmokeProcedure"));
+        args.insert("limit".to_string(), json!(0));
+
+        let output = find_definitions(&db_path, &args).unwrap();
+
+        assert!(output.contains("Procedure SmokeProcedure() export"));
+        cleanup_context(&context);
     }
 
     #[test]
