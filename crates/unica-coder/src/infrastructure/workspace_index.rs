@@ -1,4 +1,5 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::discovery::normalize_discovery_identity;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{
@@ -10,7 +11,7 @@ use fs2::FileExt;
 use rusqlite::{params, Connection, OpenFlags, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,20 @@ pub(crate) struct IndexedMethodHit {
     pub module_type: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexedMethodPage {
+    pub hits: Vec<IndexedMethodHit>,
+    pub has_more: bool,
+}
+
+impl std::ops::Deref for IndexedMethodPage {
+    type Target = [IndexedMethodHit];
+
+    fn deref(&self) -> &Self::Target {
+        &self.hits
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum IndexedMethodKind {
     Procedure,
@@ -58,6 +73,7 @@ impl IndexedMethodKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IndexQueryError {
     Unavailable(String),
+    InvalidLimit(String),
     MalformedSchema(String),
     MalformedRow(String),
     Failed(String),
@@ -67,6 +83,9 @@ impl std::fmt::Display for IndexQueryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable(message) => write!(formatter, "RLM index is unavailable: {message}"),
+            Self::InvalidLimit(message) => {
+                write!(formatter, "RLM index query limit is invalid: {message}")
+            }
             Self::MalformedSchema(message) => {
                 write!(formatter, "RLM index schema is malformed: {message}")
             }
@@ -83,11 +102,12 @@ impl std::error::Error for IndexQueryError {}
 pub(crate) fn search_indexed_methods(
     db_path: &Path,
     query: &str,
-    limit: u16,
-) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    limit: usize,
+) -> Result<IndexedMethodPage, IndexQueryError> {
     if query.trim().is_empty() || limit == 0 {
-        return Ok(Vec::new());
+        return Ok(empty_method_page());
     }
+    let sqlite_limit = sqlite_page_limit(limit)?;
     let connection = open_existing_index(db_path)?;
     let mut statement = connection
         .prepare(
@@ -103,16 +123,16 @@ pub(crate) fn search_indexed_methods(
         .map_err(|error| IndexQueryError::MalformedSchema(error.to_string()))?;
     let escaped = format!("\"{}\"", query.trim().replace('"', "\"\""));
     let rows = statement
-        .query_map(params![escaped, i64::from(limit)], raw_indexed_method)
+        .query_map(params![escaped, sqlite_limit], raw_indexed_method)
         .map_err(|error| IndexQueryError::Failed(error.to_string()))?;
-    collect_indexed_methods(rows)
+    collect_indexed_methods(rows, limit)
 }
 
 pub(crate) fn find_indexed_definitions(
     db_path: &Path,
     name: &str,
-    limit: u16,
-) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    limit: usize,
+) -> Result<IndexedMethodPage, IndexQueryError> {
     find_indexed_definitions_with_module_hint(db_path, name, None, limit)
 }
 
@@ -120,11 +140,12 @@ pub(crate) fn find_indexed_definitions_with_module_hint(
     db_path: &Path,
     name: &str,
     module_hint: Option<&str>,
-    limit: u16,
-) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    limit: usize,
+) -> Result<IndexedMethodPage, IndexQueryError> {
     if name.trim().is_empty() || limit == 0 {
-        return Ok(Vec::new());
+        return Ok(empty_method_page());
     }
+    let sqlite_limit = sqlite_page_limit(limit)?;
     let connection = open_existing_index(db_path)?;
     let (sql, hint) = match module_hint.map(str::trim).filter(|hint| !hint.is_empty()) {
         Some(hint) => (
@@ -132,7 +153,7 @@ pub(crate) fn find_indexed_definitions_with_module_hint(
                     mod.rel_path, m.params, mod.category, mod.object_name, mod.module_type \
              FROM methods m \
              JOIN modules mod ON mod.id = m.module_id \
-             WHERE m.name = ? COLLATE NOCASE \
+             WHERE m.name = ? COLLATE UNICA_DISCOVERY_IDENTITY \
                AND (mod.rel_path LIKE ? OR mod.object_name LIKE ?) \
              ORDER BY m.is_export DESC, mod.rel_path, m.line, m.id \
              LIMIT ?",
@@ -143,7 +164,7 @@ pub(crate) fn find_indexed_definitions_with_module_hint(
                     mod.rel_path, m.params, mod.category, mod.object_name, mod.module_type \
              FROM methods m \
              JOIN modules mod ON mod.id = m.module_id \
-             WHERE m.name = ? COLLATE NOCASE \
+             WHERE m.name = ? COLLATE UNICA_DISCOVERY_IDENTITY \
              ORDER BY m.is_export DESC, mod.rel_path, m.line, m.id \
              LIMIT ?",
             None,
@@ -154,13 +175,40 @@ pub(crate) fn find_indexed_definitions_with_module_hint(
         .map_err(|error| IndexQueryError::MalformedSchema(error.to_string()))?;
     let rows = match hint {
         Some(hint) => statement.query_map(
-            params![name.trim(), hint, hint, i64::from(limit)],
+            params![name.trim(), hint, hint, sqlite_limit],
             raw_indexed_method,
         ),
-        None => statement.query_map(params![name.trim(), i64::from(limit)], raw_indexed_method),
+        None => statement.query_map(params![name.trim(), sqlite_limit], raw_indexed_method),
     }
     .map_err(|error| IndexQueryError::Failed(error.to_string()))?;
-    collect_indexed_methods(rows)
+    let page = collect_indexed_methods(rows, limit)?;
+    let accepted_identity = normalize_discovery_identity(name);
+    if page
+        .hits
+        .iter()
+        .any(|hit| normalize_discovery_identity(&hit.name) != accepted_identity)
+    {
+        return Err(IndexQueryError::MalformedRow(
+            "definition row name conflicts with the accepted query identity".to_string(),
+        ));
+    }
+    Ok(page)
+}
+
+fn empty_method_page() -> IndexedMethodPage {
+    IndexedMethodPage {
+        hits: Vec::new(),
+        has_more: false,
+    }
+}
+
+fn sqlite_page_limit(limit: usize) -> Result<i64, IndexQueryError> {
+    let fetch_limit = limit
+        .checked_add(1)
+        .ok_or_else(|| IndexQueryError::InvalidLimit("limit + 1 overflowed usize".to_string()))?;
+    i64::try_from(fetch_limit).map_err(|_error| {
+        IndexQueryError::InvalidLimit("limit + 1 is outside SQLite i64 range".to_string())
+    })
 }
 
 fn open_existing_index(db_path: &Path) -> Result<Connection, IndexQueryError> {
@@ -170,8 +218,14 @@ fn open_existing_index(db_path: &Path) -> Result<Connection, IndexQueryError> {
             db_path.display()
         )));
     }
-    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| IndexQueryError::Unavailable(error.to_string()))
+    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| IndexQueryError::Unavailable(error.to_string()))?;
+    connection
+        .create_collation("UNICA_DISCOVERY_IDENTITY", |left, right| {
+            normalize_discovery_identity(left).cmp(&normalize_discovery_identity(right))
+        })
+        .map_err(|error| IndexQueryError::Failed(error.to_string()))?;
+    Ok(connection)
 }
 
 struct RawIndexedMethod {
@@ -204,8 +258,10 @@ fn raw_indexed_method(row: &Row<'_>) -> rusqlite::Result<RawIndexedMethod> {
 
 fn collect_indexed_methods(
     rows: impl Iterator<Item = rusqlite::Result<RawIndexedMethod>>,
-) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    limit: usize,
+) -> Result<IndexedMethodPage, IndexQueryError> {
     let mut hits = Vec::new();
+    let mut identities = BTreeSet::new();
     for row in rows {
         let row = row.map_err(|error| IndexQueryError::MalformedRow(error.to_string()))?;
         let method_kind = match row.method_type.as_str() {
@@ -247,7 +303,7 @@ fn collect_indexed_methods(
                 "module path must not be empty".to_string(),
             ));
         }
-        hits.push(IndexedMethodHit {
+        let hit = IndexedMethodHit {
             name: row.name,
             method_kind,
             exported,
@@ -258,9 +314,25 @@ fn collect_indexed_methods(
             parameters: optional_string_or_empty(row.parameters),
             category: row.category.filter(|value| !value.is_empty()),
             module_type: row.module_type.filter(|value| !value.is_empty()),
-        });
+        };
+        let identity = (
+            hit.module_path.clone(),
+            normalize_discovery_identity(&hit.name),
+        );
+        if !identities.insert(identity) {
+            return Err(IndexQueryError::MalformedRow(format!(
+                "duplicate logical method identity {:?} in {}",
+                hit.name,
+                hit.module_path.display()
+            )));
+        }
+        hits.push(hit);
     }
-    Ok(hits)
+    let has_more = hits.len() > limit;
+    if has_more {
+        hits.truncate(limit);
+    }
+    Ok(IndexedMethodPage { hits, has_more })
 }
 
 #[allow(
@@ -1438,6 +1510,51 @@ mod tests {
     }
 
     #[test]
+    fn typed_definition_lookup_uses_explicit_cyrillic_lowercase_identity() {
+        let context = test_context("typed-method-cyrillic-identity");
+        let db_path = context.cache_root.join("typed-method-cyrillic-identity.db");
+        create_method_index(&db_path);
+
+        let definitions = find_indexed_definitions(&db_path, "получитьсерию", 10)
+            .expect("lowercase Cyrillic definition lookup");
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].name, "ПолучитьСерию");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn typed_method_queries_fetch_one_extra_row_and_report_has_more() {
+        let context = test_context("typed-method-page-bound");
+        let db_path = context.cache_root.join("typed-method-page-bound.db");
+        create_method_index(&db_path);
+        insert_second_definition(&db_path);
+
+        let search = search_indexed_methods(&db_path, "Сер", 1).expect("typed method page");
+        let definitions =
+            find_indexed_definitions(&db_path, "ПолучитьСерию", 1).expect("definition page");
+
+        assert_eq!(search.hits.len(), 1);
+        assert!(search.has_more);
+        assert_eq!(definitions.hits.len(), 1);
+        assert!(definitions.has_more);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn typed_definition_page_rejects_duplicate_at_n_plus_one_before_hidden_row() {
+        let context = test_context("typed-method-page-duplicate");
+        let db_path = context.cache_root.join("typed-method-page-duplicate.db");
+        create_method_index(&db_path);
+        insert_duplicate_and_hidden_definition(&db_path);
+
+        let result = find_indexed_definitions(&db_path, "ПолучитьСерию", 1);
+
+        assert!(matches!(result, Err(IndexQueryError::MalformedRow(_))));
+        cleanup(&context);
+    }
+
+    #[test]
     fn typed_method_search_quotes_fts_control_syntax_as_literal_text() {
         let context = test_context("typed-method-query-escape");
         let db_path = context.cache_root.join("typed-method-query-escape.db");
@@ -2409,6 +2526,55 @@ source-set:
                 "INSERT INTO methods_fts (rowid, name, object_name) VALUES
                  (1, 'РассчитатьСерию', 'Серии'),
                  (2, 'ПолучитьСерию', 'Серии')",
+                (),
+            )
+            .unwrap();
+    }
+
+    fn insert_second_definition(db_path: &Path) {
+        let connection = Connection::open(db_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+                 VALUES (2, 'CommonModules/Другой/Ext/Module.bsl',
+                         'CommonModule', 'Другой', 'Module')",
+                (),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods
+                 (id, module_id, name, type, is_export, line, end_line, params)
+                 VALUES (3, 2, 'ПолучитьСерию', 'Function', 0, 20, 24, 'Код')",
+                (),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods_fts (rowid, name, object_name)
+                 VALUES (3, 'ПолучитьСерию', 'Другой')",
+                (),
+            )
+            .unwrap();
+    }
+
+    fn insert_duplicate_and_hidden_definition(db_path: &Path) {
+        let connection = Connection::open(db_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+                 VALUES (2, 'zz-hidden/Ext/Module.bsl',
+                         'CommonModule', 'Скрытый', 'Module')",
+                (),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods
+                 (id, module_id, name, type, is_export, line, end_line, params)
+                 VALUES
+                 (3, 1, 'ПолучитьСерию', 'Function', 0, 11, 15, 'Код'),
+                 (4, 2, 'ПолучитьСерию', 'Function', 0, 20, 24, 'Код')",
                 (),
             )
             .unwrap();

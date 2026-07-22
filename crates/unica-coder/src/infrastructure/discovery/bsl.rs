@@ -117,23 +117,7 @@ fn query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
 }
 
 fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
-    let mut terms = BTreeSet::new();
-    for term in std::iter::once(query.task())
-        .chain(query.search_terms().iter().map(String::as_str))
-        .chain(
-            query
-                .concepts()
-                .iter()
-                .map(|concept| concept.value.as_str()),
-        )
-    {
-        let trimmed = term.trim();
-        let normalized = normalize_discovery_identity(trimmed);
-        if !normalized.is_empty() {
-            terms.insert(trimmed.to_string());
-        }
-    }
-    terms.into_iter().collect()
+    query_terms(query)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -741,26 +725,19 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         let inventory = self.inventory_files()?;
         let inventory_bounded = inventory_is_bounded(self.inventory);
         let max_evidence = usize::from(query.limits().max_evidence);
-        let sqlite_limit = query.limits().max_evidence.checked_add(1).ok_or_else(|| {
-            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-                "bsl_definition_limit_overflow",
-                "definition evidence limit overflowed",
-            ))
-        })?;
-        let mut hit_set = BTreeSet::new();
+        let query_limit = max_evidence.max(1);
+        let mut hits = Vec::new();
+        let mut bounded = false;
         for term in raw_query_terms(query) {
-            let rows = find_indexed_definitions(&db_path, &term, sqlite_limit)
+            let page = find_indexed_definitions(&db_path, &term, query_limit)
                 .map_err(classify_index_query_error)?;
-            hit_set.extend(rows);
-            if hit_set.len() > max_evidence {
+            bounded |= page.has_more;
+            hits.extend(page.hits);
+            if bounded || hits.len() > max_evidence {
                 break;
             }
         }
-        let mut hits = hit_set.into_iter().collect::<Vec<_>>();
-        let bounded = hits.len() > max_evidence;
-        if bounded {
-            hits.truncate(max_evidence);
-        }
+        bounded |= hits.len() > max_evidence;
 
         let mut validated_files: BTreeMap<PortableRelativePath, AnalyzedFile> = BTreeMap::new();
         let mut records = Vec::new();
@@ -815,7 +792,11 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
             });
         }
         records.sort();
-        records.dedup();
+        reject_duplicate_definition_records(&records)
+            .map_err(DefinitionCollectionError::ContractViolation)?;
+        if records.len() > max_evidence {
+            records.truncate(max_evidence);
+        }
         let analyzed_files = validated_files.into_values().collect::<Vec<_>>();
         let contributors = contributors_for_records(&records, &analyzed_files);
         let batch = build_batch(records, analyzed_files, contributors)
@@ -1018,6 +999,21 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
     }
 }
 
+fn reject_duplicate_definition_records(
+    records: &[DefinitionFact],
+) -> Result<(), ProviderDiagnostic> {
+    let mut unique = BTreeSet::new();
+    for record in records {
+        if !unique.insert(record) {
+            return Err(ProviderDiagnostic::material(
+                "bsl_definition_duplicate",
+                "validated index rows produced duplicate definition evidence",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl DefinitionPort for ExistingIndexDefinitionProvider<'_> {
     fn definitions(
         &self,
@@ -1052,6 +1048,9 @@ fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionErr
     match error {
         IndexQueryError::Unavailable(message) => DefinitionCollectionError::Unavailable(
             ProviderDiagnostic::material("bsl_index_missing", message),
+        ),
+        IndexQueryError::InvalidLimit(message) => DefinitionCollectionError::ContractViolation(
+            ProviderDiagnostic::material("bsl_index_query_limit_invalid", message),
         ),
         IndexQueryError::MalformedSchema(message) => DefinitionCollectionError::ContractViolation(
             ProviderDiagnostic::material("bsl_index_schema_invalid", message),
@@ -1263,8 +1262,9 @@ mod tests {
     };
     use crate::application::discovery::ports::{BslSearchPort, DefinitionPort, RuntimeFlowPort};
     use crate::domain::discovery::{
-        ArtifactId, ArtifactKind, ContentHash, DiscoveryQuery, DiscoveryQueryLimits,
-        PortableRelativePath, ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
+        ArtifactId, ArtifactKind, ContentHash, DefinitionFact, DiscoveryQuery,
+        DiscoveryQueryLimits, EvidenceLocation, PortableRelativePath, ProviderCoverage,
+        ProviderOutcome, SourceFile, SourceInventory,
     };
     use crate::infrastructure::workspace_index::BslIndexStatus;
     use rusqlite::Connection;
@@ -1600,6 +1600,35 @@ mod tests {
             panic!("expected exact Cyrillic search term to remain queryable");
         };
         assert_eq!(batch.records.len(), 1);
+    }
+
+    #[test]
+    fn definition_query_terms_deduplicate_by_accepted_identity() {
+        let search_terms = vec!["ПолучитьСерию".to_string(), "  получитьсерию  ".to_string()];
+        let query = query("ПОЛУЧИТЬСЕРИЮ", &search_terms, 10);
+
+        let terms = super::raw_query_terms(&query);
+
+        assert_eq!(terms, vec!["получитьсерию"]);
+    }
+
+    #[test]
+    fn duplicate_validated_definition_records_are_contract_violations() {
+        let fact = DefinitionFact {
+            owner: artifact("CommonModule.Серии.Module.Module"),
+            definition: artifact("CommonModule.Серии.Module.Module.Method.ПолучитьСерию"),
+            name: "ПолучитьСерию".to_string(),
+            location: EvidenceLocation {
+                relative_path: path(MODULE_PATH),
+                line: Some(5),
+                column: None,
+                xml_path: None,
+            },
+        };
+
+        let result = super::reject_duplicate_definition_records(&[fact.clone(), fact]);
+
+        assert!(result.is_err());
     }
 
     #[test]

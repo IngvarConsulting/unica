@@ -1533,7 +1533,7 @@ fn search_rlm_index(db_path: &Path, args: &Map<String, Value>) -> Result<Option<
         .and_then(Value::as_u64)
         .map(|value| u16::try_from(value).map_or(u16::MAX, std::convert::identity))
         .map_or(20, std::convert::identity);
-    let lines = search_indexed_methods(db_path, query, limit)
+    let lines = search_indexed_methods(db_path, query, usize::from(limit))
         .map_err(|error| error.to_string())?
         .iter()
         .map(search_result_line)
@@ -2027,11 +2027,12 @@ fn find_definitions(db_path: &Path, args: &Map<String, Value>) -> Result<String,
     let name = required_string(args, "name")?;
     let limit = u16::try_from(read_limit(args, 50)).map_or(u16::MAX, std::convert::identity);
     let module_hint = args.get("moduleHint").and_then(Value::as_str);
-    let lines = find_indexed_definitions_with_module_hint(db_path, name, module_hint, limit)
-        .map_err(|error| error.to_string())?
-        .iter()
-        .map(definition_line)
-        .collect::<Vec<_>>();
+    let lines =
+        find_indexed_definitions_with_module_hint(db_path, name, module_hint, usize::from(limit))
+            .map_err(|error| error.to_string())?
+            .iter()
+            .map(definition_line)
+            .collect::<Vec<_>>();
 
     if lines.is_empty() {
         Ok(format!("No RLM definitions found for `{name}`."))
