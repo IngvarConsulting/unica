@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 from unittest.mock import patch
@@ -415,6 +416,28 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertFalse((dest / "skills" / "web-test" / ".browser-session.json").exists())
             self.assertFalse((dest / "skills" / "web-test" / "screenshot.png").exists())
             self.assertFalse((dest / "skills" / "web-test" / "trace.mp4").exists())
+
+    def test_attribution_page_and_referenced_local_licenses_are_packaged(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_src = repo_root / "plugins" / "unica"
+        attribution = plugin_src / "ATTRIBUTIONS.md"
+
+        self.assertTrue(attribution.is_file())
+        local_license_links = {
+            link
+            for link in re.findall(r"\[[^]]+\]\(([^)]+)\)", attribution.read_text(encoding="utf-8"))
+            if not link.startswith("https://") and "LICENSE" in link
+        }
+        self.assertTrue(local_license_links)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "unica"
+            module.copy_tracked_plugin_source(repo_root, plugin_src, destination)
+
+            self.assertTrue((destination / "ATTRIBUTIONS.md").is_file())
+            for link in local_license_links:
+                self.assertTrue((destination / link).is_file(), link)
 
     def test_plugin_source_copy_rejects_tracked_source_bin(self) -> None:
         module = load_package_module()

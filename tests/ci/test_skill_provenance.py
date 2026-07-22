@@ -62,11 +62,21 @@ class SkillProvenanceTests(unittest.TestCase):
             marker = repo / "marker.txt"
             marker.write_text("stale\n", encoding="utf-8")
             subprocess.run(["git", "add", "marker.txt"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "-m", "stale"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            subprocess.run(
+                ["git", "-c", "commit.gpgsign=false", "commit", "-m", "stale"],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+            )
             stale_commit = module.git_output(["rev-parse", "HEAD"], cwd=repo)
 
             marker.write_text("fresh\n", encoding="utf-8")
-            subprocess.run(["git", "commit", "-am", "fresh"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            subprocess.run(
+                ["git", "-c", "commit.gpgsign=false", "commit", "-am", "fresh"],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+            )
             fresh_commit = module.git_output(["rev-parse", "HEAD"], cwd=repo)
             subprocess.run(["git", "update-ref", "refs/remotes/origin/main", fresh_commit], cwd=repo, check=True)
             subprocess.run(["git", "reset", "--hard", stale_commit], cwd=repo, check=True, stdout=subprocess.PIPE)
@@ -96,7 +106,7 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(upstreams["v8-runner-rust"]["toolLockRef"], "v8-runner")
         self.assertNotIn("baselineCommit", upstreams["v8-runner-rust"])
 
-    def test_historical_donor_baselines_track_last_local_adaptation_not_current_head(self) -> None:
+    def test_historical_donor_baselines_track_last_local_review_not_current_head(self) -> None:
         data = self.load_provenance()
         upstreams = {item["id"]: item for item in data["upstreams"]}
 
@@ -113,7 +123,7 @@ class SkillProvenanceTests(unittest.TestCase):
             "484e550043a4cb749d59d0671329f3112e3ae668",
         )
         self.assertEqual(
-            upstreams["ai-rules-1c"]["lastAdaptedLocalCommit"],
+            upstreams["ai-rules-1c"]["lastReviewedLocalCommit"],
             "e5b4eeab4dac92e0c9f60d3f886aa2bb7ef79f80",
         )
 
@@ -125,7 +135,36 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(api_design["primarySource"], "unica")
         self.assertEqual(api_design["decision"], "ignored-with-reason")
         self.assertIn("Unica-owned", api_design["decisionReason"])
-        self.assertIn("secondary guidance", api_design["notes"])
+        self.assertIn("general ideas", api_design["notes"])
+        self.assertIn("no donor expression", api_design["notes"])
+
+    def test_v8_runner_license_matches_pinned_source_and_is_packaged(self) -> None:
+        tool_lock = json.loads(
+            (self.repo_root() / "plugins/unica/third-party/tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        runner = next(tool for tool in tool_lock["tools"] if tool["name"] == "v8-runner")
+
+        self.assertEqual(runner["license"], "AGPL-3.0-only")
+        license_path = self.repo_root() / "plugins/unica/third-party/licenses/v8-runner/LICENSE"
+        self.assertTrue(license_path.is_file())
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", license_path.read_text(encoding="utf-8"))
+
+    def test_ai_rules_is_recorded_as_inspiration_not_adaptation(self) -> None:
+        ai_rules = next(
+            item for item in self.load_provenance()["upstreams"] if item["id"] == "ai-rules-1c"
+        )
+
+        self.assertEqual(ai_rules.get("usage"), "inspiration-only")
+        self.assertNotIn("lastAdaptedLocalCommit", ai_rules)
+        self.assertNotIn("lastAdaptedAt", ai_rules)
+        self.assertIn("lastReviewedLocalCommit", ai_rules)
+        for entry in ai_rules["entries"]:
+            self.assertEqual(entry["status"], "inspiration-only")
+            self.assertEqual(entry["primarySource"], "unica")
+            self.assertEqual(entry["decision"], "ignored-with-reason")
+            self.assertIn("ideas", entry["decisionReason"])
 
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
