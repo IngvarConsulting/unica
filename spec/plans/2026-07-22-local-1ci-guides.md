@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `Guide`, `normalize_page_url(url)`, `guide_for_url(url)`, `page_output_path(guide, url)`.
 
-- [ ] **Step 1: Write failing normalization and boundary tests**
+- [x] **Step 1: Write failing normalization and boundary tests**
 
 ```python
 def test_normalize_page_url_forces_english_and_drops_fragment(self):
@@ -40,12 +40,12 @@ def test_lookalike_root_is_rejected(self):
     self.assertIsNone(guide_for_url(DEVELOPER_ROOT + "_Other/"))
 ```
 
-- [ ] **Step 2: Run the focused tests**
+- [x] **Step 2: Run the focused tests**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides -v`
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement exact-root URL normalization and deterministic safe paths**
+- [x] **Step 3: Implement exact-root URL normalization and deterministic safe paths**
 
 ```python
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ def guide_for_url(url: str) -> Guide | None:
     return next((g for g in GUIDES if path == urlsplit(g.root).path or path.startswith(urlsplit(g.root).path + "/")), None)
 ```
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides -v`
 Expected: PASS.
@@ -72,7 +72,7 @@ Expected: PASS.
 **Interfaces:**
 - Produces: `extract_page(html, page_url) -> ExtractedPage` containing title, Markdown, page links, and asset URLs.
 
-- [ ] **Step 1: Add failing fixture-based tests**
+- [x] **Step 1: Add failing fixture-based tests**
 
 ```python
 def test_extracts_only_xwiki_content_and_rewrites_links(self):
@@ -83,12 +83,12 @@ def test_extracts_only_xwiki_content_and_rewrites_links(self):
     self.assertEqual(page.assets, (urljoin(DEVELOPER_ROOT, "download/example.png"),))
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides.ExtractionTests -v`
 Expected: FAIL because extraction is missing.
 
-- [ ] **Step 3: Implement an `HTMLParser` content tree and Markdown renderer**
+- [x] **Step 3: Implement an `HTMLParser` content tree and Markdown renderer**
 
 ```python
 class ContentParser(HTMLParser):
@@ -103,7 +103,7 @@ def extract_page(html: str, page_url: str) -> ExtractedPage:
 Renderer rules explicitly cover headings, paragraphs, emphasis, lists, tables,
 `pre`/`code`, notes, links, images, and whitespace normalization.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides -v`
 Expected: PASS.
@@ -117,7 +117,7 @@ Expected: PASS.
 **Interfaces:**
 - Produces: `Downloader.run(max_pages: int | None = None) -> Manifest`, CLI flags `--output`, `--max-pages`, `--delay`, and `--check-links`.
 
-- [ ] **Step 1: Add failing mocked-network and transaction tests**
+- [x] **Step 1: Add failing mocked-network and transaction tests**
 
 ```python
 def test_failed_refresh_preserves_complete_destination(self):
@@ -127,12 +127,12 @@ def test_failed_refresh_preserves_complete_destination(self):
     self.assertEqual(json.loads(destination.joinpath("manifest.json").read_text())["complete"], True)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides.DownloaderTests -v`
 Expected: FAIL because `Downloader` is missing.
 
-- [ ] **Step 3: Implement sitemap-first discovery, page-link supplementation, asset download, retries, and staged replacement**
+- [x] **Step 3: Implement sitemap-first discovery, page-link supplementation, asset download, retries, and staged replacement**
 
 ```python
 with tempfile.TemporaryDirectory(dir=output.parent) as staging_name:
@@ -146,7 +146,7 @@ Use `urllib.robotparser`, `urllib.request`, SHA-256 hashes, JSON with sorted key
 three retries with exponential backoff, a 30-second timeout, and a default
 0.25-second delay between requests.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides -v`
 Expected: PASS.
@@ -162,7 +162,7 @@ Expected: PASS.
 - Consumes: CLI created in Task 3.
 - Produces: local-first agent rule and packaging/ignore regression contract.
 
-- [ ] **Step 1: Add failing contract assertions**
+- [x] **Step 1: Add failing contract assertions**
 
 ```python
 def test_local_1ci_corpus_is_ignored_and_not_packaged(self):
@@ -170,12 +170,12 @@ def test_local_1ci_corpus_is_ignored_and_not_packaged(self):
     self.assertNotIn("docs-local", package_script_text)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python3.12 -m unittest tests.ci.test_product_contracts -v`
 Expected: FAIL because the ignore and workflow rule are absent.
 
-- [ ] **Step 3: Add `docs-local/` ignore and an AGENTS section requiring local search then downloader fallback**
+- [x] **Step 3: Add `docs-local/` ignore and an AGENTS section requiring local search then downloader fallback**
 
 ```markdown
 ## Local 1Ci Platform Documentation
@@ -185,7 +185,7 @@ If the required guide or complete manifest is absent, run
 `python3.12 scripts/dev/download-1ci-guides.py` and retry the local search.
 ```
 
-- [ ] **Step 4: Run contract and downloader tests, then commit**
+- [x] **Step 4: Run contract and downloader tests, then commit**
 
 Run: `python3.12 -m unittest tests.dev.test_download_1ci_guides tests.ci.test_product_contracts -v`
 Expected: PASS.
@@ -199,17 +199,17 @@ Expected: PASS.
 - Consumes: completed downloader CLI.
 - Produces: complete local corpus and manifest.
 
-- [ ] **Step 1: Run a bounded sample**
+- [x] **Step 1: Run a bounded sample**
 
 Run: `python3.12 scripts/dev/download-1ci-guides.py --max-pages 3 --output docs-local/1ci/8.3.27/en-sample`
 Expected: three Markdown page records, downloaded assets, zero failures.
 
-- [ ] **Step 2: Inspect sample Markdown and links, then remove the sample through the script's staging replacement behavior**
+- [x] **Step 2: Inspect sample Markdown and links, then remove the sample through the script's staging replacement behavior**
 
 Run: `python3.12 scripts/dev/download-1ci-guides.py --output docs-local/1ci/8.3.27/en --check-links`
 Expected: all three guides complete, zero failed records, zero broken local links.
 
-- [ ] **Step 3: Verify repository and test state**
+- [x] **Step 3: Verify repository and test state**
 
 Run: `git status --short --ignored | rg 'docs-local|download-1ci|AGENTS|gitignore|test_product'`
 Expected: corpus lines start with `!!`; only source, tests, rules, spec, and plan are tracked changes.

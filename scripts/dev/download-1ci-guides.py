@@ -18,7 +18,7 @@ import tempfile
 import time
 from typing import NamedTuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 from urllib.robotparser import RobotFileParser
 import xml.etree.ElementTree as ET
@@ -382,13 +382,15 @@ def _atomic_write(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
-def publish_staging(staging: Path, destination: Path) -> None:
+def publish_staging(staging: Path, destination: Path, *, allow_limited: bool = False) -> None:
     manifest_path = staging / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise DownloadError(f"invalid staging manifest: {error}") from error
-    if manifest.get("complete") is not True:
+    if manifest.get("complete") is not True and not (
+        allow_limited and manifest.get("limited") is True
+    ):
         raise DownloadError("refusing to publish an incomplete corpus")
     backup = destination.with_name(destination.name + ".previous")
     if backup.exists():
@@ -421,7 +423,7 @@ class Downloader:
                 (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(),
             )
             _atomic_write(staging / "README.md", self._readme(manifest).encode())
-            publish_staging(staging, self.output)
+            publish_staging(staging, self.output, allow_limited=max_pages is not None)
             return manifest
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
@@ -497,18 +499,7 @@ class Downloader:
                 print(f"downloaded {len(records)}: {url}", flush=True)
             except Exception as error:
                 failures.append({"url": url, "error": str(error)})
-        complete = not failures and not pending
-        if max_pages is not None and not failures:
-            complete = True
-        manifest = {
-            "schemaVersion": 1,
-            "complete": complete,
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
-            "sourceRoots": [guide.root for guide in GUIDES],
-            "pages": sorted(records, key=lambda record: record["url"]),
-            "failures": failures,
-            "limited": max_pages is not None,
-        }
+        manifest = build_manifest(records, failures, max_pages=max_pages, remaining=len(pending))
         if failures:
             raise DownloadError(f"download failed for {len(failures)} item(s): {failures[0]}")
         return manifest
@@ -522,6 +513,24 @@ class Downloader:
         lines.extend(f"- `{guide.name}`: {counts[guide.name]} pages" for guide in GUIDES)
         lines.extend(["", "Refresh from the repository root:", "", "```sh", "python3.12 scripts/dev/download-1ci-guides.py", "```", ""])
         return "\n".join(lines)
+
+
+def build_manifest(
+    records: list[dict],
+    failures: list[dict],
+    *,
+    max_pages: int | None,
+    remaining: int = 0,
+) -> dict:
+    return {
+        "schemaVersion": 1,
+        "complete": not failures and remaining == 0 and max_pages is None,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "sourceRoots": [guide.root for guide in GUIDES],
+        "pages": sorted(records, key=lambda record: record["url"]),
+        "failures": failures,
+        "limited": max_pages is not None,
+    }
 
 
 def _check_links(root: Path) -> list[str]:

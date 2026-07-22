@@ -83,6 +83,11 @@ class ExtractionTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_limited_manifest_is_not_complete(self):
+        manifest = guides.build_manifest([], [], max_pages=3)
+        self.assertFalse(manifest["complete"])
+        self.assertTrue(manifest["limited"])
+
     def test_failed_refresh_preserves_complete_destination(self):
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
