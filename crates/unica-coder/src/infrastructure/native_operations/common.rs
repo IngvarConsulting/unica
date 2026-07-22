@@ -1289,11 +1289,39 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_support_state_bytes, read_utf8_sig_snapshot, support_status_for_path, utf8_bom_bytes,
-        SupportObjectRule, SupportParseError,
+        parse_support_state_bytes, read_utf8_sig_snapshot, support_guard_violation,
+        support_status_for_path, utf8_bom_bytes, SupportObjectRule, SupportParseError,
     };
+    use crate::application::operation_descriptors::SupportGuardRequirement;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TRACKED_ON_SUPPORT_FIXTURES: &[(&str, &[u8])] = &[
+        (
+            "dcs-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "dcs-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+        (
+            "form-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "form-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+        (
+            "meta-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+    ];
 
     #[test]
     fn utf8_bom_bytes_emits_exactly_one_bom() {
@@ -1352,6 +1380,57 @@ mod tests {
     }
 
     #[test]
+    fn every_tracked_on_support_fixture_uses_the_supported_tuple_grammar() {
+        for (case, bytes) in TRACKED_ON_SUPPORT_FIXTURES {
+            let state = parse_support_state_bytes(bytes)
+                .unwrap_or_else(|error| panic!("{case} fixture must parse: {error}"));
+            assert_eq!(
+                state.object_rule("11111111-1111-1111-1111-111111111111"),
+                Some(SupportObjectRule::Locked),
+                "{case} root rule"
+            );
+            assert_eq!(
+                state.object_rule("22222222-2222-2222-2222-222222222222"),
+                Some(SupportObjectRule::Locked),
+                "{case} subordinate rule"
+            );
+            assert_eq!(
+                state.object_rule("33333333-3333-3333-3333-333333333333"),
+                Some(SupportObjectRule::OffSupport),
+                "{case} removed subordinate rule"
+            );
+        }
+    }
+
+    #[test]
+    fn huge_declared_counts_return_errors_without_panicking_or_allocating() {
+        let vendor_count = format!("{{6,0,{}}}", usize::MAX);
+        let vendor_result =
+            std::panic::catch_unwind(|| parse_support_state_bytes(vendor_count.as_bytes()));
+        assert!(
+            matches!(
+                vendor_result,
+                Ok(Err(SupportParseError::CountExceedsPayload("vendor count")))
+            ),
+            "huge vendor count must be a typed parse error: {vendor_result:?}"
+        );
+
+        let object_count = format!(
+            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",{}}}",
+            usize::MAX
+        );
+        let object_result =
+            std::panic::catch_unwind(|| parse_support_state_bytes(object_count.as_bytes()));
+        assert!(
+            matches!(
+                object_result,
+                Ok(Err(SupportParseError::CountExceedsPayload("object count")))
+            ),
+            "huge object count must be a typed parse error: {object_result:?}"
+        );
+    }
+
+    #[test]
     fn support_parser_requires_a_complete_balanced_vendor_grammar() {
         let uuid = "40000000-0000-0000-0000-000000000001";
         let valid = support_bytes(0, &[(uuid, 1)]);
@@ -1371,6 +1450,12 @@ mod tests {
         ] {
             assert!(parse_support_state_bytes(malformed).is_err());
         }
+
+        let mismatched_subordinate = b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",2,0,0,40000000-0000-0000-0000-000000000001,1,0,40000000-0000-0000-0000-000000000002,40000000-0000-0000-0000-000000000003}";
+        assert!(matches!(
+            parse_support_state_bytes(mismatched_subordinate),
+            Err(SupportParseError::MismatchedObjectUuid)
+        ));
     }
 
     #[test]
@@ -1425,6 +1510,44 @@ mod tests {
             fs::write(&support_path, support_bytes(0, &[(uuid, rule.flag())])).unwrap();
             assert_eq!(support_status_for_path(&object_path), expected);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mutation_guard_distinguishes_missing_from_invalid_existing_support_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-support-guard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("Documents").join("Purchase.xml");
+        let support_path = root.join("Ext").join("ParentConfigurations.bin");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::create_dir_all(support_path.parent().unwrap()).unwrap();
+        fs::write(root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        fs::write(
+            &target,
+            "<MetaDataObject><Document uuid=\"11111111-1111-1111-1111-111111111111\"/></MetaDataObject>",
+        )
+        .unwrap();
+
+        assert!(support_guard_violation(&target, SupportGuardRequirement::Editable).is_none());
+
+        fs::write(&support_path, b"{6,0,1}").unwrap();
+        assert_eq!(support_status_for_path(&target), "не на поддержке");
+        let malformed = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("malformed existing support state must fail closed");
+        assert_eq!(malformed.code, "support-state-invalid");
+
+        fs::remove_file(&support_path).unwrap();
+        fs::create_dir(&support_path).unwrap();
+        let unreadable = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("unreadable existing support state must fail closed");
+        assert_eq!(unreadable.code, "support-state-invalid");
+
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1792,7 +1915,20 @@ pub(crate) fn support_guard_violation(
         .unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = read_support_state(&bin_path)?;
+    let state = match read_support_state_checked(&bin_path) {
+        Ok(SupportStateRead::Missing) => return None,
+        Ok(SupportStateRead::Parsed(state)) => state,
+        Err(error) => {
+            return Some(SupportGuardViolation {
+                code: "support-state-invalid",
+                reason: format!(
+                    "существующий ParentConfigurations.bin нельзя безопасно прочитать или разобрать: {error}"
+                ),
+                target_path,
+                config_dir,
+            });
+        }
+    };
     if state.removed {
         return None;
     }
@@ -1923,6 +2059,7 @@ pub(crate) enum SupportParseError {
     InvalidObjectRule(u8),
     InvalidStructure(&'static str),
     InvalidNumber(&'static str),
+    CountExceedsPayload(&'static str),
     InvalidUuid(&'static str),
     InvalidObjectMarker(u8),
     MismatchedObjectUuid,
@@ -1958,6 +2095,10 @@ impl std::fmt::Display for SupportParseError {
                 formatter,
                 "ParentConfigurations.bin has invalid numeric field {field}"
             ),
+            Self::CountExceedsPayload(field) => write!(
+                formatter,
+                "ParentConfigurations.bin declares {field} larger than its remaining payload"
+            ),
             Self::InvalidUuid(field) => write!(
                 formatter,
                 "ParentConfigurations.bin has invalid UUID field {field}"
@@ -1984,12 +2125,52 @@ pub(crate) struct SupportVendor {
     name: String,
 }
 
-pub(crate) fn read_support_state(bin_path: &Path) -> Option<ParsedSupportState> {
-    if !bin_path.is_file() {
-        return None;
+#[derive(Debug)]
+pub(crate) enum SupportStateRead {
+    Missing,
+    Parsed(ParsedSupportState),
+}
+
+#[derive(Debug)]
+pub(crate) enum SupportStateReadError {
+    Read(std::io::Error),
+    Parse(SupportParseError),
+}
+
+impl std::fmt::Display for SupportStateReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read(error) => write!(
+                formatter,
+                "failed to read ParentConfigurations.bin: {error}"
+            ),
+            Self::Parse(error) => write!(formatter, "invalid ParentConfigurations.bin: {error}"),
+        }
     }
-    let data = fs::read(bin_path).ok()?;
-    parse_support_state_bytes(&data).ok()
+}
+
+impl std::error::Error for SupportStateReadError {}
+
+pub(crate) fn read_support_state(bin_path: &Path) -> Option<ParsedSupportState> {
+    match read_support_state_checked(bin_path) {
+        Ok(SupportStateRead::Parsed(state)) => Some(state),
+        Ok(SupportStateRead::Missing) | Err(_) => None,
+    }
+}
+
+pub(crate) fn read_support_state_checked(
+    bin_path: &Path,
+) -> Result<SupportStateRead, SupportStateReadError> {
+    let data = match fs::read(bin_path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SupportStateRead::Missing);
+        }
+        Err(error) => return Err(SupportStateReadError::Read(error)),
+    };
+    parse_support_state_bytes(&data)
+        .map(SupportStateRead::Parsed)
+        .map_err(SupportStateReadError::Parse)
 }
 
 pub(crate) fn parse_support_state_bytes(
@@ -2042,8 +2223,12 @@ pub(crate) fn parse_support_state_bytes(
     let mut counts = [0usize; 3];
     let mut object_rules = BTreeMap::new();
     let mut object_rule_lines = BTreeMap::new();
-    let mut vendors = Vec::with_capacity(vendor_count);
-    for _vendor_index in 0..vendor_count {
+    const MIN_VENDOR_FIELDS: usize = 7;
+    if vendor_count > cursor.remaining() / MIN_VENDOR_FIELDS {
+        return Err(SupportParseError::CountExceedsPayload("vendor count"));
+    }
+    let mut vendors = Vec::new();
+    for vendor_index in 0..vendor_count {
         cursor.uuid("vendor uuid")?;
         let vendor_flag = cursor.number_u8("vendor flag")?;
         if !matches!(vendor_flag, 0 | 1) {
@@ -2054,12 +2239,24 @@ pub(crate) fn parse_support_state_bytes(
         let vendor = cursor.quoted("vendor name")?;
         let name = cursor.quoted("configuration name")?;
         let object_count = cursor.number_usize("object count")?;
+        let remaining_vendor_count = vendor_count.saturating_sub(vendor_index.saturating_add(1));
+        let remaining_vendor_fields = remaining_vendor_count
+            .checked_mul(MIN_VENDOR_FIELDS)
+            .ok_or(SupportParseError::CountExceedsPayload("vendor count"))?;
+        let available_object_fields = cursor
+            .remaining()
+            .checked_sub(remaining_vendor_fields)
+            .ok_or(SupportParseError::CountExceedsPayload("vendor count"))?;
+        let minimum_object_fields = minimum_support_object_fields(object_count)?;
+        if minimum_object_fields > available_object_fields {
+            return Err(SupportParseError::CountExceedsPayload("object count"));
+        }
         vendors.push(SupportVendor {
             version,
             vendor,
             name,
         });
-        for _object_index in 0..object_count {
+        for object_index in 0..object_count {
             let flag = cursor.number_u8("object rule")?;
             let Some(rule) = SupportObjectRule::from_flag(flag) else {
                 return Err(SupportParseError::InvalidObjectRule(flag));
@@ -2069,9 +2266,18 @@ pub(crate) fn parse_support_state_bytes(
                 return Err(SupportParseError::InvalidObjectMarker(marker));
             }
             let (object_uuid, offset) = cursor.uuid("object uuid")?;
-            let (repeated_uuid, _repeated_offset) = cursor.uuid("repeated object uuid")?;
-            if !object_uuid.eq_ignore_ascii_case(&repeated_uuid) {
-                return Err(SupportParseError::MismatchedObjectUuid);
+            if object_index == 0 {
+                if cursor
+                    .peek_bare()
+                    .is_some_and(|value| object_uuid.eq_ignore_ascii_case(value))
+                {
+                    cursor.uuid("repeated root object uuid")?;
+                }
+            } else {
+                let (repeated_uuid, _repeated_offset) = cursor.uuid("repeated object uuid")?;
+                if !object_uuid.eq_ignore_ascii_case(&repeated_uuid) {
+                    return Err(SupportParseError::MismatchedObjectUuid);
+                }
             }
             let normalized_uuid = object_uuid.to_ascii_lowercase();
             if object_rules.insert(normalized_uuid.clone(), rule).is_some() {
@@ -2091,6 +2297,16 @@ pub(crate) fn parse_support_state_bytes(
         object_rule_lines,
         vendors,
     })
+}
+
+fn minimum_support_object_fields(object_count: usize) -> Result<usize, SupportParseError> {
+    if object_count == 0 {
+        return Ok(0);
+    }
+    object_count
+        .checked_mul(4)
+        .and_then(|fields| fields.checked_sub(1))
+        .ok_or(SupportParseError::CountExceedsPayload("object count"))
 }
 
 #[derive(Debug)]
@@ -2229,6 +2445,17 @@ impl<'a> SupportTokenCursor<'a> {
         self.index += 1;
         match (&token.value, field) {
             (SupportTokenValue::Bare(_), _) | (SupportTokenValue::Quoted(_), _) => Ok(token),
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.tokens.len().saturating_sub(self.index)
+    }
+
+    fn peek_bare(&self) -> Option<&str> {
+        match self.tokens.get(self.index).map(|token| &token.value) {
+            Some(SupportTokenValue::Bare(value)) => Some(value),
+            Some(SupportTokenValue::Quoted(_)) | None => None,
         }
     }
 

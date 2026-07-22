@@ -29,6 +29,13 @@ pub(crate) fn evaluate_support_guard(
     let Some(violation) = support_guard_violation(&target_path, requirement) else {
         return Ok(SupportGuardCheck::Allow);
     };
+    if violation.code == "support-state-invalid" {
+        return Ok(SupportGuardCheck::Block(support_guard_blocked_outcome(
+            spec,
+            &violation,
+            requirement,
+        )));
+    }
 
     Ok(match support_guard_mode(&violation.config_dir, context) {
         SupportGuardMode::Off => SupportGuardCheck::Allow,
@@ -210,6 +217,11 @@ fn support_guard_blocked_outcome(
     let off_note =
         "Снять проверку для этой базы: editingAllowedCheck = warn|off в .v8-project.json.";
     let (state, fix) = match violation.code {
+        "support-state-invalid" => (
+            format!("Состояние поддержки не подтверждено: {}.", violation.reason),
+            "Исправьте или восстановите Ext/ParentConfigurations.bin перед любой мутацией конфигурации. Отсутствующий файл означает собственную конфигурацию, но существующий повреждённый или нечитаемый файл небезопасно считать отсутствующим."
+                .to_string(),
+        ),
         "capability-off" => (
             format!(
                 "Состояние: у всей конфигурации выключена возможность изменения (режим read-only «из коробки») — поэтому объект «{target}» редактировать нельзя."

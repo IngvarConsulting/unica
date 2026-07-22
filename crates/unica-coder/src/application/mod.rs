@@ -2339,6 +2339,124 @@ mod tests {
     }
 
     #[test]
+    fn mutating_cf_edit_blocks_tracked_valid_locked_root_tuple() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-guard-tracked-root-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            support_test_configuration_xml("11111111-1111-1111-1111-111111111111"),
+        )
+        .unwrap();
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Version=2.0".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result.errors.join("\n").contains("на замке"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_cf_edit_blocks_malformed_support_even_when_guard_override_is_off() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-guard-malformed-state-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            support_test_configuration_xml("11111111-1111-1111-1111-111111111111"),
+        )
+        .unwrap();
+        std::fs::write(ext.join("ParentConfigurations.bin"), b"{6,0,1}").unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Version=2.0".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result
+            .errors
+            .join("\n")
+            .contains("ParentConfigurations.bin"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cf_edit_normalizes_crlf_before_lxml_compatible_write() {
         let root = std::env::temp_dir().join(format!("unica-cf-crlf-{}", std::process::id()));
         let workspace = root.join("workspace");
