@@ -25,6 +25,7 @@ XML formats, DSL contracts, and reusable layout patterns live in
 ## Platform And Tooling
 
 - `references/platform/development-standards.md` — coding, architecture, and form-module standards.
+- `references/platform/metadata-conventions.md` — object naming, synonym, representation, and fill-check conventions.
 - `references/platform/platform-solutions.md` — common platform pitfalls and fix templates.
 - `references/platform/runtime-diagnostics.md` — ЖР/ТЖ, startup, web-client, HTTP, background-job, and process/session diagnostics.
 - `references/platform/db-performance.md` — query, DCS, indexes, locks, virtual tables, and DBMS evidence.
