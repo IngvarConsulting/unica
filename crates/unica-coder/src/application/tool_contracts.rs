@@ -5,6 +5,14 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const CODE_PATCH_ARGS: &[&str] = &[
+    "path",
+    "operation",
+    "selector",
+    "content",
+    "position",
+    "sourceDir",
+];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -602,6 +610,7 @@ pub fn validate_tool_arguments(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_code_patch_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
@@ -617,6 +626,62 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.code.patch" {
+        return Ok(());
+    }
+    for key in ["path", "operation", "content", "position"] {
+        let value = args
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{} argument `{key}` must be a non-empty string", tool.name))?;
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{} argument `{key}` must be a non-empty string",
+                tool.name
+            ));
+        }
+    }
+    if args.get("operation").and_then(Value::as_str) != Some("insert") {
+        return Err(format!("{} supports only operation `insert`", tool.name));
+    }
+    if !matches!(
+        args.get("position").and_then(Value::as_str),
+        Some("before" | "after")
+    ) {
+        return Err(format!(
+            "{} argument `position` must be `before` or `after`",
+            tool.name
+        ));
+    }
+    let selector = args
+        .get("selector")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} argument `selector` must be an object", tool.name))?;
+    if selector.len() != 1
+        || !selector
+            .keys()
+            .all(|key| matches!(key.as_str(), "method" | "anchor"))
+    {
+        return Err(format!(
+            "{} selector must contain exactly one of `method` or `anchor`",
+            tool.name
+        ));
+    }
+    let value = selector
+        .values()
+        .next()
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    if value.is_none() {
+        return Err(format!(
+            "{} selector value must be a non-empty string",
+            tool.name
+        ));
+    }
     Ok(())
 }
 
@@ -1218,7 +1283,11 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => {
-            names.extend(native_args_for(operation));
+            if operation == "code-patch" {
+                names.extend(CODE_PATCH_ARGS);
+            } else {
+                names.extend(native_args_for(operation));
+            }
             if operation == "form-edit" {
                 names.push("definition");
             }
@@ -1418,6 +1487,25 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.code.patch" {
+        return match name {
+            "operation" => json!({ "type": "string", "enum": ["insert"] }),
+            "position" => json!({ "type": "string", "enum": ["before", "after"] }),
+            "selector" => json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "method": { "type": "string", "minLength": 1 },
+                    "anchor": { "type": "string", "minLength": 1 }
+                },
+                "oneOf": [
+                    { "required": ["method"] },
+                    { "required": ["anchor"] }
+                ]
+            }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
@@ -1563,7 +1651,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "regex"
     ) {
         Some("boolean")
-    } else if key == "definition" {
+    } else if matches!(key, "definition" | "selector") {
         Some("object")
     } else if matches!(
         key,
@@ -1626,6 +1714,63 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn code_patch_contract_is_narrow_and_requires_one_typed_selector() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/X/Ext/Module.bsl"),
+        );
+        args.insert("operation".to_string(), json!("insert"));
+        args.insert("selector".to_string(), json!({"method": "ПриСоздании"}));
+        args.insert("content".to_string(), json!("Сообщить(\"ok\");"));
+        args.insert("position".to_string(), json!("after"));
+        args.insert("sourceDir".to_string(), json!("src"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+
+        args.insert(
+            "selector".to_string(),
+            json!({"method": "A", "anchor": "B"}),
+        );
+        assert!(validate_tool_arguments(tool, &args, false).is_err());
+        args.insert("rawArgs".to_string(), json!(["--unsafe"]));
+        assert!(validate_tool_arguments(tool, &args, false).is_err());
+    }
+
+    #[test]
+    fn code_patch_json_schema_accepts_each_documented_selector_variant() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let schema = input_schema_for_tool(&tool);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let base = json!({
+            "path": "src/CommonModules/X/Ext/Module.bsl",
+            "operation": "insert",
+            "content": "Сообщить(\"ok\");",
+            "position": "after",
+            "sourceDir": "src",
+        });
+
+        for selector in [
+            json!({"method": "ПриСоздании"}),
+            json!({"anchor": "Сообщить"}),
+        ] {
+            let mut instance = base.clone();
+            instance["selector"] = selector;
+            assert!(validator.is_valid(&instance), "{instance}");
+        }
+
+        let mut invalid = base;
+        invalid["selector"] = json!({"method": "A", "anchor": "B"});
+        assert!(!validator.is_valid(&invalid));
     }
 
     #[test]
@@ -2070,6 +2215,27 @@ mod tests {
         let logs_schema = input_schema_for_tool(&job_logs);
         assert_eq!(logs_schema["required"], json!(["jobId"]));
         assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+    }
+
+    #[test]
+    fn code_patch_schema_accepts_each_documented_selector_variant() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .expect("code patch tool is registered");
+        let schema = input_schema_for_tool(&tool);
+        let selector = &schema["properties"]["selector"];
+
+        assert_eq!(selector["type"], "object");
+        assert_eq!(selector["additionalProperties"], false);
+        assert_eq!(selector["properties"]["method"]["type"], "string");
+        assert_eq!(selector["properties"]["anchor"]["type"], "string");
+        assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
+        for required in ["path", "operation", "selector", "content", "position"] {
+            assert!(schema["required"]
+                .as_array()
+                .is_some_and(|items| { items.iter().any(|value| value == required) }));
+        }
     }
 
     #[test]

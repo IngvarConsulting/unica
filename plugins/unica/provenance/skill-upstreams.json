@@ -1,5 +1,19 @@
 {
   "schemaVersion": 1,
+  "unicaOwnedSkills": [
+    {
+      "skill": "code-patch",
+      "notes": "Unica-owned skill implementing the native unica.code.patch product and safety contract.",
+      "localPaths": [
+        "plugins/unica/skills/code-patch"
+      ],
+      "contractPaths": [
+        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-coder/src/infrastructure/native_operations/code.rs",
+        "tests/ci/test_unica_skills.py"
+      ]
+    }
+  ],
   "upstreams": [
     {
       "id": "cc-1c-skills",

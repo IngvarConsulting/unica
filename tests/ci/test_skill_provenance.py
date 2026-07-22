@@ -166,6 +166,25 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertEqual(entry["decision"], "ignored-with-reason")
             self.assertIn("ideas", entry["decisionReason"])
 
+    def test_code_patch_is_recorded_as_exclusively_unica_owned(self) -> None:
+        data = self.load_provenance()
+        owned = {entry["skill"]: entry for entry in data["unicaOwnedSkills"]}
+        donor_skills = {
+            entry["skill"]
+            for upstream in data["upstreams"]
+            for entry in upstream["entries"]
+        }
+
+        self.assertIn("code-patch", owned)
+        self.assertNotIn("code-patch", donor_skills)
+        self.assertEqual(
+            owned["code-patch"]["localPaths"],
+            ["plugins/unica/skills/code-patch"],
+        )
+        self.assertNotIn("repository", owned["code-patch"])
+        self.assertNotIn("upstreamPaths", owned["code-patch"])
+        self.assertNotIn("baselineCommit", owned["code-patch"])
+
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(
@@ -235,6 +254,7 @@ class SkillProvenanceTests(unittest.TestCase):
             for upstream in data["upstreams"]
             for entry in upstream["entries"]
         }
+        indexed_skills.update(entry["skill"] for entry in data.get("unicaOwnedSkills", []))
 
         self.assertEqual(sorted(local_skills - indexed_skills), [])
         self.assertEqual(sorted(indexed_skills - local_skills), [])
