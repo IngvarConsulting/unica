@@ -56,8 +56,12 @@ terminal `status` (`complete` or `partial`), selected source root,
 analysis-snapshot fingerprint, normalized concepts with `taskDerived` or
 `explicit` provenance, provider outcomes and coverage, related artifacts,
 structural and proven runtime-flow edges, actionable extension-point candidates,
-warnings, missing checks, and stable evidence IDs/source locations. It has no
-aggregate score, confidence scalar, or receipt.
+each with a deterministic advisory `recommendation { summary, basis }`,
+warnings, missing checks, and stable evidence IDs/source locations. A basis can
+come only from accepted metadata structure, managed-form binding, or proven
+runtime-flow facts; lexical/support evidence cannot create one. Recommendations
+do not rank a winner or override blocking/material gaps. The result has no
+aggregate score, confidence scalar, proposal verdict, or receipt.
 
 `DiscoverExtensionPointsUseCase` owns orchestration through typed ports for
 metadata/object structure, managed-form bindings, BSL lexical/index search,
@@ -69,7 +73,8 @@ Every provider/query returns exactly one exhaustive `ProviderOutcome<T>` fact:
 
 - `Complete`: complete for the exact typed query; only an empty result is
   negative evidence for that query.
-- `Bounded`: a resource limit truncated coverage.
+- `Bounded`: the returned data is sound but scope is incomplete because a
+  resource, trust, or snapshot-freshness boundary prevents a complete result.
 - `Unavailable`: the capability is unavailable in this workspace.
 - `Failed`: the provider failed with a typed diagnostic.
 - `ContractViolation`: returned data violates its port contract and is ineligible
@@ -79,6 +84,26 @@ Every provider/query returns exactly one exhaustive `ProviderOutcome<T>` fact:
 checks, never a false negative. `ContractViolation` also makes the output
 partial, adds a blocking provider diagnostic, and excludes its records from
 graph promotion.
+
+The application reserves a deterministic share of the remaining global
+`maxEvidence` budget for each later provider. Providers retain strong exact or
+inflected task matches and their structural ancestors ahead of weak prefixes
+and unrelated facts. `maxCandidates` uses the same private match-strength tiers
+with canonical identity as the tie-breaker; no score or confidence crosses the
+public boundary. Compound platform identifiers are segmented from their
+display spelling before case normalization, and three-character acronyms are
+not treated as near-inflections. All typed relevance matching in one request
+shares a cancellation-aware work budget of
+`clamp(limits.maxEvidence * 4096, 8192, 8388608)` units; each term comparison
+costs 32 units plus both normalized byte lengths. Exhaustion preserves accepted
+facts but makes the affected provider `Bounded(discovery_match_work_bound)`.
+
+Metadata-catalog facts are fail-closed `Contains` hierarchy claims over only
+metadata objects, tabular sections, attributes, forms, and commands. Each
+artifact has one typed parent, cannot parent itself, and participates in no
+cycle. A normal child must be a canonical direct descendant of its parent;
+the sole non-prefix root transition is a registered metadata object beneath a
+top-level `Configuration.*` artifact.
 
 The BSL lexical parser stores method ownership as sparse declaration-to-end
 ranges rather than one entry per source line. It rejects a line immediately at
@@ -94,10 +119,30 @@ thousands of short task-derived terms from bypassing the bound. Exhaustion is
 `Bounded` with `bsl_lexical_work_bound` and retains only facts and coverage from
 files that completed before the exhausted file.
 
-The graph keeps `contains` and `defines` structural. Only compatible typed
-platform callbacks, form-command bindings, event subscriptions, and call-graph
-facts promote evidence to runtime-flow edges. A lexical match can create a
-related artifact but cannot by itself create an actionable candidate.
+Existing-index definition lookup reads its status through a contained 64 KiB
+regular-file boundary, accepts only a canonical non-link SQLite database below
+the cache root, copies a stable verified-handle image within `maxBytes`, rejects
+WAL-mode/live-sidecar images, and deserializes the copy into one private
+read-only connection. Exact queries share one cumulative SQLite VM-work budget;
+TEXT fields are byte-bounded, and query-term truncation at 128 identities is
+reported explicitly as `Bounded`. Each captured source file is parsed at most
+once. Individually source-validated hits are returned as data-bearing
+`Bounded(bsl_definition_freshness_unverified)` because the legacy index status
+does not bind its generation to the analysis snapshot. An empty such lookup is
+also `Bounded`, never negative evidence; missing or stale indexes are
+`Unavailable`. Status publishing uses same-directory atomic replacement;
+transient/incomplete status I/O is `Unavailable`, while structurally invalid
+status and malformed schema/rows fail closed as `ContractViolation`.
+
+The graph keeps `contains`, `defines`, and data bindings structural. Compatible
+typed form actions/callbacks establish runtime roots; only directed
+`Method -> Method` `Calls` facts extend those roots. `maxGraphDepth` counts only
+those call hops: the node at depth N remains, its outgoing calls are omitted,
+and RuntimeFlow becomes `Bounded(graph_depth_limit)`. Structural edges do not
+consume depth, `maxCandidates` does not affect traversal, standalone calls do
+not establish candidates, and event subscriptions fail closed until Slice A
+has a typed source shape. A lexical match can create a related artifact but
+cannot by itself create an actionable candidate.
 
 ## Analysis snapshot boundary
 
@@ -131,6 +176,9 @@ typed `SourceInventoryBound::TraversalEntries` marker substantiates this work
 bound across the application contract without falsely adding irrelevant
 entries to evidence-only `filesSeen`; downstream providers inherit that marker
 as incomplete inventory scope and cannot report a false `Complete` result.
+Ordinary file/per-file/aggregate-byte bounds are accepted only when
+`filesSeen` records the exact N+1 eligible-file probe; merely returning exactly
+`maxFiles` or `maxBytes` does not prove that more source exists.
 
 The snapshot neither claims whole-workspace immutability nor grants permission
 to mutate. Platform filesystem code remains behind the existing infrastructure
@@ -145,10 +193,10 @@ documents, processors, handlers, or tabular sections. It calls
 edit; passes the original task and confirmed objects; and may enrich terms
 without inventing metadata names.
 
-It inspects candidates, evidence, warnings, outcomes, and missing checks;
+It inspects candidate recommendations, evidence, warnings, outcomes, and missing checks;
 resolves material checks only with public `unica.*` tools; and stops before
 mutation if an unresolved check can change the selected architecture. It records
-the selected and rejected points, evidence, support/lock state, and unresolved
+the selected and rejected points, copied recommendation, evidence, support/lock state, and unresolved
 non-material checks. It does not invoke internal RLM binaries, SQLite,
 analyzers, or packaged scripts directly.
 
@@ -156,7 +204,8 @@ Package acceptance covers source and packaged MCP smoke, official skill
 validation/provenance/routing/task-trigger checks, and native tool prompt
 examples with no script fallback. The domain-neutral packaged UT 11.5 task-only
 fixture must find `Document.ПриобретениеТоваровУслуг.TabularSection.Серии`,
-`DataProcessor.ПодборСерийВДокументы`, and the registration/selection form; it
+`DataProcessor.ПодборСерийВДокументы`, and
+`DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров`; it
 must warn when `Товары.Серия` alone has insufficient evidence or coverage. If
 BSL indexing is unavailable, metadata and form evidence remain, status is
 partial, and missing BSL checks are explicit.

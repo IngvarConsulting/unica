@@ -206,8 +206,10 @@ class SkillProvenanceTests(unittest.TestCase):
         for contract_path in [
             "crates/unica-coder/src/application/discovery/contract.rs",
             "crates/unica-coder/src/domain/discovery.rs",
+            "tests/ci/test_unica_mcp_smoke.py",
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_smoke_unica_mcp.py",
+            "tests/fixtures/extension-point-discovery/ut115",
         ]:
             with self.subTest(contract_path=contract_path):
                 self.assertIn(contract_path, entry["contractPaths"])

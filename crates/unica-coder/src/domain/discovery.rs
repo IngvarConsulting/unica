@@ -1,15 +1,27 @@
 use crate::domain::cancellation::CancellationToken;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 pub(crate) const MAX_ARTIFACT_ID_BYTES: usize = 1_024;
+pub(crate) const DISCOVERY_MATCH_WORK_BOUND_CODE: &str = "discovery_match_work_bound";
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub(crate) struct ArtifactId(String);
+const DISCOVERY_MATCH_WORK_FLOOR: u64 = 8_192;
+const DISCOVERY_MATCH_WORK_PER_EVIDENCE: u64 = 4_096;
+const DISCOVERY_MATCH_WORK_CEILING: u64 = 8_388_608;
+const DISCOVERY_MATCH_DISPATCH_COST: u64 = 32;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ArtifactId {
+    display: String,
+    normalized: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArtifactIdError {
@@ -43,11 +55,53 @@ impl ArtifactId {
         if !(1..=MAX_ARTIFACT_ID_BYTES).contains(&normalized.len()) {
             return Err(ArtifactIdError::NormalizedBytesOutOfRange);
         }
-        Ok(Self(normalized))
+        Ok(Self {
+            display: trimmed.to_string(),
+            normalized,
+        })
     }
 
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
+    pub(crate) fn display_str(&self) -> &str {
+        &self.display
+    }
+
+    pub(crate) fn normalized_str(&self) -> &str {
+        &self.normalized
+    }
+}
+
+impl PartialEq for ArtifactId {
+    fn eq(&self, other: &Self) -> bool {
+        self.normalized == other.normalized
+    }
+}
+
+impl Eq for ArtifactId {}
+
+impl PartialOrd for ArtifactId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ArtifactId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.normalized.cmp(&other.normalized)
+    }
+}
+
+impl Hash for ArtifactId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.normalized.hash(state);
+    }
+}
+
+impl Serialize for ArtifactId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.display)
     }
 }
 
@@ -231,7 +285,7 @@ impl EvidenceId {
         let mut hasher = StableHasher::new("unica.discovery.evidence.v1");
         hasher.field(provider.stable_name().as_bytes());
         hasher.field(kind.stable_name().as_bytes());
-        hasher.field(target.as_str().as_bytes());
+        hasher.field(target.normalized_str().as_bytes());
         hasher.field(relation.stable_name().as_bytes());
         hasher.field(location.relative_path.as_str().as_bytes());
         hasher.optional_u32(location.line);
@@ -385,10 +439,6 @@ pub(crate) enum RuntimeFlowRelationKind {
         )
     )]
     EventSubscription,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved wire taxonomy for call-graph discovery")
-    )]
     Calls,
 }
 
@@ -498,7 +548,8 @@ pub(crate) struct ProviderCoverage {
     pub files_analyzed: u32,
     /// Exact byte sum of returned inventory or analyzed-file identities.
     pub bytes_analyzed: u64,
-    /// Exact number of returned inventory files or full pre-truncation facts.
+    /// Exact number of returned inventory files or provider-returned facts before
+    /// application-level evidence truncation.
     pub records: u32,
 }
 
@@ -747,9 +798,9 @@ pub(crate) struct DiscoveryQuery<'a> {
     task: &'a str,
     concepts: &'a [DiscoveryConcept],
     search_terms: &'a [String],
-    objects: &'a [ArtifactId],
     limits: DiscoveryQueryLimits,
     cancellation: Option<CancellationToken>,
+    match_context: DiscoveryMatchContext,
 }
 
 impl<'a> DiscoveryQuery<'a> {
@@ -760,13 +811,28 @@ impl<'a> DiscoveryQuery<'a> {
         objects: &'a [ArtifactId],
         limits: DiscoveryQueryLimits,
     ) -> Self {
+        let mut terms = BTreeSet::new();
+        for concept in concepts {
+            for segment in discovery_identifier_segments(&concept.value) {
+                terms.insert(normalize_discovery_identity(&segment));
+            }
+        }
+        for search_term in search_terms {
+            for segment in discovery_identifier_segments(search_term) {
+                terms.insert(normalize_discovery_identity(&segment));
+            }
+        }
         Self {
             task,
             concepts,
             search_terms,
-            objects,
             limits,
             cancellation: None,
+            match_context: DiscoveryMatchContext {
+                terms: terms.into_iter().collect::<Vec<_>>().into(),
+                objects: Arc::new(objects.iter().cloned().collect()),
+                work: DiscoveryMatchWorkBudget::new(discovery_match_work_limit(limits)),
+            },
         }
     }
 
@@ -781,6 +847,10 @@ impl<'a> DiscoveryQuery<'a> {
             .is_some_and(CancellationToken::is_cancelled)
     }
 
+    pub(crate) fn cancellation_token(&self) -> Option<CancellationToken> {
+        self.cancellation.clone()
+    }
+
     pub(crate) fn task(&self) -> &'a str {
         self.task
     }
@@ -793,13 +863,223 @@ impl<'a> DiscoveryQuery<'a> {
         self.search_terms
     }
 
-    pub(crate) fn objects(&self) -> &'a [ArtifactId] {
-        self.objects
-    }
-
     pub(crate) fn limits(&self) -> DiscoveryQueryLimits {
         self.limits
     }
+}
+
+fn discovery_match_work_limit(limits: DiscoveryQueryLimits) -> u64 {
+    u64::from(limits.max_evidence)
+        .saturating_mul(DISCOVERY_MATCH_WORK_PER_EVIDENCE)
+        .clamp(DISCOVERY_MATCH_WORK_FLOOR, DISCOVERY_MATCH_WORK_CEILING)
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveryMatchContext {
+    terms: Arc<[String]>,
+    objects: Arc<BTreeSet<ArtifactId>>,
+    work: DiscoveryMatchWorkBudget,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveryMatchWorkBudget {
+    state: Arc<DiscoveryMatchWorkState>,
+}
+
+#[derive(Debug)]
+struct DiscoveryMatchWorkState {
+    remaining: AtomicU64,
+    exhausted: AtomicBool,
+}
+
+impl DiscoveryMatchWorkBudget {
+    fn new(limit: u64) -> Self {
+        Self {
+            state: Arc::new(DiscoveryMatchWorkState {
+                remaining: AtomicU64::new(limit),
+                exhausted: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn charge(&self, units: u64) -> bool {
+        if self.is_exhausted() {
+            return false;
+        }
+        let charged = self
+            .state
+            .remaining
+            .fetch_update(
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+                |remaining| remaining.checked_sub(units),
+            )
+            .is_ok();
+        if !charged {
+            self.state.exhausted.store(true, AtomicOrdering::Relaxed);
+        }
+        charged
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.state.exhausted.load(AtomicOrdering::Relaxed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DiscoveryMatchStrength(u16);
+
+impl DiscoveryMatchStrength {
+    pub(crate) const NONE: Self = Self(0);
+    const PREFIX_BASE: u16 = 10_000;
+    const INFLECTION_BASE: u16 = 20_000;
+    const EXACT_BASE: u16 = 30_000;
+    const EXPLICIT_OBJECT: Self = Self(u16::MAX);
+
+    pub(crate) const fn is_match(self) -> bool {
+        self.0 != 0
+    }
+
+    pub(crate) const fn is_strong_match(self) -> bool {
+        self.0 >= Self::INFLECTION_BASE
+    }
+}
+
+pub(crate) struct DiscoveryMatcher {
+    context: DiscoveryMatchContext,
+    cancellation: Option<CancellationToken>,
+}
+
+impl DiscoveryMatcher {
+    pub(crate) fn new(query: &DiscoveryQuery<'_>) -> Self {
+        Self {
+            context: query.match_context.clone(),
+            cancellation: query.cancellation_token(),
+        }
+    }
+
+    pub(crate) fn strength<'b, I>(
+        &self,
+        artifact: &ArtifactId,
+        supplemental: I,
+    ) -> DiscoveryMatchStrength
+    where
+        I: IntoIterator<Item = &'b str>,
+    {
+        if self.context.objects.contains(artifact) {
+            return DiscoveryMatchStrength::EXPLICIT_OBJECT;
+        }
+        if self.is_stopped() {
+            return DiscoveryMatchStrength::NONE;
+        }
+        let mut best = DiscoveryMatchStrength::NONE;
+        for leaf in artifact.display_str().rsplit('.').take(2) {
+            best = best.max(self.identifier_strength(leaf));
+            if self.is_stopped() {
+                return best;
+            }
+        }
+        for value in supplemental {
+            best = best.max(self.identifier_strength(value));
+            if self.is_stopped() {
+                return best;
+            }
+        }
+        best
+    }
+
+    pub(crate) fn work_exhausted(&self) -> bool {
+        self.context.work.is_exhausted()
+    }
+
+    fn identifier_strength(&self, value: &str) -> DiscoveryMatchStrength {
+        let mut best = DiscoveryMatchStrength::NONE;
+        for segment in discovery_identifier_segments(value) {
+            let normalized = normalize_discovery_identity(&segment);
+            for term in self.context.terms.iter() {
+                if self.is_cancelled() {
+                    return best;
+                }
+                let work = DISCOVERY_MATCH_DISPATCH_COST
+                    .saturating_add(term.len() as u64)
+                    .saturating_add(normalized.len() as u64);
+                if !self.context.work.charge(work) {
+                    return best;
+                }
+                best = best.max(lexical_match_strength(term, &normalized));
+            }
+        }
+        best
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.is_cancelled() || self.work_exhausted()
+    }
+}
+
+pub(crate) fn discovery_identifier_segments(value: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let characters = value.chars().collect::<Vec<_>>();
+
+    for (index, character) in characters.iter().copied().enumerate() {
+        if !character.is_alphanumeric() {
+            push_discovery_segment(&mut segments, &mut current);
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|index| characters.get(index));
+        let next = characters.get(index + 1);
+        let lower_or_digit_boundary = character.is_uppercase()
+            && previous.is_some_and(|previous| previous.is_lowercase() || previous.is_numeric());
+        let acronym_boundary = character.is_uppercase()
+            && previous.is_some_and(|previous| previous.is_uppercase())
+            && next.is_some_and(|next| next.is_lowercase());
+        if !current.is_empty() && (lower_or_digit_boundary || acronym_boundary) {
+            push_discovery_segment(&mut segments, &mut current);
+        }
+        current.push(character);
+    }
+    push_discovery_segment(&mut segments, &mut current);
+    segments
+}
+
+fn push_discovery_segment(segments: &mut Vec<String>, current: &mut String) {
+    if current.chars().count() >= 3 {
+        segments.push(std::mem::take(current));
+    } else {
+        current.clear();
+    }
+}
+
+fn lexical_match_strength(left: &str, right: &str) -> DiscoveryMatchStrength {
+    let left_length = left.chars().count();
+    let right_length = right.chars().count();
+    let shorter = left_length.min(right_length);
+    if shorter < 3 {
+        return DiscoveryMatchStrength::NONE;
+    }
+    let common = left
+        .chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let detail = u16::try_from(common.min(9_999)).unwrap_or(9_999);
+    if left == right {
+        return DiscoveryMatchStrength(DiscoveryMatchStrength::EXACT_BASE + detail);
+    }
+    if common == shorter {
+        return DiscoveryMatchStrength(DiscoveryMatchStrength::PREFIX_BASE + detail);
+    }
+    if shorter >= 4 && left_length.abs_diff(right_length) <= 2 && common + 1 >= shorter {
+        return DiscoveryMatchStrength(DiscoveryMatchStrength::INFLECTION_BASE + detail);
+    }
+    DiscoveryMatchStrength::NONE
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -957,10 +1237,26 @@ pub(crate) struct RuntimeFlowEdge {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct CandidateRecommendation {
+    pub summary: String,
+    pub basis: Vec<CandidateRecommendationBasis>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CandidateRecommendationBasis {
+    MetadataStructure,
+    ManagedFormBinding,
+    ProvenRuntimeFlow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ExtensionPointCandidate {
     pub target: ArtifactId,
     pub kind: ArtifactKind,
     pub evidence_ids: Vec<EvidenceId>,
+    pub recommendation: CandidateRecommendation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub support_state: Option<SupportStateKind>,
 }
@@ -1065,12 +1361,17 @@ mod tests {
     }
 
     #[test]
-    fn artifact_identity_uses_trim_plus_rust_unicode_lowercase_mapping() {
+    fn artifact_identity_preserves_display_and_compares_by_normalized_value() {
         let mixed = ArtifactId::parse(" Document.Order ").expect("mixed-case artifact");
         let lower = ArtifactId::parse("document.order").expect("lowercase artifact");
 
-        assert_eq!(mixed.as_str(), "document.order");
+        assert_eq!(mixed.display_str(), "Document.Order");
+        assert_eq!(mixed.normalized_str(), "document.order");
         assert_eq!(mixed, lower);
+        assert_eq!(
+            serde_json::to_string(&mixed).expect("serialized artifact"),
+            "\"Document.Order\""
+        );
     }
 
     #[test]
@@ -1082,6 +1383,149 @@ mod tests {
             normalize_discovery_identity("Straße"),
             normalize_discovery_identity("STRASSE")
         );
+    }
+
+    #[test]
+    fn discovery_matcher_ranks_exact_and_inflected_terms_above_prefixes() {
+        let concepts = [DiscoveryConcept {
+            value: "серий".to_string(),
+            provenance: ConceptProvenance::TaskDerived,
+        }];
+        let explicit = ArtifactId::parse("Document.Explicit").expect("explicit artifact");
+        let objects = [explicit.clone()];
+        let query = DiscoveryQuery::new(
+            "серий",
+            &concepts,
+            &[],
+            &objects,
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: 1,
+                max_evidence: 1,
+                max_candidates: 1,
+                max_graph_depth: 1,
+            },
+        );
+        let matcher = DiscoveryMatcher::new(&query);
+        let exact = matcher.strength(
+            &ArtifactId::parse("TabularSection.Серий").expect("exact artifact"),
+            std::iter::empty::<&str>(),
+        );
+        let inflected = matcher.strength(
+            &ArtifactId::parse("TabularSection.Серии").expect("inflected artifact"),
+            std::iter::empty::<&str>(),
+        );
+        let prefix = matcher.strength(
+            &ArtifactId::parse("DataProcessor.СерийныйДекой").expect("prefix artifact"),
+            std::iter::empty::<&str>(),
+        );
+
+        assert!(matcher.strength(&explicit, std::iter::empty::<&str>()) > exact);
+        assert!(exact > inflected);
+        assert!(inflected > prefix);
+        assert!(prefix.is_match());
+        for unrelated in [
+            "TabularSection.СервисныеУслуги",
+            "TabularSection.Сертификаты",
+        ] {
+            assert!(!matcher
+                .strength(
+                    &ArtifactId::parse(unrelated).expect("unrelated artifact"),
+                    std::iter::empty::<&str>(),
+                )
+                .is_match());
+        }
+    }
+
+    #[test]
+    fn discovery_matcher_segments_compound_display_leaf_before_normalization() {
+        let concepts = [DiscoveryConcept {
+            value: "серий".to_string(),
+            provenance: ConceptProvenance::TaskDerived,
+        }];
+        let query = DiscoveryQuery::new(
+            "серий",
+            &concepts,
+            &[],
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: 1,
+                max_evidence: 1,
+                max_candidates: 1,
+                max_graph_depth: 1,
+            },
+        );
+        let matcher = DiscoveryMatcher::new(&query);
+
+        assert!(matcher
+            .strength(
+                &ArtifactId::parse("DataProcessor.ПодборСерийВДокументы")
+                    .expect("compound artifact"),
+                std::iter::empty::<&str>(),
+            )
+            .is_match());
+    }
+
+    #[test]
+    fn discovery_matcher_does_not_treat_short_acronyms_as_inflections() {
+        let concepts = [DiscoveryConcept {
+            value: "АБВ".to_string(),
+            provenance: ConceptProvenance::Explicit,
+        }];
+        let query = DiscoveryQuery::new(
+            "acronym",
+            &concepts,
+            &[],
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: 1,
+                max_evidence: 1,
+                max_candidates: 1,
+                max_graph_depth: 1,
+            },
+        );
+        let matcher = DiscoveryMatcher::new(&query);
+
+        assert!(!matcher
+            .strength(
+                &ArtifactId::parse("DataProcessor.АБГ").expect("acronym artifact"),
+                std::iter::empty::<&str>(),
+            )
+            .is_match());
+    }
+
+    #[test]
+    fn discovery_matcher_observes_query_cancellation_before_lexical_work() {
+        let concepts = [DiscoveryConcept {
+            value: "серий".to_string(),
+            provenance: ConceptProvenance::TaskDerived,
+        }];
+        let cancellation = CancellationToken::new();
+        let query = DiscoveryQuery::new(
+            "серий",
+            &concepts,
+            &[],
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: 1,
+                max_evidence: 1,
+                max_candidates: 1,
+                max_graph_depth: 1,
+            },
+        )
+        .with_cancellation(&cancellation);
+        let matcher = DiscoveryMatcher::new(&query);
+        cancellation.cancel();
+
+        assert!(!matcher
+            .strength(
+                &ArtifactId::parse("TabularSection.Серий").expect("series artifact"),
+                std::iter::empty::<&str>(),
+            )
+            .is_match());
     }
 
     #[test]
@@ -1103,8 +1547,8 @@ mod tests {
 
         artifacts.sort();
 
-        assert_eq!(artifacts[0].as_str(), "document.alpha");
-        assert_eq!(artifacts[1].as_str(), "document.zed");
+        assert_eq!(artifacts[0].normalized_str(), "document.alpha");
+        assert_eq!(artifacts[1].normalized_str(), "document.zed");
     }
 
     #[test]

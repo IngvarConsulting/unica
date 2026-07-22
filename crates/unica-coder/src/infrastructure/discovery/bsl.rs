@@ -12,7 +12,8 @@ use crate::infrastructure::platform::contained_file::{
     read_contained_regular_file_cancellable, ContainedFileError, VerifiedFile,
 };
 use crate::infrastructure::workspace_index::{
-    find_indexed_definitions, BslIndexStatus, IndexQueryError, IndexedMethodHit, IndexedMethodKind,
+    BslIndexStatus, DefinitionIndexLimits, DefinitionIndexReader, IndexQueryError,
+    IndexedMethodHit, IndexedMethodKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -288,8 +289,40 @@ fn query_terms(query: &DiscoveryQuery<'_>) -> Result<Vec<String>, ProviderDiagno
     Ok(terms.into_iter().collect())
 }
 
-fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Result<Vec<String>, ProviderDiagnostic> {
-    query_terms(query)
+const MAX_DEFINITION_QUERY_TERMS: usize = 128;
+
+struct DefinitionQueryTerms {
+    values: Vec<String>,
+    truncated: bool,
+}
+
+fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Result<DefinitionQueryTerms, ProviderDiagnostic> {
+    let mut identities = BTreeSet::new();
+    let mut terms = Vec::new();
+    let mut truncated = false;
+    for term in std::iter::once(query.task())
+        .chain(query.search_terms().iter().map(String::as_str))
+        .chain(
+            query
+                .concepts()
+                .iter()
+                .map(|concept| concept.value.as_str()),
+        )
+    {
+        crate::infrastructure::discovery::check_cancellation(query)?;
+        let normalized = normalize_discovery_identity(term);
+        if !normalized.is_empty() && identities.insert(normalized.clone()) {
+            if terms.len() == MAX_DEFINITION_QUERY_TERMS {
+                truncated = true;
+                break;
+            }
+            terms.push(normalized);
+        }
+    }
+    Ok(DefinitionQueryTerms {
+        values: terms,
+        truncated,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1164,24 +1197,37 @@ fn validate_module_component(value: &str, role: &str) -> Result<(), String> {
 }
 
 fn method_artifact(module: &ArtifactId, name: &str) -> Result<ArtifactId, String> {
-    ArtifactId::parse(&format!("{}.Method.{name}", module.as_str()))
+    ArtifactId::parse(&format!("{}.Method.{name}", module.display_str()))
         .map_err(|error| format!("method artifact {name:?} is invalid: {error}"))
 }
 
 pub(crate) struct ExistingIndexDefinitionProvider<'a> {
     selected_root: &'a Path,
+    cache_root: &'a Path,
     inventory: &'a SourceInventory,
     status: Option<&'a BslIndexStatus>,
+}
+
+struct ValidatedDefinitionSource {
+    analyzed: AnalyzedFile,
+    parsed: ParsedBslSource,
+}
+
+struct CollectedDefinitionFacts {
+    batch: FactBatch<DefinitionFact>,
+    bound: Option<ProviderDiagnostic>,
 }
 
 impl<'a> ExistingIndexDefinitionProvider<'a> {
     pub(crate) fn new(
         selected_root: &'a Path,
+        cache_root: &'a Path,
         inventory: &'a SourceInventory,
         status: Option<&'a BslIndexStatus>,
     ) -> Self {
         Self {
             selected_root,
+            cache_root,
             inventory,
             status,
         }
@@ -1191,43 +1237,127 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> Result<BslCollection<DefinitionFact>, DefinitionCollectionError> {
-        check_definition_cancellation(query)?;
-        // Ready status proves operational availability, not snapshot identity. Keep
-        // structural validation diagnostics, but never publish the unbound batch.
-        let _unbound_batch = self.collect_index_facts(query)?;
-        Err(DefinitionCollectionError::Unavailable(
-            ProviderDiagnostic::material(
-                "bsl_definition_freshness_unverified",
-                "ready RLM status does not bind the index to the captured source snapshot",
-            ),
-        ))
+        self.collect_with_index_limits(
+            query,
+            DefinitionIndexLimits::for_discovery(query.limits().max_bytes),
+        )
     }
 
+    fn collect_with_index_limits(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        index_limits: DefinitionIndexLimits,
+    ) -> Result<BslCollection<DefinitionFact>, DefinitionCollectionError> {
+        check_definition_cancellation(query)?;
+        let collected =
+            self.collect_index_facts_with_limits_observing(query, index_limits, |_| {})?;
+        Ok(BslCollection::Bounded {
+            batch: collected.batch,
+            diagnostic: collected.bound.unwrap_or_else(|| {
+                ProviderDiagnostic::material(
+                    "bsl_definition_freshness_unverified",
+                    "ready RLM status does not bind the index generation to the captured source snapshot",
+                )
+            }),
+        })
+    }
+
+    #[cfg(test)]
     fn collect_index_facts(
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> Result<FactBatch<DefinitionFact>, DefinitionCollectionError> {
+        self.collect_index_facts_with_limits_observing(
+            query,
+            DefinitionIndexLimits::for_discovery(query.limits().max_bytes),
+            |_| {},
+        )
+        .map(|collected| collected.batch)
+    }
+
+    #[cfg(test)]
+    fn collect_index_facts_observing_source_parses(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        observe_source_parse: impl FnMut(&PortableRelativePath),
+    ) -> Result<FactBatch<DefinitionFact>, DefinitionCollectionError> {
+        self.collect_index_facts_with_limits_observing(
+            query,
+            DefinitionIndexLimits::for_discovery(query.limits().max_bytes),
+            observe_source_parse,
+        )
+        .map(|collected| collected.batch)
+    }
+
+    fn collect_index_facts_with_limits_observing(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        index_limits: DefinitionIndexLimits,
+        mut observe_source_parse: impl FnMut(&PortableRelativePath),
+    ) -> Result<CollectedDefinitionFacts, DefinitionCollectionError> {
         check_definition_cancellation(query)?;
         let db_path = self.validated_db_path()?;
+        check_definition_cancellation(query)?;
+        let query_terms = raw_query_terms(query).map_err(DefinitionCollectionError::Failed)?;
+        let mut bound = query_terms.truncated.then(|| {
+            ProviderDiagnostic::material(
+                "bsl_definition_term_limit",
+                format!(
+                    "definition lookup considered the first {MAX_DEFINITION_QUERY_TERMS} unique query terms"
+                ),
+            )
+        });
+        let snapshot_cancellation = query.cancellation_token().unwrap_or_default();
+        let index = match DefinitionIndexReader::open_contained(
+            self.cache_root,
+            &db_path,
+            index_limits,
+            &snapshot_cancellation,
+        ) {
+            Ok(index) => index,
+            Err(IndexQueryError::ResourceLimit(message)) => {
+                let batch = build_batch(Vec::<DefinitionFact>::new(), Vec::new(), Vec::new())
+                    .map_err(DefinitionCollectionError::ContractViolation)?;
+                return Ok(CollectedDefinitionFacts {
+                    batch,
+                    bound: Some(definition_resource_limit_diagnostic(message)),
+                });
+            }
+            Err(error) => return Err(classify_index_query_error(error)),
+        };
         check_definition_cancellation(query)?;
         let inventory = self.inventory_files()?;
         let inventory_bounded = inventory_is_bounded(self.inventory);
         let max_evidence = usize::from(query.limits().max_evidence);
-        let query_limit = max_evidence.max(1);
         let mut hits = Vec::new();
-        for term in raw_query_terms(query).map_err(DefinitionCollectionError::Failed)? {
+        for term in query_terms.values {
             check_definition_cancellation(query)?;
-            let page = find_indexed_definitions(&db_path, &term, query_limit)
-                .map_err(classify_index_query_error)?;
+            let remaining = max_evidence.saturating_sub(hits.len());
+            if remaining == 0 {
+                break;
+            }
+            let page = match index.find_definitions_cancellable(
+                &term,
+                remaining,
+                query.cancellation_token(),
+            ) {
+                Ok(page) => page,
+                Err(IndexQueryError::ResourceLimit(message)) => {
+                    bound = Some(definition_resource_limit_diagnostic(message));
+                    break;
+                }
+                Err(error) => return Err(classify_index_query_error(error)),
+            };
             check_definition_cancellation(query)?;
             let page_bounded = page.has_more;
             hits.extend(page.hits);
-            if page_bounded || hits.len() > max_evidence {
+            if page_bounded || hits.len() == max_evidence {
                 break;
             }
         }
 
-        let mut validated_files: BTreeMap<PortableRelativePath, AnalyzedFile> = BTreeMap::new();
+        let mut validated_sources: BTreeMap<PortableRelativePath, ValidatedDefinitionSource> =
+            BTreeMap::new();
         let mut records = Vec::new();
         for hit in hits {
             check_definition_cancellation(query)?;
@@ -1240,12 +1370,19 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
             if !inventory.contains_key(&relative_path) && inventory_bounded {
                 continue;
             }
-            let analyzed = match validated_files.get(&relative_path) {
-                Some(analyzed) => analyzed.clone(),
-                None => {
+            let validated = match validated_sources.entry(relative_path.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
                     let analyzed = self.validate_indexed_file(&relative_path, &inventory, query)?;
-                    validated_files.insert(relative_path.clone(), analyzed.clone());
-                    analyzed
+                    let source = inventory.get(&relative_path).ok_or_else(|| {
+                        DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                            "bsl_index_stale",
+                            "validated indexed module disappeared from the inventory map",
+                        ))
+                    })?;
+                    observe_source_parse(&relative_path);
+                    let parsed = parse_indexed_method_source(source, query)?;
+                    entry.insert(ValidatedDefinitionSource { analyzed, parsed })
                 }
             };
             let owner = module_artifact_for_path(&relative_path).map_err(|message| {
@@ -1254,13 +1391,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
                     message,
                 ))
             })?;
-            let source = inventory.get(&relative_path).ok_or_else(|| {
-                DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
-                    "bsl_index_stale",
-                    "validated indexed module disappeared from the inventory map",
-                ))
-            })?;
-            validate_indexed_method_source(&hit, source, query)?;
+            validate_indexed_method_hit(&hit, &validated.parsed)?;
             check_definition_cancellation(query)?;
             validate_hit_identity(&hit, &owner)?;
             let definition = method_artifact(&owner, &hit.name).map_err(|message| {
@@ -1274,7 +1405,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
                 definition,
                 name: hit.name,
                 location: EvidenceLocation {
-                    relative_path: analyzed.relative_path,
+                    relative_path: validated.analyzed.relative_path.clone(),
                     line: Some(hit.line),
                     column: None,
                     xml_path: None,
@@ -1287,10 +1418,14 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         if records.len() > max_evidence {
             records.truncate(max_evidence);
         }
-        let analyzed_files = validated_files.into_values().collect::<Vec<_>>();
+        let analyzed_files = validated_sources
+            .into_values()
+            .map(|source| source.analyzed)
+            .collect::<Vec<_>>();
         let contributors = contributors_for_records(&records, &analyzed_files);
-        build_batch(records, analyzed_files, contributors)
-            .map_err(DefinitionCollectionError::ContractViolation)
+        let batch = build_batch(records, analyzed_files, contributors)
+            .map_err(DefinitionCollectionError::ContractViolation)?;
+        Ok(CollectedDefinitionFacts { batch, bound })
     }
 
     fn validated_db_path(&self) -> Result<PathBuf, DefinitionCollectionError> {
@@ -1384,20 +1519,6 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
                 ProviderDiagnostic::material(
                     "bsl_index_status_invalid",
                     "ready RLM index database path must be absolute",
-                ),
-            ));
-        }
-        let metadata = std::fs::symlink_metadata(&db_path).map_err(|error| {
-            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
-                "bsl_index_missing",
-                format!("RLM index database is unavailable: {error}"),
-            ))
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(DefinitionCollectionError::ContractViolation(
-                ProviderDiagnostic::material(
-                    "bsl_index_database_invalid",
-                    "RLM index database must be a regular non-link file",
                 ),
             ));
         }
@@ -1551,6 +1672,12 @@ fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionErr
         IndexQueryError::Unavailable(message) => DefinitionCollectionError::Unavailable(
             ProviderDiagnostic::material("bsl_index_missing", message),
         ),
+        IndexQueryError::IdentityChanged(message) => DefinitionCollectionError::Unavailable(
+            ProviderDiagnostic::material("bsl_index_stale", message),
+        ),
+        IndexQueryError::InvalidPath(message) => DefinitionCollectionError::ContractViolation(
+            ProviderDiagnostic::material("bsl_index_database_invalid", message),
+        ),
         IndexQueryError::InvalidLimit(message) => DefinitionCollectionError::ContractViolation(
             ProviderDiagnostic::material("bsl_index_query_limit_invalid", message),
         ),
@@ -1560,10 +1687,20 @@ fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionErr
         IndexQueryError::MalformedRow(message) => DefinitionCollectionError::ContractViolation(
             ProviderDiagnostic::material("bsl_index_row_invalid", message),
         ),
+        IndexQueryError::ResourceLimit(message) => DefinitionCollectionError::Unavailable(
+            ProviderDiagnostic::material("bsl_definition_resource_limit", message),
+        ),
+        IndexQueryError::Cancelled => DefinitionCollectionError::Failed(
+            crate::infrastructure::discovery::cancellation_diagnostic(),
+        ),
         IndexQueryError::Failed(message) => DefinitionCollectionError::Failed(
             ProviderDiagnostic::material("bsl_index_query_failed", message),
         ),
     }
+}
+
+fn definition_resource_limit_diagnostic(message: impl Into<String>) -> ProviderDiagnostic {
+    ProviderDiagnostic::material("bsl_definition_resource_limit", message.into())
 }
 
 fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectionError {
@@ -1641,7 +1778,7 @@ fn validate_hit_identity(
         ))
     })?;
     let components = path.as_str().split('/').collect::<Vec<_>>();
-    let expected_category = owner.as_str().split('.').next().ok_or_else(|| {
+    let expected_category = owner.normalized_str().split('.').next().ok_or_else(|| {
         DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
             "bsl_index_module_identity",
             "canonical module owner has no category segment",
@@ -1700,11 +1837,10 @@ fn validate_hit_identity(
     Ok(())
 }
 
-fn validate_indexed_method_source(
-    hit: &IndexedMethodHit,
+fn parse_indexed_method_source(
     source: &SourceFile,
     query: &DiscoveryQuery<'_>,
-) -> Result<(), DefinitionCollectionError> {
+) -> Result<ParsedBslSource, DefinitionCollectionError> {
     check_definition_cancellation(query)?;
     let text = std::str::from_utf8(&source.bytes).map_err(|error| {
         DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
@@ -1715,7 +1851,7 @@ fn validate_indexed_method_source(
             ),
         ))
     })?;
-    let parsed = parse_bsl_source_cancellable(text, query).map_err(|error| match error {
+    parse_bsl_source_cancellable(text, query).map_err(|error| match error {
         BslParseError::Cancelled => DefinitionCollectionError::Failed(
             crate::infrastructure::discovery::cancellation_diagnostic(),
         ),
@@ -1737,14 +1873,22 @@ fn validate_indexed_method_source(
                 ),
             ))
         }
-    })?;
-    let Some(method) = parsed
-        .methods
-        .iter()
-        .find(|method| method.declaration_line == hit.line)
-    else {
+    })
+}
+
+fn validate_indexed_method_hit(
+    hit: &IndexedMethodHit,
+    parsed: &ParsedBslSource,
+) -> Result<(), DefinitionCollectionError> {
+    let Some(method_index) = method_index_for_line(&parsed.method_ranges, hit.line) else {
         return Err(stale_method_location(hit));
     };
+    let Some(method) = parsed.methods.get(method_index) else {
+        return Err(stale_method_location(hit));
+    };
+    if method.declaration_line != hit.line {
+        return Err(stale_method_location(hit));
+    }
     let indexed_kind = match hit.method_kind {
         IndexedMethodKind::Procedure => BslMethodKind::Procedure,
         IndexedMethodKind::Function => BslMethodKind::Function,
@@ -1789,7 +1933,8 @@ impl RuntimeFlowPort for UnavailableRuntimeFlowProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExistingIndexDefinitionProvider, InventoryBslSearchProvider, UnavailableRuntimeFlowProvider,
+        BslCollection, ExistingIndexDefinitionProvider, InventoryBslSearchProvider,
+        UnavailableRuntimeFlowProvider,
     };
     use crate::application::discovery::ports::{BslSearchPort, DefinitionPort, RuntimeFlowPort};
     use crate::domain::discovery::{
@@ -1800,7 +1945,7 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use crate::infrastructure::workspace_index::BslIndexStatus;
+    use crate::infrastructure::workspace_index::{BslIndexStatus, DefinitionIndexLimits};
     use rusqlite::Connection;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1828,9 +1973,13 @@ mod tests {
         let inventory = SourceInventory::empty();
 
         let lexical = InventoryBslSearchProvider.search(&query, &inventory);
-        let definitions =
-            ExistingIndexDefinitionProvider::new(Path::new("/must/not/be/read"), &inventory, None)
-                .definitions(&query);
+        let definitions = ExistingIndexDefinitionProvider::new(
+            Path::new("/must/not/be/read"),
+            Path::new("/must/not/be/read"),
+            &inventory,
+            None,
+        )
+        .definitions(&query);
 
         let ProviderOutcome::Failed(lexical_diagnostic) = lexical else {
             panic!("cancelled lexical provider must return failed");
@@ -1852,7 +2001,12 @@ mod tests {
         ];
         let source = fixture.write_source(MODULE_PATH, &bytes);
         let inventory = inventory(vec![source]);
-        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            None,
+        );
         let Ok(inventory_files) = provider.inventory_files() else {
             panic!("expected inventory map");
         };
@@ -1919,7 +2073,12 @@ mod tests {
         let fixture = Fixture::new("definition-directory-replacement");
         let source = fixture.write_source(MODULE_PATH, BSL);
         let inventory = inventory(vec![source]);
-        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            None,
+        );
         let Ok(inventory_files) = provider.inventory_files() else {
             panic!("expected inventory map");
         };
@@ -1943,7 +2102,12 @@ mod tests {
         let fixture = Fixture::new("definition-link-replacement");
         let source = fixture.write_source(MODULE_PATH, BSL);
         let inventory = inventory(vec![source]);
-        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            None,
+        );
         let Ok(inventory_files) = provider.inventory_files() else {
             panic!("expected inventory map");
         };
@@ -2469,8 +2633,12 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
             .unwrap();
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let provider =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
         let Ok(batch) = provider.collect_index_facts(&query("ПолучитьСерию", &[], 10))
         else {
             panic!("expected validated multiline indexed definition");
@@ -2484,6 +2652,69 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
     }
 
     #[test]
+    fn definition_revalidation_reads_and_parses_each_captured_file_once() {
+        const MULTI_BSL: &[u8] = b"Function Alpha()\nEndFunction\n\
+Function Beta()\nEndFunction\n\
+Function Gamma()\nEndFunction\n";
+        let fixture = Fixture::new("definition-parse-once");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, MULTI_BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_multi_method_index(&db_path, MODULE_PATH);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
+        let terms = vec!["Beta".to_string(), "Gamma".to_string()];
+        let mut parsed_paths = Vec::new();
+
+        let Ok(batch) = provider
+            .collect_index_facts_observing_source_parses(&query("Alpha", &terms, 10), |path| {
+                parsed_paths.push(path.clone())
+            })
+        else {
+            panic!("expected validated definitions");
+        };
+
+        assert_eq!(batch.records.len(), 3);
+        assert_eq!(parsed_paths, vec![path(MODULE_PATH)]);
+    }
+
+    #[test]
+    fn definition_global_evidence_bound_stops_before_later_exact_terms() {
+        const MULTI_BSL: &[u8] = b"Function Alpha()\nEndFunction\n\
+Function Beta()\nEndFunction\n\
+Function Gamma()\nEndFunction\n";
+        let fixture = Fixture::new("definition-global-bound");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, MULTI_BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_multi_method_index(&db_path, MODULE_PATH);
+        Connection::open(&db_path)
+            .unwrap()
+            .execute("UPDATE methods SET line = -1 WHERE name = 'Beta'", ())
+            .unwrap();
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
+        let terms = vec!["Beta".to_string()];
+
+        let outcome = provider.definitions(&query("Alpha", &terms, 1));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("the retained global prefix must remain data-bearing bounded");
+        };
+        assert_eq!(data.records.len(), 1);
+        assert_eq!(data.records[0].name, "Alpha");
+        assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
+    }
+
+    #[test]
     fn definition_revalidation_treats_parser_resource_bounds_as_unavailable() {
         let fixture = Fixture::new("definition-source-bound");
         let source_bytes = "x".repeat(super::MAX_BSL_LINE_BYTES + 1).into_bytes();
@@ -2492,8 +2723,12 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let db_path = fixture.root.join("index.db");
         create_index(&db_path, MODULE_PATH, 1, 1);
         let status = ready_status(&fixture.source_root, &db_path);
-        let provider =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
 
         let outcome = provider.collect_index_facts(&query("ПолучитьСерию", &[], 10));
 
@@ -2525,8 +2760,12 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
 
         let lexical =
             InventoryBslSearchProvider.search(&query("ПолучитьСерию", &[], 10), &inventory);
-        let provider =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
         let definitions = provider.collect_index_facts(&query("ПолучитьСерию", &[], 10));
 
         let ProviderOutcome::Complete(lexical) = lexical else {
@@ -2606,8 +2845,12 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let db_path = fixture.root.join("index.db");
         create_index(&db_path, MODULE_PATH, 5, 7);
         let status = ready_status(&fixture.source_root, &db_path);
-        let provider =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
         let search_terms = vec!["ПолучитьСерию".to_string()];
 
         let outcome = provider.collect_index_facts(&query("Найти серию", &search_terms, 10));
@@ -2636,8 +2879,12 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let db_path = fixture.root.join("index.db");
         create_index(&db_path, MODULE_PATH, 5, 7);
         let status = ready_status(&fixture.source_root, &db_path);
-        let provider =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
         let search_terms = vec!["ПолучитьСерию".to_string()];
 
         let outcome = provider.collect_index_facts(&query("получитьсерию", &search_terms, 10));
@@ -2655,7 +2902,109 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
 
         let terms = super::raw_query_terms(&query).expect("query terms");
 
-        assert_eq!(terms, vec!["получитьсерию"]);
+        assert_eq!(terms.values, vec!["получитьсерию"]);
+        assert!(!terms.truncated);
+    }
+
+    #[test]
+    fn definition_query_terms_are_capped_without_dropping_the_task() {
+        let search_terms = (0..300)
+            .map(|index| format!("search{index:03}"))
+            .collect::<Vec<_>>();
+        let query = query("PrimaryTask", &search_terms, 10);
+
+        let terms = super::raw_query_terms(&query).expect("query terms");
+
+        assert_eq!(terms.values.len(), super::MAX_DEFINITION_QUERY_TERMS);
+        assert_eq!(
+            terms.values.first().map(String::as_str),
+            Some("primarytask")
+        );
+        assert!(terms.truncated);
+    }
+
+    #[test]
+    fn definition_term_truncation_is_explicitly_data_bearing_bounded() {
+        let fixture = Fixture::new("definition-term-bound");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_empty_index(&db_path);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
+        let search_terms = (0..300)
+            .map(|index| format!("search{index:03}"))
+            .collect::<Vec<_>>();
+
+        let outcome = provider.definitions(&query("PrimaryTask", &search_terms, 10));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("term truncation must remain a typed bounded provider result");
+        };
+        assert!(data.records.is_empty());
+        assert_eq!(diagnostic.code, "bsl_definition_term_limit");
+    }
+
+    #[test]
+    fn definition_sqlite_work_exhaustion_is_bounded_not_failed() {
+        let fixture = Fixture::new("definition-vm-bound");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        );
+        let limits = DefinitionIndexLimits::new(1_000_000, 1_000, 64 * 1024);
+        let terms = vec!["НетТакогоМетода".to_string()];
+
+        let Ok(collection) =
+            provider.collect_with_index_limits(&query("ПолучитьСерию", &terms, 10), limits)
+        else {
+            panic!("resource exhaustion must not become a provider error");
+        };
+
+        let BslCollection::Bounded { diagnostic, .. } = collection else {
+            panic!("SQLite work exhaustion must be bounded");
+        };
+        assert_eq!(diagnostic.code, "bsl_definition_resource_limit");
+    }
+
+    #[test]
+    fn oversized_index_text_is_bounded_not_contract_violation() {
+        let fixture = Fixture::new("definition-text-bound");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        Connection::open(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE methods SET params = ? WHERE name = 'ПолучитьСерию'",
+                ["x".repeat(64 * 1024 + 1)],
+            )
+            .unwrap();
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("oversized SQLite text must be a typed bounded result");
+        };
+        assert!(data.records.is_empty());
+        assert_eq!(diagnostic.code, "bsl_definition_resource_limit");
     }
 
     #[test]
@@ -2681,8 +3030,13 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
     fn missing_or_stale_existing_index_is_unavailable_without_starting_work() {
         let fixture = Fixture::new("definition-unavailable");
         let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
-        let missing = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None)
-            .definitions(&query("Найти", &[], 10));
+        let missing = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            None,
+        )
+        .definitions(&query("Найти", &[], 10));
         assert!(matches!(missing, ProviderOutcome::Unavailable(_)));
 
         let stale = BslIndexStatus {
@@ -2693,27 +3047,40 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
             updated_at: 0,
             last_run: None,
         };
-        let stale =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&stale))
-                .definitions(&query("Найти", &[], 10));
+        let stale = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&stale),
+        )
+        .definitions(&query("Найти", &[], 10));
         assert!(matches!(stale, ProviderOutcome::Unavailable(_)));
     }
 
     #[test]
-    fn ready_index_hits_are_unavailable_without_snapshot_generation_proof() {
+    fn ready_index_hits_are_data_bearing_bounded_without_snapshot_generation_proof() {
         let fixture = Fixture::new("definition-freshness-hit");
         let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
         let db_path = fixture.root.join("index.db");
         create_index(&db_path, MODULE_PATH, 5, 7);
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let outcome =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
-                .definitions(&query("ПолучитьСерию", &[], 10));
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
 
-        let ProviderOutcome::Unavailable(diagnostic) = outcome else {
-            panic!("unbound ready index evidence must be unavailable");
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("source-validated unbound index evidence must be data-bearing bounded");
         };
+        assert_eq!(data.records.len(), 1);
+        assert_eq!(
+            data.records[0].definition,
+            artifact("CommonModule.Серии.Module.Module.Method.ПолучитьСерию")
+        );
         assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
         assert_eq!(
             diagnostic.materiality,
@@ -2729,31 +3096,41 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         create_empty_index(&db_path);
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let outcome =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
-                .definitions(&query("НесуществующийМетод", &[], 10));
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("НесуществующийМетод", &[], 10));
 
-        let ProviderOutcome::Unavailable(diagnostic) = outcome else {
-            panic!("empty unbound ready index result must be unavailable");
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("empty unbound ready index result must remain explicitly incomplete");
         };
+        assert!(data.records.is_empty());
         assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
     }
 
     #[test]
-    fn ready_index_evidence_bound_is_unavailable_without_snapshot_proof() {
+    fn ready_index_evidence_bound_is_data_bearing_bounded_without_snapshot_proof() {
         let fixture = Fixture::new("definition-resource-bound");
         let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
         let db_path = fixture.root.join("index.db");
         create_index(&db_path, MODULE_PATH, 5, 7);
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let outcome =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
-                .definitions(&query("ПолучитьСерию", &[], 0));
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 0));
 
-        let ProviderOutcome::Unavailable(diagnostic) = outcome else {
-            panic!("an evidence bound must not override unverified freshness");
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("an evidence bound must preserve the incomplete data-bearing outcome");
         };
+        assert!(data.records.is_empty());
         assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
     }
 
@@ -2767,6 +3144,7 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let escaped_status = ready_status(&fixture.source_root, &escaped_db);
         let escaped = ExistingIndexDefinitionProvider::new(
             &fixture.source_root,
+            &fixture.root,
             &inventory,
             Some(&escaped_status),
         )
@@ -2778,6 +3156,7 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let malformed_status = ready_status(&fixture.source_root, &malformed_db);
         let malformed = ExistingIndexDefinitionProvider::new(
             &fixture.source_root,
+            &fixture.root,
             &inventory,
             Some(&malformed_status),
         )
@@ -2793,11 +3172,35 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let identity_status = ready_status(&fixture.source_root, &identity_db);
         let identity = ExistingIndexDefinitionProvider::new(
             &fixture.source_root,
+            &fixture.root,
             &inventory,
             Some(&identity_status),
         )
         .definitions(&query("ПолучитьСерию", &[], 10));
         assert!(matches!(identity, ProviderOutcome::ContractViolation(_)));
+    }
+
+    #[test]
+    fn index_database_outside_the_workspace_cache_is_a_contract_violation() {
+        let fixture = Fixture::new("definition-cache-boundary");
+        let external = Fixture::new("definition-external-cache");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = external.root.join("outside.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+
+        let ProviderOutcome::ContractViolation(diagnostic) = outcome else {
+            panic!("an index outside the configured cache root must fail closed");
+        };
+        assert_eq!(diagnostic.code, "bsl_index_database_invalid");
     }
 
     #[test]
@@ -2811,6 +3214,7 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let missing_status = ready_status(&fixture.source_root, &missing_db);
         let missing = ExistingIndexDefinitionProvider::new(
             &fixture.source_root,
+            &fixture.root,
             &inventory,
             Some(&missing_status),
         )
@@ -2823,6 +3227,7 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         let changed_status = ready_status(&fixture.source_root, &changed_db);
         let changed = ExistingIndexDefinitionProvider::new(
             &fixture.source_root,
+            &fixture.root,
             &inventory,
             Some(&changed_status),
         )
@@ -2838,15 +3243,19 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         create_index(&db_path, MODULE_PATH, 4, 7);
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let outcome =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
-                .definitions(&query("ПолучитьСерию", &[], 10));
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
 
         assert!(matches!(outcome, ProviderOutcome::Unavailable(_)));
     }
 
     #[test]
-    fn ready_index_inventory_bound_is_unavailable_without_snapshot_proof() {
+    fn ready_index_inventory_bound_is_data_bearing_bounded_without_snapshot_proof() {
         let fixture = Fixture::new("definition-bounded-inventory");
         let source = fixture.write_source(MODULE_PATH, BSL);
         let inventory = SourceInventory {
@@ -2858,13 +3267,18 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
         create_empty_index(&db_path);
         let status = ready_status(&fixture.source_root, &db_path);
 
-        let outcome =
-            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
-                .definitions(&query("НесуществующийМетод", &[], 10));
+        let outcome = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &fixture.root,
+            &inventory,
+            Some(&status),
+        )
+        .definitions(&query("НесуществующийМетод", &[], 10));
 
-        let ProviderOutcome::Unavailable(diagnostic) = outcome else {
-            panic!("an inventory bound must not override unverified freshness");
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("an inventory bound must preserve the incomplete data-bearing outcome");
         };
+        assert!(data.records.is_empty());
         assert_eq!(diagnostic.code, "bsl_definition_freshness_unverified");
     }
 
@@ -2994,6 +3408,28 @@ Procedure Matched()\n    // needle\nEndProcedure\n",
     fn create_empty_index(db_path: &Path) {
         let connection = Connection::open(db_path).unwrap();
         create_index_schema(&connection);
+    }
+
+    fn create_multi_method_index(db_path: &Path, module_path: &str) {
+        let connection = Connection::open(db_path).unwrap();
+        create_index_schema(&connection);
+        connection
+            .execute(
+                "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+                 VALUES (1, ?1, 'CommonModule', 'Серии', 'Module')",
+                (module_path,),
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO methods
+                 (id, module_id, name, type, is_export, line, end_line, params)
+                 VALUES
+                 (1, 1, 'Alpha', 'Function', 0, 1, 2, ''),
+                 (2, 1, 'Beta', 'Function', 0, 3, 4, ''),
+                 (3, 1, 'Gamma', 'Function', 0, 5, 6, '');",
+            )
+            .unwrap();
     }
 
     fn create_index_schema(connection: &Connection) {

@@ -33,7 +33,7 @@ Inspect only `OperationResult.data.discovery`; presentation text is not discover
 
 - `schemaVersion`, `status`, `source`, and `concepts`;
 - `providerOutcomes`, `warnings`, and `missingChecks`;
-- `candidates`, `structuralEdges`, and `runtimeFlowEdges`;
+- `candidates`, including each typed `recommendation`, plus `structuralEdges` and `runtimeFlowEdges`;
 - `evidence`, including every cited `evidenceIds` entry and its `location`;
 - `analysisSnapshot.mappingFingerprint`, `analysisSnapshot.fingerprint`, and every `contributors` item with `relativePath`, `rawHash`, and `bytes`.
 
@@ -42,6 +42,12 @@ Resolve each candidate's `evidenceIds` against top-level `evidence[]`. Use the r
 Interpret wire outcomes exactly. Only an empty `complete` result is negative evidence for its exact query. `bounded`, `unavailable`, and `failed` are incomplete and remain missing checks, never negative evidence. `contract_violation` invalidates its provider records; they must not be used for selection or graph promotion, and its blocking diagnostic must be resolved before continuing.
 
 The analysis snapshot is not mutation authorization, not a freshness guarantee, and not a mutation receipt. Run a new preflight whenever the evidence inputs may have changed.
+
+A candidate recommendation is advisory, not a winner or an architectural decision. Its
+`basis` may cite only accepted `metadata_structure`, `managed_form_binding`, or
+`proven_runtime_flow` evidence. Lexical hits and support state cannot create a
+recommendation basis. A recommendation never overrides a blocking warning or
+material missing check.
 
 ## Close evidence gaps
 
@@ -65,7 +71,7 @@ No other tool is an allowed gap-closure path. Preserve the returned `providerOut
 
 ## Record the selection
 
-After inspecting the result and allowed gap evidence, record exactly this shape. Copy candidate fields from discovery, dereference evidence locations, state a concrete rejection reason, and retain the snapshot values verbatim.
+After inspecting the result and allowed gap evidence, record exactly this shape. Copy candidate fields, including `recommendation`, from discovery, dereference evidence locations, state a concrete rejection reason, and retain the snapshot values verbatim.
 
 Always include `supportState`. Copy the reported value verbatim. If the candidate omits it, use literal `"unknown"` only when the support/lock-state gap is explicitly non-material, and retain that gap in `unresolvedNonMaterialChecks`. If missing support/lock state is material to the selection or planned change, stop and do not record a selection. Never infer `editable` or `locked`.
 
@@ -75,6 +81,10 @@ Always include `supportState`. Copy the reported value verbatim. If the candidat
     "target": "<candidate-target>",
     "kind": "<candidate-kind>",
     "evidenceIds": ["<evidence-id>"],
+    "recommendation": {
+      "summary": "<candidate-recommendation-summary>",
+      "basis": ["<typed-recommendation-basis>"]
+    },
     "evidenceLocations": [
       {"relativePath": "Documents/ПриобретениеТоваровУслуг.xml", "line": 2}
     ],
@@ -95,6 +105,7 @@ Always include `supportState`. Copy the reported value verbatim. If the candidat
     }
   ],
   "analysisSnapshot": {
+    "mappingFingerprint": "<mapping-fingerprint>",
     "fingerprint": "<fingerprint>",
     "contributors": [
       {"relativePath": "<relative-path>", "rawHash": "<raw-sha256>", "bytes": 0}

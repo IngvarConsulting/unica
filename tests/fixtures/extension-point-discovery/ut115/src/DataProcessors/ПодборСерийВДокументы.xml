@@ -3,5 +3,8 @@
     <Properties>
       <Name>ПодборСерийВДокументы</Name>
     </Properties>
+    <ChildObjects>
+      <Form>РегистрацияИПодборСерийПоОднойСтрокеТоваров</Form>
+    </ChildObjects>
   </DataProcessor>
 </MetaDataObject>

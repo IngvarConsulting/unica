@@ -40,12 +40,17 @@ DISCOVERY_FIXTURE = (
 )
 DISCOVERY_TASK = "При поступлении товаров контролировать остаточный срок годности серий"
 REQUIRED_DISCOVERY_TARGETS = {
-    "document.приобретениетоваровуслуг.tabularsection.серии",
-    "dataprocessor.подборсерийвдокументы",
+    "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
+    "DataProcessor.ПодборСерийВДокументы",
     (
-        "document.приобретениетоваровуслуг.form."
-        "регистрацияиподборсерийпооднойстрокетоваров"
+        "DataProcessor.ПодборСерийВДокументы.Form."
+        "РегистрацияИПодборСерийПоОднойСтрокеТоваров"
     ),
+}
+ALLOWED_RECOMMENDATION_BASES = {
+    "metadata_structure",
+    "managed_form_binding",
+    "proven_runtime_flow",
 }
 
 
@@ -166,17 +171,38 @@ def validate_discovery(response: dict[str, Any]) -> None:
             "Unica MCP task-only discovery is missing candidates: "
             + ", ".join(missing_targets)
         )
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise SystemExit("Unica MCP discovery candidate must be an object")
+        recommendation = candidate.get("recommendation")
+        if not isinstance(recommendation, dict):
+            raise SystemExit("Unica MCP discovery candidate recommendation is missing")
+        summary = recommendation.get("summary")
+        basis = recommendation.get("basis")
+        if not isinstance(summary, str) or not summary.strip():
+            raise SystemExit("Unica MCP discovery candidate recommendation summary is missing")
+        if (
+            not isinstance(basis, list)
+            or not basis
+            or any(
+                not isinstance(item, str)
+                or item not in ALLOWED_RECOMMENDATION_BASES
+                for item in basis
+            )
+            or len(set(basis)) != len(basis)
+        ):
+            raise SystemExit("Unica MCP discovery candidate recommendation basis is invalid")
 
     warnings = discovery.get("warnings")
     if not isinstance(warnings, list) or not any(
         isinstance(warning, dict)
         and warning.get("blocking") is True
-        and warning.get("code") == "separate_series_section"
+        and warning.get("code") == "alternative_relevant_tabular_section"
         for warning in warnings
     ):
         raise SystemExit(
-            "Unica MCP task-only discovery separate_series_section blocking "
-            "warning is missing"
+            "Unica MCP task-only discovery "
+            "alternative_relevant_tabular_section blocking warning is missing"
         )
 
     missing_checks = discovery.get("missingChecks")

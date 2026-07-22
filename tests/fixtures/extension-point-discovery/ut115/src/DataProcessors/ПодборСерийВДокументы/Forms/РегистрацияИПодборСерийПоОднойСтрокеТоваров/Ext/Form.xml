@@ -2,11 +2,6 @@
   <Events>
     <Event name="OnOpen">ПриОткрытии</Event>
   </Events>
-  <ChildItems>
-    <InputField name="СерияТовара" id="1">
-      <DataPath>Объект.Товары.Серия</DataPath>
-    </InputField>
-  </ChildItems>
   <Commands>
     <Command name="ПодобратьСерии" id="1">
       <Action callType="Client">ПодобратьСерии</Action>

@@ -1,7 +1,8 @@
 use crate::application::discovery::ports::ManagedFormPort;
 use crate::domain::discovery::{
-    ArtifactId, ArtifactKind, DiscoveryQuery, FactBatch, FormBinding, FormFact,
-    PortableRelativePath, ProviderDiagnostic, ProviderOutcome, SourceFile, SourceInventory,
+    ArtifactId, ArtifactKind, DiscoveryMatchStrength, DiscoveryMatcher, DiscoveryQuery, FactBatch,
+    FormBinding, FormFact, PortableRelativePath, ProviderDiagnostic, ProviderOutcome, SourceFile,
+    SourceInventory,
 };
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, decode_xml_bytes,
@@ -114,6 +115,7 @@ fn collect_form_facts(
             "managed form input produced a duplicate typed binding",
         ));
     }
+    prioritize_form_facts(&mut records, query);
     let bounded = records.len() > usize::from(query.limits().max_evidence);
     if bounded {
         records.truncate(usize::from(query.limits().max_evidence));
@@ -139,6 +141,47 @@ fn collect_form_facts(
         })
     } else {
         Ok(FormCollection::Complete(batch))
+    }
+}
+
+fn prioritize_form_facts(records: &mut [FormFact], query: &DiscoveryQuery<'_>) {
+    let matcher = DiscoveryMatcher::new(query);
+    records.sort_by(|left, right| {
+        form_fact_strength(right, &matcher)
+            .cmp(&form_fact_strength(left, &matcher))
+            .then_with(|| left.cmp(right))
+    });
+}
+
+fn form_fact_strength(fact: &FormFact, matcher: &DiscoveryMatcher) -> DiscoveryMatchStrength {
+    match &fact.binding {
+        FormBinding::Data {
+            target, data_path, ..
+        } => matcher
+            .strength(&fact.form, std::iter::once(data_path.as_str()))
+            .max(matcher.strength(target, std::iter::once(data_path.as_str()))),
+        FormBinding::Command {
+            command,
+            handler,
+            target,
+            ..
+        } => {
+            let supplemental = [command.as_str(), handler.as_str()];
+            matcher
+                .strength(&fact.form, supplemental)
+                .max(matcher.strength(target, supplemental))
+        }
+        FormBinding::Event {
+            event,
+            handler,
+            target,
+            ..
+        } => {
+            let supplemental = [event.as_str(), handler.as_str()];
+            matcher
+                .strength(&fact.form, supplemental)
+                .max(matcher.strength(target, supplemental))
+        }
     }
 }
 
@@ -343,7 +386,7 @@ fn required_identifier_text<'a>(value: Option<&'a str>, label: &str) -> Result<&
 fn handler_artifact(form: &ArtifactId, handler: &str) -> Result<ArtifactId, String> {
     ArtifactId::parse(&format!(
         "{}.Module.FormModule.Method.{handler}",
-        form.as_str()
+        form.display_str()
     ))
     .map_err(|error| format!("handler {handler} has invalid canonical identity: {error}"))
 }
@@ -410,6 +453,14 @@ mod tests {
   </Form>
 </MetaDataObject>"#;
 
+    const OWNER_DESCRIPTOR_PATH: &str = "Documents/ПриобретениеТоваровУслуг.xml";
+    const FORM_DESCRIPTOR_PATH: &str =
+        "Documents/ПриобретениеТоваровУслуг/Forms/ФормаДокумента.xml";
+    const FORM_SOURCE_PATH: &str = concat!(
+        "Documents/ПриобретениеТоваровУслуг/Forms/",
+        "ФормаДокумента/Ext/Form.xml"
+    );
+
     #[test]
     fn enumerates_only_declared_canonical_forms_and_keeps_typed_bindings() {
         let canonical_form_path = concat!(
@@ -445,7 +496,7 @@ mod tests {
                         target,
                         target_kind: ArtifactKind::Attribute,
                         data_path,
-                    } if target.as_str() == series.as_str() && data_path == "Объект.Товары.Серия"
+                    } if target == &series && data_path == "Объект.Товары.Серия"
                 )
                 && fact.location.line == Some(7)
         }));
@@ -474,6 +525,175 @@ mod tests {
                 (DESCRIPTOR.len() + FORM_DESCRIPTOR_XML.len() + FORM_XML.len()) as u64,
                 3,
             )
+        );
+    }
+
+    #[test]
+    fn retained_form_fact_contributors_are_the_exact_descriptor_lineage() {
+        let owner_descriptor = source_file(OWNER_DESCRIPTOR_PATH, DESCRIPTOR.as_bytes());
+        let form_descriptor = source_file(FORM_DESCRIPTOR_PATH, FORM_DESCRIPTOR_XML.as_bytes());
+        let form_source = source_file(FORM_SOURCE_PATH, FORM_XML.as_bytes());
+        let mut expected = vec![
+            owner_descriptor.analyzed_file(),
+            form_descriptor.analyzed_file(),
+            form_source.analyzed_file(),
+        ];
+        expected.sort();
+
+        let outcome = ManagedFormProvider.forms(
+            &query(1),
+            &inventory(vec![owner_descriptor, form_descriptor, form_source]),
+        );
+
+        let ProviderOutcome::Bounded { data, .. } = outcome else {
+            panic!("one retained form fact from a larger valid set must be bounded");
+        };
+        assert_eq!(data.records.len(), 1);
+        assert!(matches!(
+            data.records.first().map(|fact| &fact.binding),
+            Some(FormBinding::Data { .. })
+        ));
+        assert_eq!(
+            data.contributors, expected,
+            "a retained form binding depends on its owner descriptor, declared form descriptor, and Form.xml"
+        );
+    }
+
+    #[test]
+    fn changing_only_a_form_descriptor_changes_its_contributor_identity() {
+        let changed_form_descriptor_xml = FORM_DESCRIPTOR_XML.replace(
+            "</MetaDataObject>",
+            "  <!-- same declaration, different source bytes -->\n</MetaDataObject>",
+        );
+        let baseline_descriptor = source_file(FORM_DESCRIPTOR_PATH, FORM_DESCRIPTOR_XML.as_bytes());
+        let changed_descriptor =
+            source_file(FORM_DESCRIPTOR_PATH, changed_form_descriptor_xml.as_bytes());
+        let expected_baseline_hash = baseline_descriptor.raw_hash.clone();
+        let expected_changed_hash = changed_descriptor.raw_hash.clone();
+
+        let baseline = ManagedFormProvider.forms(
+            &query(1),
+            &inventory(vec![
+                source_file(OWNER_DESCRIPTOR_PATH, DESCRIPTOR.as_bytes()),
+                baseline_descriptor,
+                source_file(FORM_SOURCE_PATH, FORM_XML.as_bytes()),
+            ]),
+        );
+        let changed = ManagedFormProvider.forms(
+            &query(1),
+            &inventory(vec![
+                source_file(OWNER_DESCRIPTOR_PATH, DESCRIPTOR.as_bytes()),
+                changed_descriptor,
+                source_file(FORM_SOURCE_PATH, FORM_XML.as_bytes()),
+            ]),
+        );
+
+        let ProviderOutcome::Bounded { data: baseline, .. } = baseline else {
+            panic!("baseline form facts must be bounded at one retained fact");
+        };
+        let ProviderOutcome::Bounded { data: changed, .. } = changed else {
+            panic!("changed form facts must be bounded at one retained fact");
+        };
+        let baseline_hash = baseline
+            .contributors
+            .iter()
+            .find(|file| file.relative_path.as_str() == FORM_DESCRIPTOR_PATH)
+            .map(|file| file.raw_hash.clone());
+        let changed_hash = changed
+            .contributors
+            .iter()
+            .find(|file| file.relative_path.as_str() == FORM_DESCRIPTOR_PATH)
+            .map(|file| file.raw_hash.clone());
+        assert_eq!(baseline_hash, Some(expected_baseline_hash));
+        assert_eq!(changed_hash, Some(expected_changed_hash));
+        assert_ne!(baseline_hash, changed_hash);
+    }
+
+    #[test]
+    fn form_local_and_unprefixed_data_paths_are_not_metadata_bindings() {
+        let form_xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">
+  <ChildItems>
+    <InputField name="ЛокальнаяСерия" id="1">
+      <DataPath>Товары.Серия</DataPath>
+    </InputField>
+    <InputField name="РеквизитФормы" id="2">
+      <DataPath>ЛокальныйРеквизит</DataPath>
+    </InputField>
+    <InputField name="ТекущаяСтрока" id="3">
+      <DataPath>Items.Список.CurrentData.Серия</DataPath>
+    </InputField>
+  </ChildItems>
+  <Attributes>
+    <Attribute name="Товары" id="1"/>
+    <Attribute name="ЛокальныйРеквизит" id="2"/>
+  </Attributes>
+</Form>"#;
+        let outcome = ManagedFormProvider.forms(
+            &query(100),
+            &inventory(vec![
+                source_file(OWNER_DESCRIPTOR_PATH, DESCRIPTOR.as_bytes()),
+                source_file(FORM_DESCRIPTOR_PATH, FORM_DESCRIPTOR_XML.as_bytes()),
+                source_file(FORM_SOURCE_PATH, form_xml.as_bytes()),
+            ]),
+        );
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("valid form-local DataPath values must not invalidate managed-form discovery");
+        };
+        let metadata_bindings = batch
+            .records
+            .iter()
+            .filter_map(|fact| match &fact.binding {
+                FormBinding::Data { data_path, .. } => Some(data_path.as_str()),
+                FormBinding::Command { .. } | FormBinding::Event { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            metadata_bindings.is_empty(),
+            "unprefixed and form-local paths are not proof of an owner metadata binding: {metadata_bindings:?}"
+        );
+    }
+
+    #[test]
+    fn object_root_data_path_binds_to_the_form_owner() {
+        let form_xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">
+  <ChildItems>
+    <InputField name="ОбъектЦеликом" id="1">
+      <DataPath>Объект</DataPath>
+    </InputField>
+  </ChildItems>
+</Form>"#;
+        let outcome = ManagedFormProvider.forms(
+            &query(100),
+            &inventory(vec![
+                source_file(OWNER_DESCRIPTOR_PATH, DESCRIPTOR.as_bytes()),
+                source_file(FORM_DESCRIPTOR_PATH, FORM_DESCRIPTOR_XML.as_bytes()),
+                source_file(FORM_SOURCE_PATH, form_xml.as_bytes()),
+            ]),
+        );
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("an Object-root DataPath must be a valid managed-form input");
+        };
+        let bindings = batch
+            .records
+            .iter()
+            .filter_map(|fact| match &fact.binding {
+                FormBinding::Data {
+                    target,
+                    target_kind,
+                    data_path,
+                } => Some((target.clone(), *target_kind, data_path.clone())),
+                FormBinding::Command { .. } | FormBinding::Event { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bindings,
+            vec![(
+                artifact("Document.ПриобретениеТоваровУслуг"),
+                ArtifactKind::MetadataObject,
+                "Объект".to_string(),
+            )]
         );
     }
 

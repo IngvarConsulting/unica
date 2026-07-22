@@ -1,7 +1,7 @@
 use crate::application::discovery::ports::SupportStatePort;
 use crate::domain::discovery::{
-    DiscoveryQuery, EvidenceLocation, FactBatch, ProviderDiagnostic, ProviderOutcome, SourceFile,
-    SourceInventory, SupportFact, SupportStateKind,
+    DiscoveryMatcher, DiscoveryQuery, EvidenceLocation, FactBatch, ProviderDiagnostic,
+    ProviderOutcome, SourceFile, SourceInventory, SupportFact, SupportStateKind,
 };
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, inventory_is_bounded,
@@ -82,7 +82,13 @@ fn collect_support_facts(
             records.push(support_fact(node, support_file, parsed.as_ref())?);
         }
     }
-    records.sort();
+    let matcher = DiscoveryMatcher::new(query);
+    records.sort_by(|left, right| {
+        matcher
+            .strength(&right.artifact, std::iter::empty::<&str>())
+            .cmp(&matcher.strength(&left.artifact, std::iter::empty::<&str>()))
+            .then_with(|| left.cmp(right))
+    });
     let bounded = records.len() > usize::from(query.limits().max_evidence);
     if bounded {
         records.truncate(usize::from(query.limits().max_evidence));
@@ -626,6 +632,118 @@ mod tests {
     }
 
     #[test]
+    fn retained_subordinate_support_fact_has_exact_descriptor_lineage() {
+        let root_uuid = "62000000-0000-0000-0000-000000000001";
+        let form_uuid = "62000000-0000-0000-0000-000000000002";
+        let parent_xml = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Document uuid="{root_uuid}">
+    <Properties><Name>Purchase</Name></Properties>
+    <ChildObjects><Form>Main</Form></ChildObjects>
+  </Document>
+</MetaDataObject>"#
+        );
+        let form_xml = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Form uuid="{form_uuid}"><Properties><Name>Main</Name></Properties></Form>
+</MetaDataObject>"#
+        );
+        let support_bytes = support_bytes(0, &[(root_uuid, 0), (form_uuid, 1)]);
+        let parent = source_file("Documents/Purchase.xml", parent_xml.as_bytes());
+        let form = source_file("Documents/Purchase/Forms/Main.xml", form_xml.as_bytes());
+        let support = source_file("Ext/ParentConfigurations.bin", &support_bytes);
+        let mut expected = vec![
+            parent.analyzed_file(),
+            form.analyzed_file(),
+            support.analyzed_file(),
+        ];
+        expected.sort();
+        let explicit_form =
+            ArtifactId::parse("Document.Purchase.Form.Main").expect("valid form artifact");
+        let objects = [explicit_form.clone()];
+        let query = DiscoveryQuery::new(
+            "support",
+            &[],
+            &[],
+            &objects,
+            DiscoveryQueryLimits {
+                max_files: 100,
+                max_bytes: 1_000_000,
+                max_evidence: 1,
+                max_candidates: 100,
+                max_graph_depth: 12,
+            },
+        );
+
+        let outcome = SupportStateProvider.support(&query, &inventory(vec![parent, form, support]));
+
+        let ProviderOutcome::Bounded { data, .. } = outcome else {
+            panic!("one retained support fact from a larger valid set must be bounded");
+        };
+        assert_eq!(data.records.len(), 1);
+        assert_eq!(data.records[0].artifact, explicit_form);
+        assert_eq!(
+            data.contributors, expected,
+            "subordinate support evidence depends on the parent descriptor, subordinate descriptor, and support bytes"
+        );
+    }
+
+    #[test]
+    fn changing_only_a_support_descriptor_changes_its_contributor_identity() {
+        let baseline_descriptor = descriptor(
+            "Documents/Purchase.xml",
+            "Document",
+            "Purchase",
+            LOCKED_UUID,
+        );
+        let changed_descriptor_bytes = format!(
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\n  <Document uuid=\"{LOCKED_UUID}\">\n    <Properties><Name>Purchase</Name></Properties>\n  </Document>\n  <!-- same object, different source bytes -->\n</MetaDataObject>"
+        );
+        let changed_descriptor = source_file(
+            "Documents/Purchase.xml",
+            changed_descriptor_bytes.as_bytes(),
+        );
+        let expected_baseline_hash = baseline_descriptor.raw_hash.clone();
+        let expected_changed_hash = changed_descriptor.raw_hash.clone();
+        let support = support_bytes(0, &[(LOCKED_UUID, 0)]);
+
+        let baseline = SupportStateProvider.support(
+            &query(100),
+            &inventory(vec![
+                baseline_descriptor,
+                source_file("Ext/ParentConfigurations.bin", &support),
+            ]),
+        );
+        let changed = SupportStateProvider.support(
+            &query(100),
+            &inventory(vec![
+                changed_descriptor,
+                source_file("Ext/ParentConfigurations.bin", &support),
+            ]),
+        );
+
+        let ProviderOutcome::Complete(baseline) = baseline else {
+            panic!("baseline support facts must be complete");
+        };
+        let ProviderOutcome::Complete(changed) = changed else {
+            panic!("changed support facts must be complete");
+        };
+        let baseline_hash = baseline
+            .contributors
+            .iter()
+            .find(|file| file.relative_path.as_str() == "Documents/Purchase.xml")
+            .map(|file| file.raw_hash.clone());
+        let changed_hash = changed
+            .contributors
+            .iter()
+            .find(|file| file.relative_path.as_str() == "Documents/Purchase.xml")
+            .map(|file| file.raw_hash.clone());
+        assert_eq!(baseline_hash, Some(expected_baseline_hash));
+        assert_eq!(changed_hash, Some(expected_changed_hash));
+        assert_ne!(baseline_hash, changed_hash);
+    }
+
+    #[test]
     fn tracked_configuration_catalog_support_uses_one_canonical_claim_per_object() {
         let outcome =
             SupportStateProvider.support(&query(100), &tracked_meta_compile_on_support_inventory());
@@ -657,7 +775,7 @@ mod tests {
         assert!(batch.records.iter().all(|fact| {
             !fact
                 .artifact
-                .as_str()
+                .display_str()
                 .starts_with("Configuration.ТестКонфиг.Catalog.")
         }));
     }

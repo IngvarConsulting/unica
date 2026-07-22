@@ -685,8 +685,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             set(selection_record["selectedPoint"]),
-            {"target", "kind", "evidenceIds", "evidenceLocations", "supportState"},
+            {
+                "target",
+                "kind",
+                "evidenceIds",
+                "recommendation",
+                "evidenceLocations",
+                "supportState",
+            },
         )
+        self.assertEqual(
+            set(selection_record["selectedPoint"]["recommendation"]),
+            {"summary", "basis"},
+        )
+        for recommendation_rule in [
+            "advisory, not a winner or an architectural decision",
+            "Lexical hits and support state cannot create a",
+            "A recommendation never overrides a blocking warning or",
+            "including `recommendation`, from discovery",
+        ]:
+            with self.subTest(recommendation_rule=recommendation_rule):
+                self.assertIn(recommendation_rule, text)
         for support_rule in [
             "Always include `supportState`",
             "Copy the reported value verbatim",
@@ -716,7 +735,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             set(selection_record["analysisSnapshot"]),
-            {"fingerprint", "contributors"},
+            {"mappingFingerprint", "fingerprint", "contributors"},
         )
         self.assertEqual(
             set(selection_record["analysisSnapshot"]["contributors"][0]),
@@ -771,13 +790,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "  allow_implicit_invocation: true\n",
         )
 
-    def test_extension_point_acceptance_requires_exact_series_tabular_section(self) -> None:
+    def test_extension_point_acceptance_requires_exact_extension_point_targets(self) -> None:
         acceptance = (
             self.repo_root() / "spec" / "acceptance" / "unica-mcp-validation.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
             "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
+            acceptance,
+        )
+        self.assertIn(
+            "DataProcessor.ПодборСерийВДокументы.Form."
+            "РегистрацияИПодборСерийПоОднойСтрокеТоваров",
             acceptance,
         )
         self.assertNotIn("retain document, processor, and form candidates", acceptance)

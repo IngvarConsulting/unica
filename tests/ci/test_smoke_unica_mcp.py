@@ -56,19 +56,38 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             "candidates": [
                 {
                     "target": (
-                        "document.приобретениетоваровуслуг."
-                        "tabularsection.серии"
-                    )
+                        "Document.ПриобретениеТоваровУслуг."
+                        "TabularSection.Серии"
+                    ),
+                    "recommendation": {
+                        "summary": "Review typed metadata evidence.",
+                        "basis": ["metadata_structure"],
+                    },
                 },
-                {"target": "dataprocessor.подборсерийвдокументы"},
+                {
+                    "target": "DataProcessor.ПодборСерийВДокументы",
+                    "recommendation": {
+                        "summary": "Review typed metadata evidence.",
+                        "basis": ["metadata_structure"],
+                    },
+                },
                 {
                     "target": (
-                        "document.приобретениетоваровуслуг.form."
-                        "регистрацияиподборсерийпооднойстрокетоваров"
-                    )
+                        "DataProcessor.ПодборСерийВДокументы.Form."
+                        "РегистрацияИПодборСерийПоОднойСтрокеТоваров"
+                    ),
+                    "recommendation": {
+                        "summary": "Review typed form-binding evidence.",
+                        "basis": ["managed_form_binding"],
+                    },
                 },
             ],
-            "warnings": [{"code": "separate_series_section", "blocking": True}],
+            "warnings": [
+                {
+                    "code": "alternative_relevant_tabular_section",
+                    "blocking": True,
+                }
+            ],
             "missingChecks": [{"code": "bsl_index_missing"}],
         }
 
@@ -224,7 +243,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def test_rejects_operation_result_without_success(self) -> None:
         discovery = self.valid_discovery()
         discovery["candidates"].append(
-            {"target": "document.приобретениетоваровуслуг"}
+            {"target": "Document.ПриобретениеТоваровУслуг"}
         )
         result = self.run_smoke(
             self.discovery_server(
@@ -237,29 +256,49 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_rejects_root_document_instead_of_series_tabular_section(self) -> None:
         discovery = self.valid_discovery()
-        discovery["candidates"][0]["target"] = "document.приобретениетоваровуслуг"
+        discovery["candidates"][0]["target"] = "Document.ПриобретениеТоваровУслуг"
         result = self.run_smoke(
             self.discovery_server({"ok": True, "data": {"discovery": discovery}})
         )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "document.приобретениетоваровуслуг.tabularsection.серии",
+            "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
             result.stderr,
         )
 
-    def test_rejects_discovery_without_separate_series_warning(self) -> None:
+    def test_rejects_discovery_without_alternative_relevant_section_warning(self) -> None:
         discovery = self.valid_discovery()
-        discovery["candidates"].append(
-            {"target": "document.приобретениетоваровуслуг"}
-        )
         discovery["warnings"] = [{"code": "unrelated_warning", "blocking": True}]
         result = self.run_smoke(
             self.discovery_server({"ok": True, "data": {"discovery": discovery}})
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("separate_series_section", result.stderr)
+        self.assertIn("alternative_relevant_tabular_section", result.stderr)
+
+    def test_rejects_candidate_without_typed_recommendation(self) -> None:
+        discovery = self.valid_discovery()
+        discovery["candidates"][0].pop("recommendation")
+        result = self.run_smoke(
+            self.discovery_server({"ok": True, "data": {"discovery": discovery}})
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("candidate recommendation is missing", result.stderr)
+
+    def test_rejects_non_string_recommendation_basis_without_traceback(self) -> None:
+        discovery = self.valid_discovery()
+        discovery["candidates"][0]["recommendation"]["basis"] = [
+            {"unexpected": "object"}
+        ]
+        result = self.run_smoke(
+            self.discovery_server({"ok": True, "data": {"discovery": discovery}})
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("candidate recommendation basis is invalid", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_preserves_protocol_error_when_stdin_close_is_broken(self) -> None:
         started = time.monotonic()

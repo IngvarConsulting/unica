@@ -65,8 +65,15 @@ impl SourceInventoryPort for CapturingSourceInventoryPort {
 
 struct CapturedDefinitionPort<'a> {
     selected_root: &'a Path,
+    cache_root: &'a Path,
     inventory: &'a RefCell<Option<SourceInventory>>,
     status: Option<&'a crate::infrastructure::workspace_index::BslIndexStatus>,
+    status_error: Option<CapturedDefinitionStatusError>,
+}
+
+enum CapturedDefinitionStatusError {
+    Unavailable(ProviderDiagnostic),
+    Invalid(ProviderDiagnostic),
 }
 
 impl DefinitionPort for CapturedDefinitionPort<'_> {
@@ -74,12 +81,28 @@ impl DefinitionPort for CapturedDefinitionPort<'_> {
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> ProviderOutcome<FactBatch<DefinitionFact>> {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
+        if let Some(error) = &self.status_error {
+            return match error {
+                CapturedDefinitionStatusError::Unavailable(diagnostic) => {
+                    ProviderOutcome::Unavailable(diagnostic.clone())
+                }
+                CapturedDefinitionStatusError::Invalid(diagnostic) => {
+                    ProviderOutcome::ContractViolation(diagnostic.clone())
+                }
+            };
+        }
         let captured = self.inventory.borrow();
         match captured.as_ref() {
-            Some(inventory) => {
-                ExistingIndexDefinitionProvider::new(self.selected_root, inventory, self.status)
-                    .definitions(query)
-            }
+            Some(inventory) => ExistingIndexDefinitionProvider::new(
+                self.selected_root,
+                self.cache_root,
+                inventory,
+                self.status,
+            )
+            .definitions(query),
             None => ProviderOutcome::Unavailable(ProviderDiagnostic::material(
                 "source_inventory_unavailable",
                 "definition provider could not run because source inventory is unavailable",
@@ -132,11 +155,40 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             MappingFingerprint::from_identity(&mapping_identity),
         );
         let inventory = CapturingSourceInventoryPort::new(selected.path.clone());
-        let status = crate::infrastructure::workspace_index::read_bsl_index_status(context);
+        let (status, status_error) =
+            match crate::infrastructure::workspace_index::read_bsl_index_status_for_discovery(
+                context,
+                cancellation,
+            ) {
+                Ok(status) => (status, None),
+                Err(crate::infrastructure::workspace_index::BslIndexStatusReadError::Cancelled) => {
+                    return Err(DiscoveryError::Cancelled)
+                }
+                Err(
+                    crate::infrastructure::workspace_index::BslIndexStatusReadError::Unavailable(
+                        message,
+                    ),
+                ) => (
+                    None,
+                    Some(CapturedDefinitionStatusError::Unavailable(
+                        ProviderDiagnostic::material("bsl_index_status_unavailable", message),
+                    )),
+                ),
+                Err(crate::infrastructure::workspace_index::BslIndexStatusReadError::Invalid(
+                    message,
+                )) => (
+                    None,
+                    Some(CapturedDefinitionStatusError::Invalid(
+                        ProviderDiagnostic::material("bsl_index_status_invalid", message),
+                    )),
+                ),
+            };
         let definitions = CapturedDefinitionPort {
             selected_root: &selected.path,
+            cache_root: &context.cache_root,
             inventory: &inventory.captured,
             status: status.as_ref(),
+            status_error,
         };
         let use_case = DiscoverExtensionPointsUseCase::new(DiscoveryPorts {
             source_inventory: &inventory,

@@ -177,7 +177,8 @@ presentation JSON to be reparsed by the application layer.
 Every provider returns an exhaustive `ProviderOutcome<T>`:
 
 - `Complete` — complete for the exact typed query;
-- `Bounded` — a resource limit truncated coverage;
+- `Bounded` — returned data is sound but a resource, trust, or
+  snapshot-freshness boundary leaves the exact query scope incomplete;
 - `Unavailable` — the capability is not available in this workspace;
 - `Failed` — the provider failed with a typed diagnostic;
 - `ContractViolation` — returned data violated the port contract and is not
@@ -191,10 +192,37 @@ records from graph promotion. Invalid requests, ambiguous/escaping source
 selection, and inability to establish a contained source root fail the whole
 operation before providers run.
 
-The graph keeps `contains` and `defines` structural. Only compatible typed
-platform callbacks, form command bindings, event subscriptions, or call-graph
-facts can create runtime-flow edges. A lexical match may create a related
-artifact but cannot create an actionable candidate by itself.
+The global evidence budget reserves deterministic capacity for later
+providers. Private match-strength tiers keep exact and inflected task matches
+plus their structural ancestors ahead of weak prefixes and unrelated facts;
+the same tiers order candidate truncation without exposing a score.
+
+Existing-index definition hits are revalidated against captured source bytes
+and may be returned as data-bearing
+`Bounded(bsl_definition_freshness_unverified)`. The legacy status cannot bind
+the index generation to the analysis snapshot, so an empty lookup is also
+`Bounded`, never negative evidence. Status reads are contained and status writes
+publish through same-directory atomic replacement. The database is copied from
+a stable verified handle within `maxBytes`, rejected when WAL state would be
+required, and deserialized into a private read-only SQLite snapshot. Exact query
+terms, cumulative VM work, returned TEXT bytes, and per-source parsing work are
+capped; exhausting or truncating these resource bounds stays explicitly
+`Bounded`.
+
+The graph keeps `contains`, `defines`, and data bindings structural. Compatible
+form actions/callbacks establish runtime roots, and only directed
+`Method -> Method` `Calls` facts extend them. `maxGraphDepth` counts calls only;
+the node at depth N remains and its outgoing calls are omitted with
+`Bounded(graph_depth_limit)`. Structural edges are unaffected, standalone calls
+do not create candidates, and event subscriptions fail closed until a typed
+Slice A source shape exists. A lexical match may create a related artifact but
+cannot create an actionable candidate by itself.
+
+Every candidate carries a deterministic advisory `recommendation` with a brief
+summary and an ordered typed basis set. Only accepted metadata-structure,
+managed-form-binding, or proven-runtime-flow facts can contribute a basis;
+lexical and support facts cannot. Recommendations do not rank a winner, validate
+a proposal, authorize mutation, or override blocking/material gaps.
 
 ## Analysis Snapshot and Filesystem Safety
 
@@ -296,7 +324,7 @@ task-only request about shelf-life control must find:
 
 - `Document.ПриобретениеТоваровУслуг.TabularSection.Серии`;
 - `DataProcessor.ПодборСерийВДокументы`;
-- the registration/selection form involved in the user flow;
+- `DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров`;
 - a warning/check showing that an implementation limited to `Товары.Серия`
   has insufficient evidence or coverage.
 

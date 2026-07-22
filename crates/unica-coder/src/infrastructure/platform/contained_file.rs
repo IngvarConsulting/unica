@@ -1,7 +1,7 @@
 use crate::domain::discovery::{ContentHash, PortableRelativePath, PortableRelativePathError};
 use std::fmt;
 use std::fs::{File, Metadata, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -21,6 +21,119 @@ pub(crate) struct VerifiedFile {
     pub raw_sha256: ContentHash,
     pub bytes_read: u64,
     pub identity: VerifiedIdentity,
+}
+
+/// Keeps a verified regular file open so consumers can copy bytes from the
+/// object that passed containment and identity checks, independent of later
+/// pathname replacement.
+pub(crate) struct VerifiedFileHandle {
+    file: File,
+    identity: VerifiedIdentity,
+    relative_path: PortableRelativePath,
+    #[cfg(windows)]
+    _directory_leases: Vec<File>,
+}
+
+impl VerifiedFileHandle {
+    /// Reads the verified object twice through the open handle and accepts it
+    /// only when both bounded copies are identical. SQLite receives the
+    /// resulting private bytes, never this handle or a pathname.
+    pub(crate) fn read_immutable_snapshot_cancellable(
+        &self,
+        max_bytes: u64,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<VerifiedFile, ContainedFileError> {
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        validate_open_handle_identity(&self.file, self.identity)?;
+        let first = read_open_handle_bytes(&self.file, max_bytes, &mut is_cancelled)?;
+        validate_open_handle_identity(&self.file, self.identity)?;
+        let second = read_open_handle_bytes(&self.file, max_bytes, &mut is_cancelled)?;
+        validate_open_handle_identity(&self.file, self.identity)?;
+        if first != second {
+            return Err(ContainedFileError::IdentityChanged);
+        }
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        let bytes_read =
+            u64::try_from(first.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let raw_sha256 = ContentHash::from_incremental_sha256(Sha256::new_with_prefix(&first));
+        Ok(VerifiedFile {
+            relative_path: self.relative_path.clone(),
+            bytes: first,
+            raw_sha256,
+            bytes_read,
+            identity: self.identity,
+        })
+    }
+}
+
+fn validate_open_handle_identity(
+    file: &File,
+    expected: VerifiedIdentity,
+) -> Result<(), ContainedFileError> {
+    let metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "reinspect open file snapshot handle",
+        source,
+    })?;
+    validate_regular_metadata(&metadata)?;
+    if identity_from_open_file(file, &metadata)? != expected {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    Ok(())
+}
+
+fn read_open_handle_bytes(
+    file: &File,
+    max_bytes: u64,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<Vec<u8>, ContainedFileError> {
+    let metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "inspect open file snapshot length",
+        source,
+    })?;
+    if metadata.len() > max_bytes {
+        return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
+    }
+    let mut bytes = Vec::new();
+    let mut reader = file;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| ContainedFileError::Io {
+            operation: "rewind open file snapshot handle",
+            source,
+        })?;
+    let mut chunk = [0_u8; VERIFIED_READ_CHUNK_BYTES];
+    loop {
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        let bytes_read =
+            u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let probe_remaining = max_bytes
+            .saturating_sub(bytes_read)
+            .saturating_add(1)
+            .min(VERIFIED_READ_CHUNK_BYTES as u64);
+        let chunk_limit =
+            usize::try_from(probe_remaining).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let read =
+            reader
+                .read(&mut chunk[..chunk_limit])
+                .map_err(|source| ContainedFileError::Io {
+                    operation: "read open file snapshot handle",
+                    source,
+                })?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if u64::try_from(bytes.len()).map_or(true, |length| length > max_bytes) {
+            return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
+        }
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -142,6 +255,72 @@ pub(crate) fn read_contained_regular_file_cancellable(
         ReadObservers::no_op(),
         is_cancelled,
     )
+}
+
+pub(crate) fn open_contained_regular_file_handle(
+    root: &Path,
+    path: &Path,
+) -> Result<VerifiedFileHandle, ContainedFileError> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map(|path| {
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
+        })
+        .map_err(|source| ContainedFileError::Io {
+            operation: "resolve source root",
+            source,
+        })?;
+    let supplied_root =
+        crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(root);
+    if canonical_root != supplied_root {
+        return Err(ContainedFileError::RootNotCanonical);
+    }
+    let root = canonical_root.as_path();
+    let root_metadata =
+        std::fs::symlink_metadata(root).map_err(|source| ContainedFileError::Io {
+            operation: "inspect source root",
+            source,
+        })?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+        &root_metadata,
+    ) || !root_metadata.file_type().is_dir()
+    {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let relative = candidate
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::PathOutsideRoot)?;
+    if !host_relative_path_is_unambiguous(relative) {
+        return Err(ContainedFileError::AmbiguousHostPath);
+    }
+    let relative_path =
+        PortableRelativePath::parse(relative).map_err(ContainedFileError::InvalidRelativePath)?;
+    #[cfg(windows)]
+    let directory_leases = open_stable_windows_directory_leases(root, &candidate)?;
+    let pre_open_identity = identity_at_path(&candidate)?;
+    let file = open_stable_no_follow(&candidate)?;
+    let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "inspect opened file",
+        source,
+    })?;
+    validate_regular_metadata(&opened_metadata)?;
+    let opened_identity = identity_from_open_file(&file, &opened_metadata)?;
+    if pre_open_identity != opened_identity {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    validate_opened_regular_file(root, &candidate, &relative_path, &file, opened_identity)?;
+    Ok(VerifiedFileHandle {
+        file,
+        identity: opened_identity,
+        relative_path,
+        #[cfg(windows)]
+        _directory_leases: directory_leases,
+    })
 }
 
 pub(crate) fn read_contained_regular_file_with_expected_identity_cancellable(
@@ -711,6 +890,11 @@ fn open_no_follow(path: &Path) -> Result<File, ContainedFileError> {
 }
 
 #[cfg(unix)]
+fn open_stable_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    open_no_follow(path)
+}
+
+#[cfg(unix)]
 const fn unix_no_follow_open_flags() -> i32 {
     libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
 }
@@ -740,8 +924,118 @@ fn open_no_follow(path: &Path) -> Result<File, ContainedFileError> {
         })
 }
 
+#[cfg(windows)]
+fn open_stable_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                ContainedFileError::IdentityChanged
+            } else {
+                ContainedFileError::Io {
+                    operation: "open stable Windows file without following reparse points",
+                    source,
+                }
+            }
+        })
+}
+
+#[cfg(windows)]
+fn open_stable_windows_directory_leases(
+    root: &Path,
+    candidate: &Path,
+) -> Result<Vec<File>, ContainedFileError> {
+    let parent = candidate
+        .parent()
+        .ok_or(ContainedFileError::PathOutsideRoot)?;
+    let relative_parent = parent
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::PathOutsideRoot)?;
+    let mut paths = vec![root.to_path_buf()];
+    let mut current = root.to_path_buf();
+    for component in relative_parent.components() {
+        current.push(component.as_os_str());
+        paths.push(current.clone());
+    }
+    paths
+        .into_iter()
+        .map(|path| open_stable_windows_directory(&path))
+        .collect()
+}
+
+#[cfg(windows)]
+fn open_stable_windows_directory(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|source| ContainedFileError::Io {
+        operation: "inspect stable Windows directory",
+        source,
+    })?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        || !metadata.is_dir()
+    {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| ContainedFileError::Io {
+            operation: "lease stable Windows directory",
+            source,
+        })?;
+    let opened_metadata = directory
+        .metadata()
+        .map_err(|source| ContainedFileError::Io {
+            operation: "inspect leased Windows directory",
+            source,
+        })?;
+    if !opened_metadata.is_dir() {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+    let opened_identity = identity_from_open_file(&directory, &opened_metadata)?;
+    let path_identity = identity_from_windows_metadata(&metadata)?;
+    if opened_identity != path_identity {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn identity_from_windows_metadata(
+    metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    use std::os::windows::fs::MetadataExt;
+
+    let storage = metadata
+        .volume_serial_number()
+        .map(u64::from)
+        .ok_or(ContainedFileError::UnsupportedHost)?;
+    let object = metadata
+        .file_index()
+        .ok_or(ContainedFileError::UnsupportedHost)?;
+    Ok(VerifiedIdentity { storage, object })
+}
+
 #[cfg(not(any(unix, windows)))]
 fn open_no_follow(_path: &Path) -> Result<File, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_stable_no_follow(_path: &Path) -> Result<File, ContainedFileError> {
     Err(ContainedFileError::UnsupportedHost)
 }
 

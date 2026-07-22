@@ -785,7 +785,8 @@ mod tests {
         .expect("normalized arrays");
         assert_eq!(request.concepts(), &["Series"]);
         assert_eq!(request.search_terms(), &["FindMe"]);
-        assert_eq!(request.objects()[0].as_str(), "document.order");
+        assert_eq!(request.objects()[0].display_str(), "Document.Order");
+        assert_eq!(request.objects()[0].normalized_str(), "document.order");
 
         for field in ["concepts", "searchTerms", "objects"] {
             let mut payload = valid_request();

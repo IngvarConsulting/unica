@@ -109,9 +109,11 @@ before planning and before mutation or manual XML/BSL edits.
 Acceptance inspects only `OperationResult.data.discovery`. The task-only UT 11.5
 fixture must return `partial`, retain the exact
 `Document.ПриобретениеТоваровУслуг.TabularSection.Серии`,
-`DataProcessor.ПодборСерийВДокументы`, and registration/selection form
+`DataProcessor.ПодборСерийВДокументы`, and
+`DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров`
 candidates, report a blocking insufficient-coverage warning, and include
-`bsl_index_missing`. Skill routing tests require evidence-ID/location
+`bsl_index_missing`. Every retained candidate must carry a brief advisory
+recommendation with typed evidence basis. Skill routing tests require evidence-ID/location
 dereferencing, public read-only gap closure, stop-on-material-gap behavior, the
 selection record, and the analysis-snapshot boundary. The snapshot is not
 mutation authorization, a freshness guarantee, or a mutation receipt.
@@ -120,7 +122,7 @@ Validate the source skill with:
 
 ```sh
 python3.12 -m unittest tests.ci.test_unica_skills tests.ci.test_skill_provenance
-python3.12 /Users/korolev/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/unica/skills/extension-point-discovery
+python3.12 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" plugins/unica/skills/extension-point-discovery
 ```
 
 ## Regression Tests

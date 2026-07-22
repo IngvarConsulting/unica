@@ -1,8 +1,9 @@
 use crate::application::discovery::ports::MetadataCatalogPort;
 use crate::domain::discovery::{
-    AnalyzedFile, ArtifactId, ArtifactKind, DiscoveryQuery, EvidenceLocation, FactBatch,
-    PortableRelativePath, ProviderCoverage, ProviderDiagnostic, ProviderOutcome, SourceFile,
-    SourceInventory, StructuralRelationKind,
+    AnalyzedFile, ArtifactId, ArtifactKind, DiscoveryMatchStrength, DiscoveryMatcher,
+    DiscoveryQuery, EvidenceLocation, FactBatch, MetadataFact, PortableRelativePath,
+    ProviderCoverage, ProviderDiagnostic, ProviderOutcome, SourceFile, SourceInventory,
+    StructuralRelationKind, DISCOVERY_MATCH_WORK_BOUND_CODE,
 };
 use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
 use roxmltree::{Document, Node};
@@ -199,7 +200,10 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
                 Err(diagnostic) => return ProviderOutcome::Failed(diagnostic),
             }
         }
-        records.sort();
+        let match_work_bounded = prioritize_metadata_facts(&mut records, query);
+        if let Err(diagnostic) = crate::infrastructure::discovery::check_cancellation(query) {
+            return ProviderOutcome::Failed(diagnostic);
+        }
 
         let bounded = records.len() > usize::from(query.limits().max_evidence);
         if bounded {
@@ -210,7 +214,15 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
             Ok(batch) => batch,
             Err(diagnostic) => return ProviderOutcome::ContractViolation(diagnostic),
         };
-        if bounded {
+        if match_work_bounded {
+            ProviderOutcome::Bounded {
+                data: batch,
+                diagnostic: ProviderDiagnostic::material(
+                    DISCOVERY_MATCH_WORK_BOUND_CODE,
+                    "typed discovery matching stopped at its request-derived work limit",
+                ),
+            }
+        } else if bounded {
             ProviderOutcome::Bounded {
                 data: batch,
                 diagnostic: ProviderDiagnostic::material(
@@ -230,6 +242,76 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
             ProviderOutcome::Complete(batch)
         }
     }
+}
+
+fn prioritize_metadata_facts(records: &mut [MetadataFact], query: &DiscoveryQuery<'_>) -> bool {
+    let matcher = DiscoveryMatcher::new(query);
+    let containers = records
+        .iter()
+        .filter_map(|fact| {
+            fact.container
+                .as_ref()
+                .map(|container| (fact.artifact.clone(), container.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let strengths = records
+        .iter()
+        .map(|fact| {
+            (
+                fact.artifact.clone(),
+                matcher.strength(&fact.artifact, std::iter::once(fact.search_name.as_str())),
+            )
+        })
+        .fold(
+            BTreeMap::<ArtifactId, DiscoveryMatchStrength>::new(),
+            |mut strengths, (artifact, strength)| {
+                strengths
+                    .entry(artifact)
+                    .and_modify(|known| *known = (*known).max(strength))
+                    .or_insert(strength);
+                strengths
+            },
+        );
+    let mut structural_context = BTreeSet::new();
+    for artifact in strengths
+        .iter()
+        .filter(|(_artifact, strength)| strength.is_match())
+        .map(|(artifact, _strength)| artifact)
+    {
+        let mut current = artifact;
+        while let Some(container) = containers.get(current) {
+            if !structural_context.insert(container.clone()) {
+                break;
+            }
+            current = container;
+        }
+    }
+    records.sort_by(|left, right| {
+        let left_strength = strengths
+            .get(&left.artifact)
+            .copied()
+            .unwrap_or(DiscoveryMatchStrength::NONE);
+        let right_strength = strengths
+            .get(&right.artifact)
+            .copied()
+            .unwrap_or(DiscoveryMatchStrength::NONE);
+        let retention_rank = |fact: &MetadataFact, strength: DiscoveryMatchStrength| {
+            if strength.is_strong_match() {
+                3
+            } else if structural_context.contains(&fact.artifact) {
+                2
+            } else if strength.is_match() {
+                1
+            } else {
+                0
+            }
+        };
+        retention_rank(right, right_strength)
+            .cmp(&retention_rank(left, left_strength))
+            .then_with(|| right_strength.cmp(&left_strength))
+            .then_with(|| left.cmp(right))
+    });
+    matcher.work_exhausted()
 }
 
 pub(super) fn inventory_is_bounded(inventory: &SourceInventory) -> bool {
@@ -452,7 +534,7 @@ fn materialize_metadata_node(
             format!("{}.{}", raw.xml_kind, raw.name)
         }
         Some((container, _container_kind)) => {
-            format!("{}.{}.{}", container.as_str(), raw.xml_kind, raw.name)
+            format!("{}.{}.{}", container.display_str(), raw.xml_kind, raw.name)
         }
         None => format!("{}.{}", raw.xml_kind, raw.name),
     };
@@ -513,7 +595,7 @@ fn attach_subordinate_descriptor(
         }
         SubordinateScope::Nested => format!(
             "{}.{}.{}",
-            parent.artifact.as_str(),
+            parent.artifact.display_str(),
             path.kind.xml_kind,
             subordinate.root.name
         ),
@@ -539,7 +621,7 @@ fn attach_subordinate_descriptor(
         return Err(format!(
             "subordinate {} {} duplicates an existing concrete definition",
             path.kind.xml_kind,
-            artifact.as_str()
+            artifact.display_str()
         ));
     }
     let expected_path_text = match path.scope {
@@ -577,7 +659,7 @@ fn attach_subordinate_descriptor(
             return Err(format!(
                 "subordinate {} {} conflicts with its declared uuid",
                 path.kind.xml_kind,
-                artifact.as_str()
+                artifact.display_str()
             ));
         }
         (None, Some(descriptor_uuid)) => declared.object_uuid = Some(descriptor_uuid.clone()),
@@ -586,7 +668,7 @@ fn attach_subordinate_descriptor(
             return Err(format!(
                 "subordinate {} {} has no concrete uuid",
                 path.kind.xml_kind,
-                artifact.as_str()
+                artifact.display_str()
             ));
         }
     }
@@ -594,7 +676,7 @@ fn attach_subordinate_descriptor(
         return Err(format!(
             "subordinate {} {} repeats an existing evidence location",
             path.kind.xml_kind,
-            artifact.as_str()
+            artifact.display_str()
         ));
     }
     declared.locations.push(subordinate.root.location);
@@ -682,7 +764,7 @@ fn validate_catalog_nodes_observing(
             {
                 return Err(format!(
                     "duplicate canonical metadata artifact {} ({previous_kind:?} and {:?})",
-                    node.artifact.as_str(),
+                    node.artifact.display_str(),
                     node.artifact_kind
                 ));
             }
@@ -694,7 +776,7 @@ fn validate_catalog_nodes_observing(
                 if !unique_locations.insert(location) {
                     return Err(format!(
                         "metadata artifact {} has duplicate evidence locations",
-                        node.artifact.as_str()
+                        node.artifact.display_str()
                     ));
                 }
             }
@@ -702,8 +784,8 @@ fn validate_catalog_nodes_observing(
                 if let Some(previous_artifact) = uuids.insert(uuid.clone(), node.artifact.clone()) {
                     return Err(format!(
                         "metadata uuid {uuid} maps to both {} and {}",
-                        previous_artifact.as_str(),
-                        node.artifact.as_str()
+                        previous_artifact.display_str(),
+                        node.artifact.display_str()
                     ));
                 }
             }
@@ -714,8 +796,8 @@ fn validate_catalog_nodes_observing(
                     return Err(format!(
                         "metadata source {} defines both {} and {}",
                         source.as_str(),
-                        previous_artifact.as_str(),
-                        node.artifact.as_str()
+                        previous_artifact.display_str(),
+                        node.artifact.display_str()
                     ));
                 }
             }
@@ -736,7 +818,7 @@ fn validate_all_declarations_resolved(
             if !node.definition_present {
                 return Err(format!(
                     "metadata declaration {} has no concrete subordinate descriptor",
-                    node.artifact.as_str()
+                    node.artifact.display_str()
                 ));
             }
             pending.extend(node.children.iter().rev());
@@ -1070,12 +1152,15 @@ pub(super) fn analyzed_file_map(
 
 #[cfg(test)]
 mod tests {
-    use super::{MetadataDescriptor, MetadataNode, PlatformXmlMetadataProvider};
+    use super::{
+        prioritize_metadata_facts, MetadataDescriptor, MetadataNode, PlatformXmlMetadataProvider,
+    };
     use crate::application::discovery::ports::MetadataCatalogPort;
     use crate::domain::discovery::{
-        ArtifactId, ArtifactKind, ContentHash, DiscoveryQuery, DiscoveryQueryLimits,
-        PortableRelativePath, ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
-        SourceInventoryBound, StructuralRelationKind,
+        ArtifactId, ArtifactKind, ConceptProvenance, ContentHash, DiscoveryConcept, DiscoveryQuery,
+        DiscoveryQueryLimits, EvidenceLocation, MetadataFact, PortableRelativePath,
+        ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory, SourceInventoryBound,
+        StructuralRelationKind,
     };
 
     const DOCUMENT_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
@@ -1114,6 +1199,74 @@ mod tests {
             panic!("cancelled metadata must be a failed provider outcome");
         };
         assert_eq!(diagnostic.code, "discovery_cancelled");
+    }
+
+    #[test]
+    fn relevance_retention_keeps_strong_target_and_structural_parent_among_two_thousand_decoys() {
+        let path = PortableRelativePath::parse_str("Documents/All.xml").expect("metadata path");
+        let location = |line| EvidenceLocation {
+            relative_path: path.clone(),
+            line: Some(line),
+            column: None,
+            xml_path: None,
+        };
+        let document = artifact("Document.Purchase");
+        let series = artifact("Document.Purchase.TabularSection.Серии");
+        let mut records = (0..2_001)
+            .map(|index| {
+                let name = format!("СерийныйДекой{index:04}");
+                MetadataFact {
+                    artifact: artifact(&format!("DataProcessor.{name}")),
+                    search_name: name,
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(index + 3),
+                }
+            })
+            .collect::<Vec<_>>();
+        records.push(MetadataFact {
+            artifact: document.clone(),
+            search_name: "Purchase".to_string(),
+            artifact_kind: ArtifactKind::MetadataObject,
+            container: None,
+            container_kind: None,
+            relation: StructuralRelationKind::Contains,
+            location: location(1),
+        });
+        records.push(MetadataFact {
+            artifact: series.clone(),
+            search_name: "Серии".to_string(),
+            artifact_kind: ArtifactKind::TabularSection,
+            container: Some(document.clone()),
+            container_kind: Some(ArtifactKind::MetadataObject),
+            relation: StructuralRelationKind::Contains,
+            location: location(2),
+        });
+        let concepts = [DiscoveryConcept {
+            value: "серий".to_string(),
+            provenance: ConceptProvenance::TaskDerived,
+        }];
+        let query = DiscoveryQuery::new(
+            "серий",
+            &concepts,
+            &[],
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 100,
+                max_bytes: 1_000_000,
+                max_evidence: 2_000,
+                max_candidates: 100,
+                max_graph_depth: 12,
+            },
+        );
+
+        prioritize_metadata_facts(&mut records, &query);
+        records.truncate(2_000);
+
+        assert!(records.iter().any(|fact| fact.artifact == series));
+        assert!(records.iter().any(|fact| fact.artifact == document));
     }
 
     #[test]
@@ -1343,7 +1496,7 @@ mod tests {
         assert!(batch.records.iter().all(|fact| {
             !fact
                 .artifact
-                .as_str()
+                .display_str()
                 .starts_with("Configuration.ТестКонфиг.Catalog.")
         }));
     }
@@ -1400,7 +1553,7 @@ mod tests {
         assert!(batch.records.iter().all(|fact| {
             !fact
                 .artifact
-                .as_str()
+                .display_str()
                 .starts_with("Configuration.Demo.Report.")
                 && fact.artifact != artifact("Template.Main")
                 && fact.artifact != artifact("Command.Run")

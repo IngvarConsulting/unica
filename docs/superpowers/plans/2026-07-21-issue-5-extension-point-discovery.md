@@ -22,7 +22,7 @@
 - Every provider returns exactly one exhaustive `ProviderOutcome<T>` variant: `Complete`, `Bounded`, `Unavailable`, `Failed`, or `ContractViolation`.
 - Only an empty `Complete` batch is negative evidence. Every other non-complete outcome makes the report partial and produces a typed diagnostic/missing check; `ContractViolation` records are excluded from graph promotion.
 - Keep `contains`, `defines`, and data/form binding relationships structural. Only typed callback, action, event-subscription, or call-graph facts may become runtime-flow edges; lexical matches alone are never actionable candidates.
-- Return typed data only at `OperationResult.data.discovery`, with `schemaVersion`, `complete|partial`, source, snapshot, concept provenance, provider outcomes/coverage, related artifacts, separate structural/runtime-flow edges, candidates, warnings, missing checks, and stable evidence IDs/locations.
+- Return typed data only at `OperationResult.data.discovery`, with `schemaVersion`, `complete|partial`, source, snapshot, concept provenance, provider outcomes/coverage, related artifacts, separate structural/runtime-flow edges, candidates with advisory typed recommendations, warnings, missing checks, and stable evidence IDs/locations.
 - The analysis snapshot records resolved mapping identity and raw SHA-256 hashes of evidence-contributing files only. BOM and EOL bytes affect hashes; the snapshot is not a mutation receipt and makes no whole-workspace freshness claim.
 - Evidence reads are bounded, contained, and made through verified regular-file handles. Reject symlinks/reparse points, non-regular files, final paths outside the selected root, and path/handle identity changes. Host-specific code stays under `infrastructure/platform`.
 - Exclude only actual runtime-sidecar `ConfigDumpInfo.xml` content using `config_dump_info_xml_kind(bytes)`; do not exclude a legitimate external metadata object by filename alone.
@@ -485,7 +485,7 @@ Expose a pure `parse_support_state_bytes(bytes: &[u8]) -> Result<ParsedSupportSt
 
 - [ ] **Step 5: Add the structural warning rule and verify GREEN**
 
-The use case may emit `separate_series_section` only from actual project facts: a relevant document has a `Товары` section with a `Серия` attribute and a distinct series-related tabular section. The warning says a point limited to `Товары.Серия` lacks coverage and cites both evidence IDs; it is not a task dictionary and does not claim a proposed point was rejected.
+The use case may emit `alternative_relevant_tabular_section` only from actual project facts: a task-relevant nested attribute and a distinct task-relevant tabular section share the same metadata object. The generic warning states that an attribute-only point lacks coverage and cites both evidence IDs; it is not a task dictionary and does not claim a proposed point was rejected.
 
 Run the three focused provider commands from Step 2 plus `cargo test -p unica-coder --lib infrastructure::native_operations::common::tests`. Expected: PASS.
 
@@ -652,7 +652,7 @@ When `sourceDir` is absent, select exactly one `SourceSetKind::Configuration`; z
 
 - [ ] **Step 5: Add the UT 11.5 fixture and source MCP acceptance**
 
-The fixture contains a Platform XML document with `Товары.Серия` and separate `Серии`, `DataProcessor.ПодборСерийВДокументы`, the declared `РегистрацияИПодборСерийПоОднойСтрокеТоваров` managed form with real event/data/command bindings, a BSL manager module, support state, and a decoy outside `src`.
+The fixture contains a Platform XML document with `Товары.Серия` and separate `Серии`, `DataProcessor.ПодборСерийВДокументы`, the declared `DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров` managed form with real event and command bindings, a BSL manager module, support state, and a decoy outside `src`.
 
 Call exactly:
 
@@ -664,7 +664,7 @@ Call exactly:
 }
 ```
 
-Assert `partial`, metadata/form evidence, explicit missing BSL runtime-flow check, all three required candidates, the insufficient `Товары.Серия` warning, stable evidence locations, raw snapshot hashes, and absence of the decoy.
+Assert `partial`, metadata/form evidence, explicit missing BSL runtime-flow check, all three required candidates with advisory typed recommendations, the insufficient `Товары.Серия` warning, stable evidence locations, raw snapshot hashes, and absence of the decoy.
 
 - [ ] **Step 6: Verify GREEN**
 

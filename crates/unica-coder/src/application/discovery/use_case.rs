@@ -2,15 +2,17 @@ use crate::application::discovery::contract::DiscoverRequest;
 use crate::application::discovery::ports::DiscoveryPorts;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::discovery::{
-    AnalysisSnapshot, AnalyzedFile, ArtifactId, ArtifactKind, BslFact, ConceptProvenance,
-    DefinitionFact, DiscoveryConcept, DiscoveryEnvironment, DiscoveryError, DiscoveryQuery,
+    AnalysisSnapshot, AnalyzedFile, ArtifactId, ArtifactKind, BslFact, CandidateRecommendation,
+    CandidateRecommendationBasis, ConceptProvenance, DefinitionFact, DiscoveryConcept,
+    DiscoveryEnvironment, DiscoveryError, DiscoveryMatchStrength, DiscoveryMatcher, DiscoveryQuery,
     DiscoveryQueryLimits, DiscoveryReport, DiscoverySource, DiscoveryStatus, DiscoveryWarning,
     Evidence, EvidenceId, EvidenceKind, EvidenceRelation, ExtensionPointCandidate, FactBatch,
     FormBinding, FormFact, LocatedFact, MetadataFact, MissingCheck, MissingCheckMateriality,
     PortableRelativePath, ProviderCoverage, ProviderDiagnostic, ProviderKind, ProviderOutcome,
     ProviderOutcomeKind, ProviderReport, RelatedArtifact, RuntimeFlowEdge, RuntimeFlowFact,
     SnapshotFingerprint, SourceInventory, SourceInventoryBound, StructuralEdge,
-    StructuralRelationKind, SupportFact, SupportStateKind, SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
+    StructuralRelationKind, SupportFact, SupportStateKind, DISCOVERY_MATCH_WORK_BOUND_CODE,
+    SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -58,7 +60,7 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             },
         )
         .with_cancellation(cancellation);
-        let matcher = FactMatcher::new(&query);
+        let matcher = DiscoveryMatcher::new(&query);
         let mut accumulator = ReportAccumulator::new(query.limits().max_evidence as usize);
 
         ensure_discovery_active(&query)?;
@@ -88,8 +90,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                     ProviderKind::MetadataCatalog,
                     metadata,
                     &mut accumulator,
-                    query.limits(),
-                    Some(files),
+                    BatchPolicy::new(query.limits(), 6, Some(files)).with_matcher(&matcher),
+                    |records| prioritize_metadata_records(records, &matcher),
                     |batch| metadata_contribution(batch, &matcher),
                 );
                 ensure_discovery_active(&query)?;
@@ -99,8 +101,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                     ProviderKind::ManagedForms,
                     forms,
                     &mut accumulator,
-                    query.limits(),
-                    Some(files),
+                    BatchPolicy::new(query.limits(), 5, Some(files)).with_matcher(&matcher),
+                    |records| prioritize_form_records(records, &matcher),
                     |batch| form_contribution(batch, &matcher),
                 );
                 ensure_discovery_active(&query)?;
@@ -110,8 +112,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                     ProviderKind::BslSearch,
                     lexical,
                     &mut accumulator,
-                    query.limits(),
-                    Some(files),
+                    BatchPolicy::new(query.limits(), 4, Some(files)),
+                    |_records| {},
                     lexical_contribution,
                 );
                 ensure_discovery_active(&query)?;
@@ -121,8 +123,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                     ProviderKind::SupportState,
                     support,
                     &mut accumulator,
-                    query.limits(),
-                    Some(files),
+                    BatchPolicy::new(query.limits(), 3, Some(files)).with_matcher(&matcher),
+                    |records| prioritize_support_records(records, &matcher),
                     support_contribution,
                 );
             }
@@ -154,8 +156,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             ProviderKind::Definitions,
             definitions,
             &mut accumulator,
-            query.limits(),
-            None,
+            BatchPolicy::new(query.limits(), 2, None),
+            |_records| {},
             definition_contribution,
         );
         ensure_discovery_active(&query)?;
@@ -165,8 +167,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             ProviderKind::RuntimeFlow,
             runtime_flow,
             &mut accumulator,
-            query.limits(),
-            None,
+            BatchPolicy::new(query.limits(), 1, None).with_matcher(&matcher),
+            |records| prioritize_runtime_records(records, &matcher),
             |batch| runtime_flow_contribution(batch, &matcher),
         );
 
@@ -206,37 +208,323 @@ macro_rules! provider_facts_without_additional_contract {
     };
 }
 
-provider_facts_without_additional_contract!(FormFact, BslFact, DefinitionFact, RuntimeFlowFact,);
+provider_facts_without_additional_contract!(BslFact, DefinitionFact,);
+
+impl ProviderFactContract for FormFact {
+    fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
+        let mut kinds = BTreeMap::new();
+        for fact in records {
+            validate_artifact_kind(&mut kinds, &fact.form, ArtifactKind::Form)?;
+            match &fact.binding {
+                FormBinding::Data {
+                    target,
+                    target_kind,
+                    data_path,
+                } => {
+                    if !matches!(
+                        target_kind,
+                        ArtifactKind::MetadataObject
+                            | ArtifactKind::TabularSection
+                            | ArtifactKind::Attribute
+                    ) {
+                        return Err(provider_contract_diagnostic(
+                            "form_data_target_kind_invalid",
+                            "managed-form data bindings must target a metadata object, tabular section, or attribute",
+                        ));
+                    }
+                    validate_platform_path(data_path, "form_data_path_invalid")?;
+                    validate_artifact_kind(&mut kinds, target, *target_kind)?;
+                }
+                FormBinding::Command {
+                    command,
+                    handler,
+                    target,
+                    target_kind,
+                } => {
+                    validate_platform_name(command, "form_command_name_invalid")?;
+                    validate_form_handler(
+                        &fact.form,
+                        handler,
+                        target,
+                        *target_kind,
+                        "form_command_handler_invalid",
+                    )?;
+                    validate_artifact_kind(&mut kinds, target, *target_kind)?;
+                }
+                FormBinding::Event {
+                    event,
+                    handler,
+                    target,
+                    target_kind,
+                } => {
+                    validate_platform_name(event, "form_event_name_invalid")?;
+                    validate_form_handler(
+                        &fact.form,
+                        handler,
+                        target,
+                        *target_kind,
+                        "form_event_handler_invalid",
+                    )?;
+                    validate_artifact_kind(&mut kinds, target, *target_kind)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_form_handler(
+    form: &ArtifactId,
+    handler: &str,
+    target: &ArtifactId,
+    target_kind: ArtifactKind,
+    code: &str,
+) -> Result<(), ProviderDiagnostic> {
+    validate_platform_name(handler, code)?;
+    if target_kind != ArtifactKind::Method {
+        return Err(provider_contract_diagnostic(
+            code,
+            "managed-form command and event bindings must target a method",
+        ));
+    }
+    let expected = ArtifactId::parse(&format!(
+        "{}.Module.FormModule.Method.{handler}",
+        form.display_str()
+    ))
+    .map_err(|_error| {
+        provider_contract_diagnostic(code, "managed-form handler identity is invalid")
+    })?;
+    if target != &expected {
+        return Err(provider_contract_diagnostic(
+            code,
+            "managed-form handler target must be the canonical method beneath the form module",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_platform_path(value: &str, code: &str) -> Result<(), ProviderDiagnostic> {
+    if value.trim() != value
+        || value.is_empty()
+        || value
+            .split('.')
+            .any(|segment| !platform_name_is_valid(segment))
+    {
+        return Err(provider_contract_diagnostic(
+            code,
+            "managed-form data path must contain nonblank canonical platform identifiers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_platform_name(value: &str, code: &str) -> Result<(), ProviderDiagnostic> {
+    if !platform_name_is_valid(value) {
+        return Err(provider_contract_diagnostic(
+            code,
+            "managed-form binding name must be a nonblank canonical platform identifier",
+        ));
+    }
+    Ok(())
+}
+
+fn platform_name_is_valid(value: &str) -> bool {
+    value.trim() == value
+        && !value.is_empty()
+        && value
+            .chars()
+            .next()
+            .is_some_and(|character| character == '_' || character.is_alphabetic())
+        && value
+            .chars()
+            .all(|character| character == '_' || character.is_alphanumeric())
+}
+
+impl ProviderFactContract for RuntimeFlowFact {
+    fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
+        let mut kinds = BTreeMap::new();
+        for fact in records {
+            validate_artifact_kind(&mut kinds, &fact.source, fact.source_kind)?;
+            validate_artifact_kind(&mut kinds, &fact.target, fact.target_kind)?;
+            let valid = match fact.relation {
+                crate::domain::discovery::RuntimeFlowRelationKind::Calls => {
+                    fact.source_kind == ArtifactKind::Method
+                        && fact.target_kind == ArtifactKind::Method
+                }
+                crate::domain::discovery::RuntimeFlowRelationKind::Action => {
+                    matches!(fact.source_kind, ArtifactKind::Form | ArtifactKind::Command)
+                        && fact.target_kind == ArtifactKind::Method
+                }
+                crate::domain::discovery::RuntimeFlowRelationKind::Callback => {
+                    fact.source_kind == ArtifactKind::Form
+                        && fact.target_kind == ArtifactKind::Method
+                }
+                crate::domain::discovery::RuntimeFlowRelationKind::EventSubscription => false,
+            };
+            if !valid {
+                return Err(provider_contract_diagnostic(
+                    "runtime_flow_shape_invalid",
+                    "runtime-flow fact does not satisfy the fail-closed typed relation matrix",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl ProviderFactContract for MetadataFact {
     fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
         let mut kinds = BTreeMap::new();
+        let mut parents = BTreeMap::new();
         for fact in records {
+            if fact.relation != StructuralRelationKind::Contains {
+                return Err(provider_contract_diagnostic(
+                    "metadata_relation_invalid",
+                    "metadata catalog facts must use the contains relation",
+                ));
+            }
             let search_name =
                 crate::domain::discovery::normalize_discovery_identity(&fact.search_name);
-            let artifact_leaf = fact.artifact.as_str().rsplit('.').next();
+            let artifact_leaf = fact.artifact.normalized_str().rsplit('.').next();
             if artifact_leaf != Some(search_name.as_str()) {
                 return Err(provider_contract_diagnostic(
                     "metadata_search_name_mismatch",
                     "metadata raw search name must normalize to the canonical artifact leaf",
                 ));
             }
+            if !metadata_artifact_kind_is_valid(fact.artifact_kind) {
+                return Err(provider_contract_diagnostic(
+                    "metadata_artifact_kind_invalid",
+                    "metadata catalog facts must describe metadata objects, tabular sections, attributes, forms, or commands",
+                ));
+            }
             validate_artifact_kind(&mut kinds, &fact.artifact, fact.artifact_kind)?;
-            match (&fact.container, fact.container_kind) {
+            let parent = match (&fact.container, fact.container_kind) {
                 (Some(container), Some(container_kind)) => {
+                    let claimed_parent = Some((container.clone(), container_kind));
+                    if parents
+                        .get(&fact.artifact)
+                        .is_some_and(|previous| previous != &claimed_parent)
+                    {
+                        return Err(provider_contract_diagnostic(
+                            "metadata_parent_conflict",
+                            "metadata artifact must have one canonical parent relationship",
+                        ));
+                    }
+                    if container == &fact.artifact {
+                        return Err(provider_contract_diagnostic(
+                            "metadata_self_parent",
+                            "metadata artifact cannot contain itself",
+                        ));
+                    }
+                    if !metadata_artifact_kind_is_valid(container_kind)
+                        || !metadata_contains_kind_is_valid(container_kind, fact.artifact_kind)
+                    {
+                        return Err(provider_contract_diagnostic(
+                            "metadata_hierarchy_kind_invalid",
+                            "metadata contains relation has an invalid parent and child kind combination",
+                        ));
+                    }
                     validate_artifact_kind(&mut kinds, container, container_kind)?;
+                    claimed_parent
                 }
-                (None, None) => {}
+                (None, None) => {
+                    if parents.get(&fact.artifact).is_some_and(Option::is_some) {
+                        return Err(provider_contract_diagnostic(
+                            "metadata_parent_conflict",
+                            "metadata artifact must have one canonical parent relationship",
+                        ));
+                    }
+                    None
+                }
                 _ => {
                     return Err(provider_contract_diagnostic(
                         "metadata_container_kind_missing",
                         "metadata container identity and kind must be supplied together",
                     ));
                 }
+            };
+            parents.entry(fact.artifact.clone()).or_insert(parent);
+        }
+        validate_metadata_hierarchy_is_acyclic(&parents)?;
+        for fact in records {
+            if let Some(container) = &fact.container {
+                if !metadata_contains_identity_is_valid(
+                    container,
+                    &fact.artifact,
+                    fact.artifact_kind,
+                ) {
+                    return Err(provider_contract_diagnostic(
+                        "metadata_hierarchy_identity_invalid",
+                        "metadata contains relation must connect canonical direct parent and child identities",
+                    ));
+                }
             }
         }
         Ok(())
     }
+}
+
+fn metadata_artifact_kind_is_valid(kind: ArtifactKind) -> bool {
+    matches!(
+        kind,
+        ArtifactKind::MetadataObject
+            | ArtifactKind::TabularSection
+            | ArtifactKind::Attribute
+            | ArtifactKind::Form
+            | ArtifactKind::Command
+    )
+}
+
+fn metadata_contains_kind_is_valid(parent: ArtifactKind, child: ArtifactKind) -> bool {
+    match parent {
+        ArtifactKind::MetadataObject => metadata_artifact_kind_is_valid(child),
+        ArtifactKind::TabularSection => child == ArtifactKind::Attribute,
+        ArtifactKind::Attribute
+        | ArtifactKind::Form
+        | ArtifactKind::Command
+        | ArtifactKind::Module
+        | ArtifactKind::Method => false,
+    }
+}
+
+fn metadata_contains_identity_is_valid(
+    parent: &ArtifactId,
+    child: &ArtifactId,
+    child_kind: ArtifactKind,
+) -> bool {
+    let parent_identity = parent.normalized_str();
+    let child_identity = child.normalized_str();
+    let is_direct_descendant = child_identity
+        .strip_prefix(parent_identity)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .is_some_and(|suffix| suffix.split('.').count() == 2);
+    if is_direct_descendant {
+        return true;
+    }
+    parent_identity.starts_with("configuration.")
+        && parent_identity.split('.').count() == 2
+        && child_kind == ArtifactKind::MetadataObject
+        && child_identity.split('.').count() == 2
+}
+
+fn validate_metadata_hierarchy_is_acyclic(
+    parents: &BTreeMap<ArtifactId, Option<(ArtifactId, ArtifactKind)>>,
+) -> Result<(), ProviderDiagnostic> {
+    for artifact in parents.keys() {
+        let mut visited = BTreeSet::new();
+        let mut current = artifact;
+        while let Some(Some((parent, _parent_kind))) = parents.get(current) {
+            if !visited.insert(current.clone()) {
+                return Err(provider_contract_diagnostic(
+                    "metadata_hierarchy_cycle",
+                    "metadata contains relationships must form an acyclic hierarchy",
+                ));
+            }
+            current = parent;
+        }
+    }
+    Ok(())
 }
 
 fn validate_artifact_kind(
@@ -341,56 +629,113 @@ impl<T: ProviderData> EvaluatedOutcome<T> {
     fn invalidate(&mut self, diagnostic: ProviderDiagnostic) {
         self.kind = ProviderOutcomeKind::ContractViolation;
         self.data = None;
+        self.coverage = ProviderCoverage::empty();
         self.diagnostic = Some(diagnostic);
     }
 }
 
-fn handle_batch<T, F>(
+struct BatchPolicy<'a> {
+    limits: DiscoveryQueryLimits,
+    remaining_provider_slots: usize,
+    inventory: Option<&'a SourceInventory>,
+    matcher: Option<&'a DiscoveryMatcher>,
+}
+
+impl<'a> BatchPolicy<'a> {
+    fn new(
+        limits: DiscoveryQueryLimits,
+        remaining_provider_slots: usize,
+        inventory: Option<&'a SourceInventory>,
+    ) -> Self {
+        Self {
+            limits,
+            remaining_provider_slots,
+            inventory,
+            matcher: None,
+        }
+    }
+
+    fn with_matcher(mut self, matcher: &'a DiscoveryMatcher) -> Self {
+        self.matcher = Some(matcher);
+        self
+    }
+}
+
+fn handle_batch<T, P, F>(
     provider: ProviderKind,
     outcome: ProviderOutcome<FactBatch<T>>,
     accumulator: &mut ReportAccumulator,
-    limits: DiscoveryQueryLimits,
-    inventory: Option<&SourceInventory>,
+    policy: BatchPolicy<'_>,
+    prioritize: P,
     build: F,
 ) where
     T: Clone + Ord + LocatedFact + ProviderFactContract,
+    P: FnOnce(&mut Vec<T>),
     F: FnOnce(&FactBatch<T>) -> Result<ProviderContribution, ProviderDiagnostic>,
 {
     let mut evaluated = EvaluatedOutcome::from_outcome(provider, outcome);
+    if evaluated.kind == ProviderOutcomeKind::Complete
+        && policy.inventory.is_some_and(source_inventory_is_incomplete)
+    {
+        evaluated.kind = ProviderOutcomeKind::Bounded;
+        evaluated.diagnostic = Some(ProviderDiagnostic::material(
+            "source_inventory_incomplete",
+            "provider evidence is limited to an incomplete source inventory",
+        ));
+    }
     let mut supplemental_diagnostic = None;
-    let contribution = match evaluated.data.as_mut() {
-        Some(batch) => {
-            match normalize_batch(batch, evaluated.kind, limits, inventory).and_then(|()| {
-                accumulator.validate_file_identities(&batch.analyzed_files)?;
-                accumulator.validate_file_identities(&batch.contributors)?;
-                let analyzed_files = batch.analyzed_files.clone();
-                let remaining = accumulator.remaining_evidence();
-                if batch.records.len() > remaining {
-                    batch.records.truncate(remaining);
-                    let diagnostic = ProviderDiagnostic::material(
-                        "max_evidence_reached",
-                        "discovery evidence was truncated by maxEvidence",
-                    );
-                    if outcome_is_complete(evaluated.kind) {
-                        evaluated.kind = ProviderOutcomeKind::Bounded;
-                        evaluated.diagnostic = Some(diagnostic);
-                    } else {
-                        supplemental_diagnostic = Some(diagnostic);
+    let contribution =
+        match evaluated.data.as_mut() {
+            Some(batch) => {
+                match normalize_batch(batch, evaluated.kind, policy.limits, policy.inventory)
+                    .and_then(|()| {
+                        accumulator.validate_file_identities(&batch.analyzed_files)?;
+                        accumulator.validate_file_identities(&batch.contributors)?;
+                        let analyzed_files = batch.analyzed_files.clone();
+                        let remaining = accumulator.remaining_evidence();
+                        let allowance =
+                            fair_evidence_allowance(remaining, policy.remaining_provider_slots);
+                        prioritize(&mut batch.records);
+                        if batch.records.len() > allowance {
+                            batch.records.truncate(allowance);
+                            let diagnostic = ProviderDiagnostic::material(
+                                "max_evidence_reached",
+                                "discovery evidence was truncated by maxEvidence",
+                            );
+                            if outcome_is_complete(evaluated.kind) {
+                                evaluated.kind = ProviderOutcomeKind::Bounded;
+                                evaluated.diagnostic = Some(diagnostic);
+                            } else {
+                                supplemental_diagnostic = Some(diagnostic);
+                            }
+                        }
+                        let mut contribution = build(batch)?;
+                        contribution.analyzed_files = analyzed_files;
+                        if policy.matcher.is_some_and(DiscoveryMatcher::work_exhausted) {
+                            let diagnostic = ProviderDiagnostic::material(
+                            DISCOVERY_MATCH_WORK_BOUND_CODE,
+                            "typed discovery matching stopped at its request-derived work limit",
+                        );
+                            if outcome_is_complete(evaluated.kind) {
+                                evaluated.kind = ProviderOutcomeKind::Bounded;
+                                evaluated.diagnostic = Some(diagnostic);
+                            } else if !evaluated.diagnostic.as_ref().is_some_and(|current| {
+                                current.code == DISCOVERY_MATCH_WORK_BOUND_CODE
+                            }) {
+                                supplemental_diagnostic = Some(diagnostic);
+                            }
+                        }
+                        Ok(contribution)
+                    }) {
+                    Ok(contribution) => Some(contribution),
+                    Err(diagnostic) => {
+                        evaluated.invalidate(diagnostic);
+                        None
                     }
                 }
-                let mut contribution = build(batch)?;
-                contribution.analyzed_files = analyzed_files;
-                Ok(contribution)
-            }) {
-                Ok(contribution) => Some(contribution),
-                Err(diagnostic) => {
-                    evaluated.invalidate(diagnostic);
-                    None
-                }
             }
-        }
-        None => None,
-    };
+            None => None,
+        };
 
     if let Some(contribution) = contribution {
         if let Err(diagnostic) = accumulator.merge(contribution) {
@@ -401,6 +746,17 @@ fn handle_batch<T, F>(
     if let Some(diagnostic) = supplemental_diagnostic {
         accumulator.record_diagnostic(provider, evaluated.kind, &diagnostic);
     }
+}
+
+fn source_inventory_is_incomplete(inventory: &SourceInventory) -> bool {
+    inventory.coverage.files_seen > inventory.coverage.files_analyzed || inventory.bound.is_some()
+}
+
+fn fair_evidence_allowance(remaining: usize, provider_slots: usize) -> usize {
+    if remaining == 0 || provider_slots == 0 {
+        return 0;
+    }
+    remaining.div_ceil(provider_slots)
 }
 
 fn normalize_inventory(
@@ -496,10 +852,10 @@ fn normalize_inventory(
                     "source inventory bound marker conflicts with its typed diagnostic",
                 ));
             }
-            let demonstrates_bound = inventory.coverage.files_seen > file_count
-                || file_count == limits.max_files
-                || byte_count == limits.max_bytes
-                || traversal_bound;
+            let has_n_plus_one_probe = file_count
+                .checked_add(1)
+                .is_some_and(|trigger| inventory.coverage.files_seen == trigger);
+            let demonstrates_bound = has_n_plus_one_probe || traversal_bound;
             if !demonstrates_bound {
                 return Err(provider_contract_diagnostic(
                     "unsubstantiated_bounded_inventory",
@@ -768,14 +1124,156 @@ struct ProviderContribution {
         crate::domain::discovery::RuntimeFlowRelationKind,
         EvidenceId,
     )>,
-    candidates: Vec<(ArtifactId, ArtifactKind, EvidenceId)>,
+    runtime_roots: BTreeSet<ArtifactId>,
+    candidates: Vec<(
+        ArtifactId,
+        ArtifactKind,
+        EvidenceId,
+        DiscoveryMatchStrength,
+        CandidateRecommendationBasis,
+    )>,
     support: Vec<(ArtifactId, SupportStateKind)>,
     warnings: Vec<DiscoveryWarning>,
 }
 
+fn prioritize_metadata_records(records: &mut [MetadataFact], matcher: &DiscoveryMatcher) {
+    let containers = records
+        .iter()
+        .filter_map(|fact| {
+            fact.container
+                .as_ref()
+                .map(|container| (fact.artifact.clone(), container.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let strengths = records
+        .iter()
+        .map(|fact| {
+            (
+                fact.artifact.clone(),
+                matcher.strength(&fact.artifact, std::iter::once(fact.search_name.as_str())),
+            )
+        })
+        .fold(
+            BTreeMap::<ArtifactId, DiscoveryMatchStrength>::new(),
+            |mut strengths, (artifact, strength)| {
+                strengths
+                    .entry(artifact)
+                    .and_modify(|known| *known = (*known).max(strength))
+                    .or_insert(strength);
+                strengths
+            },
+        );
+    let mut structural_context = BTreeSet::new();
+    for artifact in strengths
+        .iter()
+        .filter(|(_artifact, strength)| strength.is_match())
+        .map(|(artifact, _strength)| artifact)
+    {
+        let mut current = artifact;
+        while let Some(container) = containers.get(current) {
+            if !structural_context.insert(container.clone()) {
+                break;
+            }
+            current = container;
+        }
+    }
+    records.sort_by(|left, right| {
+        let left_strength = strengths
+            .get(&left.artifact)
+            .copied()
+            .unwrap_or(DiscoveryMatchStrength::NONE);
+        let right_strength = strengths
+            .get(&right.artifact)
+            .copied()
+            .unwrap_or(DiscoveryMatchStrength::NONE);
+        let retention_rank = |fact: &MetadataFact, strength: DiscoveryMatchStrength| {
+            if strength.is_strong_match() {
+                3
+            } else if structural_context.contains(&fact.artifact) {
+                2
+            } else if strength.is_match() {
+                1
+            } else {
+                0
+            }
+        };
+        retention_rank(right, right_strength)
+            .cmp(&retention_rank(left, left_strength))
+            .then_with(|| right_strength.cmp(&left_strength))
+            .then_with(|| left.cmp(right))
+    });
+}
+
+fn prioritize_form_records(records: &mut [FormFact], matcher: &DiscoveryMatcher) {
+    records.sort_by(|left, right| {
+        form_fact_strength(right, matcher)
+            .cmp(&form_fact_strength(left, matcher))
+            .then_with(|| left.cmp(right))
+    });
+}
+
+fn form_fact_strength(fact: &FormFact, matcher: &DiscoveryMatcher) -> DiscoveryMatchStrength {
+    match &fact.binding {
+        FormBinding::Data {
+            target, data_path, ..
+        } => matcher
+            .strength(&fact.form, std::iter::once(data_path.as_str()))
+            .max(matcher.strength(target, std::iter::once(data_path.as_str()))),
+        FormBinding::Command {
+            command,
+            handler,
+            target,
+            ..
+        } => {
+            let supplemental = [command.as_str(), handler.as_str()];
+            matcher
+                .strength(&fact.form, supplemental)
+                .max(matcher.strength(target, supplemental))
+        }
+        FormBinding::Event {
+            event,
+            handler,
+            target,
+            ..
+        } => {
+            let supplemental = [event.as_str(), handler.as_str()];
+            matcher
+                .strength(&fact.form, supplemental)
+                .max(matcher.strength(target, supplemental))
+        }
+    }
+}
+
+fn prioritize_support_records(records: &mut [SupportFact], matcher: &DiscoveryMatcher) {
+    records.sort_by(|left, right| {
+        matcher
+            .strength(&right.artifact, std::iter::empty::<&str>())
+            .cmp(&matcher.strength(&left.artifact, std::iter::empty::<&str>()))
+            .then_with(|| left.cmp(right))
+    });
+}
+
+fn prioritize_runtime_records(records: &mut [RuntimeFlowFact], matcher: &DiscoveryMatcher) {
+    use crate::domain::discovery::RuntimeFlowRelationKind;
+
+    records.sort_by(|left, right| {
+        let rank = |fact: &RuntimeFlowFact| {
+            let base = matches!(
+                fact.relation,
+                RuntimeFlowRelationKind::Action | RuntimeFlowRelationKind::Callback
+            );
+            let strength = matcher
+                .strength(&fact.source, std::iter::empty::<&str>())
+                .max(matcher.strength(&fact.target, std::iter::empty::<&str>()));
+            (base && strength.is_match(), strength, base)
+        };
+        rank(right).cmp(&rank(left)).then_with(|| left.cmp(right))
+    });
+}
+
 fn metadata_contribution(
     batch: &FactBatch<MetadataFact>,
-    matcher: &FactMatcher,
+    matcher: &DiscoveryMatcher,
 ) -> Result<ProviderContribution, ProviderDiagnostic> {
     let mut contribution = ProviderContribution::default();
     let mut evidence_by_artifact = BTreeMap::new();
@@ -806,11 +1304,14 @@ fn metadata_contribution(
                 evidence.0.id.clone(),
             ));
         }
-        if matcher.relevant(&fact.artifact, std::iter::once(fact.search_name.as_str())) {
+        let strength = matcher.strength(&fact.artifact, std::iter::once(fact.search_name.as_str()));
+        if strength.is_match() {
             contribution.candidates.push((
                 fact.artifact.clone(),
                 fact.artifact_kind,
                 evidence.0.id.clone(),
+                strength,
+                CandidateRecommendationBasis::MetadataStructure,
             ));
         }
         evidence_by_artifact
@@ -818,62 +1319,58 @@ fn metadata_contribution(
             .or_insert_with(|| evidence.0.id.clone());
         contribution.evidence.push(evidence.0);
     }
-    contribution.warnings = separate_series_warnings(batch, matcher, &evidence_by_artifact);
+    contribution.warnings = alternative_section_warnings(batch, matcher, &evidence_by_artifact);
     Ok(contribution)
 }
 
-fn separate_series_warnings(
+fn alternative_section_warnings(
     batch: &FactBatch<MetadataFact>,
-    matcher: &FactMatcher,
+    matcher: &DiscoveryMatcher,
     evidence_by_artifact: &BTreeMap<ArtifactId, EvidenceId>,
 ) -> Vec<DiscoveryWarning> {
     let mut warnings = Vec::new();
-    for series_attribute in batch.records.iter().filter(|fact| {
+    for nested_attribute in batch.records.iter().filter(|fact| {
         fact.artifact_kind == ArtifactKind::Attribute
             && fact.relation == StructuralRelationKind::Contains
-            && artifact_has_typed_name(&fact.artifact, "attribute", "серия")
+            && matcher
+                .strength(&fact.artifact, std::iter::once(fact.search_name.as_str()))
+                .is_match()
     }) {
-        let Some(goods_section_id) = series_attribute.container.as_ref() else {
+        let Some(parent_section_id) = nested_attribute.container.as_ref() else {
             continue;
         };
-        let Some(goods_section) = batch.records.iter().find(|fact| {
-            fact.artifact == *goods_section_id
+        let Some(parent_section) = batch.records.iter().find(|fact| {
+            fact.artifact == *parent_section_id
                 && fact.artifact_kind == ArtifactKind::TabularSection
                 && fact.relation == StructuralRelationKind::Contains
-                && artifact_has_typed_name(&fact.artifact, "tabularsection", "товары")
         }) else {
             continue;
         };
-        let Some(document) = goods_section.container.as_ref() else {
+        let Some(metadata_object) = parent_section.container.as_ref() else {
             continue;
         };
-        if document.as_str().split('.').next() != Some("document") {
-            continue;
-        }
-        if !matcher.relevant(document, std::iter::empty::<&str>())
-            && !matcher.relevant(&series_attribute.artifact, std::iter::empty::<&str>())
-        {
-            continue;
-        }
-        for separate_section in batch.records.iter().filter(|fact| {
+        for alternative_section in batch.records.iter().filter(|fact| {
             fact.artifact_kind == ArtifactKind::TabularSection
                 && fact.relation == StructuralRelationKind::Contains
-                && fact.container.as_ref() == Some(document)
-                && fact.artifact != goods_section.artifact
-                && artifact_leaves_match(&series_attribute.artifact, &fact.artifact)
+                && fact.container.as_ref() == Some(metadata_object)
+                && fact.artifact != parent_section.artifact
+                && matcher
+                    .strength(&fact.artifact, std::iter::once(fact.search_name.as_str()))
+                    .is_match()
         }) {
-            let Some(series_evidence) = evidence_by_artifact.get(&series_attribute.artifact) else {
-                continue;
-            };
-            let Some(section_evidence) = evidence_by_artifact.get(&separate_section.artifact)
+            let Some(attribute_evidence) = evidence_by_artifact.get(&nested_attribute.artifact)
             else {
                 continue;
             };
-            let mut evidence_ids = vec![series_evidence.clone(), section_evidence.clone()];
+            let Some(section_evidence) = evidence_by_artifact.get(&alternative_section.artifact)
+            else {
+                continue;
+            };
+            let mut evidence_ids = vec![attribute_evidence.clone(), section_evidence.clone()];
             evidence_ids.sort();
             warnings.push(DiscoveryWarning {
-                code: "separate_series_section".to_string(),
-                message: "A point limited to Товары.Серия lacks coverage: the same relevant document contains a distinct series-related tabular section."
+                code: "alternative_relevant_tabular_section".to_string(),
+                message: "A point limited to a relevant nested attribute lacks coverage: the same metadata object contains another task-relevant tabular section."
                     .to_string(),
                 blocking: true,
                 evidence_ids,
@@ -885,28 +1382,9 @@ fn separate_series_warnings(
     warnings
 }
 
-fn artifact_leaves_match(left: &ArtifactId, right: &ArtifactId) -> bool {
-    match (
-        left.as_str().rsplit('.').next(),
-        right.as_str().rsplit('.').next(),
-    ) {
-        (Some(left), Some(right)) => normalized_prefix_matches(left, right),
-        (Some(_), None) | (None, Some(_)) | (None, None) => false,
-    }
-}
-
-fn artifact_has_typed_name(artifact: &ArtifactId, object_type: &str, name: &str) -> bool {
-    let mut segments = artifact.as_str().rsplit('.');
-    matches!(
-        (segments.next(), segments.next()),
-        (Some(actual_name), Some(actual_type))
-            if actual_name == name && actual_type == object_type
-    )
-}
-
 fn form_contribution(
     batch: &FactBatch<FormFact>,
-    matcher: &FactMatcher,
+    matcher: &DiscoveryMatcher,
 ) -> Result<ProviderContribution, ProviderDiagnostic> {
     let mut contribution = ProviderContribution::default();
     for fact in &batch.records {
@@ -980,13 +1458,19 @@ fn form_contribution(
                 evidence.0.id.clone(),
             )),
         }
-        if matcher.relevant(&fact.form, supplemental.iter().copied())
-            || matcher.relevant(target, supplemental.iter().copied())
-        {
+        let strength = matcher
+            .strength(&fact.form, supplemental.iter().copied())
+            .max(matcher.strength(target, supplemental.iter().copied()));
+        if strength.is_match() {
+            if runtime_relation.is_some() {
+                contribution.runtime_roots.insert(target.clone());
+            }
             contribution.candidates.push((
                 fact.form.clone(),
                 ArtifactKind::Form,
                 evidence.0.id.clone(),
+                strength,
+                CandidateRecommendationBasis::ManagedFormBinding,
             ));
         }
         contribution.evidence.push(evidence.0);
@@ -1055,7 +1539,7 @@ fn definition_contribution(
 
 fn runtime_flow_contribution(
     batch: &FactBatch<RuntimeFlowFact>,
-    matcher: &FactMatcher,
+    matcher: &DiscoveryMatcher,
 ) -> Result<ProviderContribution, ProviderDiagnostic> {
     let mut contribution = ProviderContribution::default();
     for fact in &batch.records {
@@ -1080,13 +1564,22 @@ fn runtime_flow_contribution(
             fact.relation,
             evidence.0.id.clone(),
         ));
-        if matcher.relevant(&fact.source, std::iter::empty::<&str>())
-            || matcher.relevant(&fact.target, std::iter::empty::<&str>())
+        let strength = matcher
+            .strength(&fact.source, std::iter::empty::<&str>())
+            .max(matcher.strength(&fact.target, std::iter::empty::<&str>()));
+        if matches!(
+            fact.relation,
+            crate::domain::discovery::RuntimeFlowRelationKind::Action
+                | crate::domain::discovery::RuntimeFlowRelationKind::Callback
+        ) && strength.is_match()
         {
+            contribution.runtime_roots.insert(fact.target.clone());
             contribution.candidates.push((
                 fact.target.clone(),
                 fact.target_kind,
                 evidence.0.id.clone(),
+                strength,
+                CandidateRecommendationBasis::ProvenRuntimeFlow,
             ));
         }
         contribution.evidence.push(evidence.0);
@@ -1186,8 +1679,15 @@ struct ReportAccumulator {
         ),
         BTreeSet<EvidenceId>,
     >,
-    candidates: BTreeMap<(ArtifactId, ArtifactKind), BTreeSet<EvidenceId>>,
+    runtime_roots: BTreeSet<ArtifactId>,
+    candidates: BTreeMap<(ArtifactId, ArtifactKind), CandidateEvidence>,
     support: BTreeMap<ArtifactId, SupportStateKind>,
+}
+
+struct CandidateEvidence {
+    strength: DiscoveryMatchStrength,
+    evidence_ids: BTreeSet<EvidenceId>,
+    recommendation_basis: BTreeSet<CandidateRecommendationBasis>,
 }
 
 impl ReportAccumulator {
@@ -1329,11 +1829,19 @@ impl ReportAccumulator {
                 .or_default()
                 .insert(evidence_id);
         }
-        for (target, kind, evidence_id) in contribution.candidates {
-            self.candidates
-                .entry((target, kind))
-                .or_default()
-                .insert(evidence_id);
+        self.runtime_roots.extend(contribution.runtime_roots);
+        for (target, kind, evidence_id, strength, recommendation_basis) in contribution.candidates {
+            let candidate =
+                self.candidates
+                    .entry((target, kind))
+                    .or_insert_with(|| CandidateEvidence {
+                        strength,
+                        evidence_ids: BTreeSet::new(),
+                        recommendation_basis: BTreeSet::new(),
+                    });
+            candidate.strength = candidate.strength.max(strength);
+            candidate.evidence_ids.insert(evidence_id);
+            candidate.recommendation_basis.insert(recommendation_basis);
         }
         for (artifact, state) in contribution.support {
             self.support.entry(artifact).or_insert(state);
@@ -1348,6 +1856,7 @@ impl ReportAccumulator {
         environment: &DiscoveryEnvironment,
         limits: DiscoveryQueryLimits,
     ) -> DiscoveryReport {
+        self.apply_runtime_graph_depth(limits.max_graph_depth);
         self.apply_candidate_limit(limits.max_candidates as usize);
         self.provider_outcomes.sort();
         self.warnings.sort();
@@ -1403,12 +1912,13 @@ impl ReportAccumulator {
         let candidates = self
             .candidates
             .into_iter()
-            .map(|((target, kind), evidence_ids)| {
+            .map(|((target, kind), candidate)| {
                 let support_state = self.support.get(&target).copied();
                 ExtensionPointCandidate {
                     target,
                     kind,
-                    evidence_ids: evidence_ids.into_iter().collect(),
+                    evidence_ids: candidate.evidence_ids.into_iter().collect(),
+                    recommendation: candidate_recommendation(candidate.recommendation_basis),
                     support_state,
                 }
             })
@@ -1438,26 +1948,89 @@ impl ReportAccumulator {
         }
     }
 
+    fn apply_runtime_graph_depth(&mut self, maximum: u8) {
+        use crate::domain::discovery::RuntimeFlowRelationKind;
+
+        let mut retained_calls = BTreeSet::new();
+        let mut depth_by_method = self
+            .runtime_roots
+            .iter()
+            .cloned()
+            .map(|root| (root, 0_u8))
+            .collect::<BTreeMap<_, _>>();
+        let mut pending = self.runtime_roots.iter().cloned().collect::<Vec<_>>();
+        let mut cursor = 0;
+        let mut truncated = false;
+        while let Some(source) = pending.get(cursor).cloned() {
+            cursor += 1;
+            let depth = depth_by_method.get(&source).copied().unwrap_or(0);
+            let outgoing = self
+                .runtime_flow_edges
+                .keys()
+                .filter(|(edge_source, _target, relation)| {
+                    edge_source == &source && *relation == RuntimeFlowRelationKind::Calls
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if depth >= maximum {
+                truncated |= !outgoing.is_empty();
+                continue;
+            }
+            for edge in outgoing {
+                let target = edge.1.clone();
+                retained_calls.insert(edge);
+                let target_depth = depth.saturating_add(1);
+                let should_visit = depth_by_method
+                    .get(&target)
+                    .is_none_or(|known_depth| target_depth < *known_depth);
+                if should_visit {
+                    depth_by_method.insert(target.clone(), target_depth);
+                    pending.push(target);
+                }
+            }
+        }
+
+        self.runtime_flow_edges.retain(|key, _evidence_ids| {
+            key.2 != RuntimeFlowRelationKind::Calls || retained_calls.contains(key)
+        });
+        if truncated {
+            self.record_limit(
+                ProviderKind::RuntimeFlow,
+                "graph_depth_limit",
+                "runtime call-graph traversal was truncated by maxGraphDepth",
+            );
+        }
+    }
+
     fn apply_candidate_limit(&mut self, maximum: usize) {
         if self.candidates.len() <= maximum {
             return;
         }
-        let retained = self
+        let mut ranked = self
             .candidates
-            .keys()
+            .iter()
+            .map(|(key, candidate)| (candidate.strength, key.clone()))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_strength, left_key), (right_strength, right_key)| {
+            right_strength
+                .cmp(left_strength)
+                .then_with(|| left_key.cmp(right_key))
+        });
+        let retained = ranked
+            .into_iter()
             .take(maximum)
-            .cloned()
+            .map(|(_strength, key)| key)
             .collect::<BTreeSet<_>>();
         let affected = self
             .candidates
             .iter()
-            .filter(|(key, _evidence_ids)| !retained.contains(*key))
-            .flat_map(|(_key, evidence_ids)| evidence_ids)
+            .filter(|(key, _candidate)| !retained.contains(*key))
+            .flat_map(|(_key, candidate)| &candidate.evidence_ids)
             .filter_map(|id| self.evidence.get(id))
             .map(|evidence| evidence.provider)
             .collect::<BTreeSet<_>>();
         self.candidates
-            .retain(|key, _evidence_ids| retained.contains(key));
+            .retain(|key, _candidate| retained.contains(key));
         for provider in affected {
             self.record_limit(
                 provider,
@@ -1494,6 +2067,26 @@ impl ReportAccumulator {
     }
 }
 
+fn candidate_recommendation(
+    basis: BTreeSet<CandidateRecommendationBasis>,
+) -> CandidateRecommendation {
+    let ordered_basis = basis.iter().copied().collect::<Vec<_>>();
+    let summary = match ordered_basis.as_slice() {
+        [CandidateRecommendationBasis::MetadataStructure] =>
+            "Review this structural metadata point as an extension-point candidate; typed metadata evidence connects it to the task.",
+        [CandidateRecommendationBasis::ManagedFormBinding] =>
+            "Review this managed form as an extension-point candidate; typed form-binding evidence connects it to the task-relevant flow.",
+        [CandidateRecommendationBasis::ProvenRuntimeFlow] =>
+            "Review this runtime target as an extension-point candidate; typed runtime-flow evidence connects it to the task.",
+        _ =>
+            "Review this point as an extension-point candidate; multiple accepted typed evidence paths connect it to the task.",
+    };
+    CandidateRecommendation {
+        summary: summary.to_string(),
+        basis: basis.into_iter().collect(),
+    }
+}
+
 fn outcome_is_complete(kind: ProviderOutcomeKind) -> bool {
     match kind {
         ProviderOutcomeKind::Complete => true,
@@ -1516,7 +2109,7 @@ fn outcome_is_contract_violation(kind: ProviderOutcomeKind) -> bool {
 
 fn derive_concepts(request: &DiscoverRequest) -> Vec<DiscoveryConcept> {
     let mut concepts = BTreeSet::new();
-    for token in identifier_segments(request.task()) {
+    for token in crate::domain::discovery::discovery_identifier_segments(request.task()) {
         concepts.insert(DiscoveryConcept {
             value: crate::domain::discovery::normalize_discovery_identity(&token),
             provenance: ConceptProvenance::TaskDerived,
@@ -1529,100 +2122,6 @@ fn derive_concepts(request: &DiscoverRequest) -> Vec<DiscoveryConcept> {
         });
     }
     concepts.into_iter().collect()
-}
-
-fn identifier_segments(value: &str) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let characters = value.chars().collect::<Vec<_>>();
-
-    for (index, character) in characters.iter().copied().enumerate() {
-        if !character.is_alphanumeric() {
-            push_segment(&mut segments, &mut current);
-            continue;
-        }
-        let previous = index.checked_sub(1).and_then(|index| characters.get(index));
-        let next = characters.get(index + 1);
-        let lower_or_digit_boundary = character.is_uppercase()
-            && previous.is_some_and(|previous| previous.is_lowercase() || previous.is_numeric());
-        let acronym_boundary = character.is_uppercase()
-            && previous.is_some_and(|previous| previous.is_uppercase())
-            && next.is_some_and(|next| next.is_lowercase());
-        if !current.is_empty() && (lower_or_digit_boundary || acronym_boundary) {
-            push_segment(&mut segments, &mut current);
-        }
-        current.push(character);
-    }
-    push_segment(&mut segments, &mut current);
-    segments
-}
-
-fn push_segment(segments: &mut Vec<String>, current: &mut String) {
-    if current.chars().count() >= 3 {
-        segments.push(std::mem::take(current));
-    } else {
-        current.clear();
-    }
-}
-
-struct FactMatcher {
-    terms: Vec<String>,
-    objects: BTreeSet<ArtifactId>,
-}
-
-impl FactMatcher {
-    fn new(query: &DiscoveryQuery<'_>) -> Self {
-        let mut terms = BTreeSet::new();
-        for concept in query.concepts() {
-            for segment in identifier_segments(&concept.value) {
-                terms.insert(crate::domain::discovery::normalize_discovery_identity(
-                    &segment,
-                ));
-            }
-        }
-        for search_term in query.search_terms() {
-            for segment in identifier_segments(search_term) {
-                terms.insert(crate::domain::discovery::normalize_discovery_identity(
-                    &segment,
-                ));
-            }
-        }
-        Self {
-            terms: terms.into_iter().collect(),
-            objects: query.objects().iter().cloned().collect(),
-        }
-    }
-
-    fn relevant<'b, I>(&self, artifact: &ArtifactId, supplemental: I) -> bool
-    where
-        I: IntoIterator<Item = &'b str>,
-    {
-        if self.objects.contains(artifact) {
-            return true;
-        }
-        let mut values = artifact
-            .as_str()
-            .split('.')
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        for value in supplemental {
-            values.extend(identifier_segments(value));
-        }
-        values.iter().any(|value| {
-            let normalized = crate::domain::discovery::normalize_discovery_identity(value);
-            self.terms
-                .iter()
-                .any(|term| normalized_prefix_matches(term, &normalized))
-        })
-    }
-}
-
-fn normalized_prefix_matches(left: &str, right: &str) -> bool {
-    left.chars()
-        .zip(right.chars())
-        .take_while(|(left, right)| left == right)
-        .count()
-        >= 3
 }
 
 #[cfg(test)]
@@ -1690,6 +2189,11 @@ mod tests {
             outcome: ProviderOutcome<FactBatch<RuntimeFlowFact>>,
         ) -> Self {
             self.runtime_flow = outcome;
+            self
+        }
+
+        fn with_forms(mut self, batch: FactBatch<FormFact>) -> Self {
+            self.forms = ProviderOutcome::Complete(batch);
             self
         }
 
@@ -1970,6 +2474,20 @@ mod tests {
         parse_discover_request(&args).expect("valid file-bounded discovery request")
     }
 
+    fn request_with_graph_depth(
+        maximum: u8,
+    ) -> crate::application::discovery::contract::DiscoverRequest {
+        let args = json!({
+            "mode": "explore",
+            "task": "Find series extension points",
+            "limits": { "maxGraphDepth": maximum },
+        });
+        let Value::Object(args) = args else {
+            unreachable!("test JSON object is static")
+        };
+        parse_discover_request(&args).expect("valid depth-bounded discovery request")
+    }
+
     fn artifact(value: &str) -> ArtifactId {
         ArtifactId::parse(value).expect("valid test artifact")
     }
@@ -2090,16 +2608,63 @@ mod tests {
         let raw = b"CheckSeries();";
         FactBatch {
             records: vec![RuntimeFlowFact {
-                source: series_id(),
-                source_kind: ArtifactKind::TabularSection,
+                source: artifact("DataProcessor.Purchase.Form.SeriesSelection"),
+                source_kind: ArtifactKind::Form,
                 target: artifact("Document.Purchase.Module.ObjectModule.Method.CheckSeries"),
                 target_kind: ArtifactKind::Method,
-                relation: RuntimeFlowRelationKind::Calls,
+                relation: RuntimeFlowRelationKind::Callback,
                 location: location("Documents/Purchase/Ext/ObjectModule.bsl", 11),
             }],
             analyzed_files: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             contributors: vec![contributor("Documents/Purchase/Ext/ObjectModule.bsl", raw)],
             coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        }
+    }
+
+    fn runtime_call_chain() -> FactBatch<RuntimeFlowFact> {
+        let raw = b"OpenSeries(); NextSeries(); FinishSeries();";
+        let form = artifact("DataProcessor.Purchase.Form.SeriesSelection");
+        let first = artifact(
+            "DataProcessor.Purchase.Form.SeriesSelection.Module.FormModule.Method.OpenSeries",
+        );
+        let second = artifact("CommonModule.Series.Method.NextSeries");
+        let third = artifact("CommonModule.Series.Method.FinishSeries");
+        FactBatch {
+            records: vec![
+                RuntimeFlowFact {
+                    source: form,
+                    source_kind: ArtifactKind::Form,
+                    target: first.clone(),
+                    target_kind: ArtifactKind::Method,
+                    relation: RuntimeFlowRelationKind::Action,
+                    location: location("DataProcessors/Purchase/Ext/Form/Module.bsl", 1),
+                },
+                RuntimeFlowFact {
+                    source: first,
+                    source_kind: ArtifactKind::Method,
+                    target: second.clone(),
+                    target_kind: ArtifactKind::Method,
+                    relation: RuntimeFlowRelationKind::Calls,
+                    location: location("DataProcessors/Purchase/Ext/Form/Module.bsl", 2),
+                },
+                RuntimeFlowFact {
+                    source: second,
+                    source_kind: ArtifactKind::Method,
+                    target: third,
+                    target_kind: ArtifactKind::Method,
+                    relation: RuntimeFlowRelationKind::Calls,
+                    location: location("DataProcessors/Purchase/Ext/Form/Module.bsl", 3),
+                },
+            ],
+            analyzed_files: vec![contributor(
+                "DataProcessors/Purchase/Ext/Form/Module.bsl",
+                raw,
+            )],
+            contributors: vec![contributor(
+                "DataProcessors/Purchase/Ext/Form/Module.bsl",
+                raw,
+            )],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 3),
         }
     }
 
@@ -2156,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_goods_series_and_relevant_separate_section_emit_structural_warning() {
+    fn relevant_nested_attribute_and_alternative_section_emit_generic_structural_warning() {
         let raw = b"actual metadata structure";
         let path = "Documents/ПриобретениеТоваровУслуг.xml";
         let fake = FakePorts::complete_empty()
@@ -2175,14 +2740,14 @@ mod tests {
         let warning = report
             .warnings
             .iter()
-            .find(|warning| warning.code == "separate_series_section")
-            .expect("separate-series structural warning");
+            .find(|warning| warning.code == "alternative_relevant_tabular_section")
+            .expect("alternative-section structural warning");
         let expected_evidence = report
             .evidence
             .iter()
             .filter(|evidence| {
                 matches!(
-                    evidence.target.as_str(),
+                    evidence.target.normalized_str(),
                     "document.приобретениетоваровуслуг.tabularsection.товары.attribute.серия"
                         | "document.приобретениетоваровуслуг.tabularsection.серии"
                 )
@@ -2198,25 +2763,71 @@ mod tests {
             expected_evidence
         );
         assert_eq!(warning.evidence_ids.len(), 2);
-        assert!(warning.message.contains("Товары.Серия"));
-        assert!(!warning.message.contains("отклон"));
+        assert!(warning.message.contains("relevant nested attribute"));
+        assert!(!warning.message.contains("Товары"));
+        assert!(!warning.message.contains("Серия"));
     }
 
     #[test]
-    fn unrelated_distinct_section_leaf_does_not_emit_series_warning() {
+    fn structural_warning_does_not_require_the_parent_section_name_to_match() {
         let raw = b"actual metadata structure";
         let path = "Documents/ПриобретениеТоваровУслуг.xml";
         let fake = FakePorts::complete_empty()
             .with_inventory(vec![source_file(path, raw)])
-            .with_metadata(separate_section_metadata(path, raw, "Услуги"));
+            .with_metadata(separate_series_metadata(path, raw));
 
-        let report = execute(&fake, request("Проверить услуги документа", &[]))
-            .expect("structural discovery report");
+        let report = execute(&fake, request("серий", &[])).expect("structural discovery report");
 
         assert!(report
             .warnings
             .iter()
-            .all(|warning| warning.code != "separate_series_section"));
+            .any(|warning| warning.code == "alternative_relevant_tabular_section"));
+    }
+
+    #[test]
+    fn shared_three_character_prefixes_do_not_emit_structural_warning() {
+        let raw = b"actual metadata structure";
+        let path = "Documents/ПриобретениеТоваровУслуг.xml";
+        for section_name in ["СервисныеУслуги", "Сертификаты"] {
+            let discovery_request = request(
+                "Контролировать срок годности серий при поступлении товаров",
+                &[],
+            );
+            let concepts = derive_concepts(&discovery_request);
+            let query = DiscoveryQuery::new(
+                discovery_request.task(),
+                &concepts,
+                discovery_request.search_terms(),
+                discovery_request.objects(),
+                DiscoveryQueryLimits {
+                    max_files: 1,
+                    max_bytes: 1,
+                    max_evidence: 1,
+                    max_candidates: 1,
+                    max_graph_depth: 1,
+                },
+            );
+            let matcher = DiscoveryMatcher::new(&query);
+            let alternative = artifact(&format!(
+                "Document.ПриобретениеТоваровУслуг.TabularSection.{section_name}"
+            ));
+            let strength = matcher.strength(&alternative, std::iter::once(section_name));
+            assert!(!strength.is_match(), "{section_name}: {strength:?}");
+            let fake = FakePorts::complete_empty()
+                .with_inventory(vec![source_file(path, raw)])
+                .with_metadata(separate_section_metadata(path, raw, section_name));
+
+            let report = execute(&fake, discovery_request).expect("structural discovery report");
+
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .all(|warning| warning.code != "alternative_relevant_tabular_section"),
+                "false structural warning for {section_name}: {:?}",
+                report.warnings
+            );
+        }
     }
 
     #[test]
@@ -2301,6 +2912,217 @@ mod tests {
         assert!(report.candidates.is_empty());
     }
 
+    fn assert_metadata_hierarchy_contract_violation(
+        records: Vec<MetadataFact>,
+        expected_code: &str,
+    ) {
+        let raw = b"invalid metadata hierarchy";
+        let path = "Catalogs/Hierarchy.xml";
+        let batch = FactBatch {
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, records.len() as u32),
+            records,
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+
+        let report = execute(&fake, task_only()).expect("partial report");
+        let metadata = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::MetadataCatalog)
+            .expect("metadata outcome");
+        assert_eq!(metadata.outcome, ProviderOutcomeKind::ContractViolation);
+        assert_eq!(metadata.coverage, ProviderCoverage::empty());
+        assert_eq!(
+            metadata.diagnostic.as_ref().map(|item| item.code.as_str()),
+            Some(expected_code)
+        );
+        assert!(report
+            .evidence
+            .iter()
+            .all(|evidence| evidence.provider != ProviderKind::MetadataCatalog));
+    }
+
+    #[test]
+    fn metadata_contract_rejects_non_contains_relations_and_non_metadata_kinds() {
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: artifact("Catalog.Products"),
+                search_name: "Products".to_string(),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Defines,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_relation_invalid",
+        );
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: artifact("CommonModule.Tools.Method.Run"),
+                search_name: "Run".to_string(),
+                artifact_kind: ArtifactKind::Method,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Contains,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_artifact_kind_invalid",
+        );
+    }
+
+    #[test]
+    fn metadata_contract_rejects_illegal_parent_kinds_and_multiple_parents() {
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: artifact("Catalog.Products.Attribute.Series"),
+                search_name: "Series".to_string(),
+                artifact_kind: ArtifactKind::Attribute,
+                container: Some(artifact("Catalog.Products.Attribute.Parent")),
+                container_kind: Some(ArtifactKind::Attribute),
+                relation: StructuralRelationKind::Contains,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_hierarchy_kind_invalid",
+        );
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: artifact("Document.Other.TabularSection.Series"),
+                search_name: "Series".to_string(),
+                artifact_kind: ArtifactKind::TabularSection,
+                container: Some(artifact("Document.Purchase")),
+                container_kind: Some(ArtifactKind::MetadataObject),
+                relation: StructuralRelationKind::Contains,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_hierarchy_identity_invalid",
+        );
+        let child = artifact("Catalog.Products.Attribute.Series");
+        assert_metadata_hierarchy_contract_violation(
+            vec![
+                MetadataFact {
+                    artifact: child.clone(),
+                    search_name: "Series".to_string(),
+                    artifact_kind: ArtifactKind::Attribute,
+                    container: Some(artifact("Catalog.Products")),
+                    container_kind: Some(ArtifactKind::MetadataObject),
+                    relation: StructuralRelationKind::Contains,
+                    location: location("Catalogs/Hierarchy.xml", 1),
+                },
+                MetadataFact {
+                    artifact: child,
+                    search_name: "Series".to_string(),
+                    artifact_kind: ArtifactKind::Attribute,
+                    container: Some(artifact("Catalog.Alternatives")),
+                    container_kind: Some(ArtifactKind::MetadataObject),
+                    relation: StructuralRelationKind::Contains,
+                    location: location("Catalogs/Hierarchy.xml", 2),
+                },
+            ],
+            "metadata_parent_conflict",
+        );
+    }
+
+    #[test]
+    fn metadata_contract_rejects_direct_child_identity_with_wrong_kind_token() {
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: artifact("Document.Purchase.Form.Series"),
+                search_name: "Series".to_string(),
+                artifact_kind: ArtifactKind::Attribute,
+                container: Some(artifact("Document.Purchase")),
+                container_kind: Some(ArtifactKind::MetadataObject),
+                relation: StructuralRelationKind::Contains,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_hierarchy_identity_invalid",
+        );
+    }
+
+    #[test]
+    fn metadata_contract_rejects_self_parenting_and_indirect_cycles() {
+        let self_parent = artifact("Catalog.Products");
+        assert_metadata_hierarchy_contract_violation(
+            vec![MetadataFact {
+                artifact: self_parent.clone(),
+                search_name: "Products".to_string(),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: Some(self_parent),
+                container_kind: Some(ArtifactKind::MetadataObject),
+                relation: StructuralRelationKind::Contains,
+                location: location("Catalogs/Hierarchy.xml", 1),
+            }],
+            "metadata_self_parent",
+        );
+        let first = artifact("Catalog.First");
+        let second = artifact("Catalog.Second");
+        assert_metadata_hierarchy_contract_violation(
+            vec![
+                MetadataFact {
+                    artifact: first.clone(),
+                    search_name: "First".to_string(),
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: Some(second.clone()),
+                    container_kind: Some(ArtifactKind::MetadataObject),
+                    relation: StructuralRelationKind::Contains,
+                    location: location("Catalogs/Hierarchy.xml", 1),
+                },
+                MetadataFact {
+                    artifact: second,
+                    search_name: "Second".to_string(),
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: Some(first),
+                    container_kind: Some(ArtifactKind::MetadataObject),
+                    relation: StructuralRelationKind::Contains,
+                    location: location("Catalogs/Hierarchy.xml", 2),
+                },
+            ],
+            "metadata_hierarchy_cycle",
+        );
+    }
+
+    #[test]
+    fn matcher_work_exhaustion_is_reported_as_a_bounded_provider() {
+        let raw = b"metadata";
+        let path = "Documents/Purchase.xml";
+        let search_terms = (0..128)
+            .map(|index| format!("UnrelatedSearchTerm{index:03}"))
+            .collect::<Vec<_>>();
+        let args = json!({
+            "mode": "explore",
+            "task": "Unrelated discovery request",
+            "searchTerms": search_terms,
+            "limits": { "maxEvidence": 1 },
+        });
+        let Value::Object(args) = args else {
+            unreachable!("test JSON object is static")
+        };
+        let request = parse_discover_request(&args).expect("work-bounded request");
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(series_metadata_at(path, raw));
+
+        let report = execute(&fake, request).expect("work-bounded report");
+        let metadata = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::MetadataCatalog)
+            .expect("metadata outcome");
+
+        assert_eq!(metadata.outcome, ProviderOutcomeKind::Bounded);
+        assert_eq!(
+            metadata.diagnostic.as_ref().map(|item| item.code.as_str()),
+            Some("discovery_match_work_bound")
+        );
+        assert!(report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.provider == ProviderKind::MetadataCatalog));
+    }
+
     #[test]
     fn cross_provider_artifact_kind_conflict_invalidates_later_provider_atomically() {
         let metadata_raw = b"metadata";
@@ -2373,11 +3195,152 @@ mod tests {
         assert_eq!(report.runtime_flow_edges.len(), 1);
         assert_eq!(
             report.runtime_flow_edges[0].relation,
-            RuntimeFlowRelationKind::Calls
+            RuntimeFlowRelationKind::Callback
         );
-        assert!(report.candidates.iter().any(|candidate| {
-            candidate.target == artifact("Document.Purchase.Module.ObjectModule.Method.CheckSeries")
+        let candidate = report
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.target
+                    == artifact("Document.Purchase.Module.ObjectModule.Method.CheckSeries")
+            })
+            .expect("typed runtime candidate");
+        assert_eq!(
+            serde_json::to_value(candidate).expect("serialized candidate")["recommendation"],
+            json!({
+                "summary": "Review this runtime target as an extension-point candidate; typed runtime-flow evidence connects it to the task.",
+                "basis": ["proven_runtime_flow"]
+            })
+        );
+    }
+
+    #[test]
+    fn max_graph_depth_counts_only_directed_calls_after_a_typed_runtime_root() {
+        let mut fake = FakePorts::complete_empty();
+        fake.runtime_flow = ProviderOutcome::Complete(runtime_call_chain());
+
+        let report = execute(&fake, request_with_graph_depth(1)).expect("depth-bounded report");
+
+        assert!(report.runtime_flow_edges.iter().any(|edge| {
+            edge.relation == RuntimeFlowRelationKind::Action
+                && edge.target
+                    == artifact("DataProcessor.Purchase.Form.SeriesSelection.Module.FormModule.Method.OpenSeries")
         }));
+        assert!(report.runtime_flow_edges.iter().any(|edge| {
+            edge.relation == RuntimeFlowRelationKind::Calls
+                && edge.target == artifact("CommonModule.Series.Method.NextSeries")
+        }));
+        assert!(!report.runtime_flow_edges.iter().any(|edge| {
+            edge.relation == RuntimeFlowRelationKind::Calls
+                && edge.target == artifact("CommonModule.Series.Method.FinishSeries")
+        }));
+        assert!(report.provider_outcomes.iter().any(|outcome| {
+            outcome.provider == ProviderKind::RuntimeFlow
+                && outcome.outcome == ProviderOutcomeKind::Bounded
+                && outcome
+                    .diagnostic
+                    .as_ref()
+                    .is_some_and(|diagnostic| diagnostic.code == "graph_depth_limit")
+        }));
+    }
+
+    #[test]
+    fn standalone_calls_are_not_promoted_without_a_typed_runtime_root() {
+        let raw = b"NextSeries();";
+        let mut fake = FakePorts::complete_empty();
+        fake.runtime_flow = ProviderOutcome::Complete(FactBatch {
+            records: vec![RuntimeFlowFact {
+                source: artifact("CommonModule.Series.Method.StartSeries"),
+                source_kind: ArtifactKind::Method,
+                target: artifact("CommonModule.Series.Method.NextSeries"),
+                target_kind: ArtifactKind::Method,
+                relation: RuntimeFlowRelationKind::Calls,
+                location: location("CommonModules/Series/Ext/Module.bsl", 1),
+            }],
+            analyzed_files: vec![contributor("CommonModules/Series/Ext/Module.bsl", raw)],
+            contributors: vec![contributor("CommonModules/Series/Ext/Module.bsl", raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        });
+
+        let report = execute(&fake, task_only()).expect("unrooted runtime report");
+
+        assert!(report.runtime_flow_edges.is_empty());
+        assert!(report.candidates.is_empty());
+        assert!(report.provider_outcomes.iter().any(|outcome| {
+            outcome.provider == ProviderKind::RuntimeFlow
+                && outcome.outcome == ProviderOutcomeKind::Complete
+        }));
+    }
+
+    #[test]
+    fn malformed_runtime_shape_invalidates_the_whole_batch_and_resets_coverage() {
+        let raw = b"CheckSeries();";
+        let mut fake = FakePorts::complete_empty();
+        fake.runtime_flow = ProviderOutcome::Complete(FactBatch {
+            records: vec![RuntimeFlowFact {
+                source: series_id(),
+                source_kind: ArtifactKind::TabularSection,
+                target: artifact("CommonModule.Series.Method.CheckSeries"),
+                target_kind: ArtifactKind::Method,
+                relation: RuntimeFlowRelationKind::Calls,
+                location: location("CommonModules/Series/Ext/Module.bsl", 1),
+            }],
+            analyzed_files: vec![contributor("CommonModules/Series/Ext/Module.bsl", raw)],
+            contributors: vec![contributor("CommonModules/Series/Ext/Module.bsl", raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        });
+
+        let report = execute(&fake, task_only()).expect("contract-violation report");
+
+        let outcome = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::RuntimeFlow)
+            .expect("runtime outcome");
+        assert_eq!(outcome.outcome, ProviderOutcomeKind::ContractViolation);
+        assert_eq!(outcome.coverage, ProviderCoverage::empty());
+        assert!(report.runtime_flow_edges.is_empty());
+        assert!(report
+            .evidence
+            .iter()
+            .all(|evidence| evidence.provider != ProviderKind::RuntimeFlow));
+    }
+
+    #[test]
+    fn malformed_form_binding_invalidates_the_whole_batch_and_resets_coverage() {
+        let raw = b"<Form/>";
+        let path = "DataProcessors/Purchase/Forms/Main/Ext/Form.xml";
+        let batch = FactBatch {
+            records: vec![FormFact {
+                form: artifact("DataProcessor.Purchase.Form.Main"),
+                binding: FormBinding::Data {
+                    target: artifact("CommonModule.Series.Method.CheckSeries"),
+                    target_kind: ArtifactKind::Method,
+                    data_path: " ".to_string(),
+                },
+                location: location(path, 1),
+            }],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_forms(batch);
+
+        let report = execute(&fake, task_only()).expect("contract-violation report");
+
+        let outcome = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::ManagedForms)
+            .expect("form outcome");
+        assert_eq!(outcome.outcome, ProviderOutcomeKind::ContractViolation);
+        assert_eq!(outcome.coverage, ProviderCoverage::empty());
+        assert!(report
+            .evidence
+            .iter()
+            .all(|evidence| evidence.provider != ProviderKind::ManagedForms));
     }
 
     #[test]
@@ -2512,6 +3475,66 @@ mod tests {
                 && item.outcome == crate::domain::discovery::ProviderOutcomeKind::Bounded
                 && item.coverage == ProviderCoverage::new(2, 1, byte_count, 1)
         }));
+    }
+
+    #[test]
+    fn bounded_inventory_cannot_be_claimed_only_because_the_exact_limit_was_returned() {
+        let file = source_file("Documents/Purchase.xml", b"metadata");
+        let byte_count = file.bytes.len() as u64;
+        let mut inventory = SourceInventory {
+            files: vec![file],
+            coverage: ProviderCoverage::new(1, 1, byte_count, 1),
+            bound: None,
+        };
+
+        let error = normalize_inventory(
+            &mut inventory,
+            ProviderOutcomeKind::Bounded,
+            Some(&diagnostic("source_inventory_file_bound")),
+            DiscoveryQueryLimits {
+                max_files: 1,
+                max_bytes: byte_count,
+                max_evidence: 1,
+                max_candidates: 1,
+                max_graph_depth: 1,
+            },
+        )
+        .expect_err("an exact ceiling without an N+1 probe is not a proven bound");
+
+        assert_eq!(error.code, "unsubstantiated_bounded_inventory");
+    }
+
+    #[test]
+    fn bounded_inventory_keeps_inventory_backed_complete_batches_incomplete() {
+        let raw = b"metadata";
+        let path = "Documents/Purchase.xml";
+        let file = source_file(path, raw);
+        let mut fake = FakePorts::complete_empty().with_metadata(series_metadata_at(path, raw));
+        fake.inventory = ProviderOutcome::Bounded {
+            data: SourceInventory {
+                files: vec![file],
+                coverage: ProviderCoverage::new(2, 1, raw.len() as u64, 1),
+                bound: None,
+            },
+            diagnostic: diagnostic("source_inventory_file_bound"),
+        };
+
+        let report = execute(&fake, request_with_file_limit(1)).expect("bounded report");
+
+        let metadata = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::MetadataCatalog)
+            .expect("metadata outcome");
+        assert_eq!(metadata.outcome, ProviderOutcomeKind::Bounded);
+        assert_eq!(
+            metadata.diagnostic.as_ref().map(|item| item.code.as_str()),
+            Some("source_inventory_incomplete")
+        );
+        assert!(report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.provider == ProviderKind::MetadataCatalog));
     }
 
     #[test]
@@ -3112,7 +4135,18 @@ mod tests {
         )
         .expect("candidate report");
 
-        assert!(report.candidates.iter().any(|item| item.target == target));
+        let candidate = report
+            .candidates
+            .iter()
+            .find(|item| item.target == target)
+            .expect("metadata candidate");
+        assert_eq!(
+            serde_json::to_value(candidate).expect("serialized candidate")["recommendation"],
+            json!({
+                "summary": "Review this structural metadata point as an extension-point candidate; typed metadata evidence connects it to the task.",
+                "basis": ["metadata_structure"]
+            })
+        );
     }
 
     #[test]
@@ -3200,6 +4234,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![&intended]
         );
+    }
+
+    #[test]
+    fn exact_candidate_outranks_more_than_one_hundred_weak_prefix_decoys() {
+        let raw = b"metadata";
+        let path = "DataProcessors/Candidates.xml";
+        let exact = artifact("DataProcessor.Series");
+        let mut records = (0..150)
+            .map(|index| {
+                let name = format!("SeriesDecoy{index:03}");
+                MetadataFact {
+                    artifact: artifact(&format!("DataProcessor.{name}")),
+                    search_name: name,
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, index + 2),
+                }
+            })
+            .collect::<Vec<_>>();
+        records.push(MetadataFact {
+            artifact: exact.clone(),
+            search_name: "Series".to_string(),
+            artifact_kind: ArtifactKind::MetadataObject,
+            container: None,
+            container_kind: None,
+            relation: StructuralRelationKind::Contains,
+            location: location(path, 1),
+        });
+        let batch = FactBatch {
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, records.len() as u32),
+            records,
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+        let args = json!({
+            "mode": "explore",
+            "task": "Series",
+            "limits": { "maxCandidates": 1 },
+        });
+        let Value::Object(args) = args else {
+            unreachable!("test JSON object is static")
+        };
+        let request = parse_discover_request(&args).expect("bounded candidate request");
+
+        let report = execute(&fake, request).expect("bounded candidate report");
+
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].target, exact);
     }
 
     #[test]
@@ -3346,6 +4433,83 @@ mod tests {
     }
 
     #[test]
+    fn global_evidence_budget_reserves_capacity_for_later_form_and_support_providers() {
+        let metadata_raw = b"metadata";
+        let form_raw = b"form";
+        let support_raw = b"support";
+        let metadata_path = "Documents/Decoys.xml";
+        let form_path = "DataProcessors/Purchase/Forms/Main/Ext/Form.xml";
+        let support_path = "Ext/ParentConfigurations.bin";
+        let metadata_records = (0..3)
+            .map(|index| MetadataFact {
+                artifact: artifact(&format!("Document.Decoy{index}")),
+                search_name: format!("Decoy{index}"),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Contains,
+                location: location(metadata_path, index + 1),
+            })
+            .collect::<Vec<_>>();
+        let metadata = FactBatch {
+            records: metadata_records,
+            analyzed_files: vec![contributor(metadata_path, metadata_raw)],
+            contributors: vec![contributor(metadata_path, metadata_raw)],
+            coverage: ProviderCoverage::new(1, 1, metadata_raw.len() as u64, 3),
+        };
+        let forms = FactBatch {
+            records: vec![FormFact {
+                form: artifact("DataProcessor.Purchase.Form.Main"),
+                binding: FormBinding::Data {
+                    target: artifact("Document.Purchase.Attribute.Series"),
+                    target_kind: ArtifactKind::Attribute,
+                    data_path: "Объект.Серия".to_string(),
+                },
+                location: location(form_path, 1),
+            }],
+            analyzed_files: vec![contributor(form_path, form_raw)],
+            contributors: vec![contributor(form_path, form_raw)],
+            coverage: ProviderCoverage::new(1, 1, form_raw.len() as u64, 1),
+        };
+        let support = FactBatch {
+            records: vec![SupportFact {
+                artifact: artifact("DataProcessor.SupportProbe"),
+                artifact_kind: ArtifactKind::MetadataObject,
+                state: SupportStateKind::Editable,
+                location: location(support_path, 1),
+            }],
+            analyzed_files: vec![contributor(support_path, support_raw)],
+            contributors: vec![contributor(support_path, support_raw)],
+            coverage: ProviderCoverage::new(1, 1, support_raw.len() as u64, 1),
+        };
+        let mut fake = FakePorts::complete_empty()
+            .with_inventory(vec![
+                source_file(metadata_path, metadata_raw),
+                source_file(form_path, form_raw),
+                source_file(support_path, support_raw),
+            ])
+            .with_metadata(metadata)
+            .with_forms(forms);
+        fake.support = ProviderOutcome::Complete(support);
+
+        let report = execute(&fake, request_with_evidence_limit(3)).expect("fair bounded report");
+
+        assert_eq!(report.evidence.len(), 3);
+        assert_eq!(
+            report
+                .evidence
+                .iter()
+                .map(|evidence| evidence.provider)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ProviderKind::MetadataCatalog,
+                ProviderKind::ManagedForms,
+                ProviderKind::SupportState,
+            ])
+        );
+    }
+
+    #[test]
     fn exhausted_budget_still_rejects_later_conflicting_analyzed_identity() {
         let metadata = b"metadata";
         let no_match = b"receipt-metadata";
@@ -3354,8 +4518,8 @@ mod tests {
         let flow_path = "Documents/Purchase/Ext/ObjectModule.bsl";
         let runtime = FactBatch {
             records: vec![RuntimeFlowFact {
-                source: series_id(),
-                source_kind: ArtifactKind::TabularSection,
+                source: artifact("Document.Purchase.Module.ObjectModule.Method.BeforeCheckSeries"),
+                source_kind: ArtifactKind::Method,
                 target: artifact("Document.Purchase.Module.ObjectModule.Method.CheckSeries"),
                 target_kind: ArtifactKind::Method,
                 relation: RuntimeFlowRelationKind::Calls,
@@ -3418,8 +4582,8 @@ mod tests {
         };
         let runtime = FactBatch {
             records: vec![RuntimeFlowFact {
-                source: series_id(),
-                source_kind: ArtifactKind::TabularSection,
+                source: artifact("CommonModule.Series.Method.BeforeFindSeries"),
+                source_kind: ArtifactKind::Method,
                 target: artifact("CommonModule.Series.Method.FindSeries"),
                 target_kind: ArtifactKind::Method,
                 relation: RuntimeFlowRelationKind::Calls,

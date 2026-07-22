@@ -26,8 +26,10 @@
         "spec/acceptance/unica-mcp-validation.md",
         "scripts/ci/smoke-unica-mcp.py",
         "tests/ci/test_unica_mcp_script_parity.py",
+        "tests/ci/test_unica_mcp_smoke.py",
         "tests/ci/test_unica_skills.py",
-        "tests/ci/test_smoke_unica_mcp.py"
+        "tests/ci/test_smoke_unica_mcp.py",
+        "tests/fixtures/extension-point-discovery/ut115"
       ]
     }
   ],
