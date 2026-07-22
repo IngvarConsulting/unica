@@ -1281,6 +1281,9 @@ fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionErr
 
 fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectionError {
     match error {
+        ContainedFileError::Cancelled => DefinitionCollectionError::Failed(
+            crate::infrastructure::discovery::cancellation_diagnostic(),
+        ),
         ContainedFileError::UnsupportedHost => {
             DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
                 "bsl_index_validation_unavailable",

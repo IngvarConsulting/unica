@@ -87,7 +87,12 @@ the resolved mapping identity and raw SHA-256 hashes of evidence-contributing fi
 Reads stay beneath the selected source root through verified regular-file
 handles. Escaping symlinks/reparse points, non-regular files, path swaps, and
 identity changes between capture and verified read fail closed for the affected
-provider. The snapshot neither claims whole-workspace immutability nor grants
+provider. Verified file bodies are read in 64 KiB chunks with cancellation
+polls around I/O and incremental SHA-256 updates. Each XML, BSL, or support-state
+evidence file has a 16 MiB transparent-read limit in addition to request
+`maxBytes`; reaching either byte limit returns a stable `Bounded` inventory that
+preserves its fully verified prefix and is never reported as malformed provider
+data or a contract violation. The snapshot neither claims whole-workspace immutability nor grants
 permission to mutate. Platform filesystem code remains behind the existing
 infrastructure facade.
 

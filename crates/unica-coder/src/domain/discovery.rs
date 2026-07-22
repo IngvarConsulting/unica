@@ -183,6 +183,10 @@ impl ContentHash {
         hasher.update(bytes);
         Self::from_hasher(hasher)
     }
+
+    pub(crate) fn from_incremental_sha256(hasher: Sha256) -> Self {
+        Self::from_hasher(hasher)
+    }
 }
 
 impl MappingFingerprint {

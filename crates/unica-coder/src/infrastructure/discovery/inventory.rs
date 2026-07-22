@@ -5,8 +5,8 @@ use crate::domain::discovery::{
 };
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::infrastructure::platform::contained_file::{
-    read_contained_regular_file, read_contained_regular_file_with_expected_identity,
-    ContainedFileError,
+    read_contained_regular_file_cancellable,
+    read_contained_regular_file_with_expected_identity_cancellable, ContainedFileError,
 };
 use crate::infrastructure::platform::verified_directory::{
     read_verified_contained_directory_cancellable,
@@ -15,6 +15,8 @@ use crate::infrastructure::platform::verified_directory::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+const MAX_DISCOVERY_SOURCE_FILE_BYTES: u64 = 16 * 1_024 * 1_024;
 
 pub(crate) struct ContainedSourceInventoryPort {
     canonical_root: PathBuf,
@@ -104,14 +106,23 @@ impl ContainedSourceInventoryPort {
                         "source inventory byte accounting exceeded maxBytes",
                     )
                 })?;
+            let read_limit = remaining_bytes.min(MAX_DISCOVERY_SOURCE_FILE_BYTES);
             let verified_result = match expected_identity {
-                Some(expected_identity) => read_contained_regular_file_with_expected_identity(
+                Some(expected_identity) => {
+                    read_contained_regular_file_with_expected_identity_cancellable(
+                        &self.canonical_root,
+                        &path,
+                        read_limit,
+                        expected_identity,
+                        || query.is_cancelled(),
+                    )
+                }
+                None => read_contained_regular_file_cancellable(
                     &self.canonical_root,
                     &path,
-                    remaining_bytes,
-                    expected_identity,
+                    read_limit,
+                    || query.is_cancelled(),
                 ),
-                None => read_contained_regular_file(&self.canonical_root, &path, remaining_bytes),
             };
             check_inventory_cancellation(query)?;
             let verified = match verified_result {
@@ -120,12 +131,22 @@ impl ContainedSourceInventoryPort {
                     if needs_sidecar_classification {
                         files_seen = checked_increment_files_seen(files_seen)?;
                     }
-                    return Ok(Capture::Bounded {
-                        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
-                        diagnostic: ProviderDiagnostic::material(
+                    let (code, message) = if read_limit == MAX_DISCOVERY_SOURCE_FILE_BYTES
+                        && remaining_bytes >= MAX_DISCOVERY_SOURCE_FILE_BYTES
+                    {
+                        (
+                            "source_inventory_source_file_bound",
+                            "source inventory stopped at the per-file source byte limit",
+                        )
+                    } else {
+                        (
                             "source_inventory_byte_bound",
                             "source inventory stopped at the maxBytes limit",
-                        ),
+                        )
+                    };
+                    return Ok(Capture::Bounded {
+                        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
+                        diagnostic: ProviderDiagnostic::material(code, message),
                     });
                 }
                 Err(error) => return Err(classify_contained_file_error(error)),
@@ -299,6 +320,9 @@ fn classify_inventory_io(operation: &'static str, error: std::io::Error) -> Capt
 
 fn classify_contained_file_error(error: ContainedFileError) -> CaptureError {
     match error {
+        ContainedFileError::Cancelled => {
+            CaptureError::Failed(crate::infrastructure::discovery::cancellation_diagnostic())
+        }
         ContainedFileError::UnsupportedHost => {
             CaptureError::Unavailable(ProviderDiagnostic::material(
                 "source_inventory_unsupported_host",
@@ -463,6 +487,52 @@ mod tests {
     }
 
     #[test]
+    fn oversized_xml_is_a_stable_bounded_prefix_not_a_contract_violation() {
+        let root = fixture_root("per-file-xml-bound");
+        write(&root.join("a.xml"), b"prior");
+        write(
+            &root.join("z.xml"),
+            &vec![b'x'; super::MAX_DISCOVERY_SOURCE_FILE_BYTES as usize + 1],
+        );
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let outcome = provider.inventory(&query(10, 64 * 1_024 * 1_024));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("oversized source file must be a bounded inventory prefix");
+        };
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.files[0].bytes.as_ref(), b"prior");
+        assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 5, 1));
+        assert_eq!(diagnostic.code, "source_inventory_source_file_bound");
+        assert_eq!(
+            diagnostic.message,
+            "source inventory stopped at the per-file source byte limit"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn oversized_support_state_is_bounded_before_transparent_parsing() {
+        let root = fixture_root("per-file-support-bound");
+        write(
+            &root.join("Documents/Order/Ext/ParentConfigurations.bin"),
+            &vec![b'x'; super::MAX_DISCOVERY_SOURCE_FILE_BYTES as usize + 1],
+        );
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+
+        let outcome = provider.inventory(&query(10, 64 * 1_024 * 1_024));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("oversized support state must be bounded before parsing");
+        };
+        assert!(data.files.is_empty());
+        assert_eq!(data.coverage, ProviderCoverage::new(1, 0, 0, 0));
+        assert_eq!(diagnostic.code, "source_inventory_source_file_bound");
+        cleanup(&root);
+    }
+
+    #[test]
     fn byte_bound_during_sidecar_classification_counts_the_n_plus_one_observation() {
         let root = fixture_root("sidecar-byte-bound-after-file-bound");
         write(&root.join("a.xml"), b"a");
@@ -617,6 +687,12 @@ mod tests {
             classify_verified_directory_error(VerifiedDirectoryError::Cancelled)
         else {
             panic!("cancelled enumeration must be a failed provider outcome");
+        };
+        assert_eq!(cancelled.code, "discovery_cancelled");
+        let CaptureError::Failed(cancelled) =
+            classify_contained_file_error(ContainedFileError::Cancelled)
+        else {
+            panic!("cancelled contained read must be a failed provider outcome");
         };
         assert_eq!(cancelled.code, "discovery_cancelled");
         assert!(matches!(

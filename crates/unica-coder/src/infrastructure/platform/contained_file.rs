@@ -4,6 +4,10 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
+pub(crate) const VERIFIED_READ_CHUNK_BYTES: usize = 64 * 1_024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VerifiedIdentity {
     pub storage: u64,
@@ -31,6 +35,7 @@ pub(crate) enum ContainedFileError {
     SymlinkOrReparsePoint,
     NotRegularFile,
     IdentityChanged,
+    Cancelled,
     SizeLimitExceeded {
         limit: u64,
     },
@@ -72,6 +77,7 @@ impl fmt::Display for ContainedFileError {
             Self::IdentityChanged => {
                 formatter.write_str("file identity changed during verified read")
             }
+            Self::Cancelled => formatter.write_str("verified contained read cancelled"),
             Self::SizeLimitExceeded { limit } => {
                 write!(formatter, "file exceeds the {limit}-byte read limit")
             }
@@ -98,6 +104,7 @@ impl std::error::Error for ContainedFileError {
             | Self::SymlinkOrReparsePoint
             | Self::NotRegularFile
             | Self::IdentityChanged
+            | Self::Cancelled
             | Self::SizeLimitExceeded { .. }
             | Self::LengthOverflow
             | Self::UnsupportedHost => None,
@@ -110,25 +117,67 @@ pub(crate) fn read_contained_regular_file(
     path: &Path,
     max_bytes: u64,
 ) -> Result<VerifiedFile, ContainedFileError> {
-    read_contained_regular_file_observing(root, path, max_bytes, None, || {}, || {}, || {}, || {})
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers::no_op(),
+        || false,
+    )
 }
 
-pub(crate) fn read_contained_regular_file_with_expected_identity(
+pub(crate) fn read_contained_regular_file_cancellable(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers::no_op(),
+        is_cancelled,
+    )
+}
+
+pub(crate) fn read_contained_regular_file_with_expected_identity_cancellable(
     root: &Path,
     path: &Path,
     max_bytes: u64,
     expected_identity: VerifiedIdentity,
+    is_cancelled: impl FnMut() -> bool,
 ) -> Result<VerifiedFile, ContainedFileError> {
     read_contained_regular_file_observing(
         root,
         path,
         max_bytes,
         Some(expected_identity),
-        || {},
-        || {},
-        || {},
-        || {},
+        ReadObservers::no_op(),
+        is_cancelled,
     )
+}
+
+struct ReadObservers<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk> {
+    pre_open: PreOpen,
+    post_open: PostOpen,
+    final_metadata: FinalMetadata,
+    read_body: ReadBody,
+    chunk: Chunk,
+}
+
+impl ReadObservers<fn(), fn(), fn(), fn(), fn(usize)> {
+    fn no_op() -> Self {
+        Self {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,17 +185,21 @@ fn read_contained_regular_file_with_observer(
     root: &Path,
     path: &Path,
     max_bytes: u64,
-    observer: impl FnOnce(),
+    observer: impl FnMut(),
 ) -> Result<VerifiedFile, ContainedFileError> {
     read_contained_regular_file_observing(
         root,
         path,
         max_bytes,
         None,
-        observer,
-        || {},
-        || {},
-        || {},
+        ReadObservers {
+            pre_open: observer,
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
     )
 }
 
@@ -155,17 +208,21 @@ fn read_contained_regular_file_with_post_open_observer(
     root: &Path,
     path: &Path,
     max_bytes: u64,
-    observer: impl FnOnce(),
+    observer: impl FnMut(),
 ) -> Result<VerifiedFile, ContainedFileError> {
     read_contained_regular_file_observing(
         root,
         path,
         max_bytes,
         None,
-        || {},
-        observer,
-        || {},
-        || {},
+        ReadObservers {
+            pre_open: || {},
+            post_open: observer,
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
     )
 }
 
@@ -174,17 +231,21 @@ fn read_contained_regular_file_with_final_metadata_observer(
     root: &Path,
     path: &Path,
     max_bytes: u64,
-    final_metadata_observer: impl FnOnce(),
+    final_metadata_observer: impl FnMut(),
 ) -> Result<VerifiedFile, ContainedFileError> {
     read_contained_regular_file_observing(
         root,
         path,
         max_bytes,
         None,
-        || {},
-        || {},
-        final_metadata_observer,
-        || {},
+        ReadObservers {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: final_metadata_observer,
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
     )
 }
 
@@ -193,31 +254,67 @@ fn read_contained_regular_file_with_read_observer(
     root: &Path,
     path: &Path,
     max_bytes: u64,
-    post_open_observer: impl FnOnce(),
-    read_observer: impl FnOnce(),
+    post_open_observer: impl FnMut(),
+    read_observer: impl FnMut(),
 ) -> Result<VerifiedFile, ContainedFileError> {
     read_contained_regular_file_observing(
         root,
         path,
         max_bytes,
         None,
-        || {},
-        post_open_observer,
-        || {},
-        read_observer,
+        ReadObservers {
+            pre_open: || {},
+            post_open: post_open_observer,
+            final_metadata: || {},
+            read_body: read_observer,
+            chunk: |_| {},
+        },
+        || false,
     )
 }
 
-fn read_contained_regular_file_observing(
+#[cfg(test)]
+fn read_contained_regular_file_with_chunk_observer_cancellable(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    is_cancelled: impl FnMut() -> bool,
+    chunk_observer: impl FnMut(usize),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: chunk_observer,
+        },
+        is_cancelled,
+    )
+}
+
+fn read_contained_regular_file_observing<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk>(
     root: &Path,
     path: &Path,
     max_bytes: u64,
     expected_identity: Option<VerifiedIdentity>,
-    pre_open_observer: impl FnOnce(),
-    post_open_observer: impl FnOnce(),
-    final_metadata_observer: impl FnOnce(),
-    read_observer: impl FnOnce(),
-) -> Result<VerifiedFile, ContainedFileError> {
+    mut observers: ReadObservers<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<VerifiedFile, ContainedFileError>
+where
+    PreOpen: FnMut(),
+    PostOpen: FnMut(),
+    FinalMetadata: FnMut(),
+    ReadBody: FnMut(),
+    Chunk: FnMut(usize),
+{
+    if is_cancelled() {
+        return Err(ContainedFileError::Cancelled);
+    }
     let canonical_root = std::fs::canonicalize(root)
         .map(|path| {
             crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
@@ -262,7 +359,7 @@ fn read_contained_regular_file_observing(
     if expected_identity.is_some_and(|expected| expected != pre_open_identity) {
         return Err(ContainedFileError::IdentityChanged);
     }
-    pre_open_observer();
+    (observers.pre_open)();
     let file = open_no_follow(&candidate)?;
     let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
         operation: "inspect opened file",
@@ -273,35 +370,67 @@ fn read_contained_regular_file_observing(
     if pre_open_identity != opened_identity {
         return Err(ContainedFileError::IdentityChanged);
     }
-    post_open_observer();
+    (observers.post_open)();
     validate_opened_regular_file_observing(
         root,
         &candidate,
         &relative_path,
         &file,
         opened_identity,
-        final_metadata_observer,
+        observers.final_metadata,
     )?;
     let metadata_exceeds_limit = opened_metadata.len() > max_bytes;
     let mut bytes = Vec::new();
+    let mut hasher = Sha256::new();
     if !metadata_exceeds_limit {
-        read_observer();
-        (&file)
-            .take(max_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|source| ContainedFileError::Io {
+        (observers.read_body)();
+        let mut reader = &file;
+        let mut chunk = [0_u8; VERIFIED_READ_CHUNK_BYTES];
+        loop {
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            let bytes_read =
+                u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+            let probe_remaining = max_bytes
+                .saturating_sub(bytes_read)
+                .saturating_add(1)
+                .min(VERIFIED_READ_CHUNK_BYTES as u64);
+            let chunk_limit =
+                usize::try_from(probe_remaining).map_err(|_| ContainedFileError::LengthOverflow)?;
+            let read_result = reader.read(&mut chunk[..chunk_limit]);
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            let read = read_result.map_err(|source| ContainedFileError::Io {
                 operation: "read file",
                 source,
             })?;
+            if read == 0 {
+                break;
+            }
+            (observers.chunk)(read);
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            hasher.update(&chunk[..read]);
+            if u64::try_from(bytes.len()).map_or(true, |length| length > max_bytes) {
+                break;
+            }
+        }
     }
     let bytes_read = u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
     let read_exceeds_limit = bytes_read > max_bytes;
     validate_opened_regular_file(root, &candidate, &relative_path, &file, opened_identity)?;
+    if is_cancelled() {
+        return Err(ContainedFileError::Cancelled);
+    }
     if metadata_exceeds_limit || read_exceeds_limit {
         return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
     }
 
-    let raw_sha256 = ContentHash::sha256(&bytes);
+    let raw_sha256 = ContentHash::from_incremental_sha256(hasher);
     Ok(VerifiedFile {
         relative_path,
         bytes,
@@ -419,6 +548,7 @@ fn reclassify_file_final_path_error(
             | ContainedFileError::FinalPathMismatch
             | ContainedFileError::AmbiguousHostPath
             | ContainedFileError::InvalidRelativePath(_)
+            | ContainedFileError::Cancelled
             | ContainedFileError::SizeLimitExceeded { .. }
             | ContainedFileError::LengthOverflow
             | ContainedFileError::UnsupportedHost
@@ -740,11 +870,14 @@ pub(crate) fn create_non_regular_fixture_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        read_contained_regular_file, read_contained_regular_file_with_final_metadata_observer,
+        read_contained_regular_file, read_contained_regular_file_cancellable,
+        read_contained_regular_file_with_chunk_observer_cancellable,
+        read_contained_regular_file_with_final_metadata_observer,
         read_contained_regular_file_with_observer,
         read_contained_regular_file_with_post_open_observer,
         read_contained_regular_file_with_read_observer, ContainedFileError,
     };
+    use crate::domain::cancellation::CancellationToken;
     use crate::domain::discovery::{ContentHash, PortableRelativePath};
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -896,6 +1029,51 @@ mod tests {
             error,
             ContainedFileError::SizeLimitExceeded { limit: 4 }
         ));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cancellation_is_polled_between_chunk_reads_and_incremental_hash_updates() {
+        let root = fixture_root("cancel-chunked-read");
+        let path = root.join("Module.bsl");
+        fs::write(&path, vec![b'x'; 3 * super::VERIFIED_READ_CHUNK_BYTES])
+            .expect("large fixture file");
+        let cancellation = CancellationToken::new();
+        let mut chunks_read = 0_u8;
+
+        let error = read_contained_regular_file_with_chunk_observer_cancellable(
+            &root,
+            &path,
+            u64::MAX,
+            || cancellation.is_cancelled(),
+            |_| {
+                chunks_read += 1;
+                if chunks_read == 2 {
+                    cancellation.cancel();
+                }
+            },
+        )
+        .expect_err("cancellation between a chunk read and hash update must win");
+
+        assert!(matches!(error, ContainedFileError::Cancelled));
+        assert_eq!(chunks_read, 2);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn chunked_incremental_hash_matches_the_one_shot_content_hash() {
+        let root = fixture_root("chunked-hash-parity");
+        let path = root.join("Document.xml");
+        let bytes = (0..(2 * super::VERIFIED_READ_CHUNK_BYTES + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).expect("multi-chunk fixture file");
+
+        let verified = read_contained_regular_file_cancellable(&root, &path, u64::MAX, || false)
+            .expect("chunked verified read");
+
+        assert_eq!(verified.raw_sha256, ContentHash::sha256(&bytes));
+        assert_eq!(verified.bytes, bytes);
         cleanup(&root);
     }
 
