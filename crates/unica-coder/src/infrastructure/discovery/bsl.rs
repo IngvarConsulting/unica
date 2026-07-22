@@ -1589,6 +1589,13 @@ fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectio
                 "indexed module identity changed after inventory capture",
             ))
         }
+        error
+        @ (ContainedFileError::SymlinkOrReparsePoint | ContainedFileError::NotRegularFile) => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_stale",
+                format!("indexed module file kind changed after inventory capture: {error}"),
+            ))
+        }
         ContainedFileError::Io { operation, source } if source.kind() == ErrorKind::NotFound => {
             DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
                 "bsl_index_stale",
@@ -1608,8 +1615,6 @@ fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectio
         | ContainedFileError::FinalPathMismatch
         | ContainedFileError::AmbiguousHostPath
         | ContainedFileError::InvalidRelativePath(_)
-        | ContainedFileError::SymlinkOrReparsePoint
-        | ContainedFileError::NotRegularFile
         | ContainedFileError::LengthOverflow) => {
             DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
                 "bsl_index_file_contract",
@@ -1792,6 +1797,9 @@ mod tests {
         DiscoveryQuery, DiscoveryQueryLimits, EvidenceLocation, PortableRelativePath,
         ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory, SourceInventoryBound,
     };
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use crate::infrastructure::workspace_index::BslIndexStatus;
     use rusqlite::Connection;
     use std::fs;
@@ -1886,6 +1894,76 @@ mod tests {
 
         let super::DefinitionCollectionError::Unavailable(diagnostic) = error else {
             panic!("post-inventory replacement must be classified as stale");
+        };
+        assert_eq!(diagnostic.code, "bsl_index_stale");
+    }
+
+    #[test]
+    fn indexed_file_replacement_kinds_are_staleness_not_contract_violations() {
+        use crate::infrastructure::platform::contained_file::ContainedFileError;
+
+        for replacement in [
+            ContainedFileError::SymlinkOrReparsePoint,
+            ContainedFileError::NotRegularFile,
+        ] {
+            let error = super::classify_indexed_file_error(replacement);
+            let super::DefinitionCollectionError::Unavailable(diagnostic) = error else {
+                panic!("post-inventory file-kind replacement must be classified as stale");
+            };
+            assert_eq!(diagnostic.code, "bsl_index_stale");
+        }
+    }
+
+    #[test]
+    fn indexed_file_revalidation_treats_directory_replacement_as_stale() {
+        let fixture = Fixture::new("definition-directory-replacement");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = inventory(vec![source]);
+        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let Ok(inventory_files) = provider.inventory_files() else {
+            panic!("expected inventory map");
+        };
+        let relative_path = PortableRelativePath::parse_str(MODULE_PATH).unwrap();
+        let full_path = fixture.source_root.join(MODULE_PATH);
+        fs::remove_file(&full_path).expect("remove captured regular file");
+        fs::create_dir(&full_path).expect("replace captured file with directory");
+
+        let error = provider
+            .validate_indexed_file(&relative_path, &inventory_files, &query("series", &[], 10))
+            .expect_err("directory replacement must invalidate the indexed snapshot");
+
+        let super::DefinitionCollectionError::Unavailable(diagnostic) = error else {
+            panic!("directory replacement must be unavailable staleness");
+        };
+        assert_eq!(diagnostic.code, "bsl_index_stale");
+    }
+
+    #[test]
+    fn indexed_file_revalidation_treats_link_replacement_as_stale_when_supported() {
+        let fixture = Fixture::new("definition-link-replacement");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = inventory(vec![source]);
+        let provider = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None);
+        let Ok(inventory_files) = provider.inventory_files() else {
+            panic!("expected inventory map");
+        };
+        let relative_path = PortableRelativePath::parse_str(MODULE_PATH).unwrap();
+        let full_path = fixture.source_root.join(MODULE_PATH);
+        let replacement_target = fixture.source_root.join("replacement-target.bsl");
+        fs::write(&replacement_target, BSL).expect("write replacement target");
+        fs::remove_file(&full_path).expect("remove captured regular file");
+        let outcome = create_file_link_fixture_for_test(&replacement_target, &full_path)
+            .expect("create replacement link fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        let error = provider
+            .validate_indexed_file(&relative_path, &inventory_files, &query("series", &[], 10))
+            .expect_err("link replacement must invalidate the indexed snapshot");
+
+        let super::DefinitionCollectionError::Unavailable(diagnostic) = error else {
+            panic!("link replacement must be unavailable staleness");
         };
         assert_eq!(diagnostic.code, "bsl_index_stale");
     }
