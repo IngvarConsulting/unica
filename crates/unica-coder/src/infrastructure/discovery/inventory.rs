@@ -25,6 +25,15 @@ impl ContainedSourceInventoryPort {
     }
 
     fn capture(&self, query: &DiscoveryQuery<'_>) -> Result<Capture, CaptureError> {
+        self.capture_observing(query, || {})
+    }
+
+    fn capture_observing(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        mut observe_visit: impl FnMut(),
+    ) -> Result<Capture, CaptureError> {
+        check_inventory_cancellation(query)?;
         let max_files = usize::try_from(query.limits().max_files).map_err(|_| {
             ProviderDiagnostic::material(
                 "inventory_file_limit_overflow",
@@ -40,6 +49,8 @@ impl ContainedSourceInventoryPort {
         let mut bytes_analyzed = 0_u64;
         let mut bytes_read_budget = 0_u64;
         while let Some((path, (kind, expected_identity))) = pending.pop_first() {
+            observe_visit();
+            check_inventory_cancellation(query)?;
             match kind {
                 VerifiedDirectoryEntryKind::Directory => {
                     let entries = match expected_identity {
@@ -54,6 +65,7 @@ impl ContainedSourceInventoryPort {
                     }
                     .map_err(classify_verified_directory_error)?;
                     for entry in entries {
+                        check_inventory_cancellation(query)?;
                         pending.insert(entry.path, (entry.kind, Some(entry.identity)));
                     }
                     continue;
@@ -95,6 +107,7 @@ impl ContainedSourceInventoryPort {
                 ),
                 None => read_contained_regular_file(&self.canonical_root, &path, remaining_bytes),
             };
+            check_inventory_cancellation(query)?;
             let verified = match verified_result {
                 Ok(verified) => verified,
                 Err(ContainedFileError::SizeLimitExceeded { limit: _ }) => {
@@ -163,6 +176,10 @@ impl ContainedSourceInventoryPort {
             bytes_analyzed,
         )?))
     }
+}
+
+fn check_inventory_cancellation(query: &DiscoveryQuery<'_>) -> Result<(), CaptureError> {
+    crate::infrastructure::discovery::check_cancellation(query).map_err(CaptureError::Failed)
 }
 
 fn checked_increment_files_seen(files_seen: u32) -> Result<u32, ProviderDiagnostic> {
@@ -454,6 +471,31 @@ mod tests {
         assert_eq!(data.files[0].bytes, b"a");
         assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 1, 1));
         assert_eq!(diagnostic.code, "source_inventory_byte_bound");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cancellation_during_verified_enumeration_stops_inventory_capture() {
+        let root = fixture_root("cancelled-during-enumeration");
+        write(&root.join("a/first.xml"), b"first");
+        write(&root.join("z/second.xml"), b"second");
+        let provider = ContainedSourceInventoryPort::new(root.clone());
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        let query = query(10, 1_024).with_cancellation(&cancellation);
+        let mut visits = 0_u8;
+
+        let outcome = provider.capture_observing(&query, || {
+            visits += 1;
+            if visits == 2 {
+                cancellation.cancel();
+            }
+        });
+
+        let Err(CaptureError::Failed(diagnostic)) = outcome else {
+            panic!("cancelled inventory must stop with a failed provider outcome");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
+        assert_eq!(diagnostic.message, "discovery cancelled");
         cleanup(&root);
     }
 

@@ -26,12 +26,20 @@ impl BslSearchPort for InventoryBslSearchProvider {
         query: &DiscoveryQuery<'_>,
         files: &SourceInventory,
     ) -> ProviderOutcome<FactBatch<BslFact>> {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
         match collect_lexical_facts(query, files) {
             Ok(BslCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
             Ok(BslCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
                 data: batch,
                 diagnostic,
             },
+            Err(diagnostic)
+                if crate::infrastructure::discovery::is_cancellation_diagnostic(&diagnostic) =>
+            {
+                ProviderOutcome::Failed(diagnostic)
+            }
             Err(diagnostic) => ProviderOutcome::ContractViolation(diagnostic),
         }
     }
@@ -49,7 +57,8 @@ fn collect_lexical_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<BslCollection<BslFact>, ProviderDiagnostic> {
-    let terms = query_terms(query);
+    crate::infrastructure::discovery::check_cancellation(query)?;
+    let terms = query_terms(query)?;
     let mut analyzed_files = Vec::new();
     let mut records = Vec::new();
     for file in inventory
@@ -57,8 +66,11 @@ fn collect_lexical_facts(
         .iter()
         .filter(|file| is_bsl_path(&file.relative_path))
     {
+        crate::infrastructure::discovery::check_cancellation(query)?;
         analyzed_files.push(file.analyzed_file());
-        records.extend(lexical_facts_for_file(file, &terms).map_err(|message| {
+        let facts = lexical_facts_for_file(file, &terms, query);
+        crate::infrastructure::discovery::check_cancellation(query)?;
+        records.extend(facts.map_err(|message| {
             ProviderDiagnostic::material(
                 "bsl_malformed",
                 format!(
@@ -97,7 +109,7 @@ fn collect_lexical_facts(
     }
 }
 
-fn query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
+fn query_terms(query: &DiscoveryQuery<'_>) -> Result<Vec<String>, ProviderDiagnostic> {
     let mut terms = BTreeSet::new();
     for term in std::iter::once(query.task())
         .chain(query.search_terms().iter().map(String::as_str))
@@ -108,15 +120,16 @@ fn query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
                 .map(|concept| concept.value.as_str()),
         )
     {
+        crate::infrastructure::discovery::check_cancellation(query)?;
         let normalized = normalize_discovery_identity(term);
         if !normalized.is_empty() {
             terms.insert(normalized);
         }
     }
-    terms.into_iter().collect()
+    Ok(terms.into_iter().collect())
 }
 
-fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
+fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Result<Vec<String>, ProviderDiagnostic> {
     query_terms(query)
 }
 
@@ -167,12 +180,16 @@ struct ScannedBslLine {
     structural: String,
 }
 
-fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<BslFact>, String> {
+fn lexical_facts_for_file(
+    file: &SourceFile,
+    terms: &[String],
+    query: &DiscoveryQuery<'_>,
+) -> Result<Vec<BslFact>, String> {
     let text =
         std::str::from_utf8(&file.bytes).map_err(|error| format!("input is not UTF-8: {error}"))?;
     let text = strip_source_bom(text);
     let module = module_artifact_for_path(&file.relative_path)?;
-    let parsed = parse_bsl_source(text)?;
+    let parsed = parse_bsl_source_cancellable(text, query)?;
     let method_artifacts = parsed
         .methods
         .iter()
@@ -180,6 +197,9 @@ fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<Bsl
         .collect::<Result<Vec<_>, _>>()?;
     let mut facts = Vec::new();
     for (zero_based_line, line) in text.lines().enumerate() {
+        if query.is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
@@ -198,6 +218,9 @@ fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<Bsl
             .iter()
             .filter(|term| normalized_line.contains(term.as_str()))
         {
+            if query.is_cancelled() {
+                return Err("discovery cancelled".to_string());
+            }
             facts.push(BslFact {
                 artifact: artifact.0.clone(),
                 artifact_kind: artifact.1,
@@ -237,7 +260,17 @@ fn strip_source_bom(text: &str) -> &str {
         .map_or(text, std::convert::identity)
 }
 
-fn parse_bsl_source(text: &str) -> Result<ParsedBslSource, String> {
+fn parse_bsl_source_cancellable(
+    text: &str,
+    query: &DiscoveryQuery<'_>,
+) -> Result<ParsedBslSource, String> {
+    parse_bsl_source_observing(text, || query.is_cancelled())
+}
+
+fn parse_bsl_source_observing(
+    text: &str,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<ParsedBslSource, String> {
     let text = strip_source_bom(text);
     let lines = text.lines().collect::<Vec<_>>();
     let mut methods = Vec::new();
@@ -246,6 +279,9 @@ fn parse_bsl_source(text: &str) -> Result<ParsedBslSource, String> {
     let mut in_string = false;
 
     for (zero_based_line, line) in lines.iter().enumerate() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
@@ -721,6 +757,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> Result<BslCollection<DefinitionFact>, DefinitionCollectionError> {
+        check_definition_cancellation(query)?;
         // Ready status proves operational availability, not snapshot identity. Keep
         // structural validation diagnostics, but never publish the unbound batch.
         let _unbound_batch = self.collect_index_facts(query)?;
@@ -736,15 +773,19 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> Result<FactBatch<DefinitionFact>, DefinitionCollectionError> {
+        check_definition_cancellation(query)?;
         let db_path = self.validated_db_path()?;
+        check_definition_cancellation(query)?;
         let inventory = self.inventory_files()?;
         let inventory_bounded = inventory_is_bounded(self.inventory);
         let max_evidence = usize::from(query.limits().max_evidence);
         let query_limit = max_evidence.max(1);
         let mut hits = Vec::new();
-        for term in raw_query_terms(query) {
+        for term in raw_query_terms(query).map_err(DefinitionCollectionError::Failed)? {
+            check_definition_cancellation(query)?;
             let page = find_indexed_definitions(&db_path, &term, query_limit)
                 .map_err(classify_index_query_error)?;
+            check_definition_cancellation(query)?;
             let page_bounded = page.has_more;
             hits.extend(page.hits);
             if page_bounded || hits.len() > max_evidence {
@@ -755,6 +796,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         let mut validated_files: BTreeMap<PortableRelativePath, AnalyzedFile> = BTreeMap::new();
         let mut records = Vec::new();
         for hit in hits {
+            check_definition_cancellation(query)?;
             let relative_path = PortableRelativePath::parse(&hit.module_path).map_err(|error| {
                 DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
                     "bsl_index_path_invalid",
@@ -784,7 +826,8 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
                     "validated indexed module disappeared from the inventory map",
                 ))
             })?;
-            validate_indexed_method_source(&hit, source)?;
+            validate_indexed_method_source(&hit, source, query)?;
+            check_definition_cancellation(query)?;
             validate_hit_identity(&hit, &owner)?;
             let definition = method_artifact(&owner, &hit.name).map_err(|message| {
                 DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
@@ -1013,6 +1056,9 @@ impl DefinitionPort for ExistingIndexDefinitionProvider<'_> {
         &self,
         query: &DiscoveryQuery<'_>,
     ) -> ProviderOutcome<FactBatch<DefinitionFact>> {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
         match self.collect(query) {
             Ok(BslCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
             Ok(BslCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
@@ -1036,6 +1082,13 @@ enum DefinitionCollectionError {
     Unavailable(ProviderDiagnostic),
     Failed(ProviderDiagnostic),
     ContractViolation(ProviderDiagnostic),
+}
+
+fn check_definition_cancellation(
+    query: &DiscoveryQuery<'_>,
+) -> Result<(), DefinitionCollectionError> {
+    crate::infrastructure::discovery::check_cancellation(query)
+        .map_err(DefinitionCollectionError::Failed)
 }
 
 fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionError {
@@ -1182,7 +1235,9 @@ fn validate_hit_identity(
 fn validate_indexed_method_source(
     hit: &IndexedMethodHit,
     source: &SourceFile,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<(), DefinitionCollectionError> {
+    check_definition_cancellation(query)?;
     let text = std::str::from_utf8(&source.bytes).map_err(|error| {
         DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
             "bsl_malformed",
@@ -1192,14 +1247,20 @@ fn validate_indexed_method_source(
             ),
         ))
     })?;
-    let parsed = parse_bsl_source(text).map_err(|message| {
-        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-            "bsl_malformed",
-            format!(
-                "indexed BSL source {} is malformed: {message}",
-                source.relative_path.as_str()
-            ),
-        ))
+    let parsed = parse_bsl_source_cancellable(text, query).map_err(|message| {
+        if query.is_cancelled() {
+            DefinitionCollectionError::Failed(
+                crate::infrastructure::discovery::cancellation_diagnostic(),
+            )
+        } else {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_malformed",
+                format!(
+                    "indexed BSL source {} is malformed: {message}",
+                    source.relative_path.as_str()
+                ),
+            ))
+        }
     })?;
     let Some(method) = parsed
         .methods
@@ -1279,6 +1340,28 @@ mod tests {
 \xD0\xA1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x8E(\xD0\x9A\xD0\xBE\xD0\xB4)\n\
     \xD0\x92\xD0\xBE\xD0\xB7\xD0\xB2\xD1\x80\xD0\xB0\xD1\x82 \xD0\x9A\xD0\xBE\xD0\xB4;\n\
 \xD0\x9A\xD0\xBE\xD0\xBD\xD0\xB5\xD1\x86\xD0\xA4\xD1\x83\xD0\xBD\xD0\xBA\xD1\x86\xD0\xB8\xD0\xB8\n";
+
+    #[test]
+    fn cancelled_query_stops_lexical_and_index_providers_before_records() {
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        cancellation.cancel();
+        let query = query("серии", &[], 10).with_cancellation(&cancellation);
+        let inventory = SourceInventory::empty();
+
+        let lexical = InventoryBslSearchProvider.search(&query, &inventory);
+        let definitions =
+            ExistingIndexDefinitionProvider::new(Path::new("/must/not/be/read"), &inventory, None)
+                .definitions(&query);
+
+        let ProviderOutcome::Failed(lexical_diagnostic) = lexical else {
+            panic!("cancelled lexical provider must return failed");
+        };
+        let ProviderOutcome::Failed(definition_diagnostic) = definitions else {
+            panic!("cancelled index provider must return failed");
+        };
+        assert_eq!(lexical_diagnostic.code, "discovery_cancelled");
+        assert_eq!(definition_diagnostic.code, "discovery_cancelled");
+    }
 
     #[test]
     fn lexical_scan_extracts_cyrillic_procedure_and_function_matches_at_exact_lines() {
@@ -1600,7 +1683,7 @@ mod tests {
         let search_terms = vec!["ПолучитьСерию".to_string(), "  получитьсерию  ".to_string()];
         let query = query("ПОЛУЧИТЬСЕРИЮ", &search_terms, 10);
 
-        let terms = super::raw_query_terms(&query);
+        let terms = super::raw_query_terms(&query).expect("query terms");
 
         assert_eq!(terms, vec!["получитьсерию"]);
     }

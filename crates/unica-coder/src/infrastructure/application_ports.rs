@@ -145,7 +145,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             runtime_flow: &UnavailableRuntimeFlowProvider,
             support_state: &SupportStateProvider,
         });
-        let report = use_case.execute(request, &environment)?;
+        let report = use_case.execute_cancellable(request, &environment, cancellation)?;
         if cancellation.is_cancelled() {
             return Err(DiscoveryError::Cancelled);
         }

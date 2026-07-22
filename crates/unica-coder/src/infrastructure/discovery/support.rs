@@ -19,12 +19,20 @@ impl SupportStatePort for SupportStateProvider {
         query: &DiscoveryQuery<'_>,
         files: &SourceInventory,
     ) -> ProviderOutcome<FactBatch<SupportFact>> {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
         match collect_support_facts(query, files) {
             Ok(SupportCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
             Ok(SupportCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
                 data: batch,
                 diagnostic,
             },
+            Err(diagnostic)
+                if crate::infrastructure::discovery::is_cancellation_diagnostic(&diagnostic) =>
+            {
+                ProviderOutcome::Failed(diagnostic)
+            }
             Err(diagnostic) => ProviderOutcome::ContractViolation(diagnostic),
         }
     }
@@ -42,7 +50,8 @@ fn collect_support_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<SupportCollection, ProviderDiagnostic> {
-    let catalog = parse_inventory_catalog(inventory)?;
+    crate::infrastructure::discovery::check_cancellation(query)?;
+    let catalog = parse_inventory_catalog(query, inventory)?;
     let inventory_bounded = inventory_is_bounded(inventory);
     let mut analyzed_files = analyzed_file_map(&catalog);
     let support_file = root_support_file(inventory)?;
@@ -62,16 +71,17 @@ fn collect_support_facts(
         None => None,
     };
 
-    let mut records = if support_file.is_none() && inventory_bounded {
-        Vec::new()
-    } else {
-        catalog
+    let mut records = Vec::new();
+    if support_file.is_some() || !inventory_bounded {
+        for node in catalog
             .nodes()
             .into_iter()
             .filter(|node| node.object_uuid.is_some())
-            .map(|node| support_fact(node, support_file, parsed.as_ref()))
-            .collect::<Result<Vec<_>, _>>()?
-    };
+        {
+            crate::infrastructure::discovery::check_cancellation(query)?;
+            records.push(support_fact(node, support_file, parsed.as_ref())?);
+        }
+    }
     records.sort();
     let bounded = records.len() > usize::from(query.limits().max_evidence);
     if bounded {
@@ -208,6 +218,20 @@ mod tests {
 
     const LOCKED_UUID: &str = "40000000-0000-0000-0000-000000000001";
     const EDITABLE_UUID: &str = "40000000-0000-0000-0000-000000000002";
+
+    #[test]
+    fn cancelled_query_stops_support_before_parsing_records() {
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        cancellation.cancel();
+        let query = query(100).with_cancellation(&cancellation);
+
+        let outcome = SupportStateProvider.support(&query, &SourceInventory::empty());
+
+        let ProviderOutcome::Failed(diagnostic) = outcome else {
+            panic!("cancelled support must be a failed provider outcome");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
+    }
 
     #[test]
     fn absence_of_support_bytes_is_typed_not_on_support() {

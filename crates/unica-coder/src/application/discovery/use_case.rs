@@ -1,5 +1,6 @@
 use crate::application::discovery::contract::DiscoverRequest;
 use crate::application::discovery::ports::DiscoveryPorts;
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::discovery::{
     AnalysisSnapshot, AnalyzedFile, ArtifactId, ArtifactKind, BslFact, ConceptProvenance,
     DefinitionFact, DiscoveryConcept, DiscoveryEnvironment, DiscoveryError, DiscoveryQuery,
@@ -27,13 +28,31 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
         request: &DiscoverRequest,
         environment: &DiscoveryEnvironment,
     ) -> Result<DiscoveryReport, DiscoveryError> {
+        self.execute_inner(request, environment, None)
+    }
+
+    pub(crate) fn execute_cancellable(
+        &self,
+        request: &DiscoverRequest,
+        environment: &DiscoveryEnvironment,
+        cancellation: &CancellationToken,
+    ) -> Result<DiscoveryReport, DiscoveryError> {
+        self.execute_inner(request, environment, Some(cancellation))
+    }
+
+    fn execute_inner(
+        &self,
+        request: &DiscoverRequest,
+        environment: &DiscoveryEnvironment,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<DiscoveryReport, DiscoveryError> {
         if environment.source_root().as_os_str().is_empty() {
             return Err(DiscoveryError::EmptySourceRoot);
         }
 
         let concepts = derive_concepts(request);
         let limits = request.limits();
-        let query = DiscoveryQuery::new(
+        let mut query = DiscoveryQuery::new(
             request.task(),
             &concepts,
             request.search_terms(),
@@ -46,13 +65,17 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                 max_graph_depth: limits.max_graph_depth().get(),
             },
         );
+        if let Some(cancellation) = cancellation {
+            query = query.with_cancellation(cancellation);
+        }
         let matcher = FactMatcher::new(&query);
         let mut accumulator = ReportAccumulator::new(query.limits().max_evidence as usize);
 
-        let mut inventory = EvaluatedOutcome::from_outcome(
-            ProviderKind::SourceInventory,
-            self.ports.source_inventory.inventory(&query),
-        );
+        ensure_discovery_active(&query)?;
+        let inventory_outcome = self.ports.source_inventory.inventory(&query);
+        ensure_discovery_active(&query)?;
+        let mut inventory =
+            EvaluatedOutcome::from_outcome(ProviderKind::SourceInventory, inventory_outcome);
         if let Some(files) = inventory.data.as_mut() {
             if let Err(diagnostic) = normalize_inventory(files, inventory.kind, query.limits()) {
                 inventory.invalidate(diagnostic);
@@ -65,33 +88,45 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
 
         match inventory.data.as_ref() {
             Some(files) => {
+                ensure_discovery_active(&query)?;
+                let metadata = self.ports.metadata_catalog.metadata(&query, files);
+                ensure_discovery_active(&query)?;
                 handle_batch(
                     ProviderKind::MetadataCatalog,
-                    self.ports.metadata_catalog.metadata(&query, files),
+                    metadata,
                     &mut accumulator,
                     query.limits(),
                     Some(files),
                     |batch| metadata_contribution(batch, &matcher),
                 );
+                ensure_discovery_active(&query)?;
+                let forms = self.ports.managed_forms.forms(&query, files);
+                ensure_discovery_active(&query)?;
                 handle_batch(
                     ProviderKind::ManagedForms,
-                    self.ports.managed_forms.forms(&query, files),
+                    forms,
                     &mut accumulator,
                     query.limits(),
                     Some(files),
                     |batch| form_contribution(batch, &matcher),
                 );
+                ensure_discovery_active(&query)?;
+                let lexical = self.ports.bsl_search.search(&query, files);
+                ensure_discovery_active(&query)?;
                 handle_batch(
                     ProviderKind::BslSearch,
-                    self.ports.bsl_search.search(&query, files),
+                    lexical,
                     &mut accumulator,
                     query.limits(),
                     Some(files),
                     lexical_contribution,
                 );
+                ensure_discovery_active(&query)?;
+                let support = self.ports.support_state.support(&query, files);
+                ensure_discovery_active(&query)?;
                 handle_batch(
                     ProviderKind::SupportState,
-                    self.ports.support_state.support(&query, files),
+                    support,
                     &mut accumulator,
                     query.limits(),
                     Some(files),
@@ -119,25 +154,40 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
             }
         }
 
+        ensure_discovery_active(&query)?;
+        let definitions = self.ports.definitions.definitions(&query);
+        ensure_discovery_active(&query)?;
         handle_batch(
             ProviderKind::Definitions,
-            self.ports.definitions.definitions(&query),
+            definitions,
             &mut accumulator,
             query.limits(),
             None,
             definition_contribution,
         );
+        ensure_discovery_active(&query)?;
+        let runtime_flow = self.ports.runtime_flow.runtime_flow(&query);
+        ensure_discovery_active(&query)?;
         handle_batch(
             ProviderKind::RuntimeFlow,
-            self.ports.runtime_flow.runtime_flow(&query),
+            runtime_flow,
             &mut accumulator,
             query.limits(),
             None,
             |batch| runtime_flow_contribution(batch, &matcher),
         );
 
+        ensure_discovery_active(&query)?;
         let query_limits = query.limits();
         Ok(accumulator.finish(concepts, environment, query_limits))
+    }
+}
+
+fn ensure_discovery_active(query: &DiscoveryQuery<'_>) -> Result<(), DiscoveryError> {
+    if query.is_cancelled() {
+        Err(DiscoveryError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -1581,6 +1631,8 @@ mod tests {
     };
     use serde_json::{json, Value};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     #[derive(Clone)]
     struct FakePorts {
@@ -1726,6 +1778,84 @@ mod tests {
         }
     }
 
+    struct BlockingMetadataPort {
+        entered: Arc<Barrier>,
+    }
+
+    impl MetadataCatalogPort for BlockingMetadataPort {
+        fn metadata(
+            &self,
+            query: &crate::domain::discovery::DiscoveryQuery<'_>,
+            _files: &SourceInventory,
+        ) -> ProviderOutcome<FactBatch<MetadataFact>> {
+            self.entered.wait();
+            while !query.is_cancelled() {
+                std::thread::yield_now();
+            }
+            ProviderOutcome::Complete(FactBatch::empty())
+        }
+    }
+
+    #[derive(Default)]
+    struct LaterProviders {
+        calls: AtomicUsize,
+    }
+
+    impl LaterProviders {
+        fn record<T>(&self, value: T) -> T {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            value
+        }
+    }
+
+    impl ManagedFormPort for LaterProviders {
+        fn forms(
+            &self,
+            _query: &crate::domain::discovery::DiscoveryQuery<'_>,
+            _files: &SourceInventory,
+        ) -> ProviderOutcome<FactBatch<FormFact>> {
+            self.record(ProviderOutcome::Complete(FactBatch::empty()))
+        }
+    }
+
+    impl BslSearchPort for LaterProviders {
+        fn search(
+            &self,
+            _query: &crate::domain::discovery::DiscoveryQuery<'_>,
+            _files: &SourceInventory,
+        ) -> ProviderOutcome<FactBatch<BslFact>> {
+            self.record(ProviderOutcome::Complete(FactBatch::empty()))
+        }
+    }
+
+    impl DefinitionPort for LaterProviders {
+        fn definitions(
+            &self,
+            _query: &crate::domain::discovery::DiscoveryQuery<'_>,
+        ) -> ProviderOutcome<FactBatch<DefinitionFact>> {
+            self.record(ProviderOutcome::Complete(FactBatch::empty()))
+        }
+    }
+
+    impl RuntimeFlowPort for LaterProviders {
+        fn runtime_flow(
+            &self,
+            _query: &crate::domain::discovery::DiscoveryQuery<'_>,
+        ) -> ProviderOutcome<FactBatch<RuntimeFlowFact>> {
+            self.record(ProviderOutcome::Complete(FactBatch::empty()))
+        }
+    }
+
+    impl SupportStatePort for LaterProviders {
+        fn support(
+            &self,
+            _query: &crate::domain::discovery::DiscoveryQuery<'_>,
+            _files: &SourceInventory,
+        ) -> ProviderOutcome<FactBatch<SupportFact>> {
+            self.record(ProviderOutcome::Complete(FactBatch::empty()))
+        }
+    }
+
     fn execute(
         fake: &FakePorts,
         request: crate::application::discovery::contract::DiscoverRequest,
@@ -1736,6 +1866,45 @@ mod tests {
             MappingFingerprint::from_identity("configuration:src/configuration"),
         );
         DiscoverExtensionPointsUseCase::new(fake.as_ports()).execute(&request, &environment)
+    }
+
+    #[test]
+    fn cancellation_during_a_provider_stops_before_later_providers() {
+        let base = FakePorts::complete_empty();
+        let entered = Arc::new(Barrier::new(2));
+        let metadata = BlockingMetadataPort {
+            entered: Arc::clone(&entered),
+        };
+        let later = LaterProviders::default();
+        let ports = DiscoveryPorts {
+            source_inventory: &base,
+            metadata_catalog: &metadata,
+            managed_forms: &later,
+            bsl_search: &later,
+            definitions: &later,
+            runtime_flow: &later,
+            support_state: &later,
+        };
+        let use_case = DiscoverExtensionPointsUseCase::new(ports);
+        let request = task_only();
+        let environment = DiscoveryEnvironment::new(
+            PathBuf::from("src/configuration"),
+            MappingFingerprint::from_identity("configuration:src/configuration"),
+        );
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+
+        let error = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                entered.wait();
+                cancellation.cancel();
+            });
+            use_case
+                .execute_cancellable(&request, &environment, &cancellation)
+                .expect_err("mid-provider cancellation must stop discovery")
+        });
+
+        assert_eq!(error, crate::domain::discovery::DiscoveryError::Cancelled);
+        assert_eq!(later.calls.load(Ordering::SeqCst), 0);
     }
 
     fn request(

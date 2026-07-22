@@ -168,16 +168,29 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
         query: &DiscoveryQuery<'_>,
         files: &SourceInventory,
     ) -> ProviderOutcome<FactBatch<crate::domain::discovery::MetadataFact>> {
-        let catalog = match parse_inventory_catalog(files) {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
+        let catalog = match parse_inventory_catalog(query, files) {
             Ok(catalog) => catalog,
+            Err(diagnostic)
+                if crate::infrastructure::discovery::is_cancellation_diagnostic(&diagnostic) =>
+            {
+                return ProviderOutcome::Failed(diagnostic);
+            }
             Err(diagnostic) => return ProviderOutcome::ContractViolation(diagnostic),
         };
         let analyzed_files = catalog.analyzed_files.clone();
-        let mut records = catalog
-            .descriptors
-            .iter()
-            .flat_map(metadata_facts)
-            .collect::<Vec<_>>();
+        let mut records = Vec::new();
+        for descriptor in &catalog.descriptors {
+            if let Err(diagnostic) = crate::infrastructure::discovery::check_cancellation(query) {
+                return ProviderOutcome::Failed(diagnostic);
+            }
+            match metadata_facts(descriptor, query) {
+                Ok(facts) => records.extend(facts),
+                Err(diagnostic) => return ProviderOutcome::Failed(diagnostic),
+            }
+        }
         records.sort();
 
         let bounded = records.len() > usize::from(query.limits().max_evidence);
@@ -216,6 +229,7 @@ pub(super) fn inventory_is_bounded(inventory: &SourceInventory) -> bool {
 }
 
 pub(super) fn parse_inventory_catalog(
+    query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<MetadataCatalog, ProviderDiagnostic> {
     let mut raw_descriptors = Vec::new();
@@ -224,7 +238,10 @@ pub(super) fn parse_inventory_catalog(
         .iter()
         .filter(|file| is_metadata_descriptor_candidate(&file.relative_path))
     {
-        let descriptor = parse_raw_descriptor(file).map_err(|message| {
+        crate::infrastructure::discovery::check_cancellation(query)?;
+        let descriptor = parse_raw_descriptor(file, query);
+        crate::infrastructure::discovery::check_cancellation(query)?;
+        let descriptor = descriptor.map_err(|message| {
             ProviderDiagnostic::material(
                 "metadata_descriptor_malformed",
                 format!(
@@ -235,9 +252,11 @@ pub(super) fn parse_inventory_catalog(
         })?;
         raw_descriptors.push(descriptor);
     }
+    crate::infrastructure::discovery::check_cancellation(query)?;
     raw_descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    build_catalog(raw_descriptors, inventory_is_bounded(inventory))
-        .map_err(|message| ProviderDiagnostic::material("metadata_catalog_invalid", message))
+    let catalog = build_catalog(raw_descriptors, inventory_is_bounded(inventory), query);
+    crate::infrastructure::discovery::check_cancellation(query)?;
+    catalog.map_err(|message| ProviderDiagnostic::material("metadata_catalog_invalid", message))
 }
 
 fn is_metadata_descriptor_candidate(path: &PortableRelativePath) -> bool {
@@ -251,7 +270,11 @@ fn is_metadata_descriptor_candidate(path: &PortableRelativePath) -> bool {
         && !components.any(|component| component.eq_ignore_ascii_case("Ext"))
 }
 
-fn parse_raw_descriptor(file: &SourceFile) -> Result<RawMetadataDescriptor, String> {
+fn parse_raw_descriptor(
+    file: &SourceFile,
+    query: &DiscoveryQuery<'_>,
+) -> Result<RawMetadataDescriptor, String> {
+    ensure_metadata_active(query)?;
     let text = decode_xml_bytes(&file.bytes)?;
     let document = Document::parse(text).map_err(|error| error.to_string())?;
     let root = document.root_element();
@@ -271,7 +294,7 @@ fn parse_raw_descriptor(file: &SourceFile) -> Result<RawMetadataDescriptor, Stri
     if object_elements.next().is_some() {
         return Err("MetaDataObject has more than one root object element".to_string());
     }
-    let root = parse_raw_metadata_node(&document, file, object, 1, false)?;
+    let root = parse_raw_metadata_node(&document, file, object, 1, false, query)?;
     Ok(RawMetadataDescriptor {
         relative_path: file.relative_path.clone(),
         analyzed_file: file.analyzed_file(),
@@ -282,7 +305,9 @@ fn parse_raw_descriptor(file: &SourceFile) -> Result<RawMetadataDescriptor, Stri
 fn build_catalog(
     raw_descriptors: Vec<RawMetadataDescriptor>,
     inventory_bounded: bool,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<MetadataCatalog, String> {
+    ensure_metadata_active(query)?;
     let mut analyzed_files = raw_descriptors
         .iter()
         .map(|descriptor| descriptor.analyzed_file.clone())
@@ -295,6 +320,7 @@ fn build_catalog(
     let mut descriptors = Vec::new();
     let mut subordinate_descriptors = Vec::new();
     for raw in raw_descriptors {
+        ensure_metadata_active(query)?;
         if let Some(path) = subordinate_descriptor_path(&raw.relative_path)? {
             let parent_is_present = raw_paths.contains(&path.parent_path);
             if path.scope == SubordinateScope::Nested || parent_is_present {
@@ -317,6 +343,7 @@ fn build_catalog(
             .then_with(|| left.1.relative_path.cmp(&right.1.relative_path))
     });
     for (path, subordinate) in subordinate_descriptors {
+        ensure_metadata_active(query)?;
         let (parent, parent_depth) = find_definition_node_mut(&mut descriptors, &path.parent_path)?
             .ok_or_else(|| {
                 format!(
@@ -714,7 +741,9 @@ fn parse_raw_metadata_node(
     node: Node<'_, '_>,
     depth: usize,
     can_be_declaration: bool,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<RawMetadataNode, String> {
+    ensure_metadata_active(query)?;
     validate_metadata_depth(depth)?;
     let object_kind = node.tag_name().name();
     if node.tag_name().namespace() != Some(METADATA_NAMESPACE) {
@@ -746,12 +775,14 @@ fn parse_raw_metadata_node(
     let mut children = Vec::new();
     if let Some(child_objects) = semantic_child(node, "ChildObjects")? {
         for child in child_objects.children().filter(Node::is_element) {
+            ensure_metadata_active(query)?;
             children.push(parse_raw_metadata_node(
                 document,
                 file,
                 child,
                 checked_child_depth(depth)?,
                 true,
+                query,
             )?);
         }
     }
@@ -769,6 +800,11 @@ fn parse_raw_metadata_node(
         children,
         declaration_only,
     })
+}
+
+fn ensure_metadata_active(query: &DiscoveryQuery<'_>) -> Result<(), String> {
+    crate::infrastructure::discovery::check_cancellation(query)
+        .map_err(|diagnostic| diagnostic.message)
 }
 
 fn is_uuid_text(value: &str) -> bool {
@@ -894,27 +930,31 @@ fn xml_path_segment(node: Node<'_, '_>) -> String {
 
 fn metadata_facts(
     descriptor: &MetadataDescriptor,
-) -> impl Iterator<Item = crate::domain::discovery::MetadataFact> + '_ {
-    flatten_metadata_node(&descriptor.root, None).into_iter()
+    query: &DiscoveryQuery<'_>,
+) -> Result<Vec<crate::domain::discovery::MetadataFact>, ProviderDiagnostic> {
+    flatten_metadata_node(&descriptor.root, None, query)
 }
 
 fn flatten_metadata_node(
     node: &MetadataNode,
     container: Option<(&ArtifactId, ArtifactKind)>,
-) -> Vec<crate::domain::discovery::MetadataFact> {
+    query: &DiscoveryQuery<'_>,
+) -> Result<Vec<crate::domain::discovery::MetadataFact>, ProviderDiagnostic> {
     let mut facts = Vec::new();
     let mut pending = vec![(node, container)];
     while let Some((current, current_container)) = pending.pop() {
-        facts.extend(current.locations.iter().map(|location| {
-            crate::domain::discovery::MetadataFact {
+        crate::infrastructure::discovery::check_cancellation(query)?;
+        for location in &current.locations {
+            crate::infrastructure::discovery::check_cancellation(query)?;
+            facts.push(crate::domain::discovery::MetadataFact {
                 artifact: current.artifact.clone(),
                 artifact_kind: current.artifact_kind,
                 container: current_container.map(|(artifact, _kind)| artifact.clone()),
                 container_kind: current_container.map(|(_artifact, kind)| kind),
                 relation: StructuralRelationKind::Contains,
                 location: location.clone(),
-            }
-        }));
+            });
+        }
         pending.extend(
             current
                 .children
@@ -923,7 +963,7 @@ fn flatten_metadata_node(
                 .map(|child| (child, Some((&current.artifact, current.artifact_kind)))),
         );
     }
-    facts
+    Ok(facts)
 }
 
 pub(super) fn contributors_for_records<T>(
@@ -1027,6 +1067,20 @@ mod tests {
     </ChildObjects>
   </Document>
 </MetaDataObject>"#;
+
+    #[test]
+    fn cancelled_query_stops_metadata_before_parsing_records() {
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        cancellation.cancel();
+        let query = query(100).with_cancellation(&cancellation);
+
+        let outcome = PlatformXmlMetadataProvider.metadata(&query, &SourceInventory::empty());
+
+        let ProviderOutcome::Failed(diagnostic) = outcome else {
+            panic!("cancelled metadata must be a failed provider outcome");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
+    }
 
     const PROCESSOR_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
   <DataProcessor uuid="20000000-0000-0000-0000-000000000001">

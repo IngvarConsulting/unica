@@ -21,12 +21,20 @@ impl ManagedFormPort for ManagedFormProvider {
         query: &DiscoveryQuery<'_>,
         files: &SourceInventory,
     ) -> ProviderOutcome<FactBatch<FormFact>> {
+        if let Some(outcome) = crate::infrastructure::discovery::cancellation_outcome(query) {
+            return outcome;
+        }
         match collect_form_facts(query, files) {
             Ok(FormCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
             Ok(FormCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
                 data: batch,
                 diagnostic,
             },
+            Err(diagnostic)
+                if crate::infrastructure::discovery::is_cancellation_diagnostic(&diagnostic) =>
+            {
+                ProviderOutcome::Failed(diagnostic)
+            }
             Err(diagnostic) => ProviderOutcome::ContractViolation(diagnostic),
         }
     }
@@ -44,7 +52,8 @@ fn collect_form_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<FormCollection, ProviderDiagnostic> {
-    let catalog = parse_inventory_catalog(inventory)?;
+    crate::infrastructure::discovery::check_cancellation(query)?;
+    let catalog = parse_inventory_catalog(query, inventory)?;
     let inventory_bounded = inventory_is_bounded(inventory);
     let mut analyzed_files = analyzed_file_map(&catalog);
     let inventory_files = inventory
@@ -56,10 +65,12 @@ fn collect_form_facts(
     let mut records = Vec::new();
 
     for descriptor in catalog.nodes() {
+        crate::infrastructure::discovery::check_cancellation(query)?;
         let Some(descriptor_path) = descriptor.definition_source() else {
             continue;
         };
         for form in descriptor.declared_forms() {
+            crate::infrastructure::discovery::check_cancellation(query)?;
             let form_path = declared_form_path(descriptor_path, form)?;
             if !declared_paths.insert(form_path.clone()) {
                 return Err(ProviderDiagnostic::material(
@@ -83,7 +94,9 @@ fn collect_form_facts(
                 ));
             };
             analyzed_files.insert(form_path, source.analyzed_file());
-            records.extend(parse_form(source, descriptor, form).map_err(|message| {
+            let parsed = parse_form(query, source, descriptor, form);
+            crate::infrastructure::discovery::check_cancellation(query)?;
+            records.extend(parsed.map_err(|message| {
                 ProviderDiagnostic::material(
                     "managed_form_malformed",
                     format!(
@@ -160,6 +173,7 @@ fn declared_form_path(
 }
 
 fn parse_form(
+    query: &DiscoveryQuery<'_>,
     file: &SourceFile,
     descriptor: &MetadataNode,
     declared_form: &MetadataNode,
@@ -176,13 +190,15 @@ fn parse_form(
             root.tag_name().namespace()
         ));
     }
-    validate_form_semantic_namespaces(root)?;
+    validate_form_semantic_namespaces(root, query)?;
 
     let mut records = Vec::new();
     for data_path in root
         .descendants()
         .filter(|node| is_active_form_element(*node, "DataPath"))
     {
+        crate::infrastructure::discovery::check_cancellation(query)
+            .map_err(|diagnostic| diagnostic.message)?;
         let Some(path) = data_path
             .text()
             .map(str::trim)
@@ -209,6 +225,8 @@ fn parse_form(
         .descendants()
         .filter(|node| is_active_form_element(*node, "Event"))
     {
+        crate::infrastructure::discovery::check_cancellation(query)
+            .map_err(|diagnostic| diagnostic.message)?;
         let Some(events) = event.parent_element() else {
             continue;
         };
@@ -233,6 +251,8 @@ fn parse_form(
         .descendants()
         .filter(|node| is_active_form_element(*node, "Command"))
     {
+        crate::infrastructure::discovery::check_cancellation(query)
+            .map_err(|diagnostic| diagnostic.message)?;
         let Some(commands) = command.parent_element() else {
             continue;
         };
@@ -244,6 +264,8 @@ fn parse_form(
             .children()
             .filter(|node| node.is_element() && node.tag_name().name() == "Action")
         {
+            crate::infrastructure::discovery::check_cancellation(query)
+                .map_err(|diagnostic| diagnostic.message)?;
             let handler = required_identifier_text(action.text(), "command action")?;
             records.push(FormFact {
                 form: declared_form.artifact.clone(),
@@ -268,11 +290,16 @@ fn is_active_form_element(node: Node<'_, '_>, local_name: &str) -> bool {
             .any(|ancestor| ancestor.is_element() && ancestor.tag_name().name() == "BaseForm")
 }
 
-fn validate_form_semantic_namespaces(root: Node<'_, '_>) -> Result<(), String> {
+fn validate_form_semantic_namespaces(
+    root: Node<'_, '_>,
+    query: &DiscoveryQuery<'_>,
+) -> Result<(), String> {
     const SEMANTIC_NAMES: &[&str] = &[
         "BaseForm", "DataPath", "Events", "Event", "Commands", "Command", "Action",
     ];
     for node in root.descendants().filter(Node::is_element) {
+        crate::infrastructure::discovery::check_cancellation(query)
+            .map_err(|diagnostic| diagnostic.message)?;
         if SEMANTIC_NAMES.contains(&node.tag_name().name())
             && node.tag_name().namespace() != Some(MANAGED_FORM_NAMESPACE)
         {
@@ -346,6 +373,20 @@ mod tests {
     </ChildObjects>
   </Document>
 </MetaDataObject>"#;
+
+    #[test]
+    fn cancelled_query_stops_managed_forms_before_parsing_records() {
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        cancellation.cancel();
+        let query = query(100).with_cancellation(&cancellation);
+
+        let outcome = ManagedFormProvider.forms(&query, &SourceInventory::empty());
+
+        let ProviderOutcome::Failed(diagnostic) = outcome else {
+            panic!("cancelled managed forms must be a failed provider outcome");
+        };
+        assert_eq!(diagnostic.code, "discovery_cancelled");
+    }
 
     const FORM_XML: &str = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">
   <Events>

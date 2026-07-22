@@ -1,3 +1,4 @@
+use crate::domain::cancellation::CancellationToken;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -684,13 +685,14 @@ pub(crate) struct DiscoveryQueryLimits {
     pub max_graph_depth: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct DiscoveryQuery<'a> {
     task: &'a str,
     concepts: &'a [DiscoveryConcept],
     search_terms: &'a [String],
     objects: &'a [ArtifactId],
     limits: DiscoveryQueryLimits,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<'a> DiscoveryQuery<'a> {
@@ -707,7 +709,19 @@ impl<'a> DiscoveryQuery<'a> {
             search_terms,
             objects,
             limits,
+            cancellation: None,
         }
+    }
+
+    pub(crate) fn with_cancellation(mut self, cancellation: &CancellationToken) -> Self {
+        self.cancellation = Some(cancellation.clone());
+        self
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
     }
 
     pub(crate) fn task(&self) -> &'a str {
@@ -768,7 +782,7 @@ impl fmt::Display for DiscoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySourceRoot => formatter.write_str("discovery source root must not be empty"),
-            Self::Cancelled => formatter.write_str("discovery cancelled before provider execution"),
+            Self::Cancelled => formatter.write_str("discovery cancelled"),
             Self::ProjectSources(message) => {
                 write!(
                     formatter,
