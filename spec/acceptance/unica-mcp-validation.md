@@ -80,6 +80,7 @@ responses = [json.loads(line) for line in result.stdout.splitlines()]
 assert responses[0]["result"]["serverInfo"]["name"] == "unica"
 tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
 assert "unica.project.status" in tools
+assert "unica.project.discover" in tools
 assert "unica.form.edit" in tools
 assert "unica.build.load" in tools
 assert "unica.runtime.execute" in tools
@@ -95,6 +96,33 @@ assert runtime_payload["cache"]["mode"] == "dry-run"
 assert "SourceSetChanged" in runtime_payload["cache"]["events"]
 print("ok")
 PY
+```
+
+## Mandatory Extension-Point Preflight
+
+The packaged plugin ships `extension-point-discovery` with implicit invocation
+enabled. For planning or implementing changes to existing typical or supported
+configurations, CFE, forms, documents, processors, handlers, or tabular
+sections, the skill must make a valid task-only `unica.project.discover` call
+before planning and before mutation or manual XML/BSL edits.
+
+Acceptance inspects only `OperationResult.data.discovery`. The task-only UT 11.5
+fixture must return `partial`, retain the exact
+`Document.ПриобретениеТоваровУслуг.TabularSection.Серии`,
+`DataProcessor.ПодборСерийВДокументы`, and
+`DataProcessor.ПодборСерийВДокументы.Form.РегистрацияИПодборСерийПоОднойСтрокеТоваров`
+candidates, report a blocking insufficient-coverage warning, and include
+`bsl_index_missing`. Every retained candidate must carry a brief advisory
+recommendation with typed evidence basis. Skill routing tests require evidence-ID/location
+dereferencing, public read-only gap closure, stop-on-material-gap behavior, the
+selection record, and the analysis-snapshot boundary. The snapshot is not
+mutation authorization, a freshness guarantee, or a mutation receipt.
+
+Validate the source skill with:
+
+```sh
+python3.12 -m unittest tests.ci.test_unica_skills tests.ci.test_skill_provenance
+python3.12 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" plugins/unica/skills/extension-point-discovery
 ```
 
 ## Regression Tests
@@ -140,8 +168,9 @@ must satisfy:
   archive hashes, file hashes, and entrypoints for all targets;
 - re-downloaded release archives exactly match the metadata and contain the
   generated `third-party/manifest.json` plus one target's runtime binaries;
-- bootstrap `verify` completes MCP `initialize` and `tools/list` with the
-  required stable public tools.
+- bootstrap `verify` completes MCP `initialize`, `tools/list`, and the packaged
+  native task-only `unica.project.discover` fixture with the required stable
+  public tools and typed discovery result.
 
 ## Fresh Codex Visibility
 

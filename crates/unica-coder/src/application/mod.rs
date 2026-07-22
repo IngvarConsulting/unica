@@ -1,5 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::discovery::DiscoveryReport;
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -13,6 +14,7 @@ pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 
+pub(crate) mod discovery;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -36,6 +38,7 @@ pub enum ToolHandler {
     },
     ProjectStatus,
     ProjectMap,
+    ProjectDiscover,
     BuildRuntime {
         command: &'static [&'static str],
         event: Option<DomainEventKind>,
@@ -60,6 +63,12 @@ pub enum RuntimeJobAction {
     Logs,
     Cancel,
     List,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationData {
+    discovery: DiscoveryReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +149,17 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::ProjectMap,
+        },
+        ToolSpec {
+            name: "unica.project.discover",
+            description:
+                "Discover evidence-backed extension points without mutating the workspace.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph", "bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::ProjectDiscover,
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -374,6 +394,9 @@ fn call_tool(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
 ) -> Result<OperationResult, String> {
+    if matches!(spec.handler, ToolHandler::ProjectDiscover) {
+        return call_project_discover(spec, args, ports, cancellation);
+    }
     let dry_run = args
         .get("dryRun")
         .and_then(Value::as_bool)
@@ -481,6 +504,49 @@ fn call_tool(
         diagnostics,
         data: handler_outcome.data,
         job: handler_outcome.job,
+    })
+}
+
+fn call_project_discover(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+) -> Result<OperationResult, String> {
+    let request = discovery::contract::parse_discover_request(args)
+        .map_err(|error| format!("{}: {error}", error.code().stable_name()))?;
+    debug_assert_eq!(request.mode(), discovery::contract::DiscoveryMode::Explore);
+    let context = ports.discover_workspace(request.cwd().map(PathBuf::from))?;
+    ports.validate_tool_context(spec, args, false, &context)?;
+    let discovery = ports
+        .discover_extension_points(&request, &context, cancellation)
+        .map_err(|error| format!("{}: {error}", error.code()))?;
+    let summary = match discovery.status {
+        crate::domain::discovery::DiscoveryStatus::Complete => {
+            "extension-point discovery completed".to_string()
+        }
+        crate::domain::discovery::DiscoveryStatus::Partial => {
+            "extension-point discovery completed with missing checks".to_string()
+        }
+    };
+    let cache = ports.cache_report(&context, &[], false, spec.cache_access)?;
+    let data = serde_json::to_value(OperationData { discovery })
+        .map_err(|error| format!("failed to serialize typed discovery result: {error}"))?;
+
+    Ok(OperationResult {
+        ok: true,
+        summary,
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        cache,
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: Some(data),
+        job: None,
     })
 }
 
@@ -1336,6 +1402,253 @@ mod tests {
         assert!(names.contains(&"unica.meta.profile"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn registers_one_read_only_project_discovery_tool() {
+        let discovery_tools = tools()
+            .into_iter()
+            .filter(|tool| tool.name == "unica.project.discover")
+            .collect::<Vec<_>>();
+
+        let [tool] = discovery_tools.as_slice() else {
+            panic!("expected exactly one unica.project.discover tool");
+        };
+        assert!(!tool.mutating);
+        assert!(tool.cache_access.writes.is_empty());
+        assert!(matches!(tool.handler, ToolHandler::ProjectDiscover));
+    }
+
+    #[test]
+    fn operation_result_serializes_discovery_only_under_typed_data() {
+        use crate::domain::discovery::{
+            AnalysisSnapshot, DiscoveryReport, DiscoverySource, DiscoveryStatus,
+            MappingFingerprint, SnapshotFingerprint,
+        };
+
+        let mapping = MappingFingerprint::from_identity("configuration:src");
+        let discovery = DiscoveryReport {
+            schema_version: 1,
+            status: DiscoveryStatus::Partial,
+            source: DiscoverySource {
+                root: PathBuf::from("src"),
+                mapping_fingerprint: mapping.clone(),
+            },
+            analysis_snapshot: AnalysisSnapshot {
+                mapping_fingerprint: mapping.clone(),
+                fingerprint: SnapshotFingerprint::from_manifest(&mapping, &[]),
+                contributors: Vec::new(),
+            },
+            concepts: Vec::new(),
+            provider_outcomes: Vec::new(),
+            related_artifacts: Vec::new(),
+            structural_edges: Vec::new(),
+            runtime_flow_edges: Vec::new(),
+            candidates: Vec::new(),
+            warnings: Vec::new(),
+            missing_checks: Vec::new(),
+            evidence: Vec::new(),
+        };
+        let result = OperationResult {
+            ok: true,
+            summary: "discovery complete".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            cache: CacheReport {
+                mode: "read".to_string(),
+                root: ".build/unica".to_string(),
+                workspace_epoch: 1,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+            },
+            stdout: None,
+            stderr: None,
+            command: None,
+            diagnostics: None,
+            data: Some(
+                serde_json::to_value(OperationData { discovery })
+                    .expect("typed discovery data serializes"),
+            ),
+            job: None,
+        };
+
+        let payload = serde_json::to_value(result).expect("typed result serializes");
+        assert_eq!(payload["data"]["discovery"]["schemaVersion"], 1);
+        assert!(payload.get("stdout").is_none());
+    }
+
+    #[test]
+    fn project_discovery_uses_typed_dispatch_and_returns_typed_data() {
+        let root = test_workspace_root("typed-discovery-dispatch");
+        let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("raw handler must not be invoked"),
+        }));
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let result = app
+            .call_tool("unica.project.discover", &args)
+            .expect("typed discovery dispatch");
+        let payload = serde_json::to_value(result).expect("typed result serializes");
+
+        assert_eq!(payload["data"]["discovery"]["schemaVersion"], 1);
+        assert!(payload.get("stdout").is_none());
+        assert_eq!(payload["changes"], json!([]));
+        assert_eq!(payload["cache"]["mode"], "read");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discovery_parser_rejects_forbidden_fields_before_any_port_call() {
+        let ports = Arc::new(NoCallPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!("/must/not/be/resolved")),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("dryRun".to_string(), json!(true)),
+        ]);
+
+        let error = app
+            .call_tool("unica.project.discover", &args)
+            .expect_err("forbidden field must be rejected");
+
+        assert!(error.contains("does not accept argument `dryRun`"));
+        assert_eq!(ports.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn default_application_composes_read_only_discovery_providers() {
+        let root = test_workspace_root("real-discovery-dispatch");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect("real discovery providers execute");
+        let data = result.data.expect("typed discovery data");
+        let report = &data["discovery"];
+
+        assert_eq!(report["status"], "partial");
+        assert!(report["providerOutcomes"]
+            .as_array()
+            .expect("provider outcomes")
+            .iter()
+            .any(|outcome| {
+                outcome["provider"] == "runtime_flow" && outcome["outcome"] == "unavailable"
+            }));
+        assert!(report["missingChecks"]
+            .as_array()
+            .expect("missing checks")
+            .iter()
+            .any(|check| check["code"] == "runtime_flow_unavailable"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_discovery_preserves_machine_error_code_at_string_boundary() {
+        let root = test_workspace_root("discovery-error-code");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect_err("unknown source format must fail");
+
+        assert!(
+            error.starts_with("discovery_invalid_source_format:"),
+            "unexpected discovery error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_discovery_request_failures_keep_distinct_machine_codes() {
+        let unknown = Map::from_iter([
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("dryRun".to_string(), json!(true)),
+        ]);
+        let missing = Map::from_iter([("task".to_string(), json!("Inspect extension points"))]);
+
+        let unknown_error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &unknown)
+            .expect_err("unknown field must fail before workspace discovery");
+        let missing_error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &missing)
+            .expect_err("missing mode must fail before workspace discovery");
+
+        assert_eq!(
+            unknown_error,
+            "discovery_request_unknown_field: unica.project.discover does not accept argument `dryRun`"
+        );
+        assert_eq!(
+            missing_error,
+            "discovery_request_missing_field: unica.project.discover requires `mode`"
+        );
+        assert_ne!(unknown_error, missing_error);
+    }
+
+    #[test]
+    fn project_discovery_missing_explicit_root_keeps_source_root_error_identity() {
+        let root = test_workspace_root("discovery-missing-explicit-root-code");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("sourceDir".to_string(), json!("missing")),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect_err("missing explicit root must fail before providers");
+
+        assert!(
+            error.starts_with("discovery_invalid_source_root:"),
+            "unexpected discovery error: {error}"
+        );
+        assert!(!error.starts_with("discovery_invalid_source_format:"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2522,7 +2835,7 @@ mod tests {
         std::fs::write(
             ext.join("ParentConfigurations.bin"),
             support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             ),
@@ -2552,6 +2865,126 @@ mod tests {
         assert!(!result.ok);
         assert!(result.summary.contains("support guard"));
         assert!(result.errors.join("\n").contains("на замке"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_cf_edit_blocks_tracked_valid_locked_root_tuple() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-guard-tracked-root-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            support_test_configuration_xml("11111111-1111-1111-1111-111111111111"),
+        )
+        .unwrap();
+        std::fs::write(
+            ext.join("ParentConfigurations.bin"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Version=2.0".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result.errors.join("\n").contains("на замке"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_cf_edit_blocks_short_malformed_support_even_when_guard_override_is_off() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-guard-malformed-state-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let ext = src.join("Ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        let config_path = src.join("Configuration.xml");
+        std::fs::write(
+            &config_path,
+            support_test_configuration_xml("11111111-1111-1111-1111-111111111111"),
+        )
+        .unwrap();
+        std::fs::write(ext.join("ParentConfigurations.bin"), b"garbage").unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Version=2.0".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cf.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        let message = result.errors.join("\n");
+        assert!(message.contains("ParentConfigurations.bin"));
+        assert!(message.contains(
+            "Параметр editingAllowedCheck = warn|off не отключает эту fail-closed проверку существующего повреждённого или нечитаемого файла."
+        ));
+        assert!(!message.contains("Снять проверку для этой базы"));
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
@@ -3655,6 +4088,15 @@ mod tests {
                 Ok(())
             }
 
+            fn discover_extension_points(
+                &self,
+                _request: &discovery::contract::DiscoverRequest,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+            ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+                Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
+            }
+
             fn evaluate_support_guard(
                 &self,
                 _spec: ToolSpec,
@@ -3767,6 +4209,15 @@ mod tests {
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
+            }
+
+            fn discover_extension_points(
+                &self,
+                _request: &discovery::contract::DiscoverRequest,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+            ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+                Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
             }
 
             fn evaluate_support_guard(
@@ -4106,6 +4557,67 @@ mod tests {
         assert!(result.summary.contains("не на поддержке"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_rejects_short_malformed_state_without_mutation() {
+        let (root, workspace, bin_path) =
+            support_test_workspace("unica-support-edit-short-malformed", "garbage".to_string());
+        let before = std::fs::read(&bin_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("Path".to_string(), Value::String("src".to_string()));
+        args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.support.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .join("\n")
+            .contains("ParentConfigurations.bin"));
+        assert_eq!(std::fs::read(&bin_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_keeps_explicit_removed_markers_as_safe_noops() {
+        for (case, marker) in [
+            ("empty", ""),
+            ("legacy", "removed"),
+            ("serialized", "{6,0,0}"),
+        ] {
+            let (root, workspace, bin_path) = support_test_workspace(
+                &format!("unica-support-edit-removed-{case}"),
+                marker.to_string(),
+            );
+            let before = std::fs::read(&bin_path).unwrap();
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert("Path".to_string(), Value::String("src".to_string()));
+            args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.support.edit", &args)
+                .unwrap();
+
+            assert!(result.ok, "{case}: {:?}", result.errors);
+            assert!(result.changes.is_empty(), "{case}");
+            assert_eq!(std::fs::read(&bin_path).unwrap(), before, "{case}");
+
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -5870,6 +6382,113 @@ mod tests {
         (root, catalog_path)
     }
 
+    #[derive(Default)]
+    struct NoCallPorts {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl NoCallPorts {
+        fn unexpected<T>(&self) -> Result<T, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("unexpected port call".to_string())
+        }
+    }
+
+    impl ports::ApplicationPorts for NoCallPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            self.unexpected()
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            self.unexpected()
+        }
+
+        fn discover_extension_points(
+            &self,
+            _request: &discovery::contract::DiscoverRequest,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::domain::discovery::DiscoveryError::EmptySourceRoot)
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            self.unexpected()
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.unexpected()
+        }
+
+        fn cache_report(
+            &self,
+            _context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _dry_run: bool,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            self.unexpected()
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn empty_discovery_report(source_root: &std::path::Path) -> DiscoveryReport {
+        use crate::domain::discovery::{
+            AnalysisSnapshot, DiscoverySource, DiscoveryStatus, MappingFingerprint,
+            SnapshotFingerprint,
+        };
+
+        let mapping =
+            MappingFingerprint::from_identity(&format!("configuration:{}", source_root.display()));
+        DiscoveryReport {
+            schema_version: 1,
+            status: DiscoveryStatus::Partial,
+            source: DiscoverySource {
+                root: source_root.to_path_buf(),
+                mapping_fingerprint: mapping.clone(),
+            },
+            analysis_snapshot: AnalysisSnapshot {
+                mapping_fingerprint: mapping.clone(),
+                fingerprint: SnapshotFingerprint::from_manifest(&mapping, &[]),
+                contributors: Vec::new(),
+            },
+            concepts: Vec::new(),
+            provider_outcomes: Vec::new(),
+            related_artifacts: Vec::new(),
+            structural_edges: Vec::new(),
+            runtime_flow_edges: Vec::new(),
+            candidates: Vec::new(),
+            warnings: Vec::new(),
+            missing_checks: Vec::new(),
+            evidence: Vec::new(),
+        }
+    }
+
     struct FixedOutcomePorts {
         outcome: AdapterOutcome,
     }
@@ -5896,6 +6515,15 @@ mod tests {
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
+        }
+
+        fn discover_extension_points(
+            &self,
+            _request: &discovery::contract::DiscoverRequest,
+            context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<DiscoveryReport, crate::domain::discovery::DiscoveryError> {
+            Ok(empty_discovery_report(&context.workspace_root))
         }
 
         fn evaluate_support_guard(
@@ -6206,6 +6834,54 @@ mod tests {
         assert!(std::fs::read_to_string(&object_path)
             .unwrap()
             .contains("<Name>Changed</Name>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_meta_edit_blocks_short_malformed_support_even_in_warn_mode() {
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-meta-guard-short-malformed-warn",
+            "garbage".to_string(),
+        );
+        std::fs::write(
+            workspace.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"warn"}"#,
+        )
+        .unwrap();
+        let object_path = workspace.join("src/Catalogs/Items.xml");
+        let before = std::fs::read_to_string(&object_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Name=Changed".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result
+            .errors
+            .join("\n")
+            .contains("ParentConfigurations.bin"));
+        assert!(result.cache.events.is_empty());
+        assert_eq!(std::fs::read_to_string(&object_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
     }

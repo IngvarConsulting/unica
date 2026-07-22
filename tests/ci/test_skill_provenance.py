@@ -185,6 +185,41 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertNotIn("upstreamPaths", owned["code-patch"])
         self.assertNotIn("baselineCommit", owned["code-patch"])
 
+    def test_extension_point_discovery_is_unica_owned(self) -> None:
+        data = self.load_provenance()
+        owned = {
+            entry["skill"]: entry for entry in data["unicaOwnedSkills"]
+        }
+        donor_skills = {
+            entry["skill"]
+            for upstream in data["upstreams"]
+            for entry in upstream["entries"]
+        }
+
+        self.assertIn("extension-point-discovery", owned)
+        self.assertNotIn("extension-point-discovery", donor_skills)
+        entry = owned["extension-point-discovery"]
+        self.assertIn(
+            "plugins/unica/skills/extension-point-discovery",
+            entry["localPaths"],
+        )
+        for contract_path in [
+            "crates/unica-coder/src/application/discovery/contract.rs",
+            "crates/unica-coder/src/domain/discovery.rs",
+            "tests/ci/test_unica_mcp_smoke.py",
+            "tests/ci/test_unica_skills.py",
+            "tests/ci/test_smoke_unica_mcp.py",
+            "tests/fixtures/extension-point-discovery/ut115",
+        ]:
+            with self.subTest(contract_path=contract_path):
+                self.assertIn(contract_path, entry["contractPaths"])
+        self.assertIn("PR #83", entry["notes"])
+        self.assertIn("historical research", entry["notes"])
+        self.assertIn("not an upstream code baseline", entry["notes"])
+        self.assertNotIn("repository", entry)
+        self.assertNotIn("upstreamPaths", entry)
+        self.assertNotIn("baselineCommit", entry)
+
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(

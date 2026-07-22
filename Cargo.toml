@@ -24,7 +24,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "collation", "hooks", "serialize"] }
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [

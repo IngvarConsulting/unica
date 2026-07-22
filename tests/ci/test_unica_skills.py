@@ -52,6 +52,9 @@ IN_SCOPE_TOOLS = {
 }
 
 SCENARIO_SKILLS = {
+    "extension-point-discovery": [
+        "unica.project.discover",
+    ],
     "api-design": [
         "unica.code.search",
         "unica.code.definition",
@@ -214,6 +217,12 @@ SCENARIO_SKILLS = {
 }
 
 SCENARIO_REQUIRED_TOKENS = {
+    "extension-point-discovery": [
+        "OperationResult.data.discovery",
+        "providerOutcomes",
+        "missingChecks",
+        "analysisSnapshot",
+    ],
     "api-design": [
         "483",
         "543",
@@ -565,6 +574,237 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(tool_name, text)
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+
+    def test_extension_point_discovery_is_a_mandatory_task_only_preflight(self) -> None:
+        skill_dir = self.skill_root() / "extension-point-discovery"
+        skill_doc = skill_dir / "SKILL.md"
+        agent_metadata = skill_dir / "agents" / "openai.yaml"
+        text = skill_doc.read_text(encoding="utf-8")
+
+        frontmatter_match = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.S)
+        self.assertIsNotNone(frontmatter_match)
+        frontmatter = frontmatter_match.group(1)
+        self.assertEqual(
+            [line.split(":", 1)[0] for line in frontmatter.splitlines()],
+            ["name", "description"],
+        )
+        self.assertIn("name: extension-point-discovery", frontmatter)
+        description = next(
+            line.split(":", 1)[1].strip()
+            for line in frontmatter.splitlines()
+            if line.startswith("description:")
+        ).lower()
+        for trigger in [
+            "planning",
+            "implementing",
+            "typical",
+            "supported",
+            "configurations",
+            "cfe",
+            "forms",
+            "documents",
+            "processors",
+            "handlers",
+            "tabular sections",
+        ]:
+            with self.subTest(trigger=trigger):
+                self.assertIn(trigger, description)
+
+        body = text[frontmatter_match.end() :]
+        self.assertTrue(body.startswith("\n## MCP routing\n"))
+        json_examples = re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
+        self.assertGreaterEqual(len(json_examples), 2)
+        first_call = json.loads(json_examples[0])
+        self.assertEqual(first_call["method"], "tools/call")
+        self.assertEqual(first_call["params"]["name"], "unica.project.discover")
+        arguments = first_call["params"]["arguments"]
+        self.assertEqual(set(arguments), {"mode", "task", "cwd"})
+        self.assertEqual(arguments["mode"], "explore")
+        self.assertTrue(arguments["task"].strip())
+        self.assertTrue(arguments["cwd"].strip())
+
+        mandatory_order = re.compile(
+            r"unica\.project\.discover.{0,500}before planning.{0,500}before (?:any )?mutation",
+            flags=re.I | re.S,
+        )
+        self.assertRegex(text, mandatory_order)
+        for token in [
+            "OperationResult.data.discovery",
+            "schemaVersion",
+            "status",
+            "source",
+            "concepts",
+            "candidates",
+            "evidenceIds",
+            "location",
+            "providerOutcomes",
+            "warnings",
+            "missingChecks",
+            "evidence",
+            "analysisSnapshot",
+            "mappingFingerprint",
+            "fingerprint",
+            "contributors",
+            "relativePath",
+            "rawHash",
+            "bytes",
+            "structuralEdges",
+            "runtimeFlowEdges",
+        ]:
+            with self.subTest(result_field=token):
+                self.assertIn(token, text)
+
+        public_gap_tools = {
+            "unica.project.map",
+            "unica.project.status",
+            "unica.meta.info",
+            "unica.meta.profile",
+            "unica.form.info",
+            "unica.code.search",
+            "unica.code.definition",
+            "unica.code.outline",
+            "unica.code.grep",
+            "unica.code.graph",
+            "unica.cf.info",
+        }
+        for tool_name in public_gap_tools:
+            with self.subTest(public_gap_tool=tool_name):
+                self.assertIn(tool_name, text)
+        self.assertIn("unresolved material", text.lower())
+        self.assertIn("stop", text.lower())
+
+        selection_record = json.loads(json_examples[1])
+        self.assertEqual(
+            set(selection_record),
+            {
+                "selectedPoint",
+                "rejectedAlternatives",
+                "unresolvedNonMaterialChecks",
+                "analysisSnapshot",
+            },
+        )
+        self.assertEqual(
+            set(selection_record["selectedPoint"]),
+            {
+                "target",
+                "kind",
+                "evidenceIds",
+                "recommendation",
+                "evidenceLocations",
+                "supportState",
+            },
+        )
+        self.assertEqual(
+            set(selection_record["selectedPoint"]["recommendation"]),
+            {"summary", "basis"},
+        )
+        for recommendation_rule in [
+            "advisory, not a winner or an architectural decision",
+            "Lexical hits and support state cannot create a",
+            "A recommendation never overrides a blocking warning or",
+            "including `recommendation`, from discovery",
+        ]:
+            with self.subTest(recommendation_rule=recommendation_rule):
+                self.assertIn(recommendation_rule, text)
+        for support_rule in [
+            "Always include `supportState`",
+            "Copy the reported value verbatim",
+            'use literal `"unknown"` only',
+            "retain that gap in `unresolvedNonMaterialChecks`",
+            "stop and do not record a selection",
+            "Never infer `editable` or `locked`",
+        ]:
+            with self.subTest(support_rule=support_rule):
+                self.assertIn(support_rule, text)
+
+        for outcome_rule in [
+            "Only an empty `complete` result is negative evidence",
+            "`bounded`, `unavailable`, and `failed` are incomplete",
+            "`contract_violation` invalidates its provider records",
+            "must not be used for selection or graph promotion",
+        ]:
+            with self.subTest(outcome_rule=outcome_rule):
+                self.assertIn(outcome_rule, text)
+        self.assertEqual(
+            set(selection_record["rejectedAlternatives"][0]),
+            {"target", "reason", "evidenceIds"},
+        )
+        self.assertEqual(
+            set(selection_record["unresolvedNonMaterialChecks"][0]),
+            {"provider", "code", "message"},
+        )
+        self.assertEqual(
+            set(selection_record["analysisSnapshot"]),
+            {"mappingFingerprint", "fingerprint", "contributors"},
+        )
+        self.assertEqual(
+            set(selection_record["analysisSnapshot"]["contributors"][0]),
+            {"relativePath", "rawHash", "bytes"},
+        )
+
+        for phrase in [
+            "not mutation authorization",
+            "not a freshness guarantee",
+            "not a mutation receipt",
+        ]:
+            with self.subTest(snapshot_boundary=phrase):
+                self.assertIn(phrase, text.lower())
+
+        for baseline_excuse in [
+            "remembered method name",
+            "only when mapping is ambiguous",
+            "naming conventions",
+            "revision is not a freshness guard",
+            "missing concrete names",
+        ]:
+            with self.subTest(baseline_excuse=baseline_excuse):
+                self.assertIn(baseline_excuse, text.lower())
+
+        forbidden = [
+            "Slice C",
+            "Slice D",
+            "proposal verdict",
+            "mutation guard",
+            "receipt id",
+            "sqlite",
+            "rlm_",
+            "unica-coder",
+            "unica-v8-runner",
+            "scripts/",
+            ".py",
+            ".ps1",
+            "local shell",
+        ]
+        normalized_text = text.lower()
+        for token in forbidden:
+            with self.subTest(forbidden=token):
+                self.assertNotIn(token.lower(), normalized_text)
+
+        self.assertEqual(
+            agent_metadata.read_text(encoding="utf-8"),
+            "interface:\n"
+            '  display_name: "Discovery точек расширения 1С"\n'
+            '  short_description: "Обязательный preflight типовых доработок 1С"\n'
+            '  default_prompt: "Используй $extension-point-discovery до планирования изменений, найди и обоснуй типовую точку расширения 1С."\n'
+            "policy:\n"
+            "  allow_implicit_invocation: true\n",
+        )
+
+    def test_extension_point_acceptance_requires_exact_extension_point_targets(self) -> None:
+        acceptance = (
+            self.repo_root() / "spec" / "acceptance" / "unica-mcp-validation.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "Document.ПриобретениеТоваровУслуг.TabularSection.Серии",
+            acceptance,
+        )
+        self.assertIn(
+            "DataProcessor.ПодборСерийВДокументы.Form."
+            "РегистрацияИПодборСерийПоОднойСтрокеТоваров",
+            acceptance,
+        )
+        self.assertNotIn("retain document, processor, and form candidates", acceptance)
 
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {

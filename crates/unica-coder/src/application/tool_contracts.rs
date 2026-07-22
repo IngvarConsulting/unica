@@ -1,3 +1,4 @@
+use super::discovery::contract::{discover_allowed_args, discover_input_schema};
 use super::operation_descriptors::native_operation_descriptor;
 use super::{RuntimeJobAction, ToolHandler, ToolSpec};
 use serde_json::{json, Map, Value};
@@ -564,6 +565,9 @@ const STANDARDS_ARGS: &[&str] = &[
 ];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
+    if tool.name == "unica.project.discover" {
+        return discover_input_schema();
+    }
     let property_names = allowed_args(tool);
     let mut properties = Map::new();
     for name in property_names {
@@ -1280,6 +1284,9 @@ fn has_non_empty_array_arg(args: &Map<String, Value>, key: &str) -> bool {
 }
 
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
+    if tool.name == "unica.project.discover" {
+        return discover_allowed_args().to_vec();
+    }
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => {
@@ -1297,7 +1304,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
+        ToolHandler::ProjectStatus | ToolHandler::ProjectMap | ToolHandler::ProjectDiscover => {}
     }
     names.sort_unstable();
     names.dedup();
@@ -1316,6 +1323,9 @@ fn is_external_init_tool(tool: ToolSpec) -> bool {
 }
 
 fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
+    if tool.name == "unica.project.discover" {
+        return vec!["mode", "task"];
+    }
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.required_args.to_vec())
@@ -1699,7 +1709,45 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::discovery::contract::{discover_allowed_args, discover_input_schema};
     use crate::application::tools;
+    use crate::domain::cache::CacheAccess;
+
+    fn project_discover_tool() -> ToolSpec {
+        ToolSpec {
+            name: "unica.project.discover",
+            description: "test-only unregistered discovery schema seam",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::ProjectStatus,
+        }
+    }
+
+    #[test]
+    fn project_discover_uses_its_dedicated_schema_and_argument_set() {
+        let tool = project_discover_tool();
+        assert_eq!(input_schema_for_tool(&tool), discover_input_schema());
+        assert_eq!(allowed_args(&tool), discover_allowed_args());
+        assert_eq!(required_args(&tool), vec!["mode", "task"]);
+
+        let valid = json!({"mode": "explore", "task": "Find extension points"});
+        let Value::Object(valid) = valid else {
+            unreachable!("test fixture is an object")
+        };
+        validate_tool_arguments(tool, &valid, false).expect("valid outer request");
+
+        let forbidden = json!({
+            "mode": "explore",
+            "task": "Find extension points",
+            "dryRun": true
+        });
+        let Value::Object(forbidden) = forbidden else {
+            unreachable!("test fixture is an object")
+        };
+        assert!(validate_tool_arguments(tool, &forbidden, false)
+            .unwrap_err()
+            .contains("does not accept argument `dryRun`"));
+    }
 
     #[test]
     fn native_contracts_reject_unknown_args() {

@@ -12,6 +12,25 @@
         "crates/unica-coder/src/infrastructure/native_operations/code.rs",
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "extension-point-discovery",
+      "notes": "Unica-owned mandatory preflight for the typed unica.project.discover contract. PR #83 was historical research, not an upstream code baseline; its prototype behavior is not copied into the packaged skill.",
+      "localPaths": [
+        "plugins/unica/skills/extension-point-discovery"
+      ],
+      "contractPaths": [
+        "crates/unica-coder/src/application/discovery/contract.rs",
+        "crates/unica-coder/src/domain/discovery.rs",
+        "spec/architecture/extension-point-discovery.md",
+        "spec/acceptance/unica-mcp-validation.md",
+        "scripts/ci/smoke-unica-mcp.py",
+        "tests/ci/test_unica_mcp_script_parity.py",
+        "tests/ci/test_unica_mcp_smoke.py",
+        "tests/ci/test_unica_skills.py",
+        "tests/ci/test_smoke_unica_mcp.py",
+        "tests/fixtures/extension-point-discovery/ut115"
+      ]
     }
   ],
   "upstreams": [

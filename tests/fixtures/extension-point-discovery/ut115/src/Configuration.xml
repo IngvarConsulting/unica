@@ -1,0 +1,11 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="10000000-0000-0000-0000-000000000001">
+    <Properties>
+      <Name>UT115</Name>
+    </Properties>
+    <ChildObjects>
+      <Document>ПриобретениеТоваровУслуг</Document>
+      <DataProcessor>ПодборСерийВДокументы</DataProcessor>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>

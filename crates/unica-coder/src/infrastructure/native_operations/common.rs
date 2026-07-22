@@ -4,7 +4,7 @@ use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1287,10 +1287,41 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 }
 
 #[cfg(test)]
-mod mutation_tests {
-    use super::{read_utf8_sig_snapshot, utf8_bom_bytes};
+mod tests {
+    use super::{
+        parse_support_state_bytes, read_utf8_sig_snapshot, support_guard_violation,
+        support_status_for_path, utf8_bom_bytes, SupportObjectRule, SupportParseError,
+    };
+    use crate::application::operation_descriptors::SupportGuardRequirement;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TRACKED_ON_SUPPORT_FIXTURES: &[(&str, &[u8])] = &[
+        (
+            "dcs-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "dcs-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+        (
+            "form-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "form-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+        (
+            "meta-compile",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        ),
+    ];
 
     #[test]
     fn utf8_bom_bytes_emits_exactly_one_bom() {
@@ -1321,6 +1352,267 @@ mod mutation_tests {
         assert_eq!(snapshot.raw, raw);
         assert_eq!(snapshot.text, "<xml/>\r\n");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn support_bytes_parse_into_typed_object_rules() {
+        let bytes = support_bytes(0, &[("40000000-0000-0000-0000-000000000001", 1)]);
+
+        let state = parse_support_state_bytes(&bytes).expect("typed support state");
+
+        assert!(state.global_editing_enabled());
+        assert!(!state.removed());
+        assert_eq!(
+            state.object_rule("40000000-0000-0000-0000-000000000001"),
+            Some(SupportObjectRule::Editable)
+        );
+        let mut malformed = vec![0xff; 40];
+        malformed[0] = b'{';
+        assert!(matches!(
+            parse_support_state_bytes(&malformed),
+            Err(SupportParseError::InvalidUtf8)
+        ));
+        let invalid_rule = support_bytes(0, &[("40000000-0000-0000-0000-000000000001", 3)]);
+        assert!(matches!(
+            parse_support_state_bytes(&invalid_rule),
+            Err(SupportParseError::InvalidObjectRule(3))
+        ));
+    }
+
+    #[test]
+    fn support_parser_preserves_lines_for_each_decisive_state_field() {
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        let serialized = format!(
+            "{{\n6,\n0,\n1,\ndddddddd-dddd-dddd-dddd-dddddddddddd,\n0,\neeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\n\"1.0\",\n\"Vendor\",\n\"Configuration\",\n1,\n1,\n0,\n{uuid},\n{uuid}\n}}"
+        );
+        let state =
+            parse_support_state_bytes(serialized.as_bytes()).expect("valid multiline state");
+
+        assert_eq!(state.header_line(), 2);
+        assert_eq!(state.global_flag_line(), 3);
+        assert_eq!(state.object_rule_line(uuid), Some(12));
+
+        let removed =
+            parse_support_state_bytes(b"{\n6,\n0,\n0\n}").expect("valid serialized removed marker");
+        assert_eq!(removed.removed_line(), 4);
+        let legacy = parse_support_state_bytes(b"removed").expect("valid legacy removed marker");
+        assert_eq!(legacy.removed_line(), 1);
+    }
+
+    #[test]
+    fn support_parser_accepts_only_explicit_legacy_removed_markers() {
+        for valid in [
+            b"".as_slice(),
+            b"removed".as_slice(),
+            b"\xef\xbb\xbfremoved".as_slice(),
+            b"{6,0,0}".as_slice(),
+            b"\xef\xbb\xbf \n { 6, 0, 0 } \n".as_slice(),
+        ] {
+            let state = parse_support_state_bytes(valid)
+                .unwrap_or_else(|error| panic!("explicit removed marker must parse: {error}"));
+            assert!(state.removed());
+        }
+
+        for malformed in [
+            b"garbage".as_slice(),
+            b"\xff".as_slice(),
+            b"0".as_slice(),
+            b" removed".as_slice(),
+            b"removed\n".as_slice(),
+            b"{6,0".as_slice(),
+        ] {
+            assert!(
+                parse_support_state_bytes(malformed).is_err(),
+                "ambiguous short payload must be rejected: {malformed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_tracked_on_support_fixture_uses_the_supported_tuple_grammar() {
+        for (case, bytes) in TRACKED_ON_SUPPORT_FIXTURES {
+            let state = parse_support_state_bytes(bytes)
+                .unwrap_or_else(|error| panic!("{case} fixture must parse: {error}"));
+            assert_eq!(
+                state.object_rule("11111111-1111-1111-1111-111111111111"),
+                Some(SupportObjectRule::Locked),
+                "{case} root rule"
+            );
+            assert_eq!(
+                state.object_rule("22222222-2222-2222-2222-222222222222"),
+                Some(SupportObjectRule::Locked),
+                "{case} subordinate rule"
+            );
+            assert_eq!(
+                state.object_rule("33333333-3333-3333-3333-333333333333"),
+                Some(SupportObjectRule::OffSupport),
+                "{case} removed subordinate rule"
+            );
+        }
+    }
+
+    #[test]
+    fn huge_declared_counts_return_errors_without_panicking_or_allocating() {
+        let vendor_count = format!("{{6,0,{}}}", usize::MAX);
+        let vendor_result =
+            std::panic::catch_unwind(|| parse_support_state_bytes(vendor_count.as_bytes()));
+        assert!(
+            matches!(
+                vendor_result,
+                Ok(Err(SupportParseError::CountExceedsPayload("vendor count")))
+            ),
+            "huge vendor count must be a typed parse error: {vendor_result:?}"
+        );
+
+        let object_count = format!(
+            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",{}}}",
+            usize::MAX
+        );
+        let object_result =
+            std::panic::catch_unwind(|| parse_support_state_bytes(object_count.as_bytes()));
+        assert!(
+            matches!(
+                object_result,
+                Ok(Err(SupportParseError::CountExceedsPayload("object count")))
+            ),
+            "huge object count must be a typed parse error: {object_result:?}"
+        );
+    }
+
+    #[test]
+    fn support_parser_requires_a_complete_balanced_vendor_grammar() {
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        let valid = support_bytes(0, &[(uuid, 1)]);
+        let mut unclosed = valid.clone();
+        unclosed.pop();
+        let trailing = [valid.as_slice(), b"garbage"].concat();
+        let incomplete_vendor = b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0}";
+        let short_truncated_header = b"{6,0,1}";
+        let mismatched_object = b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",1,1,0,40000000-0000-0000-0000-000000000001,40000000-0000-0000-0000-000000000002}";
+
+        for malformed in [
+            unclosed.as_slice(),
+            trailing.as_slice(),
+            incomplete_vendor.as_slice(),
+            short_truncated_header.as_slice(),
+            mismatched_object.as_slice(),
+        ] {
+            assert!(parse_support_state_bytes(malformed).is_err());
+        }
+
+        let mismatched_subordinate = b"{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",2,0,0,40000000-0000-0000-0000-000000000001,1,0,40000000-0000-0000-0000-000000000002,40000000-0000-0000-0000-000000000003}";
+        assert!(matches!(
+            parse_support_state_bytes(mismatched_subordinate),
+            Err(SupportParseError::MismatchedObjectUuid)
+        ));
+    }
+
+    #[test]
+    fn support_parser_never_scans_vendor_text_and_rejects_duplicate_object_uuids() {
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        let vendor_text = format!(
+            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"0,0,{uuid}\",\"Configuration\",0}}"
+        );
+        let parsed = parse_support_state_bytes(vendor_text.as_bytes()).expect("valid vendor tuple");
+        assert_eq!(parsed.object_rule(uuid), None);
+
+        let duplicate = support_bytes(0, &[(uuid, 1), (uuid, 0)]);
+        assert!(parse_support_state_bytes(&duplicate).is_err());
+    }
+
+    #[test]
+    fn existing_support_status_caller_preserves_exact_rule_text() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-support-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let object_path = root.join("Documents").join("Purchase.xml");
+        let support_path = root.join("Ext").join("ParentConfigurations.bin");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(support_path.parent().unwrap()).unwrap();
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        fs::write(
+            &object_path,
+            format!("<MetaDataObject><Document uuid=\"{uuid}\"/></MetaDataObject>"),
+        )
+        .unwrap();
+
+        let cases = [
+            (
+                SupportObjectRule::Locked,
+                "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
+            ),
+            (
+                SupportObjectRule::Editable,
+                "редактируется с сохранением поддержки",
+            ),
+            (
+                SupportObjectRule::OffSupport,
+                "снято с поддержки (правки свободны)",
+            ),
+        ];
+        for (rule, expected) in cases {
+            fs::write(&support_path, support_bytes(0, &[(uuid, rule.flag())])).unwrap();
+            assert_eq!(support_status_for_path(&object_path), expected);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mutation_guard_distinguishes_missing_from_invalid_existing_support_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-support-guard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("Documents").join("Purchase.xml");
+        let support_path = root.join("Ext").join("ParentConfigurations.bin");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::create_dir_all(support_path.parent().unwrap()).unwrap();
+        fs::write(root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        fs::write(
+            &target,
+            "<MetaDataObject><Document uuid=\"11111111-1111-1111-1111-111111111111\"/></MetaDataObject>",
+        )
+        .unwrap();
+
+        assert!(support_guard_violation(&target, SupportGuardRequirement::Editable).is_none());
+
+        fs::write(&support_path, b"{6,0,1}").unwrap();
+        assert_eq!(support_status_for_path(&target), "не на поддержке");
+        let malformed = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("malformed existing support state must fail closed");
+        assert_eq!(malformed.code, "support-state-invalid");
+
+        fs::remove_file(&support_path).unwrap();
+        fs::create_dir(&support_path).unwrap();
+        let unreadable = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("unreadable existing support state must fail closed");
+        assert_eq!(unreadable.code, "support-state-invalid");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn support_bytes(global_flag: u8, rules: &[(&str, u8)]) -> Vec<u8> {
+        let object_count = rules.len();
+        let rules = rules
+            .iter()
+            .map(|(uuid, flag)| format!("{flag},0,{uuid},{uuid}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let separator = if rules.is_empty() { "" } else { "," };
+        format!(
+            "{{6,{global_flag},1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",{}{separator}{rules}}}",
+            object_count
+        )
+        .into_bytes()
     }
 }
 
@@ -1648,10 +1940,10 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         return "не на поддержке".to_string();
     };
     match state.object_rule(&object_uuid) {
-        Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        Some(1) => "редактируется с сохранением поддержки".to_string(),
-        Some(2) => "снято с поддержки (правки свободны)".to_string(),
-        _ => "не на поддержке".to_string(),
+        Some(SupportObjectRule::Locked) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+        Some(SupportObjectRule::Editable) => "редактируется с сохранением поддержки".to_string(),
+        Some(SupportObjectRule::OffSupport) => "снято с поддержки (правки свободны)".to_string(),
+        None => "не на поддержке".to_string(),
     }
 }
 
@@ -1672,7 +1964,20 @@ pub(crate) fn support_guard_violation(
         .unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = read_support_state(&bin_path)?;
+    let state = match read_support_state_checked(&bin_path) {
+        Ok(SupportStateRead::Missing) => return None,
+        Ok(SupportStateRead::Parsed { state, .. }) => state,
+        Err(error) => {
+            return Some(SupportGuardViolation {
+                code: "support-state-invalid",
+                reason: format!(
+                    "существующий ParentConfigurations.bin нельзя безопасно прочитать или разобрать: {error}"
+                ),
+                target_path,
+                config_dir,
+            });
+        }
+    };
     if state.removed {
         return None;
     }
@@ -1692,7 +1997,9 @@ pub(crate) fn support_guard_violation(
         .as_deref()
         .and_then(|uuid| state.object_rule(uuid));
     match requirement {
-        SupportGuardRequirement::Removed if object_rule.is_some_and(|rule| rule != 2) => {
+        SupportGuardRequirement::Removed
+            if object_rule.is_some_and(|rule| rule != SupportObjectRule::OffSupport) =>
+        {
             Some(SupportGuardViolation {
                 code: "not-removed",
                 reason: "объект не снят с поддержки — удаление сломает обновления".to_string(),
@@ -1700,7 +2007,7 @@ pub(crate) fn support_guard_violation(
                 config_dir,
             })
         }
-        SupportGuardRequirement::Editable if object_rule == Some(0) => {
+        SupportGuardRequirement::Editable if object_rule == Some(SupportObjectRule::Locked) => {
             Some(SupportGuardViolation {
                 code: "locked",
                 reason: "объект на замке — редактирование сломает обновления".to_string(),
@@ -1713,17 +2020,21 @@ pub(crate) fn support_guard_violation(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SupportState {
+pub(crate) struct ParsedSupportState {
     global_editing_enabled: bool,
     vendor_count: usize,
     removed: bool,
+    header_line: u32,
+    global_flag_line: u32,
+    removed_line: u32,
     counts: [usize; 3],
-    object_rules: HashMap<String, u8>,
+    object_rules: BTreeMap<String, SupportObjectRule>,
+    object_rule_lines: BTreeMap<String, u32>,
     vendors: Vec<SupportVendor>,
 }
 
-impl SupportState {
-    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+impl ParsedSupportState {
+    pub(crate) fn object_rule(&self, object_uuid: &str) -> Option<SupportObjectRule> {
         self.object_rules
             .get(&object_uuid.to_ascii_lowercase())
             .copied()
@@ -1736,7 +2047,140 @@ impl SupportState {
     pub(crate) fn removed(&self) -> bool {
         self.removed
     }
+
+    pub(crate) fn header_line(&self) -> u32 {
+        self.header_line
+    }
+
+    pub(crate) fn global_flag_line(&self) -> u32 {
+        self.global_flag_line
+    }
+
+    pub(crate) fn removed_line(&self) -> u32 {
+        self.removed_line
+    }
+
+    pub(crate) fn object_rule_line(&self, object_uuid: &str) -> Option<u32> {
+        self.object_rule_lines
+            .get(&object_uuid.to_ascii_lowercase())
+            .copied()
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SupportObjectRule {
+    Locked,
+    Editable,
+    OffSupport,
+}
+
+impl SupportObjectRule {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "locked" => Some(Self::Locked),
+            "editable" => Some(Self::Editable),
+            "off-support" => Some(Self::OffSupport),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn from_flag(flag: u8) -> Option<Self> {
+        match flag {
+            0 => Some(Self::Locked),
+            1 => Some(Self::Editable),
+            2 => Some(Self::OffSupport),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn flag(self) -> u8 {
+        match self {
+            Self::Locked => 0,
+            Self::Editable => 1,
+            Self::OffSupport => 2,
+        }
+    }
+
+    pub(crate) const fn state_text(self) -> &'static str {
+        match self {
+            Self::Locked => "на замке (правка запрещена)",
+            Self::Editable => {
+                "редактируется с сохранением поддержки (объект продолжит получать обновления вендора — возможны конфликты при обновлении)"
+            }
+            Self::OffSupport => {
+                "снят с поддержки (обновления вендора по этому объекту прекращаются)"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupportParseError {
+    InvalidUtf8,
+    InvalidHeader,
+    InvalidGlobalFlag(u8),
+    InvalidVendorFlag(u8),
+    InvalidObjectRule(u8),
+    InvalidStructure(&'static str),
+    InvalidNumber(&'static str),
+    CountExceedsPayload(&'static str),
+    InvalidUuid(&'static str),
+    InvalidObjectMarker(u8),
+    MismatchedObjectUuid,
+    DuplicateObjectUuid,
+}
+
+impl std::fmt::Display for SupportParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUtf8 => formatter.write_str("ParentConfigurations.bin is not UTF-8"),
+            Self::InvalidHeader => {
+                formatter.write_str("ParentConfigurations.bin has an invalid header")
+            }
+            Self::InvalidGlobalFlag(flag) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid global support flag {flag}"
+            ),
+            Self::InvalidVendorFlag(flag) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid vendor support flag {flag}"
+            ),
+            Self::InvalidObjectRule(flag) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid object support rule {flag}"
+            ),
+            Self::InvalidStructure(message) => {
+                write!(
+                    formatter,
+                    "ParentConfigurations.bin has invalid structure: {message}"
+                )
+            }
+            Self::InvalidNumber(field) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid numeric field {field}"
+            ),
+            Self::CountExceedsPayload(field) => write!(
+                formatter,
+                "ParentConfigurations.bin declares {field} larger than its remaining payload"
+            ),
+            Self::InvalidUuid(field) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid UUID field {field}"
+            ),
+            Self::InvalidObjectMarker(marker) => write!(
+                formatter,
+                "ParentConfigurations.bin has invalid object marker {marker}"
+            ),
+            Self::MismatchedObjectUuid => formatter
+                .write_str("ParentConfigurations.bin object rule contains mismatched UUID fields"),
+            Self::DuplicateObjectUuid => {
+                formatter.write_str("ParentConfigurations.bin contains duplicate object UUID rules")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SupportParseError {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SupportVendor {
@@ -1745,130 +2189,423 @@ pub(crate) struct SupportVendor {
     name: String,
 }
 
-pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
-    if !bin_path.is_file() {
-        return None;
+#[derive(Debug)]
+pub(crate) enum SupportStateRead {
+    Missing,
+    Parsed {
+        state: ParsedSupportState,
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum SupportStateReadError {
+    Read(std::io::Error),
+    Parse(SupportParseError),
+}
+
+impl std::fmt::Display for SupportStateReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read(error) => write!(
+                formatter,
+                "failed to read ParentConfigurations.bin: {error}"
+            ),
+            Self::Parse(error) => write!(formatter, "invalid ParentConfigurations.bin: {error}"),
+        }
     }
-    let data = fs::read(bin_path).ok()?;
-    if data.len() <= 32 {
-        return Some(SupportState {
+}
+
+impl std::error::Error for SupportStateReadError {}
+
+pub(crate) fn read_support_state(bin_path: &Path) -> Option<ParsedSupportState> {
+    match read_support_state_checked(bin_path) {
+        Ok(SupportStateRead::Parsed { state, .. }) => Some(state),
+        Ok(SupportStateRead::Missing) | Err(_) => None,
+    }
+}
+
+pub(crate) fn read_support_state_checked(
+    bin_path: &Path,
+) -> Result<SupportStateRead, SupportStateReadError> {
+    let data = match fs::read(bin_path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SupportStateRead::Missing);
+        }
+        Err(error) => return Err(SupportStateReadError::Read(error)),
+    };
+    let state = parse_support_state_bytes(&data).map_err(SupportStateReadError::Parse)?;
+    Ok(SupportStateRead::Parsed { state, bytes: data })
+}
+
+pub(crate) fn parse_support_state_bytes(
+    data: &[u8],
+) -> Result<ParsedSupportState, SupportParseError> {
+    let content = match data.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        Some(content) => content,
+        None => data,
+    };
+    if content.is_empty() || content == b"removed" {
+        return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count: 0,
             removed: true,
+            header_line: 1,
+            global_flag_line: 1,
+            removed_line: 1,
             counts: [0, 0, 0],
-            object_rules: HashMap::new(),
+            object_rules: BTreeMap::new(),
+            object_rule_lines: BTreeMap::new(),
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
-    let (global_flag, vendor_count) = parse_support_header(&text)?;
+    let text = std::str::from_utf8(content).map_err(|_error| SupportParseError::InvalidUtf8)?;
+    let tokens = tokenize_support_state(text)?;
+    let mut cursor = SupportTokenCursor::new(&tokens);
+    let (format, format_offset) = cursor.number_u8_at("format")?;
+    if format != 6 {
+        return Err(SupportParseError::InvalidHeader);
+    }
+    let header_line = support_line_at(text, format_offset)?;
+    let (global_flag, global_flag_offset) = cursor.number_u8_at("global flag")?;
+    if !matches!(global_flag, 0 | 1) {
+        return Err(SupportParseError::InvalidGlobalFlag(global_flag));
+    }
+    let global_flag_line = support_line_at(text, global_flag_offset)?;
+    let (vendor_count, vendor_count_offset) = cursor.number_usize_at("vendor count")?;
+    let removed_line = support_line_at(text, vendor_count_offset)?;
     if vendor_count == 0 {
-        return Some(SupportState {
+        cursor.finish()?;
+        return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count,
             removed: true,
+            header_line,
+            global_flag_line,
+            removed_line,
             counts: [0, 0, 0],
-            object_rules: HashMap::new(),
+            object_rules: BTreeMap::new(),
+            object_rule_lines: BTreeMap::new(),
             vendors: Vec::new(),
         });
     }
-    let (counts, object_rules) = parse_support_object_rules(&text);
-    Some(SupportState {
+    let mut counts = [0usize; 3];
+    let mut object_rules = BTreeMap::new();
+    let mut object_rule_lines = BTreeMap::new();
+    const MIN_VENDOR_FIELDS: usize = 7;
+    if vendor_count > cursor.remaining() / MIN_VENDOR_FIELDS {
+        return Err(SupportParseError::CountExceedsPayload("vendor count"));
+    }
+    let mut vendors = Vec::new();
+    for vendor_index in 0..vendor_count {
+        cursor.uuid("vendor uuid")?;
+        let vendor_flag = cursor.number_u8("vendor flag")?;
+        if !matches!(vendor_flag, 0 | 1) {
+            return Err(SupportParseError::InvalidVendorFlag(vendor_flag));
+        }
+        cursor.uuid("vendor configuration uuid")?;
+        let version = cursor.quoted("vendor version")?;
+        let vendor = cursor.quoted("vendor name")?;
+        let name = cursor.quoted("configuration name")?;
+        let object_count = cursor.number_usize("object count")?;
+        let remaining_vendor_count = vendor_count.saturating_sub(vendor_index.saturating_add(1));
+        let remaining_vendor_fields = remaining_vendor_count
+            .checked_mul(MIN_VENDOR_FIELDS)
+            .ok_or(SupportParseError::CountExceedsPayload("vendor count"))?;
+        let available_object_fields = cursor
+            .remaining()
+            .checked_sub(remaining_vendor_fields)
+            .ok_or(SupportParseError::CountExceedsPayload("vendor count"))?;
+        let minimum_object_fields = minimum_support_object_fields(object_count)?;
+        if minimum_object_fields > available_object_fields {
+            return Err(SupportParseError::CountExceedsPayload("object count"));
+        }
+        vendors.push(SupportVendor {
+            version,
+            vendor,
+            name,
+        });
+        for object_index in 0..object_count {
+            let (flag, flag_offset) = cursor.number_u8_at("object rule")?;
+            let Some(rule) = SupportObjectRule::from_flag(flag) else {
+                return Err(SupportParseError::InvalidObjectRule(flag));
+            };
+            let marker = cursor.number_u8("object marker")?;
+            if marker != 0 {
+                return Err(SupportParseError::InvalidObjectMarker(marker));
+            }
+            let (object_uuid, _uuid_offset) = cursor.uuid("object uuid")?;
+            if object_index == 0 {
+                if cursor
+                    .peek_bare()
+                    .is_some_and(|value| object_uuid.eq_ignore_ascii_case(value))
+                {
+                    cursor.uuid("repeated root object uuid")?;
+                }
+            } else {
+                let (repeated_uuid, _repeated_offset) = cursor.uuid("repeated object uuid")?;
+                if !object_uuid.eq_ignore_ascii_case(&repeated_uuid) {
+                    return Err(SupportParseError::MismatchedObjectUuid);
+                }
+            }
+            let normalized_uuid = object_uuid.to_ascii_lowercase();
+            if object_rules.insert(normalized_uuid.clone(), rule).is_some() {
+                return Err(SupportParseError::DuplicateObjectUuid);
+            }
+            counts[usize::from(flag)] += 1;
+            object_rule_lines.insert(normalized_uuid, support_line_at(text, flag_offset)?);
+        }
+    }
+    cursor.finish()?;
+    Ok(ParsedSupportState {
         global_editing_enabled: global_flag == 0,
         vendor_count,
         removed: false,
+        header_line,
+        global_flag_line,
+        removed_line,
         counts,
         object_rules,
-        vendors: parse_support_vendors(&text),
+        object_rule_lines,
+        vendors,
     })
 }
 
-pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    let mut parts = text
-        .trim_start_matches('\u{feff}')
-        .trim_start()
-        .strip_prefix('{')?
-        .split(',')
-        .map(str::trim);
-    if parts.next()? != "6" {
-        return None;
+fn minimum_support_object_fields(object_count: usize) -> Result<usize, SupportParseError> {
+    if object_count == 0 {
+        return Ok(0);
     }
-    let global_flag = parts.next()?.parse::<u8>().ok()?;
-    let vendor_count = parts.next()?.parse::<usize>().ok()?;
-    Some((global_flag, vendor_count))
+    object_count
+        .checked_mul(4)
+        .and_then(|fields| fields.checked_sub(1))
+        .ok_or(SupportParseError::CountExceedsPayload("object count"))
 }
 
-pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8>) {
-    let mut counts = [0usize; 3];
-    let mut object_rules = HashMap::<String, u8>::new();
+#[derive(Debug)]
+struct SupportToken {
+    value: SupportTokenValue,
+    offset: usize,
+}
+
+#[derive(Debug)]
+enum SupportTokenValue {
+    Bare(String),
+    Quoted(String),
+}
+
+fn tokenize_support_state(text: &str) -> Result<Vec<SupportToken>, SupportParseError> {
     let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        let flag = bytes[i];
-        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
-            let uuid_start = i + 4;
-            let uuid_end = uuid_start + 36;
-            if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
-                    let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
-                    let entry = object_rules
-                        .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
-                    }
-                    i = uuid_end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .ok_or(SupportParseError::InvalidStructure("payload is empty"))?;
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .ok_or(SupportParseError::InvalidStructure("payload is empty"))?;
+    if bytes[start] != b'{' || bytes[end] != b'}' {
+        return Err(SupportParseError::InvalidStructure(
+            "payload must be enclosed by one balanced brace pair",
+        ));
     }
-    (counts, object_rules)
-}
-
-pub(crate) fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
-    let quoted = parse_quoted_support_strings(text);
-    quoted
-        .chunks(3)
-        .filter_map(|chunk| {
-            if chunk.len() == 3 {
-                Some(SupportVendor {
-                    version: chunk[0].clone(),
-                    vendor: chunk[1].clone(),
-                    name: chunk[2].clone(),
-                })
-            } else {
-                None
+    let mut tokens = Vec::new();
+    let mut index = start + 1;
+    let mut needs_token = true;
+    while index < end {
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= end {
+            break;
+        }
+        if bytes[index] == b',' {
+            if needs_token {
+                return Err(SupportParseError::InvalidStructure("empty field"));
             }
-        })
-        .collect()
-}
-
-pub(crate) fn parse_quoted_support_strings(text: &str) -> Vec<String> {
-    let mut result = Vec::<String>::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
+            needs_token = true;
+            index += 1;
             continue;
         }
-        let mut value = String::new();
-        while let Some(next) = chars.next() {
-            if next == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    value.push('"');
+        if !needs_token {
+            return Err(SupportParseError::InvalidStructure(
+                "fields must be comma-separated",
+            ));
+        }
+        let offset = index;
+        let value = if bytes[index] == b'"' {
+            index += 1;
+            let mut value = String::new();
+            let mut segment_start = index;
+            let mut closed = false;
+            while index < end {
+                if bytes[index] != b'"' {
+                    index += 1;
                     continue;
                 }
+                value.push_str(&text[segment_start..index]);
+                if bytes.get(index + 1) == Some(&b'"') {
+                    value.push('"');
+                    index += 2;
+                    segment_start = index;
+                    continue;
+                }
+                index += 1;
+                closed = true;
                 break;
             }
-            value.push(next);
+            if !closed {
+                return Err(SupportParseError::InvalidStructure(
+                    "quoted field is not closed",
+                ));
+            }
+            SupportTokenValue::Quoted(value)
+        } else {
+            let token_start = index;
+            while index < end && bytes[index] != b',' {
+                if matches!(bytes[index], b'{' | b'}' | b'"') {
+                    return Err(SupportParseError::InvalidStructure(
+                        "unexpected brace or quote in bare field",
+                    ));
+                }
+                index += 1;
+            }
+            let value = text[token_start..index].trim();
+            if value.is_empty() {
+                return Err(SupportParseError::InvalidStructure("empty field"));
+            }
+            SupportTokenValue::Bare(value.to_string())
+        };
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
         }
-        result.push(value);
+        if index < end && bytes[index] != b',' {
+            return Err(SupportParseError::InvalidStructure(
+                "quoted field has trailing characters",
+            ));
+        }
+        tokens.push(SupportToken { value, offset });
+        needs_token = false;
     }
-    result
+    if needs_token && !tokens.is_empty() {
+        return Err(SupportParseError::InvalidStructure(
+            "payload ends with an empty field",
+        ));
+    }
+    if tokens.is_empty() {
+        return Err(SupportParseError::InvalidStructure("payload has no fields"));
+    }
+    Ok(tokens)
+}
+
+struct SupportTokenCursor<'a> {
+    tokens: &'a [SupportToken],
+    index: usize,
+}
+
+impl<'a> SupportTokenCursor<'a> {
+    fn new(tokens: &'a [SupportToken]) -> Self {
+        Self { tokens, index: 0 }
+    }
+
+    fn next(&mut self, field: &'static str) -> Result<&'a SupportToken, SupportParseError> {
+        let token = self
+            .tokens
+            .get(self.index)
+            .ok_or(SupportParseError::InvalidStructure(
+                "payload ended before all fields were read",
+            ))?;
+        self.index += 1;
+        match (&token.value, field) {
+            (SupportTokenValue::Bare(_), _) | (SupportTokenValue::Quoted(_), _) => Ok(token),
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.tokens.len().saturating_sub(self.index)
+    }
+
+    fn peek_bare(&self) -> Option<&str> {
+        match self.tokens.get(self.index).map(|token| &token.value) {
+            Some(SupportTokenValue::Bare(value)) => Some(value),
+            Some(SupportTokenValue::Quoted(_)) | None => None,
+        }
+    }
+
+    fn bare(&mut self, field: &'static str) -> Result<(String, usize), SupportParseError> {
+        let token = self.next(field)?;
+        match &token.value {
+            SupportTokenValue::Bare(value) => Ok((value.clone(), token.offset)),
+            SupportTokenValue::Quoted(_value) => Err(SupportParseError::InvalidStructure(
+                "numeric and UUID fields must not be quoted",
+            )),
+        }
+    }
+
+    fn quoted(&mut self, field: &'static str) -> Result<String, SupportParseError> {
+        let token = self.next(field)?;
+        match &token.value {
+            SupportTokenValue::Quoted(value) => Ok(value.clone()),
+            SupportTokenValue::Bare(_value) => Err(SupportParseError::InvalidStructure(
+                "vendor text fields must be quoted",
+            )),
+        }
+    }
+
+    fn number_u8(&mut self, field: &'static str) -> Result<u8, SupportParseError> {
+        self.number_u8_at(field).map(|(value, _offset)| value)
+    }
+
+    fn number_u8_at(&mut self, field: &'static str) -> Result<(u8, usize), SupportParseError> {
+        let (value, offset) = self.bare(field)?;
+        value
+            .parse::<u8>()
+            .map(|value| (value, offset))
+            .map_err(|_error| SupportParseError::InvalidNumber(field))
+    }
+
+    fn number_usize(&mut self, field: &'static str) -> Result<usize, SupportParseError> {
+        self.number_usize_at(field).map(|(value, _offset)| value)
+    }
+
+    fn number_usize_at(
+        &mut self,
+        field: &'static str,
+    ) -> Result<(usize, usize), SupportParseError> {
+        let (value, offset) = self.bare(field)?;
+        value
+            .parse::<usize>()
+            .map(|value| (value, offset))
+            .map_err(|_error| SupportParseError::InvalidNumber(field))
+    }
+
+    fn uuid(&mut self, field: &'static str) -> Result<(String, usize), SupportParseError> {
+        let (value, offset) = self.bare(field)?;
+        if !is_uuid_text(&value) {
+            return Err(SupportParseError::InvalidUuid(field));
+        }
+        Ok((value, offset))
+    }
+
+    fn finish(self) -> Result<(), SupportParseError> {
+        if self.index == self.tokens.len() {
+            Ok(())
+        } else {
+            Err(SupportParseError::InvalidStructure(
+                "payload contains trailing fields",
+            ))
+        }
+    }
+}
+
+fn support_line_at(text: &str, offset: usize) -> Result<u32, SupportParseError> {
+    let lines = text[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        .saturating_add(1);
+    u32::try_from(lines)
+        .map_err(|_error| SupportParseError::InvalidStructure("line number overflowed"))
 }
 
 pub(crate) fn is_uuid_text(value: &str) -> bool {

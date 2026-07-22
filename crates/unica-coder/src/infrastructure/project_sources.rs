@@ -3,13 +3,20 @@ use crate::domain::project_sources::{
     SourceFormat, SourceSetKind,
 };
 use crate::domain::source_roots::select_default_source_set;
+use crate::domain::{cancellation::CancellationToken, discovery::DiscoveryError};
+use crate::infrastructure::platform::contained_file::{
+    read_contained_regular_file_cancellable, ContainedFileError, VerifiedFile,
+};
 use crate::infrastructure::platform::filesystem::host_path_text;
-use crate::infrastructure::source_roots::normalize_contained_source_root;
+use crate::infrastructure::source_roots::{
+    normalize_contained_source_root, normalize_path_identity,
+};
 use serde_yaml::Value as YamlValue;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_DISCOVERY_PROJECT_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct ConfigSourceSet {
@@ -17,6 +24,146 @@ struct ConfigSourceSet {
     kind: SourceSetKind,
     path: String,
     default_format: Option<SourceFormat>,
+    discovery_path_is_safe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectSourceDeclaration {
+    pub name: String,
+    pub kind: SourceSetKind,
+    pub path: String,
+    pub discovery_path_is_safe: bool,
+}
+
+pub(crate) fn discover_project_source_declarations_cancellable(
+    workspace_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<ProjectSourceDeclaration>, DiscoveryError> {
+    discover_project_source_declarations_with_reader(
+        workspace_root,
+        cancellation,
+        |root, path, max_bytes, cancellation| {
+            read_contained_regular_file_cancellable(root, path, max_bytes, || {
+                cancellation.is_cancelled()
+            })
+        },
+    )
+}
+
+fn discover_project_source_declarations_with_reader(
+    workspace_root: &Path,
+    cancellation: &CancellationToken,
+    reader: impl FnOnce(
+        &Path,
+        &Path,
+        u64,
+        &CancellationToken,
+    ) -> Result<VerifiedFile, ContainedFileError>,
+) -> Result<Vec<ProjectSourceDeclaration>, DiscoveryError> {
+    if cancellation.is_cancelled() {
+        return Err(DiscoveryError::Cancelled);
+    }
+    let canonical_root = std::fs::canonicalize(workspace_root)
+        .map(|path| {
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
+        })
+        .map_err(|error| {
+            DiscoveryError::ProjectSources(format!(
+                "failed to resolve discovery workspace root {}: {error}",
+                workspace_root.display()
+            ))
+        })?;
+    if cancellation.is_cancelled() {
+        return Err(DiscoveryError::Cancelled);
+    }
+    let config_path = canonical_root.join("v8project.yaml");
+    let metadata = match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return if cancellation.is_cancelled() {
+                Err(DiscoveryError::Cancelled)
+            } else {
+                Ok(Vec::new())
+            };
+        }
+        Err(error) => {
+            return Err(DiscoveryError::ProjectSources(format!(
+                "failed to inspect discovery project manifest {}: {error}",
+                config_path.display()
+            )));
+        }
+    };
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        || !metadata.file_type().is_file()
+    {
+        return Err(DiscoveryError::ProjectSources(
+            "discovery project manifest v8project.yaml must be a regular non-link file".to_string(),
+        ));
+    }
+    let verified = reader(
+        &canonical_root,
+        &config_path,
+        MAX_DISCOVERY_PROJECT_MANIFEST_BYTES,
+        cancellation,
+    )
+    .map_err(map_discovery_manifest_error)?;
+    if cancellation.is_cancelled() {
+        return Err(DiscoveryError::Cancelled);
+    }
+    let text = std::str::from_utf8(&verified.bytes).map_err(|error| {
+        DiscoveryError::ProjectSources(format!(
+            "failed to parse {} as UTF-8: {error}",
+            config_path.display()
+        ))
+    })?;
+    let (source_sets, _configured_format_raw) =
+        parse_config_source_sets(&canonical_root, &config_path, text)
+            .map_err(DiscoveryError::ProjectSources)?;
+    if cancellation.is_cancelled() {
+        return Err(DiscoveryError::Cancelled);
+    }
+    Ok(source_sets
+        .into_iter()
+        .map(|source_set| ProjectSourceDeclaration {
+            name: source_set.name,
+            kind: source_set.kind,
+            path: source_set.path,
+            discovery_path_is_safe: source_set.discovery_path_is_safe,
+        })
+        .collect())
+}
+
+fn map_discovery_manifest_error(error: ContainedFileError) -> DiscoveryError {
+    match error {
+        ContainedFileError::Cancelled => DiscoveryError::Cancelled,
+        ContainedFileError::SizeLimitExceeded { limit } => {
+            DiscoveryError::ProjectManifestBound { limit }
+        }
+        error => DiscoveryError::ProjectSources(format!(
+            "verified discovery project manifest read failed: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+fn discover_project_source_declarations_with_chunk_observer(
+    workspace_root: &Path,
+    cancellation: &CancellationToken,
+    mut chunk_observer: impl FnMut(usize),
+) -> Result<Vec<ProjectSourceDeclaration>, DiscoveryError> {
+    discover_project_source_declarations_with_reader(
+        workspace_root,
+        cancellation,
+        |root, path, max_bytes, cancellation| {
+            crate::infrastructure::platform::contained_file::read_contained_regular_file_with_chunk_observer_cancellable(
+                root,
+                path,
+                max_bytes,
+                || cancellation.is_cancelled(),
+                &mut chunk_observer,
+            )
+        },
+    )
 }
 
 pub(crate) fn discover_project_source_map(
@@ -74,7 +221,15 @@ fn read_config_source_sets(
 ) -> Result<(Vec<ConfigSourceSet>, Option<String>), String> {
     let text = std::fs::read_to_string(config_path)
         .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
-    let yaml = serde_yaml::from_str::<YamlValue>(&text)
+    parse_config_source_sets(workspace_root, config_path, &text)
+}
+
+fn parse_config_source_sets(
+    workspace_root: &Path,
+    config_path: &Path,
+    text: &str,
+) -> Result<(Vec<ConfigSourceSet>, Option<String>), String> {
+    let yaml = serde_yaml::from_str::<YamlValue>(text)
         .map_err(|err| format!("failed to parse {}: {err}", config_path.display()))?;
     let configured_format_raw = match yaml_mapping_get(&yaml, "format") {
         None => None,
@@ -119,6 +274,7 @@ fn read_config_source_sets(
     }
 
     for source_set in &mut source_sets {
+        source_set.discovery_path_is_safe &= discovery_path_is_safe(&base_path);
         source_set.path = normalize_configured_path(workspace_root, &base_path, &source_set.path);
     }
 
@@ -143,12 +299,27 @@ fn config_source_set_from_named_yaml(
         .unwrap_or_else(|| "CONFIGURATION".to_string());
     let kind = source_set_kind_from_config(&source_type)?;
     let path = yaml_string(entry, "path").unwrap_or_else(|| ".".to_string());
+    let discovery_path_is_safe = discovery_path_is_safe(&path);
     Ok(ConfigSourceSet {
         name: name.to_string(),
         kind,
         path,
         default_format,
+        discovery_path_is_safe,
     })
+}
+
+fn discovery_path_is_safe(raw: &str) -> bool {
+    let path = Path::new(raw);
+    !path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
 }
 
 fn normalize_configured_path(workspace_root: &Path, base_path: &str, raw_path: &str) -> String {
@@ -176,6 +347,7 @@ fn autodetect_source_sets(workspace_root: &Path) -> Vec<ConfigSourceSet> {
                 kind: SourceSetKind::Configuration,
                 path: path.to_string(),
                 default_format: None,
+                discovery_path_is_safe: true,
             }];
         }
     }
@@ -186,9 +358,33 @@ fn detect_source_set_format(
     workspace_root: &Path,
     source_set: ConfigSourceSet,
 ) -> ProjectSourceSet {
-    let source_root = workspace_root.join(&source_set.path);
-    let platform_evidence = platform_xml_evidence(workspace_root, &source_root, source_set.kind);
-    let edt_evidence = edt_evidence(workspace_root, &source_root);
+    let normalized_workspace_root = match normalize_path_identity(workspace_root) {
+        Ok(root) => root,
+        Err(_error) => {
+            return ProjectSourceSet {
+                name: source_set.name,
+                kind: source_set.kind,
+                path: source_set.path,
+                source_format: SourceFormat::Invalid,
+                format_evidence: Vec::new(),
+            };
+        }
+    };
+    let source_root = match normalize_contained_source_root(workspace_root, &source_set.path) {
+        Ok(source_root) => source_root,
+        Err(_error) => {
+            return ProjectSourceSet {
+                name: source_set.name,
+                kind: source_set.kind,
+                path: source_set.path,
+                source_format: SourceFormat::Invalid,
+                format_evidence: Vec::new(),
+            };
+        }
+    };
+    let platform_evidence =
+        platform_xml_evidence(&normalized_workspace_root, &source_root, source_set.kind);
+    let edt_evidence = edt_evidence(&normalized_workspace_root, &source_root);
     let source_format = match (platform_evidence.is_empty(), edt_evidence.is_empty()) {
         (false, false) => SourceFormat::Invalid,
         (false, true) => SourceFormat::PlatformXml,
@@ -368,6 +564,10 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use crate::infrastructure::source_roots::resolve_source_root;
     use crate::infrastructure::workspace::discover_workspace;
     use std::ffi::{OsStr, OsString};
@@ -423,6 +623,171 @@ source-set:
             &["epf/PriceLoader.xml"],
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn escaping_configured_source_is_not_probed_for_format_evidence() {
+        let root = temp_workspace("unica-source-map-contained-probe");
+        let outside = temp_workspace("unica-source-map-outside-probe");
+        write(
+            &root.join("v8project.yaml"),
+            &format!(
+                "source-set:\n  - name: escaped\n    type: CONFIGURATION\n    path: {}\n",
+                outside.display()
+            ),
+        );
+        write(
+            &outside.join("Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_source_set(
+            &map,
+            "escaped",
+            SourceSetKind::Configuration,
+            SourceFormat::Invalid,
+            &[],
+        );
+        assert!(map
+            .source_selection_error
+            .as_deref()
+            .is_some_and(|error| error.contains("workspace")));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn declaration_only_source_reader_does_not_classify_any_source_root() {
+        let root = temp_workspace("unica-source-declarations-only");
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
+        );
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("epf")).unwrap();
+
+        let declarations =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .unwrap();
+
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].name, "app");
+        assert_eq!(declarations[0].kind, SourceSetKind::Configuration);
+        assert_eq!(declarations[0].path, "src");
+        assert_eq!(declarations[1].name, "external");
+        assert_eq!(declarations[1].kind, SourceSetKind::ExternalProcessor);
+        assert_eq!(declarations[1].path, "epf");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_manifest_reader_keeps_normal_declaration_semantics() {
+        let root = temp_workspace("unica-discovery-manifest-normal");
+        write(
+            &root.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n",
+        );
+
+        let declarations =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .expect("bounded discovery manifest");
+
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].name, "app");
+        assert_eq!(declarations[0].path, "src");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_discovery_manifest_has_a_stable_typed_bound() {
+        let root = temp_workspace("unica-discovery-manifest-bound");
+        fs::write(
+            root.join("v8project.yaml"),
+            vec![b' '; MAX_DISCOVERY_PROJECT_MANIFEST_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        let error =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .expect_err("oversized discovery manifest must be bounded");
+
+        assert_eq!(
+            error,
+            DiscoveryError::ProjectManifestBound {
+                limit: MAX_DISCOVERY_PROJECT_MANIFEST_BYTES,
+            }
+        );
+        assert_eq!(error.code(), "discovery_project_manifest_bound");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_manifest_reader_never_follows_a_file_link() {
+        let root = temp_workspace("unica-discovery-manifest-link");
+        let target = root.join("manifest-target.yaml");
+        write(
+            &target,
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n",
+        );
+        let link = root.join("v8project.yaml");
+        if create_file_link_fixture_for_test(&target, &link).unwrap()
+            != FileLinkFixtureOutcome::Created
+        {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
+        let error =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .expect_err("linked discovery manifest must not be followed");
+
+        let DiscoveryError::ProjectSources(message) = error else {
+            panic!("linked manifest must retain the project-source error identity");
+        };
+        assert!(message.contains("regular non-link file"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_manifest_reader_cancels_between_bounded_read_chunks() {
+        let root = temp_workspace("unica-discovery-manifest-cancel");
+        let mut manifest =
+            b"source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n".to_vec();
+        while manifest.len()
+            < crate::infrastructure::platform::contained_file::VERIFIED_READ_CHUNK_BYTES * 3
+        {
+            manifest.extend_from_slice(b"# bounded padding\n");
+        }
+        fs::write(root.join("v8project.yaml"), manifest).unwrap();
+        let cancellation = CancellationToken::new();
+        let mut chunks = 0_u8;
+
+        let error =
+            discover_project_source_declarations_with_chunk_observer(&root, &cancellation, |_| {
+                chunks += 1;
+                cancellation.cancel();
+            })
+            .expect_err("manifest read must stop between chunks");
+
+        assert_eq!(error, DiscoveryError::Cancelled);
+        assert_eq!(chunks, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_discovery_manifest_retains_project_source_error_identity() {
+        let root = temp_workspace("unica-discovery-manifest-malformed");
+        write(&root.join("v8project.yaml"), "source-set: [");
+
+        let error =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .expect_err("malformed discovery manifest");
+
+        assert!(matches!(error, DiscoveryError::ProjectSources(_)));
+        assert_eq!(error.code(), "discovery_project_sources");
         fs::remove_dir_all(root).unwrap();
     }
 

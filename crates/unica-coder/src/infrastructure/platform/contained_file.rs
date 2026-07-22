@@ -1,0 +1,1618 @@
+use crate::domain::discovery::{ContentHash, PortableRelativePath, PortableRelativePathError};
+use std::fmt;
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+pub(crate) const VERIFIED_READ_CHUNK_BYTES: usize = 64 * 1_024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedIdentity {
+    pub storage: u64,
+    pub object: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedFile {
+    pub relative_path: PortableRelativePath,
+    pub bytes: Vec<u8>,
+    pub raw_sha256: ContentHash,
+    pub bytes_read: u64,
+    pub identity: VerifiedIdentity,
+}
+
+/// Keeps a verified regular file open so consumers can copy bytes from the
+/// object that passed containment and identity checks, independent of later
+/// pathname replacement.
+pub(crate) struct VerifiedFileHandle {
+    file: File,
+    identity: VerifiedIdentity,
+    relative_path: PortableRelativePath,
+    #[cfg(windows)]
+    _directory_leases: Vec<File>,
+}
+
+impl VerifiedFileHandle {
+    /// Reads the verified object twice through the open handle and accepts it
+    /// only when both bounded copies are identical. SQLite receives the
+    /// resulting private bytes, never this handle or a pathname.
+    pub(crate) fn read_immutable_snapshot_cancellable(
+        &self,
+        max_bytes: u64,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<VerifiedFile, ContainedFileError> {
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        validate_open_handle_identity(&self.file, self.identity)?;
+        let first = read_open_handle_bytes(&self.file, max_bytes, &mut is_cancelled)?;
+        validate_open_handle_identity(&self.file, self.identity)?;
+        let second = read_open_handle_bytes(&self.file, max_bytes, &mut is_cancelled)?;
+        validate_open_handle_identity(&self.file, self.identity)?;
+        if first != second {
+            return Err(ContainedFileError::IdentityChanged);
+        }
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        let bytes_read =
+            u64::try_from(first.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let raw_sha256 = ContentHash::from_incremental_sha256(Sha256::new_with_prefix(&first));
+        Ok(VerifiedFile {
+            relative_path: self.relative_path.clone(),
+            bytes: first,
+            raw_sha256,
+            bytes_read,
+            identity: self.identity,
+        })
+    }
+}
+
+fn validate_open_handle_identity(
+    file: &File,
+    expected: VerifiedIdentity,
+) -> Result<(), ContainedFileError> {
+    let metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "reinspect open file snapshot handle",
+        source,
+    })?;
+    validate_regular_metadata(&metadata)?;
+    if identity_from_open_file(file, &metadata)? != expected {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    Ok(())
+}
+
+fn read_open_handle_bytes(
+    file: &File,
+    max_bytes: u64,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<Vec<u8>, ContainedFileError> {
+    let metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "inspect open file snapshot length",
+        source,
+    })?;
+    if metadata.len() > max_bytes {
+        return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
+    }
+    let mut bytes = Vec::new();
+    let mut reader = file;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| ContainedFileError::Io {
+            operation: "rewind open file snapshot handle",
+            source,
+        })?;
+    let mut chunk = [0_u8; VERIFIED_READ_CHUNK_BYTES];
+    loop {
+        if is_cancelled() {
+            return Err(ContainedFileError::Cancelled);
+        }
+        let bytes_read =
+            u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let probe_remaining = max_bytes
+            .saturating_sub(bytes_read)
+            .saturating_add(1)
+            .min(VERIFIED_READ_CHUNK_BYTES as u64);
+        let chunk_limit =
+            usize::try_from(probe_remaining).map_err(|_| ContainedFileError::LengthOverflow)?;
+        let read =
+            reader
+                .read(&mut chunk[..chunk_limit])
+                .map_err(|source| ContainedFileError::Io {
+                    operation: "read open file snapshot handle",
+                    source,
+                })?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if u64::try_from(bytes.len()).map_or(true, |length| length > max_bytes) {
+            return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
+        }
+    }
+    Ok(bytes)
+}
+
+#[derive(Debug)]
+pub(crate) enum ContainedFileError {
+    RootNotCanonical,
+    RootNotDirectory,
+    PathOutsideRoot,
+    FinalPathOutsideRoot,
+    FinalPathMismatch,
+    AmbiguousHostPath,
+    InvalidRelativePath(PortableRelativePathError),
+    SymlinkOrReparsePoint,
+    NotRegularFile,
+    IdentityChanged,
+    Cancelled,
+    SizeLimitExceeded {
+        limit: u64,
+    },
+    LengthOverflow,
+    #[cfg_attr(
+        any(unix, windows),
+        allow(
+            dead_code,
+            reason = "constructed only by fail-closed unsupported-host cfgs"
+        )
+    )]
+    UnsupportedHost,
+    Io {
+        operation: &'static str,
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for ContainedFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootNotCanonical => formatter.write_str("source root is not its canonical path"),
+            Self::RootNotDirectory => formatter.write_str("source root is not a directory"),
+            Self::PathOutsideRoot => formatter.write_str("file path is outside the source root"),
+            Self::FinalPathOutsideRoot => {
+                formatter.write_str("opened file resolved outside the source root")
+            }
+            Self::FinalPathMismatch => {
+                formatter.write_str("opened file path differs from the requested contained path")
+            }
+            Self::AmbiguousHostPath => {
+                formatter.write_str("host path does not have a unique portable representation")
+            }
+            Self::InvalidRelativePath(error) => write!(formatter, "invalid relative path: {error}"),
+            Self::SymlinkOrReparsePoint => {
+                formatter.write_str("file is a symlink or reparse point")
+            }
+            Self::NotRegularFile => formatter.write_str("file target is not a regular file"),
+            Self::IdentityChanged => {
+                formatter.write_str("file identity changed during verified read")
+            }
+            Self::Cancelled => formatter.write_str("verified contained read cancelled"),
+            Self::SizeLimitExceeded { limit } => {
+                write!(formatter, "file exceeds the {limit}-byte read limit")
+            }
+            Self::LengthOverflow => formatter.write_str("file byte count is not representable"),
+            Self::UnsupportedHost => {
+                formatter.write_str("verified contained reads are unsupported on this host")
+            }
+            Self::Io { operation, source } => write!(formatter, "{operation}: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for ContainedFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidRelativePath(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            Self::RootNotCanonical
+            | Self::RootNotDirectory
+            | Self::PathOutsideRoot
+            | Self::FinalPathOutsideRoot
+            | Self::FinalPathMismatch
+            | Self::AmbiguousHostPath
+            | Self::SymlinkOrReparsePoint
+            | Self::NotRegularFile
+            | Self::IdentityChanged
+            | Self::Cancelled
+            | Self::SizeLimitExceeded { .. }
+            | Self::LengthOverflow
+            | Self::UnsupportedHost => None,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn read_contained_regular_file(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers::no_op(),
+        || false,
+    )
+}
+
+pub(crate) fn read_contained_regular_file_cancellable(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers::no_op(),
+        is_cancelled,
+    )
+}
+
+pub(crate) fn open_contained_regular_file_handle(
+    root: &Path,
+    path: &Path,
+) -> Result<VerifiedFileHandle, ContainedFileError> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map(|path| {
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
+        })
+        .map_err(|source| ContainedFileError::Io {
+            operation: "resolve source root",
+            source,
+        })?;
+    let supplied_root =
+        crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(root);
+    if canonical_root != supplied_root {
+        return Err(ContainedFileError::RootNotCanonical);
+    }
+    let root = canonical_root.as_path();
+    let root_metadata =
+        std::fs::symlink_metadata(root).map_err(|source| ContainedFileError::Io {
+            operation: "inspect source root",
+            source,
+        })?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+        &root_metadata,
+    ) || !root_metadata.file_type().is_dir()
+    {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let relative = candidate
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::PathOutsideRoot)?;
+    if !host_relative_path_is_unambiguous(relative) {
+        return Err(ContainedFileError::AmbiguousHostPath);
+    }
+    let relative_path =
+        PortableRelativePath::parse(relative).map_err(ContainedFileError::InvalidRelativePath)?;
+    #[cfg(windows)]
+    let directory_leases = open_stable_windows_directory_leases(root, &candidate)?;
+    let pre_open_identity = identity_at_path(&candidate)?;
+    let file = open_stable_no_follow(&candidate)?;
+    let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "inspect opened file",
+        source,
+    })?;
+    validate_regular_metadata(&opened_metadata)?;
+    let opened_identity = identity_from_open_file(&file, &opened_metadata)?;
+    if pre_open_identity != opened_identity {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    validate_opened_regular_file(root, &candidate, &relative_path, &file, opened_identity)?;
+    Ok(VerifiedFileHandle {
+        file,
+        identity: opened_identity,
+        relative_path,
+        #[cfg(windows)]
+        _directory_leases: directory_leases,
+    })
+}
+
+pub(crate) fn read_contained_regular_file_with_expected_identity_cancellable(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    expected_identity: VerifiedIdentity,
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        Some(expected_identity),
+        ReadObservers::no_op(),
+        is_cancelled,
+    )
+}
+
+struct ReadObservers<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk> {
+    pre_open: PreOpen,
+    post_open: PostOpen,
+    final_metadata: FinalMetadata,
+    read_body: ReadBody,
+    chunk: Chunk,
+}
+
+impl ReadObservers<fn(), fn(), fn(), fn(), fn(usize)> {
+    fn no_op() -> Self {
+        Self {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        }
+    }
+}
+
+#[cfg(test)]
+fn read_contained_regular_file_with_observer(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    observer: impl FnMut(),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: observer,
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
+    )
+}
+
+#[cfg(test)]
+fn read_contained_regular_file_with_post_open_observer(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    observer: impl FnMut(),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: || {},
+            post_open: observer,
+            final_metadata: || {},
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
+    )
+}
+
+#[cfg(test)]
+fn read_contained_regular_file_with_final_metadata_observer(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    final_metadata_observer: impl FnMut(),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: final_metadata_observer,
+            read_body: || {},
+            chunk: |_| {},
+        },
+        || false,
+    )
+}
+
+#[cfg(test)]
+fn read_contained_regular_file_with_read_observer(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    post_open_observer: impl FnMut(),
+    read_observer: impl FnMut(),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: || {},
+            post_open: post_open_observer,
+            final_metadata: || {},
+            read_body: read_observer,
+            chunk: |_| {},
+        },
+        || false,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn read_contained_regular_file_with_chunk_observer_cancellable(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    is_cancelled: impl FnMut() -> bool,
+    chunk_observer: impl FnMut(usize),
+) -> Result<VerifiedFile, ContainedFileError> {
+    read_contained_regular_file_observing(
+        root,
+        path,
+        max_bytes,
+        None,
+        ReadObservers {
+            pre_open: || {},
+            post_open: || {},
+            final_metadata: || {},
+            read_body: || {},
+            chunk: chunk_observer,
+        },
+        is_cancelled,
+    )
+}
+
+fn read_contained_regular_file_observing<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk>(
+    root: &Path,
+    path: &Path,
+    max_bytes: u64,
+    expected_identity: Option<VerifiedIdentity>,
+    mut observers: ReadObservers<PreOpen, PostOpen, FinalMetadata, ReadBody, Chunk>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<VerifiedFile, ContainedFileError>
+where
+    PreOpen: FnMut(),
+    PostOpen: FnMut(),
+    FinalMetadata: FnMut(),
+    ReadBody: FnMut(),
+    Chunk: FnMut(usize),
+{
+    if is_cancelled() {
+        return Err(ContainedFileError::Cancelled);
+    }
+    let canonical_root = std::fs::canonicalize(root)
+        .map(|path| {
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
+        })
+        .map_err(|source| ContainedFileError::Io {
+            operation: "resolve source root",
+            source,
+        })?;
+    let supplied_root =
+        crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(root);
+    if canonical_root != supplied_root {
+        return Err(ContainedFileError::RootNotCanonical);
+    }
+    let root = canonical_root.as_path();
+    let root_metadata =
+        std::fs::symlink_metadata(root).map_err(|source| ContainedFileError::Io {
+            operation: "inspect source root",
+            source,
+        })?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+        &root_metadata,
+    ) || !root_metadata.file_type().is_dir()
+    {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let relative = candidate
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::PathOutsideRoot)?;
+    if !host_relative_path_is_unambiguous(relative) {
+        return Err(ContainedFileError::AmbiguousHostPath);
+    }
+    let relative_path =
+        PortableRelativePath::parse(relative).map_err(ContainedFileError::InvalidRelativePath)?;
+
+    let pre_open_identity = identity_at_path(&candidate)?;
+    if expected_identity.is_some_and(|expected| expected != pre_open_identity) {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    (observers.pre_open)();
+    let file = open_no_follow(&candidate)?;
+    let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "inspect opened file",
+        source,
+    })?;
+    validate_regular_metadata(&opened_metadata)?;
+    let opened_identity = identity_from_open_file(&file, &opened_metadata)?;
+    if pre_open_identity != opened_identity {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    (observers.post_open)();
+    validate_opened_regular_file_observing(
+        root,
+        &candidate,
+        &relative_path,
+        &file,
+        opened_identity,
+        observers.final_metadata,
+    )?;
+    let metadata_exceeds_limit = opened_metadata.len() > max_bytes;
+    let mut bytes = Vec::new();
+    let mut hasher = Sha256::new();
+    if !metadata_exceeds_limit {
+        (observers.read_body)();
+        let mut reader = &file;
+        let mut chunk = [0_u8; VERIFIED_READ_CHUNK_BYTES];
+        loop {
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            let bytes_read =
+                u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+            let probe_remaining = max_bytes
+                .saturating_sub(bytes_read)
+                .saturating_add(1)
+                .min(VERIFIED_READ_CHUNK_BYTES as u64);
+            let chunk_limit =
+                usize::try_from(probe_remaining).map_err(|_| ContainedFileError::LengthOverflow)?;
+            let read_result = reader.read(&mut chunk[..chunk_limit]);
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            let read = read_result.map_err(|source| ContainedFileError::Io {
+                operation: "read file",
+                source,
+            })?;
+            if read == 0 {
+                break;
+            }
+            (observers.chunk)(read);
+            if is_cancelled() {
+                return Err(ContainedFileError::Cancelled);
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            hasher.update(&chunk[..read]);
+            if u64::try_from(bytes.len()).map_or(true, |length| length > max_bytes) {
+                break;
+            }
+        }
+    }
+    let bytes_read = u64::try_from(bytes.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+    let read_exceeds_limit = bytes_read > max_bytes;
+    validate_opened_regular_file(root, &candidate, &relative_path, &file, opened_identity)?;
+    if is_cancelled() {
+        return Err(ContainedFileError::Cancelled);
+    }
+    if metadata_exceeds_limit || read_exceeds_limit {
+        return Err(ContainedFileError::SizeLimitExceeded { limit: max_bytes });
+    }
+
+    let raw_sha256 = ContentHash::from_incremental_sha256(hasher);
+    Ok(VerifiedFile {
+        relative_path,
+        bytes,
+        raw_sha256,
+        bytes_read,
+        identity: opened_identity,
+    })
+}
+
+fn validate_opened_regular_file(
+    root: &Path,
+    candidate: &Path,
+    relative_path: &PortableRelativePath,
+    file: &File,
+    opened_identity: VerifiedIdentity,
+) -> Result<(), ContainedFileError> {
+    validate_opened_regular_file_observing(
+        root,
+        candidate,
+        relative_path,
+        file,
+        opened_identity,
+        || {},
+    )
+}
+
+fn validate_opened_regular_file_observing(
+    root: &Path,
+    candidate: &Path,
+    relative_path: &PortableRelativePath,
+    file: &File,
+    opened_identity: VerifiedIdentity,
+    final_metadata_observer: impl FnOnce(),
+) -> Result<(), ContainedFileError> {
+    let opened_metadata = file.metadata().map_err(|source| ContainedFileError::Io {
+        operation: "reinspect opened file",
+        source,
+    })?;
+    validate_regular_metadata(&opened_metadata)?;
+    if identity_from_open_file(file, &opened_metadata)? != opened_identity
+        || identity_at_path(candidate)? != opened_identity
+    {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    let handle_path = final_opened_file_path(file)
+        .map_err(|error| reclassify_file_final_path_error(candidate, opened_identity, error))?;
+    let resolved_path = std::fs::canonicalize(&handle_path)
+        .map(|path| {
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(&path)
+        })
+        .map_err(|source| {
+            reclassify_file_final_path_error(
+                candidate,
+                opened_identity,
+                ContainedFileError::Io {
+                    operation: "resolve opened file path",
+                    source,
+                },
+            )
+        })?;
+    if !resolved_path.starts_with(root) {
+        return Err(ContainedFileError::FinalPathOutsideRoot);
+    }
+    let final_relative = resolved_path
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::FinalPathOutsideRoot)?;
+    let final_portable = PortableRelativePath::parse(final_relative)
+        .map_err(ContainedFileError::InvalidRelativePath)?;
+    if &final_portable != relative_path {
+        return Err(ContainedFileError::FinalPathMismatch);
+    }
+    final_metadata_observer();
+    let final_metadata = std::fs::symlink_metadata(&resolved_path).map_err(|source| {
+        reclassify_file_final_path_error(
+            candidate,
+            opened_identity,
+            ContainedFileError::Io {
+                operation: "inspect resolved opened file",
+                source,
+            },
+        )
+    })?;
+    validate_regular_metadata(&final_metadata)?;
+    if identity_at_path(&resolved_path)? != opened_identity
+        || identity_at_path(candidate)? != opened_identity
+    {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    Ok(())
+}
+
+fn reclassify_file_final_path_error(
+    candidate: &Path,
+    opened_identity: VerifiedIdentity,
+    final_path_error: ContainedFileError,
+) -> ContainedFileError {
+    match identity_at_path(candidate) {
+        Ok(candidate_identity) => {
+            if candidate_identity == opened_identity {
+                final_path_error
+            } else {
+                ContainedFileError::IdentityChanged
+            }
+        }
+        Err(
+            ContainedFileError::IdentityChanged
+            | ContainedFileError::SymlinkOrReparsePoint
+            | ContainedFileError::NotRegularFile,
+        ) => ContainedFileError::IdentityChanged,
+        Err(
+            ContainedFileError::RootNotCanonical
+            | ContainedFileError::RootNotDirectory
+            | ContainedFileError::PathOutsideRoot
+            | ContainedFileError::FinalPathOutsideRoot
+            | ContainedFileError::FinalPathMismatch
+            | ContainedFileError::AmbiguousHostPath
+            | ContainedFileError::InvalidRelativePath(_)
+            | ContainedFileError::Cancelled
+            | ContainedFileError::SizeLimitExceeded { .. }
+            | ContainedFileError::LengthOverflow
+            | ContainedFileError::UnsupportedHost
+            | ContainedFileError::Io { .. },
+        ) => final_path_error,
+    }
+}
+
+#[cfg(unix)]
+fn host_relative_path_is_unambiguous(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    !path.as_os_str().as_bytes().contains(&b'\\')
+}
+
+#[cfg(not(unix))]
+fn host_relative_path_is_unambiguous(_path: &Path) -> bool {
+    true
+}
+
+fn validate_regular_metadata(metadata: &Metadata) -> Result<(), ContainedFileError> {
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(metadata) {
+        return Err(ContainedFileError::SymlinkOrReparsePoint);
+    }
+    if !metadata.file_type().is_file() {
+        return Err(ContainedFileError::NotRegularFile);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn identity_at_path(path: &Path) -> Result<VerifiedIdentity, ContainedFileError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|source| {
+        if matches!(source.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) {
+            ContainedFileError::IdentityChanged
+        } else {
+            ContainedFileError::Io {
+                operation: "inspect file path identity",
+                source,
+            }
+        }
+    })?;
+    validate_regular_metadata(&metadata)?;
+    identity_from_path_metadata(&metadata)
+}
+
+#[cfg(windows)]
+fn identity_at_path(path: &Path) -> Result<VerifiedIdentity, ContainedFileError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            ContainedFileError::IdentityChanged
+        } else {
+            ContainedFileError::Io {
+                operation: "inspect file path identity",
+                source,
+            }
+        }
+    })?;
+    validate_regular_metadata(&metadata)?;
+    let file = open_no_follow(path)?;
+    identity_from_open_file(&file, &metadata)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_at_path(_path: &Path) -> Result<VerifiedIdentity, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(unix)]
+fn identity_from_path_metadata(
+    metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(VerifiedIdentity {
+        storage: metadata.dev(),
+        object: metadata.ino(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_from_path_metadata(
+    _metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(unix)]
+fn identity_from_open_file(
+    _file: &File,
+    metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    identity_from_path_metadata(metadata)
+}
+
+#[cfg(windows)]
+fn identity_from_open_file(
+    file: &File,
+    _metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: file owns a valid handle and the pointer targets writable storage initialized by a
+    // successful GetFileInformationByHandle call.
+    let succeeded =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
+    if succeeded == 0 {
+        return Err(ContainedFileError::Io {
+            operation: "inspect opened Windows file identity",
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: a nonzero result guarantees complete initialization of the information structure.
+    let information = unsafe { information.assume_init() };
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(ContainedFileError::SymlinkOrReparsePoint);
+    }
+    Ok(VerifiedIdentity {
+        storage: u64::from(information.dwVolumeSerialNumber),
+        object: (u64::from(information.nFileIndexHigh) << 32)
+            | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_from_open_file(
+    _file: &File,
+    _metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(unix_no_follow_open_flags())
+        .open(path)
+        .map_err(|source| {
+            if source.raw_os_error() == Some(libc::ELOOP) {
+                ContainedFileError::SymlinkOrReparsePoint
+            } else if source.kind() == io::ErrorKind::NotFound {
+                ContainedFileError::IdentityChanged
+            } else {
+                ContainedFileError::Io {
+                    operation: "open file without following links",
+                    source,
+                }
+            }
+        })
+}
+
+#[cfg(unix)]
+fn open_stable_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    open_no_follow(path)
+}
+
+#[cfg(unix)]
+const fn unix_no_follow_open_flags() -> i32 {
+    libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
+}
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                ContainedFileError::IdentityChanged
+            } else {
+                ContainedFileError::Io {
+                    operation: "open Windows file without following reparse points",
+                    source,
+                }
+            }
+        })
+}
+
+#[cfg(windows)]
+fn open_stable_no_follow(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                ContainedFileError::IdentityChanged
+            } else {
+                ContainedFileError::Io {
+                    operation: "open stable Windows file without following reparse points",
+                    source,
+                }
+            }
+        })
+}
+
+#[cfg(windows)]
+fn open_stable_windows_directory_leases(
+    root: &Path,
+    candidate: &Path,
+) -> Result<Vec<File>, ContainedFileError> {
+    let parent = candidate
+        .parent()
+        .ok_or(ContainedFileError::PathOutsideRoot)?;
+    let relative_parent = parent
+        .strip_prefix(root)
+        .map_err(|_| ContainedFileError::PathOutsideRoot)?;
+    let mut paths = vec![root.to_path_buf()];
+    let mut current = root.to_path_buf();
+    for component in relative_parent.components() {
+        current.push(component.as_os_str());
+        paths.push(current.clone());
+    }
+    paths
+        .into_iter()
+        .map(|path| open_stable_windows_directory(&path))
+        .collect()
+}
+
+#[cfg(windows)]
+fn open_stable_windows_directory(path: &Path) -> Result<File, ContainedFileError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|source| ContainedFileError::Io {
+        operation: "inspect stable Windows directory",
+        source,
+    })?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        || !metadata.is_dir()
+    {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| ContainedFileError::Io {
+            operation: "lease stable Windows directory",
+            source,
+        })?;
+    let opened_metadata = directory
+        .metadata()
+        .map_err(|source| ContainedFileError::Io {
+            operation: "inspect leased Windows directory",
+            source,
+        })?;
+    if !opened_metadata.is_dir() {
+        return Err(ContainedFileError::RootNotDirectory);
+    }
+    let opened_identity = identity_from_open_file(&directory, &opened_metadata)?;
+    let path_identity = identity_from_windows_metadata(&metadata)?;
+    if opened_identity != path_identity {
+        return Err(ContainedFileError::IdentityChanged);
+    }
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn identity_from_windows_metadata(
+    metadata: &Metadata,
+) -> Result<VerifiedIdentity, ContainedFileError> {
+    use std::os::windows::fs::MetadataExt;
+
+    let storage = metadata
+        .volume_serial_number()
+        .map(u64::from)
+        .ok_or(ContainedFileError::UnsupportedHost)?;
+    let object = metadata
+        .file_index()
+        .ok_or(ContainedFileError::UnsupportedHost)?;
+    Ok(VerifiedIdentity { storage, object })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_no_follow(_path: &Path) -> Result<File, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_stable_no_follow(_path: &Path) -> Result<File, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn final_opened_file_path(file: &File) -> Result<PathBuf, ContainedFileError> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|source| {
+        ContainedFileError::Io {
+            operation: "resolve opened Unix file handle",
+            source,
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn final_opened_file_path(file: &File) -> Result<PathBuf, ContainedFileError> {
+    use std::ffi::CStr;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut buffer = vec![0_i8; libc::PATH_MAX as usize];
+    // SAFETY: file owns a valid descriptor and buffer is writable for PATH_MAX bytes for the
+    // duration of fcntl. F_GETPATH writes a NUL-terminated pathname on success.
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) };
+    if result == -1 {
+        return Err(ContainedFileError::Io {
+            operation: "resolve opened macOS file handle",
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: successful F_GETPATH initialized buffer with a NUL-terminated C string.
+    let path = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
+fn final_opened_file_path(_file: &File) -> Result<PathBuf, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(windows)]
+fn final_opened_file_path(file: &File) -> Result<PathBuf, ContainedFileError> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
+    };
+
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        let buffer_length =
+            u32::try_from(buffer.len()).map_err(|_| ContainedFileError::LengthOverflow)?;
+        // SAFETY: file owns a valid handle and buffer provides writable UTF-16 storage for the
+        // declared length for the duration of this call.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer_length,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(ContainedFileError::Io {
+                operation: "resolve opened Windows file handle",
+                source: io::Error::last_os_error(),
+            });
+        }
+        let length = usize::try_from(length).map_err(|_| ContainedFileError::LengthOverflow)?;
+        if length < buffer.len() {
+            buffer.truncate(length);
+            let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer));
+            return Ok(
+                crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                    &path,
+                ),
+            );
+        }
+        let required = length
+            .checked_add(1)
+            .ok_or(ContainedFileError::LengthOverflow)?;
+        buffer.resize(required, 0);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn final_opened_file_path(_file: &File) -> Result<PathBuf, ContainedFileError> {
+    Err(ContainedFileError::UnsupportedHost)
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NonRegularFixtureOutcome {
+    Created,
+    Unsupported,
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn create_non_regular_fixture_for_test(
+    path: &Path,
+) -> io::Result<NonRegularFixtureOutcome> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    // SAFETY: path is a live NUL-terminated pathname and the supplied mode is valid.
+    let result = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+    if result == 0 {
+        Ok(NonRegularFixtureOutcome::Created)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn create_non_regular_fixture_for_test(
+    _path: &Path,
+) -> io::Result<NonRegularFixtureOutcome> {
+    Ok(NonRegularFixtureOutcome::Unsupported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        read_contained_regular_file, read_contained_regular_file_cancellable,
+        read_contained_regular_file_with_chunk_observer_cancellable,
+        read_contained_regular_file_with_final_metadata_observer,
+        read_contained_regular_file_with_observer,
+        read_contained_regular_file_with_post_open_observer,
+        read_contained_regular_file_with_read_observer, ContainedFileError,
+    };
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::discovery::{ContentHash, PortableRelativePath};
+    use crate::infrastructure::platform::testing::{
+        create_dir_symlink_for_test, create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn reads_exact_raw_bytes_from_a_contained_regular_file() {
+        let root = fixture_root("regular");
+        let path = root.join("Objects/Document.xml");
+        fs::create_dir_all(path.parent().expect("fixture file parent")).expect("fixture parent");
+        fs::write(&path, b"<Document/>\r\n").expect("fixture file");
+
+        let verified = read_contained_regular_file(&root, &path, 1_024).expect("verified read");
+
+        assert_eq!(
+            verified.relative_path,
+            PortableRelativePath::parse_str("Objects/Document.xml").expect("portable path")
+        );
+        assert_eq!(verified.bytes, b"<Document/>\r\n");
+        assert_eq!(verified.bytes_read, 13);
+        assert_eq!(verified.raw_sha256, ContentHash::sha256(b"<Document/>\r\n"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn raw_hash_and_byte_count_preserve_bom_and_line_endings() {
+        let bom_lf = read_fixture("bom-lf", &[0xef, 0xbb, 0xbf, b'a', b'\n']);
+        let plain_crlf = read_fixture("plain-crlf", b"a\r\n");
+
+        assert_ne!(bom_lf.raw_sha256, plain_crlf.raw_sha256);
+        assert_eq!(bom_lf.bytes_read, 5);
+        assert_eq!(bom_lf.bytes, &[0xef, 0xbb, 0xbf, b'a', b'\n']);
+        assert_eq!(plain_crlf.bytes, b"a\r\n");
+    }
+
+    #[test]
+    fn rejects_an_absolute_path_outside_the_canonical_root() {
+        let root = fixture_root("outside-root");
+        let outside = fixture_root("outside-file");
+        let path = outside.join("Document.xml");
+        fs::write(&path, b"outside").expect("outside file");
+
+        let error = read_contained_regular_file(&root, &path, 1_024)
+            .expect_err("outside file must not be read");
+
+        assert!(matches!(error, ContainedFileError::PathOutsideRoot));
+        cleanup(&root);
+        cleanup(&outside);
+    }
+
+    #[test]
+    fn exposes_a_stable_neutral_identity_for_the_opened_file() {
+        let root = fixture_root("stable-identity");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"identity").expect("fixture file");
+
+        let first = read_contained_regular_file(&root, &path, 1_024).expect("first read");
+        let second = read_contained_regular_file(&root, &path, 1_024).expect("second read");
+
+        assert_eq!(first.identity, second.identity);
+        assert_ne!(first.identity.object, 0);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_symlink_or_reparse_point_file() {
+        let root = fixture_root("file-link");
+        let target = root.join("target.xml");
+        let link = root.join("link.xml");
+        fs::write(&target, b"target").expect("link target");
+        let outcome = create_file_link_fixture_for_test(&target, &link).expect("link fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            cleanup(&root);
+            return;
+        }
+
+        let error =
+            read_contained_regular_file(&root, &link, 1_024).expect_err("link must not be read");
+
+        assert!(matches!(error, ContainedFileError::SymlinkOrReparsePoint));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_file_reached_through_an_escaping_directory_link() {
+        let root = fixture_root("directory-link");
+        let outside = fixture_root("directory-link-outside");
+        let outside_file = outside.join("Document.xml");
+        fs::write(&outside_file, b"outside").expect("outside file");
+        let linked_directory = root.join("linked");
+        let Some(link_result) = create_dir_symlink_for_test(&outside, &linked_directory) else {
+            cleanup(&root);
+            cleanup(&outside);
+            return;
+        };
+        if let Err(error) = link_result {
+            if error.raw_os_error() == Some(1_314) {
+                cleanup(&root);
+                cleanup(&outside);
+                return;
+            }
+            panic!("directory-link fixture failed: {error}");
+        }
+
+        let error =
+            read_contained_regular_file(&root, &linked_directory.join("Document.xml"), 1_024)
+                .expect_err("escaping directory link must not be read");
+
+        assert!(matches!(error, ContainedFileError::FinalPathOutsideRoot));
+        cleanup(&root);
+        cleanup(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_fifo_without_opening_it() {
+        let root = fixture_root("fifo");
+        let fifo = root.join("stream.xml");
+        assert_eq!(
+            super::create_non_regular_fixture_for_test(&fifo).expect("FIFO fixture"),
+            super::NonRegularFixtureOutcome::Created
+        );
+
+        let error = read_contained_regular_file(&root, &fifo, 1_024)
+            .expect_err("FIFO must be rejected before open");
+
+        assert!(matches!(error, ContainedFileError::NotRegularFile));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_regular_file_that_exceeds_the_per_read_bound() {
+        let root = fixture_root("size-bound");
+        let path = root.join("Module.bsl");
+        fs::write(&path, b"12345").expect("fixture file");
+
+        let error = read_contained_regular_file(&root, &path, 4)
+            .expect_err("oversized file must be bounded");
+
+        assert!(matches!(
+            error,
+            ContainedFileError::SizeLimitExceeded { limit: 4 }
+        ));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn cancellation_is_polled_between_chunk_reads_and_incremental_hash_updates() {
+        let root = fixture_root("cancel-chunked-read");
+        let path = root.join("Module.bsl");
+        fs::write(&path, vec![b'x'; 3 * super::VERIFIED_READ_CHUNK_BYTES])
+            .expect("large fixture file");
+        let cancellation = CancellationToken::new();
+        let mut chunks_read = 0_u8;
+
+        let error = read_contained_regular_file_with_chunk_observer_cancellable(
+            &root,
+            &path,
+            u64::MAX,
+            || cancellation.is_cancelled(),
+            |_| {
+                chunks_read += 1;
+                if chunks_read == 2 {
+                    cancellation.cancel();
+                }
+            },
+        )
+        .expect_err("cancellation between a chunk read and hash update must win");
+
+        assert!(matches!(error, ContainedFileError::Cancelled));
+        assert_eq!(chunks_read, 2);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn chunked_incremental_hash_matches_the_one_shot_content_hash() {
+        let root = fixture_root("chunked-hash-parity");
+        let path = root.join("Document.xml");
+        let bytes = (0..(2 * super::VERIFIED_READ_CHUNK_BYTES + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).expect("multi-chunk fixture file");
+
+        let verified = read_contained_regular_file_cancellable(&root, &path, u64::MAX, || false)
+            .expect("chunked verified read");
+
+        assert_eq!(verified.raw_sha256, ContentHash::sha256(&bytes));
+        assert_eq!(verified.bytes, bytes);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_source_root_that_is_not_canonical() {
+        let container = fixture_root("noncanonical-root");
+        let actual = container.join("actual");
+        let alias = container.join("alias");
+        fs::create_dir(&actual).expect("actual root");
+        let Some(link_result) = create_dir_symlink_for_test(&actual, &alias) else {
+            cleanup(&container);
+            return;
+        };
+        if let Err(error) = link_result {
+            if error.raw_os_error() == Some(1_314) {
+                cleanup(&container);
+                return;
+            }
+            panic!("root-link fixture failed: {error}");
+        }
+        let path = alias.join("Document.xml");
+        fs::write(&path, b"document").expect("fixture file");
+
+        let error = read_contained_regular_file(&alias, &path, 1_024)
+            .expect_err("noncanonical root must fail closed");
+
+        assert!(matches!(error, ContainedFileError::RootNotCanonical));
+        cleanup(&container);
+    }
+
+    #[test]
+    fn rejects_path_replacement_between_precheck_and_open() {
+        let root = fixture_root("path-swap");
+        let path = root.join("Document.xml");
+        let displaced = root.join("displaced.xml");
+        fs::write(&path, b"first").expect("fixture file");
+
+        let error = read_contained_regular_file_with_observer(&root, &path, 1_024, || {
+            fs::rename(&path, &displaced).expect("displace original");
+            fs::write(&path, b"replacement").expect("replacement file");
+        })
+        .expect_err("path replacement must fail closed");
+
+        assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_link_replacement_between_precheck_and_open_as_security_violation() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("link-swap");
+        let path = root.join("Document.xml");
+        let target = root.join("target.xml");
+        fs::write(&path, b"first").expect("fixture file");
+        fs::write(&target, b"target").expect("link target");
+
+        let error = read_contained_regular_file_with_observer(&root, &path, 1_024, || {
+            fs::remove_file(&path).expect("remove original");
+            symlink(&target, &path).expect("replacement link");
+        })
+        .expect_err("link replacement must fail closed");
+
+        assert!(matches!(error, ContainedFileError::SymlinkOrReparsePoint));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_path_replacement_after_open_and_before_postcheck() {
+        let root = fixture_root("post-open-swap");
+        let path = root.join("Document.xml");
+        let displaced = root.join("displaced.xml");
+        fs::write(&path, b"first").expect("fixture file");
+
+        let error =
+            read_contained_regular_file_with_post_open_observer(&root, &path, 1_024, || {
+                fs::rename(&path, &displaced).expect("displace opened file");
+                fs::write(&path, b"replacement").expect("replacement file");
+            })
+            .expect_err("post-open path replacement must fail closed");
+
+        assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn disappearance_during_final_file_metadata_validation_is_an_identity_change() {
+        let root = fixture_root("disappear-during-final-file-metadata");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"first").expect("fixture file");
+
+        let error =
+            read_contained_regular_file_with_final_metadata_observer(&root, &path, 1_024, || {
+                fs::remove_file(&path).expect("remove opened file during final validation")
+            })
+            .expect_err("disappearance during final metadata validation must fail closed");
+
+        assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn unchanged_file_candidate_preserves_a_final_handle_facility_failure() {
+        let root = fixture_root("unchanged-file-final-handle-failure");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"first").expect("fixture file");
+        let identity = super::identity_at_path(&path).expect("fixture identity");
+        let facility_failure = ContainedFileError::Io {
+            operation: "resolve opened Unix file handle",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "procfd unavailable"),
+        };
+
+        let error = super::reclassify_file_final_path_error(&path, identity, facility_failure);
+
+        assert!(matches!(
+            error,
+            ContainedFileError::Io {
+                operation: "resolve opened Unix file handle",
+                ..
+            }
+        ));
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_an_intermediate_escape_before_the_read_body_can_observe_bytes() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("intermediate-escape-before-read");
+        let outside = fixture_root("intermediate-escape-before-read-outside");
+        let directory = root.join("Objects");
+        let path = directory.join("Document.xml");
+        let escaped_directory = outside.join("escaped-original");
+        fs::create_dir(&directory).expect("contained directory");
+        fs::write(&path, b"sensitive").expect("contained file");
+        fs::write(outside.join("Document.xml"), b"replacement").expect("outside replacement");
+        let read_body_observed = AtomicBool::new(false);
+
+        let error = read_contained_regular_file_with_read_observer(
+            &root,
+            &path,
+            1_024,
+            || {
+                fs::rename(&directory, &escaped_directory).expect("move opened file outside root");
+                symlink(&outside, &directory).expect("install escaping intermediate link");
+            },
+            || read_body_observed.store(true, Ordering::SeqCst),
+        )
+        .expect_err("escaping intermediate component must fail before the read body");
+
+        assert!(matches!(
+            error,
+            ContainedFileError::FinalPathOutsideRoot
+                | ContainedFileError::FinalPathMismatch
+                | ContainedFileError::IdentityChanged
+        ));
+        assert!(!read_body_observed.load(Ordering::SeqCst));
+        cleanup(&root);
+        cleanup(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_no_follow_opens_are_nonblocking() {
+        assert_ne!(super::unix_no_follow_open_flags() & libc::O_NONBLOCK, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_regular_file_replaced_by_a_fifo_without_blocking() {
+        let root = fixture_root("regular-to-fifo-swap");
+        let path = root.join("Document.xml");
+        fs::write(&path, b"regular").expect("regular fixture");
+
+        let error = read_contained_regular_file_with_observer(&root, &path, 1_024, || {
+            fs::remove_file(&path).expect("remove regular fixture");
+            assert_eq!(
+                super::create_non_regular_fixture_for_test(&path).expect("FIFO replacement"),
+                super::NonRegularFixtureOutcome::Created
+            );
+        })
+        .expect_err("FIFO replacement must be rejected");
+
+        assert!(matches!(error, ContainedFileError::NotRegularFile));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn identity_violation_takes_precedence_over_a_size_bound() {
+        let root = fixture_root("swap-over-size-bound");
+        let path = root.join("Document.xml");
+        let displaced = root.join("displaced.xml");
+        fs::write(&path, b"oversized").expect("fixture file");
+
+        let error = read_contained_regular_file_with_post_open_observer(&root, &path, 1, || {
+            fs::rename(&path, &displaced).expect("displace opened file");
+            fs::write(&path, b"replacement").expect("replacement file");
+        })
+        .expect_err("identity violation must outrank the size bound");
+
+        assert!(matches!(error, ContainedFileError::IdentityChanged));
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_unix_filename_that_would_alias_a_portable_separator() {
+        let root = fixture_root("backslash-alias");
+        let path = root.join("a\\b.xml");
+        fs::write(&path, b"ambiguous").expect("fixture file");
+
+        let error = read_contained_regular_file(&root, &path, 1_024)
+            .expect_err("host path must map uniquely to its portable identity");
+
+        assert!(matches!(error, ContainedFileError::AmbiguousHostPath));
+        cleanup(&root);
+    }
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-contained-file-{label}-{}-{nanos}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        fs::canonicalize(root).expect("canonical fixture root")
+    }
+
+    fn cleanup(root: &Path) {
+        fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    fn read_fixture(label: &str, bytes: &[u8]) -> super::VerifiedFile {
+        let root = fixture_root(label);
+        let path = root.join("fixture.bsl");
+        fs::write(&path, bytes).expect("fixture file");
+        let verified = read_contained_regular_file(&root, &path, 1_024).expect("verified fixture");
+        cleanup(&root);
+        verified
+    }
+}

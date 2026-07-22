@@ -14,6 +14,7 @@ This directory contains accepted architecture decisions for Unica.
 - [ADR-0009: OS-specific code behind infrastructure platform facades](0009-os-specific-code-behind-platform-facade.md)
 - [ADR-0010: CI build cache and artifact flow](0010-ci-build-cache-and-artifact-flow.md)
 - [ADR-0011: DCS is the canonical data composition domain](0011-canonical-dcs-domain.md)
+- [ADR-0012: Read-only extension-point discovery precedes typical configuration changes](0012-read-only-extension-point-discovery.md)
 
 ## ADR Status Values
 

@@ -691,6 +691,10 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 path.relative_to(plugin).as_posix()
                 for path in plugin.rglob("*")
             }
+            discovery_skill = plugin / "skills" / "extension-point-discovery"
+            self.assertTrue((discovery_skill / "SKILL.md").is_file())
+            self.assertTrue((discovery_skill / "agents" / "openai.yaml").is_file())
+            self.assertFalse((discovery_skill / "scripts").exists())
             forbidden_script_skills = {
                 path
                 for path in packaged_paths

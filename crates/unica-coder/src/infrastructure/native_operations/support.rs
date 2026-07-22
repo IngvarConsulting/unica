@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::common::{
-    absolutize, find_support_config_dir, is_uuid_text, path_arg, read_support_state,
-    support_object_uuid_for_path, support_root_uuid,
+    absolutize, find_support_config_dir, is_uuid_text, path_arg, read_support_state_checked,
+    support_object_uuid_for_path, support_root_uuid, SupportObjectRule, SupportStateRead,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,42 +33,6 @@ impl SupportCapability {
 
     fn enabled(self) -> bool {
         matches!(self, Self::On)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportObjectRule {
-    Locked,
-    Editable,
-    OffSupport,
-}
-
-impl SupportObjectRule {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "locked" => Some(Self::Locked),
-            "editable" => Some(Self::Editable),
-            "off-support" => Some(Self::OffSupport),
-            _ => None,
-        }
-    }
-
-    fn flag(self) -> u8 {
-        match self {
-            Self::Locked => 0,
-            Self::Editable => 1,
-            Self::OffSupport => 2,
-        }
-    }
-
-    fn state_text(self) -> &'static str {
-        match self {
-            Self::Locked => "на замке (правка запрещена)",
-            Self::Editable => {
-                "редактируется с сохранением поддержки (объект продолжит получать обновления вендора — возможны конфликты при обновлении)"
-            }
-            Self::OffSupport => "снят с поддержки (обновления вендора по этому объекту прекращаются)",
-        }
     }
 }
 
@@ -125,27 +89,22 @@ fn edit_support_result(
         ));
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    if !bin_path.exists() {
-        return Ok(noop_outcome(
-            "Конфигурация не на поддержке (Ext/ParentConfigurations.bin отсутствует) — переключать нечего.",
-        ));
-    }
-    let raw = fs::read(&bin_path)
-        .map_err(|err| format!("failed to read {}: {err}", bin_path.display()))?;
-    if raw.len() <= 32 {
-        return Ok(noop_outcome(
-            "Поддержка снята полностью (пустой ParentConfigurations.bin) — переключать нечего.",
-        ));
-    }
-    let text = decode_parent_configurations(&raw)?;
-    let Some(state) = read_support_state(&bin_path) else {
-        return Err("Неизвестный формат ParentConfigurations.bin".to_string());
+    let (state, raw) = match read_support_state_checked(&bin_path)
+        .map_err(|error| error.to_string())?
+    {
+        SupportStateRead::Missing => {
+            return Ok(noop_outcome(
+                "Конфигурация не на поддержке (Ext/ParentConfigurations.bin отсутствует) — переключать нечего.",
+            ));
+        }
+        SupportStateRead::Parsed { state, bytes } => (state, bytes),
     };
     if state.removed() {
         return Ok(noop_outcome(
             "Поддержка снята полностью (пустой ParentConfigurations.bin) — переключать нечего.",
         ));
     }
+    let text = decode_parent_configurations(&raw)?;
 
     match action {
         SupportEditAction::Capability(capability) => {

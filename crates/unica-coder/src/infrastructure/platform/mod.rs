@@ -1,9 +1,11 @@
+pub(crate) mod contained_file;
 mod entrypoint;
 pub(crate) mod filesystem;
 mod process;
 mod target;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod verified_directory;
 
 pub use entrypoint::run_platform_main;
 pub(crate) use process::{

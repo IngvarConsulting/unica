@@ -1,0 +1,10 @@
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">
+  <Events>
+    <Event name="OnOpen">ПриОткрытии</Event>
+  </Events>
+  <Commands>
+    <Command name="ПодобратьСерии" id="1">
+      <Action callType="Client">ПодобратьСерии</Action>
+    </Command>
+  </Commands>
+</Form>

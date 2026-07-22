@@ -30,6 +30,7 @@ SOURCE_DIR = "src/cf"
 EXPECTED_PUBLIC_TOOLS = {
     "unica.project.status",
     "unica.project.map",
+    "unica.project.discover",
     "unica.cf.info",
     "unica.cf.validate",
     "unica.code.diagnostics",

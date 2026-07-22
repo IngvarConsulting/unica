@@ -1,0 +1,6 @@
+interface:
+  display_name: "Discovery точек расширения 1С"
+  short_description: "Обязательный preflight типовых доработок 1С"
+  default_prompt: "Используй $extension-point-discovery до планирования изменений, найди и обоснуй типовую точку расширения 1С."
+policy:
+  allow_implicit_invocation: true

@@ -20,6 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "unica"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "unica_mcp_script_parity"
+DISCOVERY_FIXTURE_ROOT = (
+    REPO_ROOT / "tests" / "fixtures" / "extension-point-discovery" / "ut115"
+)
 REFERENCE_SKILLS_ROOT = FIXTURES_ROOT / "reference_skills"
 CC_1C_CASES_ROOT = FIXTURES_ROOT / "cc-1c-skills" / "cases"
 BSP_DCS_QUERY_FIXTURE = (
@@ -3991,6 +3994,7 @@ DCS_EDIT_REQUIRED_OPS = {
     "remove-parameter",
     "remove-filter",
 }
+STRICT_READ_ONLY_EXAMPLE_TOOLS = {"unica.project.discover"}
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -4313,7 +4317,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
         self.assertEqual(covered & DCS_EDIT_REQUIRED_OPS, DCS_EDIT_REQUIRED_OPS)
 
-    def test_every_skill_tools_call_example_executes_as_mcp_dry_run(self) -> None:
+    def test_every_skill_tools_call_example_executes_safely_through_mcp(self) -> None:
         examples = list(iter_skill_mcp_examples())
         self.assertGreater(len(examples), 0)
 
@@ -4328,7 +4332,13 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             )
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
-                if example.skill == "form-edit":
+                if example.skill == "extension-point-discovery":
+                    shutil.copytree(
+                        DISCOVERY_FIXTURE_ROOT / "src",
+                        workspace / "src" / "cf",
+                        dirs_exist_ok=True,
+                    )
+                elif example.skill == "form-edit":
                     form_path = workspace / arguments["FormPath"]
                     form_path.parent.mkdir(parents=True, exist_ok=True)
                     form_path.write_text(
@@ -4401,7 +4411,12 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertNotIn("error", response)
                 result = json.loads(response["result"]["content"][0]["text"])
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
-                self.assertIn("dry run", result["summary"])
+                tool_name = message["params"]["name"]
+                if tool_name in STRICT_READ_ONLY_EXAMPLE_TOOLS:
+                    self.assertNotIn("dryRun", message["params"]["arguments"])
+                    self.assertIn("extension-point discovery", result["summary"])
+                else:
+                    self.assertIn("dry run", result["summary"])
 
     def test_mcp_calls_match_reference_python_scripts(self) -> None:
         for scenario in SCENARIOS:
@@ -5091,7 +5106,8 @@ def dry_run_message_for_example(
     params = message.setdefault("params", {})
     arguments = params.setdefault("arguments", {})
     arguments["cwd"] = str(workspace)
-    arguments["dryRun"] = True
+    if params.get("name") not in STRICT_READ_ONLY_EXAMPLE_TOOLS:
+        arguments["dryRun"] = True
     return message
 
 
