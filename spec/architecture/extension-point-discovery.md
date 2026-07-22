@@ -86,6 +86,13 @@ ranges rather than one entry per source line. It rejects a line immediately at
 those resource limits as `Bounded` while preserving prior fully analyzed file
 coverage. Lexical facts are retained in canonical order with at most
 `maxEvidence + 1` distinct matches before the final deterministic truncation.
+BSL files are scanned in canonical path order under one cumulative lexical-work
+budget of `min(limits.maxBytes * 16, 536870912)` units. Every normalized-line
+comparison and matching-column comparison is charged its haystack and pattern
+byte lengths plus a 256-unit dispatch floor; the floor prevents empty lines or
+thousands of short task-derived terms from bypassing the bound. Exhaustion is
+`Bounded` with `bsl_lexical_work_bound` and retains only facts and coverage from
+files that completed before the exhausted file.
 
 The graph keeps `contains` and `defines` structural. Only compatible typed
 platform callbacks, form-command bindings, event subscriptions, and call-graph
@@ -97,6 +104,12 @@ related artifact but cannot by itself create an actionable candidate.
 Slice A captures an **analysis snapshot**, not a mutation receipt. It records
 the resolved mapping identity and raw SHA-256 hashes of evidence-contributing files only. BOM and EOL bytes participate. The snapshot excludes only actual runtime-sidecar `ConfigDumpInfo.xml` content, as identified by `config_dump_info_xml_kind(bytes)`; legitimate external metadata with that filename remains evidence. A bounded enumeration or read makes the provider and result partial.
 
+Implicit source selection reads exactly `v8project.yaml` beneath the canonical
+workspace through a verified regular-file handle with no link following, a
+fixed 1 MiB byte ceiling, and cancellation polling around 64 KiB chunks. This
+manifest is selection input, not evidence: its bytes do not consume request
+`maxBytes` and are not included among analysis-snapshot contributor hashes.
+
 Reads stay beneath the selected source root through verified regular-file
 handles. Escaping symlinks/reparse points, non-regular files, path swaps, and
 identity changes between capture and verified read fail closed for the affected
@@ -105,9 +118,19 @@ polls around I/O and incremental SHA-256 updates. Each XML, BSL, or support-stat
 evidence file has a 16 MiB transparent-read limit in addition to request
 `maxBytes`; reaching either byte limit returns a stable `Bounded` inventory that
 preserves its fully verified prefix and is never reported as malformed provider
-data or a contract violation. The snapshot neither claims whole-workspace immutability nor grants
-permission to mutate. Platform filesystem code remains behind the existing
-infrastructure facade.
+data or a contract violation.
+
+Inventory enumeration also has a cumulative traversal-entry budget of
+`1024 + 8 * limits.maxFiles` (at most 161,024 for Slice A). Every verified child
+entry consumes it, including irrelevant files and directories, so neither flat
+fanout nor deep nesting can grow the pending set outside the request-derived
+ceiling. The first N+1 child returns `Bounded` with
+`source_inventory_traversal_bound`, preserves the fully verified evidence
+prefix, and remains subordinate to cancellation and no-follow validation.
+
+The snapshot neither claims whole-workspace immutability nor grants permission
+to mutate. Platform filesystem code remains behind the existing infrastructure
+facade.
 
 ## Slice B gate and package acceptance
 
