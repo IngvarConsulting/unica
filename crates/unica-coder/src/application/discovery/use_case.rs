@@ -9,8 +9,8 @@ use crate::domain::discovery::{
     FormBinding, FormFact, LocatedFact, MetadataFact, MissingCheck, MissingCheckMateriality,
     PortableRelativePath, ProviderCoverage, ProviderDiagnostic, ProviderKind, ProviderOutcome,
     ProviderOutcomeKind, ProviderReport, RelatedArtifact, RuntimeFlowEdge, RuntimeFlowFact,
-    SnapshotFingerprint, SourceInventory, StructuralEdge, StructuralRelationKind, SupportFact,
-    SupportStateKind,
+    SnapshotFingerprint, SourceInventory, SourceInventoryBound, StructuralEdge,
+    StructuralRelationKind, SupportFact, SupportStateKind, SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,8 +76,11 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
         ensure_discovery_active(&query)?;
         let mut inventory =
             EvaluatedOutcome::from_outcome(ProviderKind::SourceInventory, inventory_outcome);
+        let inventory_diagnostic = inventory.diagnostic.as_ref();
         if let Some(files) = inventory.data.as_mut() {
-            if let Err(diagnostic) = normalize_inventory(files, inventory.kind, query.limits()) {
+            if let Err(diagnostic) =
+                normalize_inventory(files, inventory.kind, inventory_diagnostic, query.limits())
+            {
                 inventory.invalidate(diagnostic);
             }
         }
@@ -413,6 +416,7 @@ fn handle_batch<T, F>(
 fn normalize_inventory(
     inventory: &mut SourceInventory,
     outcome: ProviderOutcomeKind,
+    diagnostic: Option<&ProviderDiagnostic>,
     limits: DiscoveryQueryLimits,
 ) -> Result<(), ProviderDiagnostic> {
     let file_count = checked_count(inventory.files.len(), "inventory_file_count_overflow")?;
@@ -472,6 +476,12 @@ fn normalize_inventory(
     }
     match outcome {
         ProviderOutcomeKind::Complete => {
+            if inventory.bound.is_some() {
+                return Err(provider_contract_diagnostic(
+                    "complete_inventory_bound_marker",
+                    "complete source inventory must not carry a resource-bound marker",
+                ));
+            }
             if inventory.coverage.files_seen != file_count {
                 return Err(provider_contract_diagnostic(
                     "complete_inventory_coverage_mismatch",
@@ -487,9 +497,19 @@ fn normalize_inventory(
                     "bounded source inventory observed more than the triggering N+1 file",
                 ));
             }
+            let traversal_bound = inventory.bound == Some(SourceInventoryBound::TraversalEntries);
+            let traversal_diagnostic = diagnostic
+                .is_some_and(|diagnostic| diagnostic.code == SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE);
+            if traversal_bound != traversal_diagnostic {
+                return Err(provider_contract_diagnostic(
+                    "inventory_bound_diagnostic_mismatch",
+                    "source inventory bound marker conflicts with its typed diagnostic",
+                ));
+            }
             let demonstrates_bound = inventory.coverage.files_seen > file_count
                 || file_count == limits.max_files
-                || byte_count == limits.max_bytes;
+                || byte_count == limits.max_bytes
+                || traversal_bound;
             if !demonstrates_bound {
                 return Err(provider_contract_diagnostic(
                     "unsubstantiated_bounded_inventory",
@@ -1670,6 +1690,7 @@ mod tests {
             self.inventory = ProviderOutcome::Complete(SourceInventory {
                 files,
                 coverage: ProviderCoverage::new(count, count, bytes, count),
+                bound: None,
             });
             self
         }
@@ -2432,6 +2453,7 @@ mod tests {
         fake.inventory = ProviderOutcome::Complete(SourceInventory {
             files: vec![source_file("Documents/Purchase.xml", b"metadata")],
             coverage: ProviderCoverage::empty(),
+            bound: None,
         });
 
         let report = execute(&fake, task_only()).expect("partial report");
@@ -2450,6 +2472,7 @@ mod tests {
         fake.inventory = ProviderOutcome::Complete(SourceInventory {
             files: vec![file.clone(), file],
             coverage: ProviderCoverage::new(1, 1, 8, 1),
+            bound: None,
         });
 
         let report = execute(&fake, task_only()).expect("partial report");
@@ -2483,6 +2506,7 @@ mod tests {
             data: SourceInventory {
                 files: vec![file],
                 coverage: ProviderCoverage::new(2, 1, byte_count, 1),
+                bound: None,
             },
             diagnostic: diagnostic("inventory_file_limit_reached"),
         };
@@ -2497,17 +2521,83 @@ mod tests {
     }
 
     #[test]
+    fn traversal_bounded_inventory_keeps_eligible_coverage_without_contract_reclassification() {
+        let file = source_file("Documents/Purchase.xml", b"metadata");
+        let byte_count = file.bytes.len() as u64;
+        let mut fake = FakePorts::complete_empty();
+        fake.inventory = ProviderOutcome::Bounded {
+            data: SourceInventory {
+                files: vec![file],
+                coverage: ProviderCoverage::new(1, 1, byte_count, 1),
+                bound: Some(SourceInventoryBound::TraversalEntries),
+            },
+            diagnostic: diagnostic("source_inventory_traversal_bound"),
+        };
+
+        let report = execute(&fake, task_only()).expect("traversal-bounded report");
+
+        let outcome = report
+            .provider_outcomes
+            .iter()
+            .find(|item| item.provider == ProviderKind::SourceInventory)
+            .expect("source inventory outcome");
+        assert_eq!(
+            outcome.outcome,
+            crate::domain::discovery::ProviderOutcomeKind::Bounded
+        );
+        assert_eq!(outcome.coverage, ProviderCoverage::new(1, 1, byte_count, 1));
+        assert_eq!(
+            outcome.diagnostic.as_ref().map(|item| item.code.as_str()),
+            Some("source_inventory_traversal_bound")
+        );
+        assert_eq!(report.status, DiscoveryStatus::Partial);
+        assert!(report.missing_checks.iter().any(|check| {
+            check.provider == ProviderKind::SourceInventory
+                && check.code == SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE
+        }));
+    }
+
+    #[test]
+    fn traversal_bound_marker_and_diagnostic_must_agree() {
+        let mut fake = FakePorts::complete_empty();
+        let mut inventory = SourceInventory::empty();
+        inventory.bound = Some(SourceInventoryBound::TraversalEntries);
+        fake.inventory = ProviderOutcome::Bounded {
+            data: inventory,
+            diagnostic: diagnostic("different_inventory_bound"),
+        };
+
+        let report = execute(&fake, task_only()).expect("partial report");
+
+        let outcome = report
+            .provider_outcomes
+            .iter()
+            .find(|item| item.provider == ProviderKind::SourceInventory)
+            .expect("source inventory outcome");
+        assert_eq!(
+            outcome.outcome,
+            crate::domain::discovery::ProviderOutcomeKind::ContractViolation
+        );
+        assert_eq!(
+            outcome.diagnostic.as_ref().map(|item| item.code.as_str()),
+            Some("inventory_bound_diagnostic_mismatch")
+        );
+    }
+
+    #[test]
     fn bounded_inventory_rejects_u32_max_files_seen_when_it_exceeds_n_plus_one() {
         let file = source_file("Documents/Purchase.xml", b"metadata");
         let byte_count = file.bytes.len() as u64;
         let mut inventory = SourceInventory {
             files: vec![file],
             coverage: ProviderCoverage::new(u32::MAX, 1, byte_count, 1),
+            bound: None,
         };
 
         let error = normalize_inventory(
             &mut inventory,
             ProviderOutcomeKind::Bounded,
+            Some(&diagnostic("inventory_file_limit_reached")),
             DiscoveryQueryLimits {
                 max_files: 1,
                 max_bytes: u64::MAX,
@@ -2533,6 +2623,7 @@ mod tests {
             data: SourceInventory {
                 files,
                 coverage: ProviderCoverage::new(3, 2, byte_count, 2),
+                bound: None,
             },
             diagnostic: diagnostic("inventory_file_limit_reached"),
         };
@@ -2553,6 +2644,7 @@ mod tests {
         fake.inventory = ProviderOutcome::Complete(SourceInventory {
             files: vec![file],
             coverage: ProviderCoverage::new(2, 1, byte_count, 1),
+            bound: None,
         });
 
         let report = execute(&fake, request_with_file_limit(1)).expect("partial report");

@@ -1,7 +1,7 @@
 use crate::application::discovery::ports::SourceInventoryPort;
 use crate::domain::discovery::{
     DiscoveryQuery, ProviderCoverage, ProviderDiagnostic, ProviderOutcome, SourceFile,
-    SourceInventory,
+    SourceInventory, SourceInventoryBound, SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
 };
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::infrastructure::platform::contained_file::{
@@ -259,10 +259,12 @@ fn traversal_bounded_capture(
     files_seen: u32,
     bytes_analyzed: u64,
 ) -> Result<Capture, CaptureError> {
+    let mut inventory = completed_inventory(files, files_seen, bytes_analyzed)?;
+    inventory.bound = Some(SourceInventoryBound::TraversalEntries);
     Ok(Capture::Bounded {
-        inventory: completed_inventory(files, files_seen, bytes_analyzed)?,
+        inventory,
         diagnostic: ProviderDiagnostic::material(
-            "source_inventory_traversal_bound",
+            SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
             "source inventory stopped at the cumulative traversal entry limit",
         ),
     })
@@ -316,6 +318,7 @@ fn completed_inventory(
     Ok(SourceInventory {
         files,
         coverage: ProviderCoverage::new(files_seen, count, bytes_analyzed, count),
+        bound: None,
     })
 }
 
@@ -551,6 +554,10 @@ mod tests {
             panic!("irrelevant fanout must be bounded");
         };
         assert_eq!(diagnostic.code, "source_inventory_traversal_bound");
+        assert_eq!(
+            data.bound,
+            Some(crate::domain::discovery::SourceInventoryBound::TraversalEntries)
+        );
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].bytes.as_ref(), b"prior");
         assert_eq!(data.coverage, ProviderCoverage::new(1, 1, 5, 1));

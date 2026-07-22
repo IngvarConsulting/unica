@@ -487,6 +487,12 @@ impl ProviderCoverage {
 pub(crate) struct SourceInventory {
     pub files: Vec<SourceFile>,
     pub coverage: ProviderCoverage,
+    pub bound: Option<SourceInventoryBound>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceInventoryBound {
+    TraversalEntries,
 }
 
 impl SourceInventory {
@@ -494,6 +500,7 @@ impl SourceInventory {
         Self {
             files: Vec::new(),
             coverage: ProviderCoverage::empty(),
+            bound: None,
         }
     }
 }
@@ -651,6 +658,8 @@ pub(crate) struct ProviderDiagnostic {
     pub message: String,
     pub materiality: MissingCheckMateriality,
 }
+
+pub(crate) const SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE: &str = "source_inventory_traversal_bound";
 
 impl ProviderDiagnostic {
     pub(crate) fn material(code: impl Into<String>, message: impl Into<String>) -> Self {

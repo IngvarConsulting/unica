@@ -233,7 +233,7 @@ impl MetadataCatalogPort for PlatformXmlMetadataProvider {
 }
 
 pub(super) fn inventory_is_bounded(inventory: &SourceInventory) -> bool {
-    inventory.coverage.files_seen > inventory.coverage.files_analyzed
+    inventory.coverage.files_seen > inventory.coverage.files_analyzed || inventory.bound.is_some()
 }
 
 pub(super) fn parse_inventory_catalog(
@@ -1075,7 +1075,7 @@ mod tests {
     use crate::domain::discovery::{
         ArtifactId, ArtifactKind, ContentHash, DiscoveryQuery, DiscoveryQueryLimits,
         PortableRelativePath, ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
-        StructuralRelationKind,
+        SourceInventoryBound, StructuralRelationKind,
     };
 
     const DOCUMENT_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
@@ -1269,6 +1269,23 @@ mod tests {
 
         let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
             panic!("truncated inventory must keep metadata bounded");
+        };
+        assert!(!data.records.is_empty());
+        assert_eq!(diagnostic.code, "metadata_inventory_bounded");
+    }
+
+    #[test]
+    fn traversal_bound_marker_keeps_exact_eligible_metadata_coverage_bounded() {
+        let mut inventory = inventory(vec![source_file(
+            "Documents/Present.xml",
+            DOCUMENT_XML.as_bytes(),
+        )]);
+        inventory.bound = Some(SourceInventoryBound::TraversalEntries);
+
+        let outcome = PlatformXmlMetadataProvider.metadata(&query(100), &inventory);
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("traversal-truncated inventory must keep metadata bounded");
         };
         assert!(!data.records.is_empty());
         assert_eq!(diagnostic.code, "metadata_inventory_bounded");
@@ -1719,6 +1736,7 @@ mod tests {
         SourceInventory {
             files,
             coverage: ProviderCoverage::new(count, count, bytes, count),
+            bound: None,
         }
     }
 }

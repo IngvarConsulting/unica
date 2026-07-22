@@ -1769,7 +1769,7 @@ mod tests {
     use crate::domain::discovery::{
         ArtifactId, ArtifactKind, ConceptProvenance, ContentHash, DefinitionFact, DiscoveryConcept,
         DiscoveryQuery, DiscoveryQueryLimits, EvidenceLocation, PortableRelativePath,
-        ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
+        ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory, SourceInventoryBound,
     };
     use crate::infrastructure::workspace_index::BslIndexStatus;
     use rusqlite::Connection;
@@ -2429,7 +2429,8 @@ mod tests {
         let file = source_file(MODULE_PATH, BSL);
         let bounded_inventory = SourceInventory {
             files: vec![file.clone()],
-            coverage: ProviderCoverage::new(2, 1, file.bytes.len() as u64, 1),
+            coverage: ProviderCoverage::new(1, 1, file.bytes.len() as u64, 1),
+            bound: Some(SourceInventoryBound::TraversalEntries),
         };
         let outcome = InventoryBslSearchProvider
             .search(&query("НесуществующийМетод", &[], 10), &bounded_inventory);
@@ -2690,6 +2691,7 @@ mod tests {
         let inventory = SourceInventory {
             files: vec![source.clone()],
             coverage: ProviderCoverage::new(2, 1, source.bytes.len() as u64, 1),
+            bound: None,
         };
         let db_path = fixture.root.join("empty.db");
         create_empty_index(&db_path);
@@ -2745,6 +2747,7 @@ mod tests {
         SourceInventory {
             files,
             coverage: ProviderCoverage::new(count, count, bytes, count),
+            bound: None,
         }
     }
 

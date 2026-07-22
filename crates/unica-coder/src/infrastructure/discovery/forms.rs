@@ -665,6 +665,7 @@ mod tests {
         SourceInventory {
             files,
             coverage: ProviderCoverage::new(count, count, bytes, count),
+            bound: None,
         }
     }
 }

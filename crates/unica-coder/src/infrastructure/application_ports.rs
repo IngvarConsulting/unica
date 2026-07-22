@@ -313,3 +313,110 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         WorkspaceServiceManager::new().notify_invalidation(context, events);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::InfrastructureApplicationPorts;
+    use crate::application::discovery::contract::parse_discover_request;
+    use crate::application::ports::ApplicationPorts;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::discovery::{
+        DiscoveryStatus, ProviderKind, ProviderOutcomeKind, SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE,
+    };
+    use crate::domain::workspace::WorkspaceContext;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn irrelevant_fanout_remains_a_public_bounded_partial_inventory() {
+        let fixture = Fixture::new("traversal-bound-public");
+        let source_root = fixture.root.join("src");
+        let ignored = source_root.join("ignored");
+        fs::create_dir_all(&ignored).expect("ignored fixture directory");
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "source-set:\n  - name: app\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("project manifest");
+        fs::write(
+            source_root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .expect("configuration marker");
+        // maxFiles=2 derives 1,040 traversal entries. The source root consumes
+        // two, so 1,039 irrelevant children exercise the deterministic N+1.
+        for index in 0..1_039 {
+            fs::write(ignored.join(format!("ignored-{index:04}.txt")), b"ignored")
+                .expect("irrelevant fanout entry");
+        }
+        let serde_json::Value::Object(args) = serde_json::json!({
+            "mode": "explore",
+            "task": "discover configuration extension points",
+            "limits": { "maxFiles": 2 }
+        }) else {
+            unreachable!("static request object")
+        };
+        let request = parse_discover_request(&args).expect("bounded request");
+        let context = WorkspaceContext {
+            cwd: fixture.root.clone(),
+            workspace_root: fixture.root.clone(),
+            cache_root: fixture.root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let report = InfrastructureApplicationPorts
+            .discover_extension_points(&request, &context, &CancellationToken::new())
+            .expect("partial discovery report");
+
+        assert_eq!(report.status, DiscoveryStatus::Partial);
+        let inventory = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::SourceInventory)
+            .expect("source inventory report");
+        assert_eq!(inventory.outcome, ProviderOutcomeKind::Bounded);
+        assert_eq!(
+            inventory
+                .diagnostic
+                .as_ref()
+                .map(|diagnostic| diagnostic.code.as_str()),
+            Some(SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE)
+        );
+        assert!(report.missing_checks.iter().any(|check| {
+            check.provider == ProviderKind::SourceInventory
+                && check.code == SOURCE_INVENTORY_TRAVERSAL_BOUND_CODE
+        }));
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "unica-{label}-{}-{nanos}-{}",
+                std::process::id(),
+                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(root.join("src")).expect("fixture source root");
+            Self {
+                root: fs::canonicalize(root).expect("canonical fixture root"),
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).expect("fixture cleanup");
+        }
+    }
+}

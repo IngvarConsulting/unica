@@ -126,7 +126,11 @@ entry consumes it, including irrelevant files and directories, so neither flat
 fanout nor deep nesting can grow the pending set outside the request-derived
 ceiling. The first N+1 child returns `Bounded` with
 `source_inventory_traversal_bound`, preserves the fully verified evidence
-prefix, and remains subordinate to cancellation and no-follow validation.
+prefix, and remains subordinate to cancellation and no-follow validation. A
+typed `SourceInventoryBound::TraversalEntries` marker substantiates this work
+bound across the application contract without falsely adding irrelevant
+entries to evidence-only `filesSeen`; downstream providers inherit that marker
+as incomplete inventory scope and cannot report a false `Complete` result.
 
 The snapshot neither claims whole-workspace immutability nor grants permission
 to mutate. Platform filesystem code remains behind the existing infrastructure
