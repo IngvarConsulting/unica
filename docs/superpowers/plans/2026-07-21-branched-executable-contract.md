@@ -774,17 +774,86 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 ## Task 12: Completed lifecycle and delivery result data
 
 **Files:**
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/artifacts.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/errors.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/recovery.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/status.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/results/task.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/results/delivery.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/results/mod.rs`
 
-- [ ] RED then implement all named completed schemas for start/status/archive/
-  cleanup and inspect/create/verify/deploy.
-- [ ] Encode preview versus apply outputs separately so previews cannot allocate
-  post-effect IDs, hashes, fingerprints, receipts, or timestamps.
-- [ ] Preserve not-created versus existing-task status as closed alternatives.
-- [ ] Add path/process/credential recursive projection negatives.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] RED-test and expose only the prerequisite authority surfaces Task 12
+  needs from artifacts/errors/repository/recovery/status. Reuse
+  `OperationInProgressContext`, `ProjectDigestProfileStateContext`, the shared
+  `RepositoryAnchor`/`RepositoryAnchorDigestRecord`, `ArchiveStagingReceipt`,
+  and Task 11 `ExistingTaskStatusData`; keep authoritative fields private,
+  validated, and non-`Deserialize` where caller injection is forbidden.
+  Specifically remove direct `Deserialize` construction for all four
+  not-created blocker authority contexts (operation, target reservation,
+  repository-account reservation, and project-profile state), including the
+  nested reservation-owner references; where persistence parsing is required,
+  deserialize only into private unchecked wire types followed by fallible
+  validation. Compile-fail/test that callers cannot construct authority values
+  from raw JSON.
+- [x] Add the shared bounded scalars and archive vocabulary, then implement
+  `StartData` as the two manual-target physical leaves, `BranchedStatusData` as
+  `NotCreatedData | TaskStatusData`, and archive/cleanup success versus
+  abandoned physical leaves in `results/task.rs`. Type
+  `commitCommentPreview` as the exact frozen `Comment`, not an undefined
+  object or `TaskSummary`. Do not duplicate or weaken Task 11 recovery/status
+  presence authorities.
+- [x] Implement inspect/create/verify/deploy in `results/delivery.rs`: the
+  single inspect leaf with its exact four-row rule-count tuple; baseline versus
+  refresh preview/applied leaves; all four expected/unconstrained distribution/
+  ordinary verification leaves; and the single deploy preview/applied leaves.
+- [x] Give every JSON-derived digest one named closed `ContractDigestRecord`
+  preimage and use only `canonical_contract_digest`; prohibit
+  `serde_json::Value`, generic maps, inline field-subtraction preimages, and
+  alternate canonicalizers. Keep artifact/archive `sha256` values as exact byte
+  hashes.
+- [x] Encode archive as two distinct layers: a durable staged core with complete
+  pre-release handoff/evidence lineage, typed staged-entry manifest, and frozen
+  provider boundaries, then a final published archive with handoff-release
+  receipts and the named closed `ArchivePublicationManifest`/digest record.
+  Bind exact member names/order/byte hashes and embedded canonical manifest
+  bytes through a non-`Deserialize` `ArchivePublicationObservation` to a
+  tracked paired writer/strict-parser capability. Require hashing and strict
+  parsing to consume the same sealed immutable-byte token/generation and bind
+  the final fsync receipt; final container bytes and `sha256` are
+  capability-backed observations, not values derived from the member list.
+  Prove `stagedArchiveSha256` and final `sha256` cannot be compared or
+  substituted, and bind final `retainedLineageDigest` into status. Archive
+  preview's `excludedRoles` is the exact full seven-role declaration-order
+  tuple, not a profile-selected subset.
+- [x] Replace singular cleanup targeting with the canonical unique full
+  `ownedTargets` set. Validate aligned target/absence-observation pairs,
+  exact role projections, the paired-empty direct-completion case, preview/
+  receipt/result identity, and success/abandoned phase correlation. Every
+  attempt allocates a durable logical `quarantineId`; paired-empty uses it only
+  as zero-effect attempt identity and creates no quarantine filesystem object.
+- [x] Enforce exact canonical order, uniqueness, fixed tuple membership, and
+  pairwise disjointness for blocker, rule-count, receipt, pre-arm recovery,
+  handoff-release, retained-entry, deferred-consumption, support-layer,
+  local-difference, and owned-target collections through validated newtypes,
+  not bare bounded vectors. Verification diagnostics use a named 0-1024
+  collection strictly increasing by exact UTF-8 bytes, with exact duplicates
+  forbidden and no normalization/case folding.
+- [x] Prove preview schemas reject post-effect IDs, hashes, timestamps,
+  receipts, and fingerprints; prove applied schemas reject cross-leaf field
+  splices and mismatched inspection/anchor/preview/archive/receipt lineage.
+- [x] Add recursive path/process/credential/secret/raw-connection negatives for
+  every new result and digest preimage, plus wrong literal, omitted required
+  field, extra field, noncanonical, duplicate, overlap, and digest-substitution
+  negatives. Cover non-ASCII/traversal/device archive names, ASCII-case-fold
+  collisions, reserved manifest/release namespaces, and manifest/member hash or
+  coverage mismatch. Compile-fail direct `Deserialize` for authority-produced
+  result/digest/manifest/cross-field records; where persistence parsing is
+  required, prove only a private raw wire plus fallible validated conversion is
+  available.
+- [x] Run RED/GREEN focused and recursive schema tests, format, clippy; commit
+  and review.
 
 ## Task 13: Completed merge and repository result data
 
@@ -841,6 +910,15 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   proofs; do not leave either as an opaque digest producer or reconstruct a
   historical observed policy record from current mutable profile state.
 - [ ] Keep recovery apply and pending-plan cancellation outputs distinct.
+- [ ] For completed pre-arm cancellation recovery, construct one sealed typed
+  terminal authority from the exact approved cancellation, current recovery
+  plan, success action catalog/outcomes (including the exact recheck
+  observation rows and digests), root-lock proof, and the exclusive
+  reserved-original or manual-working-infobase proof. It must bind all receipt
+  IDs/digests, identities, capabilities, scanner-maximal history, selective
+  update before/after state, deferred advance, result phase, and the whole
+  `recoveryReceiptDigest` before projecting `RecoveryData`. Task 12's
+  archive-lineage fixture is not a substitute for this full validation.
 - [ ] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 14: General, merge, and repository stopped data
@@ -940,6 +1018,10 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   Task 17.
 - [ ] Define internal `BranchedToolResult` variants and projection into the
   serialized application envelope without command/stdout/stderr leaks.
+- [ ] Mint the production pre-arm archive/status lineage only from Task 13's
+  sealed completed terminal authority. No handler-facing constructor may accept
+  the archive fields, root/mode proofs, action outcomes, or whole recovery
+  digest as independent caller-selected values.
 - [ ] Every production result constructor takes the validated physical request
   and copies its exact `taskId`; no handler-facing API accepts an independent
   response task ID. Test all 53 variants plus cross-task substitution.

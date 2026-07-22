@@ -746,9 +746,10 @@ The companion contract for general mutations is producer-neutral:
   it is a closed value type, not an arbitrary `Sha256`, and is used when a typed
   semantic delta is proven empty rather than omitted.
 - `DigestApproval`: `{ "digest": Sha256, "decision": "apply" }`.
-- `OwnedTargetLocator`: `{ projectId: ProjectId, instanceId: UnicaId, role }`,
-  where `role` is `instanceRoot`, `taskInfobase`, `taskWorkspace`, `probe`,
-  `sandbox`, `artifact`, or `quarantine`; it is a logical locator, never a path.
+- `OwnedTargetRole`: `instanceRoot`, `taskInfobase`, `taskWorkspace`, `probe`,
+  `sandbox`, `artifact`, or `quarantine`, in that declaration order.
+- `OwnedTargetLocator`: `{ projectId: ProjectId, instanceId: UnicaId, role:
+  OwnedTargetRole }`; it is a logical locator, never a path.
 - `ArtifactRole`: `baselineDistribution`, `refreshDistribution`,
   `ordinaryResult`, or internal layer-bound `supportRecoveryDistribution`. The
   latter is recovery evidence only: no public create request selects it and no
@@ -764,6 +765,37 @@ The companion contract for general mutations is producer-neutral:
   vendor, version }`; `name` is 1-256 printable non-control Unicode scalars.
   `vendor` and `version` are each an explicit empty string or 1-256 printable
   non-control Unicode scalars; they are never omitted, `null`, or inferred.
+- `PlatformVersion`: the canonical four-component decimal platform version
+  `major.minor.patch.build` (for example `8.3.27.2074`); every component has no
+  leading zero unless it is exactly `0` and is in `0..=4294967295`.
+- `CompatibilityMode`: 1-128 ASCII characters matching
+  `[A-Za-z][A-Za-z0-9_]{0,127}`.
+- `SafeResultCount`: an integer in `0..=9007199254740991`; result counts never
+  use a floating-point or string representation. Producers and typed decoders
+  use the integer representation. Draft 2020-12 validates the mathematical
+  instance after JSON parsing and therefore cannot distinguish lexical `1`
+  from `1.0`; the typed decoder rejects the latter and the serializer never
+  emits it. Schema validation alone is not a lexical-number authority.
+- `ArchiveEntryName`: a byte-canonical portable ASCII relative member name of
+  1-1024 bytes. It is `/`-separated into 1-128-byte segments; each segment
+  starts and ends with `[A-Za-z0-9]` and its interior uses only
+  `[A-Za-z0-9._-]`. Matching is byte-for-byte with no case or Unicode
+  normalization. A leading/trailing slash, empty/`.`/`..` segment, backslash,
+  drive prefix, control/space/non-ASCII byte, or case-insensitive Windows
+  device basename (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, or
+  `LPT1`-`LPT9`, with or without an extension) is invalid.
+- `ArchiveSchemaVersion`: the literal `branchedArchiveV1`.
+- `RepositoryAnchorDigestRecord`: the named closed digest preimage `{
+  repositoryIdentity: Sha256, historyCursor: RepositoryHistoryCursor,
+  configurationIdentity: ConfigurationIdentity, configurationFingerprint:
+  Sha256 }`.
+- `RepositoryAnchor`: the authority-produced closed `{ repositoryIdentity:
+  Sha256, historyCursor: RepositoryHistoryCursor, configurationIdentity:
+  ConfigurationIdentity, configurationFingerprint: Sha256, anchorDigest:
+  Sha256 }`, where `anchorDigest ==
+  sha256(canonical(RepositoryAnchorDigestRecord))`. Its fields are private,
+  it has no raw-field or `Deserialize` construction path, and delivery and
+  repository results reuse this one type rather than redefining the record.
 - `TargetKind`: `task` or `original`; it selects a merge/apply destination and
   is distinct from `RepositoryTargetKind`.
 - `OriginalInfobaseKind`: `file` or `clientServer`.
@@ -790,6 +822,24 @@ skip-serialization attribute is legal. An omitted key is not equivalent to
 `null` and is rejected before domain construction. Tasks 7 and 8 reuse this
 wrapper and deserializer rather than defining local nullable types or relying on
 `Option<T>` behavior.
+
+Every JSON-derived digest introduced by the Task 12 completed-result schemas
+has one named, closed `*DigestRecord` preimage implementing the sealed
+`ContractDigestRecord` marker and is computed only by the shared
+`canonical_contract_digest` helper. Neither
+`serde_json::Value`, a generic map, an inline "record without digest" value,
+nor a second canonicalizer is an admissible preimage or construction path.
+File, artifact, staged-archive, and final-archive `sha256` fields remain hashes
+of the exact bytes named by their contracts; they are not JSON-preimage
+digests.
+Validated scalar and semantic-collection newtypes may implement `Deserialize`
+only through their validating constructors. Authority-produced Task 12 result
+leaves, digest records, anchors, manifests, and any record with cross-field or
+cross-record invariants do not expose direct `Deserialize` or public raw-field
+construction. A persistence/parser boundary that must consume JSON uses a
+private closed unchecked wire record and a fallible authority conversion that
+recomputes every digest and correlation before producing the output type;
+schema derivation and round-trip tests are not reasons to weaken that boundary.
 
 Task 6 also owns fail-closed Draft 2020-12 positional-array support in
 `contracts/schema.rs`. Every exact tuple schema uses non-empty `prefixItems`,
@@ -2297,17 +2347,25 @@ ProjectId, taskId: TaskId, instanceId: UnicaId, phase: TaskPhase }`. It is a
 redacted ownership reference, never a state-root/work-root/credential locator.
 `NotCreatedData` is closed `{ exists: false, startAllowed: boolean, blockers:
 NotCreatedBlocker[] }`, where `NotCreatedBlocker` is the closed tagged union of
-`operationInProgress { code: operationInProgress, context: OperationErrorContext }`,
+`operationInProgress { code: operationInProgress, context:
+OperationInProgressContext }`,
 `targetReservationBusy { code: targetReservationBusy, context:
 TargetReservationBusyContext }`, `repositoryAccountReservationBusy { code:
 repositoryAccountReservationBusy, context: RepositoryAccountReservationBusyContext }`,
 `projectIdentityCollision { code: projectIdentityCollision, context:
-ProfileStateErrorContext }`, and `stateRootRelocationRequired { code:
-stateRootRelocationRequired, context: ProfileStateErrorContext }`. `startAllowed
-== blockers.isEmpty`. It means only that authoritative coordination admits a
-new start attempt; profile, secret, topology, and capability preflight can
-still reject it. Reservation blocker contexts are byte-identical to the
-corresponding rejected-result contexts.
+ProjectDigestProfileStateContext }`, and `stateRootRelocationRequired { code:
+stateRootRelocationRequired, context: ProjectDigestProfileStateContext }`.
+Those are the real context schema names from `contracts/errors.rs`. Blockers
+are canonical, unique, and ordered exactly
+`operationInProgress`, `targetReservationBusy`,
+`repositoryAccountReservationBusy`, `projectIdentityCollision`,
+`stateRootRelocationRequired`; each code can appear at most once.
+`startAllowed == blockers.isEmpty`. It means only that authoritative
+coordination admits a new start attempt; profile, secret, topology, and
+capability preflight can still reject it. Every blocker context is
+byte-identical to the corresponding rejected-result context and is constructed
+through the same private-field validated authority; no raw blocker context is
+caller-deserializable.
 
 ## Response Envelope
 
@@ -2510,10 +2568,14 @@ state as that action requires.
   LifecycleErrorContext }`, closed `{ contextKind: lifecycle, phase: TaskPhase,
   allowedPhases: TaskPhase[], blockerCodes: StableErrorCode[],
   recoveryDigest?: Sha256, recoveryCancellationAllowed?: boolean }`;
-- `operationRejected { code: operationReplayMismatch | operationInProgress,
-  context: OperationErrorContext }`, closed `{ contextKind: operation,
-  operationId, expectedInputDigest?: Sha256, observedInputDigest?: Sha256,
-  activeOperationDigest?: Sha256 }`;
+- `operationRejected` is a physical two-leaf `oneOf`:
+  `operationReplayMismatch { code: operationReplayMismatch, context:
+  OperationReplayMismatchContext }`, whose context is closed `{ contextKind:
+  operation, operationId, expectedInputDigest: Sha256,
+  observedInputDigest: Sha256 }`, or `operationInProgress { code:
+  operationInProgress, context: OperationInProgressContext }`, whose context is
+  closed `{ contextKind: operation, operationId, activeOperationDigest:
+  Sha256 }`; optional-field supersets are forbidden;
 - `reservationRejected { code: targetReservationBusy |
   repositoryAccountReservationBusy, context: TargetReservationBusyContext |
   RepositoryAccountReservationBusyContext }`, where
@@ -2564,11 +2626,13 @@ state as that action requires.
   `supportLayer`, `exclusiveRepositoryUserRequired` uses
   `repositoryUserExclusivity`, and `unsupportedChangeKind` uses
   `changeSemantics`;
-- `profileStateRejected { code: projectIdentityCollision |
-  stateRootRelocationRequired | profileInvalid | secretUnavailable,
-  context: ProfileStateErrorContext }`, closed `{ contextKind:
-  profileState, projectId?, profile?, propertyPath?, expectedDigest?: Sha256,
-  observedDigest?: Sha256 }`; or
+- `profileStateRejected` is a physical four-leaf `oneOf`.
+  `projectIdentityCollision` and `stateRootRelocationRequired` each carry the
+  exact `ProjectDigestProfileStateContext { contextKind: profileState,
+  projectId, expectedDigest: Sha256, observedDigest: Sha256 }`, with unequal
+  digests. `profileInvalid` and `secretUnavailable` each carry the exact
+  `ProfilePropertyStateContext { contextKind: profileState, profile,
+  propertyPath }`. Optional-field supersets are forbidden; or
 - `stateCorruptRejected { code: stateCorrupt, context:
   StateCorruptErrorContext }`, where `StateCorruptStateRef` is the closed tagged
   `oneOf` of `workspace { stateRefKind: workspace,
@@ -3060,25 +3124,34 @@ the crash-stable pre-arm guard capability,
 pre-existing unresolved tasks before it creates the durable journal
 and owned instance. It has no repository/infobase effect and no fabricated
 preview. Before task creation it writes an original-workspace-scoped start-attempt record,
-so failed preflight is replayable without a disposable directory. `data` is
-`StartData { instanceId, projectId,
-profile, originalInfobaseKind, repositoryTransport, capabilityRowId,
-preArmCancellationGuardCapabilityId: CapabilityRowId,
-retentionProviderCapabilityRowIds: CapabilityRowId[],
-manualTargetMode: ManualSupportTargetMode,
-manualActorUsername,
-reservedOriginalLeaseCapabilityId?: CapabilityRowId,
-manualWorkingInfobaseIdentity?: ManualWorkingInfobaseIdentity,
-manualWorkingInfobaseInspectionCapabilityId?: CapabilityRowId,
-workRootLocator: OwnedTargetLocator, commitCommentPreview }`. The working-IB
-identity and inspection capability are required only for
-`separateWorkingInfobase`; in reserved mode both are absent, the reserved lease
-capability is required, and the manual actor equals the reserved integration
-username. The retention-provider row list is canonical, non-empty exactly when
-the profile declares recovery-distribution sources, and each ID resolves to the
-validated tracked retention manifest described above. The reserved capability
-is absent in separate mode. Both inspection endpoints and service
-secret references remain profile-only and are never returned.
+so failed preflight is replayable without a disposable directory. `StartData`
+is the exact physical `oneOf` of `ReservedOriginalStartData` and
+`SeparateWorkingInfobaseStartData`; it is not a single record with conditional
+optional fields. Both closed leaves contain `instanceId`, `projectId`,
+`profile: LocalProfileName`, `originalInfobaseKind: OriginalInfobaseKind`,
+`repositoryTransport: RepositoryTransport`, `capabilityRowId:
+CapabilityRowId`, `preArmCancellationGuardCapabilityId: CapabilityRowId`,
+`retentionProviderCapabilityRowIds: CapabilityRowId[]`,
+`manualActorUsername: RepositoryUsername`, `workRootLocator:
+OwnedTargetLocator`, and `commitCommentPreview: Comment`. The preview is the
+exact non-empty frozen repository comment rendered for this task; it is not a
+task summary, template, path, credential, or caller-supplied commit override.
+
+`ReservedOriginalStartData` additionally contains `manualTargetMode:
+reservedOriginal` and required `reservedOriginalLeaseCapabilityId:
+CapabilityRowId`; it forbids `manualWorkingInfobaseIdentity` and
+`manualWorkingInfobaseInspectionCapabilityId`, and its manual actor is exactly
+the reserved integration username. `SeparateWorkingInfobaseStartData`
+contains `manualTargetMode: separateWorkingInfobase`, required
+`manualWorkingInfobaseIdentity: ManualWorkingInfobaseIdentity`, and required
+`manualWorkingInfobaseInspectionCapabilityId: CapabilityRowId`; it forbids
+`reservedOriginalLeaseCapabilityId`. `workRootLocator` is exactly `{
+projectId, instanceId, role: instanceRoot }` for the enclosing result. The
+retention-provider row list is canonical and unique, is non-empty exactly when
+the profile declares recovery-distribution sources, and every ID resolves to
+the validated tracked retention manifest described above. Both inspection
+endpoints and service secret references remain profile-only and are never
+returned. Cross-leaf field splices fail schema and construction.
 `preArmCancellationGuardCapabilityId` names a real fixture proving that the
 configuration-root repository capture and the selected mode lease survive
 worker, connector, and client-process death until an explicit receipt-bound
@@ -3100,6 +3173,20 @@ recovery?, latestDeferredAdvanceConsumption?:
 DeferredRepositoryAdvanceConsumptionReceipt, archive?: TaskArchiveStatus,
 cleanupReceipt?: CleanupReceipt,
 cleanupEligibility: CleanupEligibilityStatus }`.
+The complete status result schema is `BranchedStatusData`, the exact physical
+`oneOf` of `NotCreatedData` and `TaskStatusData`. `TaskStatusData` is the wire
+schema name for the production code type `ExistingTaskStatusData` and is itself
+the exact physical `oneOf` of these nine closed leaves:
+`PreWorkspaceExistingTaskStatus`, `WorkspaceExistingTaskStatus`,
+`PreWorkspaceRecoveryExistingTaskStatus`,
+`WorkspaceRecoveryExistingTaskStatus`,
+`ArchivedCleanupRecoveryExistingTaskStatus`,
+`ArchivedSuccessExistingTaskStatus`,
+`ArchivedAbandonedExistingTaskStatus`, `CleanedSuccessExistingTaskStatus`, and
+`CleanedAbandonedExistingTaskStatus`. Task 12 wraps and projects those existing
+Task 11 status contracts; it does not replace their phase/presence authorities
+with another optional-field superset. `exists: false` appears only in the first
+outer leaf and `exists: true` only in the nine existing-task leaves.
 The named status records are closed:
 
 - `ActiveOperationStatus { operationId, operation: TaskOperationSelector,
@@ -3404,7 +3491,10 @@ any branch-local `kind` or `decisionKind` field:
   required together exactly when the approved cancellation preview observed an
   `armed` authorization and absent for `awaitingArm`;
 - `recovery { priorOperationId, recoveryDigest }`;
-- `archive { archiveId, sha256, outcome }`.
+- `archive { archiveId, sha256, outcome, retainedLineageDigest }`; all four
+  values are the single immutable final-publication projection also retained
+  by `TaskArchiveStatus`, so neither the staged-core hash nor an unrelated
+  archive lineage can be substituted into the resume handle.
 
 The top-level `latestDeferredAdvanceConsumption` is required exactly when the
 most recent terminal support receipt carried a deferred observation that has
@@ -4668,28 +4758,191 @@ digest. The
 full selective proof's digest, post-release cursor, post-apply partition digest,
 optional deferred-advance digest/presence, and result phase equal the compact
 status fields and full terminal recovery; none can be omitted or substituted.
-`entryDigest ==
-sha256(canonical(entry-without-entryDigest))`.
+`PreArmCancellationArchiveEntryDigestRecord` is the named closed `{
+supportActionId, effectObservation: PreArmCancellationEffectObservation,
+finalizationPlan: PreArmCancellationFinalizationPlan, finalizationPlanDigest:
+Sha256, receiptPlanDigest: Sha256, finalizationRecheckEvidence:
+PreArmCancellationFinalizationRecheckEvidence,
+completedFinalizationProgress:
+PreArmCancellationFinalizationAttemptProgress,
+finalizationAttemptAuditDigest: Sha256, supportCancellationReceiptId: UnicaId,
+supportCancellationReceiptDigest: Sha256, preArmRecoveryReceiptId: UnicaId,
+preArmRecoveryReceiptDigest: Sha256, recoveryReceiptDigest: Sha256,
+selectiveUpdateProof: SelectiveRepositoryUpdateProof,
+postReleaseObservedHistoryCursor: RepositoryHistoryCursor,
+postApplyHistoryPartition: RepositoryHistoryPartition,
+deferredRepositoryAdvance?: DeferredRepositoryAdvance, resultingPhase:
+TaskPhase }`; `entryDigest ==
+sha256(canonical(PreArmCancellationArchiveEntryDigestRecord))`.
 Success
 requires `committedAndUnlocked`; abandonment requires no
 worker, lock, original difference, or unknown effect. Preview `data` is
-`ArchivePreviewData { outcome, retainedEntryNames[], excludedRoles[],
-eligibilityDigest, previewDigest }`; applied `data` is `ArchiveData { archiveId,
-outcome, schemaVersion, sha256, archiveStagingReceipt: ArchiveStagingReceipt,
-retainedEntryNames[],
-supportArmingReceiptIds[], supportPrerequisiteReceiptIds[], supportCancellationReceiptIds[],
-supportRecoveryReceiptIds[], preArmRecoveryReceiptIds[], preArmCancellationRecoveries:
+`ArchivePreviewData`, the exact physical `oneOf` of
+`SuccessArchivePreviewData { outcome: success, retainedEntryNames:
+ArchiveEntryName[], excludedRoles: OwnedTargetRole[], eligibilityDigest,
+previewDigest }` and `AbandonedArchivePreviewData { outcome: abandoned,
+retainedEntryNames: ArchiveEntryName[], excludedRoles: OwnedTargetRole[],
+eligibilityDigest, previewDigest }`. `ArchiveEligibilityDigestRecord` is the
+named closed `{ outcome, prePreviewStatus: TaskStatusData,
+retainedEntryNames: ArchiveEntryName[], excludedRoles: OwnedTargetRole[] }`;
+`prePreviewStatus` is the authoritative snapshot before registration of the
+current preview operation, so its digest cannot recursively include itself.
+`ArchivePreviewDigestRecord` is the named closed `{ outcome,
+retainedEntryNames: ArchiveEntryName[], excludedRoles: OwnedTargetRole[],
+eligibilityDigest }`. The two preview digests are exactly the canonical hashes
+of those records.
+
+Applied `data` is `ArchiveData`, the exact physical `oneOf` of
+`SuccessArchiveData` and `AbandonedArchiveData`; the two closed leaves have the
+same fields and differ only in required literal `outcome: success` or
+`outcome: abandoned`: `{ archiveId, outcome, schemaVersion:
+ArchiveSchemaVersion, sha256, archiveStagingReceipt: ArchiveStagingReceipt,
+archiveContainerCapabilityRowId: CapabilityRowId, stagedEntryManifest:
+StagedArchiveEntryManifest, publicationManifest: ArchivePublicationManifest,
+publicationObservation: ArchivePublicationObservation, retainedEntryNames:
+ArchiveEntryName[], supportArmingReceiptIds: UnicaId[],
+supportPrerequisiteReceiptIds: UnicaId[], supportCancellationReceiptIds:
+UnicaId[], supportRecoveryReceiptIds: UnicaId[], preArmRecoveryReceiptIds:
+UnicaId[], preArmCancellationRecoveries:
 PreArmCancellationArchiveEntry[], handoffRetentionReleases:
-HandoffRetentionReleaseReceipt[], deferredAdvanceConsumptionReceiptIds[],
-previewDigest }`, where `HandoffRetentionReleaseReceipt` is the closed
-`{ retentionLeaseId, releaseActionId, releaseActionDigest, releaseReceiptId,
+HandoffRetentionReleaseReceipt[], deferredAdvanceConsumptionReceiptIds:
+UnicaId[], retainedLineageDigest, previewDigest }`. `schemaVersion` is exactly
+`branchedArchiveV1`. `HandoffRetentionReleaseReceipt` is the closed `{
+retentionLeaseId, releaseActionId, releaseActionDigest, releaseReceiptId,
 releaseReceiptDigest }` record.
-All five support-receipt lists and the pre-arm recovery list may be empty. Each
-pre-arm entry's cancellation receipt ID appears exactly once in
-`supportCancellationReceiptIds`, its distinct recovery receipt ID appears
-exactly once in `preArmRecoveryReceiptIds` (never in the armed-support
-`supportRecoveryReceiptIds`), and every terminal pre-arm recovery has
-exactly one entry. When non-empty the archive retains
+
+`ArchivePublicationEntry` is the closed `{ entryName: ArchiveEntryName,
+sha256: Sha256 }`. `StagedArchiveEntryManifestDigestRecord` is the named closed
+`{ entries: ArchivePublicationEntry[] }`; `StagedArchiveEntryManifest` is the
+closed `{ entries: ArchivePublicationEntry[], stagedEntryManifestDigest:
+Sha256 }`, whose digest is the canonical hash of that exact digest record.
+`ArchivePublicationManifestDigestRecord` is the named closed `{ archiveId,
+outcome, schemaVersion: ArchiveSchemaVersion,
+archiveContainerCapabilityRowId: CapabilityRowId, stagedArchiveSha256: Sha256,
+stagedEntryManifestDigest: Sha256, archiveStagingReceiptDigest: Sha256,
+retainedLineageDigest: Sha256, handoffReleaseReceiptDigests: Sha256[], entries:
+ArchivePublicationEntry[] }`. `ArchivePublicationManifest` contains those exact
+fields plus `manifestDigest`, which equals the canonical hash of that digest
+record. It deliberately omits final `ArchiveData.sha256`, avoiding a self-hash
+cycle.
+
+`ArchiveParsedEntrySetDigestRecord` is the named closed `{ entries:
+ArchivePublicationEntry[] }`. `ArchivePublicationObservationDigestRecord` is
+the named closed `{ publicationObservationId: UnicaId, archiveId: UnicaId,
+archiveContainerCapabilityRowId: CapabilityRowId, finalByteObservationId:
+UnicaId, finalArchiveSize: SafeResultCount, finalArchiveSha256: Sha256,
+archiveStagingReceiptDigest: Sha256, stagedEntryManifestDigest: Sha256,
+handoffReleaseReceiptDigests: Sha256[], publicationManifestDigest: Sha256,
+parsedEntrySetDigest: Sha256, fileSynced: true, parentDirectorySynced: true,
+durableWriteReceiptId: UnicaId }`. `ArchivePublicationObservation` contains
+those exact fields plus `observationDigest`, the canonical hash of that record.
+It is authority-produced, has private fields, and has no direct `Deserialize`
+or raw-field constructor. `finalByteObservationId` identifies the durable
+authority record only; it is never a path, file descriptor, process handle, or
+reopen token.
+
+`HandoffLineageDigestRecord` is the named closed pre-release record `{
+archiveId, outcome, schemaVersion: ArchiveSchemaVersion,
+archiveContainerCapabilityRowId: CapabilityRowId, stagedEntryManifest:
+StagedArchiveEntryManifest, retainedEntryNames: ArchiveEntryName[],
+supportArmingReceiptIds: UnicaId[],
+supportPrerequisiteReceiptIds: UnicaId[], supportCancellationReceiptIds:
+UnicaId[], supportRecoveryReceiptIds: UnicaId[], preArmRecoveryReceiptIds:
+UnicaId[], preArmCancellationRecoveries:
+PreArmCancellationArchiveEntry[], deferredAdvanceConsumptionReceiptIds:
+UnicaId[], previewDigest }`; it deliberately has no handoff-release receipt.
+`FrozenProviderBoundaryDigestRecord` is the named closed `{
+providerBoundaryDigests: Sha256[] }`, with the array canonical and unique.
+`RetainedArchiveLineageDigestRecord` is the named closed final record `{
+archiveId, outcome, schemaVersion: ArchiveSchemaVersion,
+archiveContainerCapabilityRowId: CapabilityRowId, stagedEntryManifest:
+StagedArchiveEntryManifest, retainedEntryNames: ArchiveEntryName[],
+supportArmingReceiptIds: UnicaId[],
+supportPrerequisiteReceiptIds: UnicaId[], supportCancellationReceiptIds:
+UnicaId[], supportRecoveryReceiptIds: UnicaId[], preArmRecoveryReceiptIds:
+UnicaId[], preArmCancellationRecoveries:
+PreArmCancellationArchiveEntry[], deferredAdvanceConsumptionReceiptIds:
+UnicaId[], previewDigest, archiveStagingReceiptDigest: Sha256,
+handoffRetentionReleases: HandoffRetentionReleaseReceipt[] }`.
+`ArchiveStagingReceipt.handoffLineageDigest`,
+`ArchiveStagingReceipt.frozenProviderBoundaryDigest`, and
+`retainedLineageDigest` equal the canonical hashes of
+`HandoffLineageDigestRecord`, `FrozenProviderBoundaryDigestRecord`, and
+`RetainedArchiveLineageDigestRecord`, respectively; generic maps and ad-hoc
+JSON preimages are invalid.
+The publication manifest's archive ID, outcome, schema version, container
+capability row, staged byte hash, staged-entry-manifest digest,
+staging-receipt digest, and retained-lineage digest equal the enclosing
+`ArchiveData`, its `StagedArchiveEntryManifest`, and
+`ArchiveStagingReceipt` fields. The staging receipt's
+`handoffLineageDigest` binds the full staged-entry manifest through
+`HandoffLineageDigestRecord`; its `stagedArchiveSha256` independently hashes
+the exact staged container bytes. The staged manifest is produced only by
+strictly reparsing those bytes and hashing every parsed member, so a name/hash
+pair cannot be supplied independently of the staged byte observation.
+`stagedEntryManifest.entries` is ordered by ASCII `entryName`, unique both
+byte-for-byte and after ASCII case-folding, and excludes the reserved manifest
+name and release namespace.
+`handoffReleaseReceiptDigests` is the exact same-order projection of
+`handoffRetentionReleases[].releaseReceiptDigest`.
+`publicationManifest.entries` is ordered by ASCII `entryName`, unique both
+byte-for-byte and after ASCII case-folding, and is the exact list of every final
+archive member except the reserved final member `archive-manifest.json`: it
+contains every
+staged-entry-manifest member with its unchanged staged member-byte hash
+and exactly one `handoff-releases/<retentionLeaseId>.json` member per release,
+whose bytes are the canonical serialization of that exact release receipt.
+`retainedEntryNames` is the exact same-order projection of
+`stagedEntryManifest.entries[].entryName`. After ASCII case-folding, staged
+retained names may use neither `archive-manifest.json` nor the
+`handoff-releases/` namespace. Each
+`ArchivePublicationEntry.sha256` hashes its exact member bytes.
+
+`branchedArchiveV1` is the logical schema/manifest version, not a claim that a
+member list uniquely derives container bytes. The tracked
+`archiveContainerCapabilityRowId` proves a paired archive writer/strict parser,
+bounded member/container sizes, atomic durable publication, and rejection of
+absolute/traversing/non-ASCII/reserved names, byte or ASCII-case-fold duplicate
+names, links/special files, encrypted members, unsupported methods/features,
+and unbounded expansion. It also records its concrete container/profile
+version; changing that profile requires a new capability row, while the final
+byte hash remains an observation rather than a recomputed member-list digest.
+The writer emits the literal `archive-manifest.json` member with bytes exactly
+`canonical(ArchivePublicationManifest)` and no trailing data. After the final
+write and fsync, the paired parser reparses the same immutable byte stream,
+proves the exact member-name/hash set and embedded manifest, and only then the
+authority records `ArchiveData.sha256` over those exact bytes. No result
+constructor derives or predicts the final byte hash from manifest fields.
+The writer authority creates one sealed internal immutable-byte token and
+projects only its logical `finalByteObservationId`; both the SHA-256 reader and
+strict parser must consume that same token and generation, never reopen a path
+or accept a caller hash. `ArchivePublicationObservation` matches the enclosing
+archive ID, capability row, `ArchiveData.sha256`, staging-receipt digest,
+staged-entry-manifest digest, release-receipt digest projection, and publication
+manifest digest byte-for-byte. Its `parsedEntrySetDigest ==
+sha256(canonical(ArchiveParsedEntrySetDigestRecord))` for the exact parsed
+non-manifest members, which equal `publicationManifest.entries`; its file and
+parent-directory sync literals and durable-write receipt are observed before
+publication. A different byte token, generation, parser profile, entry set,
+embedded manifest, or post-parse mutation cannot construct the observation.
+The five receipt-ID arrays (`supportArmingReceiptIds`,
+`supportPrerequisiteReceiptIds`, `supportCancellationReceiptIds`,
+`supportRecoveryReceiptIds`, and `preArmRecoveryReceiptIds`) are each canonical
+and unique and are pairwise disjoint. They may be empty. Each pre-arm entry's
+cancellation receipt ID appears exactly once in
+`supportCancellationReceiptIds`; its distinct recovery receipt ID appears
+exactly once in `preArmRecoveryReceiptIds` and never in
+`supportRecoveryReceiptIds`; every terminal pre-arm recovery has exactly one
+entry. `preArmCancellationRecoveries` is canonical and unique by
+`supportActionId`; `retainedEntryNames` is in ASCII byte order, unique
+byte-for-byte and after ASCII case-folding; `excludedRoles` is canonical and
+is exactly the full declaration-order tuple `[instanceRoot, taskInfobase,
+taskWorkspace, probe, sandbox, artifact, quarantine]`. Archive publication
+constructs named logical entries and never recursively packages an owned-role
+filesystem root; the tuple is constant even when a particular role currently
+has no physical target. `deferredAdvanceConsumptionReceiptIds` is the canonical unique exact
+projection of every consumption receipt in the archived terminal support
+lineage. When non-empty the archive retains
 each arming boundary and each external
 normal root-only prerequisite, explicit cancellation (including preserved
 external-support state), or exceptional invalid/corrective recovery
@@ -4701,11 +4954,12 @@ after the archive durably retains its handoff/evidence lineage. Release drops
 the lease/reference and records its receipt; Unica never deletes the profile-
 owned CF. Missing/ambiguous lease release makes archive effect unknown and blocks
 cleanup rather than guessing.
-`handoffRetentionReleases` is canonical, unique by lease ID, and maps one-to-one
-to archived handoffs and the corresponding `releaseRetentionLease` action
-outcomes; missing, duplicate, swapped, or receipt-digest-mismatched entries are
-invalid. `deferredAdvanceConsumptionReceiptIds` retains every consumption
-receipt referenced by an archived terminal support lineage.
+`handoffRetentionReleases` is canonical and unique by lease ID, and maps
+one-to-one to archived handoffs and the corresponding `releaseRetentionLease`
+action outcomes; missing, duplicate, swapped, or receipt-digest-mismatched
+entries are invalid. Each semantic collection uses a validating newtype whose
+constructor and deserializer enforce these order, uniqueness, exact-projection,
+and cross-list disjointness invariants; a bounded vector alone is insufficient.
 Apply first writes/fsyncs the complete handoff/evidence lineage and persists
 `archiveStagingReceipt`; only after its digest and live presence are observed
 may any retention lease be released. It then records exact release receipts and
@@ -4713,12 +4967,26 @@ atomically publishes the final archive. Crash points before staging leave all
 leases held; after staging they use the archive recovery grammar above and may
 release only against that exact receipt. A stale/missing staging receipt blocks
 release and final publication.
+The staged core and final published archive are two distinct byte layers.
+`ArchiveStagingReceipt.stagedArchiveSha256` hashes the exact fsynced staged-core
+bytes, which contain the complete pre-release handoff/evidence lineage and the
+frozen provider-boundary record but exclude all handoff-release receipts and
+the final publication manifest. `ArchiveData.sha256` hashes the final published
+archive bytes after the exact release receipts and final manifest are added.
+No invariant compares these hashes for equality, and neither hash may be
+substituted for the other. Release is authorized only after live observation
+of the staging receipt whose handoff-lineage digest, frozen-boundary digest,
+and staged-core byte hash all match that exact core.
 Immediately before any retention-lease release, archive canonicalizes every
 frozen provider root and exact recovery source again and checks each against
 every owned, quarantine, archive-staging, and other destructive target in both
 containment directions. Provider roots and sources are never removable roles.
 Any identity, canonicalization, or overlap mismatch returns `unsafeTaskPath`,
 releases no retention lease, and performs no move/quarantine/deletion.
+The resulting archived/cleaned `TaskArchiveStatus` fields are byte-identical to
+`ArchiveData.archiveId`, literal outcome, final `sha256`, and
+`retainedLineageDigest`; a status projection may not retain the staged-core
+hash in place of the final archive hash.
 
 A non-terminal or frozen support-action authorization is not abandonment-safe.
 An awaiting/armed authorization is rejected with
@@ -4788,16 +5056,64 @@ produce this plan and remains unsafe/recovery-bound.
 
 Request fields: `taskId`, `operationId`, `archiveId`, and `dryRun?: true` for
 preview; apply requires `dryRun: false` and `approvedPreviewDigest`. Preview
-`data` is `CleanupPreviewData { archiveId,
-outcome, removableRoles[], ownedTargetLocator: OwnedTargetLocator, markerDigest,
-previewDigest }`;
-applied `data` is `CleanupData { quarantineId, outcome, removedRoles[],
-retainedArchiveId, markerDigest, absentObservationDigests: Sha256[],
-cleanupReceipt: CleanupReceipt, previewDigest }`, where `CleanupReceipt` is the
-closed `{ cleanupReceiptId, operationId, archiveId, approvedPreviewDigest,
-ownedTargets: OwnedTargetLocator[], quarantineId, absentObservationDigests:
-Sha256[], resultingPhase: cleanedSuccess | cleanedAbandoned, receiptDigest }`
-and `receiptDigest == sha256(canonical(receipt-without-receiptDigest))`.
+`data` is `CleanupPreviewData`, the exact physical `oneOf` of
+`SuccessCleanupPreviewData { archiveId, outcome: success, removableRoles:
+OwnedTargetRole[], ownedTargets: OwnedTargetLocator[], markerDigest,
+previewDigest }` and `AbandonedCleanupPreviewData { archiveId, outcome:
+abandoned, removableRoles: OwnedTargetRole[], ownedTargets:
+OwnedTargetLocator[], markerDigest, previewDigest }`. A singular-locator shape
+is invalid: cleanup always represents the complete zero-or-more target set.
+
+Applied `data` is `CleanupData`, the exact physical `oneOf` of
+`SuccessCleanupData { quarantineId, outcome: success, removedRoles:
+OwnedTargetRole[], retainedArchiveId, markerDigest,
+absentObservationDigests: Sha256[], cleanupReceipt: SuccessCleanupReceipt,
+previewDigest }` and `AbandonedCleanupData { quarantineId, outcome: abandoned,
+removedRoles: OwnedTargetRole[], retainedArchiveId, markerDigest,
+absentObservationDigests: Sha256[], cleanupReceipt:
+AbandonedCleanupReceipt, previewDigest }`. `CleanupReceipt` is the physical
+`oneOf` of those two closed receipt leaves. Both contain `cleanupReceiptId`,
+`operationId`, `archiveId`, `approvedPreviewDigest`, `ownedTargets:
+OwnedTargetLocator[]`, `quarantineId`, `absentObservationDigests: Sha256[]`,
+and `receiptDigest`; the success leaf has literal `resultingPhase:
+cleanedSuccess`, while the abandoned leaf has literal `resultingPhase:
+cleanedAbandoned`.
+
+`CleanupMarkerDigestRecord` is the named closed `{ archiveId: UnicaId,
+ownedTargets: OwnedTargetLocator[] }`; `CleanupPreviewDigestRecord` is the
+named closed `{ archiveId: UnicaId, outcome: success | abandoned,
+removableRoles: OwnedTargetRole[], ownedTargets: OwnedTargetLocator[],
+markerDigest: Sha256 }`. `SuccessCleanupReceiptDigestRecord` is the named
+closed `{ cleanupReceiptId: UnicaId, operationId: OperationId, archiveId:
+UnicaId, approvedPreviewDigest: Sha256, ownedTargets: OwnedTargetLocator[],
+quarantineId: UnicaId, absentObservationDigests: Sha256[], resultingPhase:
+cleanedSuccess }`; `AbandonedCleanupReceiptDigestRecord` has the exact same
+fields with literal `resultingPhase: cleanedAbandoned`. Every digest equals the
+canonical hash of its named record.
+The cleanup authority first validates exact
+`(OwnedTargetLocator, absenceObservationDigest)` pairs from fresh
+capability-backed absence observations, canonicalizes those pairs once by
+target, and only then projects the two wire arrays in that same target order.
+It never sorts observation digests independently or accepts two unrelated
+equal-length lists. The paired-empty projection `ownedTargets: [],
+absentObservationDigests: []` is the direct-completion case with no owned target
+to recover/remove; one-sided emptiness or mismatched cardinality is invalid.
+`quarantineId` is allocated durably for every cleanup attempt before target
+inspection and names that logical attempt/generation, not a path. In the
+paired-empty branch it proves the zero-effect attempt identity and no quarantine
+directory, move, deletion, or absence observation is created.
+`ownedTargets` is canonical and unique by the typed locator order
+`(projectId, instanceId, OwnedTargetRole declaration order)`.
+`removableRoles` is the exact canonical unique role projection of preview
+`ownedTargets`; applied `removedRoles` is the same exact projection of the
+receipt's `ownedTargets`. Apply requires the receipt targets to be
+byte-identical to the approved preview targets, the aligned
+`(OwnedTargetLocator, absenceObservationDigest)` pairs to remain in that order,
+and the result `previewDigest` to equal the approved preview digest. The
+success/abandoned leaf outcome must equal the retained archive outcome and its
+receipt must end in `cleanedSuccess`/`cleanedAbandoned`, respectively. These
+collection and correlation invariants are constructor/deserializer checks, not
+only schema descriptions.
 Preview and apply both rerun
 every path/marker/reparse/Git/root guard. They compare every archived frozen
 canonical retention-provider-root/source boundary with every live-canonical
@@ -4824,15 +5140,43 @@ substituted absence evidence cannot publish `cleaned*`.
 
 ### `unica.delivery.inspect` — `readOnly`
 
-Request: no fields beyond common `cwd`/`taskId`. `data` is `DeliveryInspectionData { configurationIdentity,
-repositoryIdentity, bindingMatches, mainEqualsRepository,
-mainEqualsDatabaseConfiguration, platformVersion, compatibilityMode,
-deliveryPermissions { distributionAllowed, updateAllowed },
-distributionRuleCounts, supportLayers[], localDifferences[], warningsAreErrors:
-true, statusDigest }`. `configurationIdentity` is the exact
-`ConfigurationIdentity` record and both delivery permissions are explicit
-booleans. Platform warnings make inspection/create fail; there is no caller
-switch to weaken this policy. Secret or raw connection fields are absent.
+Request: no fields beyond common `cwd`/`taskId`. `data` is the single closed
+physical leaf `DeliveryInspectionData { configurationIdentity:
+ConfigurationIdentity, repositoryIdentity: Sha256, bindingMatches: boolean,
+mainEqualsRepository: boolean, mainEqualsDatabaseConfiguration: boolean,
+platformVersion: PlatformVersion, compatibilityMode: CompatibilityMode,
+deliveryPermissions: DeliveryPermissions, distributionRuleCounts,
+supportLayers: SupportLayerId[], localDifferences:
+RepositoryTargetIdentity[], warningsAreErrors: true, statusDigest }`.
+`DeliveryPermissions` is the closed `{ distributionAllowed: boolean,
+updateAllowed: boolean }` record; both decisions are always explicit.
+
+`DistributionRuleCount` is the exact physical four-leaf `oneOf` of
+`ConfigurationAllowedDistributionRuleCount { scope: configuration, verdict:
+allowed, count: SafeResultCount }`,
+`ConfigurationForbiddenDistributionRuleCount { scope: configuration,
+verdict: forbidden, count: SafeResultCount }`,
+`MetadataObjectAllowedDistributionRuleCount { scope: metadataObject, verdict:
+allowed, count: SafeResultCount }`, and
+`MetadataObjectForbiddenDistributionRuleCount { scope: metadataObject,
+verdict: forbidden, count: SafeResultCount }`. `DistributionRuleCounts` is the
+exact four-row tuple in that declaration order, and
+`distributionRuleCounts: DistributionRuleCounts`; zero-count rows are retained.
+`supportLayers` is canonical and unique by `SupportLayerId`, and
+`localDifferences` is canonical and unique by `RepositoryTargetIdentity`.
+
+`DeliveryInspectionStatusDigestRecord` is the named closed `{
+configurationIdentity: ConfigurationIdentity, repositoryIdentity: Sha256,
+bindingMatches: boolean, mainEqualsRepository: boolean,
+mainEqualsDatabaseConfiguration: boolean, platformVersion: PlatformVersion,
+compatibilityMode: CompatibilityMode, deliveryPermissions:
+DeliveryPermissions, distributionRuleCounts: DistributionRuleCounts,
+supportLayers: SupportLayerId[], localDifferences: RepositoryTargetIdentity[],
+warningsAreErrors: true }`; `statusDigest ==
+sha256(canonical(DeliveryInspectionStatusDigestRecord))`. Platform warnings
+make inspection/create fail; there is no caller switch to weaken this policy.
+No inspection result or nested digest preimage contains a local path, process
+identifier/handle, secret, credential, or raw connection field.
 
 ### `unica.delivery.create` — `previewedJournaledEffect`
 
@@ -4857,22 +5201,73 @@ safety blocker has higher precedence. It does not claim the foreign lock
 disappeared; the later single bounded lock attempt observes that fact without
 polling.
 Source is always the proven clean original; ordinary `make`/`DumpCfg` and CFU
-cannot satisfy the call. Preview `data` is `DistributionPreviewData { role,
-configurationIdentity, repositoryAnchor, platformVersion, inspectionDigest,
-plannedArtifactKind: configurationDistribution, previewDigest }`. Applied
-`data` is `DistributionData { artifactId, role, kind, sha256,
-configurationIdentity, repositoryAnchor, platformVersion, createdAt,
-previewDigest }`. Preview never invents an artifact ID, output hash, or creation
-time.
+cannot satisfy the call. Preview `data` is `DistributionPreviewData`, the exact
+physical `oneOf` of `BaselineDistributionPreviewData { role:
+baselineDistribution, configurationIdentity: ConfigurationIdentity,
+repositoryAnchor: RepositoryAnchor, platformVersion: PlatformVersion,
+inspectionDigest, plannedArtifactKind: configurationDistribution,
+previewDigest }` and `RefreshDistributionPreviewData { role:
+refreshDistribution, configurationIdentity: ConfigurationIdentity,
+repositoryAnchor: RepositoryAnchor, platformVersion: PlatformVersion,
+inspectionDigest, plannedArtifactKind: configurationDistribution,
+previewDigest }`. `DistributionPreviewDigestRecord` is the named closed `{
+role: baselineDistribution | refreshDistribution, configurationIdentity:
+ConfigurationIdentity, repositoryAnchor: RepositoryAnchor, platformVersion:
+PlatformVersion, inspectionDigest: Sha256, plannedArtifactKind:
+configurationDistribution }`; `previewDigest` is its canonical hash.
+
+Applied `data` is `DistributionData`, the exact physical `oneOf` of
+`BaselineDistributionData { artifactId, role: baselineDistribution, kind:
+configurationDistribution, sha256, configurationIdentity:
+ConfigurationIdentity, repositoryAnchor: RepositoryAnchor, platformVersion:
+PlatformVersion, createdAt: NormalizedUtcInstant, previewDigest }` and
+`RefreshDistributionData { artifactId, role: refreshDistribution, kind:
+configurationDistribution, sha256, configurationIdentity:
+ConfigurationIdentity, repositoryAnchor: RepositoryAnchor, platformVersion:
+PlatformVersion, createdAt: NormalizedUtcInstant, previewDigest }`.
+Configuration identity and platform version equal the approved inspection;
+the anchor's repository identity equals the inspected repository identity, and
+its configuration identity/fingerprint describe that same current clean
+original. Applied identity, platform version, and anchor equal the approved
+preview.
+`sha256` is the artifact-file byte hash, not a canonical JSON digest, and
+`createdAt` is normalized UTC. The applied `previewDigest` equals the approved
+preview. Preview forbids `artifactId`, `sha256`, `createdAt`, and every other
+post-effect field.
 
 ### `unica.delivery.verify` — `contained`
 
 Request: `taskId`, `operationId`, `artifactId`, and optional `expectedKind:
 AcceptedArtifactKind`.
-Only a registered task artifact can be selected. `data` is
-`ArtifactVerificationData { verificationId, artifactId, kind, expectedKind?,
-expectationMatched, sha256, probeId, supportIdentity?, currentEqualsVendor?,
-diagnosticsDigest }` only for a completed accepted-kind result. The call stops
+Only a registered task artifact can be selected. Completed `data` is
+`ArtifactVerificationData`, the exact physical `oneOf` of four closed leaves:
+
+- `UnconstrainedDistributionArtifactVerificationData { verificationId,
+  artifactId, kind: configurationDistribution, expectationMatched: true,
+  sha256, probeId, supportIdentity: ConfigurationIdentity,
+  currentEqualsVendor: true, diagnosticsDigest }`, with `expectedKind`
+  forbidden;
+- `ExpectedDistributionArtifactVerificationData` with the same fields plus
+  required `expectedKind: configurationDistribution`;
+- `UnconstrainedOrdinaryArtifactVerificationData { verificationId,
+  artifactId, kind: ordinaryConfiguration, expectationMatched: true, sha256,
+  probeId, diagnosticsDigest }`, with `expectedKind`, `supportIdentity`, and
+  `currentEqualsVendor` forbidden; and
+- `ExpectedOrdinaryArtifactVerificationData` with the same ordinary fields
+  plus required `expectedKind: ordinaryConfiguration` and still no support
+  fields.
+
+`ArtifactVerificationDiagnostics` is the named validated collection of
+0-1024 `Diagnostic` values, strictly increasing by the exact UTF-8 bytes of
+`Diagnostic.as_str()`; exact duplicates are forbidden and no Unicode
+normalization or locale/case folding is applied.
+`ArtifactVerificationDiagnosticsDigestRecord` is the named closed `{
+artifactId, probeId, kind: AcceptedArtifactKind,
+diagnostics: ArtifactVerificationDiagnostics }`;
+the diagnostics are therefore bounded, unique, and canonical, and
+`diagnosticsDigest` is exactly its canonical hash. `sha256` is the selected
+artifact-file byte hash. Optional-field supersets and cross-leaf support fields
+are invalid. The call stops
 with `artifactKindMismatch` and the separate
 `ArtifactClassificationStopData` above whenever an explicit expectation
 differs or the observed kind is `configurationUpdate`/`invalidArtifact`, even
@@ -4894,14 +5289,36 @@ Request fields: `taskId`, `operationId`, verified `distributionId`, and
 `dryRun?: true` for preview; apply requires `dryRun: false` and
 `approvedPreviewDigest`. The artifact role must be
 `baselineDistribution`; refresh distributions are merge inputs, not deployment
-baselines. Preview `data` is `DeploymentPreviewData { distributionId,
-distributionSha256, destinationKind: ownedTaskInstance, plannedRoles[],
-previewDigest }`; applied `data` is `DeploymentData { taskInfobaseId,
-taskWorkspaceId, distributionId, vendorIdentity, currentFingerprint,
-vendorFingerprint, currentEqualsVendor, sourceFingerprint, previewDigest }`.
-Preview never allocates or reports task-infobase/workspace IDs or post-deploy
+baselines. Preview `data` is the single closed physical leaf
+`DeploymentPreviewData { distributionId, distributionSha256, destinationKind:
+ownedTaskInstance, plannedRoles, previewDigest }`, where `plannedRoles` is the
+exact positional tuple `[taskInfobase, taskWorkspace]`.
+`DeploymentPreviewDigestRecord` is the named closed `{ distributionId:
+UnicaId, distributionSha256: Sha256, destinationKind: ownedTaskInstance,
+plannedRoles: [taskInfobase, taskWorkspace] }`; `previewDigest` is its canonical
+hash.
+
+Applied `data` is the single closed physical leaf `DeploymentData {
+taskInfobaseId, taskWorkspaceId, distributionId, vendorIdentity:
+ConfigurationIdentity, currentFingerprint, vendorFingerprint,
+currentEqualsVendor: true, sourceFingerprint, previewDigest }`.
+`taskInfobaseId` and `taskWorkspaceId` are distinct. `vendorIdentity` is
+byte-identical to the selected distribution verification's required
+`supportIdentity`; `sourceFingerprint` is the selected distribution's bound
+repository-anchor configuration fingerprint; and `currentFingerprint ==
+vendorFingerprint`. The applied `previewDigest` equals the approved preview.
+Preview forbids task-infobase/workspace IDs, identities, and all post-deploy
 fingerprints. The task IB is always local File; deployment also creates guarded
 `v8project.yaml`, local overlay, and `.v8-project.json`.
+
+Across every Task 12 completed-result leaf, nested `$defs` record, and digest
+preimage, recursive negative fixtures inject a local path/`cwd`/state or work
+root, PID/process handle, password/token/secret, credential reference, raw
+connection string, and service endpoint at the root and at every nested record;
+all are rejected. `OwnedTargetLocator` is the only owned-target projection and
+is logical, while `ArchiveEntryName` is only a portable relative archive member
+name; neither is a filesystem-path escape hatch. Every new record is closed, so
+renaming a forbidden field or nesting it under an open object is not possible.
 
 ## Merge Tools
 

@@ -3,9 +3,10 @@ use super::instructions::{
     ReleaseRepositoryLocksInstruction,
 };
 use super::repository::{
-    RepositoryHistoryCursor, RepositoryHistoryPartitionClassification, RepositoryOwnerIdentity,
-    RepositoryTargetIdentity, RepositoryTargetStates, SelectiveRepositoryUpdatePlan,
-    SelectiveRepositoryUpdateScope, ValidatedRepositoryHistoryPartition,
+    DeferredRepositoryAdvance, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
+    RepositoryOwnerIdentity, RepositoryTargetIdentity, RepositoryTargetStates,
+    SelectiveRepositoryUpdatePlan, SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateScope,
+    ValidatedRepositoryHistoryPartition,
 };
 use super::scalars::{RepositoryTargetDisplay, RequiredNullable};
 use super::support::{ManualSupportTargetMode, ReservedOriginalLeaseStopEvidence};
@@ -1603,6 +1604,35 @@ impl PreArmCancellationEffectObservation {
     fn selective_update_plan_digest(&self) -> &Sha256Digest {
         &self.bound_selective_update_plan_digest
     }
+
+    const fn observed_original_fingerprint(&self) -> &Sha256Digest {
+        &self.observed_original_fingerprint
+    }
+
+    fn completed_update_final_original_fingerprint(&self) -> Option<&Sha256Digest> {
+        match self
+            .effect_progress
+            .update_progress()
+            .map(|progress| &progress.0)
+        {
+            Some(PreArmCancellationUpdateProgressRecord::Applied {
+                selective_update_effect,
+            }) => Some(&selective_update_effect.verified_original_target_fingerprint_digest),
+            Some(PreArmCancellationUpdateProgressRecord::AlreadyExact {
+                already_exact_evidence,
+            }) => Some(&already_exact_evidence.verified_original_target_fingerprint_digest),
+            Some(PreArmCancellationUpdateProgressRecord::NotRequired) | None => None,
+        }
+    }
+
+    fn current_original_fingerprint(&self) -> &Sha256Digest {
+        self.completed_update_final_original_fingerprint()
+            .unwrap_or(&self.observed_original_fingerprint)
+    }
+
+    const fn expected_final_support_graph_digest(&self) -> &Sha256Digest {
+        &self.observed_support_graph_digest
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -2582,6 +2612,26 @@ impl PreArmCancellationFinalizationRecheckPolicy {
             _ => None,
         }
     }
+
+    fn expected_recheck_state_binding(&self) -> Option<(&Sha256Digest, &Sha256Digest)> {
+        match &self.0 {
+            PreArmCancellationFinalizationRecheckPolicyRecord::ReplannableBeforeUpdate(value) => {
+                Some((
+                    &value.expected_original_fingerprint,
+                    &value.expected_support_graph_digest,
+                ))
+            }
+            PreArmCancellationFinalizationRecheckPolicyRecord::ProtectedUpdateReady(value) => {
+                Some((
+                    &value.expected_original_fingerprint,
+                    &value.expected_support_graph_digest,
+                ))
+            }
+            PreArmCancellationFinalizationRecheckPolicyRecord::ReleaseOnlyAfterPersistence(_) => {
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
@@ -3164,6 +3214,33 @@ impl PreArmCancellationFinalizationRecheckEvidence {
                 Some(&value.refreshed_history_partition)
             }
             _ => None,
+        }
+    }
+
+    fn observed_state_binding(&self) -> Option<(&Sha256Digest, &Sha256Digest)> {
+        match &self.0 {
+            PreArmCancellationFinalizationRecheckEvidenceRecord::Matched(value) => Some((
+                &value.observed_original_fingerprint,
+                &value.observed_support_graph_digest,
+            )),
+            PreArmCancellationFinalizationRecheckEvidenceRecord::SafeTailExtended(value) => Some((
+                &value.observed_original_fingerprint,
+                &value.observed_support_graph_digest,
+            )),
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReleaseTailObserved(value) => {
+                Some((
+                    &value.observed_original_fingerprint,
+                    &value.observed_support_graph_digest,
+                ))
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReplanRequired(value) => Some((
+                &value.observed_original_fingerprint,
+                &value.observed_support_graph_digest,
+            )),
+            PreArmCancellationFinalizationRecheckEvidenceRecord::CapabilityBreach(value) => value
+                .observed_original_fingerprint
+                .as_ref()
+                .zip(value.observed_support_graph_digest.as_ref()),
         }
     }
 }
@@ -4165,6 +4242,38 @@ impl PreArmCancellationFinalizationAttemptProgress {
         }
     }
 
+    /// Recheck evidence carried by the completed terminal branch.
+    ///
+    /// Archive projection uses this typed view to prove that the separately
+    /// retained terminal evidence is byte-identical to the evidence embedded
+    /// in the completed progress, without serializing and probing the record.
+    pub(crate) const fn completed_recheck_evidence(
+        &self,
+    ) -> Option<&PreArmCancellationFinalizationRecheckEvidence> {
+        match &self.0 {
+            PreArmCancellationFinalizationAttemptProgressRecord::Completed {
+                recheck_evidence,
+                ..
+            } => Some(recheck_evidence),
+            _ => None,
+        }
+    }
+
+    /// Exact finalization-plan receipts retained by the completed attempt.
+    ///
+    /// This deliberately exposes only the immutable completed slice. Recovery
+    /// uses it to prove that its ordered action outcomes produced precisely the
+    /// receipts persisted in progress, rather than trusting receipt IDs alone.
+    pub(crate) fn completed_realized_receipts(&self) -> Option<&[PreArmCancellationEffectReceipt]> {
+        match &self.0 {
+            PreArmCancellationFinalizationAttemptProgressRecord::Completed {
+                realized_receipts,
+                ..
+            } => Some(realized_receipts.as_slice()),
+            _ => None,
+        }
+    }
+
     fn compensated_stop_kind(&self) -> Option<PreArmCancellationCompensatedStopKind> {
         match &self.0 {
             PreArmCancellationFinalizationAttemptProgressRecord::Compensated {
@@ -4780,6 +4889,34 @@ pub(crate) struct PreArmCancellationFinalizationPlan {
     planned_result_phase: TaskPhase,
     relevant_advance_phase: TaskPhase,
     finalization_plan_digest: Sha256Digest,
+    #[serde(skip)]
+    #[schemars(skip)]
+    bound_cancelled_phase: TaskPhase,
+}
+
+/// Borrowed, non-wire projection of the pre-arm lineage retained by an
+/// archive entry. Keeping these observations together prevents an archive
+/// producer from independently selecting receipts, history, or phase.
+///
+/// This is intentionally not the complete terminal-recovery authority. The
+/// archive constructor separately requires the exact action/outcome receipt
+/// witness; Task 13/16 must additionally bind root/mode proofs, exact recheck
+/// rows, approved-cancellation producer authority, and the enclosing recovery
+/// receipt before a production archive constructor exists.
+#[derive(Debug)]
+pub(crate) struct PreArmCancellationArchiveLineageProjection<'a> {
+    pub(crate) effect_observation: &'a PreArmCancellationEffectObservation,
+    pub(crate) finalization_recheck_evidence: &'a PreArmCancellationFinalizationRecheckEvidence,
+    pub(crate) completed_finalization_progress: &'a PreArmCancellationFinalizationAttemptProgress,
+    pub(crate) support_cancellation_receipt_id: &'a UnicaId,
+    pub(crate) support_cancellation_receipt_digest: &'a Sha256Digest,
+    pub(crate) pre_arm_recovery_receipt_id: &'a UnicaId,
+    pub(crate) pre_arm_recovery_receipt_digest: &'a Sha256Digest,
+    pub(crate) selective_update_proof: &'a SelectiveRepositoryUpdateProof,
+    pub(crate) post_release_observed_history_cursor: &'a RepositoryHistoryCursor,
+    pub(crate) post_apply_history_partition: &'a ValidatedRepositoryHistoryPartition,
+    pub(crate) deferred_repository_advance: Option<&'a DeferredRepositoryAdvance>,
+    pub(crate) resulting_phase: TaskPhase,
 }
 
 fn partition_requires_relevant_advance(partition: &ValidatedRepositoryHistoryPartition) -> bool {
@@ -4910,6 +5047,39 @@ impl PreArmCancellationFinalizationPlan {
         {
             return Err(PreArmRecoveryContractError(
                 "finalization plan violates its source stage, history binding, or guard hierarchy",
+            ));
+        }
+        let disposition = authority.receipt_plan.selective_update_disposition();
+        let (source_current_original_fingerprint, source_current_support_graph_digest) = authority
+            .prior_attempt_lineage
+            .audits
+            .as_slice()
+            .iter()
+            .rev()
+            .find_map(|audit| audit.replan_evidence())
+            .and_then(PreArmCancellationFinalizationRecheckEvidence::observed_state_binding)
+            .unwrap_or((
+                authority.effect_observation.current_original_fingerprint(),
+                authority
+                    .effect_observation
+                    .expected_final_support_graph_digest(),
+            ));
+        let expected_final_original_fingerprint = (disposition
+            != PreArmCancellationSelectiveUpdateDisposition::Perform)
+            .then_some(source_current_original_fingerprint);
+        if expected_final_original_fingerprint
+            .is_some_and(|expected| &authority.expected_final_original_fingerprint != expected)
+            || &authority.expected_final_support_graph_digest != source_current_support_graph_digest
+            || authority
+                .recheck_policy
+                .expected_recheck_state_binding()
+                .is_some_and(|(policy_original, policy_support)| {
+                    policy_original != source_current_original_fingerprint
+                        || policy_support != source_current_support_graph_digest
+                })
+        {
+            return Err(PreArmRecoveryContractError(
+                "finalization plan state fingerprints differ from current source/replan evidence",
             ));
         }
 
@@ -5234,11 +5404,370 @@ impl PreArmCancellationFinalizationPlan {
             planned_result_phase: record.planned_result_phase,
             relevant_advance_phase: record.relevant_advance_phase,
             finalization_plan_digest,
+            bound_cancelled_phase: cancelled_phase,
         })
     }
 
     pub(crate) const fn finalization_attempt_id(&self) -> &UnicaId {
         &self.finalization_attempt_id
+    }
+
+    /// One canonical cross-contract identity check for every consumer of a
+    /// pre-arm finalization plan.  Matching only the support action is not
+    /// sufficient: two observations for the same action may belong to
+    /// different operations, cancellation approvals, target modes, or
+    /// observation generations.
+    pub(crate) fn binds_effect_observation(
+        &self,
+        observation: &PreArmCancellationEffectObservation,
+    ) -> bool {
+        observation.prior_operation_id() == &self.prior_operation_id
+            && observation.support_action_id() == &self.support_action_id
+            && observation.expected_support_action_digest() == &self.expected_support_action_digest
+            && observation.approved_cancellation_digest() == &self.approved_cancellation_digest
+            && observation.manual_target_mode() == self.manual_target_mode
+            && observation.observation_digest() == &self.effect_observation_digest
+            && observation.cancelled_phase() == self.bound_cancelled_phase
+            && observation.relevant_advance_phase() == self.relevant_advance_phase
+    }
+
+    /// Validate the complete archive-retained projection against this exact
+    /// finalization plan.
+    ///
+    /// This is deliberately one archive-lineage predicate: validating the
+    /// retained plan, receipts, recheck evidence, update proof, cursor range,
+    /// and phase separately permits values from different attempts to be
+    /// spliced into one archive entry. Full root/mode proof, terminal scanner,
+    /// and enclosing recovery-receipt authority remain Task 13/16 gates.
+    pub(crate) fn validate_archive_lineage_projection(
+        &self,
+        projection: PreArmCancellationArchiveLineageProjection<'_>,
+    ) -> Result<(), PreArmRecoveryContractError> {
+        if !self.binds_effect_observation(projection.effect_observation) {
+            return Err(PreArmRecoveryContractError(
+                "terminal effect observation belongs to another finalization plan",
+            ));
+        }
+
+        let (completed_attempt_id, realized_receipts, embedded_recheck_evidence) =
+            match &projection.completed_finalization_progress.0 {
+                PreArmCancellationFinalizationAttemptProgressRecord::Completed {
+                    finalization_attempt_id,
+                    realized_receipts,
+                    recheck_evidence,
+                    ..
+                } => (finalization_attempt_id, realized_receipts, recheck_evidence),
+                _ => {
+                    return Err(PreArmRecoveryContractError(
+                    "archive-lineage projection does not contain completed finalization progress",
+                ));
+                }
+            };
+        if completed_attempt_id != &self.finalization_attempt_id
+            || embedded_recheck_evidence != projection.finalization_recheck_evidence
+        {
+            return Err(PreArmRecoveryContractError(
+                "completed finalization progress belongs to another attempt or recheck",
+            ));
+        }
+
+        let mut realized = realized_receipts.as_slice().iter();
+        let mut cancellation_pair_matched = false;
+        let mut recovery_pair_matched = false;
+        let mut resolved_root_guard_receipt_id = None;
+        let mut resolved_update_receipt = None;
+        for (receipt_ref, expected_kind) in self.receipt_plan.ordered_refs_with_kinds() {
+            let resolved = match receipt_ref.source() {
+                PreArmCancellationReceiptSource::PriorOperation => receipt_ref
+                    .prior_receipt()
+                    .ok_or(PreArmRecoveryContractError(
+                        "prior-operation receipt ref lacks its immutable receipt",
+                    ))?,
+                PreArmCancellationReceiptSource::FinalizationPlan => {
+                    realized.next().ok_or(PreArmRecoveryContractError(
+                        "completed finalization omits a planned effect receipt",
+                    ))?
+                }
+            };
+            if receipt_ref.effect_kind() != expected_kind
+                || resolved.effect_kind() != expected_kind
+                || resolved.receipt_id() != receipt_ref.receipt_id()
+                || resolved.effect_intent_digest() != receipt_ref.effect_intent_digest()
+            {
+                return Err(PreArmRecoveryContractError(
+                    "completed finalization receipt does not resolve its exact plan ref",
+                ));
+            }
+            match expected_kind {
+                PreArmCancellationEffectKind::RootGuardAcquire => {
+                    resolved_root_guard_receipt_id = Some(resolved.receipt_id());
+                }
+                PreArmCancellationEffectKind::SelectiveOriginalUpdate => {
+                    resolved_update_receipt = Some(resolved);
+                }
+                PreArmCancellationEffectKind::AuthorizationCancellation => {
+                    cancellation_pair_matched = resolved.receipt_id()
+                        == projection.support_cancellation_receipt_id
+                        && resolved.receipt_digest()
+                            == projection.support_cancellation_receipt_digest;
+                }
+                PreArmCancellationEffectKind::RecoveryFinalization => {
+                    recovery_pair_matched = resolved.receipt_id()
+                        == projection.pre_arm_recovery_receipt_id
+                        && resolved.receipt_digest() == projection.pre_arm_recovery_receipt_digest;
+                }
+                _ => {}
+            }
+        }
+        if realized.next().is_some() || !cancellation_pair_matched || !recovery_pair_matched {
+            return Err(PreArmRecoveryContractError(
+                "completed finalization receipts or terminal receipt pairs differ from the plan",
+            ));
+        }
+
+        if projection.selective_update_proof.plan_digest()
+            != self.selective_update_plan.plan_digest()
+            || resolved_root_guard_receipt_id
+                != Some(projection.selective_update_proof.guard_receipt_id())
+            || projection
+                .selective_update_proof
+                .verified_original_target_fingerprint_digest()
+                != &self.expected_final_original_fingerprint
+        {
+            return Err(PreArmRecoveryContractError(
+                "terminal selective update proof belongs to another plan or fingerprint",
+            ));
+        }
+        let proof_effect_pair = projection
+            .selective_update_proof
+            .update_effect_receipt_id()
+            .zip(
+                projection
+                    .selective_update_proof
+                    .update_effect_receipt_digest(),
+            );
+        let resolved_effect_pair =
+            resolved_update_receipt.map(|receipt| (receipt.receipt_id(), receipt.receipt_digest()));
+        let update_disposition_matches = match self.receipt_plan.selective_update_disposition {
+            PreArmCancellationSelectiveUpdateDisposition::NotRequired => {
+                self.selective_update_plan
+                    .planned_targets()
+                    .is_empty_for_prearm()
+                    && resolved_update_receipt.is_none()
+                    && !projection.selective_update_proof.update_performed()
+                    && proof_effect_pair.is_none()
+            }
+            PreArmCancellationSelectiveUpdateDisposition::AlreadyExact => {
+                !self
+                    .selective_update_plan
+                    .planned_targets()
+                    .is_empty_for_prearm()
+                    && resolved_update_receipt.is_none()
+                    && !projection.selective_update_proof.update_performed()
+                    && proof_effect_pair.is_none()
+                    && projection
+                        .effect_observation
+                        .effect_progress()
+                        .update_progress()
+                        .is_some_and(|progress| match &progress.0 {
+                            PreArmCancellationUpdateProgressRecord::AlreadyExact {
+                                already_exact_evidence,
+                            } => {
+                                projection
+                                    .selective_update_proof
+                                    .before_original_target_fingerprint_map_digest()
+                                    == &already_exact_evidence
+                                        .before_original_target_fingerprint_map_digest
+                                    && projection
+                                        .selective_update_proof
+                                        .verified_original_target_fingerprint_digest()
+                                        == &already_exact_evidence
+                                            .verified_original_target_fingerprint_digest
+                            }
+                            _ => false,
+                        })
+            }
+            PreArmCancellationSelectiveUpdateDisposition::AlreadyApplied => {
+                !self
+                    .selective_update_plan
+                    .planned_targets()
+                    .is_empty_for_prearm()
+                    && projection.selective_update_proof.update_performed()
+                    && proof_effect_pair == resolved_effect_pair
+                    && projection
+                        .effect_observation
+                        .effect_progress()
+                        .update_progress()
+                        .is_some_and(|progress| match &progress.0 {
+                            PreArmCancellationUpdateProgressRecord::Applied {
+                                selective_update_effect,
+                            } => {
+                                projection
+                                    .selective_update_proof
+                                    .before_original_target_fingerprint_map_digest()
+                                    == &selective_update_effect
+                                        .before_original_target_fingerprint_digest
+                                    && projection
+                                        .selective_update_proof
+                                        .verified_original_target_fingerprint_digest()
+                                        == &selective_update_effect
+                                            .verified_original_target_fingerprint_digest
+                            }
+                            _ => false,
+                        })
+            }
+            PreArmCancellationSelectiveUpdateDisposition::Perform => {
+                !self
+                    .selective_update_plan
+                    .planned_targets()
+                    .is_empty_for_prearm()
+                    && projection.selective_update_proof.update_performed()
+                    && proof_effect_pair == resolved_effect_pair
+            }
+        };
+        if !update_disposition_matches {
+            return Err(PreArmRecoveryContractError(
+                "terminal selective update proof contradicts the receipt-plan disposition",
+            ));
+        }
+
+        let (reconciled_partition, recheck_forces_relevant) = self
+            .validate_terminal_recheck_evidence(
+                projection.finalization_recheck_evidence,
+                projection.post_apply_history_partition,
+            )?;
+        if reconciled_partition.through_inclusive()
+            != projection.selective_update_proof.observed_before_cursor()
+            || projection.post_apply_history_partition.start_cursor()
+                != projection.selective_update_proof.observed_before_cursor()
+            || !projection
+                .post_apply_history_partition
+                .contains_cursor(projection.selective_update_proof.observed_after_cursor())
+            || projection.post_apply_history_partition.through_inclusive()
+                != projection.post_release_observed_history_cursor
+            || !projection
+                .post_apply_history_partition
+                .all_entries_are_one_of(&[
+                    RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                    RepositoryHistoryPartitionClassification::RelevantRoutine,
+                    RepositoryHistoryPartitionClassification::ExternalSupport,
+                    RepositoryHistoryPartitionClassification::PreArmExternal,
+                ])
+            || projection
+                .deferred_repository_advance
+                .is_some_and(|advance| {
+                    advance.anchor_cursor()
+                        != projection.post_apply_history_partition.through_inclusive()
+                })
+        {
+            return Err(PreArmRecoveryContractError(
+                "terminal history partitions, proof cursors, and deferred advance are not contiguous",
+            ));
+        }
+
+        let expected_phase = if recheck_forces_relevant
+            || self.planned_result_phase == self.relevant_advance_phase
+            || partition_requires_relevant_advance(projection.post_apply_history_partition)
+            || projection.deferred_repository_advance.is_some()
+        {
+            self.relevant_advance_phase
+        } else {
+            self.bound_cancelled_phase
+        };
+        if projection.resulting_phase != expected_phase {
+            return Err(PreArmRecoveryContractError(
+                "terminal result phase disagrees with recheck and post-release history",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_terminal_recheck_evidence<'a>(
+        &self,
+        evidence: &'a PreArmCancellationFinalizationRecheckEvidence,
+        post_apply_history_partition: &ValidatedRepositoryHistoryPartition,
+    ) -> Result<(&'a ValidatedRepositoryHistoryPartition, bool), PreArmRecoveryContractError> {
+        match &evidence.0 {
+            PreArmCancellationFinalizationRecheckEvidenceRecord::Matched(value) => {
+                let expected_state = self.recheck_policy.expected_recheck_state_binding();
+                if !matches!(
+                    self.recheck_policy.mode(),
+                    PreArmCancellationFinalizationRecheckMode::ReplannableBeforeUpdate
+                        | PreArmCancellationFinalizationRecheckMode::ProtectedUpdateReady
+                ) || value.observed_history_partition != self.finalization_history_partition
+                    || expected_state
+                        != Some((
+                            &value.observed_original_fingerprint,
+                            &value.observed_support_graph_digest,
+                        ))
+                {
+                    return Err(PreArmRecoveryContractError(
+                        "matched recheck evidence differs from the finalization plan",
+                    ));
+                }
+                Ok((&value.observed_history_partition, false))
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::SafeTailExtended(value) => {
+                let expected_state = self.recheck_policy.expected_recheck_state_binding();
+                if self.recheck_policy.mode()
+                    != PreArmCancellationFinalizationRecheckMode::ProtectedUpdateReady
+                    || value.base_history_partition != self.finalization_history_partition
+                    || expected_state
+                        != Some((
+                            &value.observed_original_fingerprint,
+                            &value.observed_support_graph_digest,
+                        ))
+                {
+                    return Err(PreArmRecoveryContractError(
+                        "safe-tail recheck evidence differs from the finalization plan",
+                    ));
+                }
+                Ok((&value.combined_history_partition, true))
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReleaseTailObserved(value) => {
+                let tail_allowed = match &self.recheck_policy.0 {
+                    PreArmCancellationFinalizationRecheckPolicyRecord::ReleaseOnlyAfterPersistence(
+                        policy,
+                    ) => match policy.allowed_tail_classifications {
+                        ReleaseTailClassifications::RootHeld(_) => value
+                            .appended_history_partition
+                            .all_entries_are_one_of(&[
+                                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                                RepositoryHistoryPartitionClassification::RelevantRoutine,
+                            ]),
+                        ReleaseTailClassifications::FullyReleased(_) => value
+                            .appended_history_partition
+                            .all_entries_are_one_of(&[
+                                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                                RepositoryHistoryPartitionClassification::RelevantRoutine,
+                                RepositoryHistoryPartitionClassification::ExternalSupport,
+                                RepositoryHistoryPartitionClassification::PreArmExternal,
+                            ]),
+                    },
+                    _ => false,
+                };
+                if !tail_allowed
+                    || value.persisted_history_partition != self.finalization_history_partition
+                    || value.observed_original_fingerprint
+                        != self.expected_final_original_fingerprint
+                    || value.observed_support_graph_digest
+                        != self.expected_final_support_graph_digest
+                    || !post_apply_history_partition
+                        .has_exact_entry_prefix(&value.appended_history_partition)
+                {
+                    return Err(PreArmRecoveryContractError(
+                        "release-tail recheck is not the exact leading post-apply segment",
+                    ));
+                }
+                Ok((&value.persisted_history_partition, true))
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReplanRequired(_)
+            | PreArmCancellationFinalizationRecheckEvidenceRecord::CapabilityBreach(_) => {
+                Err(PreArmRecoveryContractError(
+                    "non-success recheck evidence cannot complete finalization",
+                ))
+            }
+        }
     }
 
     pub(crate) const fn prior_operation_id(&self) -> &OperationId {
@@ -5259,6 +5788,19 @@ impl PreArmCancellationFinalizationPlan {
 
     pub(crate) const fn effect_observation_digest(&self) -> &Sha256Digest {
         &self.effect_observation_digest
+    }
+
+    pub(crate) const fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        self.manual_target_mode
+    }
+
+    pub(crate) fn selective_update_plan_digest(&self) -> &Sha256Digest {
+        self.selective_update_plan.plan_digest()
+    }
+
+    pub(crate) fn expected_target_revision_map_digest(&self) -> &Sha256Digest {
+        self.selective_update_plan
+            .expected_target_revision_map_digest()
     }
 
     pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
@@ -5285,6 +5827,38 @@ impl PreArmCancellationFinalizationPlan {
 
     pub(crate) const fn finalization_plan_digest(&self) -> &Sha256Digest {
         &self.finalization_plan_digest
+    }
+
+    /// Recompute a future receipt intent from the sealed plan identity and the
+    /// action's exact expected postcondition. Comparing a receipt ref alone is
+    /// insufficient because an action could otherwise retain the right ref
+    /// while carrying a substituted postcondition.
+    pub(crate) fn validates_finalization_action_receipt_intent(
+        &self,
+        receipt_ref: &PreArmCancellationReceiptRef,
+        effect_kind: PreArmCancellationEffectKind,
+        expected_postcondition_digest: &Sha256Digest,
+    ) -> Result<bool, PreArmRecoveryContractError> {
+        if receipt_ref.source() != PreArmCancellationReceiptSource::FinalizationPlan
+            || receipt_ref.effect_kind() != effect_kind
+        {
+            return Ok(false);
+        }
+        let expected_intent = prearm_digest(
+            &FinalizationPlanEffectIntentDigestRecord {
+                effect_kind,
+                finalization_attempt_id: self.finalization_attempt_id.clone(),
+                support_action_id: self.support_action_id.clone(),
+                expected_support_action_digest: self.expected_support_action_digest.clone(),
+                approved_cancellation_digest: self.approved_cancellation_digest.clone(),
+                effect_observation_digest: self.effect_observation_digest.clone(),
+                manual_target_mode: self.manual_target_mode,
+                selective_update_plan_digest: self.selective_update_plan.plan_digest().clone(),
+                expected_postcondition_digest: expected_postcondition_digest.clone(),
+            },
+            "finalization action receipt intent digest failed",
+        )?;
+        Ok(receipt_ref.effect_intent_digest() == &expected_intent)
     }
 }
 
@@ -5518,6 +6092,45 @@ fn validate_execution_paths(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn archive_outcome_fixture_test_only(
+    include_selective_update: bool,
+    expected_postconditions: Vec<(PreArmCancellationEffectKind, Sha256Digest)>,
+) -> (
+    PreArmCancellationEffectObservation,
+    PreArmCancellationFinalizationPlan,
+    PreArmCancellationFinalizationRecheckEvidence,
+) {
+    tests::archive_outcome_fixture(include_selective_update, expected_postconditions)
+}
+
+#[cfg(test)]
+pub(crate) fn archive_selective_update_proof_test_only(
+    plan: &PreArmCancellationFinalizationPlan,
+) -> SelectiveRepositoryUpdateProof {
+    assert_eq!(
+        plan.receipt_plan.selective_update_disposition(),
+        PreArmCancellationSelectiveUpdateDisposition::NotRequired,
+        "test helper currently covers the no-update archive branch",
+    );
+    let endpoint = plan
+        .finalization_history_partition
+        .through_inclusive()
+        .clone();
+    SelectiveRepositoryUpdateProof::recovery_finalization_already_exact_test_only(
+        &plan.selective_update_plan,
+        plan.receipt_plan
+            .root_guard_acquisition_receipt()
+            .receipt_id()
+            .clone(),
+        plan.expected_final_original_fingerprint.clone(),
+        plan.expected_final_original_fingerprint.clone(),
+        endpoint.clone(),
+        endpoint,
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -6668,6 +7281,324 @@ mod tests {
         }
     }
 
+    fn realized_finalization_receipts(
+        plan: &PreArmCancellationFinalizationPlan,
+    ) -> Vec<PreArmCancellationEffectReceipt> {
+        plan.receipt_plan
+            .ordered_refs_with_kinds()
+            .into_iter()
+            .filter(|(receipt_ref, _)| {
+                receipt_ref.source() == PreArmCancellationReceiptSource::FinalizationPlan
+            })
+            .map(|(receipt_ref, effect_kind)| {
+                PreArmCancellationEffectReceipt::new(
+                    PreArmCancellationEffectReceiptAuthority::test_only(
+                        receipt_ref.receipt_id().clone(),
+                        effect_kind,
+                        receipt_ref.effect_intent_digest().clone(),
+                        id(ID_9),
+                        digest(B),
+                        vec![digest(A)],
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[derive(Clone)]
+    struct MatchedTerminalFixture {
+        observation: PreArmCancellationEffectObservation,
+        plan: PreArmCancellationFinalizationPlan,
+        evidence: PreArmCancellationFinalizationRecheckEvidence,
+        progress: PreArmCancellationFinalizationAttemptProgress,
+        cancellation_receipt_id: UnicaId,
+        cancellation_receipt_digest: Sha256Digest,
+        recovery_receipt_id: UnicaId,
+        recovery_receipt_digest: Sha256Digest,
+        selective_update_proof: SelectiveRepositoryUpdateProof,
+        post_release_cursor: RepositoryHistoryCursor,
+        post_apply_partition: ValidatedRepositoryHistoryPartition,
+    }
+
+    impl MatchedTerminalFixture {
+        fn projection(
+            &self,
+            resulting_phase: TaskPhase,
+        ) -> PreArmCancellationArchiveLineageProjection<'_> {
+            PreArmCancellationArchiveLineageProjection {
+                effect_observation: &self.observation,
+                finalization_recheck_evidence: &self.evidence,
+                completed_finalization_progress: &self.progress,
+                support_cancellation_receipt_id: &self.cancellation_receipt_id,
+                support_cancellation_receipt_digest: &self.cancellation_receipt_digest,
+                pre_arm_recovery_receipt_id: &self.recovery_receipt_id,
+                pre_arm_recovery_receipt_digest: &self.recovery_receipt_digest,
+                selective_update_proof: &self.selective_update_proof,
+                post_release_observed_history_cursor: &self.post_release_cursor,
+                post_apply_history_partition: &self.post_apply_partition,
+                deferred_repository_advance: None,
+                resulting_phase,
+            }
+        }
+
+        fn validate(&self, resulting_phase: TaskPhase) -> Result<(), PreArmRecoveryContractError> {
+            self.plan
+                .validate_archive_lineage_projection(self.projection(resulting_phase))
+        }
+    }
+
+    fn matched_terminal_fixture() -> MatchedTerminalFixture {
+        let selective_update_plan = empty_recovery_update_plan();
+        let history = empty_partition();
+        let observation = no_guard_observation_with_history(
+            selective_update_plan.plan_digest().clone(),
+            history.clone(),
+        );
+        let plan = PreArmCancellationFinalizationPlan::new_test_only(finalization_authority(
+            id(ID_8),
+            observation.clone(),
+            selective_update_plan,
+            history.clone(),
+            PreArmCancellationAttemptAuditLineageAuthority::initial(),
+            TaskPhase::Synchronized,
+        ))
+        .unwrap();
+        let evidence = PreArmCancellationFinalizationRecheckEvidence::new(
+            PreArmCancellationFinalizationRecheckEvidenceAuthority::matched_test_only(
+                history.clone(),
+                digest(C),
+                digest(A),
+            ),
+        )
+        .unwrap();
+        let receipts = realized_finalization_receipts(&plan);
+        let cancellation = receipts
+            .iter()
+            .find(|receipt| {
+                receipt.effect_kind() == PreArmCancellationEffectKind::AuthorizationCancellation
+            })
+            .unwrap();
+        let cancellation_receipt_id = cancellation.receipt_id().clone();
+        let cancellation_receipt_digest = cancellation.receipt_digest().clone();
+        let recovery = receipts
+            .iter()
+            .find(|receipt| {
+                receipt.effect_kind() == PreArmCancellationEffectKind::RecoveryFinalization
+            })
+            .unwrap();
+        let recovery_receipt_id = recovery.receipt_id().clone();
+        let recovery_receipt_digest = recovery.receipt_digest().clone();
+        let progress = PreArmCancellationFinalizationAttemptProgress::completed_test_only(
+            plan.finalization_attempt_id().clone(),
+            receipts,
+            evidence.clone(),
+        )
+        .unwrap();
+        let endpoint = history.through_inclusive().clone();
+        let selective_update_proof =
+            SelectiveRepositoryUpdateProof::recovery_finalization_already_exact_test_only(
+                &plan.selective_update_plan,
+                plan.receipt_plan
+                    .root_guard_acquisition_receipt()
+                    .receipt_id()
+                    .clone(),
+                digest(A),
+                digest(C),
+                endpoint.clone(),
+                endpoint.clone(),
+            )
+            .unwrap();
+        MatchedTerminalFixture {
+            observation,
+            plan,
+            evidence,
+            progress,
+            cancellation_receipt_id,
+            cancellation_receipt_digest,
+            recovery_receipt_id,
+            recovery_receipt_digest,
+            selective_update_proof,
+            post_release_cursor: endpoint,
+            post_apply_partition: history,
+        }
+    }
+
+    pub(super) fn archive_outcome_fixture(
+        include_selective_update: bool,
+        expected_postconditions: Vec<(PreArmCancellationEffectKind, Sha256Digest)>,
+    ) -> (
+        PreArmCancellationEffectObservation,
+        PreArmCancellationFinalizationPlan,
+        PreArmCancellationFinalizationRecheckEvidence,
+    ) {
+        let selective_update_plan = SelectiveRepositoryUpdatePlan::recovery_finalization_test_only(
+            if include_selective_update {
+                root_target()
+            } else {
+                empty_targets()
+            },
+            serde_json::from_value::<RepositoryUpdateLockTargets>(json!([{
+                "targetKind": "configurationRoot",
+                "objectDisplay": "Configuration",
+                "reasons": ["supportGraphGuard"],
+            }]))
+            .unwrap(),
+            capability("selective-recovery-v1"),
+            None,
+        )
+        .unwrap();
+        let history = empty_partition();
+        let observation = no_guard_observation_with_history(
+            selective_update_plan.plan_digest().clone(),
+            history.clone(),
+        );
+        let attempt_id = id(ID_9);
+        let postcondition = |kind| {
+            expected_postconditions
+                .iter()
+                .find_map(|(candidate, digest)| (*candidate == kind).then(|| digest.clone()))
+                .unwrap()
+        };
+        let receipt = |receipt_id, kind| {
+            future_ref_with_digest(
+                receipt_id,
+                kind,
+                finalization_intent(kind, &attempt_id, &observation, postcondition(kind)),
+            )
+        };
+        let projection =
+            ApprovedSelectiveUpdatePlanProjection::from_plan(&selective_update_plan).unwrap();
+        let receipt_plan = PreArmCancellationReceiptPlan::new(
+            &projection,
+            &observation,
+            true,
+            true,
+            PreArmCancellationReceiptPlanAuthority {
+                root_guard_acquisition_receipt: receipt(
+                    ID_1,
+                    PreArmCancellationEffectKind::RootGuardAcquire,
+                ),
+                mode_lease_acquisition_receipt: receipt(
+                    ID_2,
+                    PreArmCancellationEffectKind::ModeLeaseAcquire,
+                ),
+                selective_update_effect_receipt: include_selective_update
+                    .then(|| receipt(ID_3, PreArmCancellationEffectKind::SelectiveOriginalUpdate)),
+                cancellation_persistence_receipt: receipt(
+                    ID_4,
+                    PreArmCancellationEffectKind::AuthorizationCancellation,
+                ),
+                mode_lease_release_receipt: receipt(
+                    ID_5,
+                    PreArmCancellationEffectKind::ModeLeaseRelease,
+                ),
+                root_guard_release_receipt: receipt(
+                    ID_6,
+                    PreArmCancellationEffectKind::RootGuardRelease,
+                ),
+                recovery_finalization_receipt: receipt(
+                    ID_7,
+                    PreArmCancellationEffectKind::RecoveryFinalization,
+                ),
+            },
+        )
+        .unwrap();
+        let recheck_policy = PreArmCancellationFinalizationRecheckPolicy::new(
+            PreArmCancellationFinalizationRecheckPolicyAuthority {
+                kind: PreArmCancellationFinalizationRecheckPolicyAuthorityKind::ReplannableBeforeUpdate {
+                    source_progress_stage: PreArmCancellationEffectProgressStage::NoGuard,
+                    continuously_held_root: false,
+                    continuously_held_mode_lease: false,
+                    history_partition: history.clone(),
+                    expected_original_fingerprint: digest(C),
+                    expected_support_graph_digest: digest(A),
+                    pre_arm_freeze_digest: digest(B),
+                },
+            },
+        )
+        .unwrap();
+        let execution_path_plan = if include_selective_update {
+            PreArmCancellationFinalizationExecutionPathPlan::new(vec![
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::Success,
+                    [ID_1, ID_2, ID_3, ID_4, ID_5, ID_6, ID_7, ID_8]
+                        .into_iter()
+                        .map(id)
+                        .collect(),
+                )
+                .unwrap(),
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::CapabilityBreachStop,
+                    [ID_1, ID_2, ID_3].into_iter().map(id).collect(),
+                )
+                .unwrap(),
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::RootGuardConflictCompensation,
+                    vec![id(ID_1)],
+                )
+                .unwrap(),
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::ModeLeaseUnavailableBeforeAcquisitionCompensation,
+                    [ID_1, ID_2, ID_7].into_iter().map(id).collect(),
+                )
+                .unwrap(),
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::RecheckReplanCompensation,
+                    [ID_1, ID_2, ID_3, ID_6, ID_7]
+                        .into_iter()
+                        .map(id)
+                        .collect(),
+                )
+                .unwrap(),
+            ])
+            .unwrap()
+        } else {
+            finalization_paths()
+        };
+        let plan = PreArmCancellationFinalizationPlan::new_test_only(
+            PreArmCancellationFinalizationPlanAuthority {
+                finalization_attempt_id: attempt_id,
+                effect_observation: observation.clone(),
+                completion_mode:
+                    PreArmCancellationFinalizationCompletionMode::FinishCancellationAndRelease,
+                starting_root_guard_state: PreArmCancellationStartingGuardState::Released,
+                starting_mode_lease_state: PreArmCancellationStartingGuardState::Released,
+                acquire_root_guard: true,
+                acquire_mode_lease: true,
+                receipt_plan,
+                expected_postcondition_digests:
+                    PreArmCancellationExpectedPostconditionDigests::from_pairs_test_only(
+                        expected_postconditions,
+                    )
+                    .unwrap(),
+                recheck_policy,
+                execution_path_plan,
+                prior_attempt_lineage: PreArmCancellationAttemptAuditLineageAuthority::initial(),
+                finalization_history_partition: history.clone(),
+                selective_update_plan,
+                expected_final_original_fingerprint: if include_selective_update {
+                    digest(B)
+                } else {
+                    digest(C)
+                },
+                expected_final_support_graph_digest: digest(A),
+                planned_result_phase: TaskPhase::Synchronized,
+            },
+        )
+        .unwrap();
+        let evidence = PreArmCancellationFinalizationRecheckEvidence::new(
+            PreArmCancellationFinalizationRecheckEvidenceAuthority::matched_test_only(
+                history,
+                digest(C),
+                digest(A),
+            ),
+        )
+        .unwrap();
+        (observation, plan, evidence)
+    }
+
     fn replan_lineage(
         previous_plan: &PreArmCancellationFinalizationPlan,
         refreshed_history_partition: ValidatedRepositoryHistoryPartition,
@@ -7134,6 +8065,31 @@ mod tests {
             TaskPhase::Synchronized,
         );
         let plan = PreArmCancellationFinalizationPlan::new_test_only(authority.clone()).unwrap();
+        assert!(plan.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.prior_operation_id = operation_id(ID_3);
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.support_action_id = id(ID_3);
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.expected_support_action_digest = digest(B);
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.approved_cancellation_digest = digest(C);
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.manual_target_mode = ManualSupportTargetMode::SeparateWorkingInfobase;
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.effect_observation_digest = digest(C);
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.bound_cancelled_phase = TaskPhase::Developing;
+        assert!(!wrong_binding.binds_effect_observation(&observation));
+        let mut wrong_binding = plan.clone();
+        wrong_binding.relevant_advance_phase = TaskPhase::Developing;
+        assert!(!wrong_binding.binds_effect_observation(&observation));
         let observation_wire = serde_json::to_value(&observation).unwrap();
         assert!(observation_wire.get("cancelledPhase").is_none());
         assert!(observation_wire.get("relevantAdvancePhase").is_none());
@@ -7282,6 +8238,134 @@ mod tests {
             authority.planned_result_phase = TaskPhase::LocalVerified;
             assert!(PreArmCancellationFinalizationPlan::new_test_only(authority).is_ok());
         }
+    }
+
+    #[test]
+    fn archive_lineage_projection_rejects_receipt_proof_history_and_phase_splices() {
+        let fixture = matched_terminal_fixture();
+        assert!(fixture.validate(TaskPhase::Synchronized).is_ok());
+        assert!(fixture.validate(TaskPhase::LocalVerified).is_err());
+
+        let wrong_id = id(ID_9);
+        let mut projection = fixture.projection(TaskPhase::Synchronized);
+        projection.support_cancellation_receipt_id = &wrong_id;
+        assert!(fixture
+            .plan
+            .validate_archive_lineage_projection(projection)
+            .is_err());
+        let wrong_digest = digest(B);
+        let mut projection = fixture.projection(TaskPhase::Synchronized);
+        projection.pre_arm_recovery_receipt_digest = &wrong_digest;
+        assert!(fixture
+            .plan
+            .validate_archive_lineage_projection(projection)
+            .is_err());
+
+        let mut wrong_progress = fixture.clone();
+        let mut receipts = realized_finalization_receipts(&wrong_progress.plan);
+        let root_ref = wrong_progress
+            .plan
+            .receipt_plan
+            .root_guard_acquisition_receipt();
+        receipts[0] = PreArmCancellationEffectReceipt::new(
+            PreArmCancellationEffectReceiptAuthority::test_only(
+                id(ID_9),
+                PreArmCancellationEffectKind::RootGuardAcquire,
+                root_ref.effect_intent_digest().clone(),
+                id(ID_9),
+                digest(B),
+                vec![digest(A)],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        wrong_progress.progress =
+            PreArmCancellationFinalizationAttemptProgress::completed_test_only(
+                wrong_progress.plan.finalization_attempt_id().clone(),
+                receipts,
+                wrong_progress.evidence.clone(),
+            )
+            .unwrap();
+        assert!(wrong_progress.validate(TaskPhase::Synchronized).is_err());
+
+        let mut wrong_evidence = fixture.clone();
+        wrong_evidence.evidence = PreArmCancellationFinalizationRecheckEvidence::new(
+            PreArmCancellationFinalizationRecheckEvidenceAuthority::matched_test_only(
+                wrong_evidence.post_apply_partition.clone(),
+                digest(B),
+                digest(A),
+            ),
+        )
+        .unwrap();
+        wrong_evidence.progress =
+            PreArmCancellationFinalizationAttemptProgress::completed_test_only(
+                wrong_evidence.plan.finalization_attempt_id().clone(),
+                realized_finalization_receipts(&wrong_evidence.plan),
+                wrong_evidence.evidence.clone(),
+            )
+            .unwrap();
+        assert!(wrong_evidence.validate(TaskPhase::Synchronized).is_err());
+
+        let mut wrong_proof = fixture.clone();
+        let other_plan = SelectiveRepositoryUpdatePlan::recovery_finalization_test_only(
+            empty_targets(),
+            wrong_proof
+                .plan
+                .selective_update_plan
+                .lock_targets()
+                .clone(),
+            capability("selective-recovery-v2"),
+            None,
+        )
+        .unwrap();
+        wrong_proof.selective_update_proof =
+            SelectiveRepositoryUpdateProof::recovery_finalization_already_exact_test_only(
+                &other_plan,
+                wrong_proof
+                    .plan
+                    .receipt_plan
+                    .root_guard_acquisition_receipt()
+                    .receipt_id()
+                    .clone(),
+                digest(A),
+                digest(C),
+                wrong_proof.post_apply_partition.start_cursor().clone(),
+                wrong_proof.post_apply_partition.start_cursor().clone(),
+            )
+            .unwrap();
+        assert!(wrong_proof.validate(TaskPhase::Synchronized).is_err());
+
+        let mut outside_after_cursor = fixture.clone();
+        outside_after_cursor.selective_update_proof =
+            SelectiveRepositoryUpdateProof::recovery_finalization_already_exact_test_only(
+                &outside_after_cursor.plan.selective_update_plan,
+                outside_after_cursor
+                    .plan
+                    .receipt_plan
+                    .root_guard_acquisition_receipt()
+                    .receipt_id()
+                    .clone(),
+                digest(A),
+                digest(C),
+                outside_after_cursor
+                    .post_apply_partition
+                    .start_cursor()
+                    .clone(),
+                cursor("17", B),
+            )
+            .unwrap();
+        assert!(outside_after_cursor
+            .validate(TaskPhase::Synchronized)
+            .is_err());
+
+        let mut relevant_tail = fixture;
+        relevant_tail.post_apply_partition = routine_partition("16", A, &[("17", B, true)]);
+        relevant_tail.post_release_cursor = relevant_tail
+            .post_apply_partition
+            .through_inclusive()
+            .clone();
+        assert!(relevant_tail.validate(TaskPhase::LocalVerified).is_ok());
+        assert!(relevant_tail.validate(TaskPhase::Synchronized).is_err());
     }
 
     #[test]

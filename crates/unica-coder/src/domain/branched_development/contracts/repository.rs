@@ -1,3 +1,4 @@
+use super::artifacts::ConfigurationIdentity;
 use super::instructions::{
     decode_historical_support_conflict_instruction, SupportConflictInstruction,
     SupportCorrectiveInstruction,
@@ -180,8 +181,129 @@ pub(crate) struct RepositoryHistoryCursor {
 }
 
 impl RepositoryHistoryCursor {
+    pub(crate) fn new(
+        through_version: RepositoryVersion,
+        history_prefix_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            through_version,
+            history_prefix_digest,
+        }
+    }
+
     pub(crate) const fn through_version(&self) -> &RepositoryVersion {
         &self.through_version
+    }
+
+    pub(crate) const fn history_prefix_digest(&self) -> &Sha256Digest {
+        &self.history_prefix_digest
+    }
+}
+
+/// One inseparable repository observation projected by the repository adapter.
+///
+/// The authority is intentionally non-`Clone`, non-`Deserialize`, and has no
+/// production raw-field constructor. A repository adapter added with the
+/// execution handlers must mint it from one verified observation rather than
+/// accepting independently supplied digest fields.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryAnchorObservationAuthority {
+    repository_identity: Sha256Digest,
+    history_cursor: RepositoryHistoryCursor,
+    configuration_identity: ConfigurationIdentity,
+    configuration_fingerprint: Sha256Digest,
+}
+
+impl RepositoryAnchorObservationAuthority {
+    #[cfg(test)]
+    pub(crate) fn test_only(
+        repository_identity: Sha256Digest,
+        history_cursor: RepositoryHistoryCursor,
+        configuration_identity: ConfigurationIdentity,
+        configuration_fingerprint: Sha256Digest,
+    ) -> Self {
+        Self {
+            repository_identity,
+            history_cursor,
+            configuration_identity,
+            configuration_fingerprint,
+        }
+    }
+
+    pub(crate) fn into_anchor(self) -> Result<RepositoryAnchor, RepositoryContractError> {
+        RepositoryAnchor::from_observation(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryAnchorDigestRecord {
+    repository_identity: Sha256Digest,
+    history_cursor: RepositoryHistoryCursor,
+    configuration_identity: ConfigurationIdentity,
+    configuration_fingerprint: Sha256Digest,
+}
+
+impl RepositoryAnchorDigestRecord {
+    fn from_observation(authority: RepositoryAnchorObservationAuthority) -> Self {
+        Self {
+            repository_identity: authority.repository_identity,
+            history_cursor: authority.history_cursor,
+            configuration_identity: authority.configuration_identity,
+            configuration_fingerprint: authority.configuration_fingerprint,
+        }
+    }
+}
+
+impl contract_digest_record_sealed::Sealed for RepositoryAnchorDigestRecord {}
+impl ContractDigestRecord for RepositoryAnchorDigestRecord {}
+
+/// Content-bound repository observation. Deliberately not `Deserialize`;
+/// callers cannot inject an `anchorDigest` without recomputation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryAnchor {
+    repository_identity: Sha256Digest,
+    history_cursor: RepositoryHistoryCursor,
+    configuration_identity: ConfigurationIdentity,
+    configuration_fingerprint: Sha256Digest,
+    anchor_digest: Sha256Digest,
+}
+
+impl RepositoryAnchor {
+    fn from_observation(
+        authority: RepositoryAnchorObservationAuthority,
+    ) -> Result<Self, RepositoryContractError> {
+        let record = RepositoryAnchorDigestRecord::from_observation(authority);
+        let anchor_digest = canonical_contract_digest(&record, None)
+            .map_err(|_| RepositoryContractError("repository anchor digest failed"))?;
+        Ok(Self {
+            repository_identity: record.repository_identity,
+            history_cursor: record.history_cursor,
+            configuration_identity: record.configuration_identity,
+            configuration_fingerprint: record.configuration_fingerprint,
+            anchor_digest,
+        })
+    }
+
+    pub(crate) const fn repository_identity(&self) -> &Sha256Digest {
+        &self.repository_identity
+    }
+
+    pub(crate) const fn history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.history_cursor
+    }
+
+    pub(crate) const fn configuration_identity(&self) -> &ConfigurationIdentity {
+        &self.configuration_identity
+    }
+
+    pub(crate) const fn configuration_fingerprint(&self) -> &Sha256Digest {
+        &self.configuration_fingerprint
+    }
+
+    pub(crate) const fn anchor_digest(&self) -> &Sha256Digest {
+        &self.anchor_digest
     }
 }
 
@@ -3639,22 +3761,25 @@ mod tests {
         EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow,
         EvidenceSourceRegistry, FrozenSupportConflictInstructionSourceAuthority,
         FrozenSupportCorrectiveInstructionSourceAuthority, NonConflictingConcurrentEvidence,
-        ReleasedRepositoryUpdateLockTargets, RepositoryActorIdentity, RepositoryHistoryCursor,
-        RepositoryHistoryEvidenceBytesResolver, RepositoryHistoryOrderEvidence,
-        RepositoryHistoryOrderResolver, RepositoryHistoryPartitionResolver,
-        RepositoryHistorySourceEvidenceRef, RepositoryOwnerIdentity, RepositoryPlannedChanges,
-        RepositoryTargetIdentity, RepositoryTargetKind, RepositoryTargetStates,
-        RepositoryUpdateLockReason, RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
+        ReleasedRepositoryUpdateLockTargets, RepositoryActorIdentity, RepositoryAnchor,
+        RepositoryAnchorDigestRecord, RepositoryAnchorObservationAuthority,
+        RepositoryHistoryCursor, RepositoryHistoryEvidenceBytesResolver,
+        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
+        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
+        RepositoryOwnerIdentity, RepositoryPlannedChanges, RepositoryTargetIdentity,
+        RepositoryTargetKind, RepositoryTargetStates, RepositoryUpdateLockReason,
+        RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
         RoutineRepositoryVersionClassificationEvidence, SupportCorrectiveEvidenceResolver,
         UnvalidatedRepositoryHistoryPartition, ValidatedSupportRecoveryHistoryEntryRef,
     };
+    use crate::domain::branched_development::contracts::artifacts::ConfigurationIdentity;
     use crate::domain::branched_development::contracts::instructions::{
         SupportConflictInstruction, SupportCorrectiveInstruction,
         SupportCorrectiveInstructionAuthority, SupportRecoveryTransition,
     };
     use crate::domain::branched_development::contracts::scalars::{
-        Diagnostic, RepositoryTargetDisplay, RepositoryUsername, RepositoryVersion,
-        RequiredNullable,
+        Diagnostic, EmptyOrName, Name, RepositoryTargetDisplay, RepositoryUsername,
+        RepositoryVersion, RequiredNullable,
     };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
     use crate::domain::branched_development::contracts::support::{
@@ -3666,7 +3791,9 @@ mod tests {
     use crate::domain::branched_development::contracts::support_terminalization::{
         SupportRecoveryLockTarget, SupportRecoveryLockTargets,
     };
-    use crate::domain::branched_development::{Sha256Digest, SupportLayerId, UnicaId};
+    use crate::domain::branched_development::{
+        MetadataObjectId, Sha256Digest, SupportLayerId, UnicaId,
+    };
     use schemars::schema_for;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -3699,6 +3826,13 @@ mod tests {
     impl<T: ?Sized> AmbiguousIfDeserializeOwned<()> for T {}
     impl<T: serde::de::DeserializeOwned> AmbiguousIfDeserializeOwned<u8> for T {}
 
+    trait AmbiguousIfClone<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
     #[test]
     fn capability_derived_authority_types_have_no_deserialize_backdoor() {
         let _ =
@@ -3715,6 +3849,147 @@ mod tests {
         let _ = <super::ValidatedSupportObservationHistoryEntry as AmbiguousIfDeserializeOwned<
             _,
         >>::marker;
+        let _ = <RepositoryAnchor as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <RepositoryAnchorDigestRecord as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <RepositoryAnchorObservationAuthority as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <RepositoryAnchorObservationAuthority as AmbiguousIfClone<_>>::marker;
+    }
+
+    fn configuration_identity(version: &str) -> ConfigurationIdentity {
+        ConfigurationIdentity::new(
+            MetadataObjectId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+            Name::parse("Demo configuration").unwrap(),
+            EmptyOrName::parse("Demo vendor").unwrap(),
+            EmptyOrName::parse(version).unwrap(),
+        )
+    }
+
+    #[test]
+    fn task12_repository_anchor_is_produced_from_one_consumed_observation_authority() {
+        let repository_identity = Sha256Digest::parse(SHA_A).unwrap();
+        let history_cursor = RepositoryHistoryCursor::new(
+            RepositoryVersion::parse("opaque-v17").unwrap(),
+            Sha256Digest::parse(SHA_B).unwrap(),
+        );
+        let configuration_identity = configuration_identity("8.3.27");
+        let configuration_fingerprint =
+            Sha256Digest::parse("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+                .unwrap();
+        let expected_digest = Sha256Digest::parse(&test_digest(&json!({
+            "repositoryIdentity": SHA_A,
+            "historyCursor": {
+                "throughVersion": "opaque-v17",
+                "historyPrefixDigest": SHA_B,
+            },
+            "configurationIdentity": {
+                "metadataUuid": "00000000-0000-0000-0000-000000000001",
+                "name": "Demo configuration",
+                "vendor": "Demo vendor",
+                "version": "8.3.27",
+            },
+            "configurationFingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        })))
+        .unwrap();
+
+        let authority = RepositoryAnchorObservationAuthority::test_only(
+            repository_identity.clone(),
+            history_cursor.clone(),
+            configuration_identity.clone(),
+            configuration_fingerprint.clone(),
+        );
+        let anchor = authority.into_anchor().unwrap();
+
+        assert_eq!(history_cursor.through_version().as_str(), "opaque-v17");
+        assert_eq!(history_cursor.history_prefix_digest().as_str(), SHA_B);
+        assert_eq!(anchor.repository_identity(), &repository_identity);
+        assert_eq!(anchor.history_cursor(), &history_cursor);
+        assert_eq!(anchor.configuration_identity(), &configuration_identity);
+        assert_eq!(
+            anchor.configuration_fingerprint(),
+            &configuration_fingerprint
+        );
+        assert_eq!(anchor.anchor_digest(), &expected_digest);
+        assert_eq!(
+            serde_json::to_value(&anchor).unwrap(),
+            json!({
+                "repositoryIdentity": SHA_A,
+                "historyCursor": {
+                    "throughVersion": "opaque-v17",
+                    "historyPrefixDigest": SHA_B,
+                },
+                "configurationIdentity": {
+                    "metadataUuid": "00000000-0000-0000-0000-000000000001",
+                    "name": "Demo configuration",
+                    "vendor": "Demo vendor",
+                    "version": "8.3.27",
+                },
+                "configurationFingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "anchorDigest": expected_digest,
+            })
+        );
+        assert_closed::<RepositoryAnchorDigestRecord>();
+        assert_closed::<RepositoryAnchor>();
+    }
+
+    #[test]
+    fn task12_repository_anchor_digest_binds_every_authoritative_preimage_field() {
+        let cursor_a = RepositoryHistoryCursor::new(
+            RepositoryVersion::parse("opaque-v17").unwrap(),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        );
+        let cursor_b = RepositoryHistoryCursor::new(
+            RepositoryVersion::parse("opaque-v18").unwrap(),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        );
+        let base = RepositoryAnchorObservationAuthority::test_only(
+            Sha256Digest::parse(SHA_A).unwrap(),
+            cursor_a.clone(),
+            configuration_identity("8.3.27"),
+            Sha256Digest::parse(SHA_B).unwrap(),
+        )
+        .into_anchor()
+        .unwrap();
+        let variations = [
+            RepositoryAnchorObservationAuthority::test_only(
+                Sha256Digest::parse(SHA_B).unwrap(),
+                cursor_a.clone(),
+                configuration_identity("8.3.27"),
+                Sha256Digest::parse(SHA_B).unwrap(),
+            )
+            .into_anchor()
+            .unwrap(),
+            RepositoryAnchorObservationAuthority::test_only(
+                Sha256Digest::parse(SHA_A).unwrap(),
+                cursor_b,
+                configuration_identity("8.3.27"),
+                Sha256Digest::parse(SHA_B).unwrap(),
+            )
+            .into_anchor()
+            .unwrap(),
+            RepositoryAnchorObservationAuthority::test_only(
+                Sha256Digest::parse(SHA_A).unwrap(),
+                cursor_a.clone(),
+                configuration_identity("8.3.28"),
+                Sha256Digest::parse(SHA_B).unwrap(),
+            )
+            .into_anchor()
+            .unwrap(),
+            RepositoryAnchorObservationAuthority::test_only(
+                Sha256Digest::parse(SHA_A).unwrap(),
+                cursor_a,
+                configuration_identity("8.3.27"),
+                Sha256Digest::parse(
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                )
+                .unwrap(),
+            )
+            .into_anchor()
+            .unwrap(),
+        ];
+
+        for variation in variations {
+            assert_ne!(variation.anchor_digest(), base.anchor_digest());
+        }
     }
 
     #[test]

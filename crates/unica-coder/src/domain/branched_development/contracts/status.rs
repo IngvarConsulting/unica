@@ -8,14 +8,15 @@ use super::prearm_recovery::{
 };
 use super::recovery::{
     ArchivedCleanupRecoveryPlanStatusSchema, FinishCleanupAbsenceObservation,
-    PreWorkspaceRecoveryPlanStatusSchema, RecoveryPlanStatus, RecoveryTarget,
-    WorkspaceRecoveryPlanStatusSchema,
+    FinishCleanupAbsenceObservations, PreWorkspaceRecoveryPlanStatusSchema, RecoveryPlanStatus,
+    RecoveryTarget, WorkspaceRecoveryPlanStatusSchema,
 };
 use super::repository::{
     DeferredRepositoryAdvance, DeferredRepositoryAdvanceConsumptionReceipt,
     RepositoryActorIdentity, RepositoryHistoryCursor, RepositoryOwnerIdentity,
     RepositoryTargetIdentity, SupportGateHistoryEvidence,
 };
+use super::results::task::ArchiveStatusProjectionAuthority;
 use super::scalars::{NormalizedUtcInstant, PositiveGeneration, Reason, RepositoryVersion};
 use super::schema::one_of_schema;
 use super::selectors::TaskOperationSelector;
@@ -798,7 +799,18 @@ pub(crate) struct TaskArchiveStatus {
 }
 
 impl TaskArchiveStatus {
-    pub(crate) fn new(
+    pub(crate) fn from_publication(authority: ArchiveStatusProjectionAuthority) -> Self {
+        let (archive_id, outcome, sha256, retained_lineage_digest) = authority.into_parts();
+        Self {
+            archive_id,
+            outcome,
+            sha256,
+            retained_lineage_digest,
+        }
+    }
+
+    #[cfg(test)]
+    fn new(
         archive_id: UnicaId,
         outcome: TaskArchiveOutcome,
         sha256: Sha256Digest,
@@ -822,6 +834,10 @@ impl TaskArchiveStatus {
 
     pub(crate) const fn sha256(&self) -> &Sha256Digest {
         &self.sha256
+    }
+
+    pub(crate) const fn retained_lineage_digest(&self) -> &Sha256Digest {
+        &self.retained_lineage_digest
     }
 }
 
@@ -1582,19 +1598,33 @@ pub(crate) struct ArchiveResumeHandle {
     archive_id: UnicaId,
     sha256: Sha256Digest,
     outcome: TaskArchiveOutcome,
+    retained_lineage_digest: Sha256Digest,
 }
 
 impl ArchiveResumeHandle {
-    pub(crate) const fn new(
+    pub(crate) fn from_archive_status(archive: &TaskArchiveStatus) -> Self {
+        Self {
+            handle_kind: ArchiveHandleKind::Value,
+            archive_id: archive.archive_id.clone(),
+            sha256: archive.sha256.clone(),
+            outcome: archive.outcome,
+            retained_lineage_digest: archive.retained_lineage_digest.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new(
         archive_id: UnicaId,
         sha256: Sha256Digest,
         outcome: TaskArchiveOutcome,
+        retained_lineage_digest: Sha256Digest,
     ) -> Self {
         Self {
             handle_kind: ArchiveHandleKind::Value,
             archive_id,
             sha256,
             outcome,
+            retained_lineage_digest,
         }
     }
 
@@ -1608,6 +1638,10 @@ impl ArchiveResumeHandle {
 
     pub(crate) const fn outcome(&self) -> TaskArchiveOutcome {
         self.outcome
+    }
+
+    pub(crate) const fn retained_lineage_digest(&self) -> &Sha256Digest {
+        &self.retained_lineage_digest
     }
 }
 
@@ -3237,12 +3271,20 @@ impl ResumeHandles {
 
     fn archive_binding(
         &self,
-    ) -> Result<Option<(&UnicaId, &Sha256Digest, TaskArchiveOutcome)>, StatusContractError> {
+    ) -> Result<
+        Option<(&UnicaId, &Sha256Digest, TaskArchiveOutcome, &Sha256Digest)>,
+        StatusContractError,
+    > {
         let mut found = None;
         for handle in &self.0 {
             if let ResumeHandle::Archive(handle) = handle {
                 if found
-                    .replace((handle.archive_id(), handle.sha256(), handle.outcome()))
+                    .replace((
+                        handle.archive_id(),
+                        handle.sha256(),
+                        handle.outcome(),
+                        handle.retained_lineage_digest(),
+                    ))
                     .is_some()
                 {
                     return Err(StatusContractError(
@@ -3352,6 +3394,15 @@ pub(crate) enum CleanupResultPhase {
 struct CanonicalOwnedTargets(Vec<OwnedTargetLocator>);
 
 impl CanonicalOwnedTargets {
+    fn new(values: Vec<OwnedTargetLocator>) -> Result<Self, StatusContractError> {
+        if values.len() > MAX_STATUS_ITEMS || values.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(StatusContractError(
+                "cleanup owned targets must be bounded, canonical, and unique",
+            ));
+        }
+        Ok(Self(values))
+    }
+
     fn from_absences(values: &CompletedCleanupAbsences) -> Self {
         Self(
             values
@@ -3422,7 +3473,7 @@ impl JsonSchema for CanonicalAbsenceObservationDigests {
 /// One capability-validated target/absence pair. The wire receipt projects the
 /// two arrays from this paired authority; callers can never sort or splice the
 /// observation digests independently from their targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CompletedCleanupAbsence {
     owned_target: OwnedTargetLocator,
     absence_observation_digest: Sha256Digest,
@@ -3460,7 +3511,7 @@ impl CompletedCleanupAbsence {
 
 /// Canonically target-ordered cleanup completion evidence. Empty is a valid
 /// direct-completion authority when the owned target set was already empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CompletedCleanupAbsences(Vec<CompletedCleanupAbsence>);
 
 impl CompletedCleanupAbsences {
@@ -3470,21 +3521,17 @@ impl CompletedCleanupAbsences {
                 "cleanup absence pairs exceed the general collection bound",
             ));
         }
-        let mut previous_target = None;
+        let mut previous_target: Option<&OwnedTargetLocator> = None;
         let mut observation_digests = std::collections::BTreeSet::new();
         for value in &values {
-            let target_key = serde_json_canonicalizer::to_vec(&value.owned_target)
-                .map_err(|_| StatusContractError("owned target canonicalization failed"))?;
-            if previous_target
-                .as_ref()
-                .is_some_and(|previous| previous >= &target_key)
+            if previous_target.is_some_and(|previous| previous >= &value.owned_target)
                 || !observation_digests.insert(value.absence_observation_digest.as_str())
             {
                 return Err(StatusContractError(
                     "cleanup absence pairs must be target-ordered and observation-unique",
                 ));
             }
-            previous_target = Some(target_key);
+            previous_target = Some(&value.owned_target);
         }
         Ok(Self(values))
     }
@@ -3494,64 +3541,513 @@ impl CompletedCleanupAbsences {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CleanupReceiptDigestRecord {
-    cleanup_receipt_id: UnicaId,
-    operation_id: OperationId,
-    archive_id: UnicaId,
-    approved_preview_digest: Sha256Digest,
-    owned_targets: CanonicalOwnedTargets,
-    quarantine_id: UnicaId,
-    absent_observation_digests: CanonicalAbsenceObservationDigests,
-    resulting_phase: CleanupResultPhase,
+#[derive(Debug, PartialEq, Eq)]
+enum ApprovedCleanupAttemptLineage {
+    DirectEmpty,
+    Recovery {
+        recovery_digest: Sha256Digest,
+        finish_action_id: UnicaId,
+        finish_action_digest: Sha256Digest,
+    },
 }
 
-impl contract_digest_record_sealed::Sealed for CleanupReceiptDigestRecord {}
-impl ContractDigestRecord for CleanupReceiptDigestRecord {}
+/// Linear approval for one cleanup execution attempt. It binds the approved
+/// preview and marker to one archive/outcome, operation, quarantine, exact
+/// target set, and (for recovery) the final action lineage.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ApprovedCleanupAttempt {
+    operation_id: OperationId,
+    archive_id: UnicaId,
+    outcome: TaskArchiveOutcome,
+    approved_preview_digest: Sha256Digest,
+    marker_digest: Sha256Digest,
+    quarantine_id: UnicaId,
+    owned_targets: CanonicalOwnedTargets,
+    lineage: ApprovedCleanupAttemptLineage,
+}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CleanupReceiptAuthority(CleanupReceiptDigestRecord);
-
-impl CleanupReceiptAuthority {
-    pub(crate) fn new(
-        cleanup_receipt_id: UnicaId,
+impl ApprovedCleanupAttempt {
+    #[cfg(test)]
+    pub(crate) fn from_recovery_test_only(
         operation_id: OperationId,
-        archive_id: UnicaId,
+        archive: &TaskArchiveStatus,
         approved_preview_digest: Sha256Digest,
-        completed_absences: CompletedCleanupAbsences,
+        marker_digest: Sha256Digest,
         quarantine_id: UnicaId,
-        resulting_phase: CleanupResultPhase,
+        owned_targets: Vec<OwnedTargetLocator>,
+        recovery: RecoveryPlanStatus,
     ) -> Result<Self, StatusContractError> {
-        let owned_targets = CanonicalOwnedTargets::from_absences(&completed_absences);
-        let absent_observation_digests =
-            CanonicalAbsenceObservationDigests::from_absences(&completed_absences);
-        Ok(Self(CleanupReceiptDigestRecord {
-            cleanup_receipt_id,
+        let owned_targets = CanonicalOwnedTargets::new(owned_targets)?;
+        if owned_targets.as_slice().is_empty() {
+            return Err(StatusContractError(
+                "cleanup recovery attempt requires a non-empty target set",
+            ));
+        }
+        let binding = recovery
+            .cleanup_binding()
+            .map_err(|_| StatusContractError("cleanup attempt requires a cleanup recovery plan"))?;
+        let expected_phase = match archive.outcome() {
+            TaskArchiveOutcome::Success => TaskPhase::CleanedSuccess,
+            TaskArchiveOutcome::Abandoned => TaskPhase::CleanedAbandoned,
+        };
+        if binding.prior_operation_id() != &operation_id
+            || binding.archive_id() != archive.archive_id()
+            || binding.planned_result_phase() != expected_phase
+            || binding.quarantine_id() != &quarantine_id
+            || binding.owned_targets() != owned_targets.as_slice()
+        {
+            return Err(StatusContractError(
+                "cleanup attempt does not match its operation/archive/recovery/target lineage",
+            ));
+        }
+        let recovery_digest = binding.recovery_digest().clone();
+        let finish_action_id = binding.finish_action_id().clone();
+        let finish_action_digest = binding.finish_action_digest().clone();
+        drop(recovery);
+        Ok(Self {
             operation_id,
-            archive_id,
+            archive_id: archive.archive_id().clone(),
+            outcome: archive.outcome(),
             approved_preview_digest,
-            owned_targets,
+            marker_digest,
             quarantine_id,
-            absent_observation_digests,
-            resulting_phase,
-        }))
+            owned_targets,
+            lineage: ApprovedCleanupAttemptLineage::Recovery {
+                recovery_digest,
+                finish_action_id,
+                finish_action_digest,
+            },
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn direct_empty_test_only(
+        operation_id: OperationId,
+        archive: &TaskArchiveStatus,
+        approved_preview_digest: Sha256Digest,
+        marker_digest: Sha256Digest,
+        quarantine_id: UnicaId,
+        owned_targets: Vec<OwnedTargetLocator>,
+    ) -> Result<Self, StatusContractError> {
+        let owned_targets = CanonicalOwnedTargets::new(owned_targets)?;
+        if !owned_targets.as_slice().is_empty() {
+            return Err(StatusContractError(
+                "direct cleanup completion requires an empty target set",
+            ));
+        }
+        Ok(Self {
+            operation_id,
+            archive_id: archive.archive_id().clone(),
+            outcome: archive.outcome(),
+            approved_preview_digest,
+            marker_digest,
+            quarantine_id,
+            owned_targets,
+            lineage: ApprovedCleanupAttemptLineage::DirectEmpty,
+        })
+    }
+
+    pub(crate) fn observe_absences(
+        self,
+        observations: FinishCleanupAbsenceObservations,
+    ) -> Result<CompletedCleanupAttempt, StatusContractError> {
+        let ApprovedCleanupAttemptLineage::Recovery {
+            recovery_digest,
+            finish_action_id,
+            finish_action_digest,
+        } = &self.lineage
+        else {
+            return Err(StatusContractError(
+                "direct-empty cleanup cannot consume recovery observations",
+            ));
+        };
+        if observations.prior_operation_id() != &self.operation_id
+            || observations.archive_id() != &self.archive_id
+            || observations.recovery_digest() != recovery_digest
+            || observations.finish_action_id() != finish_action_id
+            || observations.finish_action_digest() != finish_action_digest
+            || observations.as_slice().len() != self.owned_targets.as_slice().len()
+            || observations
+                .as_slice()
+                .iter()
+                .zip(self.owned_targets.as_slice())
+                .any(|(observation, target)| observation.owned_target() != target)
+        {
+            return Err(StatusContractError(
+                "cleanup absence observations belong to another attempt or target set",
+            ));
+        }
+        let completed_absences = CompletedCleanupAbsences::new(
+            observations
+                .into_observations()
+                .into_iter()
+                .map(CompletedCleanupAbsence::from_finish_cleanup_observation)
+                .collect(),
+        )?;
+        Ok(CompletedCleanupAttempt::from_approved(
+            self,
+            completed_absences,
+        ))
+    }
+
+    pub(crate) fn complete_direct_empty(
+        self,
+    ) -> Result<CompletedCleanupAttempt, StatusContractError> {
+        if !matches!(self.lineage, ApprovedCleanupAttemptLineage::DirectEmpty)
+            || !self.owned_targets.as_slice().is_empty()
+        {
+            return Err(StatusContractError(
+                "only a paired-empty direct cleanup attempt completes without observations",
+            ));
+        }
+        Ok(CompletedCleanupAttempt::from_approved(
+            self,
+            CompletedCleanupAbsences::new(Vec::new())?,
+        ))
     }
 }
 
-/// Immutable cleanup receipt. Deliberately not `Deserialize`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CleanupReceipt {
-    cleanup_receipt_id: UnicaId,
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CompletedCleanupAttempt {
     operation_id: OperationId,
     archive_id: UnicaId,
+    outcome: TaskArchiveOutcome,
     approved_preview_digest: Sha256Digest,
-    owned_targets: CanonicalOwnedTargets,
+    marker_digest: Sha256Digest,
     quarantine_id: UnicaId,
-    absent_observation_digests: CanonicalAbsenceObservationDigests,
-    resulting_phase: CleanupResultPhase,
-    receipt_digest: Sha256Digest,
+    completed_absences: CompletedCleanupAbsences,
+    recovery_digest: Option<Sha256Digest>,
+    finish_action_id: Option<UnicaId>,
+    finish_action_digest: Option<Sha256Digest>,
+}
+
+impl CompletedCleanupAttempt {
+    fn from_approved(
+        approved: ApprovedCleanupAttempt,
+        completed_absences: CompletedCleanupAbsences,
+    ) -> Self {
+        let (recovery_digest, finish_action_id, finish_action_digest) = match approved.lineage {
+            ApprovedCleanupAttemptLineage::DirectEmpty => (None, None, None),
+            ApprovedCleanupAttemptLineage::Recovery {
+                recovery_digest,
+                finish_action_id,
+                finish_action_digest,
+            } => (
+                Some(recovery_digest),
+                Some(finish_action_id),
+                Some(finish_action_digest),
+            ),
+        };
+        Self {
+            operation_id: approved.operation_id,
+            archive_id: approved.archive_id,
+            outcome: approved.outcome,
+            approved_preview_digest: approved.approved_preview_digest,
+            marker_digest: approved.marker_digest,
+            quarantine_id: approved.quarantine_id,
+            completed_absences,
+            recovery_digest,
+            finish_action_id,
+            finish_action_digest,
+        }
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        &self.archive_id
+    }
+
+    pub(crate) const fn outcome(&self) -> TaskArchiveOutcome {
+        self.outcome
+    }
+
+    pub(crate) const fn approved_preview_digest(&self) -> &Sha256Digest {
+        &self.approved_preview_digest
+    }
+
+    pub(crate) const fn marker_digest(&self) -> &Sha256Digest {
+        &self.marker_digest
+    }
+
+    pub(crate) const fn quarantine_id(&self) -> &UnicaId {
+        &self.quarantine_id
+    }
+
+    pub(crate) fn owned_targets(&self) -> Vec<OwnedTargetLocator> {
+        self.completed_absences
+            .as_slice()
+            .iter()
+            .map(|value| value.owned_target().clone())
+            .collect()
+    }
+
+    pub(crate) fn absent_observation_digests(&self) -> Vec<Sha256Digest> {
+        self.completed_absences
+            .as_slice()
+            .iter()
+            .map(|value| value.absence_observation_digest().clone())
+            .collect()
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> Option<&Sha256Digest> {
+        self.recovery_digest.as_ref()
+    }
+
+    pub(crate) const fn finish_action_id(&self) -> Option<&UnicaId> {
+        self.finish_action_id.as_ref()
+    }
+
+    pub(crate) const fn finish_action_digest(&self) -> Option<&Sha256Digest> {
+        self.finish_action_digest.as_ref()
+    }
+
+    pub(crate) fn authorize_receipt(
+        self,
+        cleanup_receipt_id: UnicaId,
+    ) -> Result<CleanupReceiptAuthority, StatusContractError> {
+        let owned_targets = CanonicalOwnedTargets::from_absences(&self.completed_absences);
+        let absent_observation_digests =
+            CanonicalAbsenceObservationDigests::from_absences(&self.completed_absences);
+        let common = CleanupReceiptAuthorityCommon {
+            marker_digest: self.marker_digest,
+            outcome: self.outcome,
+            recovery_digest: self.recovery_digest,
+            finish_action_id: self.finish_action_id,
+            finish_action_digest: self.finish_action_digest,
+        };
+        let kind = match self.outcome {
+            TaskArchiveOutcome::Success => {
+                CleanupReceiptAuthorityKind::Success(SuccessCleanupReceiptDigestRecord {
+                    cleanup_receipt_id,
+                    operation_id: self.operation_id,
+                    archive_id: self.archive_id,
+                    approved_preview_digest: self.approved_preview_digest,
+                    owned_targets,
+                    quarantine_id: self.quarantine_id,
+                    absent_observation_digests,
+                    resulting_phase: CleanedSuccessTaskPhase::Value,
+                })
+            }
+            TaskArchiveOutcome::Abandoned => {
+                CleanupReceiptAuthorityKind::Abandoned(AbandonedCleanupReceiptDigestRecord {
+                    cleanup_receipt_id,
+                    operation_id: self.operation_id,
+                    archive_id: self.archive_id,
+                    approved_preview_digest: self.approved_preview_digest,
+                    owned_targets,
+                    quarantine_id: self.quarantine_id,
+                    absent_observation_digests,
+                    resulting_phase: CleanedAbandonedTaskPhase::Value,
+                })
+            }
+        };
+        Ok(CleanupReceiptAuthority { kind, common })
+    }
+}
+
+macro_rules! cleanup_receipt_digest_record {
+    ($name:ident, $phase:ty) => {
+        #[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub(crate) struct $name {
+            cleanup_receipt_id: UnicaId,
+            operation_id: OperationId,
+            archive_id: UnicaId,
+            approved_preview_digest: Sha256Digest,
+            owned_targets: CanonicalOwnedTargets,
+            quarantine_id: UnicaId,
+            absent_observation_digests: CanonicalAbsenceObservationDigests,
+            resulting_phase: $phase,
+        }
+
+        impl contract_digest_record_sealed::Sealed for $name {}
+        impl ContractDigestRecord for $name {}
+    };
+}
+
+cleanup_receipt_digest_record!(SuccessCleanupReceiptDigestRecord, CleanedSuccessTaskPhase);
+cleanup_receipt_digest_record!(
+    AbandonedCleanupReceiptDigestRecord,
+    CleanedAbandonedTaskPhase
+);
+
+#[derive(Debug, PartialEq, Eq)]
+enum CleanupReceiptAuthorityKind {
+    Success(SuccessCleanupReceiptDigestRecord),
+    Abandoned(AbandonedCleanupReceiptDigestRecord),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CleanupReceiptAuthorityCommon {
+    marker_digest: Sha256Digest,
+    outcome: TaskArchiveOutcome,
+    recovery_digest: Option<Sha256Digest>,
+    finish_action_id: Option<UnicaId>,
+    finish_action_digest: Option<Sha256Digest>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CleanupReceiptAuthority {
+    kind: CleanupReceiptAuthorityKind,
+    common: CleanupReceiptAuthorityCommon,
+}
+
+impl CleanupReceiptAuthority {
+    pub(crate) const fn marker_digest(&self) -> &Sha256Digest {
+        &self.common.marker_digest
+    }
+
+    pub(crate) const fn outcome(&self) -> TaskArchiveOutcome {
+        self.common.outcome
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> Option<&Sha256Digest> {
+        self.common.recovery_digest.as_ref()
+    }
+
+    pub(crate) const fn finish_action_id(&self) -> Option<&UnicaId> {
+        self.common.finish_action_id.as_ref()
+    }
+
+    pub(crate) const fn finish_action_digest(&self) -> Option<&Sha256Digest> {
+        self.common.finish_action_digest.as_ref()
+    }
+
+    pub(crate) fn issue_success(self) -> Result<SuccessCleanupReceipt, StatusContractError> {
+        let CleanupReceiptAuthorityKind::Success(record) = self.kind else {
+            return Err(StatusContractError(
+                "abandoned cleanup authority cannot issue a success receipt",
+            ));
+        };
+        let receipt_digest = status_digest(&record, "cleanup receipt digest failed")?;
+        Ok(SuccessCleanupReceipt {
+            cleanup_receipt_id: record.cleanup_receipt_id,
+            operation_id: record.operation_id,
+            archive_id: record.archive_id,
+            approved_preview_digest: record.approved_preview_digest,
+            owned_targets: record.owned_targets,
+            quarantine_id: record.quarantine_id,
+            absent_observation_digests: record.absent_observation_digests,
+            resulting_phase: record.resulting_phase,
+            receipt_digest,
+        })
+    }
+
+    pub(crate) fn issue_abandoned(self) -> Result<AbandonedCleanupReceipt, StatusContractError> {
+        let CleanupReceiptAuthorityKind::Abandoned(record) = self.kind else {
+            return Err(StatusContractError(
+                "success cleanup authority cannot issue an abandoned receipt",
+            ));
+        };
+        let receipt_digest = status_digest(&record, "cleanup receipt digest failed")?;
+        Ok(AbandonedCleanupReceipt {
+            cleanup_receipt_id: record.cleanup_receipt_id,
+            operation_id: record.operation_id,
+            archive_id: record.archive_id,
+            approved_preview_digest: record.approved_preview_digest,
+            owned_targets: record.owned_targets,
+            quarantine_id: record.quarantine_id,
+            absent_observation_digests: record.absent_observation_digests,
+            resulting_phase: record.resulting_phase,
+            receipt_digest,
+        })
+    }
+}
+
+macro_rules! cleanup_receipt_leaf {
+    ($name:ident, $phase:ty, $result_phase:expr) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub(crate) struct $name {
+            cleanup_receipt_id: UnicaId,
+            operation_id: OperationId,
+            archive_id: UnicaId,
+            approved_preview_digest: Sha256Digest,
+            owned_targets: CanonicalOwnedTargets,
+            quarantine_id: UnicaId,
+            absent_observation_digests: CanonicalAbsenceObservationDigests,
+            resulting_phase: $phase,
+            receipt_digest: Sha256Digest,
+        }
+
+        impl $name {
+            pub(crate) const fn cleanup_receipt_id(&self) -> &UnicaId {
+                &self.cleanup_receipt_id
+            }
+
+            pub(crate) const fn operation_id(&self) -> &OperationId {
+                &self.operation_id
+            }
+
+            pub(crate) const fn archive_id(&self) -> &UnicaId {
+                &self.archive_id
+            }
+
+            pub(crate) const fn approved_preview_digest(&self) -> &Sha256Digest {
+                &self.approved_preview_digest
+            }
+
+            pub(crate) fn owned_targets(&self) -> &[OwnedTargetLocator] {
+                self.owned_targets.as_slice()
+            }
+
+            pub(crate) const fn quarantine_id(&self) -> &UnicaId {
+                &self.quarantine_id
+            }
+
+            pub(crate) fn absent_observation_digests(&self) -> &[Sha256Digest] {
+                self.absent_observation_digests.as_slice()
+            }
+
+            pub(crate) const fn resulting_phase(&self) -> CleanupResultPhase {
+                $result_phase
+            }
+
+            pub(crate) const fn receipt_digest(&self) -> &Sha256Digest {
+                &self.receipt_digest
+            }
+        }
+    };
+}
+
+cleanup_receipt_leaf!(
+    SuccessCleanupReceipt,
+    CleanedSuccessTaskPhase,
+    CleanupResultPhase::CleanedSuccess
+);
+cleanup_receipt_leaf!(
+    AbandonedCleanupReceipt,
+    CleanedAbandonedTaskPhase,
+    CleanupResultPhase::CleanedAbandoned
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum CleanupReceiptKind {
+    Success(SuccessCleanupReceipt),
+    Abandoned(AbandonedCleanupReceipt),
+}
+
+/// Immutable physical success-or-abandoned cleanup receipt. Deliberately not
+/// `Deserialize`; only a consumed attempt authority can mint it in production.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct CleanupReceipt(CleanupReceiptKind);
+
+impl JsonSchema for CleanupReceipt {
+    fn schema_name() -> Cow<'static, str> {
+        "CleanupReceipt".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<SuccessCleanupReceipt>(),
+            generator.subschema_for::<AbandonedCleanupReceipt>(),
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -3568,18 +4064,36 @@ struct CleanupReceiptTestParts {
 
 impl CleanupReceipt {
     pub(crate) fn new(authority: CleanupReceiptAuthority) -> Result<Self, StatusContractError> {
-        let receipt_digest = status_digest(&authority.0, "cleanup receipt digest failed")?;
-        Ok(Self {
-            cleanup_receipt_id: authority.0.cleanup_receipt_id,
-            operation_id: authority.0.operation_id,
-            archive_id: authority.0.archive_id,
-            approved_preview_digest: authority.0.approved_preview_digest,
-            owned_targets: authority.0.owned_targets,
-            quarantine_id: authority.0.quarantine_id,
-            absent_observation_digests: authority.0.absent_observation_digests,
-            resulting_phase: authority.0.resulting_phase,
-            receipt_digest,
-        })
+        Ok(Self(match authority.kind {
+            CleanupReceiptAuthorityKind::Success(record) => {
+                let receipt_digest = status_digest(&record, "cleanup receipt digest failed")?;
+                CleanupReceiptKind::Success(SuccessCleanupReceipt {
+                    cleanup_receipt_id: record.cleanup_receipt_id,
+                    operation_id: record.operation_id,
+                    archive_id: record.archive_id,
+                    approved_preview_digest: record.approved_preview_digest,
+                    owned_targets: record.owned_targets,
+                    quarantine_id: record.quarantine_id,
+                    absent_observation_digests: record.absent_observation_digests,
+                    resulting_phase: record.resulting_phase,
+                    receipt_digest,
+                })
+            }
+            CleanupReceiptAuthorityKind::Abandoned(record) => {
+                let receipt_digest = status_digest(&record, "cleanup receipt digest failed")?;
+                CleanupReceiptKind::Abandoned(AbandonedCleanupReceipt {
+                    cleanup_receipt_id: record.cleanup_receipt_id,
+                    operation_id: record.operation_id,
+                    archive_id: record.archive_id,
+                    approved_preview_digest: record.approved_preview_digest,
+                    owned_targets: record.owned_targets,
+                    quarantine_id: record.quarantine_id,
+                    absent_observation_digests: record.absent_observation_digests,
+                    resulting_phase: record.resulting_phase,
+                    receipt_digest,
+                })
+            }
+        }))
     }
 
     #[cfg(test)]
@@ -3606,15 +4120,46 @@ impl CleanupReceipt {
                 .map(|(target, digest)| CompletedCleanupAbsence::test_only(target, digest))
                 .collect(),
         )?;
-        Self::new(CleanupReceiptAuthority::new(
-            cleanup_receipt_id,
-            operation_id,
-            archive_id,
-            approved_preview_digest,
-            completed_absences,
-            quarantine_id,
-            resulting_phase,
-        )?)
+        let owned_targets = CanonicalOwnedTargets::from_absences(&completed_absences);
+        let absent_observation_digests =
+            CanonicalAbsenceObservationDigests::from_absences(&completed_absences);
+        let common = CleanupReceiptAuthorityCommon {
+            marker_digest: approved_preview_digest.clone(),
+            outcome: match resulting_phase {
+                CleanupResultPhase::CleanedSuccess => TaskArchiveOutcome::Success,
+                CleanupResultPhase::CleanedAbandoned => TaskArchiveOutcome::Abandoned,
+            },
+            recovery_digest: None,
+            finish_action_id: None,
+            finish_action_digest: None,
+        };
+        let kind = match resulting_phase {
+            CleanupResultPhase::CleanedSuccess => {
+                CleanupReceiptAuthorityKind::Success(SuccessCleanupReceiptDigestRecord {
+                    cleanup_receipt_id,
+                    operation_id,
+                    archive_id,
+                    approved_preview_digest,
+                    owned_targets,
+                    quarantine_id,
+                    absent_observation_digests,
+                    resulting_phase: CleanedSuccessTaskPhase::Value,
+                })
+            }
+            CleanupResultPhase::CleanedAbandoned => {
+                CleanupReceiptAuthorityKind::Abandoned(AbandonedCleanupReceiptDigestRecord {
+                    cleanup_receipt_id,
+                    operation_id,
+                    archive_id,
+                    approved_preview_digest,
+                    owned_targets,
+                    quarantine_id,
+                    absent_observation_digests,
+                    resulting_phase: CleanedAbandonedTaskPhase::Value,
+                })
+            }
+        };
+        Self::new(CleanupReceiptAuthority { kind, common })
     }
 
     #[cfg(test)]
@@ -3648,43 +4193,70 @@ impl CleanupReceipt {
         }) else {
             return false;
         };
-        validated.receipt_digest == unchecked.receipt_digest
+        validated.receipt_digest() == &unchecked.receipt_digest
     }
 
     pub(crate) const fn cleanup_receipt_id(&self) -> &UnicaId {
-        &self.cleanup_receipt_id
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.cleanup_receipt_id,
+            CleanupReceiptKind::Abandoned(value) => &value.cleanup_receipt_id,
+        }
     }
 
     pub(crate) const fn operation_id(&self) -> &OperationId {
-        &self.operation_id
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.operation_id,
+            CleanupReceiptKind::Abandoned(value) => &value.operation_id,
+        }
     }
 
     pub(crate) const fn archive_id(&self) -> &UnicaId {
-        &self.archive_id
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.archive_id,
+            CleanupReceiptKind::Abandoned(value) => &value.archive_id,
+        }
     }
 
     pub(crate) const fn approved_preview_digest(&self) -> &Sha256Digest {
-        &self.approved_preview_digest
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.approved_preview_digest,
+            CleanupReceiptKind::Abandoned(value) => &value.approved_preview_digest,
+        }
     }
 
     pub(crate) fn owned_targets(&self) -> &[OwnedTargetLocator] {
-        self.owned_targets.as_slice()
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => value.owned_targets.as_slice(),
+            CleanupReceiptKind::Abandoned(value) => value.owned_targets.as_slice(),
+        }
     }
 
     pub(crate) fn absent_observation_digests(&self) -> &[Sha256Digest] {
-        self.absent_observation_digests.as_slice()
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => value.absent_observation_digests.as_slice(),
+            CleanupReceiptKind::Abandoned(value) => value.absent_observation_digests.as_slice(),
+        }
     }
 
     pub(crate) const fn quarantine_id(&self) -> &UnicaId {
-        &self.quarantine_id
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.quarantine_id,
+            CleanupReceiptKind::Abandoned(value) => &value.quarantine_id,
+        }
     }
 
     pub(crate) const fn resulting_phase(&self) -> CleanupResultPhase {
-        self.resulting_phase
+        match &self.0 {
+            CleanupReceiptKind::Success(_) => CleanupResultPhase::CleanedSuccess,
+            CleanupReceiptKind::Abandoned(_) => CleanupResultPhase::CleanedAbandoned,
+        }
     }
 
     pub(crate) const fn receipt_digest(&self) -> &Sha256Digest {
-        &self.receipt_digest
+        match &self.0 {
+            CleanupReceiptKind::Success(value) => &value.receipt_digest,
+            CleanupReceiptKind::Abandoned(value) => &value.receipt_digest,
+        }
     }
 }
 
@@ -4085,7 +4657,7 @@ impl ExistingTaskStatusAuthority {
                 "archived status cleanup eligibility must bind the same archive",
             ));
         }
-        let Some((handle_archive_id, handle_sha256, handle_outcome)) =
+        let Some((handle_archive_id, handle_sha256, handle_outcome, handle_lineage_digest)) =
             self.common.resume_handles.archive_binding()?
         else {
             return Err(StatusContractError(
@@ -4097,7 +4669,7 @@ impl ExistingTaskStatusAuthority {
                 "archive handle ID disagrees with archived status",
             ));
         }
-        let _ = (handle_sha256, handle_outcome);
+        let _ = (handle_sha256, handle_outcome, handle_lineage_digest);
         Ok(())
     }
 
@@ -4106,14 +4678,17 @@ impl ExistingTaskStatusAuthority {
         archive: &TaskArchiveStatus,
     ) -> Result<(), StatusContractError> {
         self.require_archive(archive.archive_id())?;
-        let Some((_, handle_sha256, handle_outcome)) =
+        let Some((_, handle_sha256, handle_outcome, handle_lineage_digest)) =
             self.common.resume_handles.archive_binding()?
         else {
             unreachable!("require_archive already proved an archive handle");
         };
-        if handle_sha256 != archive.sha256() || handle_outcome != archive.outcome() {
+        if handle_sha256 != archive.sha256()
+            || handle_outcome != archive.outcome()
+            || handle_lineage_digest != archive.retained_lineage_digest()
+        {
             return Err(StatusContractError(
-                "archive handle digest or outcome disagrees with the retained archive",
+                "archive handle digest, outcome, or lineage disagrees with the retained archive",
             ));
         }
         Ok(())
@@ -4847,6 +5422,15 @@ mod tests {
     assert_not_deserialize_owned!(OperationLease);
     assert_not_deserialize_owned!(ActiveOperationStatus);
     assert_not_deserialize_owned!(CleanupReceipt);
+    assert_not_deserialize_owned!(CompletedCleanupAbsence);
+    assert_not_deserialize_owned!(CompletedCleanupAbsences);
+    assert_not_deserialize_owned!(ApprovedCleanupAttempt);
+    assert_not_deserialize_owned!(CompletedCleanupAttempt);
+    assert_not_deserialize_owned!(CleanupReceiptAuthority);
+    assert_not_deserialize_owned!(SuccessCleanupReceiptDigestRecord);
+    assert_not_deserialize_owned!(AbandonedCleanupReceiptDigestRecord);
+    assert_not_deserialize_owned!(SuccessCleanupReceipt);
+    assert_not_deserialize_owned!(AbandonedCleanupReceipt);
     assert_not_deserialize_owned!(PendingDecisionStatus);
     assert_not_deserialize_owned!(TaskAnchorStatus);
     assert_not_deserialize_owned!(OwnedLockStatus);
@@ -5152,7 +5736,8 @@ mod tests {
         assert_eq!(encoded["resultingPhase"], "cleanedSuccess");
         assert!(encoded.get("receiptDigest").is_some());
 
-        audit_json_schema(&schema::<CleanupReceiptDigestRecord>()).unwrap();
+        audit_json_schema(&schema::<SuccessCleanupReceiptDigestRecord>()).unwrap();
+        audit_json_schema(&schema::<AbandonedCleanupReceiptDigestRecord>()).unwrap();
         audit_json_schema(&schema::<CleanupReceipt>()).unwrap();
         let mut substituted = encoded;
         substituted["quarantineId"] = json!("55555555-5555-4555-8555-555555555555");
@@ -5203,6 +5788,195 @@ mod tests {
         let encoded = serde_json::to_value(empty).unwrap();
         assert_eq!(encoded["ownedTargets"], json!([]));
         assert_eq!(encoded["absentObservationDigests"], json!([]));
+    }
+
+    #[test]
+    fn task12_cleanup_attempt_consumes_exact_full_recovery_observation_set() {
+        let operation_id = operation_id(ID_2);
+        let archive = TaskArchiveStatus::new(
+            id("33333333-3333-4333-8333-333333333333"),
+            TaskArchiveOutcome::Success,
+            digest(A),
+            digest(B),
+        );
+        let owned_target: OwnedTargetLocator = serde_json::from_value(json!({
+            "projectId": ID_1,
+            "instanceId": ID_1,
+            "role": "artifact"
+        }))
+        .unwrap();
+        let recovery = RecoveryPlanStatus::cleanup_fixture_test_only(
+            operation_id.clone(),
+            archive.archive_id().clone(),
+            owned_target.clone(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let observations = recovery
+            .cleanup_matching_absence_observations_test_only()
+            .unwrap();
+        let attempt = ApprovedCleanupAttempt::from_recovery_test_only(
+            operation_id.clone(),
+            &archive,
+            digest(A),
+            digest(B),
+            id("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            vec![owned_target.clone()],
+            recovery,
+        )
+        .unwrap();
+        let completed = attempt.observe_absences(observations).unwrap();
+        assert_eq!(completed.operation_id(), &operation_id);
+        assert_eq!(
+            completed.owned_targets(),
+            std::slice::from_ref(&owned_target)
+        );
+        assert_eq!(completed.outcome(), TaskArchiveOutcome::Success);
+        assert!(completed.recovery_digest().is_some());
+        assert!(completed.finish_action_id().is_some());
+
+        let authority = completed.authorize_receipt(id(ID_1)).unwrap();
+        assert_eq!(authority.marker_digest(), &digest(B));
+        assert!(authority.recovery_digest().is_some());
+        let receipt = CleanupReceipt::new(authority).unwrap();
+        assert_eq!(
+            receipt.resulting_phase(),
+            CleanupResultPhase::CleanedSuccess
+        );
+        assert_eq!(receipt.owned_targets(), &[owned_target]);
+        assert_eq!(receipt.absent_observation_digests().len(), 1);
+    }
+
+    #[test]
+    fn task12_cleanup_attempt_rejects_cross_attempt_observation_splice() {
+        let target: OwnedTargetLocator = serde_json::from_value(json!({
+            "projectId": ID_1,
+            "instanceId": ID_1,
+            "role": "artifact"
+        }))
+        .unwrap();
+        let archive = TaskArchiveStatus::new(
+            id("33333333-3333-4333-8333-333333333333"),
+            TaskArchiveOutcome::Success,
+            digest(A),
+            digest(B),
+        );
+        let own_recovery = RecoveryPlanStatus::cleanup_fixture_test_only(
+            operation_id(ID_1),
+            archive.archive_id().clone(),
+            target.clone(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let foreign_recovery = RecoveryPlanStatus::cleanup_fixture_test_only(
+            operation_id(ID_2),
+            archive.archive_id().clone(),
+            target.clone(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let foreign_observations = foreign_recovery
+            .cleanup_matching_absence_observations_test_only()
+            .unwrap();
+        let attempt = ApprovedCleanupAttempt::from_recovery_test_only(
+            operation_id(ID_1),
+            &archive,
+            digest(A),
+            digest(B),
+            id("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            vec![target],
+            own_recovery,
+        )
+        .unwrap();
+
+        assert!(attempt.observe_absences(foreign_observations).is_err());
+    }
+
+    #[test]
+    fn task12_cleanup_direct_completion_requires_a_paired_empty_set() {
+        let archive = TaskArchiveStatus::new(
+            id("33333333-3333-4333-8333-333333333333"),
+            TaskArchiveOutcome::Abandoned,
+            digest(A),
+            digest(B),
+        );
+        let attempt = ApprovedCleanupAttempt::direct_empty_test_only(
+            operation_id(ID_2),
+            &archive,
+            digest(A),
+            digest(B),
+            id("44444444-4444-4444-8444-444444444444"),
+            Vec::new(),
+        )
+        .unwrap();
+        let completed = attempt.complete_direct_empty().unwrap();
+        assert!(completed.owned_targets().is_empty());
+        assert!(completed.absent_observation_digests().is_empty());
+        assert!(completed.recovery_digest().is_none());
+
+        let receipt = CleanupReceipt::new(completed.authorize_receipt(id(ID_1)).unwrap()).unwrap();
+        let encoded = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(encoded["resultingPhase"], "cleanedAbandoned");
+        assert_eq!(encoded["ownedTargets"], json!([]));
+        assert_eq!(encoded["absentObservationDigests"], json!([]));
+        assert_eq!(
+            schema::<CleanupReceipt>()["oneOf"].as_array().map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn task12_cleanup_attempt_typestates_are_non_clone() {
+        const _: fn() = || {
+            trait AmbiguousIfClone<Marker> {
+                fn assert_not_clone() {}
+            }
+            struct ImplementsClone;
+            impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+            impl<T: Clone> AmbiguousIfClone<ImplementsClone> for T {}
+            let _ = <ApprovedCleanupAttempt as AmbiguousIfClone<_>>::assert_not_clone;
+            let _ = <CompletedCleanupAttempt as AmbiguousIfClone<_>>::assert_not_clone;
+            let _ = <CleanupReceiptAuthority as AmbiguousIfClone<_>>::assert_not_clone;
+        };
+    }
+
+    #[test]
+    fn task12_cleanup_authority_issues_only_its_exact_physical_receipt_leaf() {
+        fn abandoned_authority() -> CleanupReceiptAuthority {
+            let archive = TaskArchiveStatus::new(
+                id("33333333-3333-4333-8333-333333333333"),
+                TaskArchiveOutcome::Abandoned,
+                digest(A),
+                digest(B),
+            );
+            ApprovedCleanupAttempt::direct_empty_test_only(
+                operation_id(ID_2),
+                &archive,
+                digest(A),
+                digest(B),
+                id("44444444-4444-4444-8444-444444444444"),
+                Vec::new(),
+            )
+            .unwrap()
+            .complete_direct_empty()
+            .unwrap()
+            .authorize_receipt(id(ID_1))
+            .unwrap()
+        }
+
+        assert!(abandoned_authority().issue_success().is_err());
+        let receipt: AbandonedCleanupReceipt = abandoned_authority().issue_abandoned().unwrap();
+        assert_eq!(
+            receipt.archive_id(),
+            &id("33333333-3333-4333-8333-333333333333")
+        );
+        assert_eq!(receipt.approved_preview_digest(), &digest(A));
+        assert_eq!(
+            receipt.resulting_phase(),
+            CleanupResultPhase::CleanedAbandoned
+        );
+        assert!(receipt.owned_targets().is_empty());
+        assert!(schema::<AbandonedCleanupReceipt>().get("oneOf").is_none());
     }
 
     #[test]
@@ -5375,7 +6149,12 @@ mod tests {
             digest(A),
         );
         let recovery = RecoveryResumeHandle::new(operation_id(ID_1), digest(A));
-        let archive = ArchiveResumeHandle::new(id(ID_1), digest(A), TaskArchiveOutcome::Abandoned);
+        let archive = ArchiveResumeHandle::new(
+            id(ID_1),
+            digest(A),
+            TaskArchiveOutcome::Abandoned,
+            digest(B),
+        );
 
         for value in [
             serde_json::to_value(artifact).unwrap(),
@@ -5406,6 +6185,22 @@ mod tests {
         .unwrap();
         invalid_scope["scope"] = json!("main");
         assert!(!schema_accepts::<CheckpointResumeHandle>(&invalid_scope));
+    }
+
+    #[test]
+    fn task12_archive_resume_handle_retains_final_hash_and_lineage_digest() {
+        let archive =
+            TaskArchiveStatus::new(id(ID_1), TaskArchiveOutcome::Success, digest(A), digest(B));
+        let handle = ArchiveResumeHandle::from_archive_status(&archive);
+        let encoded = serde_json::to_value(&handle).unwrap();
+        assert_eq!(encoded["sha256"], A);
+        assert_eq!(encoded["retainedLineageDigest"], B);
+        assert_eq!(handle.retained_lineage_digest(), &digest(B));
+
+        assert_eq!(
+            archive.retained_lineage_digest(),
+            handle.retained_lineage_digest()
+        );
     }
 
     #[test]
@@ -6080,6 +6875,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 ))],
                 ExistingTaskDeferredState::no_terminal_support(),
                 CleanupEligibilityStatus::eligible(id(ID_2)).unwrap(),
@@ -6109,6 +6905,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 ))],
                 ExistingTaskDeferredState::no_terminal_support(),
                 CleanupEligibilityStatus::eligible(id(ID_2)).unwrap(),
@@ -6337,6 +7134,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 )),
             ],
             ExistingTaskDeferredState::no_terminal_support(),
@@ -6376,6 +7174,7 @@ mod tests {
                             id(ID_2),
                             digest(A),
                             TaskArchiveOutcome::Success,
+                            digest(B),
                         )),
                     ],
                     ExistingTaskDeferredState::no_terminal_support(),
@@ -6611,6 +7410,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 )),
             ]
         };
@@ -6681,6 +7481,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 )),
             ],
             ExistingTaskDeferredState::no_terminal_support(),
@@ -6703,6 +7504,7 @@ mod tests {
                     id(ID_2),
                     digest(A),
                     TaskArchiveOutcome::Success,
+                    digest(B),
                 )),
             ]
         };

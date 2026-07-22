@@ -968,19 +968,162 @@ struct OperationReplayMismatchContext {
     observed_input_digest: Sha256Digest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OperationInProgressContext {
+pub(crate) struct OperationInProgressContext {
     context_kind: OperationContextKind,
     operation_id: OperationId,
     active_operation_digest: Sha256Digest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl OperationInProgressContext {
+    fn from_validated_historical_fields(
+        operation_id: OperationId,
+        active_operation_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            context_kind: OperationContextKind::Value,
+            operation_id,
+            active_operation_digest,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test_only(
+        operation_id: OperationId,
+        active_operation_digest: Sha256Digest,
+    ) -> Self {
+        Self::from_validated_historical_fields(operation_id, active_operation_digest)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UncheckedOperationInProgressContext {
+    context_kind: OperationContextKind,
+    operation_id: OperationId,
+    active_operation_digest: Sha256Digest,
+}
+
+impl TryFrom<UncheckedOperationInProgressContext> for OperationInProgressContext {
+    type Error = &'static str;
+
+    fn try_from(value: UncheckedOperationInProgressContext) -> Result<Self, Self::Error> {
+        let UncheckedOperationInProgressContext {
+            context_kind: OperationContextKind::Value,
+            operation_id,
+            active_operation_digest,
+        } = value;
+        Ok(Self::from_validated_historical_fields(
+            operation_id,
+            active_operation_digest,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
-enum ReservationOwnerRef {
+pub(crate) enum ReservationOwnerRef {
     StartAttempt(StartAttemptReservationOwnerRef),
     UnresolvedTask(UnresolvedTaskReservationOwnerRef),
+}
+
+impl ReservationOwnerRef {
+    fn start_attempt_from_validated_historical_fields(
+        project_id: ProjectId,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> Self {
+        Self::StartAttempt(StartAttemptReservationOwnerRef {
+            owner_kind: StartAttemptOwnerKind::Value,
+            project_id,
+            task_id,
+            operation_id,
+        })
+    }
+
+    fn unresolved_task_from_validated_historical_fields(
+        project_id: ProjectId,
+        task_id: TaskId,
+        instance_id: UnicaId,
+        phase: TaskPhase,
+    ) -> Self {
+        Self::UnresolvedTask(UnresolvedTaskReservationOwnerRef {
+            owner_kind: UnresolvedTaskOwnerKind::Value,
+            project_id,
+            task_id,
+            instance_id,
+            phase,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_attempt_test_only(
+        project_id: ProjectId,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> Self {
+        Self::start_attempt_from_validated_historical_fields(project_id, task_id, operation_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unresolved_task_test_only(
+        project_id: ProjectId,
+        task_id: TaskId,
+        instance_id: UnicaId,
+        phase: TaskPhase,
+    ) -> Self {
+        Self::unresolved_task_from_validated_historical_fields(
+            project_id,
+            task_id,
+            instance_id,
+            phase,
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UncheckedReservationOwnerRef {
+    StartAttempt(UncheckedStartAttemptReservationOwnerRef),
+    UnresolvedTask(UncheckedUnresolvedTaskReservationOwnerRef),
+}
+
+impl TryFrom<UncheckedReservationOwnerRef> for ReservationOwnerRef {
+    type Error = &'static str;
+
+    fn try_from(value: UncheckedReservationOwnerRef) -> Result<Self, Self::Error> {
+        Ok(match value {
+            UncheckedReservationOwnerRef::StartAttempt(value) => {
+                let UncheckedStartAttemptReservationOwnerRef {
+                    owner_kind: StartAttemptOwnerKind::Value,
+                    project_id,
+                    task_id,
+                    operation_id,
+                } = value;
+                Self::start_attempt_from_validated_historical_fields(
+                    project_id,
+                    task_id,
+                    operation_id,
+                )
+            }
+            UncheckedReservationOwnerRef::UnresolvedTask(value) => {
+                let UncheckedUnresolvedTaskReservationOwnerRef {
+                    owner_kind: UnresolvedTaskOwnerKind::Value,
+                    project_id,
+                    task_id,
+                    instance_id,
+                    phase,
+                } = value;
+                Self::unresolved_task_from_validated_historical_fields(
+                    project_id,
+                    task_id,
+                    instance_id,
+                    phase,
+                )
+            }
+        })
+    }
 }
 
 impl JsonSchema for ReservationOwnerRef {
@@ -999,18 +1142,27 @@ impl JsonSchema for ReservationOwnerRef {
 string_literal!(StartAttemptOwnerKind, "startAttempt");
 string_literal!(UnresolvedTaskOwnerKind, "unresolvedTask");
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StartAttemptReservationOwnerRef {
+pub(crate) struct StartAttemptReservationOwnerRef {
     owner_kind: StartAttemptOwnerKind,
     project_id: ProjectId,
     task_id: TaskId,
     operation_id: OperationId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UnresolvedTaskReservationOwnerRef {
+struct UncheckedStartAttemptReservationOwnerRef {
+    owner_kind: StartAttemptOwnerKind,
+    project_id: ProjectId,
+    task_id: TaskId,
+    operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct UnresolvedTaskReservationOwnerRef {
     owner_kind: UnresolvedTaskOwnerKind,
     project_id: ProjectId,
     task_id: TaskId,
@@ -1018,9 +1170,19 @@ struct UnresolvedTaskReservationOwnerRef {
     phase: TaskPhase,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TargetReservationBusyContext {
+struct UncheckedUnresolvedTaskReservationOwnerRef {
+    owner_kind: UnresolvedTaskOwnerKind,
+    project_id: ProjectId,
+    task_id: TaskId,
+    instance_id: UnicaId,
+    phase: TaskPhase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TargetReservationBusyContext {
     context_kind: TargetReservationContextKind,
     repository_identity_digest: Sha256Digest,
     original_infobase_identity_digest: Sha256Digest,
@@ -1028,14 +1190,142 @@ struct TargetReservationBusyContext {
     owner: ReservationOwnerRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+impl TargetReservationBusyContext {
+    fn from_validated_historical_fields(
+        repository_identity_digest: Sha256Digest,
+        original_infobase_identity_digest: Sha256Digest,
+        reservation_key_digest: Sha256Digest,
+        owner: ReservationOwnerRef,
+    ) -> Self {
+        Self {
+            context_kind: TargetReservationContextKind::Value,
+            repository_identity_digest,
+            original_infobase_identity_digest,
+            reservation_key_digest,
+            owner,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test_only(
+        repository_identity_digest: Sha256Digest,
+        original_infobase_identity_digest: Sha256Digest,
+        reservation_key_digest: Sha256Digest,
+        owner: ReservationOwnerRef,
+    ) -> Self {
+        Self::from_validated_historical_fields(
+            repository_identity_digest,
+            original_infobase_identity_digest,
+            reservation_key_digest,
+            owner,
+        )
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RepositoryAccountReservationBusyContext {
+struct UncheckedTargetReservationBusyContext {
+    context_kind: TargetReservationContextKind,
+    repository_identity_digest: Sha256Digest,
+    original_infobase_identity_digest: Sha256Digest,
+    reservation_key_digest: Sha256Digest,
+    owner: UncheckedReservationOwnerRef,
+}
+
+impl TryFrom<UncheckedTargetReservationBusyContext> for TargetReservationBusyContext {
+    type Error = &'static str;
+
+    fn try_from(value: UncheckedTargetReservationBusyContext) -> Result<Self, Self::Error> {
+        let UncheckedTargetReservationBusyContext {
+            context_kind: TargetReservationContextKind::Value,
+            repository_identity_digest,
+            original_infobase_identity_digest,
+            reservation_key_digest,
+            owner,
+        } = value;
+        Ok(Self::from_validated_historical_fields(
+            repository_identity_digest,
+            original_infobase_identity_digest,
+            reservation_key_digest,
+            owner.try_into()?,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryAccountReservationBusyContext {
     context_kind: RepositoryAccountReservationContextKind,
     repository_identity_digest: Sha256Digest,
     normalized_username_digest: Sha256Digest,
     reservation_key_digest: Sha256Digest,
     owner: ReservationOwnerRef,
+}
+
+impl RepositoryAccountReservationBusyContext {
+    fn from_validated_historical_fields(
+        repository_identity_digest: Sha256Digest,
+        normalized_username_digest: Sha256Digest,
+        reservation_key_digest: Sha256Digest,
+        owner: ReservationOwnerRef,
+    ) -> Self {
+        Self {
+            context_kind: RepositoryAccountReservationContextKind::Value,
+            repository_identity_digest,
+            normalized_username_digest,
+            reservation_key_digest,
+            owner,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test_only(
+        repository_identity_digest: Sha256Digest,
+        normalized_username_digest: Sha256Digest,
+        reservation_key_digest: Sha256Digest,
+        owner: ReservationOwnerRef,
+    ) -> Self {
+        Self::from_validated_historical_fields(
+            repository_identity_digest,
+            normalized_username_digest,
+            reservation_key_digest,
+            owner,
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UncheckedRepositoryAccountReservationBusyContext {
+    context_kind: RepositoryAccountReservationContextKind,
+    repository_identity_digest: Sha256Digest,
+    normalized_username_digest: Sha256Digest,
+    reservation_key_digest: Sha256Digest,
+    owner: UncheckedReservationOwnerRef,
+}
+
+impl TryFrom<UncheckedRepositoryAccountReservationBusyContext>
+    for RepositoryAccountReservationBusyContext
+{
+    type Error = &'static str;
+
+    fn try_from(
+        value: UncheckedRepositoryAccountReservationBusyContext,
+    ) -> Result<Self, Self::Error> {
+        let UncheckedRepositoryAccountReservationBusyContext {
+            context_kind: RepositoryAccountReservationContextKind::Value,
+            repository_identity_digest,
+            normalized_username_digest,
+            reservation_key_digest,
+            owner,
+        } = value;
+        Ok(Self::from_validated_historical_fields(
+            repository_identity_digest,
+            normalized_username_digest,
+            reservation_key_digest,
+            owner.try_into()?,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1142,13 +1432,63 @@ capability_context!(
     ChangeSemanticsCapabilityKind
 );
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProjectDigestProfileStateContext {
+pub(crate) struct ProjectDigestProfileStateContext {
     context_kind: ProfileStateContextKind,
     project_id: ProjectId,
     expected_digest: Sha256Digest,
     observed_digest: Sha256Digest,
+}
+
+impl ProjectDigestProfileStateContext {
+    fn from_validated_historical_fields(
+        project_id: ProjectId,
+        expected_digest: Sha256Digest,
+        observed_digest: Sha256Digest,
+    ) -> Result<Self, &'static str> {
+        if expected_digest == observed_digest {
+            return Err("profile-state digests must differ");
+        }
+        Ok(Self {
+            context_kind: ProfileStateContextKind::Value,
+            project_id,
+            expected_digest,
+            observed_digest,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test_only(
+        project_id: ProjectId,
+        expected_digest: Sha256Digest,
+        observed_digest: Sha256Digest,
+    ) -> Result<Self, &'static str> {
+        Self::from_validated_historical_fields(project_id, expected_digest, observed_digest)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UncheckedProjectDigestProfileStateContext {
+    context_kind: ProfileStateContextKind,
+    project_id: ProjectId,
+    expected_digest: Sha256Digest,
+    observed_digest: Sha256Digest,
+}
+
+impl TryFrom<UncheckedProjectDigestProfileStateContext> for ProjectDigestProfileStateContext {
+    type Error = &'static str;
+
+    fn try_from(value: UncheckedProjectDigestProfileStateContext) -> Result<Self, Self::Error> {
+        let UncheckedProjectDigestProfileStateContext {
+            context_kind: ProfileStateContextKind::Value,
+            project_id,
+            expected_digest,
+            observed_digest,
+        } = value;
+        Self::from_validated_historical_fields(project_id, expected_digest, observed_digest)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1613,6 +1953,53 @@ macro_rules! rejected_leaf {
     };
 }
 
+macro_rules! authority_rejected_leaf {
+    (
+        $name:ident,
+        $unchecked_name:ident,
+        $code_type:ident,
+        $wire:literal,
+        $context:ty,
+        $unchecked_context:ty,
+        $actions:ty
+    ) => {
+        string_literal!($code_type, $wire);
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $name {
+            code: $code_type,
+            context: $context,
+            allowed_next_actions: $actions,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $unchecked_name {
+            code: $code_type,
+            context: $unchecked_context,
+            allowed_next_actions: $actions,
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                // This boundary restores an opaque historical result after
+                // validating its private wire representation. It does not
+                // observe current coordination state or mint live authority.
+                let unchecked = $unchecked_name::deserialize(deserializer)?;
+                Ok(Self {
+                    code: unchecked.code,
+                    context: <$context>::try_from(unchecked.context).map_err(D::Error::custom)?,
+                    allowed_next_actions: unchecked.allowed_next_actions,
+                })
+            }
+        }
+    };
+}
+
 rejected_leaf!(
     RepositoryBindingMismatchErrorData,
     RepositoryBindingMismatchCode,
@@ -1708,25 +2095,31 @@ rejected_leaf!(
     OperationReplayMismatchContext,
     NoNextActions
 );
-rejected_leaf!(
+authority_rejected_leaf!(
     OperationInProgressErrorData,
+    UncheckedOperationInProgressErrorData,
     OperationInProgressCode,
     "operationInProgress",
     OperationInProgressContext,
+    UncheckedOperationInProgressContext,
     StatusOnlyActions
 );
-rejected_leaf!(
+authority_rejected_leaf!(
     TargetReservationBusyErrorData,
+    UncheckedTargetReservationBusyErrorData,
     TargetReservationBusyCode,
     "targetReservationBusy",
     TargetReservationBusyContext,
+    UncheckedTargetReservationBusyContext,
     StatusOnlyActions
 );
-rejected_leaf!(
+authority_rejected_leaf!(
     RepositoryAccountReservationBusyErrorData,
+    UncheckedRepositoryAccountReservationBusyErrorData,
     RepositoryAccountReservationBusyCode,
     "repositoryAccountReservationBusy",
     RepositoryAccountReservationBusyContext,
+    UncheckedRepositoryAccountReservationBusyContext,
     StatusOnlyActions
 );
 rejected_leaf!(
@@ -1831,18 +2224,22 @@ rejected_leaf!(
     RepositoryUserExclusivityCapabilityContext,
     StatusOnlyActions
 );
-rejected_leaf!(
+authority_rejected_leaf!(
     ProjectIdentityCollisionErrorData,
+    UncheckedProjectIdentityCollisionErrorData,
     ProjectIdentityCollisionCode,
     "projectIdentityCollision",
     ProjectDigestProfileStateContext,
+    UncheckedProjectDigestProfileStateContext,
     StatusOnlyActions
 );
-rejected_leaf!(
+authority_rejected_leaf!(
     StateRootRelocationRequiredErrorData,
+    UncheckedStateRootRelocationRequiredErrorData,
     StateRootRelocationRequiredCode,
     "stateRootRelocationRequired",
     ProjectDigestProfileStateContext,
+    UncheckedProjectDigestProfileStateContext,
     StatusOnlyActions
 );
 rejected_leaf!(
@@ -2419,7 +2816,15 @@ mod tests {
     use super::*;
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
     use schemars::schema_for;
+    use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
+
+    trait AmbiguousIfDeserializeOwned<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfDeserializeOwned<()> for T {}
+    impl<T: DeserializeOwned> AmbiguousIfDeserializeOwned<u8> for T {}
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -3824,5 +4229,169 @@ mod tests {
         let schema = serde_json::to_value(schema_for!(TaskErrorData)).unwrap();
         assert_eq!(schema["oneOf"].as_array().unwrap().len(), 30);
         audit_json_schema(&schema).unwrap_or_else(|error| panic!("{error}: {schema}"));
+    }
+
+    #[test]
+    fn task12_not_created_contexts_have_exact_test_only_construction() {
+        let project_id = ProjectId::parse(ID1).unwrap();
+        let task_id = TaskId::parse("TASK-1").unwrap();
+        let operation_id = OperationId::parse(OP).unwrap();
+        let instance_id = UnicaId::parse(ID2).unwrap();
+        let digest_a = Sha256Digest::parse(A).unwrap();
+        let digest_b = Sha256Digest::parse(B).unwrap();
+        let digest_c = Sha256Digest::parse(C).unwrap();
+
+        let start_owner = ReservationOwnerRef::start_attempt_test_only(
+            project_id.clone(),
+            task_id.clone(),
+            operation_id.clone(),
+        );
+        assert_eq!(
+            serde_json::to_value(&start_owner).unwrap(),
+            json!({
+                "ownerKind": "startAttempt",
+                "projectId": ID1,
+                "taskId": "TASK-1",
+                "operationId": OP,
+            })
+        );
+
+        let unresolved_owner = ReservationOwnerRef::unresolved_task_test_only(
+            project_id.clone(),
+            task_id,
+            instance_id,
+            TaskPhase::Created,
+        );
+        assert_eq!(
+            serde_json::to_value(&unresolved_owner).unwrap(),
+            json!({
+                "ownerKind": "unresolvedTask",
+                "projectId": ID1,
+                "taskId": "TASK-1",
+                "instanceId": ID2,
+                "phase": "created",
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(OperationInProgressContext::new_test_only(
+                operation_id,
+                digest_a.clone(),
+            ))
+            .unwrap(),
+            json!({
+                "contextKind": "operation",
+                "operationId": OP,
+                "activeOperationDigest": A,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(TargetReservationBusyContext::new_test_only(
+                digest_a.clone(),
+                digest_b.clone(),
+                digest_c.clone(),
+                start_owner,
+            ))
+            .unwrap(),
+            json!({
+                "contextKind": "targetReservation",
+                "repositoryIdentityDigest": A,
+                "originalInfobaseIdentityDigest": B,
+                "reservationKeyDigest": C,
+                "owner": {
+                    "ownerKind": "startAttempt",
+                    "projectId": ID1,
+                    "taskId": "TASK-1",
+                    "operationId": OP,
+                },
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(RepositoryAccountReservationBusyContext::new_test_only(
+                digest_a.clone(),
+                digest_b.clone(),
+                digest_c,
+                unresolved_owner,
+            ))
+            .unwrap(),
+            json!({
+                "contextKind": "repositoryAccountReservation",
+                "repositoryIdentityDigest": A,
+                "normalizedUsernameDigest": B,
+                "reservationKeyDigest": C,
+                "owner": {
+                    "ownerKind": "unresolvedTask",
+                    "projectId": ID1,
+                    "taskId": "TASK-1",
+                    "instanceId": ID2,
+                    "phase": "created",
+                },
+            })
+        );
+
+        let profile = ProjectDigestProfileStateContext::new_test_only(
+            project_id,
+            digest_a.clone(),
+            digest_b.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(profile).unwrap(),
+            json!({
+                "contextKind": "profileState",
+                "projectId": ID1,
+                "expectedDigest": A,
+                "observedDigest": B,
+            })
+        );
+        assert!(ProjectDigestProfileStateContext::new_test_only(
+            ProjectId::parse(ID1).unwrap(),
+            digest_a.clone(),
+            digest_a,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn task12_blocker_authority_contexts_have_no_deserialize_backdoor() {
+        let _ = <OperationInProgressContext as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <TargetReservationBusyContext as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <RepositoryAccountReservationBusyContext as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <ProjectDigestProfileStateContext as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <ReservationOwnerRef as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <StartAttemptReservationOwnerRef as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <UnresolvedTaskReservationOwnerRef as AmbiguousIfDeserializeOwned<_>>::marker;
+    }
+
+    #[test]
+    fn task12_historical_task_error_wire_promotes_blockers_through_private_validation() {
+        let validator = schema_validator::<TaskErrorData>();
+        for code in [
+            RejectedCode::OperationInProgress,
+            RejectedCode::TargetReservationBusy,
+            RejectedCode::RepositoryAccountReservationBusy,
+            RejectedCode::ProjectIdentityCollision,
+            RejectedCode::StateRootRelocationRequired,
+        ] {
+            let value = cases()
+                .into_iter()
+                .find_map(|(candidate, _, value)| (candidate == code).then_some(value))
+                .unwrap();
+            let parsed: TaskErrorData = serde_json::from_value(value.clone())
+                .unwrap_or_else(|error| panic!("failed to promote {code:?}: {error}"));
+            assert_eq!(parsed.code(), code);
+            assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+            assert!(validator.is_valid(&value));
+        }
+
+        let mut equal_profile = cases()
+            .into_iter()
+            .find_map(|(candidate, _, value)| {
+                (candidate == RejectedCode::ProjectIdentityCollision).then_some(value)
+            })
+            .unwrap();
+        equal_profile["context"]["observedDigest"] =
+            equal_profile["context"]["expectedDigest"].clone();
+        assert!(serde_json::from_value::<TaskErrorData>(equal_profile).is_err());
     }
 }

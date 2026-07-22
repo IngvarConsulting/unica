@@ -6,6 +6,8 @@ use super::instructions::{
     SupportCorrectiveInstruction, SupportEvidenceInstruction, SupportRecoveryExternalAction,
     SupportRecoveryExternalActionRef,
 };
+#[cfg(test)]
+use super::prearm_recovery::PreArmCancellationFinalizationRecheckEvidence;
 use super::prearm_recovery::{
     PreArmCancellationEffectKind, PreArmCancellationEffectObservation,
     PreArmCancellationEffectReceipt, PreArmCancellationFinalizationAttemptProgress,
@@ -37,6 +39,7 @@ use crate::domain::branched_development::{
 };
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -280,9 +283,34 @@ impl RecoverySubjectRef {
         ))
     }
 
-    fn canonical_key(&self) -> Result<Vec<u8>, RecoveryContractError> {
-        serde_json_canonicalizer::to_vec(self)
-            .map_err(|_| RecoveryContractError("recovery subject canonicalization failed"))
+    fn canonical_key(&self) -> Result<RecoverySubjectOrderKey, RecoveryContractError> {
+        let canonical_json = || {
+            serde_json_canonicalizer::to_vec(self)
+                .map_err(|_| RecoveryContractError("recovery subject canonicalization failed"))
+        };
+        match &self.0 {
+            RecoverySubjectRefKind::ExternalWorkingInfobase(_) => Ok(
+                RecoverySubjectOrderKey::ExternalWorkingInfobase(canonical_json()?),
+            ),
+            RecoverySubjectRefKind::OwnedRole(value) => {
+                Ok(RecoverySubjectOrderKey::OwnedRole(value.locator.clone()))
+            }
+            RecoverySubjectRefKind::MetadataObject(_) => {
+                Ok(RecoverySubjectOrderKey::MetadataObject(canonical_json()?))
+            }
+            RecoverySubjectRefKind::ReservedOriginalInfobase(_) => Ok(
+                RecoverySubjectOrderKey::ReservedOriginalInfobase(canonical_json()?),
+            ),
+            RecoverySubjectRefKind::RetentionLease(_) => {
+                Ok(RecoverySubjectOrderKey::RetentionLease(canonical_json()?))
+            }
+            RecoverySubjectRefKind::Registered(_) => {
+                Ok(RecoverySubjectOrderKey::Registered(canonical_json()?))
+            }
+            RecoverySubjectRefKind::ConfigurationRoot(_) => {
+                Ok(RecoverySubjectOrderKey::ConfigurationRoot(canonical_json()?))
+            }
+        }
     }
 
     fn is_registered(&self, expected: &UnicaId) -> bool {
@@ -324,6 +352,22 @@ impl RecoverySubjectRef {
             RecoverySubjectRefKind::RetentionLease(value) if &value.retention_lease_id == expected
         )
     }
+}
+
+/// Stable subject ordering used by every recovery collection. Variant order
+/// preserves the previous canonical-JSON cross-kind order (`identity`,
+/// `locator`, `objectId`, `originalIdentityDigest`, `retentionLeaseId`,
+/// `subjectId`, `subjectKind`). Owned-role subjects alone use the normative
+/// typed locator order instead of JSON member/spelling order.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RecoverySubjectOrderKey {
+    ExternalWorkingInfobase(Vec<u8>),
+    OwnedRole(OwnedTargetLocator),
+    MetadataObject(Vec<u8>),
+    ReservedOriginalInfobase(Vec<u8>),
+    RetentionLease(Vec<u8>),
+    Registered(Vec<u8>),
+    ConfigurationRoot(Vec<u8>),
 }
 
 impl JsonSchema for RecoverySubjectRef {
@@ -398,7 +442,9 @@ impl RecoveryExpectedObservation {
         }
     }
 
-    fn canonical_key(&self) -> Result<(RecoveryObservationKind, Vec<u8>), RecoveryContractError> {
+    fn canonical_key(
+        &self,
+    ) -> Result<(RecoveryObservationKind, RecoverySubjectOrderKey), RecoveryContractError> {
         Ok((self.observation_kind, self.subject.canonical_key()?))
     }
 }
@@ -858,12 +904,101 @@ pub(crate) struct HandoffRetentionReleaseReceipt {
     release_receipt_digest: Sha256Digest,
 }
 
+impl HandoffRetentionReleaseReceipt {
+    /// Project the archive handoff receipt only from a validated performed or
+    /// recovered effect outcome for the exact release action.
+    pub(crate) fn from_release_outcome(
+        action: &RecoveryAction,
+        outcome: &RecoveryActionOutcome,
+    ) -> Result<Self, RecoveryContractError> {
+        let RecoveryActionKindWire::ReleaseRetentionLease(release) = &action.0 else {
+            return Err(RecoveryContractError(
+                "handoff receipt requires a releaseRetentionLease action",
+            ));
+        };
+        let receipt = match &outcome.0 {
+            RecoveryActionOutcomeKind::Performed(value) => &value.receipt,
+            RecoveryActionOutcomeKind::RecoveredReceipt(value) => &value.receipt,
+            RecoveryActionOutcomeKind::AlreadySatisfied(_) => {
+                return Err(RecoveryContractError(
+                    "handoff release requires an effect receipt",
+                ));
+            }
+        };
+        if outcome.action_binding() != (&release.action_id, &release.action_digest) {
+            return Err(RecoveryContractError(
+                "handoff outcome belongs to another release action",
+            ));
+        }
+        let EffectReceiptKind::RecoveryAction(receipt) = &receipt.0 else {
+            return Err(RecoveryContractError(
+                "handoff release requires a recovery-action receipt",
+            ));
+        };
+        let expected_observation_digests =
+            expected_matched_terminal_observation_digests(&release.expected_observations)?;
+        if receipt.receipt_id != release.expected_release_receipt_id
+            || !receipt.validates(action, &expected_observation_digests)
+        {
+            return Err(RecoveryContractError(
+                "handoff release receipt does not match its action and observations",
+            ));
+        }
+        Ok(Self {
+            retention_lease_id: release.retention_lease_id.clone(),
+            release_action_id: release.action_id.clone(),
+            release_action_digest: release.action_digest.clone(),
+            release_receipt_id: receipt.receipt_id.clone(),
+            release_receipt_digest: receipt.receipt_digest.clone(),
+        })
+    }
+
+    pub(crate) const fn retention_lease_id(&self) -> &UnicaId {
+        &self.retention_lease_id
+    }
+
+    pub(crate) const fn release_action_id(&self) -> &UnicaId {
+        &self.release_action_id
+    }
+
+    pub(crate) const fn release_action_digest(&self) -> &Sha256Digest {
+        &self.release_action_digest
+    }
+
+    pub(crate) const fn release_receipt_id(&self) -> &UnicaId {
+        &self.release_receipt_id
+    }
+
+    pub(crate) const fn release_receipt_digest(&self) -> &Sha256Digest {
+        &self.release_receipt_digest
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(
+        retention_lease_id: UnicaId,
+        release_action_id: UnicaId,
+        release_action_digest: Sha256Digest,
+        release_receipt_id: UnicaId,
+        release_receipt_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            retention_lease_id,
+            release_action_id,
+            release_action_digest,
+            release_receipt_id,
+            release_receipt_digest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-struct HandoffRetentionReleaseReceipts(Vec<HandoffRetentionReleaseReceipt>);
+pub(crate) struct HandoffRetentionReleaseReceipts(Vec<HandoffRetentionReleaseReceipt>);
 
 impl HandoffRetentionReleaseReceipts {
-    fn new(values: Vec<HandoffRetentionReleaseReceipt>) -> Result<Self, RecoveryContractError> {
+    pub(crate) fn new(
+        values: Vec<HandoffRetentionReleaseReceipt>,
+    ) -> Result<Self, RecoveryContractError> {
         if values.len() > MAX_RECOVERY_ITEMS {
             return Err(RecoveryContractError(
                 "handoff retention release receipts are oversized",
@@ -879,6 +1014,17 @@ impl HandoffRetentionReleaseReceipts {
             previous = Some(&value.retention_lease_id);
         }
         Ok(Self(values))
+    }
+
+    pub(crate) fn as_slice(&self) -> &[HandoffRetentionReleaseReceipt] {
+        &self.0
+    }
+
+    pub(crate) fn release_receipt_digests(&self) -> Vec<Sha256Digest> {
+        self.0
+            .iter()
+            .map(|receipt| receipt.release_receipt_digest.clone())
+            .collect()
     }
 }
 
@@ -949,16 +1095,10 @@ impl RecoveryOwnedTargets {
                 "recovery owned targets must be non-empty and bounded",
             ));
         }
-        let mut previous = None;
-        for value in &values {
-            let key = serde_json_canonicalizer::to_vec(value)
-                .map_err(|_| RecoveryContractError("owned target canonicalization failed"))?;
-            if previous.as_ref().is_some_and(|previous| previous >= &key) {
-                return Err(RecoveryContractError(
-                    "recovery owned targets must be canonical and unique",
-                ));
-            }
-            previous = Some(key);
+        if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(RecoveryContractError(
+                "recovery owned targets must be canonical and unique",
+            ));
         }
         Ok(Self(values))
     }
@@ -2654,7 +2794,7 @@ impl SupportRecoveryActionCatalogAuthority {
 /// A matched absence observation that has been checked against one exact
 /// `finishCleanup` action. This is the only production authority from which a
 /// cleanup receipt may project an owned-target absence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FinishCleanupAbsenceObservation {
     owned_target: OwnedTargetLocator,
     observation_digest: Sha256Digest,
@@ -2671,7 +2811,7 @@ impl FinishCleanupAbsenceObservation {
 }
 
 impl RecoveryAction {
-    pub(crate) fn match_finish_cleanup_absence(
+    fn match_finish_cleanup_absence(
         &self,
         owned_target: &OwnedTargetLocator,
         observation: &RecoveryObservation,
@@ -2718,6 +2858,49 @@ impl RecoveryAction {
             owned_target: owned_target.clone(),
             observation_digest: matched.observation_digest.clone(),
         })
+    }
+}
+
+/// Exact full-set absence authority minted by one cleanup recovery plan. The
+/// set is non-`Clone` and retains the recovery/action lineage that the wire
+/// observations do not carry, closing cross-attempt receipt splicing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct FinishCleanupAbsenceObservations {
+    prior_operation_id: OperationId,
+    recovery_digest: Sha256Digest,
+    archive_id: UnicaId,
+    finish_action_id: UnicaId,
+    finish_action_digest: Sha256Digest,
+    observations: Vec<FinishCleanupAbsenceObservation>,
+}
+
+impl FinishCleanupAbsenceObservations {
+    pub(crate) const fn prior_operation_id(&self) -> &OperationId {
+        &self.prior_operation_id
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> &Sha256Digest {
+        &self.recovery_digest
+    }
+
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        &self.archive_id
+    }
+
+    pub(crate) const fn finish_action_id(&self) -> &UnicaId {
+        &self.finish_action_id
+    }
+
+    pub(crate) const fn finish_action_digest(&self) -> &Sha256Digest {
+        &self.finish_action_digest
+    }
+
+    pub(crate) fn as_slice(&self) -> &[FinishCleanupAbsenceObservation] {
+        &self.observations
+    }
+
+    pub(crate) fn into_observations(self) -> Vec<FinishCleanupAbsenceObservation> {
+        self.observations
     }
 }
 
@@ -5679,6 +5862,7 @@ fn validate_support_recovery_action_grammar(
             ));
         }
     }
+
     Ok(())
 }
 
@@ -5708,11 +5892,7 @@ fn validate_prearm_finalize_action_grammar(
     actions: &[RecoveryAction],
 ) -> Result<(), RecoveryContractError> {
     validate_prearm_finalize_action_shape(actions)?;
-    if observation.prior_operation_id() != plan.prior_operation_id()
-        || observation.support_action_id() != plan.support_action_id()
-        || observation.expected_support_action_digest() != plan.expected_support_action_digest()
-        || observation.approved_cancellation_digest() != plan.approved_cancellation_digest()
-        || observation.observation_digest() != plan.effect_observation_digest()
+    if !plan.binds_effect_observation(observation)
         || progress.finalization_attempt_id() != plan.finalization_attempt_id()
     {
         return Err(RecoveryContractError(
@@ -5728,29 +5908,268 @@ fn validate_prearm_finalize_action_grammar(
         .ok_or(RecoveryContractError(
             "pre-arm finalization plan lacks its success path",
         ))?;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ExpectedActionKind {
+        AcquireRoot,
+        AcquireMode,
+        Recheck,
+        Apply,
+        Persist,
+        ReleaseMode,
+        ReleaseRoot,
+        Finish,
+    }
+
+    let receipt_plan = plan.receipt_plan();
+    let mut expected_kinds = Vec::with_capacity(8);
+    if receipt_plan.root_guard_acquisition_receipt().source()
+        == PreArmCancellationReceiptSource::FinalizationPlan
+    {
+        expected_kinds.push(ExpectedActionKind::AcquireRoot);
+    }
+    if receipt_plan.mode_lease_acquisition_receipt().source()
+        == PreArmCancellationReceiptSource::FinalizationPlan
+    {
+        expected_kinds.push(ExpectedActionKind::AcquireMode);
+    }
+    expected_kinds.push(ExpectedActionKind::Recheck);
+    if receipt_plan
+        .selective_update_effect_receipt()
+        .is_some_and(|receipt| {
+            receipt.source() == PreArmCancellationReceiptSource::FinalizationPlan
+        })
+    {
+        expected_kinds.push(ExpectedActionKind::Apply);
+    }
+    if receipt_plan.cancellation_persistence_receipt().source()
+        == PreArmCancellationReceiptSource::FinalizationPlan
+    {
+        expected_kinds.push(ExpectedActionKind::Persist);
+    }
+    if receipt_plan.mode_lease_release_receipt().source()
+        == PreArmCancellationReceiptSource::FinalizationPlan
+    {
+        expected_kinds.push(ExpectedActionKind::ReleaseMode);
+    }
+    if receipt_plan.root_guard_release_receipt().source()
+        == PreArmCancellationReceiptSource::FinalizationPlan
+    {
+        expected_kinds.push(ExpectedActionKind::ReleaseRoot);
+    }
+    expected_kinds.push(ExpectedActionKind::Finish);
+
+    let action_kind = |action: &RecoveryAction| match &action.0 {
+        RecoveryActionKindWire::AcquirePreArmRootGuard(_) => ExpectedActionKind::AcquireRoot,
+        RecoveryActionKindWire::AcquirePreArmModeLease(_) => ExpectedActionKind::AcquireMode,
+        RecoveryActionKindWire::RecheckPreArmCancellationFinalization(_) => {
+            ExpectedActionKind::Recheck
+        }
+        RecoveryActionKindWire::ApplyPreArmCancellationSelectiveUpdate(_) => {
+            ExpectedActionKind::Apply
+        }
+        RecoveryActionKindWire::PersistPreArmSupportCancellation(_) => ExpectedActionKind::Persist,
+        RecoveryActionKindWire::ReleasePreArmModeLease(_) => ExpectedActionKind::ReleaseMode,
+        RecoveryActionKindWire::ReleasePreArmRootGuard(_) => ExpectedActionKind::ReleaseRoot,
+        RecoveryActionKindWire::FinishPreArmCancellationRecovery(_) => ExpectedActionKind::Finish,
+        _ => unreachable!("shape validation excludes non-pre-arm actions"),
+    };
     if success_path.action_ids().len() != actions.len()
+        || expected_kinds.len() != actions.len()
         || success_path
             .action_ids()
             .iter()
+            .zip(expected_kinds.iter())
             .zip(actions)
-            .any(|(expected, action)| expected != action.action_id())
+            .any(|((expected_id, expected_kind), action)| {
+                expected_id != action.action_id() || *expected_kind != action_kind(action)
+            })
     {
         return Err(RecoveryContractError(
             "pre-arm recovery actions do not equal the finalization success catalog",
         ));
     }
+
+    let receipt_action_matches = |action: &RecoveryAction,
+                                  expected_ref: &PreArmCancellationReceiptRef,
+                                  expected_kind: PreArmCancellationEffectKind|
+     -> Result<bool, RecoveryContractError> {
+        let Some((actual_ref, actual_kind)) = action.prearm_receipt_binding() else {
+            return Ok(false);
+        };
+        if actual_ref != expected_ref || actual_kind != expected_kind {
+            return Ok(false);
+        }
+        plan.validates_finalization_action_receipt_intent(
+            actual_ref,
+            expected_kind,
+            action.expected_postcondition_digest(),
+        )
+        .map_err(|_| RecoveryContractError("pre-arm action receipt intent validation failed"))
+    };
+
     for action in actions {
-        let encoded = serde_json::to_value(action)
-            .map_err(|_| RecoveryContractError("pre-arm action serialization failed"))?;
-        if encoded
-            .get("finalizationAttemptId")
-            .is_some_and(|value| value != plan.finalization_attempt_id().as_str())
-            || encoded
-                .get("finalizationPlanDigest")
-                .is_some_and(|value| value != plan.finalization_plan_digest().as_str())
-        {
+        let matches = match &action.0 {
+            RecoveryActionKindWire::AcquirePreArmRootGuard(value) => {
+                &value.finalization_attempt_id == plan.finalization_attempt_id()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && &value.support_action_id == plan.support_action_id()
+                    && receipt_action_matches(
+                        action,
+                        receipt_plan.root_guard_acquisition_receipt(),
+                        PreArmCancellationEffectKind::RootGuardAcquire,
+                    )?
+            }
+            RecoveryActionKindWire::AcquirePreArmModeLease(value) => match &value.0 {
+                AcquirePreArmModeLeaseActionKindWire::ReservedOriginal(value) => {
+                    plan.manual_target_mode() == ManualSupportTargetMode::ReservedOriginal
+                        && &value.finalization_attempt_id == plan.finalization_attempt_id()
+                        && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                        && &value.support_action_id == plan.support_action_id()
+                        && receipt_action_matches(
+                            action,
+                            receipt_plan.mode_lease_acquisition_receipt(),
+                            PreArmCancellationEffectKind::ModeLeaseAcquire,
+                        )?
+                }
+                AcquirePreArmModeLeaseActionKindWire::SeparateWorkingInfobase(value) => {
+                    plan.manual_target_mode() == ManualSupportTargetMode::SeparateWorkingInfobase
+                        && &value.finalization_attempt_id == plan.finalization_attempt_id()
+                        && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                        && &value.support_action_id == plan.support_action_id()
+                        && receipt_action_matches(
+                            action,
+                            receipt_plan.mode_lease_acquisition_receipt(),
+                            PreArmCancellationEffectKind::ModeLeaseAcquire,
+                        )?
+                }
+            },
+            RecoveryActionKindWire::RecheckPreArmCancellationFinalization(value) => {
+                &value.finalization_attempt_id == plan.finalization_attempt_id()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && &value.effect_observation_digest == plan.effect_observation_digest()
+                    && &value.recheck_policy_digest == plan.recheck_policy().policy_digest()
+            }
+            RecoveryActionKindWire::ApplyPreArmCancellationSelectiveUpdate(value) => {
+                let common_matches = &value.finalization_attempt_id
+                    == plan.finalization_attempt_id()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && &value.selective_update_plan_digest == plan.selective_update_plan_digest()
+                    && &value.expected_target_revision_map_digest
+                        == plan.expected_target_revision_map_digest();
+                common_matches
+                    && match receipt_plan.selective_update_effect_receipt() {
+                        Some(expected_ref) => receipt_action_matches(
+                            action,
+                            expected_ref,
+                            PreArmCancellationEffectKind::SelectiveOriginalUpdate,
+                        )?,
+                        None => false,
+                    }
+            }
+            RecoveryActionKindWire::PersistPreArmSupportCancellation(value) => {
+                &value.finalization_attempt_id == plan.finalization_attempt_id()
+                    && &value.support_action_id == plan.support_action_id()
+                    && &value.expected_support_action_digest
+                        == plan.expected_support_action_digest()
+                    && &value.approved_cancellation_digest == plan.approved_cancellation_digest()
+                    && &value.effect_observation_digest == plan.effect_observation_digest()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && receipt_action_matches(
+                        action,
+                        receipt_plan.cancellation_persistence_receipt(),
+                        PreArmCancellationEffectKind::AuthorizationCancellation,
+                    )?
+            }
+            RecoveryActionKindWire::ReleasePreArmModeLease(value) => match &value.0 {
+                ReleasePreArmModeLeaseActionKindWire::ReservedOriginal(value) => {
+                    plan.manual_target_mode() == ManualSupportTargetMode::ReservedOriginal
+                        && &value.finalization_attempt_id == plan.finalization_attempt_id()
+                        && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                        && receipt_action_matches(
+                            action,
+                            receipt_plan.mode_lease_release_receipt(),
+                            PreArmCancellationEffectKind::ModeLeaseRelease,
+                        )?
+                }
+                ReleasePreArmModeLeaseActionKindWire::SeparateWorkingInfobase(value) => {
+                    plan.manual_target_mode() == ManualSupportTargetMode::SeparateWorkingInfobase
+                        && &value.finalization_attempt_id == plan.finalization_attempt_id()
+                        && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                        && receipt_action_matches(
+                            action,
+                            receipt_plan.mode_lease_release_receipt(),
+                            PreArmCancellationEffectKind::ModeLeaseRelease,
+                        )?
+                }
+            },
+            RecoveryActionKindWire::ReleasePreArmRootGuard(value) => {
+                &value.finalization_attempt_id == plan.finalization_attempt_id()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && &value.support_action_id == plan.support_action_id()
+                    && receipt_action_matches(
+                        action,
+                        receipt_plan.root_guard_release_receipt(),
+                        PreArmCancellationEffectKind::RootGuardRelease,
+                    )?
+            }
+            RecoveryActionKindWire::FinishPreArmCancellationRecovery(value) => {
+                &value.finalization_attempt_id == plan.finalization_attempt_id()
+                    && &value.support_action_id == plan.support_action_id()
+                    && &value.expected_support_action_digest
+                        == plan.expected_support_action_digest()
+                    && &value.approved_cancellation_digest == plan.approved_cancellation_digest()
+                    && &value.effect_observation_digest == plan.effect_observation_digest()
+                    && &value.finalization_plan_digest == plan.finalization_plan_digest()
+                    && &value.receipt_plan_digest == plan.receipt_plan().receipt_plan_digest()
+                    && value.expected_result_phase == plan.planned_result_phase()
+                    && receipt_action_matches(
+                        action,
+                        receipt_plan.recovery_finalization_receipt(),
+                        PreArmCancellationEffectKind::RecoveryFinalization,
+                    )?
+            }
+            _ => false,
+        };
+        if !matches {
             return Err(RecoveryContractError(
-                "pre-arm recovery action belongs to another finalization plan",
+                "pre-arm recovery action fields do not equal the finalization plan",
+            ));
+        }
+    }
+
+    let acquired_mode = actions.iter().find_map(|action| match &action.0 {
+        RecoveryActionKindWire::AcquirePreArmModeLease(value) => Some(value),
+        _ => None,
+    });
+    let released_mode = actions.iter().find_map(|action| match &action.0 {
+        RecoveryActionKindWire::ReleasePreArmModeLease(value) => Some(value),
+        _ => None,
+    });
+    if let (Some(acquired), Some(released)) = (acquired_mode, released_mode) {
+        let same_lease_window = match (&acquired.0, &released.0) {
+            (
+                AcquirePreArmModeLeaseActionKindWire::ReservedOriginal(acquired),
+                ReleasePreArmModeLeaseActionKindWire::ReservedOriginal(released),
+            ) => {
+                acquired.reserved_original_identity_digest
+                    == released.reserved_original_identity_digest
+                    && acquired.exclusive_lease_capability_id
+                        == released.exclusive_lease_capability_id
+            }
+            (
+                AcquirePreArmModeLeaseActionKindWire::SeparateWorkingInfobase(acquired),
+                ReleasePreArmModeLeaseActionKindWire::SeparateWorkingInfobase(released),
+            ) => {
+                acquired.working_infobase_identity == released.working_infobase_identity
+                    && acquired.exclusive_lease_capability_id
+                        == released.exclusive_lease_capability_id
+            }
+            _ => false,
+        };
+        if !same_lease_window {
+            return Err(RecoveryContractError(
+                "pre-arm acquire/release actions describe different mode-lease windows",
             ));
         }
     }
@@ -5785,13 +6204,43 @@ pub(crate) struct RecoveryPlanStatus(RecoveryPlanStatusKind);
 /// Callers cannot manufacture it independently of a validated cleanup plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CleanupRecoveryBinding<'a> {
+    prior_operation_id: &'a OperationId,
+    recovery_digest: &'a Sha256Digest,
     archive_id: &'a UnicaId,
+    finish_action_id: &'a UnicaId,
+    finish_action_digest: &'a Sha256Digest,
+    owned_targets: &'a [OwnedTargetLocator],
+    quarantine_id: &'a UnicaId,
     planned_result_phase: TaskPhase,
 }
 
 impl CleanupRecoveryBinding<'_> {
+    pub(crate) const fn prior_operation_id(&self) -> &OperationId {
+        self.prior_operation_id
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> &Sha256Digest {
+        self.recovery_digest
+    }
+
     pub(crate) const fn archive_id(&self) -> &UnicaId {
         self.archive_id
+    }
+
+    pub(crate) const fn finish_action_id(&self) -> &UnicaId {
+        self.finish_action_id
+    }
+
+    pub(crate) const fn finish_action_digest(&self) -> &Sha256Digest {
+        self.finish_action_digest
+    }
+
+    pub(crate) const fn owned_targets(&self) -> &[OwnedTargetLocator] {
+        self.owned_targets
+    }
+
+    pub(crate) const fn quarantine_id(&self) -> &UnicaId {
+        self.quarantine_id
     }
 
     pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
@@ -5924,55 +6373,86 @@ impl RecoveryPlanStatus {
         owned_target: OwnedTargetLocator,
         planned_result_phase: TaskPhase,
     ) -> Result<Self, RecoveryContractError> {
+        Self::cleanup_targets_fixture_test_only(
+            prior_operation_id,
+            archive_id,
+            vec![owned_target],
+            planned_result_phase,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_targets_fixture_test_only(
+        prior_operation_id: OperationId,
+        archive_id: UnicaId,
+        owned_targets: Vec<OwnedTargetLocator>,
+        planned_result_phase: TaskPhase,
+    ) -> Result<Self, RecoveryContractError> {
         let quarantine_id = UnicaId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
             .map_err(|_| RecoveryContractError("test quarantine ID is invalid"))?;
-        let expected_quarantined_digest =
-            expected_quarantined_owned_target_digest(&owned_target, &quarantine_id)?;
-        let resume_observation = RecoveryExpectedObservation::new(
-            RecoveryObservationKind::QuarantinePresence,
-            RecoverySubjectRef::owned_role(owned_target.clone()),
-            expected_quarantined_digest.clone(),
-        );
-        let (resume_observations, resume_postcondition) =
-            expected_postcondition(vec![resume_observation])?;
-        let resume = RecoveryAction::from_record(
-            RecoveryActionDigestRecordKind::ResumeOwnedTargetQuarantine(
-                ResumeOwnedTargetQuarantineActionDigestRecord {
-                    action_kind: ResumeOwnedTargetQuarantineActionKind::Value,
-                    action_id: UnicaId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-                        .map_err(|_| RecoveryContractError("test action ID is invalid"))?,
-                    owned_target: owned_target.clone(),
-                    quarantine_id,
-                    expected_quarantined_digest,
-                    expected_observations: resume_observations,
-                    expected_postcondition_digest: resume_postcondition,
-                },
-            ),
-        )?;
+        let mut actions = owned_targets
+            .iter()
+            .enumerate()
+            .map(|(index, owned_target)| {
+                let expected_quarantined_digest =
+                    expected_quarantined_owned_target_digest(owned_target, &quarantine_id)?;
+                let resume_observation = RecoveryExpectedObservation::new(
+                    RecoveryObservationKind::QuarantinePresence,
+                    RecoverySubjectRef::owned_role(owned_target.clone()),
+                    expected_quarantined_digest.clone(),
+                );
+                let (resume_observations, resume_postcondition) =
+                    expected_postcondition(vec![resume_observation])?;
+                RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::ResumeOwnedTargetQuarantine(
+                        ResumeOwnedTargetQuarantineActionDigestRecord {
+                            action_kind: ResumeOwnedTargetQuarantineActionKind::Value,
+                            action_id: UnicaId::parse(&format!(
+                                "aaaaaaaa-aaaa-4aaa-8aaa-{index:012}"
+                            ))
+                            .map_err(|_| RecoveryContractError("test action ID is invalid"))?,
+                            owned_target: owned_target.clone(),
+                            quarantine_id: quarantine_id.clone(),
+                            expected_quarantined_digest,
+                            expected_observations: resume_observations,
+                            expected_postcondition_digest: resume_postcondition,
+                        },
+                    ),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let finish_action_id = UnicaId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
             .map_err(|_| RecoveryContractError("test action ID is invalid"))?;
-        let expected_absent_digest =
-            expected_absent_owned_target_digest(&archive_id, &finish_action_id, &owned_target)?;
-        let finish_observation = RecoveryExpectedObservation::new(
-            RecoveryObservationKind::OwnedTargetAbsence,
-            RecoverySubjectRef::owned_role(owned_target.clone()),
-            expected_absent_digest,
-        );
+        let finish_observations = owned_targets
+            .iter()
+            .map(|owned_target| {
+                Ok(RecoveryExpectedObservation::new(
+                    RecoveryObservationKind::OwnedTargetAbsence,
+                    RecoverySubjectRef::owned_role(owned_target.clone()),
+                    expected_absent_owned_target_digest(
+                        &archive_id,
+                        &finish_action_id,
+                        owned_target,
+                    )?,
+                ))
+            })
+            .collect::<Result<Vec<_>, RecoveryContractError>>()?;
         let (finish_observations, finish_postcondition) =
-            expected_postcondition(vec![finish_observation])?;
+            expected_postcondition(finish_observations)?;
         let finish = RecoveryAction::from_record(RecoveryActionDigestRecordKind::FinishCleanup(
             FinishCleanupActionDigestRecord {
                 action_kind: FinishCleanupActionKind::Value,
                 action_id: finish_action_id,
                 archive_id,
-                owned_targets: RecoveryOwnedTargets::new(vec![owned_target])?,
+                owned_targets: RecoveryOwnedTargets::new(owned_targets)?,
                 expected_all_absent: TrueLiteral,
                 expected_observations: finish_observations,
                 expected_postcondition_digest: finish_postcondition,
             },
         ))?;
+        actions.push(finish);
         let (observations, remaining_unknowns) = validated_plan_observations(Vec::new())?;
-        let actions = CleanupRecoveryActions::from_actions(vec![resume, finish])?;
+        let actions = CleanupRecoveryActions::from_actions(actions)?;
         Ok(Self(RecoveryPlanStatusKind::Cleanup(
             CleanupRecoveryPlanStatus::new(CleanupRecoveryPlanDigestRecord {
                 prior_operation_id,
@@ -6284,10 +6764,107 @@ impl RecoveryPlanStatus {
                 "validated cleanup plan has no final cleanup action",
             ));
         };
+        let Some(RecoveryAction(RecoveryActionKindWire::ResumeOwnedTargetQuarantine(first))) =
+            actions.first()
+        else {
+            return Err(RecoveryContractError(
+                "validated cleanup recovery has no quarantine action",
+            ));
+        };
+        if actions[..actions.len() - 1].iter().any(|action| {
+            !matches!(
+                action,
+                RecoveryAction(RecoveryActionKindWire::ResumeOwnedTargetQuarantine(resume))
+                    if resume.quarantine_id == first.quarantine_id
+            )
+        }) {
+            return Err(RecoveryContractError(
+                "cleanup recovery actions disagree on quarantine identity",
+            ));
+        }
         Ok(CleanupRecoveryBinding {
+            prior_operation_id: &value.record.prior_operation_id,
+            recovery_digest: &value.recovery_digest,
             archive_id: &finish.archive_id,
+            finish_action_id: &finish.action_id,
+            finish_action_digest: &finish.action_digest,
+            owned_targets: &finish.owned_targets.0,
+            quarantine_id: &first.quarantine_id,
             planned_result_phase: value.record.planned_result_phase,
         })
+    }
+
+    /// Match one exact observation for every cleanup target, in the plan's
+    /// canonical target order, and retain the recovery lineage around the
+    /// otherwise value-only observation digests.
+    pub(crate) fn match_cleanup_absences(
+        &self,
+        observations: Vec<RecoveryObservation>,
+    ) -> Result<FinishCleanupAbsenceObservations, RecoveryContractError> {
+        let RecoveryPlanStatusKind::Cleanup(value) = &self.0 else {
+            return Err(RecoveryContractError("recovery plan is not a cleanup plan"));
+        };
+        let actions = value.record.actions.as_slice();
+        validate_cleanup_action_grammar(actions)?;
+        let Some(RecoveryAction(RecoveryActionKindWire::FinishCleanup(finish))) = actions.last()
+        else {
+            return Err(RecoveryContractError(
+                "validated cleanup plan has no final cleanup action",
+            ));
+        };
+        if observations.len() != finish.owned_targets.0.len() {
+            return Err(RecoveryContractError(
+                "cleanup requires one fresh absence observation per owned target",
+            ));
+        }
+        let observations = finish
+            .owned_targets
+            .0
+            .iter()
+            .zip(&observations)
+            .map(|(target, observation)| {
+                RecoveryAction(RecoveryActionKindWire::FinishCleanup(finish.clone()))
+                    .match_finish_cleanup_absence(target, observation)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FinishCleanupAbsenceObservations {
+            prior_operation_id: value.record.prior_operation_id.clone(),
+            recovery_digest: value.recovery_digest.clone(),
+            archive_id: finish.archive_id.clone(),
+            finish_action_id: finish.action_id.clone(),
+            finish_action_digest: finish.action_digest.clone(),
+            observations,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_matching_absence_observations_test_only(
+        &self,
+    ) -> Result<FinishCleanupAbsenceObservations, RecoveryContractError> {
+        let RecoveryPlanStatusKind::Cleanup(value) = &self.0 else {
+            return Err(RecoveryContractError("recovery plan is not a cleanup plan"));
+        };
+        let Some(RecoveryAction(RecoveryActionKindWire::FinishCleanup(finish))) =
+            value.record.actions.as_slice().last()
+        else {
+            return Err(RecoveryContractError(
+                "validated cleanup plan has no final cleanup action",
+            ));
+        };
+        let observations = finish
+            .expected_observations
+            .as_slice()
+            .iter()
+            .map(|expected| {
+                RecoveryObservation::matched_test_only(
+                    expected.observation_kind,
+                    expected.subject.clone(),
+                    expected.expected_digest.clone(),
+                    expected.expected_digest.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.match_cleanup_absences(observations)
     }
 
     pub(crate) fn armed_support_recovery_projection(
@@ -7091,6 +7668,174 @@ impl RecoveryActionOutcome {
             }
         }
     }
+
+    fn outcome_digest(&self) -> &Sha256Digest {
+        match &self.0 {
+            RecoveryActionOutcomeKind::Performed(value) => &value.outcome_digest,
+            RecoveryActionOutcomeKind::RecoveredReceipt(value) => &value.outcome_digest,
+            RecoveryActionOutcomeKind::AlreadySatisfied(value) => &value.outcome_digest,
+        }
+    }
+
+    fn prearm_effect_receipt(&self) -> Option<&PreArmCancellationEffectReceipt> {
+        let receipt = match &self.0 {
+            RecoveryActionOutcomeKind::Performed(value) => &value.receipt,
+            RecoveryActionOutcomeKind::RecoveredReceipt(value) => &value.receipt,
+            RecoveryActionOutcomeKind::AlreadySatisfied(_) => return None,
+        };
+        match &receipt.0 {
+            EffectReceiptKind::PreArmCancellationEffect(receipt) => Some(receipt),
+            EffectReceiptKind::RecoveryAction(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PreArmArchiveActionOutcomeBinding {
+    action_id: UnicaId,
+    action_digest: Sha256Digest,
+    outcome_digest: Sha256Digest,
+}
+
+/// Opaque validated witness that one exact finalization success catalog produced
+/// the exact finalization-plan receipt sequence retained by completed progress.
+///
+/// This is intentionally narrower than terminal recovery authority: root/mode
+/// capability proofs, the exact recheck observation rows, and the enclosing
+/// recovery-receipt digest remain later gates. The witness is non-`Clone`, but
+/// repeatable validation over the same immutable evidence may mint another one.
+/// It has no raw constructor, `Serialize`, or `Deserialize`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedPreArmArchiveReceiptOutcomeWitness {
+    effect_observation_digest: Sha256Digest,
+    finalization_attempt_id: UnicaId,
+    finalization_plan_digest: Sha256Digest,
+    attempt_audit_digest: Sha256Digest,
+    ordered_action_outcome_bindings: Vec<PreArmArchiveActionOutcomeBinding>,
+}
+
+impl ValidatedPreArmArchiveReceiptOutcomeWitness {
+    pub(crate) fn from_completed_outcomes(
+        observation: &PreArmCancellationEffectObservation,
+        plan: &PreArmCancellationFinalizationPlan,
+        progress: &PreArmCancellationFinalizationAttemptProgress,
+        actions: &[RecoveryAction],
+        outcomes: &[RecoveryActionOutcome],
+    ) -> Result<Self, RecoveryContractError> {
+        validate_prearm_finalize_action_grammar(observation, plan, progress, actions)?;
+        let realized_receipts =
+            progress
+                .completed_realized_receipts()
+                .ok_or(RecoveryContractError(
+                    "pre-arm archive outcomes require completed progress",
+                ))?;
+        let attempt_audit_digest = progress
+            .attempt_audit_digest()
+            .ok_or(RecoveryContractError(
+                "completed pre-arm progress lacks its attempt audit digest",
+            ))?;
+        if progress.completed_recheck_evidence().is_none() || actions.len() != outcomes.len() {
+            return Err(RecoveryContractError(
+                "pre-arm archive outcomes do not cover the exact completed success catalog",
+            ));
+        }
+
+        let mut projected_receipts = Vec::with_capacity(realized_receipts.len());
+        let mut bindings = Vec::with_capacity(actions.len());
+        for (action, outcome) in actions.iter().zip(outcomes) {
+            let (outcome_action_id, outcome_action_digest) = outcome.action_binding();
+            if outcome_action_id != action.action_id()
+                || outcome_action_digest != action.action_digest()
+            {
+                return Err(RecoveryContractError(
+                    "pre-arm outcome belongs to another action or action digest",
+                ));
+            }
+
+            let is_recheck = matches!(
+                action.0,
+                RecoveryActionKindWire::RecheckPreArmCancellationFinalization(_)
+            );
+            if is_recheck {
+                if outcome.outcome_class() != RecoveryActionOutcomeClass::AlreadySatisfied
+                    || outcome.prearm_effect_receipt().is_some()
+                {
+                    return Err(RecoveryContractError(
+                        "pre-arm recheck requires exactly its observation-only outcome",
+                    ));
+                }
+            } else {
+                if action.class() != RecoveryActionClass::PreArmEffect
+                    || !matches!(
+                        outcome.outcome_class(),
+                        RecoveryActionOutcomeClass::Performed
+                            | RecoveryActionOutcomeClass::RecoveredReceipt
+                    )
+                {
+                    return Err(RecoveryContractError(
+                        "pre-arm effect action lacks a performed or recovered receipt outcome",
+                    ));
+                }
+                let receipt = outcome
+                    .prearm_effect_receipt()
+                    .ok_or(RecoveryContractError(
+                        "pre-arm effect outcome lacks its typed pre-arm receipt",
+                    ))?;
+                projected_receipts.push(receipt.clone());
+            }
+
+            bindings.push(PreArmArchiveActionOutcomeBinding {
+                action_id: action.action_id().clone(),
+                action_digest: action.action_digest().clone(),
+                outcome_digest: outcome.outcome_digest().clone(),
+            });
+        }
+
+        if projected_receipts.as_slice() != realized_receipts {
+            return Err(RecoveryContractError(
+                "pre-arm outcomes do not equal the completed finalization receipt sequence",
+            ));
+        }
+
+        Ok(Self {
+            effect_observation_digest: observation.observation_digest().clone(),
+            finalization_attempt_id: plan.finalization_attempt_id().clone(),
+            finalization_plan_digest: plan.finalization_plan_digest().clone(),
+            attempt_audit_digest: attempt_audit_digest.clone(),
+            ordered_action_outcome_bindings: bindings,
+        })
+    }
+
+    pub(crate) fn binds_archive_lineage(
+        &self,
+        observation: &PreArmCancellationEffectObservation,
+        plan: &PreArmCancellationFinalizationPlan,
+        progress: &PreArmCancellationFinalizationAttemptProgress,
+    ) -> bool {
+        !self.ordered_action_outcome_bindings.is_empty()
+            && plan.binds_effect_observation(observation)
+            && &self.effect_observation_digest == observation.observation_digest()
+            && &self.finalization_attempt_id == plan.finalization_attempt_id()
+            && &self.finalization_plan_digest == plan.finalization_plan_digest()
+            && progress.finalization_attempt_id() == &self.finalization_attempt_id
+            && progress.attempt_audit_digest() == Some(&self.attempt_audit_digest)
+            && progress.completed_realized_receipts().is_some()
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct PreArmArchiveReceiptOutcomeWitnessTestFixture {
+    pub(crate) witness: ValidatedPreArmArchiveReceiptOutcomeWitness,
+    pub(crate) observation: PreArmCancellationEffectObservation,
+    pub(crate) plan: PreArmCancellationFinalizationPlan,
+    pub(crate) recheck_evidence: PreArmCancellationFinalizationRecheckEvidence,
+    pub(crate) progress: PreArmCancellationFinalizationAttemptProgress,
+}
+
+#[cfg(test)]
+pub(crate) fn prearm_archive_receipt_outcome_witness_fixture_test_only(
+) -> PreArmArchiveReceiptOutcomeWitnessTestFixture {
+    tests::exact_prearm_archive_fixture_for_task()
 }
 
 impl JsonSchema for RecoveryActionOutcome {
@@ -7382,6 +8127,456 @@ impl RecoveryActionOutcome {
     }
 }
 
+/// Hash of the durable staged-core container bytes. This internal type is
+/// intentionally distinct from [`PublishedArchiveSha256`], so a staged hash
+/// cannot accidentally satisfy a final-publication API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedArchiveSha256(Sha256Digest);
+
+impl StagedArchiveSha256 {
+    pub(crate) const fn as_digest(&self) -> &Sha256Digest {
+        &self.0
+    }
+
+    #[cfg(test)]
+    fn test_only(value: Sha256Digest) -> Self {
+        Self(value)
+    }
+}
+
+/// Hash of the exact immutable final published container bytes. This is never
+/// derived from a member list or publication-manifest digest.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PublishedArchiveSha256(Sha256Digest);
+
+impl PublishedArchiveSha256 {
+    pub(crate) const fn as_digest(&self) -> &Sha256Digest {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(value: Sha256Digest) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ImmutableArchiveByteLayer {
+    Staged {
+        archive_id: UnicaId,
+        handoff_lineage_digest: Sha256Digest,
+        frozen_provider_boundary_digest: Sha256Digest,
+    },
+    Published {
+        archive_id: UnicaId,
+        publication_manifest_digest: Sha256Digest,
+    },
+}
+
+/// One writer-produced, immutable byte generation. It is deliberately
+/// non-`Clone`: hashing and strict parsing happen together in the consuming
+/// observation methods below, so neither observer can reopen a path or inspect
+/// another generation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ImmutableArchiveByteGeneration {
+    archive_container_capability_row_id: CapabilityRowId,
+    generation_id: UnicaId,
+    byte_observation_id: UnicaId,
+    layer: ImmutableArchiveByteLayer,
+    bytes: Box<[u8]>,
+    durable_write_receipt_id: UnicaId,
+}
+
+/// Cohesive staged-writer lineage consumed together with the exact staged
+/// bytes. Keeping the lineage in one authority also prevents field-by-field
+/// staging calls from becoming an accidental splice surface.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveStagingWriterLineage {
+    archive_container_capability_row_id: CapabilityRowId,
+    generation_id: UnicaId,
+    byte_observation_id: UnicaId,
+    archive_id: UnicaId,
+    handoff_lineage_digest: Sha256Digest,
+    frozen_provider_boundary_digest: Sha256Digest,
+    durable_write_receipt_id: UnicaId,
+}
+
+impl ArchiveStagingWriterLineage {
+    #[cfg(test)]
+    fn test_only(
+        archive_container_capability_row_id: CapabilityRowId,
+        generation_id: UnicaId,
+        byte_observation_id: UnicaId,
+        archive_id: UnicaId,
+        handoff_lineage_digest: Sha256Digest,
+        frozen_provider_boundary_digest: Sha256Digest,
+        durable_write_receipt_id: UnicaId,
+    ) -> Self {
+        Self {
+            archive_container_capability_row_id,
+            generation_id,
+            byte_observation_id,
+            archive_id,
+            handoff_lineage_digest,
+            frozen_provider_boundary_digest,
+            durable_write_receipt_id,
+        }
+    }
+}
+
+impl ImmutableArchiveByteGeneration {
+    /// Test-only raw mint. The production writer/fsync adapter that creates
+    /// this sealed generation belongs to the handler integration task.
+    #[cfg(test)]
+    fn seal_staged_from_writer_test_only(
+        lineage: ArchiveStagingWriterLineage,
+        bytes: Vec<u8>,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::seal(
+            lineage.archive_container_capability_row_id,
+            lineage.generation_id,
+            lineage.byte_observation_id,
+            ImmutableArchiveByteLayer::Staged {
+                archive_id: lineage.archive_id,
+                handoff_lineage_digest: lineage.handoff_lineage_digest,
+                frozen_provider_boundary_digest: lineage.frozen_provider_boundary_digest,
+            },
+            bytes,
+            lineage.durable_write_receipt_id,
+        )
+    }
+
+    /// Test-only raw mint for final bytes. Production minting is reserved for
+    /// the paired writer/durable-publication adapter.
+    #[cfg(test)]
+    fn seal_published_from_writer_test_only(
+        archive_container_capability_row_id: CapabilityRowId,
+        generation_id: UnicaId,
+        final_byte_observation_id: UnicaId,
+        archive_id: UnicaId,
+        publication_manifest_digest: Sha256Digest,
+        bytes: Vec<u8>,
+        durable_write_receipt_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::seal(
+            archive_container_capability_row_id,
+            generation_id,
+            final_byte_observation_id,
+            ImmutableArchiveByteLayer::Published {
+                archive_id,
+                publication_manifest_digest,
+            },
+            bytes,
+            durable_write_receipt_id,
+        )
+    }
+
+    fn seal(
+        archive_container_capability_row_id: CapabilityRowId,
+        generation_id: UnicaId,
+        byte_observation_id: UnicaId,
+        layer: ImmutableArchiveByteLayer,
+        bytes: Vec<u8>,
+        durable_write_receipt_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        if bytes.is_empty() {
+            return Err(RecoveryContractError(
+                "immutable archive byte generation cannot be empty",
+            ));
+        }
+        Ok(Self {
+            archive_container_capability_row_id,
+            generation_id,
+            byte_observation_id,
+            layer,
+            bytes: bytes.into_boxed_slice(),
+            durable_write_receipt_id,
+        })
+    }
+
+    pub(crate) fn observe_staging(
+        self,
+        parser: &dyn ArchiveStagingStrictParser,
+    ) -> Result<ArchiveStagingObservation, RecoveryContractError> {
+        let ImmutableArchiveByteLayer::Staged {
+            archive_id,
+            handoff_lineage_digest,
+            frozen_provider_boundary_digest,
+        } = self.layer
+        else {
+            return Err(RecoveryContractError(
+                "final archive bytes cannot produce a staging observation",
+            ));
+        };
+        let staged_entry_manifest_digest =
+            parser.parse_staged_generation(&self.generation_id, &self.bytes)?;
+        let staged_archive_sha256 = StagedArchiveSha256(hash_archive_bytes(&self.bytes)?);
+        Ok(ArchiveStagingObservation {
+            archive_container_capability_row_id: self.archive_container_capability_row_id,
+            generation_id: self.generation_id,
+            byte_observation_id: self.byte_observation_id,
+            archive_id,
+            handoff_lineage_digest,
+            frozen_provider_boundary_digest,
+            staged_archive_sha256,
+            staged_entry_manifest_digest,
+            durable_write_receipt_id: self.durable_write_receipt_id,
+        })
+    }
+
+    pub(crate) fn observe_publication(
+        self,
+        parser: &dyn ArchivePublicationStrictParser,
+    ) -> Result<ArchivePublicationByteObservation, RecoveryContractError> {
+        let ImmutableArchiveByteLayer::Published {
+            archive_id,
+            publication_manifest_digest,
+        } = self.layer
+        else {
+            return Err(RecoveryContractError(
+                "staged archive bytes cannot produce a publication observation",
+            ));
+        };
+        let parsed = parser.parse_published_generation(&self.generation_id, &self.bytes)?;
+        if parsed.embedded_manifest_digest != publication_manifest_digest {
+            return Err(RecoveryContractError(
+                "strict parser embedded manifest differs from the writer-bound manifest",
+            ));
+        }
+        let final_archive_size = u64::try_from(self.bytes.len()).map_err(|_| {
+            RecoveryContractError("final archive byte count exceeds the supported range")
+        })?;
+        let final_archive_sha256 = PublishedArchiveSha256(hash_archive_bytes(&self.bytes)?);
+        Ok(ArchivePublicationByteObservation {
+            archive_container_capability_row_id: self.archive_container_capability_row_id,
+            generation_id: self.generation_id,
+            final_byte_observation_id: self.byte_observation_id,
+            archive_id,
+            publication_manifest_digest,
+            parsed_entry_set_digest: parsed.parsed_entry_set_digest,
+            final_archive_size,
+            final_archive_sha256,
+            durable_write_receipt_id: self.durable_write_receipt_id,
+        })
+    }
+}
+
+fn hash_archive_bytes(bytes: &[u8]) -> Result<Sha256Digest, RecoveryContractError> {
+    Sha256Digest::parse(&format!("{:x}", Sha256::digest(bytes)))
+        .map_err(|_| RecoveryContractError("archive byte hashing produced an invalid digest"))
+}
+
+mod archive_parser_sealed {
+    pub trait Sealed {}
+}
+
+/// Strict staged-core parser backed by the same concrete container capability
+/// as the writer. The sealed adapter receives bytes, never a reopenable path.
+pub(crate) trait ArchiveStagingStrictParser: archive_parser_sealed::Sealed {
+    fn parse_staged_generation(
+        &self,
+        generation_id: &UnicaId,
+        bytes: &[u8],
+    ) -> Result<Sha256Digest, RecoveryContractError>;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveStagingObservation {
+    archive_container_capability_row_id: CapabilityRowId,
+    generation_id: UnicaId,
+    byte_observation_id: UnicaId,
+    archive_id: UnicaId,
+    handoff_lineage_digest: Sha256Digest,
+    frozen_provider_boundary_digest: Sha256Digest,
+    staged_archive_sha256: StagedArchiveSha256,
+    staged_entry_manifest_digest: Sha256Digest,
+    durable_write_receipt_id: UnicaId,
+}
+
+impl ArchiveStagingObservation {
+    pub(crate) const fn archive_container_capability_row_id(&self) -> &CapabilityRowId {
+        &self.archive_container_capability_row_id
+    }
+
+    pub(crate) const fn generation_id(&self) -> &UnicaId {
+        &self.generation_id
+    }
+
+    pub(crate) const fn byte_observation_id(&self) -> &UnicaId {
+        &self.byte_observation_id
+    }
+
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        &self.archive_id
+    }
+
+    pub(crate) const fn handoff_lineage_digest(&self) -> &Sha256Digest {
+        &self.handoff_lineage_digest
+    }
+
+    pub(crate) const fn frozen_provider_boundary_digest(&self) -> &Sha256Digest {
+        &self.frozen_provider_boundary_digest
+    }
+
+    pub(crate) const fn staged_archive_sha256(&self) -> &StagedArchiveSha256 {
+        &self.staged_archive_sha256
+    }
+
+    pub(crate) const fn staged_entry_manifest_digest(&self) -> &Sha256Digest {
+        &self.staged_entry_manifest_digest
+    }
+
+    pub(crate) const fn durable_write_receipt_id(&self) -> &UnicaId {
+        &self.durable_write_receipt_id
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArchivePublicationParsedDigests {
+    parsed_entry_set_digest: Sha256Digest,
+    embedded_manifest_digest: Sha256Digest,
+}
+
+impl ArchivePublicationParsedDigests {
+    fn new(parsed_entry_set_digest: Sha256Digest, embedded_manifest_digest: Sha256Digest) -> Self {
+        Self {
+            parsed_entry_set_digest,
+            embedded_manifest_digest,
+        }
+    }
+}
+
+pub(crate) trait ArchivePublicationStrictParser: archive_parser_sealed::Sealed {
+    fn parse_published_generation(
+        &self,
+        generation_id: &UnicaId,
+        bytes: &[u8],
+    ) -> Result<ArchivePublicationParsedDigests, RecoveryContractError>;
+}
+
+/// Sealed final-byte evidence consumed by the result-owned publication
+/// observation. It is deliberately not serializable and cannot be cloned.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArchivePublicationByteObservation {
+    archive_container_capability_row_id: CapabilityRowId,
+    generation_id: UnicaId,
+    final_byte_observation_id: UnicaId,
+    archive_id: UnicaId,
+    publication_manifest_digest: Sha256Digest,
+    parsed_entry_set_digest: Sha256Digest,
+    final_archive_size: u64,
+    final_archive_sha256: PublishedArchiveSha256,
+    durable_write_receipt_id: UnicaId,
+}
+
+#[cfg(test)]
+pub(crate) struct ArchivePublicationByteObservationTestParts {
+    pub(crate) archive_container_capability_row_id: CapabilityRowId,
+    pub(crate) generation_id: UnicaId,
+    pub(crate) final_byte_observation_id: UnicaId,
+    pub(crate) archive_id: UnicaId,
+    pub(crate) publication_manifest_digest: Sha256Digest,
+    pub(crate) parsed_entry_set_digest: Sha256Digest,
+    pub(crate) final_archive_size: u64,
+    pub(crate) final_archive_sha256: PublishedArchiveSha256,
+    pub(crate) durable_write_receipt_id: UnicaId,
+}
+
+impl ArchivePublicationByteObservation {
+    pub(crate) const fn archive_container_capability_row_id(&self) -> &CapabilityRowId {
+        &self.archive_container_capability_row_id
+    }
+
+    pub(crate) const fn generation_id(&self) -> &UnicaId {
+        &self.generation_id
+    }
+
+    pub(crate) const fn final_byte_observation_id(&self) -> &UnicaId {
+        &self.final_byte_observation_id
+    }
+
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        &self.archive_id
+    }
+
+    pub(crate) const fn publication_manifest_digest(&self) -> &Sha256Digest {
+        &self.publication_manifest_digest
+    }
+
+    pub(crate) const fn parsed_entry_set_digest(&self) -> &Sha256Digest {
+        &self.parsed_entry_set_digest
+    }
+
+    pub(crate) const fn final_archive_size(&self) -> u64 {
+        self.final_archive_size
+    }
+
+    pub(crate) const fn final_archive_sha256(&self) -> &PublishedArchiveSha256 {
+        &self.final_archive_sha256
+    }
+
+    pub(crate) const fn durable_write_receipt_id(&self) -> &UnicaId {
+        &self.durable_write_receipt_id
+    }
+
+    pub(crate) fn into_final_archive_sha256(self) -> PublishedArchiveSha256 {
+        self.final_archive_sha256
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(
+        parts: ArchivePublicationByteObservationTestParts,
+    ) -> Result<Self, RecoveryContractError> {
+        if parts.final_archive_size == 0 {
+            return Err(RecoveryContractError(
+                "test publication observation requires non-empty final bytes",
+            ));
+        }
+        Ok(Self {
+            archive_container_capability_row_id: parts.archive_container_capability_row_id,
+            generation_id: parts.generation_id,
+            final_byte_observation_id: parts.final_byte_observation_id,
+            archive_id: parts.archive_id,
+            publication_manifest_digest: parts.publication_manifest_digest,
+            parsed_entry_set_digest: parts.parsed_entry_set_digest,
+            final_archive_size: parts.final_archive_size,
+            final_archive_sha256: parts.final_archive_sha256,
+            durable_write_receipt_id: parts.durable_write_receipt_id,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveStagingReceiptAuthority {
+    record: ArchiveStagingReceiptDigestRecord,
+}
+
+impl ArchiveStagingReceiptAuthority {
+    pub(crate) fn from_observation(
+        staging_receipt_id: UnicaId,
+        expected_staged_entry_manifest_digest: Sha256Digest,
+        observation: ArchiveStagingObservation,
+    ) -> Result<Self, RecoveryContractError> {
+        if observation.staged_entry_manifest_digest != expected_staged_entry_manifest_digest {
+            return Err(RecoveryContractError(
+                "staged archive parser manifest differs from the approved staged manifest",
+            ));
+        }
+        Ok(Self {
+            record: ArchiveStagingReceiptDigestRecord {
+                staging_receipt_id,
+                archive_id: observation.archive_id,
+                handoff_lineage_digest: observation.handoff_lineage_digest,
+                frozen_provider_boundary_digest: observation.frozen_provider_boundary_digest,
+                staged_archive_sha256: observation.staged_archive_sha256.0,
+                file_synced: TrueLiteral,
+                parent_directory_synced: TrueLiteral,
+                durable_write_receipt_id: observation.durable_write_receipt_id,
+            },
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ArchiveStagingReceiptDigestRecord {
@@ -7414,8 +8609,26 @@ pub(crate) struct ArchiveStagingReceipt {
 }
 
 impl ArchiveStagingReceipt {
+    pub(crate) fn new(
+        authority: ArchiveStagingReceiptAuthority,
+    ) -> Result<Self, RecoveryContractError> {
+        let record = authority.record;
+        let receipt_digest = contract_digest(&record, "archive staging receipt digest failed")?;
+        Ok(Self {
+            staging_receipt_id: record.staging_receipt_id,
+            archive_id: record.archive_id,
+            handoff_lineage_digest: record.handoff_lineage_digest,
+            frozen_provider_boundary_digest: record.frozen_provider_boundary_digest,
+            staged_archive_sha256: record.staged_archive_sha256,
+            file_synced: record.file_synced,
+            parent_directory_synced: record.parent_directory_synced,
+            durable_write_receipt_id: record.durable_write_receipt_id,
+            receipt_digest,
+        })
+    }
+
     #[cfg(test)]
-    fn test_only(
+    pub(crate) fn test_only(
         staging_receipt_id: UnicaId,
         archive_id: UnicaId,
         handoff_lineage_digest: Sha256Digest,
@@ -7433,29 +8646,60 @@ impl ArchiveStagingReceipt {
             parent_directory_synced: TrueLiteral,
             durable_write_receipt_id,
         };
-        let receipt_digest = contract_digest(&record, "archive staging receipt digest failed")?;
-        Ok(Self {
-            staging_receipt_id: record.staging_receipt_id,
-            archive_id: record.archive_id,
-            handoff_lineage_digest: record.handoff_lineage_digest,
-            frozen_provider_boundary_digest: record.frozen_provider_boundary_digest,
-            staged_archive_sha256: record.staged_archive_sha256,
-            file_synced: record.file_synced,
-            parent_directory_synced: record.parent_directory_synced,
-            durable_write_receipt_id: record.durable_write_receipt_id,
-            receipt_digest,
+        Self::new(ArchiveStagingReceiptAuthority {
+            record: ArchiveStagingReceiptDigestRecord {
+                staging_receipt_id: record.staging_receipt_id,
+                archive_id: record.archive_id,
+                handoff_lineage_digest: record.handoff_lineage_digest,
+                frozen_provider_boundary_digest: record.frozen_provider_boundary_digest,
+                staged_archive_sha256: record.staged_archive_sha256,
+                file_synced: record.file_synced,
+                parent_directory_synced: record.parent_directory_synced,
+                durable_write_receipt_id: record.durable_write_receipt_id,
+            },
         })
+    }
+
+    pub(crate) const fn staging_receipt_id(&self) -> &UnicaId {
+        &self.staging_receipt_id
+    }
+
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        &self.archive_id
+    }
+
+    pub(crate) const fn handoff_lineage_digest(&self) -> &Sha256Digest {
+        &self.handoff_lineage_digest
+    }
+
+    pub(crate) const fn frozen_provider_boundary_digest(&self) -> &Sha256Digest {
+        &self.frozen_provider_boundary_digest
+    }
+
+    pub(crate) const fn staged_archive_sha256(&self) -> &Sha256Digest {
+        &self.staged_archive_sha256
+    }
+
+    pub(crate) const fn durable_write_receipt_id(&self) -> &UnicaId {
+        &self.durable_write_receipt_id
+    }
+
+    pub(crate) const fn receipt_digest(&self) -> &Sha256Digest {
+        &self.receipt_digest
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::branched_development::contracts::artifacts::OwnedTargetRole;
     use crate::domain::branched_development::contracts::instructions::{
         ManualWorkingInfobaseCleanupReason, SupportCorrectiveInstructionAuthority,
         SupportRecoveryTransition,
     };
-    use crate::domain::branched_development::contracts::prearm_recovery::PreArmCancellationEffectReceiptAuthority;
+    use crate::domain::branched_development::contracts::prearm_recovery::{
+        archive_outcome_fixture_test_only, PreArmCancellationEffectReceiptAuthority,
+    };
     use crate::domain::branched_development::contracts::repository::{
         EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceRegistry,
         RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
@@ -7479,7 +8723,7 @@ mod tests {
         SupportRecoveryFinalizationPlanAuthority, SupportRecoveryLockTarget,
         SupportRecoveryLockTargets,
     };
-    use crate::domain::branched_development::SupportLayerId;
+    use crate::domain::branched_development::{ProjectId, SupportLayerId};
     use schemars::{schema_for, JsonSchema};
     use serde::de::DeserializeOwned;
     use serde::Serialize;
@@ -7497,6 +8741,33 @@ mod tests {
 
     fn id(value: &str) -> UnicaId {
         UnicaId::parse(value).unwrap()
+    }
+
+    fn typed_cleanup_targets() -> Vec<OwnedTargetLocator> {
+        let first_project = ProjectId::parse("10000000-0000-4000-8000-000000000000").unwrap();
+        let second_project = ProjectId::parse("20000000-0000-4000-8000-000000000000").unwrap();
+        let late_instance = id("f0000000-0000-4000-8000-000000000000");
+        let early_instance = id("00000000-0000-4000-8000-000000000000");
+        let mut targets = [
+            OwnedTargetRole::InstanceRoot,
+            OwnedTargetRole::TaskInfobase,
+            OwnedTargetRole::TaskWorkspace,
+            OwnedTargetRole::Probe,
+            OwnedTargetRole::Sandbox,
+            OwnedTargetRole::Artifact,
+            OwnedTargetRole::Quarantine,
+        ]
+        .into_iter()
+        .map(|role| OwnedTargetLocator::new(first_project.clone(), late_instance.clone(), role))
+        .collect::<Vec<_>>();
+        // Typed locator order is project first. Deliberately give the later
+        // project an earlier instance so JSON object-key order cannot pass.
+        targets.push(OwnedTargetLocator::new(
+            second_project,
+            early_instance,
+            OwnedTargetRole::InstanceRoot,
+        ));
+        targets
     }
 
     fn schema<T: JsonSchema>() -> Value {
@@ -7740,6 +9011,448 @@ mod tests {
             ),
             mode_observation,
         ]
+    }
+
+    struct ExactPreArmOutcomeFixture {
+        observation: PreArmCancellationEffectObservation,
+        plan: PreArmCancellationFinalizationPlan,
+        progress: PreArmCancellationFinalizationAttemptProgress,
+        actions: Vec<RecoveryAction>,
+        outcomes: Vec<RecoveryActionOutcome>,
+    }
+
+    fn matched_action_observations(action: &RecoveryAction) -> Vec<RecoveryObservation> {
+        action
+            .common()
+            .1
+            .as_slice()
+            .iter()
+            .map(|expected| {
+                RecoveryObservation::matched_test_only(
+                    expected.observation_kind,
+                    expected.subject.clone(),
+                    expected.expected_digest.clone(),
+                    expected.expected_digest.clone(),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn exact_prearm_outcome_fixture(include_selective_update: bool) -> ExactPreArmOutcomeFixture {
+        let reserved_identity = digest(A);
+        let mode_capability = CapabilityRowId::parse("reserved-original-lease.v1").unwrap();
+        let (root_observations, root_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                RecoverySubjectRef::configuration_root(),
+                digest(A),
+            )])
+            .unwrap();
+        let (mode_acquire_observations, mode_acquire_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ReservedOriginalLease,
+                RecoverySubjectRef::reserved_original_infobase(reserved_identity.clone()),
+                digest(A),
+            )])
+            .unwrap();
+        let (update_observations, update_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ObjectFingerprint,
+                RecoverySubjectRef::configuration_root(),
+                digest(B),
+            )])
+            .unwrap();
+        let (persist_observations, persist_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::SupportActionAuthorization,
+                RecoverySubjectRef::registered(id(ID_1)),
+                digest(B),
+            )])
+            .unwrap();
+        let (mode_release_observations, mode_release_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ReservedOriginalLease,
+                RecoverySubjectRef::reserved_original_infobase(reserved_identity.clone()),
+                digest(B),
+            )])
+            .unwrap();
+        let (root_release_observations, root_release_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                RecoverySubjectRef::configuration_root(),
+                digest(B),
+            )])
+            .unwrap();
+        let (finish_observations, finish_postcondition) = expected_postcondition(vec![
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::SupportGraph,
+                RecoverySubjectRef::configuration_root(),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::SupportActionAuthorization,
+                RecoverySubjectRef::registered(id(ID_1)),
+                digest(B),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ObjectFingerprint,
+                RecoverySubjectRef::registered(id(ID_2)),
+                digest(B),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                RecoverySubjectRef::configuration_root(),
+                digest(B),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ReservedOriginalLease,
+                RecoverySubjectRef::reserved_original_infobase(reserved_identity.clone()),
+                digest(B),
+            ),
+        ])
+        .unwrap();
+
+        let mut postconditions = vec![
+            (
+                PreArmCancellationEffectKind::RootGuardAcquire,
+                root_postcondition.clone(),
+            ),
+            (
+                PreArmCancellationEffectKind::ModeLeaseAcquire,
+                mode_acquire_postcondition.clone(),
+            ),
+        ];
+        if include_selective_update {
+            postconditions.push((
+                PreArmCancellationEffectKind::SelectiveOriginalUpdate,
+                update_postcondition.clone(),
+            ));
+        }
+        postconditions.extend([
+            (
+                PreArmCancellationEffectKind::AuthorizationCancellation,
+                persist_postcondition.clone(),
+            ),
+            (
+                PreArmCancellationEffectKind::ModeLeaseRelease,
+                mode_release_postcondition.clone(),
+            ),
+            (
+                PreArmCancellationEffectKind::RootGuardRelease,
+                root_release_postcondition.clone(),
+            ),
+            (
+                PreArmCancellationEffectKind::RecoveryFinalization,
+                finish_postcondition.clone(),
+            ),
+        ]);
+        let (observation, plan, evidence) =
+            archive_outcome_fixture_test_only(include_selective_update, postconditions);
+        let receipt_plan = plan.receipt_plan();
+
+        let root = runtime_action(RecoveryActionDigestRecordKind::AcquirePreArmRootGuard(
+            AcquirePreArmRootGuardActionDigestRecord {
+                action_kind: AcquirePreArmRootGuardActionKind::Value,
+                action_id: id(ID_1),
+                finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                support_action_id: plan.support_action_id().clone(),
+                receipt_ref: receipt_plan.root_guard_acquisition_receipt().clone(),
+                expected_observations: root_observations,
+                expected_postcondition_digest: root_postcondition,
+            },
+        ))
+        .unwrap();
+        let mode_acquire = runtime_action(RecoveryActionDigestRecordKind::AcquirePreArmModeLease(
+            AcquirePreArmModeLeaseActionDigestRecord(
+                AcquirePreArmModeLeaseActionDigestRecordKind::ReservedOriginal(
+                    AcquirePreArmReservedOriginalModeLeaseActionDigestRecord {
+                        action_kind: AcquirePreArmModeLeaseActionKind::Value,
+                        action_id: id(ID_2),
+                        finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                        finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                        support_action_id: plan.support_action_id().clone(),
+                        manual_target_mode: ReservedOriginalModeLiteral::Value,
+                        reserved_original_identity_digest: reserved_identity.clone(),
+                        exclusive_lease_capability_id: mode_capability.clone(),
+                        receipt_ref: receipt_plan.mode_lease_acquisition_receipt().clone(),
+                        expected_observations: mode_acquire_observations,
+                        expected_postcondition_digest: mode_acquire_postcondition,
+                    },
+                ),
+            ),
+        ))
+        .unwrap();
+        let recheck_expected = vec![
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::SupportGraph,
+                RecoverySubjectRef::configuration_root(),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::SupportActionAuthorization,
+                RecoverySubjectRef::registered(plan.support_action_id().clone()),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ObjectFingerprint,
+                RecoverySubjectRef::registered(id(ID_2)),
+                digest(B),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                RecoverySubjectRef::configuration_root(),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ReservedOriginalLease,
+                RecoverySubjectRef::reserved_original_infobase(reserved_identity.clone()),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::FinalizationPolicy,
+                RecoverySubjectRef::registered(plan.finalization_attempt_id().clone()),
+                plan.recheck_policy().policy_digest().clone(),
+            ),
+        ];
+        let (recheck_observations, recheck_postcondition) =
+            expected_postcondition(recheck_expected).unwrap();
+        let recheck = runtime_action(
+            RecoveryActionDigestRecordKind::RecheckPreArmCancellationFinalization(
+                RecheckPreArmCancellationFinalizationActionDigestRecord {
+                    action_kind: RecheckPreArmCancellationFinalizationActionKind::Value,
+                    action_id: id("33333333-3333-4333-8333-333333333333"),
+                    finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                    finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                    effect_observation_digest: plan.effect_observation_digest().clone(),
+                    recheck_policy_digest: plan.recheck_policy().policy_digest().clone(),
+                    expected_observations: recheck_observations,
+                    expected_postcondition_digest: recheck_postcondition,
+                },
+            ),
+        )
+        .unwrap();
+
+        let mut actions = vec![root, mode_acquire, recheck];
+        if include_selective_update {
+            actions.push(
+                runtime_action(
+                    RecoveryActionDigestRecordKind::ApplyPreArmCancellationSelectiveUpdate(
+                        ApplyPreArmCancellationSelectiveUpdateActionDigestRecord {
+                            action_kind: ApplyPreArmCancellationSelectiveUpdateActionKind::Value,
+                            action_id: id("44444444-4444-4444-8444-444444444444"),
+                            finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                            finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                            selective_update_plan_digest: plan
+                                .selective_update_plan_digest()
+                                .clone(),
+                            expected_target_revision_map_digest: plan
+                                .expected_target_revision_map_digest()
+                                .clone(),
+                            receipt_ref: receipt_plan
+                                .selective_update_effect_receipt()
+                                .unwrap()
+                                .clone(),
+                            expected_observations: update_observations,
+                            expected_postcondition_digest: update_postcondition,
+                        },
+                    ),
+                )
+                .unwrap(),
+            );
+        }
+        let persist_action_id = if include_selective_update {
+            "55555555-5555-4555-8555-555555555555"
+        } else {
+            "44444444-4444-4444-8444-444444444444"
+        };
+        actions.push(
+            runtime_action(
+                RecoveryActionDigestRecordKind::PersistPreArmSupportCancellation(
+                    PersistPreArmSupportCancellationActionDigestRecord {
+                        action_kind: PersistPreArmSupportCancellationActionKind::Value,
+                        action_id: id(persist_action_id),
+                        finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                        support_action_id: plan.support_action_id().clone(),
+                        expected_support_action_digest: plan
+                            .expected_support_action_digest()
+                            .clone(),
+                        approved_cancellation_digest: plan.approved_cancellation_digest().clone(),
+                        effect_observation_digest: plan.effect_observation_digest().clone(),
+                        finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                        receipt_ref: receipt_plan.cancellation_persistence_receipt().clone(),
+                        expected_observations: persist_observations,
+                        expected_postcondition_digest: persist_postcondition,
+                    },
+                ),
+            )
+            .unwrap(),
+        );
+        let mode_release_action_id = if include_selective_update {
+            "66666666-6666-4666-8666-666666666666"
+        } else {
+            "55555555-5555-4555-8555-555555555555"
+        };
+        actions.push(
+            runtime_action(RecoveryActionDigestRecordKind::ReleasePreArmModeLease(
+                ReleasePreArmModeLeaseActionDigestRecord(
+                    ReleasePreArmModeLeaseActionDigestRecordKind::ReservedOriginal(
+                        ReleasePreArmReservedOriginalModeLeaseActionDigestRecord {
+                            action_kind: ReleasePreArmModeLeaseActionKind::Value,
+                            action_id: id(mode_release_action_id),
+                            finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                            finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                            manual_target_mode: ReservedOriginalModeLiteral::Value,
+                            reserved_original_identity_digest: reserved_identity,
+                            exclusive_lease_capability_id: mode_capability,
+                            receipt_ref: receipt_plan.mode_lease_release_receipt().clone(),
+                            expected_observations: mode_release_observations,
+                            expected_postcondition_digest: mode_release_postcondition,
+                        },
+                    ),
+                ),
+            ))
+            .unwrap(),
+        );
+        let root_release_action_id = if include_selective_update {
+            "77777777-7777-4777-8777-777777777777"
+        } else {
+            "66666666-6666-4666-8666-666666666666"
+        };
+        actions.push(
+            runtime_action(RecoveryActionDigestRecordKind::ReleasePreArmRootGuard(
+                ReleasePreArmRootGuardActionDigestRecord {
+                    action_kind: ReleasePreArmRootGuardActionKind::Value,
+                    action_id: id(root_release_action_id),
+                    finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                    finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                    support_action_id: plan.support_action_id().clone(),
+                    receipt_ref: receipt_plan.root_guard_release_receipt().clone(),
+                    expected_observations: root_release_observations,
+                    expected_postcondition_digest: root_release_postcondition,
+                },
+            ))
+            .unwrap(),
+        );
+        let finish_action_id = if include_selective_update {
+            "88888888-8888-4888-8888-888888888888"
+        } else {
+            "77777777-7777-4777-8777-777777777777"
+        };
+        actions.push(
+            runtime_action(
+                RecoveryActionDigestRecordKind::FinishPreArmCancellationRecovery(
+                    FinishPreArmCancellationRecoveryActionDigestRecord {
+                        action_kind: FinishPreArmCancellationRecoveryActionKind::Value,
+                        action_id: id(finish_action_id),
+                        finalization_attempt_id: plan.finalization_attempt_id().clone(),
+                        support_action_id: plan.support_action_id().clone(),
+                        expected_support_action_digest: plan
+                            .expected_support_action_digest()
+                            .clone(),
+                        approved_cancellation_digest: plan.approved_cancellation_digest().clone(),
+                        effect_observation_digest: plan.effect_observation_digest().clone(),
+                        finalization_plan_digest: plan.finalization_plan_digest().clone(),
+                        receipt_plan_digest: plan.receipt_plan().receipt_plan_digest().clone(),
+                        expected_result_phase: plan.planned_result_phase(),
+                        receipt_ref: receipt_plan.recovery_finalization_receipt().clone(),
+                        expected_observations: finish_observations,
+                        expected_postcondition_digest: finish_postcondition,
+                    },
+                ),
+            )
+            .unwrap(),
+        );
+
+        validate_prearm_finalize_action_grammar(
+            &observation,
+            &plan,
+            &PreArmCancellationFinalizationAttemptProgress::not_started_test_only(
+                plan.finalization_attempt_id().clone(),
+            ),
+            &actions,
+        )
+        .unwrap();
+
+        let mut outcomes = Vec::with_capacity(actions.len());
+        let mut receipts = Vec::with_capacity(actions.len() - 1);
+        for action in &actions {
+            let matched = matched_action_observations(action);
+            if matches!(
+                action.0,
+                RecoveryActionKindWire::RecheckPreArmCancellationFinalization(_)
+            ) {
+                outcomes.push(
+                    RecoveryActionOutcome::already_satisfied_test_only(action, matched).unwrap(),
+                );
+                continue;
+            }
+            let (receipt_ref, effect_kind) = action.prearm_receipt_binding().unwrap();
+            let terminal_observation_digests = matched
+                .iter()
+                .map(|value| value.observation_digest().clone())
+                .collect();
+            let receipt = PreArmCancellationEffectReceipt::new(
+                PreArmCancellationEffectReceiptAuthority::test_only(
+                    receipt_ref.receipt_id().clone(),
+                    effect_kind,
+                    receipt_ref.effect_intent_digest().clone(),
+                    action.action_id().clone(),
+                    action.action_digest().clone(),
+                    terminal_observation_digests,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            outcomes.push(
+                RecoveryActionOutcome::performed_from_prearm_receipt_test_only(
+                    action,
+                    matched,
+                    receipt.clone(),
+                )
+                .unwrap(),
+            );
+            receipts.push(receipt);
+        }
+        let progress = PreArmCancellationFinalizationAttemptProgress::completed_test_only(
+            plan.finalization_attempt_id().clone(),
+            receipts,
+            evidence,
+        )
+        .unwrap();
+        ExactPreArmOutcomeFixture {
+            observation,
+            plan,
+            progress,
+            actions,
+            outcomes,
+        }
+    }
+
+    pub(super) fn exact_prearm_archive_fixture_for_task(
+    ) -> PreArmArchiveReceiptOutcomeWitnessTestFixture {
+        let fixture = exact_prearm_outcome_fixture(false);
+        let recheck_evidence = fixture
+            .progress
+            .completed_recheck_evidence()
+            .unwrap()
+            .clone();
+        let witness = ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+            &fixture.observation,
+            &fixture.plan,
+            &fixture.progress,
+            &fixture.actions,
+            &fixture.outcomes,
+        )
+        .unwrap();
+        PreArmArchiveReceiptOutcomeWitnessTestFixture {
+            witness,
+            observation: fixture.observation,
+            plan: fixture.plan,
+            recheck_evidence,
+            progress: fixture.progress,
+        }
     }
 
     fn observe_prearm_outcome_action(
@@ -8297,6 +10010,318 @@ mod tests {
     assert_not_deserialize_owned!(HandoffRetentionReleaseReceipt);
     assert_not_deserialize_owned!(HandoffRetentionReleaseSetDigestRecord);
     assert_not_deserialize_owned!(RecoveryActionPlan);
+    assert_not_deserialize_owned!(FinishCleanupAbsenceObservation);
+    assert_not_deserialize_owned!(FinishCleanupAbsenceObservations);
+    assert_not_deserialize_owned!(StagedArchiveSha256);
+    assert_not_deserialize_owned!(PublishedArchiveSha256);
+    assert_not_deserialize_owned!(ImmutableArchiveByteGeneration);
+    assert_not_deserialize_owned!(ArchiveStagingWriterLineage);
+    assert_not_deserialize_owned!(ArchiveStagingObservation);
+    assert_not_deserialize_owned!(ArchivePublicationParsedDigests);
+    assert_not_deserialize_owned!(ArchivePublicationByteObservation);
+    assert_not_deserialize_owned!(ArchiveStagingReceiptAuthority);
+    assert_not_deserialize_owned!(ValidatedPreArmArchiveReceiptOutcomeWitness);
+
+    #[test]
+    fn prearm_archive_outcome_witness_accepts_exact_empty_and_perform_catalogs() {
+        for include_selective_update in [false, true] {
+            let fixture = exact_prearm_outcome_fixture(include_selective_update);
+            let witness = ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                &fixture.actions,
+                &fixture.outcomes,
+            )
+            .unwrap();
+            assert!(witness.binds_archive_lineage(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+            ));
+        }
+    }
+
+    #[test]
+    fn prearm_archive_outcome_witness_rejects_order_class_and_legacy_producers() {
+        let fixture = exact_prearm_outcome_fixture(false);
+
+        let mut reordered = fixture.outcomes.clone();
+        reordered.swap(0, 1);
+        assert!(
+            ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                &fixture.actions,
+                &reordered,
+            )
+            .is_err()
+        );
+
+        let mut missing = fixture.outcomes.clone();
+        missing.pop();
+        assert!(
+            ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                &fixture.actions,
+                &missing,
+            )
+            .is_err()
+        );
+
+        let mut wrong_recheck_class = fixture.outcomes.clone();
+        let recheck_id = fixture.actions[2].action_id().clone();
+        let recheck_digest = fixture.actions[2].action_digest().clone();
+        let RecoveryActionOutcomeKind::Performed(mut performed) = fixture.outcomes[0].0.clone()
+        else {
+            panic!("fixture root outcome must be performed");
+        };
+        performed.action_id = recheck_id;
+        performed.action_digest = recheck_digest;
+        wrong_recheck_class[2] =
+            RecoveryActionOutcome(RecoveryActionOutcomeKind::Performed(performed));
+        assert!(
+            ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                &fixture.actions,
+                &wrong_recheck_class,
+            )
+            .is_err()
+        );
+
+        let legacy_receipts = fixture
+            .progress
+            .completed_realized_receipts()
+            .unwrap()
+            .iter()
+            .map(|receipt| {
+                PreArmCancellationEffectReceipt::new(
+                    PreArmCancellationEffectReceiptAuthority::test_only(
+                        receipt.receipt_id().clone(),
+                        receipt.effect_kind(),
+                        receipt.effect_intent_digest().clone(),
+                        id("99999999-9999-4999-8999-999999999999"),
+                        digest(B),
+                        vec![digest(A)],
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let legacy_progress = PreArmCancellationFinalizationAttemptProgress::completed_test_only(
+            fixture.plan.finalization_attempt_id().clone(),
+            legacy_receipts,
+            fixture
+                .progress
+                .completed_recheck_evidence()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert!(
+            ValidatedPreArmArchiveReceiptOutcomeWitness::from_completed_outcomes(
+                &fixture.observation,
+                &fixture.plan,
+                &legacy_progress,
+                &fixture.actions,
+                &fixture.outcomes,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prearm_exact_action_grammar_rejects_kind_ref_payload_and_mode_splices() {
+        let fixture = exact_prearm_outcome_fixture(false);
+        let rejects = |actions: &[RecoveryAction]| {
+            validate_prearm_finalize_action_grammar(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                actions,
+            )
+            .is_err()
+        };
+
+        // Same action IDs and length, but an optional update kind substituted
+        // for the required cancellation persistence kind.
+        let mut wrong_kind_mask = fixture.actions.clone();
+        let (apply_observations, apply_postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ObjectFingerprint,
+                RecoverySubjectRef::configuration_root(),
+                digest(A),
+            )])
+            .unwrap();
+        wrong_kind_mask[3] = runtime_action(
+            RecoveryActionDigestRecordKind::ApplyPreArmCancellationSelectiveUpdate(
+                ApplyPreArmCancellationSelectiveUpdateActionDigestRecord {
+                    action_kind: ApplyPreArmCancellationSelectiveUpdateActionKind::Value,
+                    action_id: fixture.actions[3].action_id().clone(),
+                    finalization_attempt_id: fixture.plan.finalization_attempt_id().clone(),
+                    finalization_plan_digest: fixture.plan.finalization_plan_digest().clone(),
+                    selective_update_plan_digest: fixture
+                        .plan
+                        .selective_update_plan_digest()
+                        .clone(),
+                    expected_target_revision_map_digest: fixture
+                        .plan
+                        .expected_target_revision_map_digest()
+                        .clone(),
+                    receipt_ref: PreArmCancellationReceiptRef::finalization_plan(
+                        id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                        PreArmCancellationEffectKind::SelectiveOriginalUpdate,
+                        digest(A),
+                    ),
+                    expected_observations: apply_observations,
+                    expected_postcondition_digest: apply_postcondition,
+                },
+            ),
+        )
+        .unwrap();
+        assert!(rejects(&wrong_kind_mask));
+
+        let mut foreign_same_kind_ref = fixture.actions.clone();
+        let RecoveryActionKindWire::AcquirePreArmRootGuard(root) = &mut foreign_same_kind_ref[0].0
+        else {
+            panic!("fixture must acquire root first");
+        };
+        root.receipt_ref = PreArmCancellationReceiptRef::finalization_plan(
+            id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            PreArmCancellationEffectKind::RootGuardAcquire,
+            root.receipt_ref.effect_intent_digest().clone(),
+        );
+        assert!(rejects(&foreign_same_kind_ref));
+
+        let mut foreign_support = fixture.actions.clone();
+        let RecoveryActionKindWire::AcquirePreArmRootGuard(root) = &mut foreign_support[0].0 else {
+            panic!("fixture must acquire root first");
+        };
+        root.support_action_id = id(ID_2);
+        assert!(rejects(&foreign_support));
+
+        let mut foreign_cancellation = fixture.actions.clone();
+        let RecoveryActionKindWire::PersistPreArmSupportCancellation(persist) =
+            &mut foreign_cancellation[3].0
+        else {
+            panic!("empty-plan fixture must persist at index 3");
+        };
+        persist.approved_cancellation_digest = digest(A);
+        assert!(rejects(&foreign_cancellation));
+
+        let mut foreign_observation = fixture.actions.clone();
+        let RecoveryActionKindWire::PersistPreArmSupportCancellation(persist) =
+            &mut foreign_observation[3].0
+        else {
+            panic!("empty-plan fixture must persist at index 3");
+        };
+        persist.effect_observation_digest = digest(A);
+        assert!(rejects(&foreign_observation));
+
+        let mut foreign_support_digest = fixture.actions.clone();
+        let RecoveryActionKindWire::PersistPreArmSupportCancellation(persist) =
+            &mut foreign_support_digest[3].0
+        else {
+            panic!("empty-plan fixture must persist at index 3");
+        };
+        persist.expected_support_action_digest = digest(B);
+        assert!(rejects(&foreign_support_digest));
+
+        let mut substituted_postcondition = fixture.actions.clone();
+        let RecoveryActionKindWire::AcquirePreArmRootGuard(root) =
+            &mut substituted_postcondition[0].0
+        else {
+            panic!("fixture must acquire root first");
+        };
+        let (observations, postcondition) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                RecoverySubjectRef::configuration_root(),
+                digest(B),
+            )])
+            .unwrap();
+        root.expected_observations = observations;
+        root.expected_postcondition_digest = postcondition;
+        assert!(rejects(&substituted_postcondition));
+
+        for mutate_capability in [false, true] {
+            let mut foreign_mode_window = fixture.actions.clone();
+            let release = foreign_mode_window
+                .iter_mut()
+                .find_map(|action| match &mut action.0 {
+                    RecoveryActionKindWire::ReleasePreArmModeLease(value) => Some(value),
+                    _ => None,
+                })
+                .unwrap();
+            let ReleasePreArmModeLeaseActionKindWire::ReservedOriginal(release) = &mut release.0
+            else {
+                panic!("fixture must use reserved-original mode");
+            };
+            if mutate_capability {
+                release.exclusive_lease_capability_id =
+                    CapabilityRowId::parse("foreign-reserved-lease.v1").unwrap();
+            } else {
+                release.reserved_original_identity_digest = digest(B);
+            }
+            assert!(rejects(&foreign_mode_window));
+        }
+
+        let mut foreign_receipt_plan = fixture.actions.clone();
+        let RecoveryActionKindWire::FinishPreArmCancellationRecovery(finish) =
+            &mut foreign_receipt_plan.last_mut().unwrap().0
+        else {
+            panic!("fixture must finish last");
+        };
+        finish.receipt_plan_digest = digest(A);
+        assert!(rejects(&foreign_receipt_plan));
+
+        let mut foreign_phase = fixture.actions.clone();
+        let RecoveryActionKindWire::FinishPreArmCancellationRecovery(finish) =
+            &mut foreign_phase.last_mut().unwrap().0
+        else {
+            panic!("fixture must finish last");
+        };
+        finish.expected_result_phase = TaskPhase::RecoveryRequired;
+        assert!(rejects(&foreign_phase));
+    }
+
+    #[test]
+    fn prearm_perform_action_rejects_foreign_selective_plan_and_revision_map() {
+        let fixture = exact_prearm_outcome_fixture(true);
+        let rejects = |actions: &[RecoveryAction]| {
+            validate_prearm_finalize_action_grammar(
+                &fixture.observation,
+                &fixture.plan,
+                &fixture.progress,
+                actions,
+            )
+            .is_err()
+        };
+
+        let mut foreign_plan = fixture.actions.clone();
+        let RecoveryActionKindWire::ApplyPreArmCancellationSelectiveUpdate(apply) =
+            &mut foreign_plan[3].0
+        else {
+            panic!("perform fixture must apply at index 3");
+        };
+        apply.selective_update_plan_digest = digest(A);
+        assert!(rejects(&foreign_plan));
+
+        let mut foreign_map = fixture.actions.clone();
+        let RecoveryActionKindWire::ApplyPreArmCancellationSelectiveUpdate(apply) =
+            &mut foreign_map[3].0
+        else {
+            panic!("perform fixture must apply at index 3");
+        };
+        apply.expected_target_revision_map_digest = digest(B);
+        assert!(rejects(&foreign_map));
+    }
 
     #[test]
     fn recovery_subject_contract_exists() {
@@ -9722,6 +11747,218 @@ mod tests {
         assert!(!schema_accepts::<ArchiveStagingReceipt>(&substitution));
     }
 
+    struct Task12StagingParser {
+        expected_generation_id: UnicaId,
+        expected_bytes: Vec<u8>,
+        staged_entry_manifest_digest: Sha256Digest,
+    }
+
+    impl archive_parser_sealed::Sealed for Task12StagingParser {}
+
+    impl ArchiveStagingStrictParser for Task12StagingParser {
+        fn parse_staged_generation(
+            &self,
+            generation_id: &UnicaId,
+            bytes: &[u8],
+        ) -> Result<Sha256Digest, RecoveryContractError> {
+            if generation_id != &self.expected_generation_id || bytes != self.expected_bytes {
+                return Err(RecoveryContractError(
+                    "strict staging parser received another byte generation",
+                ));
+            }
+            Ok(self.staged_entry_manifest_digest.clone())
+        }
+    }
+
+    #[test]
+    fn task12_archive_staging_hash_parse_and_fsync_consume_one_byte_generation() {
+        use sha2::{Digest, Sha256};
+
+        let generation_id = id("33333333-3333-4333-8333-333333333333");
+        let archive_id = id(ID_2);
+        let bytes = b"immutable staged archive bytes".to_vec();
+        let expected_sha256 = Sha256Digest::parse(&format!("{:x}", Sha256::digest(&bytes)))
+            .expect("SHA-256 output is canonical");
+        let expected_manifest_digest = digest(B);
+        let generation = ImmutableArchiveByteGeneration::seal_staged_from_writer_test_only(
+            ArchiveStagingWriterLineage::test_only(
+                CapabilityRowId::parse("archive-container.v1").unwrap(),
+                generation_id.clone(),
+                id("44444444-4444-4444-8444-444444444444"),
+                archive_id.clone(),
+                digest(A),
+                digest(B),
+                id("55555555-5555-4555-8555-555555555555"),
+            ),
+            bytes.clone(),
+        )
+        .unwrap();
+        let observation = generation
+            .observe_staging(&Task12StagingParser {
+                expected_generation_id: generation_id,
+                expected_bytes: bytes,
+                staged_entry_manifest_digest: expected_manifest_digest.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            observation.staged_archive_sha256().as_digest(),
+            &expected_sha256
+        );
+        assert_eq!(
+            observation.staged_entry_manifest_digest(),
+            &expected_manifest_digest
+        );
+        assert_eq!(observation.archive_id(), &archive_id);
+
+        let authority = ArchiveStagingReceiptAuthority::from_observation(
+            id(ID_1),
+            expected_manifest_digest,
+            observation,
+        )
+        .unwrap();
+        let receipt = ArchiveStagingReceipt::new(authority).unwrap();
+        assert_eq!(receipt.archive_id(), &archive_id);
+        assert_eq!(receipt.staged_archive_sha256(), &expected_sha256);
+        assert_eq!(receipt.handoff_lineage_digest(), &digest(A));
+        assert_eq!(receipt.frozen_provider_boundary_digest(), &digest(B));
+    }
+
+    #[test]
+    fn task12_archive_staging_rejects_a_manifest_from_another_generation() {
+        let generation = ImmutableArchiveByteGeneration::seal_staged_from_writer_test_only(
+            ArchiveStagingWriterLineage::test_only(
+                CapabilityRowId::parse("archive-container.v1").unwrap(),
+                id("33333333-3333-4333-8333-333333333333"),
+                id("44444444-4444-4444-8444-444444444444"),
+                id(ID_2),
+                digest(A),
+                digest(B),
+                id("55555555-5555-4555-8555-555555555555"),
+            ),
+            b"generation-a".to_vec(),
+        )
+        .unwrap();
+
+        assert!(generation
+            .observe_staging(&Task12StagingParser {
+                expected_generation_id: id("66666666-6666-4666-8666-666666666666"),
+                expected_bytes: b"generation-b".to_vec(),
+                staged_entry_manifest_digest: digest(A),
+            })
+            .is_err());
+    }
+
+    struct Task12PublicationParser {
+        expected_generation_id: UnicaId,
+        expected_bytes: Vec<u8>,
+        parsed_entry_set_digest: Sha256Digest,
+        embedded_manifest_digest: Sha256Digest,
+    }
+
+    impl archive_parser_sealed::Sealed for Task12PublicationParser {}
+
+    impl ArchivePublicationStrictParser for Task12PublicationParser {
+        fn parse_published_generation(
+            &self,
+            generation_id: &UnicaId,
+            bytes: &[u8],
+        ) -> Result<ArchivePublicationParsedDigests, RecoveryContractError> {
+            if generation_id != &self.expected_generation_id || bytes != self.expected_bytes {
+                return Err(RecoveryContractError(
+                    "strict publication parser received another byte generation",
+                ));
+            }
+            Ok(ArchivePublicationParsedDigests::new(
+                self.parsed_entry_set_digest.clone(),
+                self.embedded_manifest_digest.clone(),
+            ))
+        }
+    }
+
+    #[test]
+    fn task12_archive_publication_hash_and_parse_consume_one_byte_generation() {
+        use sha2::{Digest, Sha256};
+
+        let generation_id = id("33333333-3333-4333-8333-333333333333");
+        let bytes = b"immutable final archive bytes".to_vec();
+        let expected_sha256 = Sha256Digest::parse(&format!("{:x}", Sha256::digest(&bytes)))
+            .expect("SHA-256 output is canonical");
+        let manifest_digest = digest(B);
+        let generation = ImmutableArchiveByteGeneration::seal_published_from_writer_test_only(
+            CapabilityRowId::parse("archive-container.v1").unwrap(),
+            generation_id.clone(),
+            id("44444444-4444-4444-8444-444444444444"),
+            id(ID_2),
+            manifest_digest.clone(),
+            bytes.clone(),
+            id("55555555-5555-4555-8555-555555555555"),
+        )
+        .unwrap();
+        let observation = generation
+            .observe_publication(&Task12PublicationParser {
+                expected_generation_id: generation_id,
+                expected_bytes: bytes,
+                parsed_entry_set_digest: digest(A),
+                embedded_manifest_digest: manifest_digest.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            observation.final_archive_sha256().as_digest(),
+            &expected_sha256
+        );
+        assert_eq!(observation.publication_manifest_digest(), &manifest_digest);
+        assert_eq!(observation.parsed_entry_set_digest(), &digest(A));
+        assert_eq!(observation.final_archive_size(), 29);
+    }
+
+    #[test]
+    fn task12_archive_publication_rejects_an_embedded_manifest_substitution() {
+        let generation = ImmutableArchiveByteGeneration::seal_published_from_writer_test_only(
+            CapabilityRowId::parse("archive-container.v1").unwrap(),
+            id("33333333-3333-4333-8333-333333333333"),
+            id("44444444-4444-4444-8444-444444444444"),
+            id(ID_2),
+            digest(A),
+            b"immutable final archive bytes".to_vec(),
+            id("55555555-5555-4555-8555-555555555555"),
+        )
+        .unwrap();
+
+        assert!(generation
+            .observe_publication(&Task12PublicationParser {
+                expected_generation_id: id("33333333-3333-4333-8333-333333333333"),
+                expected_bytes: b"immutable final archive bytes".to_vec(),
+                parsed_entry_set_digest: digest(B),
+                embedded_manifest_digest: digest(B),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn task12_archive_byte_generation_is_linear_and_hash_layers_are_distinct() {
+        fn accepts_staged(_: &StagedArchiveSha256) {}
+        fn accepts_published(_: &PublishedArchiveSha256) {}
+
+        let staged = StagedArchiveSha256::test_only(digest(A));
+        let published = PublishedArchiveSha256::test_only(digest(A));
+        accepts_staged(&staged);
+        accepts_published(&published);
+
+        const _: fn() = || {
+            trait AmbiguousIfClone<Marker> {
+                fn assert_not_clone() {}
+            }
+            struct ImplementsClone;
+            impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+            impl<T: Clone> AmbiguousIfClone<ImplementsClone> for T {}
+            let _ = <ImmutableArchiveByteGeneration as AmbiguousIfClone<_>>::assert_not_clone;
+            let _ = <PublishedArchiveSha256 as AmbiguousIfClone<_>>::assert_not_clone;
+            let _ = <ArchivePublicationByteObservation as AmbiguousIfClone<_>>::assert_not_clone;
+        };
+    }
+
     #[test]
     fn target_effect_action_matrix_has_no_cross_row_authority_value() {
         let verify = verify_task_action(
@@ -9827,7 +12064,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_grammar_binds_release_action_and_receipt_lineage_to_finish_archive() {
+    fn task12_archive_grammar_and_handoff_receipt_bind_release_lineage() {
         let archive_id = id(ID_1);
         let staging_receipt_id = id("22222222-2222-4222-8222-222222222222");
         let retention_lease_id = id("33333333-3333-4333-8333-333333333333");
@@ -10016,6 +12253,22 @@ mod tests {
             release_receipt_id.clone(),
         )
         .unwrap();
+        let projected_release =
+            HandoffRetentionReleaseReceipt::from_release_outcome(&release, &held_release_outcome)
+                .unwrap();
+        assert_eq!(projected_release.retention_lease_id(), &retention_lease_id);
+        assert_eq!(projected_release.release_action_id(), &release_action_id);
+        assert_eq!(projected_release.release_receipt_id(), &release_receipt_id);
+        assert_eq!(
+            projected_release.release_receipt_digest(),
+            &release_receipt_digest
+        );
+        let releases = HandoffRetentionReleaseReceipts::new(vec![projected_release]).unwrap();
+        assert_eq!(releases.as_slice().len(), 1);
+        assert_eq!(
+            releases.release_receipt_digests(),
+            vec![release_receipt_digest.clone()]
+        );
         let staging_outcome = RecoveryActionOutcome::already_satisfied_test_only(
             &observe_staging,
             vec![RecoveryObservation::matched_test_only(
@@ -10179,6 +12432,93 @@ mod tests {
             Vec::new(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn recovery_owned_targets_use_typed_locator_order_and_reject_reorder_or_duplicate() {
+        let project = ProjectId::parse("10000000-0000-4000-8000-000000000000").unwrap();
+        let instance = id("f0000000-0000-4000-8000-000000000000");
+        let root = OwnedTargetLocator::new(
+            project.clone(),
+            instance.clone(),
+            OwnedTargetRole::InstanceRoot,
+        );
+        let artifact = OwnedTargetLocator::new(project, instance, OwnedTargetRole::Artifact);
+
+        assert!(RecoveryOwnedTargets::new(vec![root.clone(), artifact.clone()]).is_ok());
+        assert!(RecoveryOwnedTargets::new(vec![artifact.clone(), root.clone()]).is_err());
+        assert!(RecoveryOwnedTargets::new(vec![root.clone(), root.clone()]).is_err());
+
+        let observations = vec![
+            RecoveryObservation::matched_test_only(
+                RecoveryObservationKind::OwnedTargetAbsence,
+                RecoverySubjectRef::owned_role(root),
+                digest(A),
+                digest(A),
+            )
+            .unwrap(),
+            RecoveryObservation::matched_test_only(
+                RecoveryObservationKind::OwnedTargetAbsence,
+                RecoverySubjectRef::owned_role(artifact),
+                digest(B),
+                digest(B),
+            )
+            .unwrap(),
+        ];
+        assert!(validated_plan_observations(observations.clone()).is_ok());
+        let mut reordered = observations.clone();
+        reordered.reverse();
+        assert!(validated_plan_observations(reordered).is_err());
+        assert!(validated_plan_observations(vec![
+            observations[0].clone(),
+            observations[0].clone(),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn all_typed_owned_targets_retain_order_through_cleanup_grammar_and_absences() {
+        let targets = typed_cleanup_targets();
+        let plan = RecoveryPlanStatus::cleanup_targets_fixture_test_only(
+            OperationId::parse("22222222-2222-4222-8222-222222222222").unwrap(),
+            id("33333333-3333-4333-8333-333333333333"),
+            targets.clone(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+
+        let binding = plan.cleanup_binding().unwrap();
+        assert_eq!(binding.owned_targets(), targets.as_slice());
+
+        let absences = plan
+            .cleanup_matching_absence_observations_test_only()
+            .unwrap();
+        assert_eq!(absences.as_slice().len(), targets.len());
+        assert!(absences
+            .as_slice()
+            .iter()
+            .zip(&targets)
+            .all(|(observation, target)| observation.owned_target() == target));
+
+        let RecoveryPlanStatusKind::Cleanup(cleanup) = &plan.0 else {
+            panic!("fixture must be cleanup");
+        };
+        let (finish, resumes) = cleanup.record.actions.as_slice().split_last().unwrap();
+        assert!(resumes
+            .iter()
+            .zip(&targets)
+            .all(|(action, target)| matches!(
+                &action.0,
+                RecoveryActionKindWire::ResumeOwnedTargetQuarantine(resume)
+                    if &resume.owned_target == target
+            )));
+        let RecoveryActionKindWire::FinishCleanup(finish) = &finish.0 else {
+            panic!("fixture must finish cleanup last");
+        };
+        assert_eq!(finish.owned_targets.0, targets);
+        assert!(schema_accepts::<RecoveryPlanStatus>(
+            &serde_json::to_value(plan).unwrap()
+        ));
     }
 
     #[test]
