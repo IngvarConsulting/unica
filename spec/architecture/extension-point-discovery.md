@@ -74,6 +74,13 @@ checks, never a false negative. `ContractViolation` also makes the output
 partial, adds a blocking provider diagnostic, and excludes its records from
 graph promotion.
 
+The BSL lexical parser stores method ownership as sparse declaration-to-end
+ranges rather than one entry per source line. It rejects a line immediately at
+64 KiB plus one byte, bounds signatures to 64 lines and 64 KiB, and reports
+those resource limits as `Bounded` while preserving prior fully analyzed file
+coverage. Lexical facts are retained in canonical order with at most
+`maxEvidence + 1` distinct matches before the final deterministic truncation.
+
 The graph keeps `contains` and `defines` structural. Only compatible typed
 platform callbacks, form-command bindings, event subscriptions, and call-graph
 facts promote evidence to runtime-flow edges. A lexical match can create a

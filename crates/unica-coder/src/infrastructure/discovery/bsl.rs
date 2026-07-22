@@ -60,34 +60,65 @@ fn collect_lexical_facts(
     crate::infrastructure::discovery::check_cancellation(query)?;
     let terms = query_terms(query)?;
     let mut analyzed_files = Vec::new();
-    let mut records = Vec::new();
+    let mut records = BTreeSet::new();
+    let max_evidence = usize::from(query.limits().max_evidence);
     for file in inventory
         .files
         .iter()
         .filter(|file| is_bsl_path(&file.relative_path))
     {
         crate::infrastructure::discovery::check_cancellation(query)?;
-        analyzed_files.push(file.analyzed_file());
-        let facts = lexical_facts_for_file(file, &terms, query);
+        let facts = lexical_facts_for_file(file, &terms, query, max_evidence);
         crate::infrastructure::discovery::check_cancellation(query)?;
-        records.extend(facts.map_err(|message| {
-            ProviderDiagnostic::material(
-                "bsl_malformed",
-                format!(
-                    "BSL source {} is malformed: {message}",
-                    file.relative_path.as_str()
-                ),
-            )
-        })?);
+        match facts {
+            Ok(facts) => {
+                analyzed_files.push(file.analyzed_file());
+                for fact in facts {
+                    insert_bounded_fact(&mut records, fact, max_evidence);
+                }
+            }
+            Err(BslParseError::Cancelled) => {
+                return Err(crate::infrastructure::discovery::cancellation_diagnostic())
+            }
+            Err(BslParseError::Bounded(BslParseBound::LineBytes { .. })) => {
+                let batch = build_lexical_batch(records, analyzed_files, max_evidence)?;
+                return Ok(BslCollection::Bounded {
+                    batch,
+                    diagnostic: ProviderDiagnostic::material(
+                        "bsl_source_line_bound",
+                        format!(
+                            "BSL source {} exceeded the per-line byte limit",
+                            file.relative_path.as_str()
+                        ),
+                    ),
+                });
+            }
+            Err(BslParseError::Bounded(BslParseBound::Signature { .. })) => {
+                let batch = build_lexical_batch(records, analyzed_files, max_evidence)?;
+                return Ok(BslCollection::Bounded {
+                    batch,
+                    diagnostic: ProviderDiagnostic::material(
+                        "bsl_source_signature_bound",
+                        format!(
+                            "BSL source {} exceeded the method-signature parse limit",
+                            file.relative_path.as_str()
+                        ),
+                    ),
+                });
+            }
+            Err(BslParseError::Malformed(message)) => {
+                return Err(ProviderDiagnostic::material(
+                    "bsl_malformed",
+                    format!(
+                        "BSL source {} is malformed: {message}",
+                        file.relative_path.as_str()
+                    ),
+                ))
+            }
+        }
     }
-    records.sort();
-    records.dedup();
-    let evidence_bounded = records.len() > usize::from(query.limits().max_evidence);
-    if evidence_bounded {
-        records.truncate(usize::from(query.limits().max_evidence));
-    }
-    let contributors = contributors_for_records(&records, &analyzed_files);
-    let batch = build_batch(records, analyzed_files, contributors)?;
+    let evidence_bounded = records.len() > max_evidence;
+    let batch = build_lexical_batch(records, analyzed_files, max_evidence)?;
     if evidence_bounded {
         Ok(BslCollection::Bounded {
             batch,
@@ -107,6 +138,24 @@ fn collect_lexical_facts(
     } else {
         Ok(BslCollection::Complete(batch))
     }
+}
+
+fn insert_bounded_fact(records: &mut BTreeSet<BslFact>, fact: BslFact, max_evidence: usize) {
+    records.insert(fact);
+    let retained = max_evidence.saturating_add(1);
+    if records.len() > retained {
+        let _discarded = records.pop_last();
+    }
+}
+
+fn build_lexical_batch(
+    records: BTreeSet<BslFact>,
+    analyzed_files: Vec<AnalyzedFile>,
+    max_evidence: usize,
+) -> Result<FactBatch<BslFact>, ProviderDiagnostic> {
+    let records = records.into_iter().take(max_evidence).collect::<Vec<_>>();
+    let contributors = contributors_for_records(&records, &analyzed_files);
+    build_batch(records, analyzed_files, contributors)
 }
 
 fn query_terms(query: &DiscoveryQuery<'_>) -> Result<Vec<String>, ProviderDiagnostic> {
@@ -143,6 +192,7 @@ const MAX_BSL_SIGNATURE_LINES: usize = 64;
 const MAX_BSL_SIGNATURE_BYTES: usize = 64 * 1024;
 const MAX_BSL_LINE_BYTES: usize = 64 * 1024;
 
+#[derive(Debug)]
 struct ParsedBslMethod {
     kind: BslMethodKind,
     name: String,
@@ -151,9 +201,62 @@ struct ParsedBslMethod {
     end_line: u32,
 }
 
+#[derive(Debug)]
 struct ParsedBslSource {
     methods: Vec<ParsedBslMethod>,
-    line_methods: Vec<Option<usize>>,
+    method_ranges: Vec<ParsedBslMethodRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedBslMethodRange {
+    start_line: u32,
+    end_line: u32,
+    method_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BslParseBound {
+    LineBytes { limit: usize },
+    Signature { max_lines: usize, max_bytes: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BslParseError {
+    Cancelled,
+    Bounded(BslParseBound),
+    Malformed(String),
+}
+
+impl std::fmt::Display for BslParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("discovery cancelled"),
+            Self::Bounded(BslParseBound::LineBytes { limit }) => {
+                write!(
+                    formatter,
+                    "BSL line exceeds the supported bound of {limit} bytes"
+                )
+            }
+            Self::Bounded(BslParseBound::Signature {
+                max_lines,
+                max_bytes,
+            }) => write!(
+                formatter,
+                "method signature exceeds {max_lines} lines or {max_bytes} bytes"
+            ),
+            Self::Malformed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for BslParseError {
+    fn from(message: String) -> Self {
+        if message == "discovery cancelled" {
+            Self::Cancelled
+        } else {
+            Self::Malformed(message)
+        }
+    }
 }
 
 enum BslParseState {
@@ -185,32 +288,33 @@ fn lexical_facts_for_file(
     file: &SourceFile,
     terms: &[String],
     query: &DiscoveryQuery<'_>,
-) -> Result<Vec<BslFact>, String> {
-    let text =
-        std::str::from_utf8(&file.bytes).map_err(|error| format!("input is not UTF-8: {error}"))?;
+    max_evidence: usize,
+) -> Result<BTreeSet<BslFact>, BslParseError> {
+    let text = std::str::from_utf8(&file.bytes)
+        .map_err(|error| BslParseError::Malformed(format!("input is not UTF-8: {error}")))?;
     let text = strip_source_bom(text);
     let module = module_artifact_for_path(&file.relative_path)?;
     let parsed = parse_bsl_source_cancellable(text, query)?;
     let mut method_artifacts = Vec::new();
     for method in &parsed.methods {
         if query.is_cancelled() {
-            return Err("discovery cancelled".to_string());
+            return Err(BslParseError::Cancelled);
         }
         method_artifacts.push(method_artifact(&module, &method.name)?);
     }
-    let mut facts = Vec::new();
+    let mut facts = BTreeSet::new();
     let mut offset = 0_usize;
     let mut zero_based_line = 0_usize;
     while let Some(line) = next_bsl_line(text, &mut offset, &mut || query.is_cancelled())? {
         if query.is_cancelled() {
-            return Err("discovery cancelled".to_string());
+            return Err(BslParseError::Cancelled);
         }
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
         let normalized_line = normalize_bsl_line_cancellable(line, &mut || query.is_cancelled())?;
-        let artifact = match parsed.line_methods.get(zero_based_line).copied().flatten() {
+        let artifact = match method_index_for_line(&parsed.method_ranges, line_number) {
             Some(method_index) => {
                 let method = method_artifacts
                     .get(method_index)
@@ -221,22 +325,26 @@ fn lexical_facts_for_file(
         };
         for term in terms {
             if query.is_cancelled() {
-                return Err("discovery cancelled".to_string());
+                return Err(BslParseError::Cancelled);
             }
             if !contains_cancellable(&normalized_line, term, &mut || query.is_cancelled())? {
                 continue;
             }
-            facts.push(BslFact {
-                artifact: artifact.0.clone(),
-                artifact_kind: artifact.1,
-                matched_text: term.clone(),
-                location: EvidenceLocation {
-                    relative_path: file.relative_path.clone(),
-                    line: Some(line_number),
-                    column: matching_column(line, term, &mut || query.is_cancelled())?,
-                    xml_path: None,
+            insert_bounded_fact(
+                &mut facts,
+                BslFact {
+                    artifact: artifact.0.clone(),
+                    artifact_kind: artifact.1,
+                    matched_text: term.clone(),
+                    location: EvidenceLocation {
+                        relative_path: file.relative_path.clone(),
+                        line: Some(line_number),
+                        column: matching_column(line, term, &mut || query.is_cancelled())?,
+                        xml_path: None,
+                    },
                 },
-            });
+                max_evidence,
+            );
         }
         zero_based_line = zero_based_line
             .checked_add(1)
@@ -338,17 +446,16 @@ fn strip_source_bom(text: &str) -> &str {
 fn parse_bsl_source_cancellable(
     text: &str,
     query: &DiscoveryQuery<'_>,
-) -> Result<ParsedBslSource, String> {
+) -> Result<ParsedBslSource, BslParseError> {
     parse_bsl_source_observing(text, || query.is_cancelled())
 }
 
 fn parse_bsl_source_observing(
     text: &str,
     mut is_cancelled: impl FnMut() -> bool,
-) -> Result<ParsedBslSource, String> {
+) -> Result<ParsedBslSource, BslParseError> {
     let text = strip_source_bom(text);
     let mut methods = Vec::new();
-    let mut line_methods = Vec::new();
     let mut state = BslParseState::OutsideMethod;
     let mut in_string = false;
     let mut offset = 0_usize;
@@ -356,26 +463,25 @@ fn parse_bsl_source_observing(
 
     while let Some(line) = next_bsl_line(text, &mut offset, &mut is_cancelled)? {
         if is_cancelled() {
-            return Err("discovery cancelled".to_string());
+            return Err(BslParseError::Cancelled);
         }
-        line_methods.push(None);
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
         let scanned = scan_bsl_line(line, &mut in_string, &mut is_cancelled)?;
         if is_cancelled() {
-            return Err("discovery cancelled".to_string());
+            return Err(BslParseError::Cancelled);
         }
         state = match state {
             BslParseState::OutsideMethod => {
                 if parse_method_end(&scanned.code, &mut is_cancelled)?.is_some() {
-                    return Err(format!(
+                    return Err(BslParseError::Malformed(format!(
                         "method terminator without declaration at line {line_number}"
-                    ));
+                    )));
                 }
                 if is_cancelled() {
-                    return Err("discovery cancelled".to_string());
+                    return Err(BslParseError::Cancelled);
                 }
                 match parse_method_declaration(&scanned.code, &mut is_cancelled)? {
                     Some(declaration) => {
@@ -387,7 +493,6 @@ fn parse_bsl_source_observing(
                             declaration_line: line_number,
                             end_line: 0,
                         });
-                        set_line_method(&mut line_methods, zero_based_line, method_index)?;
                         let mut signature = SignatureState {
                             method_index,
                             depth: 0,
@@ -419,7 +524,6 @@ fn parse_bsl_source_observing(
                 }
             }
             BslParseState::Signature(mut signature) => {
-                set_line_method(&mut line_methods, zero_based_line, signature.method_index)?;
                 if signature.closed {
                     let trimmed = scanned.code.trim();
                     if trimmed.is_empty() {
@@ -459,16 +563,13 @@ fn parse_bsl_source_observing(
                     }
                 }
             }
-            BslParseState::Body(method_index) => {
-                set_line_method(&mut line_methods, zero_based_line, method_index)?;
-                process_body_line(
-                    method_index,
-                    &scanned.code,
-                    line_number,
-                    &mut methods,
-                    &mut is_cancelled,
-                )?
-            }
+            BslParseState::Body(method_index) => process_body_line(
+                method_index,
+                &scanned.code,
+                line_number,
+                &mut methods,
+                &mut is_cancelled,
+            )?,
         };
         zero_based_line = zero_based_line
             .checked_add(1)
@@ -476,19 +577,18 @@ fn parse_bsl_source_observing(
     }
 
     if in_string {
-        return Err("BSL source has an unterminated string literal".to_string());
+        return Err(BslParseError::Malformed(
+            "BSL source has an unterminated string literal".to_string(),
+        ));
     }
     match state {
-        BslParseState::OutsideMethod => Ok(ParsedBslSource {
-            methods,
-            line_methods,
-        }),
-        BslParseState::Signature(signature) if !signature.closed => {
-            Err("method signature has no balanced closing parenthesis".to_string())
-        }
-        BslParseState::Signature(_) | BslParseState::Body(_) => {
-            Err("method declaration has no terminator".to_string())
-        }
+        BslParseState::OutsideMethod => Ok(parsed_bsl_source(methods)),
+        BslParseState::Signature(signature) if !signature.closed => Err(BslParseError::Malformed(
+            "method signature has no balanced closing parenthesis".to_string(),
+        )),
+        BslParseState::Signature(_) | BslParseState::Body(_) => Err(BslParseError::Malformed(
+            "method declaration has no terminator".to_string(),
+        )),
     }
 }
 
@@ -496,14 +596,14 @@ fn next_bsl_line<'a>(
     text: &'a str,
     offset: &mut usize,
     is_cancelled: &mut dyn FnMut() -> bool,
-) -> Result<Option<&'a str>, String> {
+) -> Result<Option<&'a str>, BslParseError> {
     if *offset >= text.len() {
         return Ok(None);
     }
     let start = *offset;
     for index in start..text.len() {
         if index % 1_024 == 0 && is_cancelled() {
-            return Err("discovery cancelled".to_string());
+            return Err(BslParseError::Cancelled);
         }
         if text.as_bytes()[index] == b'\n' {
             *offset = index + 1;
@@ -516,6 +616,16 @@ fn next_bsl_line<'a>(
             validate_bsl_line_bound(line)?;
             return Ok(Some(line));
         }
+        let bytes_from_start = index
+            .checked_sub(start)
+            .ok_or_else(|| BslParseError::Malformed("BSL line boundary underflowed".to_string()))?;
+        if bytes_from_start >= MAX_BSL_LINE_BYTES
+            && !(text.as_bytes()[index] == b'\r' && text.as_bytes().get(index + 1) == Some(&b'\n'))
+        {
+            return Err(BslParseError::Bounded(BslParseBound::LineBytes {
+                limit: MAX_BSL_LINE_BYTES,
+            }));
+        }
     }
     *offset = text.len();
     let line = &text[start..];
@@ -523,13 +633,37 @@ fn next_bsl_line<'a>(
     Ok(Some(line))
 }
 
-fn validate_bsl_line_bound(line: &str) -> Result<(), String> {
+fn validate_bsl_line_bound(line: &str) -> Result<(), BslParseError> {
     if line.len() > MAX_BSL_LINE_BYTES {
-        return Err(format!(
-            "BSL line exceeds the supported bound of {MAX_BSL_LINE_BYTES} bytes"
-        ));
+        return Err(BslParseError::Bounded(BslParseBound::LineBytes {
+            limit: MAX_BSL_LINE_BYTES,
+        }));
     }
     Ok(())
+}
+
+fn parsed_bsl_source(methods: Vec<ParsedBslMethod>) -> ParsedBslSource {
+    let method_ranges = methods
+        .iter()
+        .enumerate()
+        .map(|(method_index, method)| ParsedBslMethodRange {
+            start_line: method.declaration_line,
+            end_line: method.end_line,
+            method_index,
+        })
+        .collect();
+    ParsedBslSource {
+        methods,
+        method_ranges,
+    }
+}
+
+fn method_index_for_line(ranges: &[ParsedBslMethodRange], line: u32) -> Option<usize> {
+    let candidate = ranges
+        .partition_point(|range| range.start_line <= line)
+        .checked_sub(1)?;
+    let range = ranges.get(candidate)?;
+    (line <= range.end_line).then_some(range.method_index)
 }
 
 fn scan_bsl_line(
@@ -720,36 +854,22 @@ fn signature_line_is_export(
     ))
 }
 
-fn extend_signature_bounds(state: &mut SignatureState, line: &str) -> Result<(), String> {
-    state.lines = state
-        .lines
-        .checked_add(1)
-        .ok_or_else(|| "method signature line count overflowed".to_string())?;
-    let line_bytes = line
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| "method signature byte count overflowed".to_string())?;
-    state.bytes = state
-        .bytes
-        .checked_add(line_bytes)
-        .ok_or_else(|| "method signature byte count overflowed".to_string())?;
+fn extend_signature_bounds(state: &mut SignatureState, line: &str) -> Result<(), BslParseError> {
+    state.lines = state.lines.checked_add(1).ok_or_else(|| {
+        BslParseError::Malformed("method signature line count overflowed".to_string())
+    })?;
+    let line_bytes = line.len().checked_add(1).ok_or_else(|| {
+        BslParseError::Malformed("method signature byte count overflowed".to_string())
+    })?;
+    state.bytes = state.bytes.checked_add(line_bytes).ok_or_else(|| {
+        BslParseError::Malformed("method signature byte count overflowed".to_string())
+    })?;
     if state.lines > MAX_BSL_SIGNATURE_LINES || state.bytes > MAX_BSL_SIGNATURE_BYTES {
-        return Err(format!(
-            "method signature exceeds {MAX_BSL_SIGNATURE_LINES} lines or {MAX_BSL_SIGNATURE_BYTES} bytes"
-        ));
+        return Err(BslParseError::Bounded(BslParseBound::Signature {
+            max_lines: MAX_BSL_SIGNATURE_LINES,
+            max_bytes: MAX_BSL_SIGNATURE_BYTES,
+        }));
     }
-    Ok(())
-}
-
-fn set_line_method(
-    line_methods: &mut [Option<usize>],
-    line_index: usize,
-    method_index: usize,
-) -> Result<(), String> {
-    let slot = line_methods
-        .get_mut(line_index)
-        .ok_or_else(|| "BSL line ownership index is invalid".to_string())?;
-    *slot = Some(method_index);
     Ok(())
 }
 
@@ -1418,12 +1538,20 @@ fn validate_indexed_method_source(
             ),
         ))
     })?;
-    let parsed = parse_bsl_source_cancellable(text, query).map_err(|message| {
-        if query.is_cancelled() {
-            DefinitionCollectionError::Failed(
-                crate::infrastructure::discovery::cancellation_diagnostic(),
-            )
-        } else {
+    let parsed = parse_bsl_source_cancellable(text, query).map_err(|error| match error {
+        BslParseError::Cancelled => DefinitionCollectionError::Failed(
+            crate::infrastructure::discovery::cancellation_diagnostic(),
+        ),
+        BslParseError::Bounded(_) => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_source_bound",
+                format!(
+                    "indexed BSL source {} exceeded a parser resource limit",
+                    source.relative_path.as_str()
+                ),
+            ))
+        }
+        BslParseError::Malformed(message) => {
             DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
                 "bsl_malformed",
                 format!(
@@ -1547,7 +1675,7 @@ mod tests {
             panic!("long-line scan must stop at the cancellation boundary");
         };
 
-        assert_eq!(error, "discovery cancelled");
+        assert_eq!(error, super::BslParseError::Cancelled);
         assert_eq!(checks, 4);
     }
 
@@ -1565,7 +1693,7 @@ mod tests {
             panic!("post-scan parsing must observe cancellation before token work");
         };
 
-        assert_eq!(error, "discovery cancelled");
+        assert_eq!(error, super::BslParseError::Cancelled);
         assert_eq!(checks, cancel_at);
     }
 
@@ -1578,10 +1706,115 @@ mod tests {
             panic!("an oversized BSL line must be rejected");
         };
 
-        assert!(
-            error.contains("BSL line exceeds"),
-            "unexpected error: {error}"
+        assert_eq!(
+            error,
+            super::BslParseError::Bounded(super::BslParseBound::LineBytes {
+                limit: super::MAX_BSL_LINE_BYTES,
+            })
         );
+    }
+
+    #[test]
+    fn oversized_line_stops_at_the_first_byte_beyond_the_parse_unit() {
+        let source = "x".repeat(8 * super::MAX_BSL_LINE_BYTES);
+        let mut cancellation_polls = 0_usize;
+
+        let error = super::parse_bsl_source_observing(&source, || {
+            cancellation_polls += 1;
+            false
+        })
+        .expect_err("oversized line must stop without scanning the full tail");
+
+        assert!(matches!(
+            error,
+            super::BslParseError::Bounded(super::BslParseBound::LineBytes { .. })
+        ));
+        assert!(cancellation_polls < 100, "polls: {cancellation_polls}");
+    }
+
+    #[test]
+    fn crlf_line_shape_keeps_exact_limit_and_rejects_limit_plus_one() {
+        let exact = format!("{}\r\n", "x".repeat(super::MAX_BSL_LINE_BYTES));
+        let oversized = format!("{}\r\n", "x".repeat(super::MAX_BSL_LINE_BYTES + 1));
+
+        assert!(super::parse_bsl_source_observing(&exact, || false).is_ok());
+        assert!(matches!(
+            super::parse_bsl_source_observing(&oversized, || false),
+            Err(super::BslParseError::Bounded(
+                super::BslParseBound::LineBytes { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn method_ownership_is_stored_as_sparse_ranges() {
+        let source = format!(
+            "// header\n{}Процедура Первая()\nКонецПроцедуры\n{}Функция Вторая()\nКонецФункции\n",
+            "// gap\n".repeat(10_000),
+            "\n".repeat(10_000),
+        );
+
+        let parsed = super::parse_bsl_source_observing(&source, || false).expect("valid source");
+
+        assert_eq!(parsed.methods.len(), 2);
+        assert_eq!(parsed.method_ranges.len(), 2);
+        assert_eq!(
+            super::method_index_for_line(&parsed.method_ranges, 10_002),
+            Some(0)
+        );
+        assert_eq!(
+            super::method_index_for_line(&parsed.method_ranges, 20_004),
+            Some(1)
+        );
+        assert_eq!(super::method_index_for_line(&parsed.method_ranges, 2), None);
+    }
+
+    #[test]
+    fn line_bound_is_a_bounded_lexical_prefix_with_prior_file_coverage() {
+        let prior = source_file("CommonModules/A/Ext/Module.bsl", b"// needle\n");
+        let oversized = source_file(
+            "CommonModules/Z/Ext/Module.bsl",
+            "x".repeat(super::MAX_BSL_LINE_BYTES + 1).as_bytes(),
+        );
+
+        let outcome = InventoryBslSearchProvider.search(
+            &query("needle", &[], 10),
+            &inventory(vec![prior.clone(), oversized]),
+        );
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("line resource exhaustion must be bounded");
+        };
+        assert_eq!(diagnostic.code, "bsl_source_line_bound");
+        assert_eq!(data.analyzed_files, vec![prior.analyzed_file()]);
+        assert_eq!(data.records.len(), 1);
+    }
+
+    #[test]
+    fn lexical_matches_keep_the_same_sorted_n_plus_one_prefix_for_any_file_order() {
+        let first = source_file(
+            "CommonModules/A/Ext/Module.bsl",
+            b"// needle one\n// needle two\n",
+        );
+        let second = source_file(
+            "CommonModules/Z/Ext/Module.bsl",
+            b"// needle three\n// needle four\n",
+        );
+        let forward = InventoryBslSearchProvider.search(
+            &query("needle", &[], 2),
+            &inventory(vec![first.clone(), second.clone()]),
+        );
+        let reverse = InventoryBslSearchProvider
+            .search(&query("needle", &[], 2), &inventory(vec![second, first]));
+
+        let ProviderOutcome::Bounded { data: forward, .. } = forward else {
+            panic!("expected bounded forward result");
+        };
+        let ProviderOutcome::Bounded { data: reverse, .. } = reverse else {
+            panic!("expected bounded reverse result");
+        };
+        assert_eq!(forward.records, reverse.records);
+        assert_eq!(forward.records.len(), 2);
     }
 
     #[test]
@@ -1762,6 +1995,26 @@ mod tests {
     }
 
     #[test]
+    fn definition_revalidation_treats_parser_resource_bounds_as_unavailable() {
+        let fixture = Fixture::new("definition-source-bound");
+        let source_bytes = "x".repeat(super::MAX_BSL_LINE_BYTES + 1).into_bytes();
+        let source = fixture.write_source(MODULE_PATH, &source_bytes);
+        let inventory = inventory(vec![source]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 1, 1);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+
+        let outcome = provider.collect_index_facts(&query("ПолучитьСерию", &[], 10));
+
+        let Err(super::DefinitionCollectionError::Unavailable(diagnostic)) = outcome else {
+            panic!("parser bounds must not become definition contract violations");
+        };
+        assert_eq!(diagnostic.code, "bsl_index_source_bound");
+    }
+
+    #[test]
     fn common_form_lexical_and_definition_method_identities_agree() {
         let fixture = Fixture::new("common-form-method-identity");
         let module_path = "CommonForms/ВыборСерии/Ext/Form/Module.bsl";
@@ -1818,12 +2071,18 @@ mod tests {
             "x".repeat(65 * 1024)
         );
 
-        for source in [unbalanced.to_string(), too_many_lines, oversized] {
-            let outcome = InventoryBslSearchProvider.search(
+        let malformed = InventoryBslSearchProvider.search(
+            &query("ПолучитьСерию", &[], 10),
+            &inventory(vec![source_file(MODULE_PATH, unbalanced.as_bytes())]),
+        );
+        assert!(matches!(malformed, ProviderOutcome::ContractViolation(_)));
+
+        for source in [too_many_lines, oversized] {
+            let bounded = InventoryBslSearchProvider.search(
                 &query("ПолучитьСерию", &[], 10),
                 &inventory(vec![source_file(MODULE_PATH, source.as_bytes())]),
             );
-            assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+            assert!(matches!(bounded, ProviderOutcome::Bounded { .. }));
         }
     }
 
