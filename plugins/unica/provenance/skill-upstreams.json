@@ -1508,6 +1508,32 @@
       "lastAdaptedLocalCommit": "db254e42af00c248ec33346ba64076bbf5d37b71",
       "lastAdaptedAt": "2026-05-13T15:37:00+05:00",
       "baselineSelection": "toolLockRef v8-runner commit from tools.lock.json"
+    },
+    {
+      "id": "1c-design-guide",
+      "repository": "https://github.com/Oxotka/1CDesignGuide",
+      "trackingRef": "main",
+      "role": "guidance",
+      "baselineCommit": "edc05eaf5c191250a184b0e185006bf4b412f7a5",
+      "entries": [
+        {
+          "skill": "form-patterns",
+          "status": "adapted",
+          "notes": "Adapted UX rules for individual form elements (input fields, checkboxes, toggles, radio buttons, switches, hyperlinks, buttons, tables, dialogs, tooltips, conditional appearance). Content adapted with corrections for Unica Form DSL contract.",
+          "upstreamPaths": [
+            "README.md"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/form-patterns",
+            "plugins/unica/references/specs/form-patterns.md"
+          ],
+          "contractPaths": [],
+          "decision": "ported",
+          "baselineCommit": "edc05eaf5c191250a184b0e185006bf4b412f7a5"
+        }
+      ],
+      "usage": "adaptation",
+      "baselineSelection": "donor commit with typo fixes (edc05ea)"
     }
   ]
 }

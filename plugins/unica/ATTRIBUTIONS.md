@@ -107,6 +107,21 @@ skills принадлежат Unica. На указанном baseline лицен
 поэтому Unica не заявляет право на распространение материалов этого проекта и
 не включает его в цепочку лицензий поставки.
 
+### 1C Design Guide
+
+<!-- unica-attribution: upstream 1c-design-guide -->
+
+- Репозиторий: [Oxotka/1CDesignGuide](https://github.com/Oxotka/1CDesignGuide)
+- Автор: [Nikita Aripov (Oxotka)](https://github.com/Oxotka)
+- Проверенный baseline: `edc05eaf5c191250a184b0e185006bf4b412f7a5`
+- Лицензия: [MIT](https://github.com/Oxotka/1CDesignGuide/blob/main/LICENSE)
+
+Адаптированы UX-правила для элементов форм (поля, флажки, кнопки, гиперссылки,
+таблицы, диалоги, подсказки, условное оформление). Текст переработан с учётом
+Form DSL контракта Unica; исходные правила используются как источник
+рекомендаций, а не как исполняемый код. MIT-лицензия сохранена: ссылка на
+автора и оригинальный репозиторий приведена в skill form-patterns.
+
 ### v8-runner-rust как источник runtime-контракта
 
 <!-- unica-attribution: upstream v8-runner-rust -->
