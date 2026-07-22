@@ -10,7 +10,7 @@ use crate::infrastructure::platform::verified_directory::{
     VerifiedDirectoryEntry, VerifiedDirectoryEntryKind, VerifiedDirectoryError,
 };
 use crate::infrastructure::project_sources::{
-    discover_project_source_declarations, discover_project_source_map,
+    discover_project_source_declarations_cancellable, discover_project_source_map,
 };
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -48,8 +48,10 @@ pub(crate) fn resolve_discovery_source_root(
                 })
             }
             None => {
-                let declarations = discover_project_source_declarations(&context.workspace_root)
-                    .map_err(DiscoveryError::ProjectSources)?;
+                let declarations = discover_project_source_declarations_cancellable(
+                    &context.workspace_root,
+                    cancellation,
+                )?;
                 let configurations = declarations
                     .iter()
                     .filter(|source_set| source_set.kind == SourceSetKind::Configuration)

@@ -274,7 +274,7 @@ fn read_contained_regular_file_with_read_observer(
 }
 
 #[cfg(test)]
-fn read_contained_regular_file_with_chunk_observer_cancellable(
+pub(crate) fn read_contained_regular_file_with_chunk_observer_cancellable(
     root: &Path,
     path: &Path,
     max_bytes: u64,

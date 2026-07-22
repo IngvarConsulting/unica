@@ -779,6 +779,7 @@ pub(crate) enum DiscoveryError {
     EmptySourceRoot,
     Cancelled,
     ProjectSources(String),
+    ProjectManifestBound { limit: u64 },
     NoConfigurationSource,
     AmbiguousConfigurationSources(Vec<String>),
     InvalidSourceRoot(String),
@@ -793,6 +794,7 @@ impl DiscoveryError {
             Self::EmptySourceRoot => "discovery_empty_source_root",
             Self::Cancelled => "discovery_cancelled",
             Self::ProjectSources(_) => "discovery_project_sources",
+            Self::ProjectManifestBound { .. } => "discovery_project_manifest_bound",
             Self::NoConfigurationSource => "discovery_no_configuration_source",
             Self::AmbiguousConfigurationSources(_) => "discovery_ambiguous_configuration_sources",
             Self::InvalidSourceRoot(_) => "discovery_invalid_source_root",
@@ -814,6 +816,10 @@ impl fmt::Display for DiscoveryError {
                     "could not discover project source sets: {message}"
                 )
             }
+            Self::ProjectManifestBound { limit } => write!(
+                formatter,
+                "discovery project manifest exceeded the {limit}-byte limit"
+            ),
             Self::NoConfigurationSource => formatter
                 .write_str("sourceDir is required because no configuration source set was found"),
             Self::AmbiguousConfigurationSources(candidates) => write!(
@@ -971,6 +977,10 @@ mod tests {
             (
                 DiscoveryError::ProjectSources("invalid manifest".to_string()),
                 "discovery_project_sources",
+            ),
+            (
+                DiscoveryError::ProjectManifestBound { limit: 1_048_576 },
+                "discovery_project_manifest_bound",
             ),
             (
                 DiscoveryError::NoConfigurationSource,
