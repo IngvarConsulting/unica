@@ -4,6 +4,7 @@ use crate::domain::discovery::{
     PortableRelativePath, ProviderCoverage, ProviderDiagnostic, ProviderOutcome, SourceFile,
     SourceInventory, StructuralRelationKind,
 };
+use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,6 +34,7 @@ pub(super) struct MetadataNode {
     pub locations: Vec<EvidenceLocation>,
     pub children: Vec<MetadataNode>,
     definition_present: bool,
+    definition_source: Option<PortableRelativePath>,
 }
 
 #[derive(Debug)]
@@ -64,6 +66,13 @@ struct SubordinateKind {
 struct SubordinateDescriptorPath {
     parent_path: PortableRelativePath,
     kind: SubordinateKind,
+    scope: SubordinateScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubordinateScope {
+    RegisteredTopLevel,
+    Nested,
 }
 
 const SUBORDINATE_KINDS: &[SubordinateKind] = &[
@@ -77,13 +86,14 @@ const SUBORDINATE_KINDS: &[SubordinateKind] = &[
         xml_kind: "Template",
         artifact_kind: ArtifactKind::MetadataObject,
     },
+    SubordinateKind {
+        collection: "Commands",
+        xml_kind: "Command",
+        artifact_kind: ArtifactKind::Command,
+    },
 ];
 
 impl MetadataCatalog {
-    pub(super) fn descriptors(&self) -> &[MetadataDescriptor] {
-        &self.descriptors
-    }
-
     pub(super) fn nodes(&self) -> Vec<&MetadataNode> {
         let mut nodes = Vec::new();
         for descriptor in &self.descriptors {
@@ -93,10 +103,9 @@ impl MetadataCatalog {
     }
 }
 
-impl MetadataDescriptor {
+impl MetadataNode {
     pub(super) fn declared_forms(&self) -> impl Iterator<Item = &MetadataNode> {
-        self.root
-            .children
+        self.children
             .iter()
             .filter(|child| child.artifact_kind == ArtifactKind::Form)
     }
@@ -115,11 +124,13 @@ impl MetadataDescriptor {
         }) {
             names.remove(0);
         }
-        resolve_child_path(&self.root.children, &names)
+        resolve_child_path(&self.children, &names)
     }
-}
 
-impl MetadataNode {
+    pub(super) fn definition_source(&self) -> Option<&PortableRelativePath> {
+        self.definition_source.as_ref()
+    }
+
     pub(super) fn primary_location(&self) -> Option<&EvidenceLocation> {
         self.locations.first()
     }
@@ -277,14 +288,21 @@ fn build_catalog(
         .map(|descriptor| descriptor.analyzed_file.clone())
         .collect::<Vec<_>>();
     analyzed_files.sort();
+    let raw_paths = raw_descriptors
+        .iter()
+        .map(|descriptor| descriptor.relative_path.clone())
+        .collect::<BTreeSet<_>>();
     let mut descriptors = Vec::new();
     let mut subordinate_descriptors = Vec::new();
     for raw in raw_descriptors {
         if let Some(path) = subordinate_descriptor_path(&raw.relative_path)? {
-            subordinate_descriptors.push((path, raw));
-            continue;
+            let parent_is_present = raw_paths.contains(&path.parent_path);
+            if path.scope == SubordinateScope::Nested || parent_is_present {
+                subordinate_descriptors.push((path, raw));
+                continue;
+            }
         }
-        let root = materialize_metadata_node(raw.root, None, 1)?;
+        let root = materialize_metadata_node(raw.root, None, 1, true)?;
         descriptors.push(MetadataDescriptor {
             relative_path: raw.relative_path,
             root,
@@ -293,9 +311,22 @@ fn build_catalog(
     descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     validate_catalog_nodes(&descriptors)?;
 
-    subordinate_descriptors.sort_by(|left, right| left.1.relative_path.cmp(&right.1.relative_path));
+    subordinate_descriptors.sort_by(|left, right| {
+        descriptor_path_depth(&left.1.relative_path)
+            .cmp(&descriptor_path_depth(&right.1.relative_path))
+            .then_with(|| left.1.relative_path.cmp(&right.1.relative_path))
+    });
     for (path, subordinate) in subordinate_descriptors {
-        attach_subordinate_descriptor(&mut descriptors, path, subordinate)?;
+        let (parent, parent_depth) = find_definition_node_mut(&mut descriptors, &path.parent_path)?
+            .ok_or_else(|| {
+                format!(
+                    "subordinate {} {} has no parent descriptor {}",
+                    path.kind.xml_kind,
+                    subordinate.relative_path.as_str(),
+                    path.parent_path.as_str()
+                )
+            })?;
+        attach_subordinate_descriptor(parent, parent_depth, path, subordinate)?;
     }
     validate_catalog_nodes(&descriptors)?;
     if !inventory_bounded {
@@ -311,50 +342,79 @@ fn subordinate_descriptor_path(
     path: &PortableRelativePath,
 ) -> Result<Option<SubordinateDescriptorPath>, String> {
     let components = path.as_str().split('/').collect::<Vec<_>>();
-    if components.len() < 3 {
-        return Ok(None);
+    if components.len() >= 3 {
+        if let Some(kind) = SUBORDINATE_KINDS
+            .iter()
+            .copied()
+            .find(|kind| components[components.len() - 2].eq_ignore_ascii_case(kind.collection))
+        {
+            let parent_base = components[..components.len() - 2].join("/");
+            let parent_path = PortableRelativePath::parse_str(&format!("{parent_base}.xml"))
+                .map_err(|error| {
+                    format!(
+                        "subordinate {} parent path is invalid: {error}",
+                        kind.xml_kind
+                    )
+                })?;
+            validate_subordinate_extension(components.last().copied(), kind.xml_kind)?;
+            return Ok(Some(SubordinateDescriptorPath {
+                parent_path,
+                kind,
+                scope: SubordinateScope::Nested,
+            }));
+        }
     }
-    let Some(kind) = SUBORDINATE_KINDS
-        .iter()
-        .copied()
-        .find(|kind| components[components.len() - 2].eq_ignore_ascii_case(kind.collection))
-    else {
-        return Ok(None);
-    };
-    let Some((_stem, extension)) = components
-        .last()
-        .and_then(|file_name| file_name.rsplit_once('.'))
-    else {
+
+    if let [directory, file_name] = components.as_slice() {
+        if let Some(registered) = metadata_kind_by_directory(directory) {
+            validate_subordinate_extension(Some(file_name), registered.tag)?;
+            return Ok(Some(SubordinateDescriptorPath {
+                parent_path: PortableRelativePath::parse_str("Configuration.xml")
+                    .map_err(|error| format!("Configuration path is invalid: {error}"))?,
+                kind: SubordinateKind {
+                    collection: registered.directory,
+                    xml_kind: registered.tag,
+                    artifact_kind: artifact_kind_for_xml_object(registered.tag),
+                },
+                scope: SubordinateScope::RegisteredTopLevel,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_subordinate_extension(file_name: Option<&str>, xml_kind: &str) -> Result<(), String> {
+    let Some((_stem, extension)) = file_name.and_then(|name| name.rsplit_once('.')) else {
         return Err(format!(
-            "subordinate {} descriptor has no .xml extension",
-            kind.xml_kind
+            "subordinate {xml_kind} descriptor has no .xml extension"
         ));
     };
     if !extension.eq_ignore_ascii_case("xml") {
         return Err(format!(
-            "subordinate {} descriptor does not end in .xml",
-            kind.xml_kind
+            "subordinate {xml_kind} descriptor does not end in .xml"
         ));
     }
-    let parent_base = components[..components.len() - 2].join("/");
-    PortableRelativePath::parse_str(&format!("{parent_base}.xml"))
-        .map(|parent_path| Some(SubordinateDescriptorPath { parent_path, kind }))
-        .map_err(|error| {
-            format!(
-                "subordinate {} parent path is invalid: {error}",
-                kind.xml_kind
-            )
-        })
+    Ok(())
+}
+
+fn descriptor_path_depth(path: &PortableRelativePath) -> usize {
+    path.as_str().split('/').count()
 }
 
 fn materialize_metadata_node(
     raw: RawMetadataNode,
-    container: Option<&ArtifactId>,
+    container: Option<(&ArtifactId, &str)>,
     depth: usize,
+    descriptor_root: bool,
 ) -> Result<MetadataNode, String> {
     validate_metadata_depth(depth)?;
     let artifact_text = match container {
-        Some(container) => format!("{}.{}.{}", container.as_str(), raw.xml_kind, raw.name),
+        Some((_container, "Configuration")) if metadata_kind(&raw.xml_kind).is_some() => {
+            format!("{}.{}", raw.xml_kind, raw.name)
+        }
+        Some((container, _container_kind)) => {
+            format!("{}.{}.{}", container.as_str(), raw.xml_kind, raw.name)
+        }
         None => format!("{}.{}", raw.xml_kind, raw.name),
     };
     let artifact = ArtifactId::parse(&artifact_text).map_err(|error| {
@@ -363,10 +423,19 @@ fn materialize_metadata_node(
             raw.xml_kind
         )
     })?;
+    let definition_source =
+        (descriptor_root && !raw.declaration_only).then(|| raw.location.relative_path.clone());
     let mut children = raw
         .children
         .into_iter()
-        .map(|child| materialize_metadata_node(child, Some(&artifact), checked_child_depth(depth)?))
+        .map(|child| {
+            materialize_metadata_node(
+                child,
+                Some((&artifact, &raw.xml_kind)),
+                checked_child_depth(depth)?,
+                false,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     children.sort_by(|left, right| left.artifact.cmp(&right.artifact));
     Ok(MetadataNode {
@@ -377,11 +446,13 @@ fn materialize_metadata_node(
         locations: vec![raw.location],
         children,
         definition_present: !raw.declaration_only,
+        definition_source,
     })
 }
 
 fn attach_subordinate_descriptor(
-    descriptors: &mut [MetadataDescriptor],
+    parent: &mut MetadataNode,
+    parent_depth: usize,
     path: SubordinateDescriptorPath,
     subordinate: RawMetadataDescriptor,
 ) -> Result<(), String> {
@@ -396,31 +467,24 @@ fn attach_subordinate_descriptor(
             path.kind.xml_kind
         ));
     }
-    let descriptor = descriptors
-        .iter_mut()
-        .find(|descriptor| descriptor.relative_path == path.parent_path)
-        .ok_or_else(|| {
-            format!(
-                "subordinate {} {} has no parent descriptor {}",
-                path.kind.xml_kind,
-                subordinate.relative_path.as_str(),
-                path.parent_path.as_str()
-            )
-        })?;
-    let artifact = ArtifactId::parse(&format!(
-        "{}.{}.{}",
-        descriptor.root.artifact.as_str(),
-        path.kind.xml_kind,
-        subordinate.root.name
-    ))
-    .map_err(|error| {
+    let artifact_text = match path.scope {
+        SubordinateScope::RegisteredTopLevel => {
+            format!("{}.{}", path.kind.xml_kind, subordinate.root.name)
+        }
+        SubordinateScope::Nested => format!(
+            "{}.{}.{}",
+            parent.artifact.as_str(),
+            path.kind.xml_kind,
+            subordinate.root.name
+        ),
+    };
+    let artifact = ArtifactId::parse(&artifact_text).map_err(|error| {
         format!(
             "subordinate {} identity is invalid: {error}",
             path.kind.xml_kind
         )
     })?;
-    let declared = descriptor
-        .root
+    let declared = parent
         .direct_child_mut(&artifact)
         .filter(|child| child.artifact_kind == path.kind.artifact_kind)
         .ok_or_else(|| {
@@ -438,16 +502,23 @@ fn attach_subordinate_descriptor(
             artifact.as_str()
         ));
     }
-    let descriptor_base = descriptor
-        .relative_path
-        .as_str()
-        .strip_suffix(".xml")
-        .ok_or_else(|| "parent descriptor does not end in canonical .xml".to_string())?;
-    let expected_path = PortableRelativePath::parse_str(&format!(
-        "{descriptor_base}/{}/{}.xml",
-        path.kind.collection, declared.name
-    ))
-    .map_err(|error| {
+    let expected_path_text = match path.scope {
+        SubordinateScope::RegisteredTopLevel => {
+            format!("{}/{}.xml", path.kind.collection, declared.name)
+        }
+        SubordinateScope::Nested => {
+            let descriptor_base = path
+                .parent_path
+                .as_str()
+                .strip_suffix(".xml")
+                .ok_or_else(|| "parent descriptor does not end in canonical .xml".to_string())?;
+            format!(
+                "{descriptor_base}/{}/{}.xml",
+                path.kind.collection, declared.name
+            )
+        }
+    };
+    let expected_path = PortableRelativePath::parse_str(&expected_path_text).map_err(|error| {
         format!(
             "declared subordinate {} path is invalid: {error}",
             path.kind.xml_kind
@@ -488,11 +559,20 @@ fn attach_subordinate_descriptor(
     }
     declared.locations.push(subordinate.root.location);
     declared.definition_present = true;
+    declared.definition_source = Some(subordinate.relative_path.clone());
+    let declared_depth = checked_child_depth(parent_depth)?;
     let mut subordinate_children = subordinate
         .root
         .children
         .into_iter()
-        .map(|child| materialize_metadata_node(child, Some(&artifact), 3))
+        .map(|child| {
+            materialize_metadata_node(
+                child,
+                Some((&artifact, path.kind.xml_kind)),
+                checked_child_depth(declared_depth)?,
+                false,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     declared.children.append(&mut subordinate_children);
     declared
@@ -501,9 +581,43 @@ fn attach_subordinate_descriptor(
     Ok(())
 }
 
+fn find_definition_node_mut<'a>(
+    descriptors: &'a mut [MetadataDescriptor],
+    path: &PortableRelativePath,
+) -> Result<Option<(&'a mut MetadataNode, usize)>, String> {
+    for descriptor in descriptors {
+        if let Some(found) = find_definition_node_in_tree_mut(&mut descriptor.root, path, 1)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+fn find_definition_node_in_tree_mut<'a>(
+    node: &'a mut MetadataNode,
+    path: &PortableRelativePath,
+    depth: usize,
+) -> Result<Option<(&'a mut MetadataNode, usize)>, String> {
+    validate_metadata_depth(depth)?;
+    if node.definition_source.as_ref() == Some(path) {
+        return Ok(Some((node, depth)));
+    }
+    if node.children.is_empty() {
+        return Ok(None);
+    }
+    let child_depth = checked_child_depth(depth)?;
+    for child in &mut node.children {
+        if let Some(found) = find_definition_node_in_tree_mut(child, path, child_depth)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
 fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), String> {
     let mut artifacts = BTreeMap::new();
     let mut uuids = BTreeMap::new();
+    let mut definition_sources = BTreeMap::new();
     for descriptor in descriptors {
         let mut nodes = Vec::new();
         collect_metadata_nodes(&descriptor.root, &mut nodes);
@@ -527,6 +641,18 @@ fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), Stri
                 if let Some(previous_artifact) = uuids.insert(uuid.clone(), node.artifact.clone()) {
                     return Err(format!(
                         "metadata uuid {uuid} maps to both {} and {}",
+                        previous_artifact.as_str(),
+                        node.artifact.as_str()
+                    ));
+                }
+            }
+            if let Some(source) = &node.definition_source {
+                if let Some(previous_artifact) =
+                    definition_sources.insert(source.clone(), node.artifact.clone())
+                {
+                    return Err(format!(
+                        "metadata source {} defines both {} and {}",
+                        source.as_str(),
                         previous_artifact.as_str(),
                         node.artifact.as_str()
                     ));
@@ -1050,6 +1176,123 @@ mod tests {
     }
 
     #[test]
+    fn tracked_configuration_catalogs_attach_to_registered_canonical_identities() {
+        let outcome = PlatformXmlMetadataProvider
+            .metadata(&query(100), &tracked_meta_compile_on_support_inventory());
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("full tracked meta-compile inventory must be complete");
+        };
+        assert!(batch
+            .records
+            .iter()
+            .any(|fact| fact.artifact == artifact("Catalog.Locked")));
+        assert!(batch
+            .records
+            .iter()
+            .any(|fact| fact.artifact == artifact("Catalog.Removed")));
+        assert!(batch.records.iter().all(|fact| {
+            !fact
+                .artifact
+                .as_str()
+                .starts_with("Configuration.ТестКонфиг.Catalog.")
+        }));
+    }
+
+    #[test]
+    fn configuration_report_nested_descriptors_attach_topologically() {
+        let configuration = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="58000000-0000-0000-0000-000000000001">
+    <Properties><Name>Demo</Name></Properties>
+    <ChildObjects><Report>Sales</Report></ChildObjects>
+  </Configuration>
+</MetaDataObject>"#;
+        let report = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Report uuid="58000000-0000-0000-0000-000000000002">
+    <Properties><Name>Sales</Name></Properties>
+    <ChildObjects><Template>Main</Template><Command>Run</Command></ChildObjects>
+  </Report>
+</MetaDataObject>"#;
+        let template = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Template uuid="58000000-0000-0000-0000-000000000003">
+    <Properties><Name>Main</Name></Properties>
+  </Template>
+</MetaDataObject>"#;
+        let command = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Command uuid="58000000-0000-0000-0000-000000000004">
+    <Properties><Name>Run</Name></Properties>
+  </Command>
+</MetaDataObject>"#;
+        let inventory = inventory(vec![
+            source_file("Configuration.xml", configuration.as_bytes()),
+            source_file("Reports/Sales.xml", report.as_bytes()),
+            source_file("Reports/Sales/Templates/Main.xml", template.as_bytes()),
+            source_file("Reports/Sales/Commands/Run.xml", command.as_bytes()),
+        ]);
+
+        let outcome = PlatformXmlMetadataProvider.metadata(&query(100), &inventory);
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("topologically attached descriptor graph must be complete");
+        };
+        for expected in [
+            "Report.Sales",
+            "Report.Sales.Template.Main",
+            "Report.Sales.Command.Run",
+        ] {
+            assert!(
+                batch
+                    .records
+                    .iter()
+                    .any(|fact| fact.artifact == artifact(expected)),
+                "missing {expected}"
+            );
+        }
+        assert!(batch.records.iter().all(|fact| {
+            !fact
+                .artifact
+                .as_str()
+                .starts_with("Configuration.Demo.Report.")
+                && fact.artifact != artifact("Template.Main")
+                && fact.artifact != artifact("Command.Run")
+        }));
+    }
+
+    #[test]
+    fn bounded_configuration_declarations_keep_top_level_canonical_identity() {
+        let configuration = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="59000000-0000-0000-0000-000000000001">
+    <Properties><Name>Demo</Name></Properties>
+    <ChildObjects><Catalog>Missing</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>"#;
+        let complete = inventory(vec![source_file(
+            "Configuration.xml",
+            configuration.as_bytes(),
+        )]);
+        let mut bounded = complete.clone();
+        bounded.coverage.files_seen += 1;
+
+        assert!(matches!(
+            PlatformXmlMetadataProvider.metadata(&query(100), &complete),
+            ProviderOutcome::ContractViolation(_)
+        ));
+        let ProviderOutcome::Bounded { data, .. } =
+            PlatformXmlMetadataProvider.metadata(&query(100), &bounded)
+        else {
+            panic!("bounded unresolved Configuration declaration must remain partial");
+        };
+        assert!(data
+            .records
+            .iter()
+            .any(|fact| fact.artifact == artifact("Catalog.Missing")));
+        assert!(data
+            .records
+            .iter()
+            .all(|fact| { fact.artifact != artifact("Configuration.Demo.Catalog.Missing") }));
+    }
+
+    #[test]
     fn tracked_template_subordinate_uses_parent_identity_when_inventory_is_bounded() {
         let mut inventory = inventory(vec![
             source_file(
@@ -1265,6 +1508,43 @@ mod tests {
     fn assert_catalog_violation(files: Vec<SourceFile>) {
         let outcome = PlatformXmlMetadataProvider.metadata(&query(100), &inventory(files));
         assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+    }
+
+    fn tracked_meta_compile_on_support_inventory() -> SourceInventory {
+        inventory(vec![
+            source_file(
+                "Configuration.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Configuration.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Locked.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Locked.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Removed.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Removed.xml"
+                )),
+            ),
+            source_file(
+                "Ext/ParentConfigurations.bin",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+                )),
+            ),
+        ])
     }
 
     fn descriptor_xml(kind: &str, name: &str, uuid: &str, body: &str) -> String {

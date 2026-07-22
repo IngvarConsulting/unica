@@ -602,6 +602,43 @@ mod tests {
     }
 
     #[test]
+    fn tracked_configuration_catalog_support_uses_one_canonical_claim_per_object() {
+        let outcome =
+            SupportStateProvider.support(&query(100), &tracked_meta_compile_on_support_inventory());
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("full tracked meta-compile inventory must be complete");
+        };
+        assert_eq!(
+            state_for(&batch.records, "Configuration.ТестКонфиг"),
+            Some(SupportStateKind::Locked)
+        );
+        assert_eq!(
+            state_for(&batch.records, "Catalog.Locked"),
+            Some(SupportStateKind::Locked)
+        );
+        assert_eq!(
+            state_for(&batch.records, "Catalog.Removed"),
+            Some(SupportStateKind::NotOnSupport)
+        );
+        assert_eq!(batch.records.len(), 3);
+        assert_eq!(
+            batch
+                .records
+                .iter()
+                .filter(|fact| fact.artifact == ArtifactId::parse("Catalog.Locked").unwrap())
+                .count(),
+            1
+        );
+        assert!(batch.records.iter().all(|fact| {
+            !fact
+                .artifact
+                .as_str()
+                .starts_with("Configuration.ТестКонфиг.Catalog.")
+        }));
+    }
+
+    #[test]
     fn tracked_template_support_uuid_maps_only_to_its_parent_canonical_identity() {
         let mut inventory = inventory(vec![
             source_file(
@@ -742,6 +779,43 @@ mod tests {
             bytes: bytes.to_vec(),
             raw_hash: ContentHash::sha256(bytes),
         }
+    }
+
+    fn tracked_meta_compile_on_support_inventory() -> SourceInventory {
+        inventory(vec![
+            source_file(
+                "Configuration.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Configuration.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Locked.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Locked.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Removed.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Removed.xml"
+                )),
+            ),
+            source_file(
+                "Ext/ParentConfigurations.bin",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+                )),
+            ),
+        ])
     }
 
     fn inventory(files: Vec<SourceFile>) -> SourceInventory {

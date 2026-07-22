@@ -6,7 +6,7 @@ use crate::domain::discovery::{
 use crate::infrastructure::discovery::metadata::{
     analyzed_file_map, build_batch, contributors_for_records, decode_xml_bytes,
     inventory_is_bounded, parse_inventory_catalog, validate_platform_identifier, xml_location,
-    MetadataDescriptor, MetadataNode,
+    MetadataNode,
 };
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,9 +55,12 @@ fn collect_form_facts(
     let mut declared_paths = BTreeSet::new();
     let mut records = Vec::new();
 
-    for descriptor in catalog.descriptors() {
+    for descriptor in catalog.nodes() {
+        let Some(descriptor_path) = descriptor.definition_source() else {
+            continue;
+        };
         for form in descriptor.declared_forms() {
-            let form_path = declared_form_path(descriptor, form)?;
+            let form_path = declared_form_path(descriptor_path, form)?;
             if !declared_paths.insert(form_path.clone()) {
                 return Err(ProviderDiagnostic::material(
                     "managed_form_declaration_conflict",
@@ -127,10 +130,10 @@ fn collect_form_facts(
 }
 
 fn declared_form_path(
-    descriptor: &MetadataDescriptor,
+    descriptor_path: &PortableRelativePath,
     form: &MetadataNode,
 ) -> Result<PortableRelativePath, ProviderDiagnostic> {
-    let descriptor_path = descriptor.relative_path.as_str();
+    let descriptor_path = descriptor_path.as_str();
     let extension_start = descriptor_path.len().checked_sub(4).ok_or_else(|| {
         ProviderDiagnostic::material(
             "managed_form_descriptor_path",
@@ -158,7 +161,7 @@ fn declared_form_path(
 
 fn parse_form(
     file: &SourceFile,
-    descriptor: &MetadataDescriptor,
+    descriptor: &MetadataNode,
     declared_form: &MetadataNode,
 ) -> Result<Vec<FormFact>, String> {
     let text = decode_xml_bytes(&file.bytes)?;
@@ -474,6 +477,19 @@ mod tests {
     }
 
     #[test]
+    fn tracked_configuration_catalog_inventory_is_a_complete_empty_form_scope() {
+        let outcome =
+            ManagedFormProvider.forms(&query(100), &tracked_meta_compile_on_support_inventory());
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("tracked catalog-only configuration must not violate form discovery");
+        };
+        assert!(batch.records.is_empty());
+        assert_eq!(batch.analyzed_files.len(), 3);
+        assert!(batch.contributors.is_empty());
+    }
+
+    #[test]
     fn foreign_namespace_cannot_inject_or_suppress_form_semantics() {
         let canonical_form_path = concat!(
             "Documents/ПриобретениеТоваровУслуг/Forms/",
@@ -563,6 +579,43 @@ mod tests {
             "Documents/ПриобретениеТоваровУслуг/Forms/ФормаДокумента.xml",
             FORM_DESCRIPTOR_XML.as_bytes(),
         )
+    }
+
+    fn tracked_meta_compile_on_support_inventory() -> SourceInventory {
+        inventory(vec![
+            source_file(
+                "Configuration.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Configuration.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Locked.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Locked.xml"
+                )),
+            ),
+            source_file(
+                "Catalogs/Removed.xml",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Catalogs/Removed.xml"
+                )),
+            ),
+            source_file(
+                "Ext/ParentConfigurations.bin",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/",
+                    "meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+                )),
+            ),
+        ])
     }
 
     fn inventory(files: Vec<SourceFile>) -> SourceInventory {
