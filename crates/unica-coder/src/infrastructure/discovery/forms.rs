@@ -64,7 +64,7 @@ fn collect_form_facts(
     let mut declared_paths = BTreeSet::new();
     let mut records = Vec::new();
 
-    for descriptor in catalog.nodes() {
+    for descriptor in catalog.nodes(query)? {
         crate::infrastructure::discovery::check_cancellation(query)?;
         let Some(descriptor_path) = descriptor.definition_source() else {
             continue;

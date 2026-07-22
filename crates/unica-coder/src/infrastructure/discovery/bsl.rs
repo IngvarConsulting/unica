@@ -190,13 +190,17 @@ fn lexical_facts_for_file(
     let text = strip_source_bom(text);
     let module = module_artifact_for_path(&file.relative_path)?;
     let parsed = parse_bsl_source_cancellable(text, query)?;
-    let method_artifacts = parsed
-        .methods
-        .iter()
-        .map(|method| method_artifact(&module, &method.name))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut method_artifacts = Vec::new();
+    for method in &parsed.methods {
+        if query.is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        method_artifacts.push(method_artifact(&module, &method.name)?);
+    }
     let mut facts = Vec::new();
-    for (zero_based_line, line) in text.lines().enumerate() {
+    let mut offset = 0_usize;
+    let mut zero_based_line = 0_usize;
+    while let Some(line) = next_bsl_line(text, &mut offset, &mut || query.is_cancelled())? {
         if query.is_cancelled() {
             return Err("discovery cancelled".to_string());
         }
@@ -204,7 +208,7 @@ fn lexical_facts_for_file(
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
-        let normalized_line = normalize_discovery_identity(line);
+        let normalized_line = normalize_bsl_line_cancellable(line, &mut || query.is_cancelled())?;
         let artifact = match parsed.line_methods.get(zero_based_line).copied().flatten() {
             Some(method_index) => {
                 let method = method_artifacts
@@ -214,12 +218,12 @@ fn lexical_facts_for_file(
             }
             None => (module.clone(), ArtifactKind::Module),
         };
-        for term in terms
-            .iter()
-            .filter(|term| normalized_line.contains(term.as_str()))
-        {
+        for term in terms {
             if query.is_cancelled() {
                 return Err("discovery cancelled".to_string());
+            }
+            if !contains_cancellable(&normalized_line, term, &mut || query.is_cancelled())? {
+                continue;
             }
             facts.push(BslFact {
                 artifact: artifact.0.clone(),
@@ -228,31 +232,93 @@ fn lexical_facts_for_file(
                 location: EvidenceLocation {
                     relative_path: file.relative_path.clone(),
                     line: Some(line_number),
-                    column: matching_column(line, term),
+                    column: matching_column(line, term, &mut || query.is_cancelled())?,
                     xml_path: None,
                 },
             });
         }
+        zero_based_line = zero_based_line
+            .checked_add(1)
+            .ok_or_else(|| "BSL line index overflowed".to_string())?;
     }
     Ok(facts)
 }
 
-fn matching_column(line: &str, normalized_term: &str) -> Option<u32> {
+fn normalize_bsl_line_cancellable(
+    line: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<String, String> {
+    let mut normalized = String::new();
+    for character in line.chars() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        normalized.extend(character.to_lowercase());
+    }
+    Ok(normalized.trim().to_string())
+}
+
+fn contains_cancellable(
+    value: &str,
+    needle: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<bool, String> {
+    for (offset, _character) in value.char_indices() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        if value[offset..].starts_with(needle) {
+            return Ok(true);
+        }
+    }
+    Ok(needle.is_empty())
+}
+
+fn matching_column(
+    line: &str,
+    normalized_term: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Option<u32>, String> {
     let mut normalized_line = String::new();
     let mut original_columns = Vec::new();
     for (zero_based_column, character) in line.chars().enumerate() {
-        let column = zero_based_column.checked_add(1)?;
-        let column = u32::try_from(column).ok()?;
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        let column = zero_based_column
+            .checked_add(1)
+            .and_then(|column| u32::try_from(column).ok())
+            .ok_or_else(|| "BSL column exceeds u32".to_string())?;
         for lowercase in character.to_lowercase() {
             original_columns.push((normalized_line.len(), column));
             normalized_line.push(lowercase);
         }
     }
-    let byte_offset = normalized_line.find(normalized_term)?;
-    original_columns
+    let Some(byte_offset) =
+        cancellable_match_offset(&normalized_line, normalized_term, is_cancelled)?
+    else {
+        return Ok(None);
+    };
+    Ok(original_columns
         .binary_search_by_key(&byte_offset, |(offset, _column)| *offset)
         .ok()
-        .and_then(|index| original_columns.get(index).map(|(_offset, column)| *column))
+        .and_then(|index| original_columns.get(index).map(|(_offset, column)| *column)))
+}
+
+fn cancellable_match_offset(
+    value: &str,
+    needle: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Option<usize>, String> {
+    for (offset, _character) in value.char_indices() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        if value[offset..].starts_with(needle) {
+            return Ok(Some(offset));
+        }
+    }
+    Ok(needle.is_empty().then_some(0))
 }
 
 fn strip_source_bom(text: &str) -> &str {
@@ -272,21 +338,23 @@ fn parse_bsl_source_observing(
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<ParsedBslSource, String> {
     let text = strip_source_bom(text);
-    let lines = text.lines().collect::<Vec<_>>();
     let mut methods = Vec::new();
-    let mut line_methods = vec![None; lines.len()];
+    let mut line_methods = Vec::new();
     let mut state = BslParseState::OutsideMethod;
     let mut in_string = false;
+    let mut offset = 0_usize;
+    let mut zero_based_line = 0_usize;
 
-    for (zero_based_line, line) in lines.iter().enumerate() {
+    while let Some(line) = next_bsl_line(text, &mut offset, &mut is_cancelled)? {
         if is_cancelled() {
             return Err("discovery cancelled".to_string());
         }
+        line_methods.push(None);
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
-        let scanned = scan_bsl_line(line, &mut in_string);
+        let scanned = scan_bsl_line(line, &mut in_string, &mut is_cancelled)?;
         state = match state {
             BslParseState::OutsideMethod => {
                 if parse_method_end(&scanned.code).is_some() {
@@ -374,6 +442,9 @@ fn parse_bsl_source_observing(
                 process_body_line(method_index, &scanned.code, line_number, &mut methods)?
             }
         };
+        zero_based_line = zero_based_line
+            .checked_add(1)
+            .ok_or_else(|| "BSL line index overflowed".to_string())?;
     }
 
     if in_string {
@@ -393,11 +464,45 @@ fn parse_bsl_source_observing(
     }
 }
 
-fn scan_bsl_line(line: &str, in_string: &mut bool) -> ScannedBslLine {
+fn next_bsl_line<'a>(
+    text: &'a str,
+    offset: &mut usize,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Option<&'a str>, String> {
+    if *offset >= text.len() {
+        return Ok(None);
+    }
+    let start = *offset;
+    for index in start..text.len() {
+        if index % 1_024 == 0 && is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
+        if text.as_bytes()[index] == b'\n' {
+            *offset = index + 1;
+            let end = index
+                .checked_sub(usize::from(
+                    index > start && text.as_bytes()[index - 1] == b'\r',
+                ))
+                .ok_or_else(|| "BSL line boundary underflowed".to_string())?;
+            return Ok(Some(&text[start..end]));
+        }
+    }
+    *offset = text.len();
+    Ok(Some(&text[start..]))
+}
+
+fn scan_bsl_line(
+    line: &str,
+    in_string: &mut bool,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<ScannedBslLine, String> {
     let mut code = String::new();
     let mut structural = String::new();
     let mut characters = line.chars().peekable();
     while let Some(character) = characters.next() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
         if character == '"' {
             code.push(character);
             structural.push(' ');
@@ -420,7 +525,7 @@ fn scan_bsl_line(line: &str, in_string: &mut bool) -> ScannedBslLine {
             structural.push(character);
         }
     }
-    ScannedBslLine { code, structural }
+    Ok(ScannedBslLine { code, structural })
 }
 
 fn parse_method_declaration(code: &str) -> Result<Option<DeclarationStart>, String> {
@@ -1361,6 +1466,23 @@ mod tests {
         };
         assert_eq!(lexical_diagnostic.code, "discovery_cancelled");
         assert_eq!(definition_diagnostic.code, "discovery_cancelled");
+    }
+
+    #[test]
+    fn parser_observes_cancellation_while_scanning_one_long_line() {
+        let source = "content ".repeat(64);
+        let mut checks = 0_u8;
+
+        let result = super::parse_bsl_source_observing(&source, || {
+            checks += 1;
+            checks == 4
+        });
+        let Err(error) = result else {
+            panic!("long-line scan must stop at the cancellation boundary");
+        };
+
+        assert_eq!(error, "discovery cancelled");
+        assert_eq!(checks, 4);
     }
 
     #[test]

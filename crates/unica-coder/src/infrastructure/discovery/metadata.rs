@@ -94,12 +94,20 @@ const SUBORDINATE_KINDS: &[SubordinateKind] = &[
 ];
 
 impl MetadataCatalog {
-    pub(super) fn nodes(&self) -> Vec<&MetadataNode> {
+    pub(super) fn nodes(
+        &self,
+        query: &DiscoveryQuery<'_>,
+    ) -> Result<Vec<&MetadataNode>, ProviderDiagnostic> {
         let mut nodes = Vec::new();
         for descriptor in &self.descriptors {
-            collect_metadata_nodes(&descriptor.root, &mut nodes);
+            let mut pending = vec![&descriptor.root];
+            while let Some(node) = pending.pop() {
+                crate::infrastructure::discovery::check_cancellation(query)?;
+                nodes.push(node);
+                pending.extend(node.children.iter().rev());
+            }
         }
-        nodes
+        Ok(nodes)
     }
 }
 
@@ -328,14 +336,14 @@ fn build_catalog(
                 continue;
             }
         }
-        let root = materialize_metadata_node(raw.root, None, 1, true)?;
+        let root = materialize_metadata_node(raw.root, None, 1, true, query)?;
         descriptors.push(MetadataDescriptor {
             relative_path: raw.relative_path,
             root,
         });
     }
     descriptors.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    validate_catalog_nodes(&descriptors)?;
+    validate_catalog_nodes(&descriptors, query)?;
 
     subordinate_descriptors.sort_by(|left, right| {
         descriptor_path_depth(&left.1.relative_path)
@@ -344,20 +352,22 @@ fn build_catalog(
     });
     for (path, subordinate) in subordinate_descriptors {
         ensure_metadata_active(query)?;
-        let (parent, parent_depth) = find_definition_node_mut(&mut descriptors, &path.parent_path)?
-            .ok_or_else(|| {
-                format!(
-                    "subordinate {} {} has no parent descriptor {}",
-                    path.kind.xml_kind,
-                    subordinate.relative_path.as_str(),
-                    path.parent_path.as_str()
-                )
-            })?;
-        attach_subordinate_descriptor(parent, parent_depth, path, subordinate)?;
+        let (parent, parent_depth) =
+            find_definition_node_mut(&mut descriptors, &path.parent_path, query)?.ok_or_else(
+                || {
+                    format!(
+                        "subordinate {} {} has no parent descriptor {}",
+                        path.kind.xml_kind,
+                        subordinate.relative_path.as_str(),
+                        path.parent_path.as_str()
+                    )
+                },
+            )?;
+        attach_subordinate_descriptor(parent, parent_depth, path, subordinate, query)?;
     }
-    validate_catalog_nodes(&descriptors)?;
+    validate_catalog_nodes(&descriptors, query)?;
     if !inventory_bounded {
-        validate_all_declarations_resolved(&descriptors)?;
+        validate_all_declarations_resolved(&descriptors, query)?;
     }
     Ok(MetadataCatalog {
         descriptors,
@@ -433,7 +443,9 @@ fn materialize_metadata_node(
     container: Option<(&ArtifactId, &str)>,
     depth: usize,
     descriptor_root: bool,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<MetadataNode, String> {
+    ensure_metadata_active(query)?;
     validate_metadata_depth(depth)?;
     let artifact_text = match container {
         Some((_container, "Configuration")) if metadata_kind(&raw.xml_kind).is_some() => {
@@ -452,18 +464,17 @@ fn materialize_metadata_node(
     })?;
     let definition_source =
         (descriptor_root && !raw.declaration_only).then(|| raw.location.relative_path.clone());
-    let mut children = raw
-        .children
-        .into_iter()
-        .map(|child| {
-            materialize_metadata_node(
-                child,
-                Some((&artifact, &raw.xml_kind)),
-                checked_child_depth(depth)?,
-                false,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut children = Vec::new();
+    for child in raw.children {
+        ensure_metadata_active(query)?;
+        children.push(materialize_metadata_node(
+            child,
+            Some((&artifact, &raw.xml_kind)),
+            checked_child_depth(depth)?,
+            false,
+            query,
+        )?);
+    }
     children.sort_by(|left, right| left.artifact.cmp(&right.artifact));
     Ok(MetadataNode {
         artifact,
@@ -482,7 +493,9 @@ fn attach_subordinate_descriptor(
     parent_depth: usize,
     path: SubordinateDescriptorPath,
     subordinate: RawMetadataDescriptor,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<(), String> {
+    ensure_metadata_active(query)?;
     if subordinate.root.xml_kind != path.kind.xml_kind
         || subordinate.root.artifact_kind != path.kind.artifact_kind
     {
@@ -588,19 +601,17 @@ fn attach_subordinate_descriptor(
     declared.definition_present = true;
     declared.definition_source = Some(subordinate.relative_path.clone());
     let declared_depth = checked_child_depth(parent_depth)?;
-    let mut subordinate_children = subordinate
-        .root
-        .children
-        .into_iter()
-        .map(|child| {
-            materialize_metadata_node(
-                child,
-                Some((&artifact, path.kind.xml_kind)),
-                checked_child_depth(declared_depth)?,
-                false,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut subordinate_children = Vec::new();
+    for child in subordinate.root.children {
+        ensure_metadata_active(query)?;
+        subordinate_children.push(materialize_metadata_node(
+            child,
+            Some((&artifact, path.kind.xml_kind)),
+            checked_child_depth(declared_depth)?,
+            false,
+            query,
+        )?);
+    }
     declared.children.append(&mut subordinate_children);
     declared
         .children
@@ -611,9 +622,12 @@ fn attach_subordinate_descriptor(
 fn find_definition_node_mut<'a>(
     descriptors: &'a mut [MetadataDescriptor],
     path: &PortableRelativePath,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<Option<(&'a mut MetadataNode, usize)>, String> {
     for descriptor in descriptors {
-        if let Some(found) = find_definition_node_in_tree_mut(&mut descriptor.root, path, 1)? {
+        ensure_metadata_active(query)?;
+        if let Some(found) = find_definition_node_in_tree_mut(&mut descriptor.root, path, 1, query)?
+        {
             return Ok(Some(found));
         }
     }
@@ -624,7 +638,9 @@ fn find_definition_node_in_tree_mut<'a>(
     node: &'a mut MetadataNode,
     path: &PortableRelativePath,
     depth: usize,
+    query: &DiscoveryQuery<'_>,
 ) -> Result<Option<(&'a mut MetadataNode, usize)>, String> {
+    ensure_metadata_active(query)?;
     validate_metadata_depth(depth)?;
     if node.definition_source.as_ref() == Some(path) {
         return Ok(Some((node, depth)));
@@ -634,21 +650,34 @@ fn find_definition_node_in_tree_mut<'a>(
     }
     let child_depth = checked_child_depth(depth)?;
     for child in &mut node.children {
-        if let Some(found) = find_definition_node_in_tree_mut(child, path, child_depth)? {
+        ensure_metadata_active(query)?;
+        if let Some(found) = find_definition_node_in_tree_mut(child, path, child_depth, query)? {
             return Ok(Some(found));
         }
     }
     Ok(None)
 }
 
-fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), String> {
+fn validate_catalog_nodes(
+    descriptors: &[MetadataDescriptor],
+    query: &DiscoveryQuery<'_>,
+) -> Result<(), String> {
+    validate_catalog_nodes_observing(descriptors, || query.is_cancelled())
+}
+
+fn validate_catalog_nodes_observing(
+    descriptors: &[MetadataDescriptor],
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<(), String> {
     let mut artifacts = BTreeMap::new();
     let mut uuids = BTreeMap::new();
     let mut definition_sources = BTreeMap::new();
     for descriptor in descriptors {
-        let mut nodes = Vec::new();
-        collect_metadata_nodes(&descriptor.root, &mut nodes);
-        for node in nodes {
+        let mut pending = vec![&descriptor.root];
+        while let Some(node) = pending.pop() {
+            if is_cancelled() {
+                return Err("discovery cancelled".to_string());
+            }
             if let Some(previous_kind) = artifacts.insert(node.artifact.clone(), node.artifact_kind)
             {
                 return Err(format!(
@@ -657,12 +686,17 @@ fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), Stri
                     node.artifact_kind
                 ));
             }
-            let unique_locations = node.locations.iter().collect::<BTreeSet<_>>();
-            if unique_locations.len() != node.locations.len() {
-                return Err(format!(
-                    "metadata artifact {} has duplicate evidence locations",
-                    node.artifact.as_str()
-                ));
+            let mut unique_locations = BTreeSet::new();
+            for location in &node.locations {
+                if is_cancelled() {
+                    return Err("discovery cancelled".to_string());
+                }
+                if !unique_locations.insert(location) {
+                    return Err(format!(
+                        "metadata artifact {} has duplicate evidence locations",
+                        node.artifact.as_str()
+                    ));
+                }
             }
             if let Some(uuid) = &node.object_uuid {
                 if let Some(previous_artifact) = uuids.insert(uuid.clone(), node.artifact.clone()) {
@@ -685,31 +719,30 @@ fn validate_catalog_nodes(descriptors: &[MetadataDescriptor]) -> Result<(), Stri
                     ));
                 }
             }
+            pending.extend(node.children.iter().rev());
         }
     }
     Ok(())
 }
 
-fn validate_all_declarations_resolved(descriptors: &[MetadataDescriptor]) -> Result<(), String> {
+fn validate_all_declarations_resolved(
+    descriptors: &[MetadataDescriptor],
+    query: &DiscoveryQuery<'_>,
+) -> Result<(), String> {
     for descriptor in descriptors {
-        let mut nodes = Vec::new();
-        collect_metadata_nodes(&descriptor.root, &mut nodes);
-        if let Some(unresolved) = nodes.into_iter().find(|node| !node.definition_present) {
-            return Err(format!(
-                "metadata declaration {} has no concrete subordinate descriptor",
-                unresolved.artifact.as_str()
-            ));
+        let mut pending = vec![&descriptor.root];
+        while let Some(node) = pending.pop() {
+            ensure_metadata_active(query)?;
+            if !node.definition_present {
+                return Err(format!(
+                    "metadata declaration {} has no concrete subordinate descriptor",
+                    node.artifact.as_str()
+                ));
+            }
+            pending.extend(node.children.iter().rev());
         }
     }
     Ok(())
-}
-
-fn collect_metadata_nodes<'a>(node: &'a MetadataNode, output: &mut Vec<&'a MetadataNode>) {
-    let mut pending = vec![node];
-    while let Some(current) = pending.pop() {
-        output.push(current);
-        pending.extend(current.children.iter().rev());
-    }
 }
 
 fn validate_metadata_depth(depth: usize) -> Result<(), String> {
@@ -1037,7 +1070,7 @@ pub(super) fn analyzed_file_map(
 
 #[cfg(test)]
 mod tests {
-    use super::PlatformXmlMetadataProvider;
+    use super::{MetadataDescriptor, MetadataNode, PlatformXmlMetadataProvider};
     use crate::application::discovery::ports::MetadataCatalogPort;
     use crate::domain::discovery::{
         ArtifactId, ArtifactKind, ContentHash, DiscoveryQuery, DiscoveryQueryLimits,
@@ -1081,6 +1114,50 @@ mod tests {
             panic!("cancelled metadata must be a failed provider outcome");
         };
         assert_eq!(diagnostic.code, "discovery_cancelled");
+    }
+
+    #[test]
+    fn catalog_validation_observes_cancellation_during_metadata_node_traversal() {
+        let location = crate::domain::discovery::EvidenceLocation {
+            relative_path: PortableRelativePath::parse_str("Documents/Order.xml")
+                .expect("metadata path"),
+            line: Some(1),
+            column: Some(1),
+            xml_path: Some("/MetaDataObject/Document".to_string()),
+        };
+        let child = MetadataNode {
+            artifact: artifact("Document.Order.Attribute.Series"),
+            artifact_kind: ArtifactKind::Attribute,
+            name: "Series".to_string(),
+            object_uuid: None,
+            locations: vec![location.clone()],
+            children: Vec::new(),
+            definition_present: true,
+            definition_source: None,
+        };
+        let descriptor = MetadataDescriptor {
+            relative_path: location.relative_path.clone(),
+            root: MetadataNode {
+                artifact: artifact("Document.Order"),
+                artifact_kind: ArtifactKind::MetadataObject,
+                name: "Order".to_string(),
+                object_uuid: None,
+                locations: vec![location],
+                children: vec![child],
+                definition_present: true,
+                definition_source: None,
+            },
+        };
+        let mut checks = 0_u8;
+
+        let error = super::validate_catalog_nodes_observing(&[descriptor], || {
+            checks += 1;
+            checks == 3
+        })
+        .expect_err("catalog validation must stop at the cancellation boundary");
+
+        assert_eq!(error, "discovery cancelled");
+        assert_eq!(checks, 3);
     }
 
     const PROCESSOR_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">

@@ -74,7 +74,7 @@ fn collect_support_facts(
     let mut records = Vec::new();
     if support_file.is_some() || !inventory_bounded {
         for node in catalog
-            .nodes()
+            .nodes(query)?
             .into_iter()
             .filter(|node| node.object_uuid.is_some())
         {

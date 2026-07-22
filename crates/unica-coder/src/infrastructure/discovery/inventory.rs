@@ -9,7 +9,8 @@ use crate::infrastructure::platform::contained_file::{
     ContainedFileError,
 };
 use crate::infrastructure::platform::verified_directory::{
-    read_verified_contained_directory, read_verified_contained_directory_with_expected_identity,
+    read_verified_contained_directory_cancellable,
+    read_verified_contained_directory_with_expected_identity_cancellable,
     VerifiedDirectoryEntryKind, VerifiedDirectoryError,
 };
 use std::collections::BTreeMap;
@@ -55,13 +56,18 @@ impl ContainedSourceInventoryPort {
                 VerifiedDirectoryEntryKind::Directory => {
                     let entries = match expected_identity {
                         Some(expected_identity) => {
-                            read_verified_contained_directory_with_expected_identity(
+                            read_verified_contained_directory_with_expected_identity_cancellable(
                                 &self.canonical_root,
                                 &path,
                                 expected_identity,
+                                || query.is_cancelled(),
                             )
                         }
-                        None => read_verified_contained_directory(&self.canonical_root, &path),
+                        None => read_verified_contained_directory_cancellable(
+                            &self.canonical_root,
+                            &path,
+                            || query.is_cancelled(),
+                        ),
                     }
                     .map_err(classify_verified_directory_error)?;
                     for entry in entries {
@@ -322,6 +328,9 @@ fn classify_contained_file_error(error: ContainedFileError) -> CaptureError {
 
 fn classify_verified_directory_error(error: VerifiedDirectoryError) -> CaptureError {
     match error {
+        VerifiedDirectoryError::Cancelled => {
+            CaptureError::Failed(crate::infrastructure::discovery::cancellation_diagnostic())
+        }
         VerifiedDirectoryError::UnsupportedHost => {
             CaptureError::Unavailable(ProviderDiagnostic::material(
                 "source_inventory_unsupported_host",
@@ -603,6 +612,12 @@ mod tests {
 
     #[test]
     fn unsupported_hosts_are_unavailable_but_security_failures_are_contract_violations() {
+        let CaptureError::Failed(cancelled) =
+            classify_verified_directory_error(VerifiedDirectoryError::Cancelled)
+        else {
+            panic!("cancelled enumeration must be a failed provider outcome");
+        };
+        assert_eq!(cancelled.code, "discovery_cancelled");
         assert!(matches!(
             classify_contained_file_error(ContainedFileError::UnsupportedHost),
             CaptureError::Unavailable(_)
