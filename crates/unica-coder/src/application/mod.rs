@@ -504,7 +504,7 @@ fn call_project_discover(
     cancellation: &CancellationToken,
 ) -> Result<OperationResult, String> {
     let request = discovery::contract::parse_discover_request(args)
-        .map_err(|error| format!("invalid discovery request: {error}"))?;
+        .map_err(|error| format!("{}: {error}", error.code().stable_name()))?;
     debug_assert_eq!(request.mode(), discovery::contract::DiscoveryMode::Explore);
     let context = ports.discover_workspace(request.cwd().map(PathBuf::from))?;
     ports.validate_tool_context(spec, args, false, &context)?;
@@ -1573,6 +1573,33 @@ mod tests {
             "unexpected discovery error: {error}"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_discovery_request_failures_keep_distinct_machine_codes() {
+        let unknown = Map::from_iter([
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("dryRun".to_string(), json!(true)),
+        ]);
+        let missing = Map::from_iter([("task".to_string(), json!("Inspect extension points"))]);
+
+        let unknown_error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &unknown)
+            .expect_err("unknown field must fail before workspace discovery");
+        let missing_error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &missing)
+            .expect_err("missing mode must fail before workspace discovery");
+
+        assert_eq!(
+            unknown_error,
+            "discovery_request_unknown_field: unica.project.discover does not accept argument `dryRun`"
+        );
+        assert_eq!(
+            missing_error,
+            "discovery_request_missing_field: unica.project.discover requires `mode`"
+        );
+        assert_ne!(unknown_error, missing_error);
     }
 
     #[test]

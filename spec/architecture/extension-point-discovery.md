@@ -43,6 +43,12 @@ prose, not character `maxLength`. Entries are unique.
 
 Callers may lower limits but never raise them above these values.
 
+Every rejected request crosses the public tool boundary as
+`discovery_request_<reason>: <detail>`, with a distinct stable reason for
+unknown or missing fields, invalid types or mode, text/item/duplicate failures,
+invalid artifact/source identities, and out-of-range limits. Runtime discovery
+errors keep their separate `discovery_<reason>` codes.
+
 ## Result, providers, and graph
 
 The typed result is at `OperationResult.data.discovery`: `schemaVersion`,

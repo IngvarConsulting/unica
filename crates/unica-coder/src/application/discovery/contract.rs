@@ -148,6 +148,23 @@ pub(crate) enum DiscoveryContractErrorCode {
     LimitOutOfRange,
 }
 
+impl DiscoveryContractErrorCode {
+    pub(crate) const fn stable_name(self) -> &'static str {
+        match self {
+            Self::UnknownField => "discovery_request_unknown_field",
+            Self::MissingField => "discovery_request_missing_field",
+            Self::InvalidType => "discovery_request_invalid_type",
+            Self::InvalidMode => "discovery_request_invalid_mode",
+            Self::TextBytesOutOfRange => "discovery_request_text_bytes_out_of_range",
+            Self::TooManyItems => "discovery_request_too_many_items",
+            Self::DuplicateValue => "discovery_request_duplicate_value",
+            Self::InvalidArtifactId => "discovery_request_invalid_artifact_id",
+            Self::InvalidSourceDir => "discovery_request_invalid_source_dir",
+            Self::LimitOutOfRange => "discovery_request_limit_out_of_range",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiscoveryContractError {
     code: DiscoveryContractErrorCode,
@@ -698,6 +715,61 @@ mod tests {
         for (payload, expected) in cases {
             let error = parse(payload).unwrap_err();
             assert_eq!(error.code(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn contract_error_codes_have_distinct_stable_boundary_names() {
+        let cases = [
+            (
+                DiscoveryContractErrorCode::UnknownField,
+                "discovery_request_unknown_field",
+            ),
+            (
+                DiscoveryContractErrorCode::MissingField,
+                "discovery_request_missing_field",
+            ),
+            (
+                DiscoveryContractErrorCode::InvalidType,
+                "discovery_request_invalid_type",
+            ),
+            (
+                DiscoveryContractErrorCode::InvalidMode,
+                "discovery_request_invalid_mode",
+            ),
+            (
+                DiscoveryContractErrorCode::TextBytesOutOfRange,
+                "discovery_request_text_bytes_out_of_range",
+            ),
+            (
+                DiscoveryContractErrorCode::TooManyItems,
+                "discovery_request_too_many_items",
+            ),
+            (
+                DiscoveryContractErrorCode::DuplicateValue,
+                "discovery_request_duplicate_value",
+            ),
+            (
+                DiscoveryContractErrorCode::InvalidArtifactId,
+                "discovery_request_invalid_artifact_id",
+            ),
+            (
+                DiscoveryContractErrorCode::InvalidSourceDir,
+                "discovery_request_invalid_source_dir",
+            ),
+            (
+                DiscoveryContractErrorCode::LimitOutOfRange,
+                "discovery_request_limit_out_of_range",
+            ),
+        ];
+
+        let mut names = std::collections::BTreeSet::new();
+        for (code, expected) in cases {
+            assert_eq!(code.stable_name(), expected);
+            assert!(
+                names.insert(code.stable_name()),
+                "duplicate code: {expected}"
+            );
         }
     }
 
