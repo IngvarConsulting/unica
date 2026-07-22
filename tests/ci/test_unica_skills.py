@@ -895,7 +895,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, form_dsl)
 
-        self.assertIn("Выпадающее меню", form_patterns)
+        self.assertIn("Связанные действия командной панели", form_patterns)
         self.assertIn("mobileCommandBarContent", form_compile)
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
@@ -942,6 +942,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "как подсказку",
             "подобно гиперссылке",
             "Командная панель",
+            '"commandSource": "Form"',
+            '"commandSource": "FormCommandPanelGlobalCommands"',
+            '"commandName": "CommonCommand.ОткрытьПараметры"',
+            "вручную устраните дубли",
+            "не выдавайте `popup` или `buttonGroup` за исполнимые нативные элементы",
             "Команды формы",
             "Шапка формы",
             "функциональным опциям",
@@ -953,6 +958,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             '"choiceButton": true',
             "очевидных полей",
             '"titleLocation": "none"',
+            '"titleLocation": "top"',
             '"inputHint": "По всем организациям"',
             '"showInHeader": false',
             '"readOnly": true',
@@ -981,10 +987,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("buttonHint", reference_section)
         self.assertNotIn("RGB(", reference_section)
         self.assertNotRegex(reference_section, r'"radio"\s*:')
+        self.assertNotRegex(reference_section, r'"(?:popup|buttonGroup)"\s*:')
         self.assertNotRegex(reference_section, r'"(?:leftIndent|showLeftIndent)"\s*:')
         self.assertNotIn("нет нативного DSL-ключа для левого отступа", reference_section)
         self.assertNotIn('"representation": "Picture"', reference_section)
         self.assertNotIn("Кнопки действий внизу", reference_section)
+
+    def test_form_dsl_keeps_tooltip_and_command_binding_contracts_unambiguous(self) -> None:
+        form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Обычный `<Title>` поля и `<ToolTip>`", form_dsl)
+        self.assertRegex(form_dsl, r"передавать им `\{text, formatted\}`\s+нельзя")
+        self.assertIn("приоритетом `command` → `commandName` → `stdCommand`", form_dsl)
 
     def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")

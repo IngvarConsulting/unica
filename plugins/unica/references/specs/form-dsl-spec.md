@@ -701,6 +701,10 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 | `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
 | `locationInCommandBar` | string | `InCommandBar`, `InAdditionalSubmenu` |
 
+`command`, `commandName` и `stdCommand` — альтернативные способы привязки.
+Если ошибочно заданы несколько, компилятор эмитит ровно один `<CommandName>` с
+приоритетом `command` → `commandName` → `stdCommand`.
+
 #### picture — PictureDecoration
 
 ```json

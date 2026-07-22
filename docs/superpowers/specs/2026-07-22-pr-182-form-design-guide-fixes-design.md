@@ -97,8 +97,9 @@ native-компилятором.
 - у поля ввода явные `<ChoiceButton>`, `<ShowInHeader>`,
   `<HorizontalAlign>` и `<HeaderHorizontalAlign>` из уже документированных
   ключей, используемых правилами выбора и табличных колонок.
-- у кнопки `commandName` как глобальную команду без префикса `Form.Command`, а
-  у командной панели `commandSource` как источник `Form` или
+- у кнопки `commandName` как глобальную команду без префикса `Form.Command`;
+  `command`, `commandName` и `stdCommand` дают ровно один тег с таким же
+  порядком приоритета, а у командной панели `commandSource` как источник `Form` или
   `FormCommandPanelGlobalCommands`;
 - у обычного tooltip не только строку, но и документированную многоязычную
   `{ru, en}` форму. Атрибут `formatted` для `<ToolTip>` не добавляется:

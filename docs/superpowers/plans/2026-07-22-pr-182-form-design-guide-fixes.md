@@ -273,7 +273,8 @@ git -c commit.gpgsign=false commit -m "fix: emit documented input column propert
 
 **Interfaces:**
 - Button `commandName` emits a global `<CommandName>` verbatim when local
-  `command` is absent; existing `command` precedence is preserved.
+  `command` is absent. The three alternative bindings emit exactly one tag with
+  precedence `command` → `commandName` → `stdCommand`.
 - Standalone command-bar `commandSource` emits `<CommandSource>` before
   `<Autofill>` and child items.
 - Element tooltip accepts string and `{ru, en}` values; language/content values

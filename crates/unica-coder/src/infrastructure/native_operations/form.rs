@@ -6088,17 +6088,59 @@ pub(crate) fn emit_form_mltext(lines: &mut Vec<String>, indent: &str, tag: &str,
     lines.push(format!("{indent}</{tag}>"));
 }
 
+pub(crate) fn emit_form_mltext_value(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    value: &Value,
+) {
+    if let Some(text) = value.as_str() {
+        if text.is_empty() {
+            return;
+        }
+        emit_form_mltext(lines, indent, tag, text);
+        return;
+    }
+
+    let Some(texts) = value.as_object() else {
+        return;
+    };
+    let texts = texts
+        .iter()
+        .filter(|(language, _)| !matches!(language.as_str(), "text" | "formatted"))
+        .filter_map(|(language, text)| {
+            text.as_str()
+                .filter(|text| !text.is_empty())
+                .map(|text| (language, text))
+        })
+        .collect::<Vec<_>>();
+    if texts.is_empty() {
+        return;
+    }
+
+    lines.push(format!("{indent}<{tag}>"));
+    for (language, text) in texts {
+        lines.push(format!("{indent}\t<v8:item>"));
+        lines.push(format!(
+            "{indent}\t\t<v8:lang>{}</v8:lang>",
+            escape_xml(language)
+        ));
+        lines.push(format!(
+            "{indent}\t\t<v8:content>{}</v8:content>",
+            escape_xml(text)
+        ));
+        lines.push(format!("{indent}\t</v8:item>"));
+    }
+    lines.push(format!("{indent}</{tag}>"));
+}
+
 pub(crate) fn emit_form_element_tooltip(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     indent: &str,
 ) {
-    if let Some(tooltip) = element
-        .get("tooltip")
-        .and_then(Value::as_str)
-        .filter(|tooltip| !tooltip.is_empty())
-    {
-        emit_form_mltext(lines, indent, "ToolTip", tooltip);
+    if let Some(tooltip) = element.get("tooltip") {
+        emit_form_mltext_value(lines, indent, "ToolTip", tooltip);
     }
     if let Some(representation) = element
         .get("tooltipRepresentation")
@@ -6653,18 +6695,32 @@ pub(crate) fn emit_form_button(
         };
         lines.push(format!("{inner}<Type>{}</Type>", escape_xml(mapped)));
     }
-    if let Some(command) = element.get("command").and_then(Value::as_str) {
-        lines.push(format!(
-            "{inner}<CommandName>Form.Command.{}</CommandName>",
-            escape_xml(command)
-        ));
-    }
-    if let Some(std_command) = element.get("stdCommand").and_then(Value::as_str) {
-        let command_name = if let Some((item, command)) = std_command.rsplit_once('.') {
-            format!("Form.Item.{item}.StandardCommand.{command}")
-        } else {
-            format!("Form.StandardCommand.{std_command}")
-        };
+    let command_name = element
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+        .map(|command| format!("Form.Command.{command}"))
+        .or_else(|| {
+            element
+                .get("commandName")
+                .and_then(Value::as_str)
+                .filter(|command_name| !command_name.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            element
+                .get("stdCommand")
+                .and_then(Value::as_str)
+                .filter(|std_command| !std_command.is_empty())
+                .map(|std_command| {
+                    if let Some((item, command)) = std_command.rsplit_once('.') {
+                        format!("Form.Item.{item}.StandardCommand.{command}")
+                    } else {
+                        format!("Form.StandardCommand.{std_command}")
+                    }
+                })
+        });
+    if let Some(command_name) = command_name {
         lines.push(format!(
             "{inner}<CommandName>{}</CommandName>",
             escape_xml(&command_name)
@@ -6735,6 +6791,16 @@ pub(crate) fn emit_form_command_bar_element(
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
+    if let Some(command_source) = element
+        .get("commandSource")
+        .and_then(Value::as_str)
+        .filter(|command_source| !command_source.is_empty())
+    {
+        lines.push(format!(
+            "{inner}<CommandSource>{}</CommandSource>",
+            escape_xml(command_source)
+        ));
+    }
     if element.get("autofill").and_then(Value::as_bool) == Some(true) {
         lines.push(format!("{inner}<Autofill>true</Autofill>"));
     }
@@ -9820,6 +9886,156 @@ mod tests {
                 "\t\t\t<ContextMenu name=\"ЗаполнительКонтекстноеМеню\""
             )),
             "{xml}"
+        );
+    }
+
+    #[test]
+    fn form_compile_emits_documented_command_sources_and_global_buttons() {
+        let definition = json!({
+            "elements": [
+                {
+                    "cmdBar": "FormCommands",
+                    "commandSource": "Form",
+                    "autofill": true,
+                    "children": [
+                        {
+                            "button": "Local",
+                            "command": "Save&<",
+                            "commandName": "CommonCommand.Ignored&<",
+                            "stdCommand": "IgnoredLocalStandard"
+                        },
+                        {
+                            "button": "Global",
+                            "commandName": "CommonCommand.Open&<",
+                            "stdCommand": "IgnoredGlobalStandard"
+                        },
+                        {
+                            "button": "Fallback",
+                            "command": "",
+                            "commandName": "CommonCommand.Fallback",
+                            "stdCommand": "IgnoredFallbackStandard"
+                        },
+                        {
+                            "button": "Standard",
+                            "stdCommand": "Table.Add"
+                        }
+                    ]
+                },
+                {
+                    "cmdBar": "GlobalCommands",
+                    "commandSource": "FormCommandPanelGlobalCommands",
+                    "autofill": false
+                }
+            ]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+
+        assert!(
+            xml.contains(concat!(
+                "<CommandBar name=\"FormCommands\" id=\"1\">\n",
+                "\t\t\t<CommandSource>Form</CommandSource>\n",
+                "\t\t\t<Autofill>true</Autofill>\n",
+                "\t\t\t<ChildItems>"
+            )),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<CommandName>Form.Command.Save&amp;&lt;</CommandName>"),
+            "{xml}"
+        );
+        assert!(!xml.contains("CommonCommand.Ignored"), "{xml}");
+        assert!(!xml.contains("IgnoredLocalStandard"), "{xml}");
+        assert!(
+            xml.contains("<CommandName>CommonCommand.Open&amp;&lt;</CommandName>"),
+            "{xml}"
+        );
+        assert!(!xml.contains("IgnoredGlobalStandard"), "{xml}");
+        assert!(
+            xml.contains("<CommandName>CommonCommand.Fallback</CommandName>"),
+            "{xml}"
+        );
+        assert!(!xml.contains("IgnoredFallbackStandard"), "{xml}");
+        assert!(
+            xml.contains("<CommandName>Form.Item.Table.StandardCommand.Add</CommandName>"),
+            "{xml}"
+        );
+        assert!(
+            !xml.contains("<CommandName>Form.Command.</CommandName>"),
+            "{xml}"
+        );
+        let global_commands = xml
+            .split_once("<CommandBar name=\"GlobalCommands\"")
+            .and_then(|(_, tail)| tail.split_once("</CommandBar>"))
+            .map(|(command_bar, _)| command_bar)
+            .expect("GlobalCommands command bar must be emitted");
+        assert!(
+            global_commands
+                .contains("<CommandSource>FormCommandPanelGlobalCommands</CommandSource>"),
+            "{global_commands}"
+        );
+    }
+
+    #[test]
+    fn form_compile_emits_multilingual_tooltip_values() {
+        let definition = json!({
+            "elements": [
+                {
+                    "input": "Input",
+                    "tooltip": {"ru": "Поле < &", "en": "Input > &"}
+                },
+                {
+                    "button": "Button",
+                    "tooltip": {"ru": "Кнопка < &", "en": "Button > &"}
+                },
+                {
+                    "check": "Check",
+                    "tooltip": {"ru": "Флажок < &", "en": "Check > &"}
+                },
+                {
+                    "labelField": "Label",
+                    "tooltip": {"ru": "Надпись < &", "en": "Label > &"}
+                },
+                {
+                    "input": "Empty",
+                    "tooltip": {"ru": "", "en": ""}
+                },
+                {
+                    "input": "FormattedWrapper",
+                    "tooltip": {"text": "Not a tooltip language", "formatted": true}
+                }
+            ]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+
+        for (ru, en) in [
+            ("Поле &lt; &amp;", "Input &gt; &amp;"),
+            ("Кнопка &lt; &amp;", "Button &gt; &amp;"),
+            ("Флажок &lt; &amp;", "Check &gt; &amp;"),
+            ("Надпись &lt; &amp;", "Label &gt; &amp;"),
+        ] {
+            assert!(
+                xml.contains(&format!(
+                    "<ToolTip>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>{ru}</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>en</v8:lang>\n\t\t\t\t\t<v8:content>{en}</v8:content>"
+                )),
+                "{xml}"
+            );
+        }
+
+        let empty_start = xml.find("<InputField name=\"Empty\"").unwrap();
+        let empty_end = empty_start + xml[empty_start..].find("</InputField>").unwrap();
+        assert!(
+            !xml[empty_start..empty_end].contains("<ToolTip"),
+            "{}",
+            &xml[empty_start..empty_end]
+        );
+        let formatted_start = xml.find("<InputField name=\"FormattedWrapper\"").unwrap();
+        let formatted_end = formatted_start + xml[formatted_start..].find("</InputField>").unwrap();
+        assert!(
+            !xml[formatted_start..formatted_end].contains("<ToolTip"),
+            "{}",
+            &xml[formatted_start..formatted_end]
         );
     }
 
