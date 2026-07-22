@@ -1,10 +1,16 @@
+use super::instructions::{
+    decode_historical_support_conflict_instruction, SupportConflictInstruction,
+    SupportCorrectiveInstruction,
+};
 use super::scalars::{
     NormalizedUtcInstant, RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername,
     RepositoryVersion, RequiredNullable,
 };
 use super::schema::{audit_json_schema, one_of_schema};
 use super::support::{
-    SupportPrerequisiteVersionObservation, SupportPrerequisiteVersionObservationDigestRecord,
+    ExternalSupportOwnershipEvidence, SupportHistoryOrderAuthority,
+    SupportObservationCorrectiveProjection, SupportPrerequisiteVersionObservation,
+    SupportPrerequisiteVersionObservationDigestRecord,
 };
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
@@ -16,6 +22,7 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -178,6 +185,20 @@ pub(crate) struct RepositoryActorIdentity {
     computer: RequiredNullable<RepositoryIdentityComponent>,
     #[serde(deserialize_with = "RequiredNullable::deserialize_required")]
     infobase: RequiredNullable<RepositoryIdentityComponent>,
+}
+
+impl RepositoryActorIdentity {
+    pub(crate) const fn username(&self) -> &RepositoryUsername {
+        &self.username
+    }
+
+    pub(crate) const fn computer(&self) -> Option<&RepositoryIdentityComponent> {
+        self.computer.as_ref()
+    }
+
+    pub(crate) const fn infobase(&self) -> Option<&RepositoryIdentityComponent> {
+        self.infobase.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -752,6 +773,8 @@ enum SemanticDigestProjection {
     CopyContentDeltaDigest,
     CopyClassificationDigest,
     CopyExternalSupportDisjointnessDigest,
+    CopyCorrectiveInstructionDigest,
+    CopySupportConflictInstructionDigest,
     ExplicitNull,
     CopyEvidenceDigest,
 }
@@ -766,6 +789,8 @@ enum MapperSourceCase {
     Authorized,
     ExternalSupport,
     PreArmExternal,
+    ActionCorrection,
+    ExternalConflictCorrection,
     Invalid,
     HarmlessNonBlockingReferenceExpansion,
 }
@@ -843,6 +868,23 @@ impl EvidenceClassificationMappingRow {
             classification_digest_projection: SemanticDigestProjection::CopyClassificationDigest,
             external_support_disjointness_digest_projection,
             corrective_instruction_digest_projection: SemanticDigestProjection::ExplicitNull,
+            non_conflicting_concurrent_evidence_digest_projection:
+                SemanticDigestProjection::ExplicitNull,
+        }
+    }
+
+    const fn support_correction(
+        source_case: MapperSourceCase,
+        corrective_instruction_digest_projection: SemanticDigestProjection,
+    ) -> Self {
+        Self {
+            source_case,
+            partition_classification: RepositoryHistoryPartitionClassification::Corrective,
+            root_delta_digest_projection: SemanticDigestProjection::CopyRootDeltaDigest,
+            content_delta_digest_projection: SemanticDigestProjection::CopyContentDeltaDigest,
+            classification_digest_projection: SemanticDigestProjection::CopyClassificationDigest,
+            external_support_disjointness_digest_projection: SemanticDigestProjection::ExplicitNull,
+            corrective_instruction_digest_projection,
             non_conflicting_concurrent_evidence_digest_projection:
                 SemanticDigestProjection::ExplicitNull,
         }
@@ -940,7 +982,7 @@ impl JsonSchema for NonConflictingEvidenceMappings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-struct SupportObservationEvidenceMappings([EvidenceClassificationMappingRow; 6]);
+struct SupportObservationEvidenceMappings([EvidenceClassificationMappingRow; 8]);
 
 impl SupportObservationEvidenceMappings {
     const fn canonical() -> Self {
@@ -969,6 +1011,14 @@ impl SupportObservationEvidenceMappings {
                 MapperSourceCase::PreArmExternal,
                 RepositoryHistoryPartitionClassification::PreArmExternal,
                 SemanticDigestProjection::ExplicitNull,
+            ),
+            EvidenceClassificationMappingRow::support_correction(
+                MapperSourceCase::ActionCorrection,
+                SemanticDigestProjection::CopyCorrectiveInstructionDigest,
+            ),
+            EvidenceClassificationMappingRow::support_correction(
+                MapperSourceCase::ExternalConflictCorrection,
+                SemanticDigestProjection::CopySupportConflictInstructionDigest,
             ),
             EvidenceClassificationMappingRow::support_observation(
                 MapperSourceCase::Invalid,
@@ -1008,11 +1058,27 @@ impl JsonSchema for SupportObservationEvidenceMappings {
                     "explicitNull",
                 ]),
                 mapping_row_schema("preArmExternal", "preArmExternal", ordinary),
+                mapping_row_schema("actionCorrection", "corrective", [
+                    "copyRootDeltaDigest",
+                    "copyContentDeltaDigest",
+                    "copyClassificationDigest",
+                    "explicitNull",
+                    "copyCorrectiveInstructionDigest",
+                    "explicitNull",
+                ]),
+                mapping_row_schema("externalConflictCorrection", "corrective", [
+                    "copyRootDeltaDigest",
+                    "copyContentDeltaDigest",
+                    "copyClassificationDigest",
+                    "explicitNull",
+                    "copySupportConflictInstructionDigest",
+                    "explicitNull",
+                ]),
                 mapping_row_schema("invalid", "invalid", ordinary),
             ],
             "items": false,
-            "minItems": 6,
-            "maxItems": 6,
+            "minItems": 8,
+            "maxItems": 8,
         })
     }
 }
@@ -1133,6 +1199,10 @@ const TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST: &str =
     "fd97e2378b0b4125531a6088c99dfbcfe7a9e81ce08e634c1d2dc109225f0a1f";
 const TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST: &str =
     "2cb42be57491f40e046c03e0c92633cd7be5c1853dd01fdb8d21940ad570b4c2";
+const TASK9_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST: &str =
+    "0da7a986536cf8008b5ef53c74f659bec3e79220977915c84d91963c1724f1a6";
+const TASK9_EVIDENCE_SOURCE_REGISTRY_DIGEST: &str =
+    "c198250d1a992ec1a8b85ae6facddaaa222879de1ded2d721eda1e82432ef6fb";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EvidenceSourceRegistry {
@@ -1141,7 +1211,7 @@ pub(crate) struct EvidenceSourceRegistry {
 }
 
 impl EvidenceSourceRegistry {
-    pub(crate) fn task8() -> Result<Self, RepositoryContractError> {
+    pub(crate) fn task9() -> Result<Self, RepositoryContractError> {
         let entries = [
             Self::entry(EvidenceKind::RoutineClassification)?,
             Self::entry(EvidenceKind::SupportPrerequisiteObservation)?,
@@ -1160,6 +1230,11 @@ impl EvidenceSourceRegistry {
         };
         registry.verify_committed_artifacts()?;
         Ok(registry)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task8() -> Result<Self, RepositoryContractError> {
+        Self::task9()
     }
 
     fn entry(kind: EvidenceKind) -> Result<EvidenceSourceRegistryEntry, RepositoryContractError> {
@@ -1251,7 +1326,7 @@ impl EvidenceSourceRegistry {
                 TASK8_SUPPORT_OBSERVATION_EVIDENCE_SCHEMA_DIGEST,
                 TASK8_SUPPORT_OBSERVATION_DIGEST_RECORD_SCHEMA_DIGEST,
                 TASK8_SUPPORT_OBSERVATION_LOADER_REVISION_DIGEST,
-                TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
+                TASK9_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
             ),
             (
                 EvidenceKind::NonConflictingConcurrent,
@@ -1274,7 +1349,7 @@ impl EvidenceSourceRegistry {
                 return Err(RepositoryContractError("registry artifact digest mismatch"));
             }
         }
-        if self.registry_digest.as_str() != TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST {
+        if self.registry_digest.as_str() != TASK9_EVIDENCE_SOURCE_REGISTRY_DIGEST {
             return Err(RepositoryContractError("registry digest mismatch"));
         }
         Ok(())
@@ -1729,6 +1804,141 @@ pub(crate) trait RepositoryHistoryEvidenceBytesResolver {
     ) -> Result<Vec<u8>, RepositoryContractError>;
 }
 
+/// Capability-selected frozen historical source for an action correction.
+///
+/// This authority is deliberately neither serializable nor deserializable. Its
+/// identity fields are typed, while the retained canonical bytes remain input
+/// to strict decoding and rehashing by the repository validator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrozenSupportCorrectiveInstructionSourceAuthority {
+    historical_repository_version: RepositoryVersion,
+    expected_historical_support_action_id: UnicaId,
+    frozen_corrective_instruction_digest: Sha256Digest,
+    canonical_instruction_bytes: Vec<u8>,
+}
+
+impl FrozenSupportCorrectiveInstructionSourceAuthority {
+    pub(crate) fn from_capability_adapter(
+        historical_repository_version: RepositoryVersion,
+        expected_historical_support_action_id: UnicaId,
+        frozen_corrective_instruction_digest: Sha256Digest,
+        canonical_instruction_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            historical_repository_version,
+            expected_historical_support_action_id,
+            frozen_corrective_instruction_digest,
+            canonical_instruction_bytes,
+        }
+    }
+
+    pub(crate) const fn historical_repository_version(&self) -> &RepositoryVersion {
+        &self.historical_repository_version
+    }
+
+    pub(crate) const fn expected_historical_support_action_id(&self) -> &UnicaId {
+        &self.expected_historical_support_action_id
+    }
+
+    pub(crate) const fn frozen_corrective_instruction_digest(&self) -> &Sha256Digest {
+        &self.frozen_corrective_instruction_digest
+    }
+
+    fn canonical_instruction_bytes(&self) -> &[u8] {
+        &self.canonical_instruction_bytes
+    }
+}
+
+/// Capability-selected frozen historical source for an external conflict
+/// correction. This is a distinct type so the two instruction kinds cannot be
+/// interchanged at the authority boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrozenSupportConflictInstructionSourceAuthority {
+    historical_repository_version: RepositoryVersion,
+    expected_historical_support_action_id: UnicaId,
+    expected_historical_conflict_resolution_id: UnicaId,
+    frozen_support_conflict_instruction_digest: Sha256Digest,
+    canonical_instruction_bytes: Vec<u8>,
+}
+
+impl FrozenSupportConflictInstructionSourceAuthority {
+    pub(crate) fn from_capability_adapter(
+        historical_repository_version: RepositoryVersion,
+        expected_historical_support_action_id: UnicaId,
+        expected_historical_conflict_resolution_id: UnicaId,
+        frozen_support_conflict_instruction_digest: Sha256Digest,
+        canonical_instruction_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            historical_repository_version,
+            expected_historical_support_action_id,
+            expected_historical_conflict_resolution_id,
+            frozen_support_conflict_instruction_digest,
+            canonical_instruction_bytes,
+        }
+    }
+
+    pub(crate) const fn historical_repository_version(&self) -> &RepositoryVersion {
+        &self.historical_repository_version
+    }
+
+    pub(crate) const fn expected_historical_support_action_id(&self) -> &UnicaId {
+        &self.expected_historical_support_action_id
+    }
+
+    pub(crate) const fn expected_historical_conflict_resolution_id(&self) -> &UnicaId {
+        &self.expected_historical_conflict_resolution_id
+    }
+
+    pub(crate) const fn frozen_support_conflict_instruction_digest(&self) -> &Sha256Digest {
+        &self.frozen_support_conflict_instruction_digest
+    }
+
+    fn canonical_instruction_bytes(&self) -> &[u8] {
+        &self.canonical_instruction_bytes
+    }
+}
+
+/// Capability-backed resolver for versioned frozen historical records that
+/// alone can make a structurally valid corrective observation authoritative.
+///
+/// Crucially, neither source method accepts an observation-supplied digest:
+/// the capability adapter selects the frozen source independently by the
+/// authority-trusted partition entry version.
+/// The attribution methods bind facts which are not intrinsic to either
+/// instruction record.
+pub(crate) trait SupportCorrectiveEvidenceResolver {
+    fn historical_frozen_support_corrective_instruction_source(
+        &self,
+        repository_version: &RepositoryVersion,
+    ) -> Result<FrozenSupportCorrectiveInstructionSourceAuthority, RepositoryContractError>;
+
+    fn historical_frozen_support_conflict_instruction_source(
+        &self,
+        repository_version: &RepositoryVersion,
+    ) -> Result<FrozenSupportConflictInstructionSourceAuthority, RepositoryContractError>;
+
+    fn frozen_support_action_id(&self) -> &UnicaId;
+
+    fn support_history_order_authority(&self) -> &dyn SupportHistoryOrderAuthority;
+
+    fn validate_action_correction_attribution(
+        &self,
+        repository_version: &RepositoryVersion,
+        repository_actor: &RepositoryActorIdentity,
+        instruction: &SupportCorrectiveInstruction,
+    ) -> Result<(), RepositoryContractError>;
+
+    fn validate_external_ownership_attribution(
+        &self,
+        repository_version: &RepositoryVersion,
+        repository_actor: &RepositoryActorIdentity,
+        root_delta_digest: &Sha256Digest,
+        content_delta_digest: &Sha256Digest,
+        evidence: &ExternalSupportOwnershipEvidence,
+    ) -> Result<(), RepositoryContractError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 enum EvidenceBackedPartitionClassification {
@@ -1931,6 +2141,20 @@ struct CanonicalSupportObservationRecord<'a>(&'a SupportPrerequisiteVersionObser
 impl contract_digest_record_sealed::Sealed for CanonicalSupportObservationRecord<'_> {}
 impl ContractDigestRecord for CanonicalSupportObservationRecord<'_> {}
 
+#[derive(Serialize)]
+#[serde(transparent)]
+struct CanonicalSupportCorrectiveInstructionRecord<'a>(&'a SupportCorrectiveInstruction);
+
+impl contract_digest_record_sealed::Sealed for CanonicalSupportCorrectiveInstructionRecord<'_> {}
+impl ContractDigestRecord for CanonicalSupportCorrectiveInstructionRecord<'_> {}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct CanonicalSupportConflictInstructionRecord<'a>(&'a SupportConflictInstruction);
+
+impl contract_digest_record_sealed::Sealed for CanonicalSupportConflictInstructionRecord<'_> {}
+impl ContractDigestRecord for CanonicalSupportConflictInstructionRecord<'_> {}
+
 enum ResolvedHistoryEvidence {
     Routine(RoutineRepositoryVersionClassificationEvidence),
     SupportObservation(SupportPrerequisiteVersionObservation),
@@ -2054,6 +2278,57 @@ fn load_history_evidence(
             Ok(ResolvedHistoryEvidence::SupportObservation(evidence))
         }
     }
+}
+
+fn load_support_corrective_instruction(
+    source: &FrozenSupportCorrectiveInstructionSourceAuthority,
+) -> Result<SupportCorrectiveInstruction, RepositoryContractError> {
+    let bytes = source.canonical_instruction_bytes();
+    let value = crate::domain::i_json::from_slice(bytes).map_err(|_| {
+        RepositoryContractError("corrective instruction bytes are not strict I-JSON")
+    })?;
+    let instruction = serde_json::from_value::<SupportCorrectiveInstruction>(value)
+        .map_err(|_| RepositoryContractError("corrective instruction typed decode failed"))?;
+    if instruction.corrective_instruction_digest() != source.frozen_corrective_instruction_digest()
+        || instruction.support_action_id() != source.expected_historical_support_action_id()
+    {
+        return Err(RepositoryContractError(
+            "corrective instruction frozen source mismatch",
+        ));
+    }
+    canonical_contract_digest(
+        &CanonicalSupportCorrectiveInstructionRecord(&instruction),
+        Some(bytes),
+    )
+    .map_err(|_| RepositoryContractError("corrective instruction is not canonical"))?;
+    Ok(instruction)
+}
+
+fn load_support_conflict_instruction(
+    source: &FrozenSupportConflictInstructionSourceAuthority,
+    history_order: &dyn SupportHistoryOrderAuthority,
+) -> Result<SupportConflictInstruction, RepositoryContractError> {
+    let bytes = source.canonical_instruction_bytes();
+    let value = crate::domain::i_json::from_slice(bytes).map_err(|_| {
+        RepositoryContractError("support-conflict instruction bytes are not strict I-JSON")
+    })?;
+    let instruction = decode_historical_support_conflict_instruction(value, history_order)
+        .map_err(|_| RepositoryContractError("support-conflict instruction typed decode failed"))?;
+    if instruction.support_conflict_instruction_digest()
+        != source.frozen_support_conflict_instruction_digest()
+        || instruction.conflict_resolution_id()
+            != source.expected_historical_conflict_resolution_id()
+    {
+        return Err(RepositoryContractError(
+            "support-conflict instruction frozen source mismatch",
+        ));
+    }
+    canonical_contract_digest(
+        &CanonicalSupportConflictInstructionRecord(&instruction),
+        Some(bytes),
+    )
+    .map_err(|_| RepositoryContractError("support-conflict instruction is not canonical"))?;
+    Ok(instruction)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2218,7 +2493,7 @@ impl ValidatedRepositoryHistoryPartition {
         let partition_classification =
             RepositoryHistoryPartitionClassification::from(entry.classification);
         if index_proof.repository_version != entry.repository_version
-            || index_proof.registry_digest.as_str() != TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST
+            || index_proof.registry_digest.as_str() != TASK9_EVIDENCE_SOURCE_REGISTRY_DIGEST
             || expected_index_proof_digest != index_proof.proof_digest
             || support_ref.evidence_kind != EvidenceKind::SupportPrerequisiteObservation
             || support_ref != &entry.source_evidence_ref
@@ -2251,6 +2526,7 @@ pub(crate) struct RepositoryHistoryPartitionResolver<'a> {
     source_index: &'a dyn EvidenceSourceIndex,
     order_resolver: &'a dyn RepositoryHistoryOrderResolver,
     evidence_resolver: &'a dyn RepositoryHistoryEvidenceBytesResolver,
+    corrective_resolver: Option<&'a dyn SupportCorrectiveEvidenceResolver>,
 }
 
 impl<'a> RepositoryHistoryPartitionResolver<'a> {
@@ -2265,7 +2541,16 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             source_index,
             order_resolver,
             evidence_resolver,
+            corrective_resolver: None,
         }
+    }
+
+    pub(crate) fn with_corrective_evidence_resolver(
+        mut self,
+        corrective_resolver: &'a dyn SupportCorrectiveEvidenceResolver,
+    ) -> Self {
+        self.corrective_resolver = Some(corrective_resolver);
+        self
     }
 
     pub(crate) fn validate(
@@ -2310,7 +2595,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             .any(|entry| matches!(entry, RepositoryHistoryPartitionEntry::TaskCommit(_)))
         {
             return Err(RepositoryContractError(
-                "generic Task 8 validator rejects taskCommit",
+                "generic repository-history validator rejects taskCommit",
             ));
         }
 
@@ -2378,7 +2663,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             .ok_or(RepositoryContractError("missing concurrent index row"))?;
         match entry {
             RepositoryHistoryPartitionEntry::TaskCommit(_) => Err(RepositoryContractError(
-                "generic Task 8 validator rejects taskCommit",
+                "generic repository-history validator rejects taskCommit",
             )),
             RepositoryHistoryPartitionEntry::EvidenceBacked(entry) => match support_row {
                 EvidenceSourceAvailability::Available(value) => {
@@ -2405,38 +2690,174 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                             "support-observation version mismatch",
                         ));
                     }
-                    let projection =
-                        observation
-                            .task8_mapping_projection()
-                            .ok_or(RepositoryContractError(
-                                "corrective support observation is not enabled in Task 8",
-                            ))?;
                     let partition_classification =
                         RepositoryHistoryPartitionClassification::from(entry.classification);
-                    if partition_classification != projection.partition_classification() {
+                    let (
+                        projected_classification,
+                        root_delta_digest,
+                        content_delta_digest,
+                        classification_digest,
+                        external_support_disjointness_digest,
+                        corrective_instruction_digest,
+                    ) = if let Some(projection) = observation.task8_mapping_projection() {
+                        (
+                            projection.partition_classification(),
+                            projection.root_delta_digest(),
+                            projection.content_delta_digest(),
+                            projection.classification_digest(),
+                            projection.external_support_disjointness_digest(),
+                            None,
+                        )
+                    } else {
+                        let corrective = observation.task9_corrective_projection().ok_or(
+                            RepositoryContractError("unsupported support-observation mapping"),
+                        )?;
+                        let resolver = self.corrective_resolver.ok_or(RepositoryContractError(
+                            "corrective observation lacks historical source authority",
+                        ))?;
+                        match corrective {
+                            SupportObservationCorrectiveProjection::ActionCorrection {
+                                repository_actor,
+                                manual_target_mode,
+                                working_infobase_identity,
+                                root_delta_digest,
+                                content_delta_digest,
+                                corrective_instruction_digest,
+                            } => {
+                                let source = resolver
+                                    .historical_frozen_support_corrective_instruction_source(
+                                        &entry.repository_version,
+                                    )?;
+                                if source.historical_repository_version()
+                                    != &entry.repository_version
+                                    || source.expected_historical_support_action_id()
+                                        != resolver.frozen_support_action_id()
+                                {
+                                    return Err(RepositoryContractError(
+                                        "action-correction historical source authority mismatch",
+                                    ));
+                                }
+                                if &corrective_instruction_digest
+                                    != source.frozen_corrective_instruction_digest()
+                                {
+                                    return Err(RepositoryContractError(
+                                        "action-correction observation selected a different historical instruction",
+                                    ));
+                                }
+                                let instruction = load_support_corrective_instruction(&source)?;
+                                if instruction.support_action_id()
+                                    != resolver.frozen_support_action_id()
+                                    || instruction.repository_username()
+                                        != repository_actor.username()
+                                    || instruction.manual_target_mode() != manual_target_mode
+                                    || instruction.working_infobase_identity()
+                                        != working_infobase_identity.as_ref()
+                                    || instruction.required_root_delta_digest()
+                                        != &root_delta_digest
+                                    || instruction.required_content_delta_digest()
+                                        != &content_delta_digest
+                                {
+                                    return Err(RepositoryContractError(
+                                        "action-correction instruction binding mismatch",
+                                    ));
+                                }
+                                resolver.validate_action_correction_attribution(
+                                    &entry.repository_version,
+                                    &repository_actor,
+                                    &instruction,
+                                )?;
+                                (
+                                    RepositoryHistoryPartitionClassification::Corrective,
+                                    Some(root_delta_digest),
+                                    Some(content_delta_digest),
+                                    observation.classification_digest().clone(),
+                                    None,
+                                    Some(corrective_instruction_digest),
+                                )
+                            }
+                            SupportObservationCorrectiveProjection::ExternalConflictCorrection {
+                                repository_actor,
+                                root_delta_digest,
+                                content_delta_digest,
+                                conflict_resolution_id,
+                                support_conflict_instruction_digest,
+                                final_baseline_digest,
+                                external_ownership_evidence,
+                            } => {
+                                let source = resolver
+                                    .historical_frozen_support_conflict_instruction_source(
+                                        &entry.repository_version,
+                                    )?;
+                                if source.historical_repository_version()
+                                    != &entry.repository_version
+                                    || source.expected_historical_support_action_id()
+                                        != resolver.frozen_support_action_id()
+                                {
+                                    return Err(RepositoryContractError(
+                                        "external-conflict historical source authority mismatch",
+                                    ));
+                                }
+                                if &support_conflict_instruction_digest
+                                    != source.frozen_support_conflict_instruction_digest()
+                                    || &conflict_resolution_id
+                                        != source.expected_historical_conflict_resolution_id()
+                                {
+                                    return Err(RepositoryContractError(
+                                        "external-conflict observation selected a different historical instruction",
+                                    ));
+                                }
+                                let instruction = load_support_conflict_instruction(
+                                    &source,
+                                    resolver.support_history_order_authority(),
+                                )?;
+                                if instruction.conflict_resolution_id()
+                                    != &conflict_resolution_id
+                                    || instruction.required_final_baseline_digest()
+                                        != &final_baseline_digest
+                                {
+                                    return Err(RepositoryContractError(
+                                        "external-conflict instruction binding mismatch",
+                                    ));
+                                }
+                                resolver.validate_external_ownership_attribution(
+                                    &entry.repository_version,
+                                    &repository_actor,
+                                    &root_delta_digest,
+                                    &content_delta_digest,
+                                    &external_ownership_evidence,
+                                )?;
+                                (
+                                    RepositoryHistoryPartitionClassification::Corrective,
+                                    Some(root_delta_digest),
+                                    Some(content_delta_digest),
+                                    observation.classification_digest().clone(),
+                                    None,
+                                    Some(support_conflict_instruction_digest),
+                                )
+                            }
+                        }
+                    };
+                    if partition_classification != projected_classification {
                         return Err(RepositoryContractError(
                             "support-observation classification mismatch",
                         ));
                     }
                     let semantic = RepositorySemanticDeltaDigestRecord {
                         repository_version: entry.repository_version.clone(),
-                        partition_classification: projection.partition_classification(),
-                        root_delta_digest: projection
-                            .root_delta_digest()
+                        partition_classification: projected_classification,
+                        root_delta_digest: root_delta_digest
                             .map(RequiredNullable::value)
                             .unwrap_or_else(RequiredNullable::null),
-                        content_delta_digest: projection
-                            .content_delta_digest()
+                        content_delta_digest: content_delta_digest
                             .map(RequiredNullable::value)
                             .unwrap_or_else(RequiredNullable::null),
-                        classification_digest: RequiredNullable::value(
-                            projection.classification_digest(),
-                        ),
-                        external_support_disjointness_digest: projection
-                            .external_support_disjointness_digest()
+                        classification_digest: RequiredNullable::value(classification_digest),
+                        external_support_disjointness_digest: external_support_disjointness_digest
                             .map(RequiredNullable::value)
                             .unwrap_or_else(RequiredNullable::null),
-                        corrective_instruction_digest: RequiredNullable::null(),
+                        corrective_instruction_digest: corrective_instruction_digest
+                            .map(RequiredNullable::value)
+                            .unwrap_or_else(RequiredNullable::null),
                         non_conflicting_concurrent_evidence_digest: RequiredNullable::null(),
                     };
                     let expected = canonical_contract_digest(&semantic, None)
@@ -2688,6 +3109,25 @@ pub(crate) struct ObjectTargetIdentity {
 pub(crate) enum RepositoryTargetIdentity {
     ConfigurationRoot(RootTargetIdentity),
     DevelopmentObject(ObjectTargetIdentity),
+}
+
+impl Ord for RepositoryTargetIdentity {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::ConfigurationRoot(_), Self::ConfigurationRoot(_)) => Ordering::Equal,
+            (Self::ConfigurationRoot(_), Self::DevelopmentObject(_)) => Ordering::Less,
+            (Self::DevelopmentObject(_), Self::ConfigurationRoot(_)) => Ordering::Greater,
+            (Self::DevelopmentObject(left), Self::DevelopmentObject(right)) => {
+                left.object_id.cmp(&right.object_id)
+            }
+        }
+    }
+}
+
+impl PartialOrd for RepositoryTargetIdentity {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl JsonSchema for RepositoryTargetIdentity {
@@ -2990,26 +3430,46 @@ mod tests {
     use super::{
         AcquiredRepositoryUpdateLockTargets, CanonicalEmptyDeltaDigest, EvidenceKind,
         EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow,
-        EvidenceSourceRegistry, NonConflictingConcurrentEvidence,
+        EvidenceSourceRegistry, FrozenSupportConflictInstructionSourceAuthority,
+        FrozenSupportCorrectiveInstructionSourceAuthority, NonConflictingConcurrentEvidence,
         ReleasedRepositoryUpdateLockTargets, RepositoryActorIdentity, RepositoryHistoryCursor,
         RepositoryHistoryEvidenceBytesResolver, RepositoryHistoryOrderEvidence,
         RepositoryHistoryOrderResolver, RepositoryHistoryPartitionResolver,
         RepositoryHistorySourceEvidenceRef, RepositoryOwnerIdentity, RepositoryPlannedChanges,
-        RepositoryTargetKind, RepositoryTargetStates, RepositoryUpdateLockReasons,
-        RepositoryUpdateLockTargets, RoutineRepositoryVersionClassificationEvidence,
+        RepositoryTargetIdentity, RepositoryTargetKind, RepositoryTargetStates,
+        RepositoryUpdateLockReason, RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
+        RoutineRepositoryVersionClassificationEvidence, SupportCorrectiveEvidenceResolver,
         UnvalidatedRepositoryHistoryPartition,
     };
+    use crate::domain::branched_development::contracts::instructions::{
+        SupportConflictInstruction, SupportCorrectiveInstruction,
+        SupportCorrectiveInstructionAuthority, SupportRecoveryTransition,
+    };
+    use crate::domain::branched_development::contracts::scalars::{
+        Diagnostic, RepositoryTargetDisplay, RepositoryUsername, RepositoryVersion,
+        RequiredNullable,
+    };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
-    use crate::domain::branched_development::contracts::support::SupportObservationTask8Projection;
-    use crate::domain::branched_development::Sha256Digest;
+    use crate::domain::branched_development::contracts::support::{
+        ExternalSupportOwnershipEvidence, ManualSupportTargetMode, SupportActionPurpose,
+        SupportContractError, SupportHistoryOrderAuthority, SupportObservationCorrectiveProjection,
+        SupportObservationTask8Projection, SupportTransition, SupportTransitionConflict,
+        SupportTransitionConflicts, SupportTransitionOverlapKind,
+    };
+    use crate::domain::branched_development::contracts::support_terminalization::{
+        SupportRecoveryLockTarget, SupportRecoveryLockTargets,
+    };
+    use crate::domain::branched_development::{Sha256Digest, SupportLayerId, UnicaId};
     use schemars::schema_for;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
+    use std::cmp::Ordering;
     use std::collections::BTreeMap;
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const UUID_A: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const UUID_B: &str = "223e4567-e89b-42d3-a456-426614174000";
     const OBJECT_A: &str = "00000000-0000-0000-0000-000000000001";
     const OBJECT_B: &str = "00000000-0000-0000-0000-000000000002";
 
@@ -3038,6 +3498,13 @@ mod tests {
             <super::ValidatedRepositoryHistoryPartition as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <super::EvidenceSourceIndexProof as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <SupportObservationTask8Projection as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <SupportObservationCorrectiveProjection as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <FrozenSupportCorrectiveInstructionSourceAuthority as AmbiguousIfDeserializeOwned<
+            _,
+        >>::marker;
+        let _ = <FrozenSupportConflictInstructionSourceAuthority as AmbiguousIfDeserializeOwned<
+            _,
+        >>::marker;
         let _ = <super::ValidatedSupportObservationHistoryEntry as AmbiguousIfDeserializeOwned<
             _,
         >>::marker;
@@ -3311,6 +3778,22 @@ mod tests {
             json!(["configurationRoot", "developmentObject"])
         );
 
+        let root = serde_json::from_value::<RepositoryTargetIdentity>(
+            json!({ "targetKind": "configurationRoot" }),
+        )
+        .unwrap();
+        let object_a = serde_json::from_value::<RepositoryTargetIdentity>(json!({
+            "targetKind": "developmentObject",
+            "objectId": OBJECT_A,
+        }))
+        .unwrap();
+        let object_b = serde_json::from_value::<RepositoryTargetIdentity>(json!({
+            "targetKind": "developmentObject",
+            "objectId": OBJECT_B,
+        }))
+        .unwrap();
+        assert!(root < object_a && object_a < object_b);
+
         for display in ["x".to_owned(), "界".repeat(512)] {
             let mut target = object_lock(OBJECT_A);
             target["objectDisplay"] = json!(display);
@@ -3380,7 +3863,7 @@ mod tests {
     }
 
     #[test]
-    fn task8_registry_artifact_digest_constants_match_generated_preimages() {
+    fn task9_registry_artifact_digest_constants_match_generated_preimages() {
         let entries = [
             super::EvidenceSourceRegistry::entry(EvidenceKind::RoutineClassification).unwrap(),
             super::EvidenceSourceRegistry::entry(EvidenceKind::SupportPrerequisiteObservation)
@@ -3406,15 +3889,15 @@ mod tests {
             super::TASK8_SUPPORT_OBSERVATION_EVIDENCE_SCHEMA_DIGEST,
             super::TASK8_SUPPORT_OBSERVATION_DIGEST_RECORD_SCHEMA_DIGEST,
             super::TASK8_SUPPORT_OBSERVATION_LOADER_REVISION_DIGEST,
-            super::TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
-            super::TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST,
+            super::TASK9_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
+            super::TASK9_EVIDENCE_SOURCE_REGISTRY_DIGEST,
         ];
         assert_eq!(actual, committed);
     }
 
     #[test]
-    fn task8_evidence_registry_binds_exact_ordered_schema_loader_and_mapper_digests() {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
+    fn task9_evidence_registry_binds_exact_ordered_schema_loader_and_mapper_digests() {
+        let registry = EvidenceSourceRegistry::task9().unwrap();
         assert_eq!(
             registry.evidence_kinds(),
             [
@@ -3427,7 +3910,7 @@ mod tests {
         assert_eq!(registry.registry_digest().as_str().len(), 64);
         assert_ne!(
             registry.registry_digest().as_str(),
-            super::TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST
+            super::TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST
         );
 
         for entry_index in 0..3 {
@@ -3455,6 +3938,11 @@ mod tests {
         let mut duplicate = registry.clone();
         duplicate.entries[1] = duplicate.entries[0].clone();
         assert!(duplicate.verify_committed_artifacts().is_err());
+
+        let mut stale_task8_mapper = registry;
+        stale_task8_mapper.entries[1].classification_mapper_revision_digest =
+            Sha256Digest::parse(super::TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST).unwrap();
+        assert!(stale_task8_mapper.verify_committed_artifacts().is_err());
     }
 
     #[test]
@@ -3522,7 +4010,7 @@ mod tests {
     }
 
     #[test]
-    fn support_observation_mapper_schema_is_the_exact_six_row_task8_table() {
+    fn support_observation_mapper_schema_is_the_exact_eight_row_task9_table() {
         let schema = serde_json::to_value(schema_for!(
             super::SupportObservationEvidenceClassificationMapperRevisionDigestRecord
         ))
@@ -3531,20 +4019,55 @@ mod tests {
         let rows = schema["$defs"]["SupportObservationEvidenceMappings"]["prefixItems"]
             .as_array()
             .unwrap();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 8);
         let expected = [
-            ("routineUnrelated", "unrelatedRoutine", "explicitNull"),
-            ("routineRelevant", "relevantRoutine", "explicitNull"),
-            ("authorized", "authorizedSupport", "explicitNull"),
+            (
+                "routineUnrelated",
+                "unrelatedRoutine",
+                "explicitNull",
+                "explicitNull",
+            ),
+            (
+                "routineRelevant",
+                "relevantRoutine",
+                "explicitNull",
+                "explicitNull",
+            ),
+            (
+                "authorized",
+                "authorizedSupport",
+                "explicitNull",
+                "explicitNull",
+            ),
             (
                 "externalSupport",
                 "externalSupport",
                 "copyExternalSupportDisjointnessDigest",
+                "explicitNull",
             ),
-            ("preArmExternal", "preArmExternal", "explicitNull"),
-            ("invalid", "invalid", "explicitNull"),
+            (
+                "preArmExternal",
+                "preArmExternal",
+                "explicitNull",
+                "explicitNull",
+            ),
+            (
+                "actionCorrection",
+                "corrective",
+                "explicitNull",
+                "copyCorrectiveInstructionDigest",
+            ),
+            (
+                "externalConflictCorrection",
+                "corrective",
+                "explicitNull",
+                "copySupportConflictInstructionDigest",
+            ),
+            ("invalid", "invalid", "explicitNull", "explicitNull"),
         ];
-        for (row, (source_case, classification, external_projection)) in rows.iter().zip(expected) {
+        for (row, (source_case, classification, external_projection, corrective_projection)) in
+            rows.iter().zip(expected)
+        {
             assert_eq!(row["properties"]["sourceCase"]["const"], json!(source_case));
             assert_eq!(
                 row["properties"]["partitionClassification"]["const"],
@@ -3558,7 +4081,10 @@ mod tests {
                     "externalSupportDisjointnessDigestProjection",
                     external_projection,
                 ),
-                ("correctiveInstructionDigestProjection", "explicitNull"),
+                (
+                    "correctiveInstructionDigestProjection",
+                    corrective_projection,
+                ),
                 (
                     "nonConflictingConcurrentEvidenceDigestProjection",
                     "explicitNull",
@@ -3569,8 +4095,8 @@ mod tests {
             assert_eq!(row["additionalProperties"], json!(false));
         }
         let mapping_tuple = &schema["$defs"]["SupportObservationEvidenceMappings"];
-        assert_eq!(mapping_tuple["minItems"], json!(6));
-        assert_eq!(mapping_tuple["maxItems"], json!(6));
+        assert_eq!(mapping_tuple["minItems"], json!(8));
+        assert_eq!(mapping_tuple["maxItems"], json!(8));
         assert_eq!(mapping_tuple["items"], json!(false));
     }
 
@@ -3702,6 +4228,269 @@ mod tests {
                 .ok_or(super::RepositoryContractError(
                     "missing fake evidence bytes",
                 ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeCorrectiveEvidence {
+        corrective_sources: BTreeMap<String, FrozenSupportCorrectiveInstructionSourceAuthority>,
+        conflict_sources: BTreeMap<String, FrozenSupportConflictInstructionSourceAuthority>,
+        expected_actor: RepositoryActorIdentity,
+        expected_external_ownership: ExternalSupportOwnershipEvidence,
+        action_attribution_valid: bool,
+        external_attribution_valid: bool,
+        frozen_support_action_id: UnicaId,
+        support_history_order: FakeSupportHistoryOrder,
+    }
+
+    impl SupportCorrectiveEvidenceResolver for FakeCorrectiveEvidence {
+        fn historical_frozen_support_corrective_instruction_source(
+            &self,
+            repository_version: &RepositoryVersion,
+        ) -> Result<FrozenSupportCorrectiveInstructionSourceAuthority, super::RepositoryContractError>
+        {
+            self.corrective_sources
+                .get(repository_version.as_str())
+                .cloned()
+                .ok_or(super::RepositoryContractError(
+                    "missing fake corrective instruction",
+                ))
+        }
+
+        fn historical_frozen_support_conflict_instruction_source(
+            &self,
+            repository_version: &RepositoryVersion,
+        ) -> Result<FrozenSupportConflictInstructionSourceAuthority, super::RepositoryContractError>
+        {
+            self.conflict_sources
+                .get(repository_version.as_str())
+                .cloned()
+                .ok_or(super::RepositoryContractError(
+                    "missing fake conflict instruction",
+                ))
+        }
+
+        fn support_history_order_authority(&self) -> &dyn SupportHistoryOrderAuthority {
+            &self.support_history_order
+        }
+
+        fn frozen_support_action_id(&self) -> &UnicaId {
+            &self.frozen_support_action_id
+        }
+
+        fn validate_action_correction_attribution(
+            &self,
+            repository_version: &RepositoryVersion,
+            repository_actor: &RepositoryActorIdentity,
+            instruction: &SupportCorrectiveInstruction,
+        ) -> Result<(), super::RepositoryContractError> {
+            if self.action_attribution_valid
+                && self
+                    .corrective_sources
+                    .contains_key(repository_version.as_str())
+                && repository_actor == &self.expected_actor
+                && instruction.support_action_id() == &self.frozen_support_action_id
+            {
+                Ok(())
+            } else {
+                Err(super::RepositoryContractError(
+                    "fake action attribution rejected",
+                ))
+            }
+        }
+
+        fn validate_external_ownership_attribution(
+            &self,
+            repository_version: &RepositoryVersion,
+            repository_actor: &RepositoryActorIdentity,
+            _root_delta_digest: &Sha256Digest,
+            _content_delta_digest: &Sha256Digest,
+            evidence: &ExternalSupportOwnershipEvidence,
+        ) -> Result<(), super::RepositoryContractError> {
+            if self.external_attribution_valid
+                && self
+                    .conflict_sources
+                    .contains_key(repository_version.as_str())
+                && repository_actor == &self.expected_actor
+                && evidence == &self.expected_external_ownership
+            {
+                Ok(())
+            } else {
+                Err(super::RepositoryContractError(
+                    "fake external attribution rejected",
+                ))
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct FakeSupportHistoryOrder;
+
+    impl SupportHistoryOrderAuthority for FakeSupportHistoryOrder {
+        fn compare_versions(
+            &self,
+            left: &RepositoryVersion,
+            right: &RepositoryVersion,
+        ) -> Result<Ordering, SupportContractError> {
+            Ok(left.as_str().cmp(right.as_str()))
+        }
+
+        fn compare_cursors(
+            &self,
+            left: &RepositoryHistoryCursor,
+            right: &RepositoryHistoryCursor,
+        ) -> Result<Ordering, SupportContractError> {
+            Ok(left
+                .through_version
+                .as_str()
+                .cmp(right.through_version.as_str())
+                .then_with(|| {
+                    left.history_prefix_digest
+                        .as_str()
+                        .cmp(right.history_prefix_digest.as_str())
+                }))
+        }
+    }
+
+    fn test_id(value: &str) -> UnicaId {
+        UnicaId::parse(value).unwrap()
+    }
+
+    fn test_sha(value: &str) -> Sha256Digest {
+        Sha256Digest::parse(value).unwrap()
+    }
+
+    fn corrective_instruction_for(support_action_id: &str) -> SupportCorrectiveInstruction {
+        corrective_instruction_for_deltas(support_action_id, SHA_A, SHA_B)
+    }
+
+    fn corrective_instruction_for_deltas(
+        support_action_id: &str,
+        root_delta_digest: &str,
+        content_delta_digest: &str,
+    ) -> SupportCorrectiveInstruction {
+        let root_lock = SupportRecoveryLockTarget::configuration_root(
+            RepositoryTargetDisplay::parse("Configuration").unwrap(),
+            vec![RepositoryUpdateLockReason::SupportGraphGuard],
+        )
+        .unwrap();
+        let locks = SupportRecoveryLockTargets::new(vec![root_lock]).unwrap();
+        let transition =
+            SupportRecoveryTransition::ordinary(SupportTransition::enable_configuration_changes(
+                RepositoryTargetDisplay::parse("Configuration").unwrap(),
+                SupportLayerId::parse("layer-a").unwrap(),
+            ));
+        SupportCorrectiveInstruction::new(
+            SupportCorrectiveInstructionAuthority::test_only(
+                test_id(support_action_id),
+                SupportActionPurpose::AbandonmentCleanup,
+                ManualSupportTargetMode::ReservedOriginal,
+                RepositoryUsername::parse("repository-user").unwrap(),
+                None,
+                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+                locks.clone(),
+                locks,
+                vec![transition],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                test_sha(root_delta_digest),
+                test_sha(content_delta_digest),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn corrective_instruction() -> SupportCorrectiveInstruction {
+        corrective_instruction_for(UUID_A)
+    }
+
+    fn conflict_instruction_for(conflict_resolution_id: &str) -> SupportConflictInstruction {
+        let display = RepositoryTargetDisplay::parse("Configuration").unwrap();
+        let layer = SupportLayerId::parse("layer-a").unwrap();
+        let transition =
+            SupportTransition::enable_configuration_changes(display.clone(), layer.clone());
+        let conflict = SupportTransitionConflict::from_capability_adapter(
+            RepositoryVersion::parse("opaque-v1").unwrap(),
+            RequiredNullable::value(
+                serde_json::from_value::<RepositoryActorIdentity>(support_actor()).unwrap(),
+            ),
+            None,
+            display,
+            layer,
+            transition,
+            test_sha(SHA_A),
+            SupportTransitionOverlapKind::SameTarget,
+            Diagnostic::parse("external support overlap").unwrap(),
+        )
+        .unwrap();
+        let conflicts =
+            SupportTransitionConflicts::new(vec![conflict], &FakeSupportHistoryOrder).unwrap();
+        SupportConflictInstruction::new(test_id(conflict_resolution_id), conflicts, test_sha(SHA_B))
+            .unwrap()
+    }
+
+    fn conflict_instruction() -> SupportConflictInstruction {
+        conflict_instruction_for(UUID_A)
+    }
+
+    fn fake_corrective_resolver(
+        corrective_bytes: Option<Vec<u8>>,
+        conflict_bytes: Option<Vec<u8>>,
+    ) -> FakeCorrectiveEvidence {
+        let historical_corrective_instruction = corrective_instruction();
+        let historical_conflict_instruction = conflict_instruction();
+        FakeCorrectiveEvidence {
+            corrective_sources: corrective_bytes
+                .map(|bytes| {
+                    let version = RepositoryVersion::parse("opaque-v1").unwrap();
+                    BTreeMap::from([(
+                        version.as_str().to_owned(),
+                        FrozenSupportCorrectiveInstructionSourceAuthority::from_capability_adapter(
+                            version,
+                            historical_corrective_instruction
+                                .support_action_id()
+                                .clone(),
+                            historical_corrective_instruction
+                                .corrective_instruction_digest()
+                                .clone(),
+                            bytes,
+                        ),
+                    )])
+                })
+                .unwrap_or_default(),
+            conflict_sources: conflict_bytes
+                .map(|bytes| {
+                    let version = RepositoryVersion::parse("opaque-v1").unwrap();
+                    BTreeMap::from([(
+                        version.as_str().to_owned(),
+                        FrozenSupportConflictInstructionSourceAuthority::from_capability_adapter(
+                            version,
+                            historical_corrective_instruction
+                                .support_action_id()
+                                .clone(),
+                            historical_conflict_instruction
+                                .conflict_resolution_id()
+                                .clone(),
+                            historical_conflict_instruction
+                                .support_conflict_instruction_digest()
+                                .clone(),
+                            bytes,
+                        ),
+                    )])
+                })
+                .unwrap_or_default(),
+            expected_actor: serde_json::from_value(support_actor()).unwrap(),
+            expected_external_ownership:
+                ExternalSupportOwnershipEvidence::support_prerequisite_receipt(
+                    test_id(UUID_A),
+                    test_sha(SHA_A),
+                ),
+            action_attribution_valid: true,
+            external_attribution_valid: true,
+            frozen_support_action_id: test_id(UUID_A),
+            support_history_order: FakeSupportHistoryOrder,
         }
     }
 
@@ -4001,7 +4790,117 @@ mod tests {
         (partition, source_ref, observation)
     }
 
+    fn corrective_partition_from_observation(
+        observation: Value,
+        instruction_digest: &str,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        let observation = finalize_support_observation(observation);
+        serde_json::from_value::<super::SupportPrerequisiteVersionObservation>(observation.clone())
+            .unwrap();
+        let classification_digest = observation["classificationDigest"].as_str().unwrap();
+        let source_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::SupportPrerequisiteObservation,
+            classification_digest,
+        )
+        .unwrap();
+        let repository_version = observation["repositoryVersion"].as_str().unwrap();
+        let semantic = json!({
+            "repositoryVersion":repository_version,
+            "partitionClassification":"corrective",
+            "rootDeltaDigest":observation["rootDeltaDigest"],
+            "contentDeltaDigest":observation["contentDeltaDigest"],
+            "classificationDigest":classification_digest,
+            "externalSupportDisjointnessDigest":null,
+            "correctiveInstructionDigest":instruction_digest,
+            "nonConflictingConcurrentEvidenceDigest":null
+        });
+        let entry = json!({
+            "repositoryVersion":repository_version,
+            "classification":"corrective",
+            "semanticDeltaDigest":test_digest(&semantic),
+            "sourceEvidenceRef":serde_json::to_value(&source_ref).unwrap()
+        });
+        let mut partition = json!({
+            "fromExclusive":cursor("opaque-v0", SHA_A),
+            "throughInclusive":cursor(repository_version, SHA_B),
+            "entries":[entry]
+        });
+        recalculate_partition_digest(&mut partition);
+        (partition, source_ref, observation)
+    }
+
+    fn action_corrective_partition_fixture(
+        instruction: &SupportCorrectiveInstruction,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        action_corrective_partition_fixture_for("opaque-v1", instruction)
+    }
+
+    fn action_corrective_partition_fixture_for(
+        repository_version: &str,
+        instruction: &SupportCorrectiveInstruction,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        corrective_partition_from_observation(
+            json!({
+                "repositoryVersion":repository_version,
+                "classification":"corrective",
+                "classificationDigest":SHA_A,
+                "mismatchKinds":[],
+                "correctionKind":"actionCorrection",
+                "repositoryActor":support_actor(),
+                "manualTargetMode":"reservedOriginal",
+                "rootDeltaDigest":instruction.required_root_delta_digest().as_str(),
+                "contentDeltaDigest":instruction.required_content_delta_digest().as_str(),
+                "correctiveInstructionDigest":instruction.corrective_instruction_digest().as_str()
+            }),
+            instruction.corrective_instruction_digest().as_str(),
+        )
+    }
+
+    fn external_corrective_partition_fixture(
+        instruction: &SupportConflictInstruction,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        external_corrective_partition_fixture_for("opaque-v1", instruction)
+    }
+
+    fn external_corrective_partition_fixture_for(
+        repository_version: &str,
+        instruction: &SupportConflictInstruction,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        corrective_partition_from_observation(
+            json!({
+                "repositoryVersion":repository_version,
+                "classification":"corrective",
+                "classificationDigest":SHA_A,
+                "mismatchKinds":[],
+                "correctionKind":"externalConflictCorrection",
+                "repositoryActor":support_actor(),
+                "rootDeltaDigest":SHA_A,
+                "contentDeltaDigest":SHA_B,
+                "conflictResolutionId":instruction.conflict_resolution_id().as_str(),
+                "supportConflictInstructionDigest":instruction
+                    .support_conflict_instruction_digest()
+                    .as_str(),
+                "finalBaselineDigest":instruction.required_final_baseline_digest().as_str(),
+                "externalOwnershipEvidence":{
+                    "kind":"supportPrerequisiteReceipt",
+                    "receiptId":UUID_A,
+                    "receiptDigest":SHA_A
+                }
+            }),
+            instruction.support_conflict_instruction_digest().as_str(),
+        )
+    }
+
     fn support_candidate(
+        registry: &EvidenceSourceRegistry,
+        source_ref: RepositoryHistorySourceEvidenceRef,
+        ncc_available: bool,
+    ) -> EvidenceSourceIndexCandidate {
+        support_candidate_for("opaque-v1", registry, source_ref, ncc_available)
+    }
+
+    fn support_candidate_for(
+        repository_version: &str,
         registry: &EvidenceSourceRegistry,
         source_ref: RepositoryHistorySourceEvidenceRef,
         ncc_available: bool,
@@ -4019,7 +4918,7 @@ mod tests {
             EvidenceSourceIndexCandidateRow::absent(EvidenceKind::NonConflictingConcurrent)
         };
         EvidenceSourceIndexCandidate::from_capability_adapter(
-            "opaque-v1",
+            repository_version,
             registry.registry_digest().as_str(),
             UUID_A,
             vec![
@@ -4065,6 +4964,124 @@ mod tests {
         };
         RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &evidence_bytes)
             .validate(serde_json::from_value(partition_json).unwrap())
+    }
+
+    fn validate_corrective_fixture(
+        partition_json: Value,
+        source_ref: &RepositoryHistorySourceEvidenceRef,
+        observation_bytes: Vec<u8>,
+        corrective_resolver: Option<&dyn SupportCorrectiveEvidenceResolver>,
+    ) -> Result<super::ValidatedRepositoryHistoryPartition, super::RepositoryContractError> {
+        let registry = EvidenceSourceRegistry::task9().unwrap();
+        let index = FakeIndex {
+            candidates: BTreeMap::from([(
+                "opaque-v1".into(),
+                support_candidate(&registry, source_ref.clone(), false),
+            )]),
+        };
+        let order = FakeOrder {
+            evidence: routine_order(),
+        };
+        let evidence_bytes = FakeEvidenceBytes {
+            bytes: BTreeMap::from([(
+                (
+                    EvidenceKind::SupportPrerequisiteObservation,
+                    source_ref.evidence_digest().as_str().to_owned(),
+                ),
+                observation_bytes,
+            )]),
+        };
+        let resolver =
+            RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &evidence_bytes);
+        match corrective_resolver {
+            Some(corrective_resolver) => resolver
+                .with_corrective_evidence_resolver(corrective_resolver)
+                .validate(serde_json::from_value(partition_json).unwrap()),
+            None => resolver.validate(serde_json::from_value(partition_json).unwrap()),
+        }
+    }
+
+    fn combine_corrective_partitions(partitions: &[Value]) -> Value {
+        assert!(!partitions.is_empty());
+        let entries = partitions
+            .iter()
+            .map(|partition| partition["entries"][0].clone())
+            .collect::<Vec<_>>();
+        let mut combined = json!({
+            "fromExclusive":partitions.first().unwrap()["fromExclusive"].clone(),
+            "throughInclusive":partitions.last().unwrap()["throughInclusive"].clone(),
+            "entries":entries
+        });
+        recalculate_partition_digest(&mut combined);
+        combined
+    }
+
+    fn validate_versioned_corrective_fixture(
+        partition_json: Value,
+        evidence: Vec<(String, RepositoryHistorySourceEvidenceRef, Vec<u8>)>,
+        corrective_resolver: &dyn SupportCorrectiveEvidenceResolver,
+    ) -> Result<super::ValidatedRepositoryHistoryPartition, super::RepositoryContractError> {
+        let registry = EvidenceSourceRegistry::task9().unwrap();
+        let candidates = evidence
+            .iter()
+            .map(|(version, source_ref, _)| {
+                (
+                    version.clone(),
+                    support_candidate_for(version, &registry, source_ref.clone(), false),
+                )
+            })
+            .collect();
+        let evidence_bytes = FakeEvidenceBytes {
+            bytes: evidence
+                .into_iter()
+                .map(|(_, source_ref, bytes)| {
+                    (
+                        (
+                            EvidenceKind::SupportPrerequisiteObservation,
+                            source_ref.evidence_digest().as_str().to_owned(),
+                        ),
+                        bytes,
+                    )
+                })
+                .collect(),
+        };
+        let from_exclusive =
+            serde_json::from_value(partition_json["fromExclusive"].clone()).unwrap();
+        let through_inclusive: RepositoryHistoryCursor =
+            serde_json::from_value(partition_json["throughInclusive"].clone()).unwrap();
+        let entries = partition_json["entries"].as_array().unwrap();
+        let ordered_cursors = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                if index + 1 == entries.len() {
+                    through_inclusive.clone()
+                } else {
+                    serde_json::from_value(cursor(
+                        entry["repositoryVersion"].as_str().unwrap(),
+                        SHA_A,
+                    ))
+                    .unwrap()
+                }
+            })
+            .collect();
+        let order = FakeOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "versioned-corrective-order-v1",
+                from_exclusive,
+                through_inclusive,
+                ordered_cursors,
+            )
+            .unwrap(),
+        };
+        RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &FakeIndex { candidates },
+            &order,
+            &evidence_bytes,
+        )
+        .with_corrective_evidence_resolver(corrective_resolver)
+        .validate(serde_json::from_value(partition_json).unwrap())
     }
 
     fn validate_routine_fixture(
@@ -4481,26 +5498,480 @@ mod tests {
     }
 
     #[test]
-    fn corrective_support_observation_is_wire_valid_but_task8_mapping_rejects_it() {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
-        let (partition, source_ref, observation) = support_observation_fixture("corrective");
-        assert!(
-            serde_json::from_value::<super::SupportPrerequisiteVersionObservation>(
-                observation.clone()
-            )
-            .is_ok()
+    fn action_correction_requires_exact_historical_instruction_and_attribution_authority() {
+        let instruction = corrective_instruction();
+        let instruction_bytes = serde_json_canonicalizer::to_vec(&instruction).unwrap();
+        let conflict_bytes = serde_json_canonicalizer::to_vec(&conflict_instruction()).unwrap();
+        let (partition, source_ref, observation) =
+            action_corrective_partition_fixture(&instruction);
+        let observation_bytes = serde_json_canonicalizer::to_vec(&observation).unwrap();
+        let resolver = fake_corrective_resolver(
+            Some(instruction_bytes.clone()),
+            Some(conflict_bytes.clone()),
         );
-        assert!(
-            serde_json::from_value::<UnvalidatedRepositoryHistoryPartition>(partition.clone())
-                .is_ok()
-        );
-        assert!(validate_support_fixture(
-            partition,
-            support_candidate(&registry, source_ref.clone(), false),
-            serde_json_canonicalizer::to_vec(&observation).unwrap(),
+
+        assert!(validate_corrective_fixture(
+            partition.clone(),
             &source_ref,
+            observation_bytes.clone(),
+            Some(&resolver),
+        )
+        .is_ok());
+
+        // The observation must not be able to select another internally
+        // consistent historical instruction merely by supplying its digest.
+        let foreign_instruction = corrective_instruction_for(UUID_B);
+        let (foreign_partition, foreign_ref, foreign_observation) =
+            action_corrective_partition_fixture(&foreign_instruction);
+        let foreign_resolver = fake_corrective_resolver(
+            Some(serde_json_canonicalizer::to_vec(&foreign_instruction).unwrap()),
+            None,
+        );
+        assert!(validate_corrective_fixture(
+            foreign_partition,
+            &foreign_ref,
+            serde_json_canonicalizer::to_vec(&foreign_observation).unwrap(),
+            Some(&foreign_resolver),
         )
         .is_err());
+
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            None,
+        )
+        .is_err());
+
+        let missing = fake_corrective_resolver(None, Some(conflict_bytes.clone()));
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&missing),
+        )
+        .is_err());
+
+        let cross_kind = fake_corrective_resolver(Some(conflict_bytes), None);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&cross_kind),
+        )
+        .is_err());
+
+        let mut noncanonical = serde_json::to_vec_pretty(&instruction).unwrap();
+        noncanonical.push(b'\n');
+        let noncanonical = fake_corrective_resolver(Some(noncanonical), None);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&noncanonical),
+        )
+        .is_err());
+
+        let mut rejected_actor = resolver.clone();
+        rejected_actor.action_attribution_valid = false;
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&rejected_actor),
+        )
+        .is_err());
+
+        let mut wrong_historical_action = resolver.clone();
+        wrong_historical_action
+            .corrective_sources
+            .get_mut("opaque-v1")
+            .unwrap()
+            .expected_historical_support_action_id = test_id(UUID_B);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&wrong_historical_action),
+        )
+        .is_err());
+
+        for (field, replacement, semantic_instruction_digest) in [
+            (
+                "rootDeltaDigest",
+                json!(SHA_A),
+                instruction.corrective_instruction_digest().as_str(),
+            ),
+            (
+                "contentDeltaDigest",
+                json!(SHA_B),
+                instruction.corrective_instruction_digest().as_str(),
+            ),
+            ("correctiveInstructionDigest", json!(SHA_A), SHA_A),
+            (
+                "repositoryVersion",
+                json!("opaque-v2"),
+                instruction.corrective_instruction_digest().as_str(),
+            ),
+        ] {
+            let mut substituted = observation.clone();
+            substituted[field] = replacement;
+            let (substituted_partition, substituted_ref, substituted_observation) =
+                corrective_partition_from_observation(substituted, semantic_instruction_digest);
+            assert!(validate_corrective_fixture(
+                substituted_partition,
+                &substituted_ref,
+                serde_json_canonicalizer::to_vec(&substituted_observation).unwrap(),
+                Some(&resolver),
+            )
+            .is_err());
+        }
+
+        let mut wrong_actor = observation.clone();
+        wrong_actor["repositoryActor"]["username"] = json!("another-user");
+        let (wrong_actor_partition, wrong_actor_ref, wrong_actor_observation) =
+            corrective_partition_from_observation(
+                wrong_actor,
+                instruction.corrective_instruction_digest().as_str(),
+            );
+        assert!(validate_corrective_fixture(
+            wrong_actor_partition,
+            &wrong_actor_ref,
+            serde_json_canonicalizer::to_vec(&wrong_actor_observation).unwrap(),
+            Some(&resolver),
+        )
+        .is_err());
+
+        let mut wrong_semantic = partition;
+        wrong_semantic["entries"][0]["semanticDeltaDigest"] = json!(SHA_A);
+        recalculate_partition_digest(&mut wrong_semantic);
+        assert!(validate_corrective_fixture(
+            wrong_semantic,
+            &source_ref,
+            observation_bytes,
+            Some(&resolver),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn action_correction_resolves_each_historical_version_to_its_exact_frozen_instruction() {
+        let first_instruction = corrective_instruction_for(UUID_A);
+        let second_instruction = corrective_instruction_for_deltas(UUID_A, SHA_B, SHA_A);
+        assert_eq!(
+            first_instruction.support_action_id(),
+            second_instruction.support_action_id()
+        );
+        assert_ne!(
+            first_instruction.corrective_instruction_digest(),
+            second_instruction.corrective_instruction_digest()
+        );
+        let (first_partition, first_ref, first_observation) =
+            action_corrective_partition_fixture_for("opaque-v1", &first_instruction);
+        let (second_partition, second_ref, second_observation) =
+            action_corrective_partition_fixture_for("opaque-v2", &second_instruction);
+        let partition = combine_corrective_partitions(&[first_partition, second_partition]);
+        let evidence = vec![
+            (
+                "opaque-v1".to_owned(),
+                first_ref,
+                serde_json_canonicalizer::to_vec(&first_observation).unwrap(),
+            ),
+            (
+                "opaque-v2".to_owned(),
+                second_ref,
+                serde_json_canonicalizer::to_vec(&second_observation).unwrap(),
+            ),
+        ];
+        let mut exact = fake_corrective_resolver(None, None);
+        for (version, instruction) in [
+            ("opaque-v1", &first_instruction),
+            ("opaque-v2", &second_instruction),
+        ] {
+            let repository_version = RepositoryVersion::parse(version).unwrap();
+            exact.corrective_sources.insert(
+                version.to_owned(),
+                FrozenSupportCorrectiveInstructionSourceAuthority::from_capability_adapter(
+                    repository_version,
+                    instruction.support_action_id().clone(),
+                    instruction.corrective_instruction_digest().clone(),
+                    serde_json_canonicalizer::to_vec(instruction).unwrap(),
+                ),
+            );
+        }
+
+        assert!(
+            validate_versioned_corrective_fixture(partition.clone(), evidence.clone(), &exact,)
+                .is_ok()
+        );
+
+        let mut swapped = exact;
+        let first_source = swapped.corrective_sources.remove("opaque-v1").unwrap();
+        let second_source = swapped.corrective_sources.remove("opaque-v2").unwrap();
+        swapped
+            .corrective_sources
+            .insert("opaque-v1".to_owned(), second_source);
+        swapped
+            .corrective_sources
+            .insert("opaque-v2".to_owned(), first_source);
+        assert!(validate_versioned_corrective_fixture(partition, evidence, &swapped).is_err());
+
+        // Even a fully self-consistent per-version source/observation pair
+        // cannot splice another frozen action into this action-bound history.
+        let foreign_instruction = corrective_instruction_for_deltas(UUID_B, SHA_B, SHA_A);
+        let (first_partition, first_ref, first_observation) =
+            action_corrective_partition_fixture_for("opaque-v1", &first_instruction);
+        let (foreign_partition, foreign_ref, foreign_observation) =
+            action_corrective_partition_fixture_for("opaque-v2", &foreign_instruction);
+        let mixed_partition = combine_corrective_partitions(&[first_partition, foreign_partition]);
+        let mixed_evidence = vec![
+            (
+                "opaque-v1".to_owned(),
+                first_ref,
+                serde_json_canonicalizer::to_vec(&first_observation).unwrap(),
+            ),
+            (
+                "opaque-v2".to_owned(),
+                foreign_ref,
+                serde_json_canonicalizer::to_vec(&foreign_observation).unwrap(),
+            ),
+        ];
+        let mut mixed = fake_corrective_resolver(None, None);
+        for (version, instruction) in [
+            ("opaque-v1", &first_instruction),
+            ("opaque-v2", &foreign_instruction),
+        ] {
+            let repository_version = RepositoryVersion::parse(version).unwrap();
+            mixed.corrective_sources.insert(
+                version.to_owned(),
+                FrozenSupportCorrectiveInstructionSourceAuthority::from_capability_adapter(
+                    repository_version,
+                    instruction.support_action_id().clone(),
+                    instruction.corrective_instruction_digest().clone(),
+                    serde_json_canonicalizer::to_vec(instruction).unwrap(),
+                ),
+            );
+        }
+        assert!(
+            validate_versioned_corrective_fixture(mixed_partition, mixed_evidence, &mixed,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn external_conflict_correction_binds_conflict_baseline_and_immutable_ownership() {
+        let instruction = conflict_instruction();
+        let instruction_bytes = serde_json_canonicalizer::to_vec(&instruction).unwrap();
+        let corrective_bytes = serde_json_canonicalizer::to_vec(&corrective_instruction()).unwrap();
+        let (partition, source_ref, observation) =
+            external_corrective_partition_fixture(&instruction);
+        let observation_bytes = serde_json_canonicalizer::to_vec(&observation).unwrap();
+        let resolver = fake_corrective_resolver(
+            Some(corrective_bytes.clone()),
+            Some(instruction_bytes.clone()),
+        );
+
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&resolver),
+        )
+        .is_ok());
+
+        // A fully self-consistent foreign conflict pair is still not the
+        // capability-selected frozen historical conflict instruction.
+        let foreign_instruction = conflict_instruction_for(UUID_B);
+        let (foreign_partition, foreign_ref, foreign_observation) =
+            external_corrective_partition_fixture(&foreign_instruction);
+        let foreign_resolver = fake_corrective_resolver(
+            None,
+            Some(serde_json_canonicalizer::to_vec(&foreign_instruction).unwrap()),
+        );
+        assert!(validate_corrective_fixture(
+            foreign_partition,
+            &foreign_ref,
+            serde_json_canonicalizer::to_vec(&foreign_observation).unwrap(),
+            Some(&foreign_resolver),
+        )
+        .is_err());
+
+        let mut rejected_ownership = resolver.clone();
+        rejected_ownership.external_attribution_valid = false;
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&rejected_ownership),
+        )
+        .is_err());
+
+        let mut wrong_historical_conflict = resolver.clone();
+        wrong_historical_conflict
+            .conflict_sources
+            .get_mut("opaque-v1")
+            .unwrap()
+            .expected_historical_conflict_resolution_id = test_id(UUID_B);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&wrong_historical_conflict),
+        )
+        .is_err());
+
+        let mut wrong_action_binding = resolver.clone();
+        wrong_action_binding
+            .conflict_sources
+            .get_mut("opaque-v1")
+            .unwrap()
+            .expected_historical_support_action_id = test_id(UUID_B);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&wrong_action_binding),
+        )
+        .is_err());
+
+        let missing = fake_corrective_resolver(Some(corrective_bytes.clone()), None);
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&missing),
+        )
+        .is_err());
+
+        let cross_kind = fake_corrective_resolver(None, Some(corrective_bytes.clone()));
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&cross_kind),
+        )
+        .is_err());
+
+        let mut noncanonical = serde_json::to_vec_pretty(&instruction).unwrap();
+        noncanonical.push(b'\n');
+        let noncanonical = fake_corrective_resolver(Some(corrective_bytes), Some(noncanonical));
+        assert!(validate_corrective_fixture(
+            partition.clone(),
+            &source_ref,
+            observation_bytes.clone(),
+            Some(&noncanonical),
+        )
+        .is_err());
+
+        for (field, replacement) in [
+            (
+                "conflictResolutionId",
+                json!("22222222-2222-4222-8222-222222222222"),
+            ),
+            ("finalBaselineDigest", json!(SHA_A)),
+        ] {
+            let mut substituted = observation.clone();
+            substituted[field] = replacement;
+            let (substituted_partition, substituted_ref, substituted_observation) =
+                corrective_partition_from_observation(
+                    substituted,
+                    instruction.support_conflict_instruction_digest().as_str(),
+                );
+            assert!(validate_corrective_fixture(
+                substituted_partition,
+                &substituted_ref,
+                serde_json_canonicalizer::to_vec(&substituted_observation).unwrap(),
+                Some(&resolver),
+            )
+            .is_err());
+        }
+
+        let mut wrong_instruction_digest = observation.clone();
+        wrong_instruction_digest["supportConflictInstructionDigest"] = json!(SHA_A);
+        let (wrong_partition, wrong_ref, wrong_observation) =
+            corrective_partition_from_observation(wrong_instruction_digest, SHA_A);
+        assert!(validate_corrective_fixture(
+            wrong_partition,
+            &wrong_ref,
+            serde_json_canonicalizer::to_vec(&wrong_observation).unwrap(),
+            Some(&resolver),
+        )
+        .is_err());
+
+        let mut wrong_ownership = observation;
+        wrong_ownership["externalOwnershipEvidence"]["receiptDigest"] = json!(SHA_B);
+        let (wrong_partition, wrong_ref, wrong_observation) = corrective_partition_from_observation(
+            wrong_ownership,
+            instruction.support_conflict_instruction_digest().as_str(),
+        );
+        assert!(validate_corrective_fixture(
+            wrong_partition,
+            &wrong_ref,
+            serde_json_canonicalizer::to_vec(&wrong_observation).unwrap(),
+            Some(&resolver),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn external_conflict_correction_resolves_each_historical_version_to_its_exact_frozen_instruction(
+    ) {
+        let first_instruction = conflict_instruction_for(UUID_A);
+        let second_instruction = conflict_instruction_for(UUID_B);
+        assert_ne!(
+            first_instruction.support_conflict_instruction_digest(),
+            second_instruction.support_conflict_instruction_digest()
+        );
+        let (first_partition, first_ref, first_observation) =
+            external_corrective_partition_fixture_for("opaque-v1", &first_instruction);
+        let (second_partition, second_ref, second_observation) =
+            external_corrective_partition_fixture_for("opaque-v2", &second_instruction);
+        let partition = combine_corrective_partitions(&[first_partition, second_partition]);
+        let evidence = vec![
+            (
+                "opaque-v1".to_owned(),
+                first_ref,
+                serde_json_canonicalizer::to_vec(&first_observation).unwrap(),
+            ),
+            (
+                "opaque-v2".to_owned(),
+                second_ref,
+                serde_json_canonicalizer::to_vec(&second_observation).unwrap(),
+            ),
+        ];
+        let mut exact = fake_corrective_resolver(None, None);
+        for (version, instruction) in [
+            ("opaque-v1", &first_instruction),
+            ("opaque-v2", &second_instruction),
+        ] {
+            let repository_version = RepositoryVersion::parse(version).unwrap();
+            exact.conflict_sources.insert(
+                version.to_owned(),
+                FrozenSupportConflictInstructionSourceAuthority::from_capability_adapter(
+                    repository_version,
+                    test_id(UUID_A),
+                    instruction.conflict_resolution_id().clone(),
+                    instruction.support_conflict_instruction_digest().clone(),
+                    serde_json_canonicalizer::to_vec(instruction).unwrap(),
+                ),
+            );
+        }
+
+        assert!(
+            validate_versioned_corrective_fixture(partition.clone(), evidence.clone(), &exact,)
+                .is_ok()
+        );
+
+        let mut swapped = exact;
+        let first_source = swapped.conflict_sources.remove("opaque-v1").unwrap();
+        let second_source = swapped.conflict_sources.remove("opaque-v2").unwrap();
+        swapped
+            .conflict_sources
+            .insert("opaque-v1".to_owned(), second_source);
+        swapped
+            .conflict_sources
+            .insert("opaque-v2".to_owned(), first_source);
+        assert!(validate_versioned_corrective_fixture(partition, evidence, &swapped).is_err());
     }
 
     #[test]
@@ -4552,7 +6023,7 @@ mod tests {
 
         let mut stale_candidate = routine_candidate(&registry, routine_ref.clone());
         stale_candidate.registry_digest =
-            Sha256Digest::parse(super::TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST).unwrap();
+            Sha256Digest::parse(super::TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST).unwrap();
         let (_, _, routine_evidence) = routine_partition_fixture();
         assert!(validate_routine_fixture(
             routine_partition_fixture().0,

@@ -556,38 +556,50 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/change_receipts.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/support_terminalization.rs`
 
-- [ ] RED: all four `BranchedChangeReceipt` leaves, changed/no-change phase
+- [x] RED: all four `BranchedChangeReceipt` leaves, changed/no-change phase
   rules, target hashes/events/cache impact, recovery finalization plan/guard
   proof, working-IB closure plan/proof, both mode stop-evidence types,
   `SupportCorrectiveInstruction`, `SupportRecoveryExternalAction`, and both
   instruction-bound corrective observation/source-resolution leaves.
-- [ ] Extend Task 8's instruction module with the corrective instruction and the
+- [x] Extend Task 8's instruction module with the corrective instruction and the
   closed recovery-external-action union; reuse the existing eight instruction
   records and their digests without redefining any `NextAction` vocabulary.
-- [ ] Extend the Task 8 support-observation source validator to accept
+- [x] Extend the Task 8 support-observation source validator to accept
   `corrective` only by its `correctionKind`. `actionCorrection` resolves and
   rehashes the historical `SupportCorrectiveInstruction`, then proves exact
   instruction digest, repository actor, target-mode/working-IB presence, and
-  root/content delta equality. `externalConflictCorrection` instead resolves and
+  root/content delta equality against the instruction's constructor-derived
+  `requiredRootDeltaDigest`/`requiredContentDeltaDigest` (never its endpoint
+  state digests). `externalConflictCorrection` instead resolves and
   rehashes Task 8's historical `SupportConflictInstruction`, then proves its
   instruction digest, `conflictResolutionId`, `finalBaselineDigest ==
   requiredFinalBaselineDigest`, and the exact `ExternalSupportOwnershipEvidence`
-  binding the same actor/version/root/content delta. Both leaves require the
+  binding the same actor/version/root/content delta. Both historical source
+  authorities bind the resolver's stable frozen `supportActionId` even though
+  the conflict-instruction wire itself has no action ID. Both leaves require the
   authoritative source-index version/ref, partition class `corrective`,
   recomputed classification and semantic-delta digests. Add missing/multiple,
   wrong-kind/version/ref/digest, cross-action/conflict, and cross-leaf negatives;
   structural observation validity alone must never authorize either branch.
-- [ ] Enabling those corrective mappings changes the support-observation
+- [x] Enabling those corrective mappings changes the support-observation
   registry entry's `classificationMapperRevisionDigest`, recomputes
   `registryDigest`, and rejects every Task 8 `EvidenceSourceIndexProof`. Keep the
   evidence-schema, digest-record-schema, and loader revision digests unchanged
   unless their actual schema/loader changes. Test stale Task 8 proof rejection,
   mapper-digest substitution, and the recomputed Task 9 proof/order.
-- [ ] Ensure no-change receipts cannot invalidate evidence or supersede a
+- [x] Ensure no-change receipts cannot invalidate evidence or supersede a
   decision; changed receipts bind the exact invalidation/supersession closure.
-- [ ] Keep conceptual workflow links as typed IDs/digests and ordinary owned
+- [x] Keep corrective, recovery finalization/guard, and working-IB
+  closure/proof/stop ownership in Task 9 limited to closed wire/digest types
+  and test-only semantic constructors. Do not expose any production
+  materialization, execution, completion, or stop authority before Task 11 can
+  bind the frozen action ID/digest, exact approved history partition,
+  capability-proven materialized working-IB cursor/object map, materialized
+  selective-update plan, typed acquire/release receipt window, and under-guard
+  recheck/post-release scan as one opaque authority.
+- [x] Keep conceptual workflow links as typed IDs/digests and ordinary owned
   fields; do not add `Box` or recursive generic JSON.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 10: Pre-arm cancellation and recovery core
 
@@ -643,6 +655,18 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   These value checks are mandatory after shape validation and before any replay
   view; no caller-supplied digest is trusted merely because its scalar schema is
   valid.
+- [ ] Add the sole production support-recovery corrective/finalization/
+  completion authority here, after `RecoveryPlanStatus` exists. It atomically
+  binds the exact frozen action ID/digest and approved history through-cursor/
+  partition digest to the corrective delta/handoffs and materialized
+  finalization/selective-update plan and capability-proven working-IB
+  cursor/object map, validates current desired support/content/target state
+  under the typed acquire/release receipt window, and accepts only the
+  capability-scanned post-release tail ending before a forbidden successor or
+  coverage gap with the exact optional `DeferredRepositoryAdvance`. This is
+  also the sole production execution/stop authority for the Task 9 working-IB
+  closure and guard records; none of their fixture constructors becomes a
+  production mint independently.
 - [ ] Keep Task 5A opaque candidates unbound to a production record. A test-only
   typed loader may validate `OperationRecord<TestTerminalEnvelope>` and construct
   a test replay view; the production opaque-loader binding waits for Task 16.

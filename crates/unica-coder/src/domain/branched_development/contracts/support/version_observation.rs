@@ -1,6 +1,6 @@
 use super::{
-    ExternalSupportOwnershipEvidence, ManualWorkingInfobaseIdentity, SupportMissingEvidenceKind,
-    SupportPrerequisiteMismatchKind,
+    ExternalSupportOwnershipEvidence, ManualSupportTargetMode, ManualWorkingInfobaseIdentity,
+    SupportMissingEvidenceKind, SupportPrerequisiteMismatchKind,
 };
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
@@ -796,6 +796,33 @@ pub(crate) struct SupportObservationTask8Projection {
     external_support_disjointness_digest: Option<Sha256Digest>,
 }
 
+/// Intrinsic Task 9 projection for the two instruction-bound corrective leaves.
+///
+/// Like the Task 8 projection, this is data only and is not an authority. The
+/// repository resolver must still load and rehash the exact historical
+/// instruction, validate external ownership when applicable, and bind the
+/// active source-index proof before a corrective partition entry can exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupportObservationCorrectiveProjection {
+    ActionCorrection {
+        repository_actor: RepositoryActorIdentity,
+        manual_target_mode: ManualSupportTargetMode,
+        working_infobase_identity: Option<ManualWorkingInfobaseIdentity>,
+        root_delta_digest: Sha256Digest,
+        content_delta_digest: Sha256Digest,
+        corrective_instruction_digest: Sha256Digest,
+    },
+    ExternalConflictCorrection {
+        repository_actor: RepositoryActorIdentity,
+        root_delta_digest: Sha256Digest,
+        content_delta_digest: Sha256Digest,
+        conflict_resolution_id: UnicaId,
+        support_conflict_instruction_digest: Sha256Digest,
+        final_baseline_digest: Sha256Digest,
+        external_ownership_evidence: ExternalSupportOwnershipEvidence,
+    },
+}
+
 impl SupportObservationTask8Projection {
     pub(crate) const fn partition_classification(
         &self,
@@ -929,6 +956,56 @@ impl SupportPrerequisiteVersionObservation {
             | ObservationWire::ExternalConflictCorrection(_) => return None,
         };
         Some(projection)
+    }
+
+    pub(crate) fn task9_corrective_projection(
+        &self,
+    ) -> Option<SupportObservationCorrectiveProjection> {
+        match &self.0 {
+            ObservationWire::ActionCorrectionReserved(value) => {
+                Some(SupportObservationCorrectiveProjection::ActionCorrection {
+                    repository_actor: value.repository_actor.clone(),
+                    manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+                    working_infobase_identity: None,
+                    root_delta_digest: value.root_delta_digest.clone(),
+                    content_delta_digest: value.content_delta_digest.clone(),
+                    corrective_instruction_digest: value.corrective_instruction_digest.clone(),
+                })
+            }
+            ObservationWire::ActionCorrectionSeparate(value) => {
+                Some(SupportObservationCorrectiveProjection::ActionCorrection {
+                    repository_actor: value.repository_actor.clone(),
+                    manual_target_mode: ManualSupportTargetMode::SeparateWorkingInfobase,
+                    working_infobase_identity: Some(value.working_infobase_identity.clone()),
+                    root_delta_digest: value.root_delta_digest.clone(),
+                    content_delta_digest: value.content_delta_digest.clone(),
+                    corrective_instruction_digest: value.corrective_instruction_digest.clone(),
+                })
+            }
+            ObservationWire::ExternalConflictCorrection(value) => Some(
+                SupportObservationCorrectiveProjection::ExternalConflictCorrection {
+                    repository_actor: value.repository_actor.clone(),
+                    root_delta_digest: value.root_delta_digest.clone(),
+                    content_delta_digest: value.content_delta_digest.clone(),
+                    conflict_resolution_id: value.conflict_resolution_id.clone(),
+                    support_conflict_instruction_digest: value
+                        .support_conflict_instruction_digest
+                        .clone(),
+                    final_baseline_digest: value.final_baseline_digest.clone(),
+                    external_ownership_evidence: value.external_ownership_evidence.clone(),
+                },
+            ),
+            ObservationWire::Routine(_)
+            | ObservationWire::AuthorizedReserved(_)
+            | ObservationWire::AuthorizedSeparate(_)
+            | ObservationWire::ExternalSupport(_)
+            | ObservationWire::PreArmAwaiting(_)
+            | ObservationWire::PreArmFrozen(_)
+            | ObservationWire::InvalidThisActionReserved(_)
+            | ObservationWire::InvalidThisActionSeparate(_)
+            | ObservationWire::InvalidExternalActor(_)
+            | ObservationWire::InvalidUnattributed(_) => None,
+        }
     }
 }
 
@@ -1156,6 +1233,64 @@ mod tests {
         let schema =
             serde_json::to_value(schema_for!(SupportPrerequisiteVersionObservation)).unwrap();
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+    }
+
+    #[test]
+    fn task9_corrective_projection_preserves_the_exact_instruction_binding() {
+        let reserved = accepts(finalize(json!({
+            "repositoryVersion":"opaque-v4",
+            "classification":"corrective",
+            "classificationDigest":SHA_A,
+            "mismatchKinds":[],
+            "correctionKind":"actionCorrection",
+            "repositoryActor":actor(),
+            "manualTargetMode":"reservedOriginal",
+            "rootDeltaDigest":SHA_A,
+            "contentDeltaDigest":SHA_A,
+            "correctiveInstructionDigest":SHA_A
+        })));
+        match reserved.task9_corrective_projection().unwrap() {
+            super::SupportObservationCorrectiveProjection::ActionCorrection {
+                manual_target_mode,
+                working_infobase_identity,
+                corrective_instruction_digest,
+                ..
+            } => {
+                assert_eq!(
+                    manual_target_mode,
+                    super::ManualSupportTargetMode::ReservedOriginal
+                );
+                assert!(working_infobase_identity.is_none());
+                assert_eq!(corrective_instruction_digest.as_str(), SHA_A);
+            }
+            other => panic!("unexpected corrective projection: {other:?}"),
+        }
+
+        let external = accepts(finalize(json!({
+            "repositoryVersion":"opaque-v6",
+            "classification":"corrective",
+            "classificationDigest":SHA_A,
+            "mismatchKinds":[],
+            "correctionKind":"externalConflictCorrection",
+            "repositoryActor":actor(),
+            "rootDeltaDigest":SHA_A,
+            "contentDeltaDigest":SHA_A,
+            "conflictResolutionId":UUID_A,
+            "supportConflictInstructionDigest":SHA_A,
+            "finalBaselineDigest":SHA_A,
+            "externalOwnershipEvidence":external_ownership()
+        })));
+        match external.task9_corrective_projection().unwrap() {
+            super::SupportObservationCorrectiveProjection::ExternalConflictCorrection {
+                conflict_resolution_id,
+                support_conflict_instruction_digest,
+                ..
+            } => {
+                assert_eq!(conflict_resolution_id.as_str(), UUID_A);
+                assert_eq!(support_conflict_instruction_digest.as_str(), SHA_A);
+            }
+            other => panic!("unexpected corrective projection: {other:?}"),
+        }
     }
 
     #[test]

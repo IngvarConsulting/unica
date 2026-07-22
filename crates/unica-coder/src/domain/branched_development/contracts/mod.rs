@@ -3,6 +3,8 @@ pub(crate) mod actions;
 #[allow(dead_code)]
 pub(crate) mod artifacts;
 #[allow(dead_code)]
+pub(crate) mod change_receipts;
+#[allow(dead_code)]
 pub(crate) mod envelope;
 #[allow(dead_code)]
 pub(crate) mod errors;
@@ -22,6 +24,8 @@ pub(crate) mod schema;
 pub(crate) mod selectors;
 #[allow(dead_code)]
 pub(crate) mod support;
+#[allow(dead_code)]
+pub(crate) mod support_terminalization;
 
 pub(crate) use support::SupportMissingEvidenceKind;
 

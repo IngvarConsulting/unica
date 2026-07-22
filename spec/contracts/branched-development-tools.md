@@ -279,6 +279,17 @@ The companion contract for general mutations is producer-neutral:
   unattributed leaf. The structurally representable `corrective` observation
   has no mapper row until Task 9 binds it to an exact historical instruction.
 
+  Task 9 replaces that six-row mapper with exactly eight rows in fixed order:
+  `routineUnrelated`, `routineRelevant`, `authorized`, `externalSupport`,
+  `preArmExternal`, `actionCorrection`, `externalConflictCorrection`,
+  `invalid`. The two new rows both select `corrective`, copy root/content/
+  classification digests, and keep external-support/non-conflicting slots
+  explicitly null. `actionCorrection` uses
+  `copyCorrectiveInstructionDigest`; `externalConflictCorrection` uses
+  `copySupportConflictInstructionDigest`. The distinct projection literals are
+  part of the mapper preimage, so the two historical instruction kinds cannot
+  be interchanged.
+
   Those named member strings and literal values are the canonical preimage;
   `null` is not used inside the descriptor row because `explicitNull` describes
   the mapper's output policy.
@@ -1487,18 +1498,26 @@ Neither corrective subvariant is validated history evidence from its own shape
 or `classificationDigest` alone. For `actionCorrection`, typed source resolution
 loads and rehashes the exact historical `SupportCorrectiveInstruction` named by
 `correctiveInstructionDigest`, then proves the repository actor, manual target
-mode/working-IB presence, and complete root/content delta equal that instruction.
+mode/working-IB presence, and complete root/content delta equal that
+instruction's derived `requiredRootDeltaDigest` and
+`requiredContentDeltaDigest`.
 For `externalConflictCorrection`, it loads and rehashes the Task 8
 `SupportConflictInstruction` named by `supportConflictInstructionDigest`, proves
 `conflictResolutionId` equality, requires `finalBaselineDigest ==
 requiredFinalBaselineDigest`, and validates `ExternalSupportOwnershipEvidence`
 as the immutable provenance of the same repository actor/version/root/content
-delta. In both leaves the selected source ref/index proof version equals the
-observation and partition-entry version, the observation discriminator maps only
-to partition classification `corrective`, its `classificationDigest` is
-recomputed, and `semanticDeltaDigest` uses that exact instruction digest. An
-unavailable, multiple, wrong-kind, wrong-action/conflict, cross-leaf, or digest-
-mismatched instruction/evidence source leaves the partition unvalidated.
+delta. In both leaves the independently selected historical source authority
+also carries the frozen `supportActionId`, which equals the resolver's stable
+action scope; this is especially required for `SupportConflictInstruction`,
+whose own wire intentionally contains no action ID. The selected source
+ref/index proof version equals the observation and partition-entry version, the
+observation discriminator maps only to partition classification `corrective`,
+its `classificationDigest` is recomputed, and `semanticDeltaDigest` uses that
+exact instruction digest. An unavailable, multiple, wrong-kind,
+wrong-action/conflict, cross-leaf, or digest-mismatched instruction/evidence
+source leaves the partition unvalidated. Conflict-resolution IDs remain
+per-version historical facts, so a later frozen retry may publish a distinct
+conflict instruction without escaping the stable support-action scope.
 
 The second subvariant represents the allowed external corrective sequence for a
 conflicting support target. It is preserved and never automatically inversed;
@@ -1618,6 +1637,7 @@ correctionLockTargets: SupportRecoveryLockTarget[],
 finalizationLockTargets: SupportRecoveryLockTarget[], requiredRootTransitions:
 SupportRecoveryTransition[],
 requiredContentRestorations: SupportContentRestoration[],
+requiredRootDeltaDigest, requiredContentDeltaDigest,
 distributionHandoffs: SupportRecoveryDistributionHandoff[],
 handoffRevalidations: SupportRecoveryHandoffRevalidation[],
 desiredSupportGraphDigest, desiredRepositoryContentDigest,
@@ -1636,6 +1656,15 @@ byte-identical to the frozen authorization evidence, and is empty when no
 off-support restoration requires a vendor CF. The revalidation list maps
 one-to-one to that non-empty handoff subset and proves same-SHA availability and
 retention immediately before this instruction.
+`requiredRootDeltaDigest == sha256(canonical({ requiredRootTransitions }))`
+over the named closed `SupportRequiredRootDeltaDigestRecord`, and
+`requiredContentDeltaDigest == sha256(canonical({
+requiredContentRestorations }))` over the named closed
+`SupportRequiredContentDeltaDigestRecord`. They are derived by the instruction
+constructor, not supplied as independent authority. They bind the exact version
+delta expected from the human corrective commit. The separate
+`desiredSupportGraphDigest` and `desiredRepositoryContentDigest` remain endpoint
+state digests and must never be compared to a delta digest.
 `correctiveInstructionDigest ==
 sha256(canonical(instruction-without-correctiveInstructionDigest))`. A
 `corrective` history observation repeats the digest of the exact instruction
@@ -1791,6 +1820,21 @@ reapproval with this released attempt in prior audit evidence, not as the
 current latest proof. Unknown acquisition, update, finalization, or release remains
 `recoveryRequired`.
 Every guard `proofDigest == sha256(canonical(proof-without-proofDigest))`.
+
+Task 9 keeps the corrective semantic authority and the finalization/guard and
+working-IB closure/proof/stop output records non-deserializable, with test-only
+semantic constructors. `SupportCorrectiveInstruction` and
+`SupportConflictInstruction` are strict-decodable only inside an independently
+selected historical source, with the latter additionally requiring the external
+history-order authority; successful wire decoding remains evidence, never
+authority by shape. Task 9 intentionally exposes no production corrective,
+materialization, execution, completion, or stop mint. The single authority
+appears only with `RecoveryPlanStatus` in Task 11, where it atomically binds the
+frozen action ID/digest, exact approved history partition, capability-proven
+materialized working-IB cursor/object map, materialized selective-update plan,
+typed acquire/release receipt window, current under-guard destination rechecks,
+and the capability-scanned post-release tail. Adding a production plan
+constructor alone must not make any Task 9 fixture constructor callable.
 
 `ManualWorkingInfobaseClosurePlan` is a closed tagged `oneOf` of:
 
@@ -3100,7 +3144,15 @@ phases and absent before terminal cleanup. These
 records are status projections only and cannot be supplied as mutation input.
 `taskWorkspaceId` appears from successful deployment until cleanup and lets a
 new client resume typed tools without learning a path. `resumeHandles` is a
-closed tagged union containing only current non-invalidated records:
+closed `handleKind`-tagged union containing only current non-invalidated
+records. Every branch below includes `handleKind` with the literal branch name
+(`artifact`, `workspace`, `mergeResolutionWorkspace`, `checkpoint`,
+`comparison`, `supportPreflight`, `supportActionAuthorization`,
+`supportPrerequisite`, `supportCancellation`, `supportRecovery`,
+`deferredRepositoryAdvance`, `mergeSession`, `decision`,
+`resolutionChangeReceipt`, `verification`, `mergeApply`, `lockPlan`, `lockSet`,
+`preview`, `recovery`, or `archive`); this outer discriminator is distinct from
+any branch-local `kind` or `decisionKind` field:
 
 - `artifact { artifactId, role, kind, sha256, verificationId? }`;
 - `workspace { taskWorkspaceId }` or `mergeResolutionWorkspace {
@@ -4481,7 +4533,10 @@ plan before normal main verification/commit can resume; an effect/recovery plan
 that has entered `recoveryRequired` is never cancellable.
 
 `recentOperations` contains bounded `{ operationId, operation:
-TaskOperationSelector, terminalKind, resultDigest }` records. Together the
+TaskOperationSelector, terminalKind, resultDigest }` records. `terminalKind` is
+the closed enum `completed`, `stopped`, or `rejected` and is the exact
+projection of the durable terminal envelope's `resultKind`; it is not a second
+caller-selected classification. Together the
 current phase and tagged handles provide
 every ID/digest required by the next legal request after a response is lost;
 callers never reconstruct IDs or paths. Status does not write observations or

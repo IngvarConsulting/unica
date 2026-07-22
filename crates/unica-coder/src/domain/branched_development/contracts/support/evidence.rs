@@ -1076,6 +1076,18 @@ impl ManualActorLockInventoryProof {
             observation_digest,
         })
     }
+
+    pub(crate) const fn username(&self) -> &RepositoryUsername {
+        &self.username
+    }
+
+    pub(crate) const fn baseline_lock_set_digest(&self) -> &Sha256Digest {
+        &self.baseline_lock_set_digest
+    }
+
+    pub(crate) const fn observed_lock_set_digest(&self) -> &Sha256Digest {
+        &self.observed_lock_set_digest
+    }
 }
 
 impl<'de> Deserialize<'de> for ManualActorLockInventoryProof {
@@ -1156,6 +1168,14 @@ impl ReservedOriginalLeaseStopEvidence {
             exclusive_lease_acquired: record.exclusive_lease_acquired,
             evidence_digest,
         })
+    }
+
+    pub(crate) const fn reserved_original_identity_digest(&self) -> &Sha256Digest {
+        &self.reserved_original_identity_digest
+    }
+
+    pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        &self.exclusive_lease_capability_id
     }
 }
 
@@ -1289,6 +1309,18 @@ impl ReservedOriginalTerminalizationProof {
 
     pub(crate) const fn proof_digest(&self) -> &Sha256Digest {
         &self.proof_digest
+    }
+
+    pub(crate) const fn reserved_original_identity_digest(&self) -> &Sha256Digest {
+        &self.reserved_original_identity_digest
+    }
+
+    pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        &self.exclusive_lease_capability_id
+    }
+
+    pub(crate) const fn expected_repository_fingerprint(&self) -> &Sha256Digest {
+        &self.expected_repository_fingerprint
     }
 }
 

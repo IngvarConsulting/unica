@@ -2233,6 +2233,14 @@ impl ManualWorkingInfobaseIdentity {
     pub(crate) const fn digest(&self) -> &Sha256Digest {
         &self.digest
     }
+
+    pub(crate) const fn computer(&self) -> &RepositoryIdentityComponent {
+        &self.computer
+    }
+
+    pub(crate) const fn infobase(&self) -> &RepositoryIdentityComponent {
+        &self.infobase
+    }
 }
 
 impl<'de> Deserialize<'de> for ManualWorkingInfobaseIdentity {

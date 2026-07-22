@@ -253,6 +253,7 @@ mod tests {
     assert_not_deserialize_owned!(TerminalSupportActionAuthorization);
     assert_not_deserialize_owned!(AwaitingSupportInstructionProjection);
     assert_not_deserialize_owned!(ArmedSupportInstructionProjection);
+    assert_not_deserialize_owned!(FrozenSupportRecoveryAuthorizationProjection);
 
     #[test]
     fn action_digest_and_authorization_schemas_are_closed_and_state_exact() {
@@ -316,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn prearm_freeze_stays_active_while_cancellation_is_terminal() {
+    fn prearm_freeze_cannot_authorize_armed_recovery_while_cancellation_is_terminal() {
         let authority = SupportActionAuthorizationAuthority::reserved_original(
             inputs("reserved-user"),
             CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
@@ -324,7 +325,9 @@ mod tests {
         )
         .unwrap();
         let active = ActiveSupportActionResumeHandle::publish(authority).unwrap();
+        assert!(active.frozen_support_recovery_projection().is_none());
         let frozen = active.clone().freeze_prearm_cancellation_effect().unwrap();
+        assert!(frozen.frozen_support_recovery_projection().is_none());
         let frozen_json = serde_json::to_value(&frozen).unwrap();
         assert_eq!(frozen_json["state"], json!("frozenForRecovery"));
         assert_eq!(frozen_json["freezeKind"], json!("preArmCancellationEffect"));
@@ -881,6 +884,100 @@ struct SupportActionAuthorizationRecord {
     freeze_kind: Option<SupportActionFreezeKind>,
 }
 
+/// Immutable authorization fields required to validate recovery guard evidence.
+///
+/// Production instances can be projected only from a frozen support action, so
+/// guard construction cannot choose a manual mode or splice lease evidence from
+/// another authorization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrozenSupportRecoveryAuthorizationProjection {
+    support_action_id: UnicaId,
+    support_action_digest: Sha256Digest,
+    manual_target_mode: ManualSupportTargetMode,
+    manual_actor_username: RepositoryUsername,
+    manual_actor_lock_baseline_digest: Option<Sha256Digest>,
+    reserved_original_identity_digest: Sha256Digest,
+    reserved_original_lease_capability_id: Option<CapabilityRowId>,
+    expected_original_fingerprint: Sha256Digest,
+}
+
+impl FrozenSupportRecoveryAuthorizationProjection {
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reserved_test_only(
+        support_action_id: UnicaId,
+        support_action_digest: Sha256Digest,
+        manual_actor_username: RepositoryUsername,
+        manual_actor_lock_baseline_digest: Sha256Digest,
+        reserved_original_identity_digest: Sha256Digest,
+        reserved_original_lease_capability_id: CapabilityRowId,
+        expected_original_fingerprint: Sha256Digest,
+    ) -> Self {
+        Self {
+            support_action_id,
+            support_action_digest,
+            manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+            manual_actor_username,
+            manual_actor_lock_baseline_digest: Some(manual_actor_lock_baseline_digest),
+            reserved_original_identity_digest,
+            reserved_original_lease_capability_id: Some(reserved_original_lease_capability_id),
+            expected_original_fingerprint,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn separate_test_only(
+        support_action_id: UnicaId,
+        support_action_digest: Sha256Digest,
+        manual_actor_username: RepositoryUsername,
+        reserved_original_identity_digest: Sha256Digest,
+        expected_original_fingerprint: Sha256Digest,
+    ) -> Self {
+        Self {
+            support_action_id,
+            support_action_digest,
+            manual_target_mode: ManualSupportTargetMode::SeparateWorkingInfobase,
+            manual_actor_username,
+            manual_actor_lock_baseline_digest: None,
+            reserved_original_identity_digest,
+            reserved_original_lease_capability_id: None,
+            expected_original_fingerprint,
+        }
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn support_action_digest(&self) -> &Sha256Digest {
+        &self.support_action_digest
+    }
+
+    pub(crate) const fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        self.manual_target_mode
+    }
+
+    pub(crate) const fn manual_actor_username(&self) -> &RepositoryUsername {
+        &self.manual_actor_username
+    }
+
+    pub(crate) const fn manual_actor_lock_baseline_digest(&self) -> Option<&Sha256Digest> {
+        self.manual_actor_lock_baseline_digest.as_ref()
+    }
+
+    pub(crate) const fn reserved_original_identity_digest(&self) -> &Sha256Digest {
+        &self.reserved_original_identity_digest
+    }
+
+    pub(crate) const fn reserved_original_lease_capability_id(&self) -> Option<&CapabilityRowId> {
+        self.reserved_original_lease_capability_id.as_ref()
+    }
+
+    pub(crate) const fn expected_original_fingerprint(&self) -> &Sha256Digest {
+        &self.expected_original_fingerprint
+    }
+}
+
 /// Opaque, state-checked inputs for the external acquire-root instruction.
 ///
 /// This projection can be minted only from a published action which is still
@@ -1144,6 +1241,15 @@ pub(crate) enum ActiveSupportActionResumeHandle {
 }
 
 impl ActiveSupportActionResumeHandle {
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        match self {
+            Self::AwaitingArm(record)
+            | Self::Armed(record)
+            | Self::FrozenArmedAction(record)
+            | Self::FrozenPreArmCancellationEffect(record) => &record.immutable.support_action_id,
+        }
+    }
+
     pub(crate) fn publish(
         authority: SupportActionAuthorizationAuthority,
     ) -> Result<Self, SupportContractError> {
@@ -1217,6 +1323,36 @@ impl ActiveSupportActionResumeHandle {
             manual_actor_username: record.immutable.manual_actor_username.clone(),
             working_infobase_identity: record.immutable.manual_working_infobase_identity.clone(),
             authorized_transitions: record.immutable.authorized_transitions.clone(),
+        })
+    }
+
+    pub(crate) fn frozen_support_recovery_projection(
+        &self,
+    ) -> Option<FrozenSupportRecoveryAuthorizationProjection> {
+        let record = match self {
+            Self::FrozenArmedAction(record) => record,
+            Self::AwaitingArm(_) | Self::Armed(_) | Self::FrozenPreArmCancellationEffect(_) => {
+                return None
+            }
+        };
+        Some(FrozenSupportRecoveryAuthorizationProjection {
+            support_action_id: record.immutable.support_action_id.clone(),
+            support_action_digest: record.support_action_digest.clone(),
+            manual_target_mode: record.immutable.manual_target_mode,
+            manual_actor_username: record.immutable.manual_actor_username.clone(),
+            manual_actor_lock_baseline_digest: record
+                .immutable
+                .manual_actor_lock_baseline_digest
+                .clone(),
+            reserved_original_identity_digest: record
+                .immutable
+                .reserved_original_identity_digest
+                .clone(),
+            reserved_original_lease_capability_id: record
+                .immutable
+                .reserved_original_lease_capability_id
+                .clone(),
+            expected_original_fingerprint: record.immutable.expected_original_fingerprint.clone(),
         })
     }
 
