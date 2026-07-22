@@ -85,6 +85,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", classifier)
         self.assertIn("--force-full", classifier)
 
+    def test_classifier_preserves_merge_base_for_triple_dot_diff(self) -> None:
+        text = self.release_text()
+        classifier = job_block(text, "classify-changes")
+
+        self.assertIn("fetch-depth: 0", classifier)
+        self.assertIn('git fetch --no-tags origin "${{ github.base_ref }}"', classifier)
+        self.assertNotIn("--depth", classifier)
+        self.assertIn("FORCE_FULL", classifier)
+        self.assertIn("git diff --name-only FETCH_HEAD...HEAD", classifier)
+
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()
         source = job_block(text, "verify-source")

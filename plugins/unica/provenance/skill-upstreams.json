@@ -1435,6 +1435,32 @@
       "lastReviewedAt": "2026-05-04T23:48:32+07:00"
     },
     {
+      "id": "1c-design-guide",
+      "repository": "https://github.com/Oxotka/1CDesignGuide",
+      "trackingRef": "main",
+      "role": "guidance",
+      "baselineCommit": "edc05eaf5c191250a184b0e185006bf4b412f7a5",
+      "entries": [
+        {
+          "skill": "form-patterns",
+          "status": "adapted",
+          "notes": "Unica adapts applicable 1C Design Guide form UX guidance into its form-patterns reference and prompt-visible skill while preserving the native unica.form.* contract.",
+          "upstreamPaths": [
+            "README.md"
+          ],
+          "localPaths": [
+            "plugins/unica/references/specs/form-patterns.md",
+            "plugins/unica/skills/form-patterns"
+          ],
+          "contractPaths": [
+            "tests/ci/test_unica_skills.py"
+          ],
+          "decision": "ported"
+        }
+      ],
+      "baselineSelection": "pinned source for the adapted form UX guidance"
+    },
+    {
       "id": "v8-runner-rust",
       "repository": "https://github.com/alkoleft/v8-runner-rust",
       "trackingRef": "master",

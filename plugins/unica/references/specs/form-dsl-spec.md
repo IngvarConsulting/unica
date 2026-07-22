@@ -132,7 +132,7 @@
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `name` | string | Имя элемента (по умолчанию — из значения ключа типа) |
-| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (для page/popup/label и непривязанных полей/кнопок). **`""`** → подавить (заголовок не выводится). Строка → ru. Объект `{ "ru": "…", "en": "…" }` → мультиязычный (по `<v8:item>` на язык). Так же `tooltip`/`inputHint`/`title` команд/реквизитов/колонок |
+| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (для page/label и непривязанных полей/кнопок). **`""`** → подавить (заголовок не выводится). Строка → ru. Объект `{ "ru": "…", "en": "…" }` → мультиязычный (по `<v8:item>` на язык). Так же `tooltip`/`inputHint`/`title` команд/реквизитов/колонок |
 | `titleDataPath` | string | Путь данных динамического заголовка (`<TitleDataPath>`) — у Page/UsualGroup (напр. `Объект.Товары.RowsCount` в заголовке страницы). Парный к `footerDataPath` (путь данных подвала поля) |
 | `hidden` | bool | `true` → `<Visible>false</Visible>` |
 | `disabled` | bool | `true` → `<Enabled>false</Enabled>` |
@@ -147,16 +147,24 @@
 | `displayImportance` | string | Важность отображения (атрибут открывающего тега `DisplayImportance`): `VeryHigh`, `High`, `Usual`, `Low`, `VeryLow`. Адаптивная раскладка (моб./узкие формы). Применимо к любому элементу |
 | `extendedTooltip` | string/object | Расширенная подсказка (companion `<ExtendedTooltip>`, по сути LabelDecoration). **Текст-форма**: строка / ML / `{text, formatted}`. **Own-content форма** (объект с layout/оформлением/флагами): `{ text?, formatted?, tooltip?, width?, autoMaxWidth?, maxWidth?, height?, horizontalStretch?, verticalAlign?, titleHeight?, hyperlink?, visible?, enabled?, textColor?, font?, … }` — own-content эмитится перед `Title`. `text` → `<Title>` (текст подсказки), `tooltip` → `<ToolTip>` самой расширенной подсказки (редкое; ML, эмитится после `Title`; ≠ элементного `tooltip` обычной подсказки — скоупится вложенностью). **События** компаньона — ключ `events` (та же грамматика, что у элемента; напр. `{ "URLProcessing": "Обработчик" }` у hyperlink-подсказки), эмитится после `Title`. Синоним: `extTooltip` |
 
-#### Форма ML-текста и `formatted`
+#### Форма ML-текста и форматированные заголовки декораций
 
-`title`/`tooltip`/`extendedTooltip` принимают:
+Обычные ML-свойства (`title`, `tooltip`, `inputHint` и аналогичные) принимают:
 - `"строка"` — ru-текст;
-- `{ "ru": "…", "en": "…" }` — многоязычный;
-- `{ "text": <строка|мапа>, "formatted": true }` — **форматированный** текст (атрибут `<Title formatted="true">`).
+- `{ "ru": "…", "en": "…" }` — многоязычный текст.
+
+Форма `{ "text": <строка|мапа>, "formatted": true }` разрешена только для
+заголовка декорации (`label`/`picture`) и `extendedTooltip`, где XML действительно
+несёт атрибут `<Title formatted="true">`. Обычный `<Title>` поля и `<ToolTip>` —
+многоязычные значения без атрибута `formatted`; передавать им `{text, formatted}`
+нельзя.
 
 **`formatted`** включает интерпретацию inline-разметки в тексте (1С-формат, похож на BBCode): `<b>…</>`, `<i>`, `<u>`, `<color web:Red>…</>`, `<bgColor …>`, `<font …>`, `<fontSize …>`, `<link URL>…</>`, `<img …>`; закрывающий тег — `</>`. Текст несётся **raw** (разметка — часть строки), парсинг не требуется.
 
-Флаг авто-детектится по наличию известной разметки/`</>`: для plain-строки объект не нужен. Явная форма `{text, formatted}` — только когда авто-детект неверен (formatted-текст без разметки, либо буквальные `<…>`-плейсхолдеры в неформатированном).
+Для заголовка декорации флаг авто-детектится по наличию известной разметки/`</>`:
+для plain-строки объект не нужен. Явная форма `{text, formatted}` нужна только
+когда авто-детект неверен (formatted-текст без разметки либо буквальные
+`<…>`-плейсхолдеры в неформатированном тексте).
 
 #### Русские синонимы ключей-свойств (прощающий ввод)
 
@@ -205,7 +213,10 @@ companion-панели с собственным контентом. Оба не
 - массив `[ … ]` → shorthand для `{ "children": [ … ] }`;
 - объект `{ "autofill"?: bool, "children": [ … ] }` (+ `horizontalAlign` у `commandBar`).
 
-`children` — обычная грамматика кнопок: `button` (с `command`/`commandName`/`stdCommand`), `buttonGroup`, `popup`.
+`children` — массив `button` с `command`/`commandName`/`stdCommand`.
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
+native `unica.form.compile` их не принимает. Не передавайте эти ключи как
+элементы DSL до появления отдельной реализации и тестов.
 
 - `autofill`: `false` → подавить автозаполнение (тег `<Autofill>false</Autofill>`); `true` или отсутствие → автозаполнение (платформенный дефолт, тег **не пишется**). Платформа `Autofill=true` не эмитит никогда.
 - Отсутствие свойства целиком → пустой companion (как обычно).
@@ -225,7 +236,7 @@ companion-панели с собственным контентом. Оба не
 
 ### 4.1e. Оформление элемента (цвета / шрифты / граница)
 
-Прямые свойства оформления элемента. Ключи — англ. camelCase 1:1 с тегами; **принимаются рус. синонимы** (forgiving). Применимо к полям (input/check/radio/labelField/picField/calendar), декорациям (label/picture), кнопкам (button), группам (group/columnGroup), **страницам (page/pages: `backColor`/`titleTextColor`/`titleFont`)**, **попапам (popup: `titleTextColor`/`titleFont`)** и таблицам (table); порядок тегов в XML — по базовому типу (профиль), компилятор расставляет сам (1С толерантна к порядку оформления внутри элемента).
+Прямые свойства оформления элемента. Ключи — англ. camelCase 1:1 с тегами; **принимаются рус. синонимы** (forgiving). Применимо к полям (input/check/radio/labelField/picField/calendar), декорациям (label/picture), кнопкам (button), группам (group/columnGroup), **страницам (page/pages: `backColor`/`titleTextColor`/`titleFont`)** и таблицам (table); порядок тегов в XML — по базовому типу (профиль), компилятор расставляет сам (1С толерантна к порядку оформления внутри элемента).
 
 | Ключ | Тег | Рус. синоним |
 |------|-----|--------------|
@@ -688,10 +699,14 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 | `defaultButton` | bool | Кнопка по умолчанию |
 | `checked` | bool | Пометка (нажатое состояние toggle-кнопки командной панели) → `<Check>true</Check>`. Платформа эмитит только `true`. Ключ `checked` (не `check` — `check` — тип-ключ ПоляФлажка) |
 | `picture` | string \| object | Ссылка на картинку (`StdPicture.Name`; префикс `abs:` → встроенная `<xr:Abs>`). Скаляр-строка ИЛИ объект `{src, loadTransparent?, transparentPixel?}` (флаг и прозрачный пиксель `{x,y}` можно задать прямо в объекте) |
-| `loadTransparent` | bool | Загружать картинку прозрачной (у `<Picture>` кнопки/команды/попапа). **Дефолт `true`** (эмитится всегда; `false` — явно). Элемент-уровневый ключ ИЛИ поле объекта `picture`. Также у `command` (§7) и `popup`. ⚠️ Полярность обратна `headerPicture`/`valuesPicture` (там дефолт `false`, см. §4.1) |
+| `loadTransparent` | bool | Загружать картинку прозрачной (у `<Picture>` кнопки/команды). **Дефолт `true`** (эмитится всегда; `false` — явно). Элемент-уровневый ключ ИЛИ поле объекта `picture`. Также у `command` (§7). ⚠️ Полярность обратна `headerPicture`/`valuesPicture` (там дефолт `false`, см. §4.1) |
 | `path` | string | DataPath кнопки общей команды (`Объект.Ref`, `Items.X.CurrentData.Поле`) — привязка к контексту |
 | `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
 | `locationInCommandBar` | string | `InCommandBar`, `InAdditionalSubmenu` |
+
+`command`, `commandName` и `stdCommand` — альтернативные способы привязки.
+Если ошибочно заданы несколько, компилятор эмитит ровно один `<CommandName>` с
+приоритетом `command` → `commandName` → `stdCommand`.
 
 #### picture — PictureDecoration
 
@@ -750,32 +765,14 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 { "cmdBar": "КоманднаяПанель", "horizontalLocation": "right", "children": [ ... ] }
 ```
 
-Свойства: `commandSource`, `autofill`, `horizontalLocation` (`<HorizontalLocation>`: `auto` дефолт / `left` / `right` / `center`, + рус. синонимы), `title`, `children` + общие флаги/layout.
+Свойства: `commandSource`, `autofill`, `horizontalLocation` (`<HorizontalLocation>`: `auto` дефолт / `left` / `right` / `center`, + рус. синонимы), `title`, `children` + общие флаги/layout. Кнопка без явного `type` внутри панели получает `<Type>CommandBarButton</Type>`; `type: "hyperlink"` — `<Type>CommandBarHyperlink</Type>`.
 
-#### popup — Popup
+#### popup / buttonGroup — зарезервированы
 
-```json
-{ "popup": "Печать", "picture": "StdPicture.Print", "children": [ ... ] }
-```
-
-#### buttonGroup — ButtonGroup
-
-Группа кнопок внутри командной панели (`autoCmdBar`/`cmdBar`/`popup`). Значение ключа — имя элемента.
-
-```json
-{ "buttonGroup": "ГруппаПереместить", "title": "Переместить", "children": [
-    { "button": "ПереместитьВверх", "command": "ПереместитьВверх" },
-    { "button": "ПереместитьВниз", "command": "ПереместитьВниз" }
-] }
-```
-
-| Свойство | Тип | Описание |
-|----------|-----|----------|
-| `buttonGroup` | string | Имя элемента |
-| `title` | string/object | Заголовок группы |
-| `commandSource` | string | Источник команд группы (`<CommandSource>`): `Form`, `FormCommandPanelGlobalCommands`, `Item.<ИмяЭлемента>`. Также у `cmdBar` и `popup`. Эмитится «как есть» |
-| `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
-| `children` | array | Кнопки (`button`) внутри группы |
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
+native `unica.form.compile` их не принимает. Для группировки команд пока
+используйте отдельные `button` в `cmdBar`; документировать эти два ключа как
+исполняемый JSON DSL можно только после реализации и точных XML-тестов.
 
 #### Спец-поля «документ/датчик»
 

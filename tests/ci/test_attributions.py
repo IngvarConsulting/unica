@@ -83,8 +83,20 @@ class AttributionTests(unittest.TestCase):
                 ("adapter", "v8std"),
                 ("upstream", "cc-1c-skills"),
                 ("upstream", "ai-rules-1c"),
+                ("upstream", "1c-design-guide"),
                 ("upstream", "v8-runner-rust"),
             },
+        )
+
+    def test_design_guide_attribution_references_packaged_license(self) -> None:
+        module = load_attribution_module()
+        attribution = self.repo_root() / "plugins" / "unica" / "ATTRIBUTIONS.md"
+
+        sections = module.parse_sections(attribution.read_text(encoding="utf-8"))
+
+        self.assertIn(
+            "[MIT](third-party/licenses/1c-design-guide/LICENSE)",
+            sections.get(("upstream", "1c-design-guide"), ""),
         )
 
     def test_parse_sections_maps_grouped_markers_to_one_section(self) -> None:

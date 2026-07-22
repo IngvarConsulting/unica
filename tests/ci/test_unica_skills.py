@@ -895,12 +895,114 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, form_dsl)
 
-        self.assertIn("Выпадающее меню", form_patterns)
+        self.assertIn("Связанные действия командной панели", form_patterns)
         self.assertIn("mobileCommandBarContent", form_compile)
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
         self.assertIn("unica.form.info", form_edit)
         self.assertIn("unica.form.validate", form_edit)
+
+    def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
+        heading = "## UX-правила для элементов и компоновки форм"
+        legacy_heading = "## UX-правила для элементов форм"
+
+        def ux_section(path: Path) -> str:
+            text = path.read_text(encoding="utf-8")
+            start = text.index(heading if heading in text else legacy_heading)
+            end = text.index("\n---", start)
+            return text[start:end]
+
+        reference_path = self.reference_root() / "specs" / "form-patterns.md"
+        skill_path = self.skill_root() / "form-patterns" / "SKILL.md"
+        reference_section = ux_section(reference_path)
+        skill_section = ux_section(skill_path)
+
+        self.assertIn(heading, reference_path.read_text(encoding="utf-8"))
+        self.assertIn(heading, skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(skill_section, reference_section)
+        self.assertIn(
+            "https://github.com/Oxotka/1CDesignGuide/tree/edc05eaf5c191250a184b0e185006bf4b412f7a5",
+            reference_section,
+        )
+        for token in [
+            "Обычная группа",
+            "прижатия элементов и заголовков к краю",
+            "Сильное",
+            "Обычное",
+            "Слабое",
+            "Сворачиваемая группа",
+            "не отображайте отступ слева",
+            '"showLeftMargin": false',
+            "`collapsed` задаёт начальное состояние",
+            "`Группа.Показать()`",
+            "`Группа.Скрыть()`",
+            "только в коде формы",
+            "Всплывающая группа",
+            "DSL пока не может настроить `ControlRepresentation`",
+            "как подсказку",
+            "подобно гиперссылке",
+            "Командная панель",
+            '"commandSource": "Form"',
+            '"commandSource": "FormCommandPanelGlobalCommands"',
+            '"commandName": "CommonCommand.ОткрытьПараметры"',
+            "вручную устраните дубли",
+            "не выдавайте `popup` или `buttonGroup` за исполнимые нативные элементы",
+            "Команды формы",
+            "Шапка формы",
+            "функциональным опциям",
+            "автозаполняются или сохраняют предыдущее значение",
+            "изменяющее форму, ставьте первым",
+            "Подвал формы",
+            "Комментарий и Ответственный последними",
+            "строковых полей с доступным выбором",
+            '"choiceButton": true',
+            "очевидных полей",
+            '"titleLocation": "none"',
+            '"titleLocation": "top"',
+            '"inputHint": "По всем организациям"',
+            '"showInHeader": false',
+            '"readOnly": true',
+            '"horizontalStretch": true',
+            '"headerHorizontalAlign": "Right"',
+            '"horizontalAlign": "Right"',
+            "не используйте много разных стилей и цветов",
+            "достаточно длинное название",
+            "двойное отрицание",
+            "Проводить документ при записи",
+            '"tooltip": "Пояснение"',
+            '"tooltipRepresentation": "Button"',
+            '"checkBoxType": "switcher"',
+            "3–5 значений",
+            "на весь экран",
+            "слева вверху",
+            "модальной",
+            "справа внизу",
+            '"font": { "bold": true }',
+            '"backColor": "#FFFF00"',
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, reference_section)
+
+        self.assertEqual(reference_section.count("defaultButton"), 1)
+        self.assertNotIn("buttonHint", reference_section)
+        self.assertNotIn("RGB(", reference_section)
+        self.assertNotRegex(reference_section, r'"radio"\s*:')
+        self.assertNotRegex(reference_section, r'"(?:popup|buttonGroup)"\s*:')
+        self.assertNotRegex(reference_section, r'"(?:leftIndent|showLeftIndent)"\s*:')
+        self.assertNotIn("нет нативного DSL-ключа для левого отступа", reference_section)
+        self.assertNotIn('"representation": "Picture"', reference_section)
+        self.assertNotIn("Кнопки действий внизу", reference_section)
+
+    def test_form_dsl_keeps_tooltip_and_command_binding_contracts_unambiguous(self) -> None:
+        form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Обычный `<Title>` поля и `<ToolTip>`", form_dsl)
+        self.assertRegex(form_dsl, r"передавать им `\{text, formatted\}`\s+нельзя")
+        self.assertIn("приоритетом `command` → `commandName` → `stdCommand`", form_dsl)
+        self.assertIn("`popup` и `buttonGroup` зарезервированы", form_dsl)
+        self.assertNotRegex(form_dsl, r'"(?:popup|buttonGroup)"\s*:')
 
     def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")

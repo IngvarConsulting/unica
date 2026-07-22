@@ -41,7 +41,7 @@ jobs:
             python scripts/ci/classify-workflow-changes.py --force-full </dev/null >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "${{ github.base_ref }}"
           git diff --name-only FETCH_HEAD...HEAD |
             python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
 
