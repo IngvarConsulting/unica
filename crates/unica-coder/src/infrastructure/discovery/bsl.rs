@@ -57,18 +57,51 @@ fn collect_lexical_facts(
     query: &DiscoveryQuery<'_>,
     inventory: &SourceInventory,
 ) -> Result<BslCollection<BslFact>, ProviderDiagnostic> {
+    collect_lexical_facts_with_work_limit_observing(
+        query,
+        inventory,
+        lexical_work_limit(query.limits().max_bytes),
+        |_| {},
+    )
+}
+
+#[cfg(test)]
+fn collect_lexical_facts_with_work_limit(
+    query: &DiscoveryQuery<'_>,
+    inventory: &SourceInventory,
+    work_limit: u64,
+) -> Result<BslCollection<BslFact>, ProviderDiagnostic> {
+    collect_lexical_facts_with_work_limit_observing(query, inventory, work_limit, |_| {})
+}
+
+fn collect_lexical_facts_with_work_limit_observing(
+    query: &DiscoveryQuery<'_>,
+    inventory: &SourceInventory,
+    work_limit: u64,
+    mut observe_work: impl FnMut(u64),
+) -> Result<BslCollection<BslFact>, ProviderDiagnostic> {
     crate::infrastructure::discovery::check_cancellation(query)?;
     let terms = query_terms(query)?;
     let mut analyzed_files = Vec::new();
     let mut records = BTreeSet::new();
     let max_evidence = usize::from(query.limits().max_evidence);
-    for file in inventory
+    let mut bsl_files = inventory
         .files
         .iter()
         .filter(|file| is_bsl_path(&file.relative_path))
-    {
+        .collect::<Vec<_>>();
+    bsl_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let mut work_budget = LexicalWorkBudget::new(work_limit);
+    for file in bsl_files {
         crate::infrastructure::discovery::check_cancellation(query)?;
-        let facts = lexical_facts_for_file(file, &terms, query, max_evidence);
+        let facts = lexical_facts_for_file(
+            file,
+            &terms,
+            query,
+            max_evidence,
+            &mut work_budget,
+            &mut observe_work,
+        );
         crate::infrastructure::discovery::check_cancellation(query)?;
         match facts {
             Ok(facts) => {
@@ -106,6 +139,18 @@ fn collect_lexical_facts(
                     ),
                 });
             }
+            Err(BslParseError::Bounded(BslParseBound::LexicalWork { limit })) => {
+                let batch = build_lexical_batch(records, analyzed_files, max_evidence)?;
+                return Ok(BslCollection::Bounded {
+                    batch,
+                    diagnostic: ProviderDiagnostic::material(
+                        "bsl_lexical_work_bound",
+                        format!(
+                            "BSL lexical scan stopped at the {limit}-unit comparison-work limit"
+                        ),
+                    ),
+                });
+            }
             Err(BslParseError::Malformed(message)) => {
                 return Err(ProviderDiagnostic::material(
                     "bsl_malformed",
@@ -137,6 +182,71 @@ fn collect_lexical_facts(
         })
     } else {
         Ok(BslCollection::Complete(batch))
+    }
+}
+
+const BSL_LEXICAL_WORK_MULTIPLIER: u64 = 16;
+const MAX_BSL_LEXICAL_WORK_UNITS: u64 = 512 * 1_024 * 1_024;
+const MIN_BSL_LEXICAL_COMPARISON_WORK_UNITS: u64 = 256;
+
+/// Bounds cumulative pattern-dispatch and haystack-comparison work across all
+/// BSL files. Each comparison is charged its byte lengths plus a 256-unit
+/// dispatch floor, so empty lines and very short patterns remain bounded.
+fn lexical_work_limit(max_bytes: u64) -> u64 {
+    max_bytes
+        .saturating_mul(BSL_LEXICAL_WORK_MULTIPLIER)
+        .min(MAX_BSL_LEXICAL_WORK_UNITS)
+}
+
+struct LexicalWorkBudget {
+    limit: u64,
+    consumed: u64,
+}
+
+impl LexicalWorkBudget {
+    const fn new(limit: u64) -> Self {
+        Self { limit, consumed: 0 }
+    }
+
+    fn charge(
+        &mut self,
+        haystack_bytes: usize,
+        pattern_bytes: usize,
+        query: &DiscoveryQuery<'_>,
+        observe_work: &mut dyn FnMut(u64),
+    ) -> Result<(), BslParseError> {
+        if query.is_cancelled() {
+            return Err(BslParseError::Cancelled);
+        }
+        let attempt = u64::try_from(haystack_bytes)
+            .ok()
+            .and_then(|haystack| {
+                u64::try_from(pattern_bytes)
+                    .ok()
+                    .and_then(|pattern| haystack.checked_add(pattern))
+            })
+            .and_then(|work| work.checked_add(MIN_BSL_LEXICAL_COMPARISON_WORK_UNITS));
+        let next = attempt.and_then(|work| self.consumed.checked_add(work));
+        let Some(next) = next else {
+            return Err(self.exhausted(query));
+        };
+        if next > self.limit {
+            return Err(self.exhausted(query));
+        }
+        self.consumed = next;
+        observe_work(self.consumed);
+        if query.is_cancelled() {
+            return Err(BslParseError::Cancelled);
+        }
+        Ok(())
+    }
+
+    fn exhausted(&self, query: &DiscoveryQuery<'_>) -> BslParseError {
+        if query.is_cancelled() {
+            BslParseError::Cancelled
+        } else {
+            BslParseError::Bounded(BslParseBound::LexicalWork { limit: self.limit })
+        }
     }
 }
 
@@ -218,6 +328,7 @@ struct ParsedBslMethodRange {
 enum BslParseBound {
     LineBytes { limit: usize },
     Signature { max_lines: usize, max_bytes: usize },
+    LexicalWork { limit: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +355,9 @@ impl std::fmt::Display for BslParseError {
                 formatter,
                 "method signature exceeds {max_lines} lines or {max_bytes} bytes"
             ),
+            Self::Bounded(BslParseBound::LexicalWork { limit }) => {
+                write!(formatter, "lexical comparison work exceeds {limit} units")
+            }
             Self::Malformed(message) => formatter.write_str(message),
         }
     }
@@ -289,6 +403,8 @@ fn lexical_facts_for_file(
     terms: &[String],
     query: &DiscoveryQuery<'_>,
     max_evidence: usize,
+    work_budget: &mut LexicalWorkBudget,
+    observe_work: &mut dyn FnMut(u64),
 ) -> Result<BTreeSet<BslFact>, BslParseError> {
     let text = std::str::from_utf8(&file.bytes)
         .map_err(|error| BslParseError::Malformed(format!("input is not UTF-8: {error}")))?;
@@ -314,37 +430,46 @@ fn lexical_facts_for_file(
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
         let normalized_line = normalize_bsl_line_cancellable(line, &mut || query.is_cancelled())?;
-        let artifact = match method_index_for_line(&parsed.method_ranges, line_number) {
-            Some(method_index) => {
-                let method = method_artifacts
-                    .get(method_index)
-                    .ok_or_else(|| "BSL method line ownership is invalid".to_string())?;
-                (method.clone(), ArtifactKind::Method)
-            }
-            None => (module.clone(), ArtifactKind::Module),
-        };
+        let mut matches = Vec::new();
         for term in terms {
             if query.is_cancelled() {
                 return Err(BslParseError::Cancelled);
             }
+            work_budget.charge(normalized_line.len(), term.len(), query, observe_work)?;
             if !contains_cancellable(&normalized_line, term, &mut || query.is_cancelled())? {
                 continue;
             }
-            insert_bounded_fact(
-                &mut facts,
-                BslFact {
-                    artifact: artifact.0.clone(),
-                    artifact_kind: artifact.1,
-                    matched_text: term.clone(),
-                    location: EvidenceLocation {
-                        relative_path: file.relative_path.clone(),
-                        line: Some(line_number),
-                        column: matching_column(line, term, &mut || query.is_cancelled())?,
-                        xml_path: None,
+            work_budget.charge(line.len(), term.len(), query, observe_work)?;
+            let column = matching_column(line, term, &mut || query.is_cancelled())?;
+            matches.push((term, column));
+        }
+        if !matches.is_empty() {
+            let artifact = match method_index_for_line(&parsed.method_ranges, line_number) {
+                Some(method_index) => {
+                    let method = method_artifacts
+                        .get(method_index)
+                        .ok_or_else(|| "BSL method line ownership is invalid".to_string())?;
+                    (method, ArtifactKind::Method)
+                }
+                None => (&module, ArtifactKind::Module),
+            };
+            for (term, column) in matches {
+                insert_bounded_fact(
+                    &mut facts,
+                    BslFact {
+                        artifact: artifact.0.clone(),
+                        artifact_kind: artifact.1,
+                        matched_text: term.clone(),
+                        location: EvidenceLocation {
+                            relative_path: file.relative_path.clone(),
+                            line: Some(line_number),
+                            column,
+                            xml_path: None,
+                        },
                     },
-                },
-                max_evidence,
-            );
+                    max_evidence,
+                );
+            }
         }
         zero_based_line = zero_based_line
             .checked_add(1)
@@ -1642,9 +1767,9 @@ mod tests {
     };
     use crate::application::discovery::ports::{BslSearchPort, DefinitionPort, RuntimeFlowPort};
     use crate::domain::discovery::{
-        ArtifactId, ArtifactKind, ContentHash, DefinitionFact, DiscoveryQuery,
-        DiscoveryQueryLimits, EvidenceLocation, PortableRelativePath, ProviderCoverage,
-        ProviderOutcome, SourceFile, SourceInventory,
+        ArtifactId, ArtifactKind, ConceptProvenance, ContentHash, DefinitionFact, DiscoveryConcept,
+        DiscoveryQuery, DiscoveryQueryLimits, EvidenceLocation, PortableRelativePath,
+        ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
     };
     use crate::infrastructure::workspace_index::BslIndexStatus;
     use rusqlite::Connection;
@@ -1870,6 +1995,127 @@ mod tests {
         assert_eq!(diagnostic.code, "bsl_source_line_bound");
         assert_eq!(data.analyzed_files, vec![prior.analyzed_file()]);
         assert_eq!(data.records.len(), 1);
+    }
+
+    #[test]
+    fn lexical_work_bound_preserves_the_same_prior_prefix_for_any_inventory_order() {
+        let prior = source_file("CommonModules/A/Ext/Module.bsl", b"// needle\n");
+        let newline_heavy =
+            source_file("CommonModules/Z/Ext/Module.bsl", "\n".repeat(64).as_bytes());
+        let search_terms = (0..128)
+            .map(|index| format!("absentterm{index:03}"))
+            .collect::<Vec<_>>();
+        let query = query("needle", &search_terms, 10);
+
+        let Ok(forward) = super::collect_lexical_facts_with_work_limit(
+            &query,
+            &inventory(vec![prior.clone(), newline_heavy.clone()]),
+            40_000,
+        ) else {
+            panic!("expected bounded forward collection");
+        };
+        let Ok(reverse) = super::collect_lexical_facts_with_work_limit(
+            &query,
+            &inventory(vec![newline_heavy, prior.clone()]),
+            40_000,
+        ) else {
+            panic!("expected bounded reverse collection");
+        };
+
+        let super::BslCollection::Bounded {
+            batch: forward,
+            diagnostic: forward_diagnostic,
+        } = forward
+        else {
+            panic!("many terms and lines must exhaust lexical work");
+        };
+        let super::BslCollection::Bounded {
+            batch: reverse,
+            diagnostic: reverse_diagnostic,
+        } = reverse
+        else {
+            panic!("reversed inventory must exhaust lexical work");
+        };
+        assert_eq!(forward_diagnostic.code, "bsl_lexical_work_bound");
+        assert_eq!(reverse_diagnostic.code, "bsl_lexical_work_bound");
+        assert_eq!(forward.records, reverse.records);
+        assert_eq!(forward.analyzed_files, reverse.analyzed_files);
+        assert_eq!(forward.records.len(), 1);
+        assert_eq!(forward.analyzed_files, vec![prior.analyzed_file()]);
+    }
+
+    #[test]
+    fn thousands_of_task_derived_camel_case_terms_cannot_bypass_empty_line_work_bounds() {
+        let concepts = (0..3_000)
+            .map(|index| DiscoveryConcept {
+                value: format!("Segment{index:04}Token"),
+                provenance: ConceptProvenance::TaskDerived,
+            })
+            .collect::<Vec<_>>();
+        let query = DiscoveryQuery::new(
+            "discover",
+            &concepts,
+            &[],
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 100,
+                max_bytes: 1_000_000,
+                max_evidence: 10,
+                max_candidates: 10,
+                max_graph_depth: 3,
+            },
+        );
+        let inventory = inventory(vec![source_file(
+            "CommonModules/A/Ext/Module.bsl",
+            "\n".repeat(16).as_bytes(),
+        )]);
+
+        let Ok(collection) =
+            super::collect_lexical_facts_with_work_limit(&query, &inventory, 10_000)
+        else {
+            panic!("expected bounded lexical collection");
+        };
+
+        let super::BslCollection::Bounded { diagnostic, .. } = collection else {
+            panic!("task-derived terms must consume bounded comparison work");
+        };
+        assert_eq!(diagnostic.code, "bsl_lexical_work_bound");
+    }
+
+    #[test]
+    fn lexical_work_observer_cancels_during_pattern_dispatch() {
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        let query = query("needle", &[], 10).with_cancellation(&cancellation);
+        let inventory = inventory(vec![source_file(
+            "CommonModules/A/Ext/Module.bsl",
+            b"// needle\n// another needle\n",
+        )]);
+        let mut observations = 0_u8;
+
+        let result = super::collect_lexical_facts_with_work_limit_observing(
+            &query,
+            &inventory,
+            10_000,
+            |_| {
+                observations += 1;
+                cancellation.cancel();
+            },
+        );
+        let Err(error) = result else {
+            panic!("lexical dispatch must observe mid-scan cancellation");
+        };
+
+        assert_eq!(error.code, "discovery_cancelled");
+        assert_eq!(observations, 1);
+    }
+
+    #[test]
+    fn lexical_work_limit_is_request_derived_and_globally_capped() {
+        assert_eq!(super::lexical_work_limit(1_024), 16_384);
+        assert_eq!(
+            super::lexical_work_limit(u64::MAX),
+            super::MAX_BSL_LEXICAL_WORK_UNITS
+        );
     }
 
     #[test]
