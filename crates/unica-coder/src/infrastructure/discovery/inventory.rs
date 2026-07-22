@@ -166,7 +166,7 @@ impl ContainedSourceInventoryPort {
                 })?;
             files.push(SourceFile {
                 relative_path: verified.relative_path,
-                bytes: verified.bytes,
+                bytes: verified.bytes.into(),
                 raw_hash: verified.raw_sha256,
             });
         }
@@ -405,8 +405,8 @@ mod tests {
                 PortableRelativePath::parse_str("z/Module.bsl").expect("portable BSL path"),
             ]
         );
-        assert_eq!(inventory.files[0].bytes, b"xml");
-        assert_eq!(inventory.files[1].bytes, b"z");
+        assert_eq!(inventory.files[0].bytes.as_ref(), b"xml");
+        assert_eq!(inventory.files[1].bytes.as_ref(), b"z");
         assert_eq!(inventory.coverage, ProviderCoverage::new(2, 2, 4, 2));
         cleanup(&root);
     }
@@ -446,7 +446,7 @@ mod tests {
             panic!("expected bounded inventory");
         };
         assert_eq!(data.files.len(), 1);
-        assert_eq!(data.files[0].bytes, b"123");
+        assert_eq!(data.files[0].bytes.as_ref(), b"123");
         assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 3, 1));
         assert_eq!(diagnostic.code, "source_inventory_byte_bound");
         cleanup(&root);
@@ -468,7 +468,7 @@ mod tests {
             panic!("expected bounded inventory");
         };
         assert_eq!(data.files.len(), 1);
-        assert_eq!(data.files[0].bytes, b"a");
+        assert_eq!(data.files[0].bytes.as_ref(), b"a");
         assert_eq!(data.coverage, ProviderCoverage::new(2, 1, 1, 1));
         assert_eq!(diagnostic.code, "source_inventory_byte_bound");
         cleanup(&root);
@@ -531,7 +531,7 @@ mod tests {
             panic!("expected complete inventory");
         };
         assert_eq!(inventory.files.len(), 1);
-        assert_eq!(inventory.files[0].bytes, bytes);
+        assert_eq!(inventory.files[0].bytes.as_ref(), bytes);
         assert_eq!(
             inventory.coverage,
             ProviderCoverage::new(1, 1, bytes.len() as u64, 1)
@@ -582,7 +582,7 @@ mod tests {
             PortableRelativePath::parse_str("Documents/Order/Ext/ParentConfigurations.bin")
                 .expect("portable support path")
         );
-        assert_eq!(inventory.files[0].bytes, b"support-state");
+        assert_eq!(inventory.files[0].bytes.as_ref(), b"support-state");
         cleanup(&root);
     }
 

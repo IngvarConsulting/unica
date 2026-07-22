@@ -3,6 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) const MAX_ARTIFACT_ID_BYTES: usize = 1_024;
 
@@ -423,7 +424,7 @@ impl EvidenceRelation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceFile {
     pub relative_path: PortableRelativePath,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub raw_hash: ContentHash,
 }
 
@@ -1043,10 +1044,12 @@ mod tests {
         let source = SourceFile {
             relative_path: PortableRelativePath::parse_str("Documents/Order.xml")
                 .expect("source path"),
-            bytes: b"raw".to_vec(),
+            bytes: Arc::from(b"raw".as_slice()),
             raw_hash: ContentHash::sha256(b"raw"),
         };
         assert_eq!(source.analyzed_file().bytes, 3);
+        let cloned = source.clone();
+        assert!(std::sync::Arc::ptr_eq(&source.bytes, &cloned.bytes));
 
         let concepts = [DiscoveryConcept {
             value: "series".to_string(),

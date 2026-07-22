@@ -1020,7 +1020,7 @@ impl<'a> ExistingIndexDefinitionProvider<'a> {
         if verified.relative_path != expected.relative_path
             || verified.bytes_read != max_bytes
             || verified.raw_sha256 != expected.raw_hash
-            || verified.bytes != expected.bytes
+            || verified.bytes.as_slice() != expected.bytes.as_ref()
         {
             return Err(DefinitionCollectionError::Unavailable(
                 ProviderDiagnostic::material(
@@ -1943,7 +1943,7 @@ mod tests {
     fn source_file(path: &str, bytes: &[u8]) -> SourceFile {
         SourceFile {
             relative_path: PortableRelativePath::parse_str(path).unwrap(),
-            bytes: bytes.to_vec(),
+            bytes: bytes.to_vec().into(),
             raw_hash: ContentHash::sha256(bytes),
         }
     }

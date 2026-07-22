@@ -610,7 +610,7 @@ mod tests {
     fn source_file(path: &str, bytes: &[u8]) -> SourceFile {
         SourceFile {
             relative_path: PortableRelativePath::parse_str(path).expect("portable test path"),
-            bytes: bytes.to_vec(),
+            bytes: bytes.to_vec().into(),
             raw_hash: ContentHash::sha256(bytes),
         }
     }
