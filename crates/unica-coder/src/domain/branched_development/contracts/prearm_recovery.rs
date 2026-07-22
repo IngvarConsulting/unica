@@ -3199,6 +3199,27 @@ impl PreArmCancellationFinalizationRecheckEvidence {
         }
     }
 
+    /// Intrinsic success-branch endpoint used only to anchor the terminal
+    /// capability scan. The enclosing finalization plan still validates the
+    /// full branch and exact post-apply prefix before completion is accepted.
+    pub(crate) const fn success_reconciled_history_partition(
+        &self,
+    ) -> Option<&ValidatedRepositoryHistoryPartition> {
+        match &self.0 {
+            PreArmCancellationFinalizationRecheckEvidenceRecord::Matched(value) => {
+                Some(&value.observed_history_partition)
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::SafeTailExtended(value) => {
+                Some(&value.combined_history_partition)
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReleaseTailObserved(value) => {
+                Some(&value.persisted_history_partition)
+            }
+            PreArmCancellationFinalizationRecheckEvidenceRecord::ReplanRequired(_)
+            | PreArmCancellationFinalizationRecheckEvidenceRecord::CapabilityBreach(_) => None,
+        }
+    }
+
     fn replan_mismatch_kinds(&self) -> Option<&[PreArmCancellationFinalizationReplanMismatchKind]> {
         match &self.0 {
             PreArmCancellationFinalizationRecheckEvidenceRecord::ReplanRequired(value) => {
@@ -5807,6 +5828,18 @@ impl PreArmCancellationFinalizationPlan {
         self.planned_result_phase
     }
 
+    pub(crate) const fn cancelled_phase(&self) -> TaskPhase {
+        self.bound_cancelled_phase
+    }
+
+    pub(crate) const fn relevant_advance_phase(&self) -> TaskPhase {
+        self.relevant_advance_phase
+    }
+
+    pub(crate) const fn expected_final_original_fingerprint(&self) -> &Sha256Digest {
+        &self.expected_final_original_fingerprint
+    }
+
     pub(crate) const fn receipt_plan(&self) -> &PreArmCancellationReceiptPlan {
         &self.receipt_plan
     }
@@ -6104,6 +6137,23 @@ pub(crate) fn archive_outcome_fixture_test_only(
     PreArmCancellationFinalizationRecheckEvidence,
 ) {
     tests::archive_outcome_fixture(include_selective_update, expected_postconditions)
+}
+
+#[cfg(test)]
+pub(crate) fn archive_outcome_fixture_for_mode_test_only(
+    include_selective_update: bool,
+    expected_postconditions: Vec<(PreArmCancellationEffectKind, Sha256Digest)>,
+    manual_target_mode: ManualSupportTargetMode,
+) -> (
+    PreArmCancellationEffectObservation,
+    PreArmCancellationFinalizationPlan,
+    PreArmCancellationFinalizationRecheckEvidence,
+) {
+    tests::archive_outcome_fixture_for_mode(
+        include_selective_update,
+        expected_postconditions,
+        manual_target_mode,
+    )
 }
 
 #[cfg(test)]
@@ -7013,6 +7063,18 @@ mod tests {
         selective_update_plan_digest: Sha256Digest,
         history_partition: ValidatedRepositoryHistoryPartition,
     ) -> PreArmCancellationEffectObservation {
+        no_guard_observation_with_history_for_mode(
+            selective_update_plan_digest,
+            history_partition,
+            ManualSupportTargetMode::ReservedOriginal,
+        )
+    }
+
+    fn no_guard_observation_with_history_for_mode(
+        selective_update_plan_digest: Sha256Digest,
+        history_partition: ValidatedRepositoryHistoryPartition,
+        manual_target_mode: ManualSupportTargetMode,
+    ) -> PreArmCancellationEffectObservation {
         PreArmCancellationEffectObservation::new_test_only(
             PreArmCancellationEffectObservationAuthority {
                 observation_id: id(ID_1),
@@ -7022,7 +7084,7 @@ mod tests {
                 approved_cancellation_digest: digest(B),
                 bound_cancelled_phase: TaskPhase::Synchronized,
                 bound_relevant_advance_phase: TaskPhase::LocalVerified,
-                manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+                manual_target_mode,
                 effect_progress: PreArmCancellationEffectProgress::no_guard_test_only(),
                 history_partition,
                 observed_original_fingerprint: digest(C),
@@ -7159,7 +7221,13 @@ mod tests {
     }
 
     fn finalization_paths() -> PreArmCancellationFinalizationExecutionPathPlan {
-        PreArmCancellationFinalizationExecutionPathPlan::new(vec![
+        finalization_paths_for_mode(ManualSupportTargetMode::ReservedOriginal)
+    }
+
+    fn finalization_paths_for_mode(
+        manual_target_mode: ManualSupportTargetMode,
+    ) -> PreArmCancellationFinalizationExecutionPathPlan {
+        let mut paths = vec![
             PreArmCancellationFinalizationExecutionPath::new(
                 PreArmCancellationFinalizationExecutionPathKind::Success,
                 [ID_1, ID_2, ID_3, ID_4, ID_5, ID_6, ID_7]
@@ -7191,8 +7259,18 @@ mod tests {
                     .collect(),
             )
             .unwrap(),
-        ])
-        .unwrap()
+        ];
+        if manual_target_mode == ManualSupportTargetMode::SeparateWorkingInfobase {
+            paths.push(
+                PreArmCancellationFinalizationExecutionPath::new(
+                    PreArmCancellationFinalizationExecutionPathKind::ModeLeaseUnavailableAfterAcquisitionCompensation,
+                    [ID_1, ID_2, ID_5, ID_6].into_iter().map(id).collect(),
+                )
+                .unwrap(),
+            );
+        }
+        paths.sort_by_key(PreArmCancellationFinalizationExecutionPath::path_kind);
+        PreArmCancellationFinalizationExecutionPathPlan::new(paths).unwrap()
     }
 
     fn finalization_authority(
@@ -7433,6 +7511,22 @@ mod tests {
         PreArmCancellationFinalizationPlan,
         PreArmCancellationFinalizationRecheckEvidence,
     ) {
+        archive_outcome_fixture_for_mode(
+            include_selective_update,
+            expected_postconditions,
+            ManualSupportTargetMode::ReservedOriginal,
+        )
+    }
+
+    pub(super) fn archive_outcome_fixture_for_mode(
+        include_selective_update: bool,
+        expected_postconditions: Vec<(PreArmCancellationEffectKind, Sha256Digest)>,
+        manual_target_mode: ManualSupportTargetMode,
+    ) -> (
+        PreArmCancellationEffectObservation,
+        PreArmCancellationFinalizationPlan,
+        PreArmCancellationFinalizationRecheckEvidence,
+    ) {
         let selective_update_plan = SelectiveRepositoryUpdatePlan::recovery_finalization_test_only(
             if include_selective_update {
                 root_target()
@@ -7450,9 +7544,10 @@ mod tests {
         )
         .unwrap();
         let history = empty_partition();
-        let observation = no_guard_observation_with_history(
+        let observation = no_guard_observation_with_history_for_mode(
             selective_update_plan.plan_digest().clone(),
             history.clone(),
+            manual_target_mode,
         );
         let attempt_id = id(ID_9);
         let postcondition = |kind| {
@@ -7520,7 +7615,7 @@ mod tests {
         )
         .unwrap();
         let execution_path_plan = if include_selective_update {
-            PreArmCancellationFinalizationExecutionPathPlan::new(vec![
+            let mut paths = vec![
                 PreArmCancellationFinalizationExecutionPath::new(
                     PreArmCancellationFinalizationExecutionPathKind::Success,
                     [ID_1, ID_2, ID_3, ID_4, ID_5, ID_6, ID_7, ID_8]
@@ -7552,10 +7647,20 @@ mod tests {
                         .collect(),
                 )
                 .unwrap(),
-            ])
-            .unwrap()
+            ];
+            if manual_target_mode == ManualSupportTargetMode::SeparateWorkingInfobase {
+                paths.push(
+                    PreArmCancellationFinalizationExecutionPath::new(
+                        PreArmCancellationFinalizationExecutionPathKind::ModeLeaseUnavailableAfterAcquisitionCompensation,
+                        [ID_1, ID_2, ID_6, ID_7].into_iter().map(id).collect(),
+                    )
+                    .unwrap(),
+                );
+            }
+            paths.sort_by_key(PreArmCancellationFinalizationExecutionPath::path_kind);
+            PreArmCancellationFinalizationExecutionPathPlan::new(paths).unwrap()
         } else {
-            finalization_paths()
+            finalization_paths_for_mode(manual_target_mode)
         };
         let plan = PreArmCancellationFinalizationPlan::new_test_only(
             PreArmCancellationFinalizationPlanAuthority {

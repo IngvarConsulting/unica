@@ -224,6 +224,13 @@ mod tests {
         )
     }
 
+    pub(crate) fn ready_preflight_authority_fixture_test_only() -> ReadySupportPreflightAuthority {
+        ReadySupportPreflightAuthority::try_from(
+            SupportPreflightData::ready(empty_inputs()).unwrap(),
+        )
+        .unwrap()
+    }
+
     fn candidate_with_restriction(
         layer_id: &SupportLayerId,
         vendor_restriction: VendorChangeRestriction,
@@ -368,6 +375,13 @@ mod tests {
     #[test]
     fn ready_preflight_has_no_action_projection_and_rejects_splice() {
         let ready = SupportPreflightData::ready(empty_inputs()).unwrap();
+        let authority = ReadySupportPreflightAuthority::try_from(ready.clone()).unwrap();
+        assert_eq!(authority.support_gate_id(), ready.support_gate_id());
+        assert_eq!(authority.support_gate_digest(), ready.support_gate_digest());
+        assert_eq!(
+            authority.history_evidence_digest(),
+            ready.history_evidence().evidence_digest(),
+        );
         let encoded = serde_json::to_value(&ready).unwrap();
         assert_eq!(encoded["outcome"], json!("ready"));
         assert!(encoded.get("supportActionId").is_none());
@@ -408,6 +422,7 @@ mod tests {
         )
         .unwrap();
         let manual = gate.publish(&action).unwrap();
+        assert!(ReadySupportPreflightAuthority::try_from(manual.clone()).is_err());
         let encoded = serde_json::to_value(&manual).unwrap();
         assert_eq!(encoded["outcome"], json!("manualSupportRequired"));
         assert_eq!(encoded["supportActionId"], json!(ID_2));
@@ -548,6 +563,9 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) use tests::ready_preflight_authority_fixture_test_only;
 
 use super::super::repository::{RepositoryHistoryCursor, SupportGateHistoryEvidence};
 use super::super::schema::one_of_schema;
@@ -736,6 +754,246 @@ pub(crate) struct SupportPreflightData {
     record: SupportPreflightRecord,
     support_action_id: Option<UnicaId>,
     support_action_digest: Option<Sha256Digest>,
+}
+
+/// Consuming proof that a published support preflight is the exact `ready`
+/// branch usable by main-integration preparation. It exposes only immutable
+/// lineage needed to bind the nested merge session; callers cannot relabel a
+/// non-ready preflight or supply those fields independently.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ReadySupportPreflightAuthority(SupportPreflightData);
+
+impl TryFrom<SupportPreflightData> for ReadySupportPreflightAuthority {
+    type Error = SupportContractError;
+
+    fn try_from(value: SupportPreflightData) -> Result<Self, Self::Error> {
+        if value.record.outcome != SupportPreflightOutcome::Ready
+            || value.support_action_id.is_some()
+            || value.support_action_digest.is_some()
+        {
+            return Err(SupportContractError(
+                "main-integration preparation requires an action-free ready support preflight",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl ReadySupportPreflightAuthority {
+    pub(crate) const fn support_gate_id(&self) -> &UnicaId {
+        &self.0.record.support_gate_id
+    }
+
+    pub(crate) const fn support_gate_digest(&self) -> &Sha256Digest {
+        &self.0.record.support_gate_digest
+    }
+
+    pub(crate) fn history_evidence_digest(&self) -> &Sha256Digest {
+        self.0.record.history_evidence.evidence_digest()
+    }
+
+    pub(crate) const fn history_evidence(&self) -> &SupportGateHistoryEvidence {
+        &self.0.record.history_evidence
+    }
+
+    pub(crate) const fn ordinary_result_artifact_id(&self) -> &UnicaId {
+        &self.0.record.ordinary_result_artifact_id
+    }
+
+    pub(crate) const fn comparison_id(&self) -> &UnicaId {
+        &self.0.record.comparison_id
+    }
+
+    pub(crate) const fn settings_digest(&self) -> &Sha256Digest {
+        &self.0.record.settings_digest
+    }
+
+    pub(crate) const fn sandbox_result_digest(&self) -> &Sha256Digest {
+        &self.0.record.sandbox_result_digest
+    }
+
+    pub(crate) const fn support_graph_digest(&self) -> &Sha256Digest {
+        &self.0.record.support_graph_digest
+    }
+
+    pub(crate) const fn observed_history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.0.record.observed_history_cursor
+    }
+
+    pub(crate) const fn relevant_baseline_digest(&self) -> &Sha256Digest {
+        &self.0.record.relevant_baseline_digest
+    }
+
+    pub(crate) const fn original_fingerprint(&self) -> &Sha256Digest {
+        &self.0.record.original_fingerprint
+    }
+
+    pub(crate) fn into_data(self) -> SupportPreflightData {
+        self.0
+    }
+}
+
+/// Exact semantic gate candidate submitted to authoritative task state.
+///
+/// The request is borrowed from a sealed ready authority: callers cannot
+/// construct a current-state claim from IDs, digests, or a status DTO.
+#[derive(Debug)]
+pub(crate) struct CurrentReadySupportGateResolutionRequest<'a> {
+    candidate: &'a ReadySupportPreflightAuthority,
+}
+
+impl CurrentReadySupportGateResolutionRequest<'_> {
+    pub(crate) fn support_gate_id(&self) -> &UnicaId {
+        self.candidate.support_gate_id()
+    }
+
+    pub(crate) fn support_gate_digest(&self) -> &Sha256Digest {
+        self.candidate.support_gate_digest()
+    }
+
+    pub(crate) fn candidate_history_evidence(&self) -> &SupportGateHistoryEvidence {
+        self.candidate.history_evidence()
+    }
+
+    pub(crate) fn ordinary_result_artifact_id(&self) -> &UnicaId {
+        self.candidate.ordinary_result_artifact_id()
+    }
+
+    pub(crate) fn comparison_id(&self) -> &UnicaId {
+        self.candidate.comparison_id()
+    }
+
+    pub(crate) fn settings_digest(&self) -> &Sha256Digest {
+        self.candidate.settings_digest()
+    }
+
+    pub(crate) fn sandbox_result_digest(&self) -> &Sha256Digest {
+        self.candidate.sandbox_result_digest()
+    }
+
+    pub(crate) fn support_graph_digest(&self) -> &Sha256Digest {
+        self.candidate.support_graph_digest()
+    }
+
+    pub(crate) fn observed_history_cursor(&self) -> &RepositoryHistoryCursor {
+        self.candidate.observed_history_cursor()
+    }
+
+    pub(crate) fn relevant_baseline_digest(&self) -> &Sha256Digest {
+        self.candidate.relevant_baseline_digest()
+    }
+
+    pub(crate) fn original_fingerprint(&self) -> &Sha256Digest {
+        self.candidate.original_fingerprint()
+    }
+}
+
+/// One authoritative task-state read. Implementations must bind the request
+/// to the latest non-invalidated preflight whose state is `current` and whose
+/// semantic outcome is `ready`.
+pub(crate) trait CurrentReadySupportGateStateLease {
+    fn binds(&self, request: &CurrentReadySupportGateResolutionRequest<'_>) -> bool;
+
+    fn persisted_history_evidence(&self) -> &SupportGateHistoryEvidence;
+
+    fn current_state_revision(&self) -> &Sha256Digest;
+}
+
+/// Production port for resolving the current support gate from authoritative
+/// task state. The adapter receives the complete typed semantic request and
+/// returns a lease, never a caller-selected status projection.
+pub(crate) trait CurrentReadySupportGateStateResolver {
+    fn resolve_latest_non_invalidated_current_ready(
+        &mut self,
+        request: &CurrentReadySupportGateResolutionRequest<'_>,
+    ) -> Result<Box<dyn CurrentReadySupportGateStateLease>, SupportContractError>;
+}
+
+/// Linear proof that this is the latest non-invalidated ready gate in the
+/// authoritative `current` state at `current_state_revision`.
+///
+/// Deliberately non-wire and non-`Clone`: temporal authority cannot be decoded
+/// from a resume handle or replayed by copying a digest projection.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CurrentReadySupportGateAuthority {
+    ready: ReadySupportPreflightAuthority,
+    current_state_revision: Sha256Digest,
+}
+
+impl CurrentReadySupportGateAuthority {
+    pub(crate) fn resolve(
+        mut ready: ReadySupportPreflightAuthority,
+        resolver: &mut dyn CurrentReadySupportGateStateResolver,
+    ) -> Result<Self, SupportContractError> {
+        let request = CurrentReadySupportGateResolutionRequest { candidate: &ready };
+        let lease = resolver.resolve_latest_non_invalidated_current_ready(&request)?;
+        if !lease.binds(&request) {
+            return Err(SupportContractError(
+                "task state did not resolve the exact latest non-invalidated current ready gate",
+            ));
+        }
+        let persisted_history_evidence = lease.persisted_history_evidence().clone();
+        let current_state_revision = lease.current_state_revision().clone();
+        ready
+            .0
+            .replace_history_evidence(persisted_history_evidence)?;
+        Ok(Self {
+            ready,
+            current_state_revision,
+        })
+    }
+
+    pub(crate) fn support_gate_id(&self) -> &UnicaId {
+        self.ready.support_gate_id()
+    }
+
+    pub(crate) fn support_gate_digest(&self) -> &Sha256Digest {
+        self.ready.support_gate_digest()
+    }
+
+    pub(crate) fn history_evidence(&self) -> &SupportGateHistoryEvidence {
+        self.ready.history_evidence()
+    }
+
+    pub(crate) fn history_evidence_digest(&self) -> &Sha256Digest {
+        self.ready.history_evidence_digest()
+    }
+
+    pub(crate) fn ordinary_result_artifact_id(&self) -> &UnicaId {
+        self.ready.ordinary_result_artifact_id()
+    }
+
+    pub(crate) fn comparison_id(&self) -> &UnicaId {
+        self.ready.comparison_id()
+    }
+
+    pub(crate) fn settings_digest(&self) -> &Sha256Digest {
+        self.ready.settings_digest()
+    }
+
+    pub(crate) fn sandbox_result_digest(&self) -> &Sha256Digest {
+        self.ready.sandbox_result_digest()
+    }
+
+    pub(crate) fn support_graph_digest(&self) -> &Sha256Digest {
+        self.ready.support_graph_digest()
+    }
+
+    pub(crate) fn observed_history_cursor(&self) -> &RepositoryHistoryCursor {
+        self.ready.observed_history_cursor()
+    }
+
+    pub(crate) fn relevant_baseline_digest(&self) -> &Sha256Digest {
+        self.ready.relevant_baseline_digest()
+    }
+
+    pub(crate) fn original_fingerprint(&self) -> &Sha256Digest {
+        self.ready.original_fingerprint()
+    }
+
+    pub(crate) fn current_state_revision(&self) -> &Sha256Digest {
+        &self.current_state_revision
+    }
 }
 
 impl SupportManualPreflightAuthority {

@@ -1,5 +1,8 @@
 use super::artifacts::{ArtifactKind, ArtifactRole, OwnedTargetLocator};
-use super::change_receipts::{BranchedAffectedTarget, ChangeReceiptSequence};
+use super::change_receipts::{
+    BranchedAffectedTarget, BranchedChangeReceipt, ChangeReceiptSequence,
+    MergeResolutionChangedReceiptProjection,
+};
 use super::errors::{ConflictResolution, StableErrorCode};
 use super::prearm_recovery::{
     PreArmCancellationEffectObservation, PreArmCancellationFinalizationAttemptProgress,
@@ -407,6 +410,47 @@ impl CanonicalStatusIds {
             ));
         }
         Ok(Self(values))
+    }
+}
+
+/// Receipt IDs preserve receipt-sequence order, which is intentionally not
+/// UUID lexical order. The changed receipt producer has already proved that
+/// order; status must preserve it byte-for-byte while still rejecting
+/// duplicates or an unbounded projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct SequenceOrderedStatusIds(Vec<UnicaId>);
+
+impl SequenceOrderedStatusIds {
+    fn new(values: Vec<UnicaId>) -> Result<Self, StatusContractError> {
+        if values.len() > MAX_STATUS_ITEMS
+            || values
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != values.len()
+        {
+            return Err(StatusContractError(
+                "sequence-ordered status IDs must be bounded and duplicate-free",
+            ));
+        }
+        Ok(Self(values))
+    }
+}
+
+impl JsonSchema for SequenceOrderedStatusIds {
+    fn schema_name() -> Cow<'static, str> {
+        "SequenceOrderedStatusIds".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "array",
+            "items": generator.subschema_for::<UnicaId>(),
+            "minItems": 0,
+            "maxItems": MAX_STATUS_ITEMS,
+            "uniqueItems": true
+        })
     }
 }
 
@@ -1420,6 +1464,18 @@ impl MergeResolutionWorkspaceResumeHandle {
             base_session_digest,
         }
     }
+
+    pub(crate) const fn session_id(&self) -> &UnicaId {
+        &self.session_id
+    }
+
+    pub(crate) const fn workspace_id(&self) -> &UnicaId {
+        &self.workspace_id
+    }
+
+    pub(crate) const fn base_session_digest(&self) -> &Sha256Digest {
+        &self.base_session_digest
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1549,6 +1605,33 @@ impl ComparisonResumeHandle {
 pub(crate) struct DeferredRepositoryAdvanceResumeHandle {
     handle_kind: DeferredRepositoryAdvanceHandleKind,
     advance: DeferredRepositoryAdvance,
+}
+
+/// Non-wire proof that one deferred advance is the current handle produced by
+/// the authoritative latest support terminal in a validated live status.
+/// Keeping the terminal receipt ID here prevents a consumption receipt from
+/// substituting another otherwise well-formed terminal lineage.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CurrentDeferredRepositoryAdvanceAuthority {
+    terminal_receipt_id: UnicaId,
+    advance: DeferredRepositoryAdvance,
+}
+
+impl CurrentDeferredRepositoryAdvanceAuthority {
+    pub(crate) fn into_parts(self) -> (UnicaId, DeferredRepositoryAdvance) {
+        (self.terminal_receipt_id, self.advance)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test_only(
+        terminal_receipt_id: UnicaId,
+        advance: DeferredRepositoryAdvance,
+    ) -> Self {
+        Self {
+            terminal_receipt_id,
+            advance,
+        }
+    }
 }
 
 impl DeferredRepositoryAdvanceResumeHandle {
@@ -1839,7 +1922,7 @@ struct ResolutionChangeReceiptResumeBody {
     affected_target: BranchedAffectedTarget,
     after_sha256: Sha256Digest,
     change_receipt_digest: Sha256Digest,
-    superseded_change_receipt_ids: CanonicalStatusIds,
+    superseded_change_receipt_ids: SequenceOrderedStatusIds,
     superseded_decision_ids: CanonicalStatusIds,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_replacement_decision_id: Option<UnicaId>,
@@ -1913,6 +1996,191 @@ impl JsonSchema for ResolutionChangeReceiptResumeHandle {
             generator.subschema_for::<SupersededResolutionChangeReceiptResumeHandle>(),
             generator.subschema_for::<ConsumedResolutionChangeReceiptResumeHandle>(),
         ])
+    }
+}
+
+fn resolution_receipt_body(
+    projection: &MergeResolutionChangedReceiptProjection,
+) -> Result<ResolutionChangeReceiptResumeBody, StatusContractError> {
+    Ok(ResolutionChangeReceiptResumeBody {
+        handle_kind: ResolutionChangeReceiptHandleKind::Value,
+        change_receipt_id: projection.change_receipt_id.clone(),
+        affected_target: BranchedAffectedTarget::metadata_property(
+            projection.affected_target.clone(),
+        ),
+        after_sha256: projection.after_sha256.clone(),
+        change_receipt_digest: projection.change_receipt_digest.clone(),
+        superseded_change_receipt_ids: SequenceOrderedStatusIds::new(
+            projection.superseded_change_receipt_ids.clone(),
+        )?,
+        superseded_decision_ids: CanonicalStatusIds::new(
+            projection.superseded_decision_ids.clone(),
+        )?,
+        pending_replacement_decision_id: projection.pending_replacement_decision_id.clone(),
+        decision_set_digest_before: projection.decision_set_digest_before.clone(),
+        revised_decision_set_digest: projection.revised_decision_set_digest.clone(),
+        phase_transition: MergeResolutionStatusPhaseTransition::VALUE,
+        base_session_digest: projection.base_session_digest.clone(),
+        workspace_generation_id: projection.workspace_generation_id.clone(),
+        receipt_sequence: projection.receipt_sequence,
+    })
+}
+
+fn validate_live_resolution_workspace(
+    projection: &MergeResolutionChangedReceiptProjection,
+    workspace: &MergeResolutionWorkspaceResumeHandle,
+) -> Result<(), StatusContractError> {
+    if &projection.base_session_digest != workspace.base_session_digest()
+        || &projection.workspace_generation_id != workspace.workspace_id()
+    {
+        return Err(StatusContractError(
+            "resolution receipt is not from the current session workspace generation",
+        ));
+    }
+    Ok(())
+}
+
+/// Current, exact, unconsumed changed-receipt proof accepted by
+/// `merge.resolve`. The authority is consuming and cannot be deserialized or
+/// cloned; successful resolution turns it into the matching consumed handle.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SelectableResolutionChangeReceiptAuthority {
+    session_id: UnicaId,
+    projection: MergeResolutionChangedReceiptProjection,
+}
+
+impl SelectableResolutionChangeReceiptAuthority {
+    pub(crate) fn try_from_current(
+        receipt: BranchedChangeReceipt,
+        handle: ResolutionChangeReceiptResumeHandle,
+        workspace: &MergeResolutionWorkspaceResumeHandle,
+    ) -> Result<Self, StatusContractError> {
+        let projection =
+            receipt
+                .merge_resolution_changed_projection()
+                .ok_or(StatusContractError(
+                    "only a changed merge-resolution receipt can be selected",
+                ))?;
+        validate_live_resolution_workspace(&projection, workspace)?;
+        let expected_body = resolution_receipt_body(&projection)?;
+        let ResolutionChangeReceiptResumeHandleKind::Selectable(current) = handle.0 else {
+            return Err(StatusContractError(
+                "resolution receipt handle is not current and selectable",
+            ));
+        };
+        if current.body != expected_body {
+            return Err(StatusContractError(
+                "resolution receipt handle disagrees with its immutable producer receipt",
+            ));
+        }
+        Ok(Self {
+            session_id: workspace.session_id().clone(),
+            projection,
+        })
+    }
+
+    pub(crate) const fn session_id(&self) -> &UnicaId {
+        &self.session_id
+    }
+
+    pub(crate) const fn change_receipt_id(&self) -> &UnicaId {
+        &self.projection.change_receipt_id
+    }
+
+    pub(crate) const fn affected_target(
+        &self,
+    ) -> &super::change_receipts::MetadataPropertyAffectedTarget {
+        &self.projection.affected_target
+    }
+
+    pub(crate) const fn after_sha256(&self) -> &Sha256Digest {
+        &self.projection.after_sha256
+    }
+
+    pub(crate) const fn change_receipt_digest(&self) -> &Sha256Digest {
+        &self.projection.change_receipt_digest
+    }
+
+    pub(crate) const fn base_session_digest(&self) -> &Sha256Digest {
+        &self.projection.base_session_digest
+    }
+
+    pub(crate) const fn workspace_generation_id(&self) -> &UnicaId {
+        &self.projection.workspace_generation_id
+    }
+
+    pub(crate) fn into_consumed_handle(
+        self,
+    ) -> Result<ResolutionChangeReceiptResumeHandle, StatusContractError> {
+        Ok(ResolutionChangeReceiptResumeHandle(
+            ResolutionChangeReceiptResumeHandleKind::Consumed(
+                ConsumedResolutionChangeReceiptResumeHandle {
+                    body: resolution_receipt_body(&self.projection)?,
+                    consumed: ConsumedReceiptLiteral,
+                    selectable: UnselectableReceiptLiteral,
+                },
+            ),
+        ))
+    }
+}
+
+impl ResolutionChangeReceiptResumeHandle {
+    pub(crate) fn selectable_from_changed_receipt(
+        receipt: &BranchedChangeReceipt,
+        workspace: &MergeResolutionWorkspaceResumeHandle,
+    ) -> Result<Self, StatusContractError> {
+        let projection =
+            receipt
+                .merge_resolution_changed_projection()
+                .ok_or(StatusContractError(
+                    "only a changed merge-resolution receipt has a selectable handle",
+                ))?;
+        validate_live_resolution_workspace(&projection, workspace)?;
+        Ok(Self(ResolutionChangeReceiptResumeHandleKind::Selectable(
+            SelectableResolutionChangeReceiptResumeHandle {
+                body: resolution_receipt_body(&projection)?,
+                consumed: UnconsumedReceiptLiteral,
+                selectable: SelectableReceiptLiteral,
+            },
+        )))
+    }
+
+    pub(crate) fn superseded_by_changed_receipt(
+        self,
+        later_receipt: &BranchedChangeReceipt,
+    ) -> Result<Self, StatusContractError> {
+        let ResolutionChangeReceiptResumeHandleKind::Selectable(prior) = self.0 else {
+            return Err(StatusContractError(
+                "only an unconsumed selectable receipt can become superseded",
+            ));
+        };
+        let later =
+            later_receipt
+                .merge_resolution_changed_projection()
+                .ok_or(StatusContractError(
+                    "receipt supersession requires a later changed receipt",
+                ))?;
+        if later.base_session_digest != prior.body.base_session_digest
+            || later.workspace_generation_id != prior.body.workspace_generation_id
+            || BranchedAffectedTarget::metadata_property(later.affected_target.clone())
+                != prior.body.affected_target
+            || later.receipt_sequence <= prior.body.receipt_sequence
+            || !later
+                .superseded_change_receipt_ids
+                .contains(&prior.body.change_receipt_id)
+        {
+            return Err(StatusContractError(
+                "later receipt does not prove exact same-target receipt supersession",
+            ));
+        }
+        Ok(Self(ResolutionChangeReceiptResumeHandleKind::Superseded(
+            SupersededResolutionChangeReceiptResumeHandle {
+                body: prior.body,
+                consumed: UnconsumedReceiptLiteral,
+                selectable: UnselectableReceiptLiteral,
+                superseded_by_receipt_id: later.change_receipt_id,
+            },
+        )))
     }
 }
 
@@ -3310,6 +3578,22 @@ impl ResumeHandles {
         Ok(found)
     }
 
+    fn current_deferred_advance(
+        &self,
+    ) -> Result<Option<&DeferredRepositoryAdvance>, StatusContractError> {
+        let mut found = None;
+        for handle in &self.0 {
+            if let ResumeHandle::DeferredRepositoryAdvance(handle) = handle {
+                if found.replace(&handle.advance).is_some() {
+                    return Err(StatusContractError(
+                        "status contains more than one current deferred repository advance",
+                    ));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     fn terminal_support_binding(
         &self,
         receipt_id: &UnicaId,
@@ -4431,6 +4715,8 @@ struct ExistingTaskStatusCommon {
     artifact_hashes: ArtifactHashStatuses,
     resume_handles: ResumeHandles,
     recent_operations: RecentOperations,
+    #[serde(skip)]
+    latest_terminal_support_receipt_id: Option<UnicaId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_deferred_advance_consumption: Option<DeferredRepositoryAdvanceConsumptionReceipt>,
     cleanup_eligibility: CleanupEligibilityStatus,
@@ -4634,6 +4920,8 @@ impl ExistingTaskStatusAuthority {
                 artifact_hashes: collections.artifact_hashes,
                 resume_handles: collections.resume_handles,
                 recent_operations: collections.recent_operations,
+                latest_terminal_support_receipt_id: deferred_state
+                    .latest_terminal_support_receipt_id,
                 latest_deferred_advance_consumption: deferred_state.latest_consumption,
                 cleanup_eligibility,
             },
@@ -5143,6 +5431,59 @@ impl JsonSchema for ExistingTaskStatusData {
 }
 
 impl ExistingTaskStatusData {
+    fn common(&self) -> &ExistingTaskStatusCommon {
+        match &self.0 {
+            ExistingTaskStatusDataKind::PreWorkspace(status) => &status.common,
+            ExistingTaskStatusDataKind::Workspace(status) => &status.common,
+            ExistingTaskStatusDataKind::PreWorkspaceRecovery(status) => &status.common,
+            ExistingTaskStatusDataKind::WorkspaceRecovery(status) => &status.common,
+            ExistingTaskStatusDataKind::ArchivedCleanupRecovery(status) => &status.common,
+            ExistingTaskStatusDataKind::ArchivedSuccess(status) => &status.common,
+            ExistingTaskStatusDataKind::ArchivedAbandoned(status) => &status.common,
+            ExistingTaskStatusDataKind::CleanedSuccess(status) => &status.common,
+            ExistingTaskStatusDataKind::CleanedAbandoned(status) => &status.common,
+        }
+    }
+
+    pub(crate) fn current_deferred_repository_advance_authority(
+        &self,
+    ) -> Result<Option<CurrentDeferredRepositoryAdvanceAuthority>, StatusContractError> {
+        let common = self.common();
+        let Some(advance) = common.resume_handles.current_deferred_advance()? else {
+            if common.latest_terminal_support_receipt_id.is_some()
+                && common.latest_deferred_advance_consumption.is_none()
+            {
+                // A latest terminal without a deferred handle is valid. Its
+                // terminal binding is rechecked by status construction.
+            }
+            return Ok(None);
+        };
+        if common.latest_deferred_advance_consumption.is_some() {
+            return Err(StatusContractError(
+                "current deferred handle cannot coexist with a consumption receipt",
+            ));
+        }
+        let terminal_receipt_id =
+            common
+                .latest_terminal_support_receipt_id
+                .as_ref()
+                .ok_or(StatusContractError(
+                    "current deferred handle lacks its authoritative terminal receipt",
+                ))?;
+        let terminal = common
+            .resume_handles
+            .terminal_support_binding(terminal_receipt_id)?;
+        if terminal.deferred_repository_advance_digest != Some(advance.observation_digest()) {
+            return Err(StatusContractError(
+                "current deferred handle differs from its authoritative terminal receipt",
+            ));
+        }
+        Ok(Some(CurrentDeferredRepositoryAdvanceAuthority {
+            terminal_receipt_id: terminal_receipt_id.clone(),
+            advance: advance.clone(),
+        }))
+    }
+
     pub(crate) fn pre_workspace(
         phase: TaskPhase,
         authority: ExistingTaskStatusAuthority,

@@ -344,12 +344,223 @@ mod tests {
         };
     }
 
+    macro_rules! assert_not_clone {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfClone<Marker> {
+                    fn assert_not_clone() {}
+                }
+                struct ImplementsClone;
+                impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+                impl<T: ?Sized + Clone> AmbiguousIfClone<ImplementsClone> for T {}
+                let _ = <$type as AmbiguousIfClone<_>>::assert_not_clone;
+            };
+        };
+    }
+
     assert_not_deserialize_owned!(SupportActionAuthorizationData);
     assert_not_deserialize_owned!(ActiveSupportActionResumeHandle);
     assert_not_deserialize_owned!(TerminalSupportActionAuthorization);
     assert_not_deserialize_owned!(AwaitingSupportInstructionProjection);
     assert_not_deserialize_owned!(ArmedSupportInstructionProjection);
     assert_not_deserialize_owned!(FrozenSupportRecoveryAuthorizationProjection);
+    assert_not_deserialize_owned!(SupportUpdateAuthorizationProjection);
+    assert_not_clone!(SupportUpdateAuthorizationProjection);
+
+    fn arming_receipt_for(active: &ActiveSupportActionResumeHandle) -> SupportActionArmingReceipt {
+        let ActiveSupportActionResumeHandle::AwaitingArm(record) = active else {
+            panic!("fresh action must await arming")
+        };
+        let endpoint = record.immutable.expected_before_history_cursor.clone();
+        let expected_owner = owner(record.immutable.manual_actor_username.as_str());
+        SupportActionArmingReceipt::new(
+            id(ID_2),
+            record.immutable.support_action_id.clone(),
+            record.support_action_digest.clone(),
+            endpoint.clone(),
+            endpoint.clone(),
+            empty_partition(&endpoint),
+            record.immutable.support_gate_digest.clone(),
+            record.immutable.candidate_set_digest.clone(),
+            record.immutable.expected_relevant_baseline_digest.clone(),
+            record.expected_support_graph_digest.clone(),
+            record
+                .immutable
+                .support_recovery_distribution_set_digest
+                .clone(),
+            record.immutable.expected_original_fingerprint.clone(),
+            record.immutable.manual_target_mode,
+            SupportRootLockObservation::new(RequiredNullable::value(expected_owner.clone()))
+                .unwrap(),
+            &expected_owner,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn support_update_projection_is_exact_for_live_state_mode_and_authority() {
+        let authority = SupportActionAuthorizationAuthority::reserved_original(
+            inputs("reserved-user"),
+            CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+            digest(),
+        )
+        .unwrap();
+        let awaiting = ActiveSupportActionResumeHandle::publish(authority).unwrap();
+        let receipt = arming_receipt_for(&awaiting);
+        let projection = awaiting
+            .support_update_authorization_projection()
+            .expect("awaiting action must project update authorization");
+
+        assert_eq!(projection.support_action_id(), &id(ID_1));
+        assert_eq!(
+            projection.purpose(),
+            SupportActionPurpose::MainIntegrationPrerequisite
+        );
+        assert_eq!(projection.support_gate_id(), &id(ID_2));
+        assert_eq!(projection.expected_before_history_cursor(), &cursor());
+        assert_eq!(projection.expected_support_graph_digest(), &digest());
+        assert_eq!(
+            projection.manual_target_mode(),
+            ManualSupportTargetMode::ReservedOriginal
+        );
+        assert_eq!(
+            projection.reserved_original_lease_capability_id(),
+            Some(&CapabilityRowId::parse("reserved-original-lease.v1").unwrap())
+        );
+        assert_eq!(
+            projection.manual_actor_lock_baseline_digest(),
+            Some(&digest())
+        );
+        assert!(projection.manual_working_infobase_identity().is_none());
+        assert!(projection.manual_working_infobase_baseline().is_none());
+        assert!(projection.arming_receipt().is_none());
+        assert_eq!(projection.authorized_transitions().as_slice().len(), 1);
+        assert_eq!(projection.origin_phase(), TaskPhase::Synchronized);
+        assert_eq!(projection.cancelled_phase(), TaskPhase::Synchronized);
+        assert_eq!(
+            projection.relevant_advance_phase(),
+            TaskPhase::LocalVerified
+        );
+        assert_eq!(projection.post_reconcile_phase(), TaskPhase::LocalVerified);
+
+        let armed = awaiting.clone().arm(receipt.clone()).unwrap();
+        let armed_projection = armed
+            .support_update_authorization_projection()
+            .expect("armed action must project update authorization");
+        assert_eq!(armed_projection.arming_receipt(), Some(&receipt));
+        assert!(armed
+            .clone()
+            .freeze_armed_action()
+            .unwrap()
+            .support_update_authorization_projection()
+            .is_none());
+        assert!(awaiting
+            .clone()
+            .freeze_prearm_cancellation_effect()
+            .unwrap()
+            .support_update_authorization_projection()
+            .is_none());
+
+        let mut foreign_inputs = inputs("reserved-user");
+        foreign_inputs.support_action_id = id(ID_2);
+        let foreign = ActiveSupportActionResumeHandle::publish(
+            SupportActionAuthorizationAuthority::reserved_original(
+                foreign_inputs,
+                CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                digest(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(foreign.arm(receipt).is_err());
+    }
+
+    #[test]
+    fn support_update_projection_retains_separate_mode_without_reserved_splice() {
+        let capability = CapabilityRowId::parse("manual-working-ib-lease.v1").unwrap();
+        let (inputs, identity, baseline) =
+            separate_inputs(digest(), capability.clone(), capability);
+        let active = ActiveSupportActionResumeHandle::publish(
+            SupportActionAuthorizationAuthority::separate_working_infobase(
+                inputs,
+                identity.clone(),
+                baseline.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let projection = active
+            .support_update_authorization_projection()
+            .expect("awaiting separate-mode action must project update authorization");
+
+        assert_eq!(
+            projection.manual_target_mode(),
+            ManualSupportTargetMode::SeparateWorkingInfobase
+        );
+        assert_eq!(
+            projection.manual_working_infobase_identity(),
+            Some(&identity)
+        );
+        assert_eq!(
+            projection.manual_working_infobase_baseline(),
+            Some(&baseline)
+        );
+        assert!(projection.reserved_original_lease_capability_id().is_none());
+        assert!(projection.manual_actor_lock_baseline_digest().is_none());
+    }
+
+    pub(super) fn active_support_action_resume_handle_fixture(
+        mode: ManualSupportTargetMode,
+    ) -> ActiveSupportActionResumeHandle {
+        match mode {
+            ManualSupportTargetMode::ReservedOriginal => ActiveSupportActionResumeHandle::publish(
+                SupportActionAuthorizationAuthority::reserved_original(
+                    inputs("reserved-user"),
+                    CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                    digest(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            ManualSupportTargetMode::SeparateWorkingInfobase => {
+                let capability = CapabilityRowId::parse("manual-working-ib-lease.v1").unwrap();
+                let (inputs, identity, baseline) =
+                    separate_inputs(digest(), capability.clone(), capability);
+                ActiveSupportActionResumeHandle::publish(
+                    SupportActionAuthorizationAuthority::separate_working_infobase(
+                        inputs, identity, baseline,
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            }
+        }
+    }
+
+    pub(super) fn armed_support_action_resume_handle_fixture(
+        mode: ManualSupportTargetMode,
+    ) -> ActiveSupportActionResumeHandle {
+        let active = active_support_action_resume_handle_fixture(mode);
+        let receipt = arming_receipt_for(&active);
+        active.arm(receipt).unwrap()
+    }
+
+    pub(super) fn support_update_projection_fixture(
+        armed: bool,
+        mode: ManualSupportTargetMode,
+    ) -> SupportUpdateAuthorizationProjection {
+        let active = active_support_action_resume_handle_fixture(mode);
+        if armed {
+            let receipt = arming_receipt_for(&active);
+            active
+                .arm(receipt)
+                .unwrap()
+                .support_update_authorization_projection()
+                .unwrap()
+        } else {
+            active.support_update_authorization_projection().unwrap()
+        }
+    }
 
     #[test]
     fn action_digest_and_authorization_schemas_are_closed_and_state_exact() {
@@ -614,8 +825,30 @@ mod tests {
         assert!(binding.manual_working_infobase_baseline().is_none());
     }
 }
+
+#[cfg(test)]
+pub(crate) fn support_update_authorization_projection_fixture_test_only(
+    armed: bool,
+    mode: ManualSupportTargetMode,
+) -> SupportUpdateAuthorizationProjection {
+    tests::support_update_projection_fixture(armed, mode)
+}
+
+#[cfg(test)]
+pub(crate) fn active_support_action_resume_handle_fixture_test_only(
+    mode: ManualSupportTargetMode,
+) -> ActiveSupportActionResumeHandle {
+    tests::active_support_action_resume_handle_fixture(mode)
+}
+
+#[cfg(test)]
+pub(crate) fn armed_support_action_resume_handle_fixture_test_only(
+    mode: ManualSupportTargetMode,
+) -> ActiveSupportActionResumeHandle {
+    tests::armed_support_action_resume_handle_fixture(mode)
+}
 use super::super::repository::RepositoryHistoryCursor;
-use super::super::scalars::RepositoryUsername;
+use super::super::scalars::{OriginalProjectCwd, RepositoryUsername};
 use super::super::schema::one_of_schema;
 use super::super::support_recovery_authority::SupportRecoveryAuthorityToken;
 use super::evidence::{
@@ -629,12 +862,15 @@ use super::model::{
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
-use crate::domain::branched_development::{CapabilityRowId, Sha256Digest, TaskPhase, UnicaId};
+use crate::domain::branched_development::{
+    CapabilityRowId, OperationId, Sha256Digest, TaskId, TaskPhase, UnicaId,
+};
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
+use std::fmt;
 
 fn contract_digest<T: ContractDigestRecord>(
     record: &T,
@@ -1148,6 +1384,162 @@ pub(crate) struct FrozenSupportRecoveryAuthorizationProjection {
     armed_binding: Option<FrozenArmedSupportRecoveryBinding>,
 }
 
+/// Complete immutable support-action authority for update preview/apply.
+///
+/// This is deliberately a non-wire, non-`Clone` capability.  It can be minted
+/// only from a live awaiting/armed resume handle, so consumers cannot splice a
+/// mode, lease, transition set, phase binding, or arming receipt from another
+/// authorization.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SupportUpdateAuthorizationProjection {
+    support_action_id: UnicaId,
+    purpose: SupportActionPurpose,
+    support_action_digest: Sha256Digest,
+    support_gate_id: UnicaId,
+    support_gate_digest: Sha256Digest,
+    candidate_set_digest: Sha256Digest,
+    expected_before_history_cursor: RepositoryHistoryCursor,
+    expected_relevant_baseline_digest: Sha256Digest,
+    expected_support_graph_digest: Sha256Digest,
+    authorized_transitions: SupportTransitions,
+    authorized_transitions_digest: Sha256Digest,
+    support_recovery_distributions: Vec<SupportRecoveryDistributionEvidence>,
+    support_recovery_distribution_set_digest: Sha256Digest,
+    reserved_integration_username: RepositoryUsername,
+    reserved_original_identity_digest: Sha256Digest,
+    reserved_original_lease_capability_id: Option<CapabilityRowId>,
+    expected_original_fingerprint: Sha256Digest,
+    manual_target_mode: ManualSupportTargetMode,
+    manual_actor_username: RepositoryUsername,
+    manual_actor_lock_baseline_digest: Option<Sha256Digest>,
+    manual_working_infobase_identity: Option<ManualWorkingInfobaseIdentity>,
+    manual_working_infobase_baseline: Option<ManualWorkingInfobaseBaseline>,
+    origin_phase: TaskPhase,
+    cancelled_phase: TaskPhase,
+    relevant_advance_phase: TaskPhase,
+    post_reconcile_phase: TaskPhase,
+    phase_evidence_digest: Sha256Digest,
+    arming_receipt: Option<SupportActionArmingReceipt>,
+}
+
+impl SupportUpdateAuthorizationProjection {
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn purpose(&self) -> SupportActionPurpose {
+        self.purpose
+    }
+
+    pub(crate) const fn support_action_digest(&self) -> &Sha256Digest {
+        &self.support_action_digest
+    }
+
+    pub(crate) const fn support_gate_id(&self) -> &UnicaId {
+        &self.support_gate_id
+    }
+
+    pub(crate) const fn support_gate_digest(&self) -> &Sha256Digest {
+        &self.support_gate_digest
+    }
+
+    pub(crate) const fn candidate_set_digest(&self) -> &Sha256Digest {
+        &self.candidate_set_digest
+    }
+
+    pub(crate) const fn expected_before_history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.expected_before_history_cursor
+    }
+
+    pub(crate) const fn expected_relevant_baseline_digest(&self) -> &Sha256Digest {
+        &self.expected_relevant_baseline_digest
+    }
+
+    pub(crate) const fn expected_support_graph_digest(&self) -> &Sha256Digest {
+        &self.expected_support_graph_digest
+    }
+
+    pub(crate) const fn authorized_transitions(&self) -> &SupportTransitions {
+        &self.authorized_transitions
+    }
+
+    pub(crate) const fn authorized_transitions_digest(&self) -> &Sha256Digest {
+        &self.authorized_transitions_digest
+    }
+
+    pub(crate) fn support_recovery_distributions(&self) -> &[SupportRecoveryDistributionEvidence] {
+        &self.support_recovery_distributions
+    }
+
+    pub(crate) const fn support_recovery_distribution_set_digest(&self) -> &Sha256Digest {
+        &self.support_recovery_distribution_set_digest
+    }
+
+    pub(crate) const fn reserved_integration_username(&self) -> &RepositoryUsername {
+        &self.reserved_integration_username
+    }
+
+    pub(crate) const fn reserved_original_identity_digest(&self) -> &Sha256Digest {
+        &self.reserved_original_identity_digest
+    }
+
+    pub(crate) const fn reserved_original_lease_capability_id(&self) -> Option<&CapabilityRowId> {
+        self.reserved_original_lease_capability_id.as_ref()
+    }
+
+    pub(crate) const fn expected_original_fingerprint(&self) -> &Sha256Digest {
+        &self.expected_original_fingerprint
+    }
+
+    pub(crate) const fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        self.manual_target_mode
+    }
+
+    pub(crate) const fn manual_actor_username(&self) -> &RepositoryUsername {
+        &self.manual_actor_username
+    }
+
+    pub(crate) const fn manual_actor_lock_baseline_digest(&self) -> Option<&Sha256Digest> {
+        self.manual_actor_lock_baseline_digest.as_ref()
+    }
+
+    pub(crate) const fn manual_working_infobase_identity(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseIdentity> {
+        self.manual_working_infobase_identity.as_ref()
+    }
+
+    pub(crate) const fn manual_working_infobase_baseline(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseBaseline> {
+        self.manual_working_infobase_baseline.as_ref()
+    }
+
+    pub(crate) const fn origin_phase(&self) -> TaskPhase {
+        self.origin_phase
+    }
+
+    pub(crate) const fn cancelled_phase(&self) -> TaskPhase {
+        self.cancelled_phase
+    }
+
+    pub(crate) const fn relevant_advance_phase(&self) -> TaskPhase {
+        self.relevant_advance_phase
+    }
+
+    pub(crate) const fn post_reconcile_phase(&self) -> TaskPhase {
+        self.post_reconcile_phase
+    }
+
+    pub(crate) const fn phase_evidence_digest(&self) -> &Sha256Digest {
+        &self.phase_evidence_digest
+    }
+
+    pub(crate) const fn arming_receipt(&self) -> Option<&SupportActionArmingReceipt> {
+        self.arming_receipt.as_ref()
+    }
+}
+
 impl FrozenSupportRecoveryAuthorizationProjection {
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
@@ -1487,6 +1879,160 @@ impl Serialize for SupportActionAuthorizationRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportActionTerminalOutcome {
+    Consumed,
+    Cancelled,
+}
+
+/// Exact durable-status lineage that must be held while an active support
+/// authorization becomes terminal.  The binding owns the apply operation,
+/// result receipt and effect proof, so neither a replay nor a receipt from a
+/// parallel apply can be substituted after repository effects complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportActionTerminalStatusCasBinding {
+    cwd: OriginalProjectCwd,
+    task_id: TaskId,
+    operation_id: OperationId,
+    expected_status_digest: Sha256Digest,
+    support_action_id: UnicaId,
+    support_action_digest: Sha256Digest,
+    outcome: SupportActionTerminalOutcome,
+    terminal_receipt_id: UnicaId,
+    effect_proof_digest: Sha256Digest,
+    resulting_phase: TaskPhase,
+    deferred_advance_digest: Option<Sha256Digest>,
+}
+
+impl SupportActionTerminalStatusCasBinding {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        cwd: OriginalProjectCwd,
+        task_id: TaskId,
+        operation_id: OperationId,
+        expected_status_digest: Sha256Digest,
+        support_action_id: UnicaId,
+        support_action_digest: Sha256Digest,
+        outcome: SupportActionTerminalOutcome,
+        terminal_receipt_id: UnicaId,
+        effect_proof_digest: Sha256Digest,
+        resulting_phase: TaskPhase,
+        deferred_advance_digest: Option<Sha256Digest>,
+    ) -> Self {
+        Self {
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            support_action_digest,
+            outcome,
+            terminal_receipt_id,
+            effect_proof_digest,
+            resulting_phase,
+            deferred_advance_digest,
+        }
+    }
+
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        &self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        &self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        &self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn support_action_digest(&self) -> &Sha256Digest {
+        &self.support_action_digest
+    }
+
+    pub(crate) const fn outcome(&self) -> SupportActionTerminalOutcome {
+        self.outcome
+    }
+
+    pub(crate) const fn terminal_receipt_id(&self) -> &UnicaId {
+        &self.terminal_receipt_id
+    }
+
+    pub(crate) const fn effect_proof_digest(&self) -> &Sha256Digest {
+        &self.effect_proof_digest
+    }
+
+    pub(crate) const fn resulting_phase(&self) -> TaskPhase {
+        self.resulting_phase
+    }
+
+    pub(crate) const fn deferred_advance_digest(&self) -> Option<&Sha256Digest> {
+        self.deferred_advance_digest.as_ref()
+    }
+}
+
+pub(crate) trait SupportActionTerminalStatusCasLease {
+    fn binds(&self, binding: &SupportActionTerminalStatusCasBinding) -> bool;
+
+    fn commit_terminal(
+        self: Box<Self>,
+        terminal: &TerminalSupportActionAuthorization,
+    ) -> Result<(), SupportContractError>;
+}
+
+pub(crate) trait SupportActionTerminalStatusCasResolver {
+    fn acquire(
+        &mut self,
+        binding: &SupportActionTerminalStatusCasBinding,
+    ) -> Result<Box<dyn SupportActionTerminalStatusCasLease>, SupportContractError>;
+}
+
+/// One-shot CAS authority for a support terminal transition.  It is neither
+/// cloneable nor serializable and is consumed together with the live handle.
+pub(crate) struct ValidatedSupportActionTerminalStatusCasAuthority {
+    binding: SupportActionTerminalStatusCasBinding,
+    lease: Box<dyn SupportActionTerminalStatusCasLease>,
+}
+
+impl fmt::Debug for ValidatedSupportActionTerminalStatusCasAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedSupportActionTerminalStatusCasAuthority")
+            .field("binding", &self.binding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ValidatedSupportActionTerminalStatusCasAuthority {
+    pub(crate) fn acquire(
+        binding: SupportActionTerminalStatusCasBinding,
+        resolver: &mut dyn SupportActionTerminalStatusCasResolver,
+    ) -> Result<Self, SupportContractError> {
+        let lease = resolver.acquire(&binding)?;
+        if !lease.binds(&binding) {
+            return Err(SupportContractError(
+                "support terminal status CAS lease belongs to another operation lineage",
+            ));
+        }
+        Ok(Self { binding, lease })
+    }
+
+    fn commit_terminal(
+        self,
+        terminal: &TerminalSupportActionAuthorization,
+    ) -> Result<(), SupportContractError> {
+        self.lease.commit_terminal(terminal)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(private_interfaces)]
 pub(crate) enum ActiveSupportActionResumeHandle {
@@ -1579,6 +2125,69 @@ impl ActiveSupportActionResumeHandle {
             manual_actor_username: record.immutable.manual_actor_username.clone(),
             working_infobase_identity: record.immutable.manual_working_infobase_identity.clone(),
             authorized_transitions: record.immutable.authorized_transitions.clone(),
+        })
+    }
+
+    /// Projects the exact immutable authority required by support update
+    /// preview/apply. Frozen handles are intentionally excluded: they are
+    /// owned by the corresponding recovery protocol.
+    pub(crate) fn support_update_authorization_projection(
+        &self,
+    ) -> Option<SupportUpdateAuthorizationProjection> {
+        let record = match self {
+            Self::AwaitingArm(record) | Self::Armed(record) => record,
+            Self::FrozenArmedAction(_) | Self::FrozenPreArmCancellationEffect(_) => return None,
+        };
+        Some(SupportUpdateAuthorizationProjection {
+            support_action_id: record.immutable.support_action_id.clone(),
+            purpose: record.immutable.purpose,
+            support_action_digest: record.support_action_digest.clone(),
+            support_gate_id: record.immutable.support_gate_id.clone(),
+            support_gate_digest: record.immutable.support_gate_digest.clone(),
+            candidate_set_digest: record.immutable.candidate_set_digest.clone(),
+            expected_before_history_cursor: record.immutable.expected_before_history_cursor.clone(),
+            expected_relevant_baseline_digest: record
+                .immutable
+                .expected_relevant_baseline_digest
+                .clone(),
+            expected_support_graph_digest: record.expected_support_graph_digest.clone(),
+            authorized_transitions: record.immutable.authorized_transitions.clone(),
+            authorized_transitions_digest: record.immutable.authorized_transitions_digest.clone(),
+            support_recovery_distributions: record.immutable.support_recovery_distributions.clone(),
+            support_recovery_distribution_set_digest: record
+                .immutable
+                .support_recovery_distribution_set_digest
+                .clone(),
+            reserved_integration_username: record.immutable.reserved_integration_username.clone(),
+            reserved_original_identity_digest: record
+                .immutable
+                .reserved_original_identity_digest
+                .clone(),
+            reserved_original_lease_capability_id: record
+                .immutable
+                .reserved_original_lease_capability_id
+                .clone(),
+            expected_original_fingerprint: record.immutable.expected_original_fingerprint.clone(),
+            manual_target_mode: record.immutable.manual_target_mode,
+            manual_actor_username: record.immutable.manual_actor_username.clone(),
+            manual_actor_lock_baseline_digest: record
+                .immutable
+                .manual_actor_lock_baseline_digest
+                .clone(),
+            manual_working_infobase_identity: record
+                .immutable
+                .manual_working_infobase_identity
+                .clone(),
+            manual_working_infobase_baseline: record
+                .immutable
+                .manual_working_infobase_baseline
+                .clone(),
+            origin_phase: record.immutable.origin_phase,
+            cancelled_phase: record.immutable.cancelled_phase,
+            relevant_advance_phase: record.immutable.relevant_advance_phase,
+            post_reconcile_phase: record.immutable.post_reconcile_phase,
+            phase_evidence_digest: record.immutable.phase_evidence_digest.clone(),
+            arming_receipt: record.arming_receipt.clone(),
         })
     }
 
@@ -1686,38 +2295,67 @@ impl ActiveSupportActionResumeHandle {
         self.freeze_armed_action_inner()
     }
 
-    #[cfg(test)]
-    pub(crate) fn cancel(self) -> Result<TerminalSupportActionAuthorization, SupportContractError> {
-        match self {
-            Self::AwaitingArm(mut record) => {
+    fn into_terminal(
+        self,
+        outcome: SupportActionTerminalOutcome,
+    ) -> Result<TerminalSupportActionAuthorization, SupportContractError> {
+        match (self, outcome) {
+            (Self::AwaitingArm(mut record), SupportActionTerminalOutcome::Cancelled) => {
                 record.state = SupportActionState::Cancelled;
                 Ok(TerminalSupportActionAuthorization::CancelledBeforeArm(
                     record,
                 ))
             }
-            Self::Armed(mut record) => {
+            (Self::Armed(mut record), SupportActionTerminalOutcome::Cancelled) => {
                 record.state = SupportActionState::Cancelled;
                 Ok(TerminalSupportActionAuthorization::CancelledAfterArm(
                     record,
                 ))
             }
-            Self::FrozenArmedAction(_) | Self::FrozenPreArmCancellationEffect(_) => Err(
+            (Self::Armed(mut record), SupportActionTerminalOutcome::Consumed) => {
+                record.state = SupportActionState::Consumed;
+                Ok(TerminalSupportActionAuthorization::Consumed(record))
+            }
+            (Self::AwaitingArm(_), SupportActionTerminalOutcome::Consumed) => Err(
+                SupportContractError("only armed support actions can be consumed"),
+            ),
+            (Self::FrozenArmedAction(_) | Self::FrozenPreArmCancellationEffect(_), _) => Err(
                 SupportContractError("frozen support action requires recovery terminalization"),
             ),
         }
+    }
+
+    pub(crate) fn terminalize_with_status_cas(
+        self,
+        authority: ValidatedSupportActionTerminalStatusCasAuthority,
+    ) -> Result<TerminalSupportActionAuthorization, SupportContractError> {
+        if self.support_action_id() != authority.binding.support_action_id()
+            || self
+                .support_update_authorization_projection()
+                .is_none_or(|projection| {
+                    projection.support_action_digest() != authority.binding.support_action_digest()
+                })
+        {
+            return Err(SupportContractError(
+                "live support handle differs from the terminal status CAS binding",
+            ));
+        }
+        let outcome = authority.binding.outcome();
+        let terminal = self.into_terminal(outcome)?;
+        authority.commit_terminal(&terminal)?;
+        Ok(terminal)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel(self) -> Result<TerminalSupportActionAuthorization, SupportContractError> {
+        self.into_terminal(SupportActionTerminalOutcome::Cancelled)
     }
 
     #[cfg(test)]
     pub(crate) fn consume(
         self,
     ) -> Result<TerminalSupportActionAuthorization, SupportContractError> {
-        let Self::Armed(mut record) = self else {
-            return Err(SupportContractError(
-                "only armed support actions can be consumed",
-            ));
-        };
-        record.state = SupportActionState::Consumed;
-        Ok(TerminalSupportActionAuthorization::Consumed(record))
+        self.into_terminal(SupportActionTerminalOutcome::Consumed)
     }
 }
 

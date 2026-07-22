@@ -2597,6 +2597,10 @@ impl ManualWorkingInfobaseClosureProof {
         &self.exclusive_lease_release_receipt_id
     }
 
+    pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        &self.exclusive_lease_capability_id
+    }
+
     pub(crate) const fn proof_digest(&self) -> &Sha256Digest {
         &self.proof_digest
     }

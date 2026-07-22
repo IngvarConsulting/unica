@@ -816,6 +816,25 @@ pub(crate) struct MergeResolutionChangeReceipt {
     change_receipt_digest: Sha256Digest,
 }
 
+/// Internal immutable projection shared with status/merge transition
+/// authorities. It can only be produced from a digest-validated changed
+/// merge-resolution receipt; no no-change or task receipt can be relabelled.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MergeResolutionChangedReceiptProjection {
+    pub(crate) change_receipt_id: UnicaId,
+    pub(crate) affected_target: MetadataPropertyAffectedTarget,
+    pub(crate) after_sha256: Sha256Digest,
+    pub(crate) change_receipt_digest: Sha256Digest,
+    pub(crate) superseded_change_receipt_ids: Vec<UnicaId>,
+    pub(crate) superseded_decision_ids: Vec<UnicaId>,
+    pub(crate) pending_replacement_decision_id: Option<UnicaId>,
+    pub(crate) decision_set_digest_before: Sha256Digest,
+    pub(crate) revised_decision_set_digest: Sha256Digest,
+    pub(crate) base_session_digest: Sha256Digest,
+    pub(crate) workspace_generation_id: UnicaId,
+    pub(crate) receipt_sequence: ChangeReceiptSequence,
+}
+
 impl JsonSchema for MergeResolutionChangeReceipt {
     fn schema_name() -> Cow<'static, str> {
         "MergeResolutionChangeReceipt".into()
@@ -1523,6 +1542,28 @@ impl BranchedChangeReceipt {
                 MutationOutcome::NoChange
             }
         }
+    }
+
+    pub(crate) fn merge_resolution_changed_projection(
+        &self,
+    ) -> Option<MergeResolutionChangedReceiptProjection> {
+        let Self::MergeResolution(MergeResolutionReceipt::Changed(value)) = self else {
+            return None;
+        };
+        Some(MergeResolutionChangedReceiptProjection {
+            change_receipt_id: value.record.change_receipt_id.clone(),
+            affected_target: value.record.affected_targets.0[0].clone(),
+            after_sha256: value.record.after_sha256.clone(),
+            change_receipt_digest: value.change_receipt_digest.clone(),
+            superseded_change_receipt_ids: value.record.superseded_change_receipt_ids.0.clone(),
+            superseded_decision_ids: value.record.superseded_decision_ids.0.clone(),
+            pending_replacement_decision_id: value.record.pending_replacement_decision_id.clone(),
+            decision_set_digest_before: value.record.decision_set_digest_before.clone(),
+            revised_decision_set_digest: value.record.revised_decision_set_digest.clone(),
+            base_session_digest: value.record.base_session_digest.clone(),
+            workspace_generation_id: value.record.workspace_generation_id.clone(),
+            receipt_sequence: value.record.receipt_sequence,
+        })
     }
 
     fn unvalidated_projection(&self) -> UnvalidatedBranchedChangeReceipt {

@@ -59,7 +59,7 @@ string_literal!(ApplyStage, Value, "apply");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-enum SupportCancellationReason {
+pub(crate) enum SupportCancellationReason {
     TaskChanged,
     Abandoned,
     OperatorCancelled,
@@ -237,6 +237,454 @@ pub(crate) enum RepositoryUpdateRequestVariant {
     CancellationApply,
 }
 
+/// Borrowed request lineage for a routine preview. Both the omitted and
+/// explicit `dryRun: true` wire leaves project to this same semantic token.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRoutineUpdatePreviewRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+}
+
+impl ValidatedRoutineUpdatePreviewRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+}
+
+/// Borrowed request lineage for a support-prerequisite arming preview.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedArmPreviewRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+}
+
+impl ValidatedArmPreviewRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+}
+
+/// Borrowed request lineage for a support-prerequisite reconciliation preview.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedPrerequisiteUpdatePreviewRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+    expected_arming_receipt_id: &'a UnicaId,
+    expected_arming_receipt_digest: &'a Sha256Digest,
+}
+
+impl ValidatedPrerequisiteUpdatePreviewRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+
+    pub(crate) const fn expected_arming_receipt_id(&self) -> &UnicaId {
+        self.expected_arming_receipt_id
+    }
+
+    pub(crate) const fn expected_arming_receipt_digest(&self) -> &Sha256Digest {
+        self.expected_arming_receipt_digest
+    }
+}
+
+/// Borrowed request lineage for an awaiting or armed cancellation preview.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedCancellationPreviewRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+    reason: SupportCancellationReason,
+    arming: ValidatedCancellationArming<'a>,
+}
+
+impl ValidatedCancellationPreviewRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+
+    pub(crate) const fn reason(&self) -> SupportCancellationReason {
+        self.reason
+    }
+
+    pub(crate) const fn arming(&self) -> &ValidatedCancellationArming<'_> {
+        &self.arming
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpdatePreviewValidationError {
+    Routine,
+    Arm,
+    Prerequisite,
+    Cancellation,
+}
+
+impl std::fmt::Display for UpdatePreviewValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Routine => "request is not a routine update preview",
+            Self::Arm => "request is not a support arming preview",
+            Self::Prerequisite => "request is not a support-prerequisite update preview",
+            Self::Cancellation => "request is not a support cancellation preview",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for UpdatePreviewValidationError {}
+
+/// Borrowed, non-wire proof that an arming apply approved one exact preview
+/// and still carries the action selectors that preview authorized.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedArmApplyRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+    approved_arming_digest: &'a Sha256Digest,
+}
+
+impl ValidatedArmApplyRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+
+    pub(crate) const fn approved_arming_digest(&self) -> &Sha256Digest {
+        self.approved_arming_digest
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ArmApprovalValidationError {
+    NotArmApply,
+    DigestMismatch(DigestApprovalMismatch),
+}
+
+impl std::fmt::Display for ArmApprovalValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotArmApply => formatter.write_str("request is not a support arming apply"),
+            Self::DigestMismatch(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ArmApprovalValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotArmApply => None,
+            Self::DigestMismatch(error) => Some(error),
+        }
+    }
+}
+
+/// Borrowed, non-wire proof that a routine update apply approved one exact
+/// preview digest. The selectors remain attached to the approval so a result
+/// producer cannot splice an approval into another task or operation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRoutineUpdateApplyRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    approved_update_digest: &'a Sha256Digest,
+}
+
+impl ValidatedRoutineUpdateApplyRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn approved_update_digest(&self) -> &Sha256Digest {
+        self.approved_update_digest
+    }
+}
+
+/// Borrowed, non-wire proof that a support-prerequisite update apply approved
+/// one exact preview while preserving its action and arming lineage.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedPrerequisiteUpdateApplyRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+    expected_arming_receipt_id: &'a UnicaId,
+    expected_arming_receipt_digest: &'a Sha256Digest,
+    approved_update_digest: &'a Sha256Digest,
+}
+
+impl ValidatedPrerequisiteUpdateApplyRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+
+    pub(crate) const fn expected_arming_receipt_id(&self) -> &UnicaId {
+        self.expected_arming_receipt_id
+    }
+
+    pub(crate) const fn expected_arming_receipt_digest(&self) -> &Sha256Digest {
+        self.expected_arming_receipt_digest
+    }
+
+    pub(crate) const fn approved_update_digest(&self) -> &Sha256Digest {
+        self.approved_update_digest
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UpdateApprovalValidationError {
+    NotRoutineApply,
+    NotPrerequisiteApply,
+    DigestMismatch(DigestApprovalMismatch),
+}
+
+impl std::fmt::Display for UpdateApprovalValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRoutineApply => formatter.write_str("request is not a routine update apply"),
+            Self::NotPrerequisiteApply => {
+                formatter.write_str("request is not a support-prerequisite update apply")
+            }
+            Self::DigestMismatch(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for UpdateApprovalValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotRoutineApply | Self::NotPrerequisiteApply => None,
+            Self::DigestMismatch(error) => Some(error),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ValidatedCancellationArming<'a> {
+    Awaiting,
+    Armed {
+        expected_arming_receipt_id: &'a UnicaId,
+        expected_arming_receipt_digest: &'a Sha256Digest,
+    },
+}
+
+/// Borrowed, non-wire proof that an exact cancellation-apply request approved
+/// the immutable preview digest supplied by the coordinator. Keeping all
+/// selectors in one value prevents a later recovery producer from combining
+/// the approval of one operation with another action, arming window, or reason.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedCancellationApplyRequest<'a> {
+    cwd: &'a OriginalProjectCwd,
+    task_id: &'a TaskId,
+    operation_id: &'a OperationId,
+    expected_status_digest: &'a Sha256Digest,
+    support_action_id: &'a UnicaId,
+    expected_support_action_digest: &'a Sha256Digest,
+    reason: SupportCancellationReason,
+    arming: ValidatedCancellationArming<'a>,
+    approved_cancellation_digest: &'a Sha256Digest,
+}
+
+impl ValidatedCancellationApplyRequest<'_> {
+    pub(crate) const fn cwd(&self) -> &OriginalProjectCwd {
+        self.cwd
+    }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        self.task_id
+    }
+
+    pub(crate) const fn operation_id(&self) -> &OperationId {
+        self.operation_id
+    }
+
+    pub(crate) const fn expected_status_digest(&self) -> &Sha256Digest {
+        self.expected_status_digest
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        self.expected_support_action_digest
+    }
+
+    pub(crate) const fn reason(&self) -> SupportCancellationReason {
+        self.reason
+    }
+
+    pub(crate) const fn arming(&self) -> &ValidatedCancellationArming<'_> {
+        &self.arming
+    }
+
+    pub(crate) const fn approved_cancellation_digest(&self) -> &Sha256Digest {
+        self.approved_cancellation_digest
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CancellationApprovalValidationError {
+    NotCancellationApply,
+    DigestMismatch(DigestApprovalMismatch),
+}
+
+impl std::fmt::Display for CancellationApprovalValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCancellationApply => {
+                formatter.write_str("request is not a support cancellation apply")
+            }
+            Self::DigestMismatch(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CancellationApprovalValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotCancellationApply => None,
+            Self::DigestMismatch(error) => Some(error),
+        }
+    }
+}
+
 impl RepositoryUpdateRequest {
     pub(crate) const fn request_variant(&self) -> RepositoryUpdateRequestVariant {
         match self {
@@ -283,6 +731,321 @@ impl RepositoryUpdateRequest {
 
     pub(crate) fn execution_policy_for_json(value: &Value) -> Option<ExecutionPolicy> {
         execution_policy_for_json::<Self>(value, Self::execution_policy)
+    }
+
+    pub(crate) fn validate_routine_update_preview_context(
+        &self,
+    ) -> Result<ValidatedRoutineUpdatePreviewRequest<'_>, UpdatePreviewValidationError> {
+        let (cwd, task_id, operation_id, expected_status_digest) = match self {
+            Self::RoutinePreviewOmitted(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+            ),
+            Self::RoutinePreviewExplicit(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+            ),
+            _ => return Err(UpdatePreviewValidationError::Routine),
+        };
+        Ok(ValidatedRoutineUpdatePreviewRequest {
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+        })
+    }
+
+    pub(crate) fn validate_arm_preview_context(
+        &self,
+    ) -> Result<ValidatedArmPreviewRequest<'_>, UpdatePreviewValidationError> {
+        let Self::ArmPreview(request) = self else {
+            return Err(UpdatePreviewValidationError::Arm);
+        };
+        Ok(ValidatedArmPreviewRequest {
+            cwd: &request.cwd,
+            task_id: &request.task_id,
+            expected_status_digest: &request.expected_status_digest,
+            support_action_id: &request.support_action_id,
+            expected_support_action_digest: &request.expected_support_action_digest,
+        })
+    }
+
+    pub(crate) fn validate_prerequisite_update_preview_context(
+        &self,
+    ) -> Result<ValidatedPrerequisiteUpdatePreviewRequest<'_>, UpdatePreviewValidationError> {
+        let (
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            expected_arming_receipt_id,
+            expected_arming_receipt_digest,
+        ) = match self {
+            Self::PrerequisitePreviewOmitted(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                &request.expected_arming_receipt_id,
+                &request.expected_arming_receipt_digest,
+            ),
+            Self::PrerequisitePreviewExplicit(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                &request.expected_arming_receipt_id,
+                &request.expected_arming_receipt_digest,
+            ),
+            _ => return Err(UpdatePreviewValidationError::Prerequisite),
+        };
+        Ok(ValidatedPrerequisiteUpdatePreviewRequest {
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            expected_arming_receipt_id,
+            expected_arming_receipt_digest,
+        })
+    }
+
+    pub(crate) fn validate_cancellation_preview_context(
+        &self,
+    ) -> Result<ValidatedCancellationPreviewRequest<'_>, UpdatePreviewValidationError> {
+        let (
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            reason,
+            arming,
+        ) = match self {
+            Self::CancellationAwaitingPreviewOmitted(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Awaiting,
+            ),
+            Self::CancellationAwaitingPreviewExplicit(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Awaiting,
+            ),
+            Self::CancellationArmedPreviewOmitted(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Armed {
+                    expected_arming_receipt_id: &request.expected_arming_receipt_id,
+                    expected_arming_receipt_digest: &request.expected_arming_receipt_digest,
+                },
+            ),
+            Self::CancellationArmedPreviewExplicit(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Armed {
+                    expected_arming_receipt_id: &request.expected_arming_receipt_id,
+                    expected_arming_receipt_digest: &request.expected_arming_receipt_digest,
+                },
+            ),
+            _ => return Err(UpdatePreviewValidationError::Cancellation),
+        };
+        Ok(ValidatedCancellationPreviewRequest {
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            reason,
+            arming,
+        })
+    }
+
+    pub(crate) fn validate_arm_approval(
+        &self,
+        expected_arming_digest: &Sha256Digest,
+    ) -> Result<ValidatedArmApplyRequest<'_>, ArmApprovalValidationError> {
+        let Self::ArmApply(request) = self else {
+            return Err(ArmApprovalValidationError::NotArmApply);
+        };
+        if request.approved_arming_digest != *expected_arming_digest {
+            return Err(ArmApprovalValidationError::DigestMismatch(
+                DigestApprovalMismatch {
+                    expected: expected_arming_digest.clone(),
+                    observed: request.approved_arming_digest.clone(),
+                },
+            ));
+        }
+        Ok(ValidatedArmApplyRequest {
+            cwd: &request.cwd,
+            task_id: &request.task_id,
+            operation_id: &request.operation_id,
+            expected_status_digest: &request.expected_status_digest,
+            support_action_id: &request.support_action_id,
+            expected_support_action_digest: &request.expected_support_action_digest,
+            approved_arming_digest: &request.approved_arming_digest,
+        })
+    }
+
+    pub(crate) fn validate_routine_update_approval(
+        &self,
+        expected_update_digest: &Sha256Digest,
+    ) -> Result<ValidatedRoutineUpdateApplyRequest<'_>, UpdateApprovalValidationError> {
+        let Self::RoutineApply(request) = self else {
+            return Err(UpdateApprovalValidationError::NotRoutineApply);
+        };
+        if request.approved_update_digest != *expected_update_digest {
+            return Err(UpdateApprovalValidationError::DigestMismatch(
+                DigestApprovalMismatch {
+                    expected: expected_update_digest.clone(),
+                    observed: request.approved_update_digest.clone(),
+                },
+            ));
+        }
+        Ok(ValidatedRoutineUpdateApplyRequest {
+            cwd: &request.cwd,
+            task_id: &request.task_id,
+            operation_id: &request.operation_id,
+            expected_status_digest: &request.expected_status_digest,
+            approved_update_digest: &request.approved_update_digest,
+        })
+    }
+
+    pub(crate) fn validate_prerequisite_update_approval(
+        &self,
+        expected_update_digest: &Sha256Digest,
+    ) -> Result<ValidatedPrerequisiteUpdateApplyRequest<'_>, UpdateApprovalValidationError> {
+        let Self::PrerequisiteApply(request) = self else {
+            return Err(UpdateApprovalValidationError::NotPrerequisiteApply);
+        };
+        if request.approved_update_digest != *expected_update_digest {
+            return Err(UpdateApprovalValidationError::DigestMismatch(
+                DigestApprovalMismatch {
+                    expected: expected_update_digest.clone(),
+                    observed: request.approved_update_digest.clone(),
+                },
+            ));
+        }
+        Ok(ValidatedPrerequisiteUpdateApplyRequest {
+            cwd: &request.cwd,
+            task_id: &request.task_id,
+            operation_id: &request.operation_id,
+            expected_status_digest: &request.expected_status_digest,
+            support_action_id: &request.support_action_id,
+            expected_support_action_digest: &request.expected_support_action_digest,
+            expected_arming_receipt_id: &request.expected_arming_receipt_id,
+            expected_arming_receipt_digest: &request.expected_arming_receipt_digest,
+            approved_update_digest: &request.approved_update_digest,
+        })
+    }
+
+    pub(crate) fn validate_cancellation_approval(
+        &self,
+        expected_cancellation_digest: &Sha256Digest,
+    ) -> Result<ValidatedCancellationApplyRequest<'_>, CancellationApprovalValidationError> {
+        let (
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            reason,
+            arming,
+            approved_cancellation_digest,
+        ) = match self {
+            Self::CancellationAwaitingApply(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Awaiting,
+                &request.approved_cancellation_digest,
+            ),
+            Self::CancellationArmedApply(request) => (
+                &request.cwd,
+                &request.task_id,
+                &request.operation_id,
+                &request.expected_status_digest,
+                &request.support_action_id,
+                &request.expected_support_action_digest,
+                request.reason,
+                ValidatedCancellationArming::Armed {
+                    expected_arming_receipt_id: &request.expected_arming_receipt_id,
+                    expected_arming_receipt_digest: &request.expected_arming_receipt_digest,
+                },
+                &request.approved_cancellation_digest,
+            ),
+            Self::RoutinePreviewOmitted(_)
+            | Self::RoutinePreviewExplicit(_)
+            | Self::RoutineApply(_)
+            | Self::ArmPreview(_)
+            | Self::ArmApply(_)
+            | Self::PrerequisitePreviewOmitted(_)
+            | Self::PrerequisitePreviewExplicit(_)
+            | Self::PrerequisiteApply(_)
+            | Self::CancellationAwaitingPreviewOmitted(_)
+            | Self::CancellationAwaitingPreviewExplicit(_)
+            | Self::CancellationArmedPreviewOmitted(_)
+            | Self::CancellationArmedPreviewExplicit(_) => {
+                return Err(CancellationApprovalValidationError::NotCancellationApply);
+            }
+        };
+        if approved_cancellation_digest != expected_cancellation_digest {
+            return Err(CancellationApprovalValidationError::DigestMismatch(
+                DigestApprovalMismatch {
+                    expected: expected_cancellation_digest.clone(),
+                    observed: approved_cancellation_digest.clone(),
+                },
+            ));
+        }
+        Ok(ValidatedCancellationApplyRequest {
+            cwd,
+            task_id,
+            operation_id,
+            expected_status_digest,
+            support_action_id,
+            expected_support_action_digest,
+            reason,
+            arming,
+            approved_cancellation_digest,
+        })
     }
 }
 
@@ -465,6 +1228,167 @@ pub(crate) enum RepositoryCommitRequestVariant {
     Apply,
 }
 
+/// Owned, non-wire proof that the exact physical commit request was one of the
+/// two preview leaves. Keeping the original enum preserves omitted versus
+/// explicit `dryRun: true` together with every selector used by the preview.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRepositoryCommitPreviewRequest {
+    request: RepositoryCommitRequest,
+}
+
+/// Owned, non-wire proof that the exact physical commit request was the apply
+/// leaf. Lineage approval happens only when this value is consumed together
+/// with the preview authority.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRepositoryCommitApplyRequest {
+    request: RepositoryCommitRequest,
+}
+
+/// A consuming variant-validation failure. The original wire request remains
+/// owned so callers can report or recover without reconstructing it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryCommitRequestValidationFailure {
+    request: RepositoryCommitRequest,
+    expected: RepositoryCommitRequestVariant,
+}
+
+impl RepositoryCommitRequestValidationFailure {
+    pub(crate) const fn expected(&self) -> RepositoryCommitRequestVariant {
+        self.expected
+    }
+
+    pub(crate) fn into_request(self: Box<Self>) -> RepositoryCommitRequest {
+        self.request
+    }
+}
+
+macro_rules! validated_commit_preview_accessor {
+    ($name:ident, $field:ident, $type:ty) => {
+        pub(crate) fn $name(&self) -> &$type {
+            match &self.request {
+                RepositoryCommitRequest::PreviewOmitted(request) => &request.$field,
+                RepositoryCommitRequest::PreviewExplicit(request) => &request.$field,
+                RepositoryCommitRequest::Apply(_) => {
+                    unreachable!("validated commit preview contains an apply request")
+                }
+            }
+        }
+    };
+}
+
+impl ValidatedRepositoryCommitPreviewRequest {
+    pub(crate) const fn request(&self) -> &RepositoryCommitRequest {
+        &self.request
+    }
+
+    pub(crate) fn into_request(self) -> RepositoryCommitRequest {
+        self.request
+    }
+
+    validated_commit_preview_accessor!(cwd, cwd, OriginalProjectCwd);
+    validated_commit_preview_accessor!(task_id, task_id, TaskId);
+    validated_commit_preview_accessor!(operation_id, operation_id, OperationId);
+    validated_commit_preview_accessor!(integration_set_id, integration_set_id, UnicaId);
+    validated_commit_preview_accessor!(
+        expected_integration_set_digest,
+        expected_integration_set_digest,
+        Sha256Digest
+    );
+    validated_commit_preview_accessor!(lock_set_id, lock_set_id, UnicaId);
+    validated_commit_preview_accessor!(
+        expected_lock_set_digest,
+        expected_lock_set_digest,
+        Sha256Digest
+    );
+    validated_commit_preview_accessor!(verification_id, verification_id, UnicaId);
+    validated_commit_preview_accessor!(
+        expected_verification_digest,
+        expected_verification_digest,
+        Sha256Digest
+    );
+    validated_commit_preview_accessor!(merge_receipt_id, merge_receipt_id, UnicaId);
+    validated_commit_preview_accessor!(support_gate_id, support_gate_id, UnicaId);
+    validated_commit_preview_accessor!(
+        expected_support_gate_digest,
+        expected_support_gate_digest,
+        Sha256Digest
+    );
+    validated_commit_preview_accessor!(
+        expected_support_gate_history_evidence_digest,
+        expected_support_gate_history_evidence_digest,
+        Sha256Digest
+    );
+    validated_commit_preview_accessor!(
+        expected_authorized_post_merge_fingerprint,
+        expected_authorized_post_merge_fingerprint,
+        Sha256Digest
+    );
+}
+
+macro_rules! validated_commit_apply_accessor {
+    ($name:ident, $field:ident, $type:ty) => {
+        pub(crate) fn $name(&self) -> &$type {
+            match &self.request {
+                RepositoryCommitRequest::Apply(request) => &request.$field,
+                RepositoryCommitRequest::PreviewOmitted(_)
+                | RepositoryCommitRequest::PreviewExplicit(_) => {
+                    unreachable!("validated commit apply contains a preview request")
+                }
+            }
+        }
+    };
+}
+
+impl ValidatedRepositoryCommitApplyRequest {
+    pub(crate) const fn request(&self) -> &RepositoryCommitRequest {
+        &self.request
+    }
+
+    pub(crate) fn into_request(self) -> RepositoryCommitRequest {
+        self.request
+    }
+
+    validated_commit_apply_accessor!(cwd, cwd, OriginalProjectCwd);
+    validated_commit_apply_accessor!(task_id, task_id, TaskId);
+    validated_commit_apply_accessor!(operation_id, operation_id, OperationId);
+    validated_commit_apply_accessor!(integration_set_id, integration_set_id, UnicaId);
+    validated_commit_apply_accessor!(
+        expected_integration_set_digest,
+        expected_integration_set_digest,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(lock_set_id, lock_set_id, UnicaId);
+    validated_commit_apply_accessor!(
+        expected_lock_set_digest,
+        expected_lock_set_digest,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(verification_id, verification_id, UnicaId);
+    validated_commit_apply_accessor!(
+        expected_verification_digest,
+        expected_verification_digest,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(merge_receipt_id, merge_receipt_id, UnicaId);
+    validated_commit_apply_accessor!(support_gate_id, support_gate_id, UnicaId);
+    validated_commit_apply_accessor!(
+        expected_support_gate_digest,
+        expected_support_gate_digest,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(
+        expected_support_gate_history_evidence_digest,
+        expected_support_gate_history_evidence_digest,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(
+        expected_authorized_post_merge_fingerprint,
+        expected_authorized_post_merge_fingerprint,
+        Sha256Digest
+    );
+    validated_commit_apply_accessor!(approved_commit_digest, approved_commit_digest, Sha256Digest);
+}
+
 impl RepositoryCommitRequest {
     pub(crate) const fn request_variant(&self) -> RepositoryCommitRequestVariant {
         match self {
@@ -481,6 +1405,34 @@ impl RepositoryCommitRequest {
 
     pub(crate) fn execution_policy_for_json(value: &Value) -> Option<ExecutionPolicy> {
         execution_policy_for_json::<Self>(value, Self::execution_policy)
+    }
+
+    pub(crate) fn into_validated_preview(
+        self,
+    ) -> Result<
+        ValidatedRepositoryCommitPreviewRequest,
+        Box<RepositoryCommitRequestValidationFailure>,
+    > {
+        if self.request_variant() != RepositoryCommitRequestVariant::Preview {
+            return Err(Box::new(RepositoryCommitRequestValidationFailure {
+                request: self,
+                expected: RepositoryCommitRequestVariant::Preview,
+            }));
+        }
+        Ok(ValidatedRepositoryCommitPreviewRequest { request: self })
+    }
+
+    pub(crate) fn into_validated_apply(
+        self,
+    ) -> Result<ValidatedRepositoryCommitApplyRequest, Box<RepositoryCommitRequestValidationFailure>>
+    {
+        if self.request_variant() != RepositoryCommitRequestVariant::Apply {
+            return Err(Box::new(RepositoryCommitRequestValidationFailure {
+                request: self,
+                expected: RepositoryCommitRequestVariant::Apply,
+            }));
+        }
+        Ok(ValidatedRepositoryCommitApplyRequest { request: self })
     }
 }
 
@@ -561,12 +1513,13 @@ impl RepositoryRecoverRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepositoryCommitRequest, RepositoryCommitRequestVariant, RepositoryLockRequest,
-        RepositoryLockRequestVariant, RepositoryPlanLocksRequest,
-        RepositoryPlanLocksRequestVariant, RepositoryRecoverRequest,
+        RepositoryCommitRequest, RepositoryCommitRequestValidationFailure,
+        RepositoryCommitRequestVariant, RepositoryLockRequest, RepositoryLockRequestVariant,
+        RepositoryPlanLocksRequest, RepositoryPlanLocksRequestVariant, RepositoryRecoverRequest,
         RepositoryRecoverRequestVariant, RepositoryStatusRequest, RepositoryStatusRequestVariant,
         RepositoryUnlockRequest, RepositoryUnlockRequestVariant, RepositoryUpdateRequest,
-        RepositoryUpdateRequestVariant,
+        RepositoryUpdateRequestVariant, ValidatedRepositoryCommitApplyRequest,
+        ValidatedRepositoryCommitPreviewRequest,
     };
     use crate::domain::branched_development::contracts::schema::{
         audit_json_schema, is_i_json_lf_text, is_i_json_single_line_text,
@@ -585,6 +1538,74 @@ mod tests {
     const OTHER_ID: &str = "323e4567-e89b-12d3-a456-426614174000";
     const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    macro_rules! assert_not_clone {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfClone<Marker> {
+                    fn assert_not_clone() {}
+                }
+                struct ImplementsClone;
+                impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+                impl<T: Clone> AmbiguousIfClone<ImplementsClone> for T {}
+                let _ = <$type as AmbiguousIfClone<_>>::assert_not_clone;
+            };
+        };
+    }
+
+    macro_rules! assert_not_serialize {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfSerialize<Marker> {
+                    fn assert_not_serialize() {}
+                }
+                struct ImplementsSerialize;
+                impl<T: ?Sized> AmbiguousIfSerialize<()> for T {}
+                impl<T: ?Sized + serde::Serialize> AmbiguousIfSerialize<ImplementsSerialize> for T {}
+                let _ = <$type as AmbiguousIfSerialize<_>>::assert_not_serialize;
+            };
+        };
+    }
+
+    macro_rules! assert_not_deserialize_owned {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfDeserialize<Marker> {
+                    fn assert_not_deserialize() {}
+                }
+                struct ImplementsDeserialize;
+                impl<T: ?Sized> AmbiguousIfDeserialize<()> for T {}
+                impl<T: serde::de::DeserializeOwned> AmbiguousIfDeserialize<ImplementsDeserialize>
+                    for T
+                {
+                }
+                let _ = <$type as AmbiguousIfDeserialize<_>>::assert_not_deserialize;
+            };
+        };
+    }
+
+    assert_not_clone!(ValidatedRepositoryCommitPreviewRequest);
+    assert_not_clone!(ValidatedRepositoryCommitApplyRequest);
+    assert_not_clone!(RepositoryCommitRequestValidationFailure);
+    assert_not_serialize!(ValidatedRepositoryCommitPreviewRequest);
+    assert_not_serialize!(ValidatedRepositoryCommitApplyRequest);
+    assert_not_serialize!(RepositoryCommitRequestValidationFailure);
+    assert_not_deserialize_owned!(ValidatedRepositoryCommitPreviewRequest);
+    assert_not_deserialize_owned!(ValidatedRepositoryCommitApplyRequest);
+    assert_not_deserialize_owned!(RepositoryCommitRequestValidationFailure);
+
+    const _: fn(
+        RepositoryCommitRequest,
+    ) -> Result<
+        ValidatedRepositoryCommitPreviewRequest,
+        Box<RepositoryCommitRequestValidationFailure>,
+    > = RepositoryCommitRequest::into_validated_preview;
+    const _: fn(
+        RepositoryCommitRequest,
+    ) -> Result<
+        ValidatedRepositoryCommitApplyRequest,
+        Box<RepositoryCommitRequestValidationFailure>,
+    > = RepositoryCommitRequest::into_validated_apply;
 
     fn task() -> Value {
         json!({ "cwd": CWD, "taskId": TASK_ID })
@@ -945,6 +1966,225 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_apply_approval_seals_exact_request_lineage_and_rejects_splices() {
+        let approved_digest = Sha256Digest::parse(DIGEST).unwrap();
+        let other_digest = Sha256Digest::parse(OTHER_DIGEST).unwrap();
+
+        let awaiting = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(cancellation_base(false), "approvedCancellationDigest")[2].clone(),
+        );
+        let awaiting = awaiting
+            .validate_cancellation_approval(&approved_digest)
+            .unwrap();
+        assert_eq!(awaiting.approved_cancellation_digest(), &approved_digest);
+        assert_eq!(
+            serde_json::to_value(awaiting.operation_id()).unwrap(),
+            json!(OPERATION_ID)
+        );
+        assert_eq!(
+            serde_json::to_value(awaiting.support_action_id()).unwrap(),
+            json!(ID)
+        );
+        assert_eq!(awaiting.expected_support_action_digest(), &other_digest);
+        assert_eq!(
+            awaiting.reason(),
+            super::SupportCancellationReason::OperatorCancelled
+        );
+        assert!(matches!(
+            awaiting.arming(),
+            super::ValidatedCancellationArming::Awaiting
+        ));
+
+        let armed = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(cancellation_base(true), "approvedCancellationDigest")[2].clone(),
+        );
+        let armed = armed
+            .validate_cancellation_approval(&approved_digest)
+            .unwrap();
+        let super::ValidatedCancellationArming::Armed {
+            expected_arming_receipt_id,
+            expected_arming_receipt_digest,
+        } = armed.arming()
+        else {
+            panic!("armed cancellation apply lost its arming pair");
+        };
+        assert_eq!(
+            serde_json::to_value(expected_arming_receipt_id).unwrap(),
+            json!(OTHER_ID)
+        );
+        assert_eq!(*expected_arming_receipt_digest, &approved_digest);
+
+        let mismatched = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(cancellation_base(false), "approvedCancellationDigest")[2].clone(),
+        );
+        assert!(matches!(
+            mismatched.validate_cancellation_approval(&other_digest),
+            Err(super::CancellationApprovalValidationError::DigestMismatch(
+                _
+            ))
+        ));
+
+        let preview = assert_accept::<RepositoryUpdateRequest>(cancellation_base(false));
+        assert!(matches!(
+            preview.validate_cancellation_approval(&approved_digest),
+            Err(super::CancellationApprovalValidationError::NotCancellationApply)
+        ));
+    }
+
+    #[test]
+    fn update_apply_approvals_seal_routine_and_prerequisite_lineage() {
+        let approved_digest = Sha256Digest::parse(DIGEST).unwrap();
+        let other_digest = Sha256Digest::parse(OTHER_DIGEST).unwrap();
+
+        let routine = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(routine_base(), "approvedUpdateDigest")[2].clone(),
+        );
+        let routine = routine
+            .validate_routine_update_approval(&approved_digest)
+            .unwrap();
+        assert_eq!(routine.approved_update_digest(), &approved_digest);
+        assert_eq!(
+            serde_json::to_value(routine.operation_id()).unwrap(),
+            json!(OPERATION_ID)
+        );
+        assert_eq!(routine.expected_status_digest(), &approved_digest);
+
+        let prerequisite = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(prerequisite_base(), "approvedUpdateDigest")[2].clone(),
+        );
+        let prerequisite = prerequisite
+            .validate_prerequisite_update_approval(&approved_digest)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(prerequisite.support_action_id()).unwrap(),
+            json!(ID)
+        );
+        assert_eq!(prerequisite.expected_support_action_digest(), &other_digest);
+        assert_eq!(
+            serde_json::to_value(prerequisite.expected_arming_receipt_id()).unwrap(),
+            json!(OTHER_ID)
+        );
+        assert_eq!(
+            prerequisite.expected_arming_receipt_digest(),
+            &approved_digest
+        );
+
+        let mismatch = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(routine_base(), "approvedUpdateDigest")[2].clone(),
+        );
+        assert!(matches!(
+            mismatch.validate_routine_update_approval(&other_digest),
+            Err(super::UpdateApprovalValidationError::DigestMismatch(_))
+        ));
+        assert!(matches!(
+            mismatch.validate_prerequisite_update_approval(&approved_digest),
+            Err(super::UpdateApprovalValidationError::NotPrerequisiteApply)
+        ));
+
+        let preview = assert_accept::<RepositoryUpdateRequest>(routine_base());
+        assert!(matches!(
+            preview.validate_routine_update_approval(&approved_digest),
+            Err(super::UpdateApprovalValidationError::NotRoutineApply)
+        ));
+    }
+
+    #[test]
+    fn arm_apply_approval_seals_exact_action_lineage() {
+        let approved_digest = Sha256Digest::parse(DIGEST).unwrap();
+        let other_digest = Sha256Digest::parse(OTHER_DIGEST).unwrap();
+
+        let apply = assert_accept::<RepositoryUpdateRequest>(arm_apply());
+        let validated = apply.validate_arm_approval(&approved_digest).unwrap();
+        assert_eq!(validated.approved_arming_digest(), &approved_digest);
+        assert_eq!(validated.expected_status_digest(), &approved_digest);
+        assert_eq!(
+            serde_json::to_value(validated.operation_id()).unwrap(),
+            json!(OPERATION_ID)
+        );
+        assert_eq!(
+            serde_json::to_value(validated.support_action_id()).unwrap(),
+            json!(ID)
+        );
+        assert_eq!(validated.expected_support_action_digest(), &other_digest);
+
+        let mismatch = assert_accept::<RepositoryUpdateRequest>(arm_apply());
+        assert!(matches!(
+            mismatch.validate_arm_approval(&other_digest),
+            Err(super::ArmApprovalValidationError::DigestMismatch(_))
+        ));
+
+        let preview = assert_accept::<RepositoryUpdateRequest>(arm_preview());
+        assert!(matches!(
+            preview.validate_arm_approval(&approved_digest),
+            Err(super::ArmApprovalValidationError::NotArmApply)
+        ));
+    }
+
+    #[test]
+    fn update_preview_contexts_seal_exact_request_lineage() {
+        let status_digest = Sha256Digest::parse(DIGEST).unwrap();
+        let action_digest = Sha256Digest::parse(OTHER_DIGEST).unwrap();
+
+        for value in &preview_leaves(routine_base(), "approvedUpdateDigest")[..2] {
+            let request = assert_accept::<RepositoryUpdateRequest>(value.clone());
+            let context = request.validate_routine_update_preview_context().unwrap();
+            assert_eq!(context.expected_status_digest(), &status_digest);
+            assert_eq!(
+                serde_json::to_value(context.operation_id()).unwrap(),
+                json!(OPERATION_ID)
+            );
+        }
+
+        let prerequisite = assert_accept::<RepositoryUpdateRequest>(
+            preview_leaves(prerequisite_base(), "approvedUpdateDigest")[0].clone(),
+        );
+        let prerequisite = prerequisite
+            .validate_prerequisite_update_preview_context()
+            .unwrap();
+        assert_eq!(
+            prerequisite.expected_support_action_digest(),
+            &action_digest
+        );
+        assert_eq!(
+            serde_json::to_value(prerequisite.expected_arming_receipt_id()).unwrap(),
+            json!(OTHER_ID)
+        );
+
+        let arm = assert_accept::<RepositoryUpdateRequest>(arm_preview());
+        let arm = arm.validate_arm_preview_context().unwrap();
+        assert_eq!(arm.expected_status_digest(), &status_digest);
+        assert_eq!(arm.expected_support_action_digest(), &action_digest);
+
+        let awaiting = assert_accept::<RepositoryUpdateRequest>(cancellation_base(false));
+        let awaiting = awaiting.validate_cancellation_preview_context().unwrap();
+        assert_eq!(
+            awaiting.reason(),
+            super::SupportCancellationReason::OperatorCancelled
+        );
+        assert!(matches!(
+            awaiting.arming(),
+            super::ValidatedCancellationArming::Awaiting
+        ));
+
+        let armed = assert_accept::<RepositoryUpdateRequest>(cancellation_base(true));
+        let armed = armed.validate_cancellation_preview_context().unwrap();
+        assert!(matches!(
+            armed.arming(),
+            super::ValidatedCancellationArming::Armed { .. }
+        ));
+
+        let apply = assert_accept::<RepositoryUpdateRequest>(arm_apply());
+        assert!(matches!(
+            apply.validate_arm_preview_context(),
+            Err(super::UpdatePreviewValidationError::Arm)
+        ));
+        assert!(matches!(
+            apply.validate_cancellation_preview_context(),
+            Err(super::UpdatePreviewValidationError::Cancellation)
+        ));
+    }
+
+    #[test]
     fn every_physical_leaf_repeats_its_common_selectors_and_no_other_leaf_gets_stage() {
         for value in [task(), arm_preview()] {
             for field in ["cwd", "taskId"] {
@@ -1191,6 +2431,113 @@ mod tests {
             assert_reject::<RepositoryCommitRequest>(invalid.clone());
             assert!(RepositoryCommitRequest::execution_policy_for_json(&invalid).is_none());
         }
+    }
+
+    #[test]
+    fn commit_request_validation_consumes_and_retains_the_exact_wire_leaf() {
+        let leaves = preview_leaves(commit_base(), "approvedCommitDigest");
+
+        for preview_wire in &leaves[..2] {
+            let validated = assert_accept::<RepositoryCommitRequest>(preview_wire.clone())
+                .into_validated_preview()
+                .unwrap();
+            assert_eq!(serde_json::to_value(validated.cwd()).unwrap(), json!(CWD));
+            assert_eq!(
+                serde_json::to_value(validated.task_id()).unwrap(),
+                json!(TASK_ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.operation_id()).unwrap(),
+                json!(OPERATION_ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.integration_set_id()).unwrap(),
+                json!(ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_integration_set_digest()).unwrap(),
+                json!(DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.lock_set_id()).unwrap(),
+                json!(OTHER_ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_lock_set_digest()).unwrap(),
+                json!(OTHER_DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.verification_id()).unwrap(),
+                json!(ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_verification_digest()).unwrap(),
+                json!(DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.merge_receipt_id()).unwrap(),
+                json!(OTHER_ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.support_gate_id()).unwrap(),
+                json!(ID)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_support_gate_digest()).unwrap(),
+                json!(OTHER_DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_support_gate_history_evidence_digest())
+                    .unwrap(),
+                json!(DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.expected_authorized_post_merge_fingerprint())
+                    .unwrap(),
+                json!(OTHER_DIGEST)
+            );
+            assert_eq!(
+                serde_json::to_value(validated.into_request()).unwrap(),
+                *preview_wire
+            );
+        }
+
+        let apply_wire = leaves[2].clone();
+        let validated = assert_accept::<RepositoryCommitRequest>(apply_wire.clone())
+            .into_validated_apply()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(validated.approved_commit_digest()).unwrap(),
+            json!(DIGEST)
+        );
+        assert_eq!(
+            serde_json::to_value(validated.into_request()).unwrap(),
+            apply_wire
+        );
+    }
+
+    #[test]
+    fn commit_request_wrong_variant_failure_retains_the_consumed_request() {
+        let leaves = preview_leaves(commit_base(), "approvedCommitDigest");
+        let preview_wire = leaves[0].clone();
+        let blocked = assert_accept::<RepositoryCommitRequest>(preview_wire.clone())
+            .into_validated_apply()
+            .unwrap_err();
+        assert_eq!(blocked.expected(), RepositoryCommitRequestVariant::Apply);
+        assert_eq!(
+            serde_json::to_value(blocked.into_request()).unwrap(),
+            preview_wire
+        );
+
+        let apply_wire = leaves[2].clone();
+        let blocked = assert_accept::<RepositoryCommitRequest>(apply_wire.clone())
+            .into_validated_preview()
+            .unwrap_err();
+        assert_eq!(blocked.expected(), RepositoryCommitRequestVariant::Preview);
+        assert_eq!(
+            serde_json::to_value(blocked.into_request()).unwrap(),
+            apply_wire
+        );
     }
 
     fn recover_apply() -> Value {

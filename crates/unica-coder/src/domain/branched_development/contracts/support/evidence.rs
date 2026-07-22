@@ -982,6 +982,24 @@ impl SupportRootLockProof {
             observation_digest,
         })
     }
+
+    pub(crate) const fn guard_receipt_id(&self) -> &UnicaId {
+        &self.guard_receipt_id
+    }
+
+    pub(crate) const fn root_guard_release_receipt_id(&self) -> &UnicaId {
+        &self.root_guard_release_receipt_id
+    }
+
+    pub(crate) const fn authorization_outcome(&self) -> SupportAuthorizationOutcome {
+        self.authorization_outcome
+    }
+
+    pub(crate) const fn reserved_original_terminalization_proof_digest(
+        &self,
+    ) -> Option<&Sha256Digest> {
+        self.reserved_original_terminalization_proof_digest.as_ref()
+    }
 }
 
 impl<'de> Deserialize<'de> for SupportRootLockProof {
@@ -1321,6 +1339,14 @@ impl ReservedOriginalTerminalizationProof {
 
     pub(crate) const fn expected_repository_fingerprint(&self) -> &Sha256Digest {
         &self.expected_repository_fingerprint
+    }
+
+    pub(crate) const fn exclusive_lease_receipt_id(&self) -> &UnicaId {
+        &self.exclusive_lease_receipt_id
+    }
+
+    pub(crate) const fn exclusive_lease_release_receipt_id(&self) -> &UnicaId {
+        &self.exclusive_lease_release_receipt_id
     }
 }
 

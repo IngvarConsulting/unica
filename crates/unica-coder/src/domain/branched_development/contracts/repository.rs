@@ -3,11 +3,13 @@ use super::instructions::{
     decode_historical_support_conflict_instruction, SupportConflictInstruction,
     SupportCorrectiveInstruction,
 };
+use super::results::repository::ValidatedCommitObjectAuthority;
 use super::scalars::{
     NormalizedUtcInstant, RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername,
     RepositoryVersion, RequiredNullable,
 };
 use super::schema::{audit_json_schema, one_of_schema};
+use super::status::CurrentDeferredRepositoryAdvanceAuthority;
 use super::support::{
     ExternalSupportOwnershipEvidence, SupportHistoryOrderAuthority,
     SupportObservationCorrectiveProjection, SupportPrerequisiteVersionObservation,
@@ -17,19 +19,21 @@ use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
 use crate::domain::branched_development::{
-    CapabilityRowId, MetadataObjectId, Sha256Digest, UnicaId,
+    CapabilityRowId, MetadataObjectId, Sha256Digest, TaskPhase, UnicaId,
 };
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 pub(crate) mod lifecycle;
 pub(crate) mod update;
 
+#[cfg(test)]
+pub(crate) use lifecycle::empty_commit_history_evidence_fixture_test_only;
 #[allow(unused_imports)]
 pub(crate) use lifecycle::{
     ClassifiedDeferredRepositoryAdvance, CoverageUnknownDeferredRepositoryAdvance,
@@ -37,17 +41,20 @@ pub(crate) use lifecycle::{
     DeferredRepositoryAdvanceClassificationAuthority, DeferredRepositoryAdvanceConsumptionReceipt,
     DeferredRepositoryAdvanceMissingEvidenceAuthority, OriginalCleanRefreshProof,
     OriginalCleanRefreshScanAuthority, PostMergeHistoryGuardAuthority,
-    PostMergeHistoryGuardEvidence, SupportGateHistoryEvidence,
+    PostMergeHistoryGuardEvidence, RoutineUpdatePhaseAuthority, SupportGateHistoryEvidence,
     SupportGateRelevantBaselineAuthority, UnclassifiedDeferredRepositoryAdvance,
     UnvalidatedDeferredRepositoryAdvance, UnvalidatedOriginalCleanRefreshProof,
 };
 #[allow(unused_imports)]
 pub(crate) use update::{
+    RoutineSelectiveRepositoryUpdateCapabilityToken, RoutineSelectiveRepositoryUpdatePlanAuthority,
     SelectiveRepositoryUpdateExecutionAuthority, SelectiveRepositoryUpdatePlan,
     SelectiveRepositoryUpdatePlanAuthority, SelectiveRepositoryUpdateProof,
     SelectiveRepositoryUpdateScope, SupportRecoverySelectiveUpdateEffectObservation,
     SupportRecoverySelectiveUpdateExecutionObservation,
     SupportRecoverySelectiveUpdatePlanObservation,
+    SupportRootSelectiveRepositoryUpdateCapabilityToken,
+    SupportRootSelectiveRepositoryUpdatePlanAuthority,
 };
 
 const CANONICAL_EMPTY_DELTA_DIGEST: &str =
@@ -286,6 +293,23 @@ impl RepositoryAnchor {
         })
     }
 
+    /// Internal constructor used only behind request-bound repository adapter
+    /// scopes. Adapter-facing code must expose a scoped request method instead
+    /// of accepting a freely assembled anchor.
+    pub(super) fn from_guarded_observation(
+        repository_identity: Sha256Digest,
+        history_cursor: RepositoryHistoryCursor,
+        configuration_identity: ConfigurationIdentity,
+        configuration_fingerprint: Sha256Digest,
+    ) -> Result<Self, RepositoryContractError> {
+        Self::from_observation(RepositoryAnchorObservationAuthority {
+            repository_identity,
+            history_cursor,
+            configuration_identity,
+            configuration_fingerprint,
+        })
+    }
+
     pub(crate) const fn repository_identity(&self) -> &Sha256Digest {
         &self.repository_identity
     }
@@ -341,6 +365,20 @@ pub(crate) struct RepositoryOwnerIdentity {
     infobase: RequiredNullable<RepositoryIdentityComponent>,
     #[serde(deserialize_with = "RequiredNullable::deserialize_required")]
     locked_at: RequiredNullable<NormalizedUtcInstant>,
+}
+
+impl RepositoryOwnerIdentity {
+    pub(crate) const fn username(&self) -> &RepositoryUsername {
+        &self.username
+    }
+
+    pub(crate) const fn computer(&self) -> Option<&RepositoryIdentityComponent> {
+        self.computer.as_ref()
+    }
+
+    pub(crate) const fn infobase(&self) -> Option<&RepositoryIdentityComponent> {
+        self.infobase.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2168,6 +2206,14 @@ impl RepositoryHistoryPartitionEntry {
             Self::TaskCommit(_) => RepositoryHistoryPartitionClassification::TaskCommit,
         }
     }
+
+    fn semantic_delta_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::EvidenceBacked(value) => &value.semantic_delta_digest,
+            Self::NonConflicting(value) => &value.semantic_delta_digest,
+            Self::TaskCommit(value) => &value.semantic_delta_digest,
+        }
+    }
 }
 
 impl JsonSchema for RepositoryHistoryPartitionEntry {
@@ -2391,6 +2437,129 @@ impl ValidatedSupportObservationHistoryEntry {
     }
 }
 
+/// Capability-backed exact observation projection for a support-prerequisite
+/// history range. Every supplied observation must be the content-addressed
+/// source that the validated partition resolver bound to that same ordered
+/// entry; version-only or lexical reconstruction is impossible.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedSupportPrerequisiteHistoryProjection {
+    partition: ValidatedRepositoryHistoryPartition,
+    observations: Vec<SupportPrerequisiteVersionObservation>,
+    authorized_index: usize,
+}
+
+impl ValidatedSupportPrerequisiteHistoryProjection {
+    pub(crate) fn from_validated_partition(
+        partition: ValidatedRepositoryHistoryPartition,
+        observations: Vec<SupportPrerequisiteVersionObservation>,
+    ) -> Result<Self, RepositoryContractError> {
+        if observations.len() != partition.entry_count() {
+            return Err(RepositoryContractError(
+                "support-prerequisite observations do not cover the exact history range",
+            ));
+        }
+        let mut authorized_index = None;
+        for (index, (entry, observation)) in partition
+            .support_recovery_entries()
+            .zip(observations.iter())
+            .enumerate()
+        {
+            let projection =
+                observation
+                    .task8_mapping_projection()
+                    .ok_or(RepositoryContractError(
+                        "support-prerequisite history contains a non-Task8 observation",
+                    ))?;
+            let ValidatedSupportRecoveryHistoryEntryRef::SupportObservation {
+                repository_version,
+                partition_classification,
+                source_evidence_digest,
+                ..
+            } = entry
+            else {
+                return Err(RepositoryContractError(
+                    "support-prerequisite entry lacks its validated observation source",
+                ));
+            };
+            if repository_version != observation.repository_version()
+                || partition_classification != projection.partition_classification()
+                || source_evidence_digest != observation.classification_digest()
+            {
+                return Err(RepositoryContractError(
+                    "support-prerequisite observation differs from its exact partition source",
+                ));
+            }
+            if partition_classification
+                == RepositoryHistoryPartitionClassification::AuthorizedSupport
+                && authorized_index.replace(index).is_some()
+            {
+                return Err(RepositoryContractError(
+                    "support-prerequisite history contains more than one authorized entry",
+                ));
+            }
+            if !matches!(
+                partition_classification,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                    | RepositoryHistoryPartitionClassification::RelevantRoutine
+                    | RepositoryHistoryPartitionClassification::AuthorizedSupport
+                    | RepositoryHistoryPartitionClassification::ExternalSupport
+            ) {
+                return Err(RepositoryContractError(
+                    "support-prerequisite history contains an inadmissible classification",
+                ));
+            }
+        }
+        Ok(Self {
+            partition,
+            observations,
+            authorized_index: authorized_index.ok_or(RepositoryContractError(
+                "support-prerequisite history lacks its authorized entry",
+            ))?,
+        })
+    }
+
+    pub(crate) const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.partition
+    }
+
+    pub(crate) fn observations(&self) -> &[SupportPrerequisiteVersionObservation] {
+        &self.observations
+    }
+
+    pub(crate) fn authorized_observation(&self) -> &SupportPrerequisiteVersionObservation {
+        &self.observations[self.authorized_index]
+    }
+
+    pub(crate) fn final_root_repository_version(&self) -> &RepositoryVersion {
+        self.observations
+            .iter()
+            .rev()
+            .find(|observation| {
+                observation
+                    .task8_mapping_projection()
+                    .is_some_and(|projection| {
+                        matches!(
+                            projection.partition_classification(),
+                            RepositoryHistoryPartitionClassification::AuthorizedSupport
+                                | RepositoryHistoryPartitionClassification::ExternalSupport
+                        )
+                    })
+            })
+            .expect("validated prerequisite history has an authorized root entry")
+            .repository_version()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ValidatedRepositoryHistoryPartition,
+        Vec<SupportPrerequisiteVersionObservation>,
+        usize,
+    ) {
+        (self.partition, self.observations, self.authorized_index)
+    }
+}
+
 fn load_history_evidence(
     reference: &RepositoryHistorySourceEvidenceRef,
     resolver: &dyn RepositoryHistoryEvidenceBytesResolver,
@@ -2498,8 +2667,60 @@ fn load_support_conflict_instruction(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedRepositoryHistoryPartition {
     wire: UnvalidatedRepositoryHistoryPartition,
-    source_index_proofs: Vec<EvidenceSourceIndexProof>,
+    // The sole taskCommit constructor has no source-index row for its one
+    // commit-owned entry. Every other slot remains aligned with an exact
+    // authoritative source-index proof.
+    source_index_proofs: Vec<Option<EvidenceSourceIndexProof>>,
     order_evidence: Option<RepositoryHistoryOrderEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValidatedRepositoryHistoryEntryRef<'a> {
+    repository_version: &'a RepositoryVersion,
+    classification: RepositoryHistoryPartitionClassification,
+    semantic_delta_digest: &'a Sha256Digest,
+}
+
+impl<'a> ValidatedRepositoryHistoryEntryRef<'a> {
+    pub(crate) const fn repository_version(&self) -> &'a RepositoryVersion {
+        self.repository_version
+    }
+
+    pub(crate) const fn classification(&self) -> RepositoryHistoryPartitionClassification {
+        self.classification
+    }
+
+    pub(crate) const fn semantic_delta_digest(&self) -> &'a Sha256Digest {
+        self.semantic_delta_digest
+    }
+}
+
+/// Commit-owned partition plus the exact authority lineage that validated its
+/// otherwise source-less taskCommit entry. Deliberately non-`Clone` and
+/// non-wire so a generic partition cannot be substituted at completion.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedTaskCommitHistoryPartition {
+    partition: ValidatedRepositoryHistoryPartition,
+    repository_version: RepositoryVersion,
+    committed_objects_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+impl ValidatedTaskCommitHistoryPartition {
+    pub(crate) const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.partition
+    }
+
+    pub(crate) fn binds(&self, commit: &ValidatedCommitObjectAuthority) -> bool {
+        &self.repository_version == commit.repository_version()
+            && &self.committed_objects_digest == commit.committed_objects_digest()
+            && &self.atomic_commit_safety_capability_id
+                == commit.atomic_commit_safety_capability_id()
+    }
+
+    pub(crate) fn into_partition(self) -> ValidatedRepositoryHistoryPartition {
+        self.partition
+    }
 }
 
 impl Serialize for ValidatedRepositoryHistoryPartition {
@@ -2548,6 +2769,24 @@ impl ValidatedRepositoryHistoryPartition {
         self.wire.entries.0.len()
     }
 
+    pub(crate) fn entries(
+        &self,
+    ) -> impl Iterator<Item = ValidatedRepositoryHistoryEntryRef<'_>> + '_ {
+        self.wire
+            .entries
+            .0
+            .iter()
+            .map(|entry| ValidatedRepositoryHistoryEntryRef {
+                repository_version: entry.repository_version(),
+                classification: entry.classification(),
+                semantic_delta_digest: entry.semantic_delta_digest(),
+            })
+    }
+
+    pub(crate) fn first_entry(&self) -> Option<ValidatedRepositoryHistoryEntryRef<'_>> {
+        self.entries().next()
+    }
+
     pub(crate) fn support_recovery_entries(
         &self,
     ) -> impl Iterator<Item = ValidatedSupportRecoveryHistoryEntryRef<'_>> + '_ {
@@ -2560,6 +2799,7 @@ impl ValidatedRepositoryHistoryPartition {
                 RepositoryHistoryPartitionEntry::EvidenceBacked(value) => self
                     .source_index_proofs
                     .get(index)
+                    .and_then(Option::as_ref)
                     .and_then(|proof| proof.validated_support_mapping.as_ref())
                     .map_or_else(
                         || ValidatedSupportRecoveryHistoryEntryRef::Unsupported {
@@ -2606,6 +2846,26 @@ impl ValidatedRepositoryHistoryPartition {
                 .starts_with(prefix.wire.entries.0.as_slice())
     }
 
+    /// Compares the validated wire projection while deliberately ignoring the
+    /// identity of independently acquired hidden order/source proofs.
+    pub(crate) fn is_semantically_exact(&self, other: &Self) -> bool {
+        self.wire == other.wire
+    }
+
+    /// A strict exact-prefix extension whose appended entries are all routine
+    /// and unrelated. No repository-version lexical ordering is inferred here;
+    /// ordering comes exclusively from the validated partition evidence.
+    pub(crate) fn is_strict_unrelated_extension_of(&self, prefix: &Self) -> bool {
+        self.entry_count() > prefix.entry_count()
+            && self.has_exact_entry_prefix(prefix)
+            && self
+                .classifications()
+                .skip(prefix.entry_count())
+                .all(|classification| {
+                    classification == RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                })
+    }
+
     pub(crate) fn contains_repository_version(&self, version: &RepositoryVersion) -> bool {
         version == self.start_cursor().through_version()
             || self
@@ -2614,6 +2874,17 @@ impl ValidatedRepositoryHistoryPartition {
                 .0
                 .iter()
                 .any(|entry| entry.repository_version() == version)
+    }
+
+    /// Iterates only repository versions represented by partition entries.
+    /// The `fromExclusive` cursor is deliberately excluded: it is an ordering
+    /// anchor, not an observed history entry.
+    pub(crate) fn entry_versions(&self) -> impl Iterator<Item = &RepositoryVersion> {
+        self.wire
+            .entries
+            .0
+            .iter()
+            .map(RepositoryHistoryPartitionEntry::repository_version)
     }
 
     pub(crate) fn all_entries_are_one_of(
@@ -2696,7 +2967,11 @@ impl ValidatedRepositoryHistoryPartition {
                 ));
             }
         };
-        let index_proof = &self.source_index_proofs[0];
+        let index_proof = self.source_index_proofs[0]
+            .as_ref()
+            .ok_or(RepositoryContractError(
+                "immediate successor lacks its source-index proof",
+            ))?;
         let validated =
             index_proof
                 .validated_support_mapping
@@ -2755,6 +3030,145 @@ impl ValidatedRepositoryHistoryPartition {
             source_index_proof_digest: validated.source_index_proof_digest.clone(),
         })
     }
+}
+
+#[cfg(test)]
+pub(crate) fn repository_history_partition_fixture_test_only(
+    from_exclusive: RepositoryHistoryCursor,
+    entries: Vec<(RepositoryVersion, RepositoryHistoryPartitionClassification)>,
+    order_capability_id: &str,
+    atomic_commit_safety_capability_id: &str,
+) -> Result<ValidatedRepositoryHistoryPartition, RepositoryContractError> {
+    let mut ordered_cursors = Vec::with_capacity(entries.len());
+    let mut wire_entries = Vec::with_capacity(entries.len());
+    for (index, (repository_version, classification)) in entries.into_iter().enumerate() {
+        let cursor_character = char::from_digit(((index + 1) % 15 + 1) as u32, 16)
+            .expect("fixture cursor digit must be hexadecimal");
+        let semantic_character = char::from_digit(((index + 6) % 15 + 1) as u32, 16)
+            .expect("fixture semantic digit must be hexadecimal");
+        let evidence_character = char::from_digit(((index + 10) % 15 + 1) as u32, 16)
+            .expect("fixture evidence digit must be hexadecimal");
+        let cursor = RepositoryHistoryCursor::new(
+            repository_version.clone(),
+            Sha256Digest::parse(&cursor_character.to_string().repeat(64))
+                .expect("fixture cursor digest must be valid"),
+        );
+        let semantic_delta_digest = Sha256Digest::parse(&semantic_character.to_string().repeat(64))
+            .expect("fixture semantic digest must be valid");
+        let evidence_digest = evidence_character.to_string().repeat(64);
+        let entry = match classification {
+            RepositoryHistoryPartitionClassification::UnrelatedRoutine
+            | RepositoryHistoryPartitionClassification::RelevantRoutine
+            | RepositoryHistoryPartitionClassification::AuthorizedSupport
+            | RepositoryHistoryPartitionClassification::ExternalSupport
+            | RepositoryHistoryPartitionClassification::PreArmExternal
+            | RepositoryHistoryPartitionClassification::Invalid
+            | RepositoryHistoryPartitionClassification::Corrective => {
+                let classification = match classification {
+                    RepositoryHistoryPartitionClassification::UnrelatedRoutine => {
+                        EvidenceBackedPartitionClassification::UnrelatedRoutine
+                    }
+                    RepositoryHistoryPartitionClassification::RelevantRoutine => {
+                        EvidenceBackedPartitionClassification::RelevantRoutine
+                    }
+                    RepositoryHistoryPartitionClassification::AuthorizedSupport => {
+                        EvidenceBackedPartitionClassification::AuthorizedSupport
+                    }
+                    RepositoryHistoryPartitionClassification::ExternalSupport => {
+                        EvidenceBackedPartitionClassification::ExternalSupport
+                    }
+                    RepositoryHistoryPartitionClassification::PreArmExternal => {
+                        EvidenceBackedPartitionClassification::PreArmExternal
+                    }
+                    RepositoryHistoryPartitionClassification::Invalid => {
+                        EvidenceBackedPartitionClassification::Invalid
+                    }
+                    RepositoryHistoryPartitionClassification::Corrective => {
+                        EvidenceBackedPartitionClassification::Corrective
+                    }
+                    RepositoryHistoryPartitionClassification::NonConflictingConcurrent
+                    | RepositoryHistoryPartitionClassification::TaskCommit => unreachable!(),
+                };
+                RepositoryHistoryPartitionEntry::EvidenceBacked(
+                    EvidenceBackedHistoryPartitionEntry {
+                        repository_version,
+                        classification,
+                        semantic_delta_digest,
+                        source_evidence_ref: RepositoryHistorySourceEvidenceRef::new(
+                            EvidenceKind::RoutineClassification,
+                            &evidence_digest,
+                        )?,
+                    },
+                )
+            }
+            RepositoryHistoryPartitionClassification::NonConflictingConcurrent => {
+                RepositoryHistoryPartitionEntry::NonConflicting(
+                    NonConflictingHistoryPartitionEntry {
+                        non_conflicting_concurrent_evidence: NonConflictingConcurrentEvidence::new(
+                            repository_version.as_str(),
+                            atomic_commit_safety_capability_id,
+                            &"1".repeat(64),
+                            &"2".repeat(64),
+                            &"3".repeat(64),
+                            &"4".repeat(64),
+                            &"5".repeat(64),
+                        )?,
+                        repository_version,
+                        classification: NonConflictingClassification::Value,
+                        semantic_delta_digest,
+                        source_evidence_ref: RepositoryHistorySourceEvidenceRef::new(
+                            EvidenceKind::NonConflictingConcurrent,
+                            &evidence_digest,
+                        )?,
+                    },
+                )
+            }
+            RepositoryHistoryPartitionClassification::TaskCommit => {
+                RepositoryHistoryPartitionEntry::TaskCommit(TaskCommitHistoryPartitionEntry {
+                    repository_version,
+                    classification: TaskCommitClassification::Value,
+                    semantic_delta_digest,
+                })
+            }
+        };
+        ordered_cursors.push(cursor);
+        wire_entries.push(entry);
+    }
+    let through_inclusive = ordered_cursors
+        .last()
+        .cloned()
+        .unwrap_or_else(|| from_exclusive.clone());
+    let entries = UnvalidatedRepositoryHistoryEntries(wire_entries);
+    let partition_digest = canonical_contract_digest(
+        &RepositoryHistoryPartitionDigestRecord {
+            from_exclusive: from_exclusive.clone(),
+            through_inclusive: through_inclusive.clone(),
+            entries: entries.clone(),
+        },
+        None,
+    )
+    .map_err(|_| RepositoryContractError("history fixture partition digest failed"))?;
+    let order_evidence = (!ordered_cursors.is_empty())
+        .then(|| {
+            RepositoryHistoryOrderEvidence::from_capability_adapter(
+                order_capability_id,
+                from_exclusive.clone(),
+                through_inclusive.clone(),
+                ordered_cursors,
+            )
+        })
+        .transpose()?;
+    let source_index_proofs = (0..entries.0.len()).map(|_| None).collect();
+    Ok(ValidatedRepositoryHistoryPartition {
+        wire: UnvalidatedRepositoryHistoryPartition {
+            from_exclusive,
+            through_inclusive,
+            entries,
+            partition_digest,
+        },
+        source_index_proofs,
+        order_evidence,
+    })
 }
 
 pub(crate) struct RepositoryHistoryPartitionResolver<'a> {
@@ -2874,13 +3288,138 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                 self.registry,
             )?;
             proof.validated_support_mapping = self.validate_entry(entry, &proof)?;
-            source_index_proofs.push(proof);
+            source_index_proofs.push(Some(proof));
         }
 
         Ok(ValidatedRepositoryHistoryPartition {
             wire,
             source_index_proofs,
             order_evidence: Some(order_evidence),
+        })
+    }
+
+    /// Validate the one history partition whose taskCommit entry is owned by
+    /// the enclosing committed-object authority. No wire-only or generic
+    /// path can select this branch.
+    pub(crate) fn validate_task_commit_partition(
+        &self,
+        wire: UnvalidatedRepositoryHistoryPartition,
+        commit: &ValidatedCommitObjectAuthority,
+    ) -> Result<ValidatedTaskCommitHistoryPartition, RepositoryContractError> {
+        self.registry.verify_committed_artifacts()?;
+        let expected_partition_digest = canonical_contract_digest(
+            &RepositoryHistoryPartitionDigestRecord {
+                from_exclusive: wire.from_exclusive.clone(),
+                through_inclusive: wire.through_inclusive.clone(),
+                entries: wire.entries.clone(),
+            },
+            None,
+        )
+        .map_err(|_| RepositoryContractError("task-commit partition digest failed"))?;
+        if expected_partition_digest != wire.partition_digest {
+            return Err(RepositoryContractError(
+                "task-commit partition digest mismatch",
+            ));
+        }
+        if wire.entries.0.is_empty() || wire.from_exclusive == wire.through_inclusive {
+            return Err(RepositoryContractError(
+                "task-commit partition requires a non-empty repository range",
+            ));
+        }
+
+        let mut task_entries = wire.entries.0.iter().filter_map(|entry| match entry {
+            RepositoryHistoryPartitionEntry::TaskCommit(value) => Some(value),
+            RepositoryHistoryPartitionEntry::EvidenceBacked(_)
+            | RepositoryHistoryPartitionEntry::NonConflicting(_) => None,
+        });
+        let Some(task_entry) = task_entries.next() else {
+            return Err(RepositoryContractError(
+                "task-commit partition lacks its task version",
+            ));
+        };
+        if task_entries.next().is_some()
+            || &task_entry.repository_version != commit.repository_version()
+            || &task_entry.semantic_delta_digest != commit.committed_objects_digest()
+        {
+            return Err(RepositoryContractError(
+                "task-commit partition task version or semantic digest mismatch",
+            ));
+        }
+        for entry in &wire.entries.0 {
+            match entry {
+                RepositoryHistoryPartitionEntry::TaskCommit(_) => {}
+                RepositoryHistoryPartitionEntry::EvidenceBacked(value)
+                    if value.classification
+                        == EvidenceBackedPartitionClassification::UnrelatedRoutine => {}
+                RepositoryHistoryPartitionEntry::NonConflicting(value)
+                    if &value
+                        .non_conflicting_concurrent_evidence
+                        .atomic_commit_safety_capability_id
+                        == commit.atomic_commit_safety_capability_id() => {}
+                RepositoryHistoryPartitionEntry::EvidenceBacked(_)
+                | RepositoryHistoryPartitionEntry::NonConflicting(_) => {
+                    return Err(RepositoryContractError(
+                        "task-commit partition contains relevant or unproven concurrent history",
+                    ));
+                }
+            }
+        }
+
+        let order_evidence = self
+            .order_resolver
+            .order_evidence(&wire.from_exclusive, &wire.through_inclusive)?;
+        let entry_versions: Vec<_> = wire
+            .entries
+            .0
+            .iter()
+            .map(|entry| entry.repository_version().clone())
+            .collect();
+        let unique_versions: HashSet<_> = entry_versions.iter().collect();
+        if order_evidence.from_exclusive != wire.from_exclusive
+            || order_evidence.through_inclusive != wire.through_inclusive
+            || order_evidence.ordered_versions != entry_versions
+            || order_evidence.ordered_cursors.len() != entry_versions.len()
+            || order_evidence
+                .ordered_cursors
+                .iter()
+                .map(|cursor| &cursor.through_version)
+                .ne(entry_versions.iter())
+            || order_evidence.ordered_cursors.last() != Some(&wire.through_inclusive)
+            || unique_versions.len() != entry_versions.len()
+            || entry_versions.last() != Some(&wire.through_inclusive.through_version)
+        {
+            return Err(RepositoryContractError(
+                "history-order evidence does not prove exact task-commit partition coverage",
+            ));
+        }
+
+        let mut source_index_proofs = Vec::with_capacity(wire.entries.0.len());
+        for entry in &wire.entries.0 {
+            if matches!(entry, RepositoryHistoryPartitionEntry::TaskCommit(_)) {
+                source_index_proofs.push(None);
+                continue;
+            }
+            let candidate = self
+                .source_index
+                .candidate_for(entry.repository_version(), self.registry)?;
+            let mut proof = EvidenceSourceIndexProof::from_candidate(
+                candidate,
+                entry.repository_version(),
+                self.registry,
+            )?;
+            proof.validated_support_mapping = self.validate_entry(entry, &proof)?;
+            source_index_proofs.push(Some(proof));
+        }
+
+        Ok(ValidatedTaskCommitHistoryPartition {
+            partition: ValidatedRepositoryHistoryPartition {
+                wire,
+                source_index_proofs,
+                order_evidence: Some(order_evidence),
+            },
+            repository_version: commit.repository_version().clone(),
+            committed_objects_digest: commit.committed_objects_digest().clone(),
+            atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id().clone(),
         })
     }
 
@@ -3378,6 +3917,14 @@ pub(crate) struct RootTargetIdentity {
     target_kind: ConfigurationRootKind,
 }
 
+impl RootTargetIdentity {
+    pub(crate) const fn new() -> Self {
+        Self {
+            target_kind: ConfigurationRootKind::Value,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ObjectTargetIdentity {
@@ -3385,11 +3932,34 @@ pub(crate) struct ObjectTargetIdentity {
     object_id: MetadataObjectId,
 }
 
+impl ObjectTargetIdentity {
+    pub(crate) const fn new(object_id: MetadataObjectId) -> Self {
+        Self {
+            target_kind: DevelopmentObjectKind::Value,
+            object_id,
+        }
+    }
+
+    pub(crate) const fn object_id(&self) -> &MetadataObjectId {
+        &self.object_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum RepositoryTargetIdentity {
     ConfigurationRoot(RootTargetIdentity),
     DevelopmentObject(ObjectTargetIdentity),
+}
+
+impl RepositoryTargetIdentity {
+    pub(crate) const fn configuration_root() -> Self {
+        Self::ConfigurationRoot(RootTargetIdentity::new())
+    }
+
+    pub(crate) const fn development_object(object_id: MetadataObjectId) -> Self {
+        Self::DevelopmentObject(ObjectTargetIdentity::new(object_id))
+    }
 }
 
 impl Ord for RepositoryTargetIdentity {
@@ -3476,6 +4046,75 @@ pub(crate) enum RepositoryPlannedChange {
     RootModify(RootPlannedChange),
     ObjectPresent(ObjectPresentPlannedChange),
     ObjectAbsent(ObjectAbsentPlannedChange),
+}
+
+impl RepositoryPlannedChange {
+    pub(crate) fn target_identity(&self) -> RepositoryTargetIdentity {
+        match self {
+            Self::RootModify(_) => RepositoryTargetIdentity::configuration_root(),
+            Self::ObjectPresent(value) => {
+                RepositoryTargetIdentity::development_object(value.object_id.clone())
+            }
+            Self::ObjectAbsent(value) => {
+                RepositoryTargetIdentity::development_object(value.object_id.clone())
+            }
+        }
+    }
+
+    pub(crate) const fn relevance(&self) -> RepositoryRelevance {
+        match self {
+            Self::RootModify(value) => value.relevance,
+            Self::ObjectPresent(value) => value.relevance,
+            Self::ObjectAbsent(value) => value.relevance,
+        }
+    }
+
+    pub(crate) const fn is_structural(&self) -> bool {
+        matches!(
+            self,
+            Self::ObjectPresent(ObjectPresentPlannedChange {
+                action: AddOrModifyAction::Add,
+                ..
+            }) | Self::ObjectAbsent(_)
+        )
+    }
+
+    pub(crate) const fn repository_version(&self) -> &RepositoryVersion {
+        match self {
+            Self::RootModify(value) => &value.repository_version,
+            Self::ObjectPresent(value) => &value.repository_version,
+            Self::ObjectAbsent(value) => &value.deletion_repository_version,
+        }
+    }
+
+    pub(crate) fn target_state(&self) -> RepositoryTargetState {
+        match self {
+            Self::RootModify(value) => RepositoryTargetState::RootPresent(RootPresentTargetState {
+                target_kind: ConfigurationRootKind::Value,
+                state: PresentState::Value,
+                repository_version: value.repository_version.clone(),
+                target_fingerprint: value.target_fingerprint.clone(),
+            }),
+            Self::ObjectPresent(value) => {
+                RepositoryTargetState::ObjectPresent(ObjectPresentTargetState {
+                    target_kind: DevelopmentObjectKind::Value,
+                    state: PresentState::Value,
+                    object_id: value.object_id.clone(),
+                    repository_version: value.repository_version.clone(),
+                    target_fingerprint: value.target_fingerprint.clone(),
+                })
+            }
+            Self::ObjectAbsent(value) => {
+                RepositoryTargetState::ObjectAbsent(ObjectAbsentTargetState {
+                    target_kind: DevelopmentObjectKind::Value,
+                    state: AbsentState::Value,
+                    object_id: value.object_id.clone(),
+                    absence_established_at_version: value.deletion_repository_version.clone(),
+                    expected_absent: TrueLiteral,
+                })
+            }
+        }
+    }
 }
 
 impl JsonSchema for RepositoryPlannedChange {
@@ -3750,8 +4389,502 @@ validated_target_collection!(
     1
 );
 
+/// Adapter-observed target changes for one exact validated history entry.
+/// The enclosing capability token binds the version/digest tuple to the
+/// complete partition before the core independently folds these changes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RoutineRepositoryVersionChangeObservation {
+    repository_version: RepositoryVersion,
+    semantic_delta_digest: Sha256Digest,
+    changes: RepositoryPlannedChanges,
+}
+
+impl RoutineRepositoryVersionChangeObservation {
+    pub(crate) const fn from_capability_adapter(
+        repository_version: RepositoryVersion,
+        semantic_delta_digest: Sha256Digest,
+        changes: RepositoryPlannedChanges,
+    ) -> Self {
+        Self {
+            repository_version,
+            semantic_delta_digest,
+            changes,
+        }
+    }
+}
+
+/// Complete capability-backed history-to-target observation for routine
+/// update. Deliberately non-`Clone` and non-wire.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RoutineUpdateHistoryFoldCapabilityToken {
+    before_anchor_digest: Sha256Digest,
+    partition_digest: Sha256Digest,
+    before_target_states: RepositoryTargetStates,
+    entry_changes: Vec<RoutineRepositoryVersionChangeObservation>,
+    target_projection_capability_id: CapabilityRowId,
+}
+
+impl RoutineUpdateHistoryFoldCapabilityToken {
+    pub(crate) fn from_capability_adapter(
+        before_anchor: &RepositoryAnchor,
+        history_partition: &ValidatedRepositoryHistoryPartition,
+        before_target_states: RepositoryTargetStates,
+        entry_changes: Vec<RoutineRepositoryVersionChangeObservation>,
+        target_projection_capability_id: CapabilityRowId,
+    ) -> Result<Self, RepositoryContractError> {
+        if before_anchor.history_cursor() != history_partition.start_cursor()
+            || entry_changes.len() != history_partition.entry_count()
+            || !history_partition
+                .entries()
+                .zip(entry_changes.iter())
+                .all(|(entry, observation)| {
+                    entry.repository_version() == &observation.repository_version
+                        && entry.semantic_delta_digest() == &observation.semantic_delta_digest
+                })
+        {
+            return Err(RepositoryContractError(
+                "routine target projection is not bound to the complete history partition",
+            ));
+        }
+        Ok(Self {
+            before_anchor_digest: before_anchor.anchor_digest().clone(),
+            partition_digest: history_partition.partition_digest().clone(),
+            before_target_states,
+            entry_changes,
+            target_projection_capability_id,
+        })
+    }
+}
+
+pub(crate) trait RoutineUpdateProjectionResolver {
+    fn resolve_history_fold(
+        &mut self,
+        before_anchor: &RepositoryAnchor,
+        history_partition: &ValidatedRepositoryHistoryPartition,
+    ) -> Result<RoutineUpdateHistoryFoldCapabilityToken, RepositoryContractError>;
+
+    fn resolve_selective_plan(
+        &mut self,
+        planned_targets: &RepositoryTargetStates,
+        structural_targets: &[RepositoryTargetIdentity],
+    ) -> Result<RoutineSelectiveRepositoryUpdatePlanAuthority, RepositoryContractError>;
+
+    fn resolve_phase(
+        &mut self,
+        before_anchor: &RepositoryAnchor,
+        history_partition: &ValidatedRepositoryHistoryPartition,
+    ) -> Result<RoutineUpdatePhaseAuthority, RepositoryContractError>;
+}
+
+struct FoldedRoutineUpdate {
+    planned_changes: RepositoryPlannedChanges,
+    planned_targets: RepositoryTargetStates,
+    planned_relevant_objects: Vec<RepositoryTargetIdentity>,
+    planned_unrelated_objects: Vec<RepositoryTargetIdentity>,
+    structural_changes: RepositoryPlannedChanges,
+    structural_targets: Vec<RepositoryTargetIdentity>,
+    contains_relevant_advance: bool,
+}
+
+fn classification_relevance(
+    classification: RepositoryHistoryPartitionClassification,
+) -> Option<RepositoryRelevance> {
+    match classification {
+        RepositoryHistoryPartitionClassification::UnrelatedRoutine => {
+            Some(RepositoryRelevance::Unrelated)
+        }
+        RepositoryHistoryPartitionClassification::RelevantRoutine
+        | RepositoryHistoryPartitionClassification::AuthorizedSupport
+        | RepositoryHistoryPartitionClassification::Invalid
+        | RepositoryHistoryPartitionClassification::Corrective => {
+            Some(RepositoryRelevance::Relevant)
+        }
+        RepositoryHistoryPartitionClassification::ExternalSupport
+        | RepositoryHistoryPartitionClassification::PreArmExternal
+        | RepositoryHistoryPartitionClassification::NonConflictingConcurrent
+        | RepositoryHistoryPartitionClassification::TaskCommit => None,
+    }
+}
+
+fn validate_routine_partition_grammar(
+    partition: &ValidatedRepositoryHistoryPartition,
+    deferred: Option<&DeferredRepositoryAdvance>,
+) -> Result<bool, RepositoryContractError> {
+    let classifications: Vec<_> = partition.classifications().collect();
+    if deferred.is_some() {
+        let Some((first, rest)) = classifications.split_first() else {
+            return Err(RepositoryContractError(
+                "current deferred advance requires its immediate successor",
+            ));
+        };
+        if !matches!(
+            first,
+            RepositoryHistoryPartitionClassification::AuthorizedSupport
+                | RepositoryHistoryPartitionClassification::Invalid
+                | RepositoryHistoryPartitionClassification::Corrective
+        ) || rest.iter().any(|classification| {
+            !matches!(
+                classification,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                    | RepositoryHistoryPartitionClassification::RelevantRoutine
+            )
+        }) {
+            return Err(RepositoryContractError(
+                "deferred routine partition has an invalid first or tail classification",
+            ));
+        }
+    } else if classifications.iter().any(|classification| {
+        !matches!(
+            classification,
+            RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                | RepositoryHistoryPartitionClassification::RelevantRoutine
+        )
+    }) {
+        return Err(RepositoryContractError(
+            "ordinary routine partition contains non-routine history",
+        ));
+    }
+    Ok(classifications.into_iter().any(|classification| {
+        classification_relevance(classification) == Some(RepositoryRelevance::Relevant)
+    }))
+}
+
+fn target_state_semantically_equal(
+    left: &RepositoryTargetState,
+    right: &RepositoryTargetState,
+) -> bool {
+    match (left, right) {
+        (RepositoryTargetState::RootPresent(left), RepositoryTargetState::RootPresent(right)) => {
+            left.target_fingerprint == right.target_fingerprint
+        }
+        (
+            RepositoryTargetState::ObjectPresent(left),
+            RepositoryTargetState::ObjectPresent(right),
+        ) => {
+            left.object_id == right.object_id && left.target_fingerprint == right.target_fingerprint
+        }
+        (RepositoryTargetState::ObjectAbsent(left), RepositoryTargetState::ObjectAbsent(right)) => {
+            left.object_id == right.object_id
+        }
+        _ => false,
+    }
+}
+
+fn change_applies_to_state(
+    current: &RepositoryTargetState,
+    change: &RepositoryPlannedChange,
+) -> bool {
+    match (current, change) {
+        (RepositoryTargetState::RootPresent(_), RepositoryPlannedChange::RootModify(_)) => true,
+        (
+            RepositoryTargetState::ObjectAbsent(current),
+            RepositoryPlannedChange::ObjectPresent(change),
+        ) => current.object_id == change.object_id && change.action == AddOrModifyAction::Add,
+        (
+            RepositoryTargetState::ObjectPresent(current),
+            RepositoryPlannedChange::ObjectPresent(change),
+        ) => current.object_id == change.object_id && change.action == AddOrModifyAction::Modify,
+        (
+            RepositoryTargetState::ObjectPresent(current),
+            RepositoryPlannedChange::ObjectAbsent(change),
+        ) => current.object_id == change.object_id,
+        _ => false,
+    }
+}
+
+fn finalize_folded_change(
+    mut change: RepositoryPlannedChange,
+    before: &RepositoryTargetState,
+    relevance: RepositoryRelevance,
+) -> Result<RepositoryPlannedChange, RepositoryContractError> {
+    match (&mut change, before) {
+        (RepositoryPlannedChange::RootModify(value), RepositoryTargetState::RootPresent(_)) => {
+            value.relevance = relevance;
+        }
+        (
+            RepositoryPlannedChange::ObjectPresent(value),
+            RepositoryTargetState::ObjectPresent(_),
+        ) => {
+            value.action = AddOrModifyAction::Modify;
+            value.relevance = relevance;
+        }
+        (RepositoryPlannedChange::ObjectPresent(value), RepositoryTargetState::ObjectAbsent(_)) => {
+            value.action = AddOrModifyAction::Add;
+            value.relevance = relevance;
+        }
+        (RepositoryPlannedChange::ObjectAbsent(value), RepositoryTargetState::ObjectPresent(_)) => {
+            value.relevance = relevance;
+        }
+        _ => {
+            return Err(RepositoryContractError(
+                "routine history final state is incompatible with its before state",
+            ));
+        }
+    }
+    Ok(change)
+}
+
+fn fold_routine_history(
+    before_anchor: &RepositoryAnchor,
+    partition: &ValidatedRepositoryHistoryPartition,
+    token: RoutineUpdateHistoryFoldCapabilityToken,
+    contains_relevant_advance: bool,
+) -> Result<FoldedRoutineUpdate, RepositoryContractError> {
+    if token.before_anchor_digest != *before_anchor.anchor_digest()
+        || token.partition_digest != *partition.partition_digest()
+        || token.entry_changes.len() != partition.entry_count()
+    {
+        return Err(RepositoryContractError(
+            "routine fold capability belongs to another anchor or partition",
+        ));
+    }
+    let _target_projection_capability_id = token.target_projection_capability_id;
+    let mut states: BTreeMap<TargetKey, (RepositoryTargetState, RepositoryTargetState)> = token
+        .before_target_states
+        .as_slice()
+        .iter()
+        .cloned()
+        .map(|state| (state.target_key(), (state.clone(), state)))
+        .collect();
+    let mut last_changes = BTreeMap::<TargetKey, (RepositoryPlannedChange, bool)>::new();
+
+    for (entry, observation) in partition.entries().zip(token.entry_changes) {
+        if entry.repository_version() != &observation.repository_version
+            || entry.semantic_delta_digest() != &observation.semantic_delta_digest
+        {
+            return Err(RepositoryContractError(
+                "routine fold entry observation was substituted",
+            ));
+        }
+        let expected_relevance = classification_relevance(entry.classification()).ok_or(
+            RepositoryContractError("routine fold received an unsupported classification"),
+        )?;
+        for change in observation.changes.0 {
+            if change.repository_version() != entry.repository_version()
+                || change.relevance() != expected_relevance
+            {
+                return Err(RepositoryContractError(
+                    "routine target change disagrees with its history entry",
+                ));
+            }
+            let key = change.target_key();
+            let Some((_, current)) = states.get_mut(&key) else {
+                return Err(RepositoryContractError(
+                    "routine target projection omitted a touched before state",
+                ));
+            };
+            if !change_applies_to_state(current, &change) {
+                return Err(RepositoryContractError(
+                    "routine target change is not a valid ordered state transition",
+                ));
+            }
+            *current = change.target_state();
+            last_changes
+                .entry(key)
+                .and_modify(|(last, relevant)| {
+                    *last = change.clone();
+                    *relevant |= expected_relevance == RepositoryRelevance::Relevant;
+                })
+                .or_insert((change, expected_relevance == RepositoryRelevance::Relevant));
+        }
+    }
+    if states.len() != last_changes.len()
+        || states.keys().any(|key| !last_changes.contains_key(key))
+    {
+        return Err(RepositoryContractError(
+            "routine target projection before-state set is not exact",
+        ));
+    }
+
+    let mut planned_changes = Vec::new();
+    let mut planned_targets = Vec::new();
+    let mut relevant_targets = Vec::new();
+    let mut unrelated_targets = Vec::new();
+    let mut structural_changes = Vec::new();
+    let mut structural_targets = Vec::new();
+    for (key, (last, relevant)) in last_changes {
+        let (before, current) = states.get(&key).expect("exact state key was validated");
+        if target_state_semantically_equal(before, current) {
+            continue;
+        }
+        let relevance = if relevant {
+            RepositoryRelevance::Relevant
+        } else {
+            RepositoryRelevance::Unrelated
+        };
+        let change = finalize_folded_change(last, before, relevance)?;
+        let target = change.target_identity();
+        if relevance == RepositoryRelevance::Relevant {
+            relevant_targets.push(target.clone());
+        } else {
+            unrelated_targets.push(target.clone());
+        }
+        if change.is_structural() {
+            structural_targets.push(target);
+            structural_changes.push(change.clone());
+        }
+        planned_targets.push(change.target_state());
+        planned_changes.push(change);
+    }
+    Ok(FoldedRoutineUpdate {
+        planned_changes: RepositoryPlannedChanges(planned_changes),
+        planned_targets: RepositoryTargetStates(planned_targets),
+        planned_relevant_objects: relevant_targets,
+        planned_unrelated_objects: unrelated_targets,
+        structural_changes: RepositoryPlannedChanges(structural_changes),
+        structural_targets,
+        contains_relevant_advance,
+    })
+}
+
+/// Capability-complete, non-wire routine-update projection consumed by result
+/// construction. It has no raw DTO constructor and is deliberately non-Clone.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedRoutineUpdateProjection {
+    before_anchor: RepositoryAnchor,
+    expected_history_cursor: RepositoryHistoryCursor,
+    observed_history_cursor: RepositoryHistoryCursor,
+    deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+    deferred_terminal_receipt_id: Option<UnicaId>,
+    deferred_advance_resolution_digest: Option<Sha256Digest>,
+    planned_changes: RepositoryPlannedChanges,
+    planned_relevant_objects: Vec<RepositoryTargetIdentity>,
+    planned_unrelated_objects: Vec<RepositoryTargetIdentity>,
+    structural_changes: RepositoryPlannedChanges,
+    history_partition: ValidatedRepositoryHistoryPartition,
+    selective_update_plan: SelectiveRepositoryUpdatePlan,
+    resulting_phase: TaskPhase,
+}
+
+impl ValidatedRoutineUpdateProjection {
+    pub(crate) fn resolve<R: RoutineUpdateProjectionResolver>(
+        before_anchor: RepositoryAnchor,
+        history_partition: ValidatedRepositoryHistoryPartition,
+        current_deferred: Option<CurrentDeferredRepositoryAdvanceAuthority>,
+        mut resolver: R,
+    ) -> Result<Self, RepositoryContractError> {
+        let (deferred_terminal_receipt_id, deferred_repository_advance) = match current_deferred {
+            Some(authority) => {
+                let (terminal_receipt_id, advance) = authority.into_parts();
+                (Some(terminal_receipt_id), Some(advance))
+            }
+            None => (None, None),
+        };
+        if before_anchor.history_cursor() != history_partition.start_cursor() {
+            return Err(RepositoryContractError(
+                "routine projection anchor does not start its history partition",
+            ));
+        }
+        let contains_relevant_advance = validate_routine_partition_grammar(
+            &history_partition,
+            deferred_repository_advance.as_ref(),
+        )?;
+        let fold_token = resolver.resolve_history_fold(&before_anchor, &history_partition)?;
+        let folded = fold_routine_history(
+            &before_anchor,
+            &history_partition,
+            fold_token,
+            contains_relevant_advance,
+        )?;
+        let plan_authority =
+            resolver.resolve_selective_plan(&folded.planned_targets, &folded.structural_targets)?;
+        let selective_update_plan = SelectiveRepositoryUpdatePlan::routine_from_authority(
+            plan_authority,
+            &folded.planned_targets,
+            &folded.structural_targets,
+        )?;
+        let resulting_phase = resolver
+            .resolve_phase(&before_anchor, &history_partition)?
+            .into_resulting_phase(folded.contains_relevant_advance)?;
+        let deferred_advance_resolution_digest = deferred_repository_advance
+            .as_ref()
+            .map(|deferred| deferred.routine_resolution_digest(&history_partition, resulting_phase))
+            .transpose()?;
+        let expected_history_cursor = before_anchor.history_cursor().clone();
+        let observed_history_cursor = history_partition.through_inclusive().clone();
+        Ok(Self {
+            before_anchor,
+            expected_history_cursor,
+            observed_history_cursor,
+            deferred_repository_advance,
+            deferred_terminal_receipt_id,
+            deferred_advance_resolution_digest,
+            planned_changes: folded.planned_changes,
+            planned_relevant_objects: folded.planned_relevant_objects,
+            planned_unrelated_objects: folded.planned_unrelated_objects,
+            structural_changes: folded.structural_changes,
+            history_partition,
+            selective_update_plan,
+            resulting_phase,
+        })
+    }
+
+    pub(crate) const fn before_anchor(&self) -> &RepositoryAnchor {
+        &self.before_anchor
+    }
+
+    pub(crate) const fn expected_history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.expected_history_cursor
+    }
+
+    pub(crate) const fn observed_history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.observed_history_cursor
+    }
+
+    pub(crate) const fn deferred_repository_advance(&self) -> Option<&DeferredRepositoryAdvance> {
+        self.deferred_repository_advance.as_ref()
+    }
+
+    pub(crate) const fn deferred_terminal_receipt_id(&self) -> Option<&UnicaId> {
+        self.deferred_terminal_receipt_id.as_ref()
+    }
+
+    pub(crate) const fn deferred_advance_resolution_digest(&self) -> Option<&Sha256Digest> {
+        self.deferred_advance_resolution_digest.as_ref()
+    }
+
+    pub(crate) const fn planned_changes(&self) -> &RepositoryPlannedChanges {
+        &self.planned_changes
+    }
+
+    pub(crate) fn planned_relevant_objects(&self) -> &[RepositoryTargetIdentity] {
+        &self.planned_relevant_objects
+    }
+
+    pub(crate) fn planned_unrelated_objects(&self) -> &[RepositoryTargetIdentity] {
+        &self.planned_unrelated_objects
+    }
+
+    pub(crate) const fn structural_changes(&self) -> &RepositoryPlannedChanges {
+        &self.structural_changes
+    }
+
+    pub(crate) fn structural_confirmation_required(&self) -> bool {
+        !self.structural_changes.as_slice().is_empty()
+    }
+
+    pub(crate) const fn history_partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.history_partition
+    }
+
+    pub(crate) const fn selective_update_plan(&self) -> &SelectiveRepositoryUpdatePlan {
+        &self.selective_update_plan
+    }
+
+    pub(crate) const fn resulting_phase(&self) -> TaskPhase {
+        self.resulting_phase
+    }
+}
+
 fn parse_digest(value: &str) -> Result<Sha256Digest, RepositoryContractError> {
     Sha256Digest::parse(value).map_err(|_| RepositoryContractError("invalid SHA-256 digest"))
+}
+
+#[cfg(test)]
+pub(crate) fn validated_task_commit_partition_fixture_test_only(
+    commit: &ValidatedCommitObjectAuthority,
+) -> ValidatedTaskCommitHistoryPartition {
+    tests::validated_task_commit_partition_for_results(commit)
 }
 
 #[cfg(test)]
@@ -3769,14 +4902,17 @@ mod tests {
         RepositoryOwnerIdentity, RepositoryPlannedChanges, RepositoryTargetIdentity,
         RepositoryTargetKind, RepositoryTargetStates, RepositoryUpdateLockReason,
         RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
-        RoutineRepositoryVersionClassificationEvidence, SupportCorrectiveEvidenceResolver,
-        UnvalidatedRepositoryHistoryPartition, ValidatedSupportRecoveryHistoryEntryRef,
+        RoutineRepositoryVersionChangeObservation, RoutineRepositoryVersionClassificationEvidence,
+        RoutineUpdateHistoryFoldCapabilityToken, RoutineUpdateProjectionResolver,
+        SupportCorrectiveEvidenceResolver, UnvalidatedRepositoryHistoryPartition,
+        ValidatedRoutineUpdateProjection, ValidatedSupportRecoveryHistoryEntryRef,
     };
     use crate::domain::branched_development::contracts::artifacts::ConfigurationIdentity;
     use crate::domain::branched_development::contracts::instructions::{
         SupportConflictInstruction, SupportCorrectiveInstruction,
         SupportCorrectiveInstructionAuthority, SupportRecoveryTransition,
     };
+    use crate::domain::branched_development::contracts::results::repository::validated_commit_object_authority_fixture_test_only;
     use crate::domain::branched_development::contracts::scalars::{
         Diagnostic, EmptyOrName, Name, RepositoryTargetDisplay, RepositoryUsername,
         RepositoryVersion, RequiredNullable,
@@ -3792,7 +4928,7 @@ mod tests {
         SupportRecoveryLockTarget, SupportRecoveryLockTargets,
     };
     use crate::domain::branched_development::{
-        MetadataObjectId, Sha256Digest, SupportLayerId, UnicaId,
+        CapabilityRowId, MetadataObjectId, Sha256Digest, SupportLayerId, TaskPhase, UnicaId,
     };
     use schemars::schema_for;
     use serde_json::{json, Value};
@@ -3853,6 +4989,11 @@ mod tests {
         let _ = <RepositoryAnchorDigestRecord as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <RepositoryAnchorObservationAuthority as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <RepositoryAnchorObservationAuthority as AmbiguousIfClone<_>>::marker;
+        let _ = <super::RoutineUpdateHistoryFoldCapabilityToken as AmbiguousIfDeserializeOwned<
+            _,
+        >>::marker;
+        let _ = <super::ValidatedRoutineUpdateProjection as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <super::ValidatedRoutineUpdateProjection as AmbiguousIfClone<_>>::marker;
     }
 
     fn configuration_identity(version: &str) -> ConfigurationIdentity {
@@ -4244,6 +5385,203 @@ mod tests {
         .is_err());
         assert_closed::<RepositoryTargetStates>();
         assert_closed::<RepositoryPlannedChanges>();
+    }
+
+    struct RoutineProjectionResolverFixture {
+        fold: Option<RoutineUpdateHistoryFoldCapabilityToken>,
+        plan: Option<super::update::RoutineSelectiveRepositoryUpdatePlanAuthority>,
+        phase: Option<super::lifecycle::RoutineUpdatePhaseAuthority>,
+    }
+
+    impl RoutineUpdateProjectionResolver for RoutineProjectionResolverFixture {
+        fn resolve_history_fold(
+            &mut self,
+            _before_anchor: &RepositoryAnchor,
+            _history_partition: &super::ValidatedRepositoryHistoryPartition,
+        ) -> Result<RoutineUpdateHistoryFoldCapabilityToken, super::RepositoryContractError>
+        {
+            self.fold.take().ok_or(super::RepositoryContractError(
+                "routine fold fixture already consumed",
+            ))
+        }
+
+        fn resolve_selective_plan(
+            &mut self,
+            _planned_targets: &RepositoryTargetStates,
+            _structural_targets: &[RepositoryTargetIdentity],
+        ) -> Result<
+            super::update::RoutineSelectiveRepositoryUpdatePlanAuthority,
+            super::RepositoryContractError,
+        > {
+            self.plan.take().ok_or(super::RepositoryContractError(
+                "routine plan fixture already consumed",
+            ))
+        }
+
+        fn resolve_phase(
+            &mut self,
+            _before_anchor: &RepositoryAnchor,
+            _history_partition: &super::ValidatedRepositoryHistoryPartition,
+        ) -> Result<super::lifecycle::RoutineUpdatePhaseAuthority, super::RepositoryContractError>
+        {
+            self.phase.take().ok_or(super::RepositoryContractError(
+                "routine phase fixture already consumed",
+            ))
+        }
+    }
+
+    fn routine_projection_fixture(
+        plan_targets: RepositoryTargetStates,
+        phase: super::lifecycle::RoutineUpdatePhaseAuthority,
+    ) -> (
+        RepositoryAnchor,
+        super::ValidatedRepositoryHistoryPartition,
+        RoutineProjectionResolverFixture,
+    ) {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition_json, source_ref, evidence) =
+            routine_partition_fixture_for("relevant", "relevantRoutine");
+        let partition = validate_routine_fixture(
+            partition_json,
+            routine_candidate(&registry, source_ref.clone()),
+            routine_order(),
+            serde_json_canonicalizer::to_vec(&evidence).unwrap(),
+            &source_ref,
+        )
+        .unwrap();
+        let anchor = RepositoryAnchorObservationAuthority::test_only(
+            Sha256Digest::parse(SHA_A).unwrap(),
+            partition.start_cursor().clone(),
+            configuration_identity("8.3.27"),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        )
+        .into_anchor()
+        .unwrap();
+        let before_states: RepositoryTargetStates = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "state": "present",
+            "repositoryVersion": "opaque-v0",
+            "targetFingerprint": SHA_A,
+        }]))
+        .unwrap();
+        let changes: RepositoryPlannedChanges = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "action": "modify",
+            "objectDisplay": "Configuration",
+            "repositoryVersion": "opaque-v1",
+            "targetFingerprint": SHA_B,
+            "relevance": "relevant",
+        }]))
+        .unwrap();
+        let first = partition
+            .first_entry()
+            .expect("one-entry routine partition has a first entry");
+        let fold = RoutineUpdateHistoryFoldCapabilityToken::from_capability_adapter(
+            &anchor,
+            &partition,
+            before_states,
+            vec![
+                RoutineRepositoryVersionChangeObservation::from_capability_adapter(
+                    first.repository_version().clone(),
+                    first.semantic_delta_digest().clone(),
+                    changes,
+                ),
+            ],
+            CapabilityRowId::parse("routine.history-target-projection.v1").unwrap(),
+        )
+        .unwrap();
+        let lock_targets: RepositoryUpdateLockTargets = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "objectDisplay": "Configuration",
+            "reasons": ["updateTarget"],
+        }]))
+        .unwrap();
+        let plan_token =
+            super::update::RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+                plan_targets,
+                Vec::new(),
+                lock_targets,
+                CapabilityRowId::parse("selective.objects.v1").unwrap(),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let plan =
+            super::update::RoutineSelectiveRepositoryUpdatePlanAuthority::from_capability_token(
+                plan_token,
+            )
+            .unwrap();
+        (
+            anchor,
+            partition,
+            RoutineProjectionResolverFixture {
+                fold: Some(fold),
+                plan: Some(plan),
+                phase: Some(phase),
+            },
+        )
+    }
+
+    #[test]
+    fn routine_projection_folds_history_and_rejects_foreign_phase_or_plan() {
+        let expected_targets: RepositoryTargetStates = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "state": "present",
+            "repositoryVersion": "opaque-v1",
+            "targetFingerprint": SHA_B,
+        }]))
+        .unwrap();
+        let (anchor, partition, resolver) = routine_projection_fixture(
+            expected_targets.clone(),
+            super::lifecycle::RoutineUpdatePhaseAuthority::routine_test_only(
+                TaskPhase::Synchronized,
+            )
+            .unwrap(),
+        );
+        let projection =
+            ValidatedRoutineUpdateProjection::resolve(anchor, partition, None, resolver).unwrap();
+        assert_eq!(projection.planned_changes().as_slice().len(), 1);
+        assert_eq!(projection.planned_relevant_objects().len(), 1);
+        assert!(projection.planned_unrelated_objects().is_empty());
+        assert!(projection.structural_changes().as_slice().is_empty());
+        assert!(!projection.structural_confirmation_required());
+        assert_eq!(
+            projection.selective_update_plan().planned_targets(),
+            &expected_targets
+        );
+        assert_eq!(projection.resulting_phase(), TaskPhase::LocalVerified);
+        assert!(projection.deferred_repository_advance().is_none());
+        assert!(projection.deferred_advance_resolution_digest().is_none());
+
+        let wrong_targets: RepositoryTargetStates = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "state": "present",
+            "repositoryVersion": "opaque-v1",
+            "targetFingerprint": SHA_A,
+        }]))
+        .unwrap();
+        let (anchor, partition, wrong_plan) = routine_projection_fixture(
+            wrong_targets,
+            super::lifecycle::RoutineUpdatePhaseAuthority::routine_test_only(
+                TaskPhase::Synchronized,
+            )
+            .unwrap(),
+        );
+        assert!(
+            ValidatedRoutineUpdateProjection::resolve(anchor, partition, None, wrong_plan,)
+                .is_err()
+        );
+
+        let (anchor, partition, foreign_phase) = routine_projection_fixture(
+            expected_targets,
+            super::lifecycle::RoutineUpdatePhaseAuthority::foreign_test_only(
+                TaskPhase::RecoveryRequired,
+            ),
+        );
+        assert!(
+            ValidatedRoutineUpdateProjection::resolve(anchor, partition, None, foreign_phase,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -5078,6 +6416,41 @@ mod tests {
         .unwrap()
     }
 
+    pub(super) fn validated_task_commit_partition_for_results(
+        commit: &crate::domain::branched_development::contracts::results::repository::ValidatedCommitObjectAuthority,
+    ) -> super::ValidatedTaskCommitHistoryPartition {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let from: RepositoryHistoryCursor =
+            serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap();
+        let through = RepositoryHistoryCursor::new(
+            commit.repository_version().clone(),
+            Sha256Digest::parse(SHA_B).unwrap(),
+        );
+        let order = FakeOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "history-order-v1",
+                from.clone(),
+                through.clone(),
+                vec![through.clone()],
+            )
+            .unwrap(),
+        };
+        let mut partition = json!({
+            "fromExclusive": from,
+            "throughInclusive": through,
+            "entries": [{
+                "repositoryVersion": commit.repository_version(),
+                "classification": "taskCommit",
+                "semanticDeltaDigest": commit.committed_objects_digest(),
+            }],
+        });
+        recalculate_partition_digest(&mut partition);
+        let bytes = FakeEvidenceBytes::default();
+        RepositoryHistoryPartitionResolver::new(&registry, &UnexpectedIndex, &order, &bytes)
+            .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), commit)
+            .unwrap()
+    }
+
     fn support_actor() -> Value {
         json!({
             "username":"repository-user",
@@ -5716,6 +7089,39 @@ mod tests {
     }
 
     #[test]
+    fn prerequisite_history_projection_rejects_same_version_foreign_observation() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition, source_ref, observation_json) = support_observation_fixture("authorized");
+        let validated = validate_support_fixture(
+            partition,
+            support_candidate(&registry, source_ref.clone(), false),
+            serde_json_canonicalizer::to_vec(&observation_json).unwrap(),
+            &source_ref,
+        )
+        .unwrap();
+        let exact: super::SupportPrerequisiteVersionObservation =
+            serde_json::from_value(observation_json.clone()).unwrap();
+        super::ValidatedSupportPrerequisiteHistoryProjection::from_validated_partition(
+            validated.clone(),
+            vec![exact],
+        )
+        .unwrap();
+
+        let mut foreign = observation_json;
+        foreign["repositoryActor"]["username"] = json!("foreign-user");
+        foreign = finalize_support_observation(foreign);
+        let foreign: super::SupportPrerequisiteVersionObservation =
+            serde_json::from_value(foreign).unwrap();
+        assert!(
+            super::ValidatedSupportPrerequisiteHistoryProjection::from_validated_partition(
+                validated,
+                vec![foreign],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn immediate_support_entry_token_requires_the_exact_validated_mapping_and_successor() {
         let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, observation) = support_observation_fixture("authorized");
@@ -5755,7 +7161,8 @@ mod tests {
         );
         assert_eq!(token.registry_digest(), registry.registry_digest());
         assert_eq!(token.source_index_proof_digest().as_str().len(), 64);
-        let index_proof_json = serde_json::to_value(&validated.source_index_proofs[0]).unwrap();
+        let index_proof_json =
+            serde_json::to_value(validated.source_index_proofs[0].as_ref().unwrap()).unwrap();
         assert!(index_proof_json.get("validatedSupportMapping").is_none());
         let index_proof_schema =
             serde_json::to_value(schema_for!(super::EvidenceSourceIndexProof)).unwrap();
@@ -5787,7 +7194,10 @@ mod tests {
         }
 
         let mut wrong_registry = validated.clone();
-        wrong_registry.source_index_proofs[0].registry_digest = Sha256Digest::parse(SHA_A).unwrap();
+        wrong_registry.source_index_proofs[0]
+            .as_mut()
+            .unwrap()
+            .registry_digest = Sha256Digest::parse(SHA_A).unwrap();
         assert!(
             super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
                 &wrong_registry,
@@ -5797,7 +7207,12 @@ mod tests {
         );
 
         let mut wrong_selected_ref = validated.clone();
-        match &mut wrong_selected_ref.source_index_proofs[0].availability.0[1] {
+        match &mut wrong_selected_ref.source_index_proofs[0]
+            .as_mut()
+            .unwrap()
+            .availability
+            .0[1]
+        {
             super::EvidenceSourceAvailability::Available(row) => {
                 row.source_evidence_ref = RepositoryHistorySourceEvidenceRef::new(
                     EvidenceKind::SupportPrerequisiteObservation,
@@ -5817,6 +7232,8 @@ mod tests {
 
         let mut wrong_semantic = validated.clone();
         wrong_semantic.source_index_proofs[0]
+            .as_mut()
+            .unwrap()
             .validated_support_mapping
             .as_mut()
             .unwrap()
@@ -5977,6 +7394,115 @@ mod tests {
             &substituted_ref,
         )
         .is_err());
+    }
+
+    #[test]
+    fn routine_projection_resolves_current_deferred_against_the_same_partition() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition_json, source_ref, observation) = support_observation_fixture("authorized");
+        let partition = validate_support_fixture(
+            partition_json,
+            support_candidate(&registry, source_ref.clone(), false),
+            serde_json_canonicalizer::to_vec(&observation).unwrap(),
+            &source_ref,
+        )
+        .unwrap();
+        let anchor = RepositoryAnchorObservationAuthority::test_only(
+            Sha256Digest::parse(SHA_A).unwrap(),
+            partition.start_cursor().clone(),
+            configuration_identity("8.3.27"),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        )
+        .into_anchor()
+        .unwrap();
+        let before_states: RepositoryTargetStates = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "state": "present",
+            "repositoryVersion": "opaque-v0",
+            "targetFingerprint": SHA_A,
+        }]))
+        .unwrap();
+        let changes: RepositoryPlannedChanges = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "action": "modify",
+            "objectDisplay": "Configuration",
+            "repositoryVersion": "opaque-v1",
+            "targetFingerprint": SHA_B,
+            "relevance": "relevant",
+        }]))
+        .unwrap();
+        let first = partition.first_entry().unwrap();
+        let fold = RoutineUpdateHistoryFoldCapabilityToken::from_capability_adapter(
+            &anchor,
+            &partition,
+            before_states,
+            vec![
+                RoutineRepositoryVersionChangeObservation::from_capability_adapter(
+                    first.repository_version().clone(),
+                    first.semantic_delta_digest().clone(),
+                    changes,
+                ),
+            ],
+            CapabilityRowId::parse("routine.history-target-projection.v1").unwrap(),
+        )
+        .unwrap();
+        let planned_targets: RepositoryTargetStates = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "state": "present",
+            "repositoryVersion": "opaque-v1",
+            "targetFingerprint": SHA_B,
+        }]))
+        .unwrap();
+        let locks: RepositoryUpdateLockTargets = serde_json::from_value(json!([{
+            "targetKind": "configurationRoot",
+            "objectDisplay": "Configuration",
+            "reasons": ["updateTarget"],
+        }]))
+        .unwrap();
+        let plan = super::update::RoutineSelectiveRepositoryUpdatePlanAuthority::from_capability_token(
+            super::update::RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+                planned_targets,
+                Vec::new(),
+                locks,
+                CapabilityRowId::parse("selective.objects.v1").unwrap(),
+                None,
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let resolver = RoutineProjectionResolverFixture {
+            fold: Some(fold),
+            plan: Some(plan),
+            phase: Some(
+                super::lifecycle::RoutineUpdatePhaseAuthority::routine_test_only(
+                    TaskPhase::Synchronized,
+                )
+                .unwrap(),
+            ),
+        };
+        let deferred = super::DeferredRepositoryAdvance::coverage_unknown_test_only(
+            partition.start_cursor().clone(),
+        )
+        .unwrap();
+        let projection = ValidatedRoutineUpdateProjection::resolve(
+            anchor,
+            partition,
+            Some(super::CurrentDeferredRepositoryAdvanceAuthority::test_only(
+                UnicaId::parse("123e4567-e89b-12d3-a456-426614174000").unwrap(),
+                deferred.clone(),
+            )),
+            resolver,
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .deferred_repository_advance()
+                .unwrap()
+                .observation_digest(),
+            deferred.observation_digest()
+        );
+        assert!(projection.deferred_advance_resolution_digest().is_some());
     }
 
     #[test]
@@ -7046,6 +8572,129 @@ mod tests {
         assert!(resolver
             .validate(serde_json::from_value(task_commit).unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn commit_owned_partition_accepts_only_the_exact_singleton_task_version_and_digest() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let capability = CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap();
+        let authority = validated_commit_object_authority_fixture_test_only(
+            RepositoryVersion::parse("opaque-v1").unwrap(),
+            capability,
+        );
+        let mut task_commit = json!({
+            "fromExclusive":cursor("opaque-v0", SHA_A),
+            "throughInclusive":cursor("opaque-v1", SHA_B),
+            "entries":[{
+                "repositoryVersion":"opaque-v1",
+                "classification":"taskCommit",
+                "semanticDeltaDigest":authority.committed_objects_digest()
+            }]
+        });
+        recalculate_partition_digest(&mut task_commit);
+        let evidence_bytes = FakeEvidenceBytes::default();
+        let order = FakeOrder {
+            evidence: routine_order(),
+        };
+        let resolver = RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &UnexpectedIndex,
+            &order,
+            &evidence_bytes,
+        );
+
+        let validated = resolver
+            .validate_task_commit_partition(
+                serde_json::from_value(task_commit.clone()).unwrap(),
+                &authority,
+            )
+            .unwrap();
+        assert!(validated.binds(&authority));
+        let foreign_authority = validated_commit_object_authority_fixture_test_only(
+            RepositoryVersion::parse("opaque-v1").unwrap(),
+            CapabilityRowId::parse("repository.other-atomic-safety.v1").unwrap(),
+        );
+        assert!(!validated.binds(&foreign_authority));
+
+        task_commit["entries"][0]["semanticDeltaDigest"] = json!(SHA_A);
+        recalculate_partition_digest(&mut task_commit);
+        assert!(resolver
+            .validate_task_commit_partition(
+                serde_json::from_value(task_commit).unwrap(),
+                &authority,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn commit_owned_partition_resolves_every_non_task_entry_through_the_source_index() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (routine, source_ref, evidence) = routine_partition_fixture();
+        let authority = validated_commit_object_authority_fixture_test_only(
+            RepositoryVersion::parse("opaque-v2").unwrap(),
+            CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap(),
+        );
+        let mut partition = json!({
+            "fromExclusive":cursor("opaque-v0", SHA_A),
+            "throughInclusive":cursor("opaque-v2", SHA_A),
+            "entries":[
+                routine["entries"][0].clone(),
+                {
+                    "repositoryVersion":"opaque-v2",
+                    "classification":"taskCommit",
+                    "semanticDeltaDigest":authority.committed_objects_digest()
+                }
+            ]
+        });
+        recalculate_partition_digest(&mut partition);
+        let order = FakeOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "history-order-v1",
+                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+                serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap(),
+                vec![
+                    serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
+                    serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap(),
+                ],
+            )
+            .unwrap(),
+        };
+        let index = FakeIndex {
+            candidates: BTreeMap::from([(
+                "opaque-v1".into(),
+                routine_candidate(&registry, source_ref.clone()),
+            )]),
+        };
+        let evidence_bytes = FakeEvidenceBytes {
+            bytes: BTreeMap::from([(
+                (
+                    EvidenceKind::RoutineClassification,
+                    source_ref.evidence_digest().as_str().to_owned(),
+                ),
+                serde_json_canonicalizer::to_vec(&evidence).unwrap(),
+            )]),
+        };
+        let resolver =
+            RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &evidence_bytes);
+
+        assert!(resolver
+            .validate_task_commit_partition(
+                serde_json::from_value(partition.clone()).unwrap(),
+                &authority,
+            )
+            .is_ok());
+
+        let missing_index = FakeIndex {
+            candidates: BTreeMap::new(),
+        };
+        assert!(RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &missing_index,
+            &order,
+            &evidence_bytes,
+        )
+        .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), &authority)
+        .is_err());
     }
 
     fn non_conflicting_partition_fixture() -> (

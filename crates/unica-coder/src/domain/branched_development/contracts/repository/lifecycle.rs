@@ -1,5 +1,6 @@
 use super::super::scalars::RepositoryVersion;
 use super::super::schema::one_of_schema;
+use super::super::status::ExistingTaskStatusData;
 use super::super::SupportMissingEvidenceKind;
 use super::{
     FalseLiteral, RepositoryContractError, RepositoryHistoryCoverageGapEvidence,
@@ -7,6 +8,8 @@ use super::{
     RepositoryHistoryPartitionClassification, TrueLiteral, UnvalidatedRepositoryHistoryPartition,
     ValidatedRepositoryHistoryPartition,
 };
+#[cfg(test)]
+use super::{RepositoryHistoryPartitionDigestRecord, UnvalidatedRepositoryHistoryEntries};
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
@@ -32,6 +35,77 @@ wire_literal!(ClassifiedState, "classified");
 wire_literal!(UnclassifiedState, "unclassified");
 wire_literal!(CoverageUnknownState, "coverageUnknown");
 wire_literal!(RoutineUpdateMode, "routine");
+
+/// Non-wire proof of the live task phase used by one routine update.
+///
+/// Production construction accepts only the validated current status leaf;
+/// callers cannot assert either the origin or result phase independently.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RoutineUpdatePhaseAuthority {
+    origin_phase: TaskPhase,
+}
+
+impl RoutineUpdatePhaseAuthority {
+    pub(crate) fn from_live_status(
+        status: &ExistingTaskStatusData,
+    ) -> Result<Self, RepositoryContractError> {
+        Self::from_phase(status.phase())
+    }
+
+    fn from_phase(origin_phase: TaskPhase) -> Result<Self, RepositoryContractError> {
+        if !matches!(
+            origin_phase,
+            TaskPhase::BaselineReady
+                | TaskPhase::Developing
+                | TaskPhase::LocalVerified
+                | TaskPhase::SynchronizationPrepared
+                | TaskPhase::SynchronizationConflicts
+                | TaskPhase::Synchronized
+                | TaskPhase::IntegrationPlanned
+                | TaskPhase::BlockedByForeignLock
+                | TaskPhase::StaleRelevantBaseline
+                | TaskPhase::LockPlanExpansionRequired
+                | TaskPhase::StaleSupportPreflight
+                | TaskPhase::UnexpectedDelta
+                | TaskPhase::ValidationFailed
+                | TaskPhase::AbandonmentReady
+        ) {
+            return Err(RepositoryContractError(
+                "live task phase does not allow a routine repository update",
+            ));
+        }
+        Ok(Self { origin_phase })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn routine_test_only(
+        origin_phase: TaskPhase,
+    ) -> Result<Self, RepositoryContractError> {
+        Self::from_phase(origin_phase)
+    }
+
+    /// Adversarial cross-contract fixture. Production has no equivalent raw
+    /// phase mint; the projection must still reject this forged authority.
+    #[cfg(test)]
+    pub(crate) const fn foreign_test_only(origin_phase: TaskPhase) -> Self {
+        Self { origin_phase }
+    }
+
+    pub(crate) fn into_resulting_phase(
+        self,
+        contains_relevant_advance: bool,
+    ) -> Result<TaskPhase, RepositoryContractError> {
+        Self::from_phase(self.origin_phase)?;
+        let resulting_phase = if self.origin_phase == TaskPhase::AbandonmentReady {
+            TaskPhase::AbandonmentReady
+        } else if contains_relevant_advance {
+            TaskPhase::LocalVerified
+        } else {
+            self.origin_phase
+        };
+        Ok(resulting_phase)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -531,6 +605,20 @@ pub(crate) enum UnvalidatedDeferredRepositoryAdvance {
     CoverageUnknown(UnvalidatedCoverageUnknownDeferredRepositoryAdvance),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeferredRepositoryAdvanceResolutionDigestRecord {
+    advance_observation_digest: Sha256Digest,
+    resolved_history_partition_digest: Sha256Digest,
+    first_resolved_version: RepositoryVersion,
+    first_resolved_classification: RepositoryHistoryPartitionClassification,
+    first_resolved_semantic_delta_digest: Sha256Digest,
+    resulting_phase: TaskPhase,
+}
+
+impl contract_digest_record_sealed::Sealed for DeferredRepositoryAdvanceResolutionDigestRecord {}
+impl ContractDigestRecord for DeferredRepositoryAdvanceResolutionDigestRecord {}
+
 impl JsonSchema for UnvalidatedDeferredRepositoryAdvance {
     fn schema_name() -> Cow<'static, str> {
         "DeferredRepositoryAdvance".into()
@@ -560,6 +648,99 @@ impl DeferredRepositoryAdvance {
             Self::Unclassified(value) => &value.observation_digest,
             Self::CoverageUnknown(value) => &value.observation_digest,
         }
+    }
+
+    /// Known immediate successor retained outside the completed terminal
+    /// partition. Coverage-unknown handles intentionally have no invented
+    /// version.
+    pub(crate) fn first_observed_version(&self) -> Option<&RepositoryVersion> {
+        match self {
+            Self::Classified(value) => Some(&value.first_observed_version),
+            Self::Unclassified(value) => Some(&value.first_observed_version),
+            Self::CoverageUnknown(_) => None,
+        }
+    }
+
+    pub(crate) fn routine_resolution_digest(
+        &self,
+        partition: &ValidatedRepositoryHistoryPartition,
+        resulting_phase: TaskPhase,
+    ) -> Result<Sha256Digest, RepositoryContractError> {
+        if self.anchor_cursor() != partition.start_cursor() {
+            return Err(RepositoryContractError(
+                "deferred advance does not bind the routine partition start",
+            ));
+        }
+        let first = partition.first_entry().ok_or(RepositoryContractError(
+            "deferred advance resolution requires its immediate successor",
+        ))?;
+        let expected_classification = match self {
+            Self::Classified(value) => {
+                if &value.first_observed_version != first.repository_version()
+                    || &value.semantic_delta_digest != first.semantic_delta_digest()
+                {
+                    return Err(RepositoryContractError(
+                        "classified deferred successor differs from routine history",
+                    ));
+                }
+                Some(match value.classification {
+                    DeferredRepositoryAdvanceClassification::AuthorizedSupport => {
+                        RepositoryHistoryPartitionClassification::AuthorizedSupport
+                    }
+                    DeferredRepositoryAdvanceClassification::Invalid => {
+                        RepositoryHistoryPartitionClassification::Invalid
+                    }
+                    DeferredRepositoryAdvanceClassification::Corrective => {
+                        RepositoryHistoryPartitionClassification::Corrective
+                    }
+                })
+            }
+            Self::Unclassified(value) => {
+                if &value.first_observed_version != first.repository_version() {
+                    return Err(RepositoryContractError(
+                        "unclassified deferred successor version was substituted",
+                    ));
+                }
+                None
+            }
+            Self::CoverageUnknown(_) => None,
+        };
+        if expected_classification.is_some_and(|expected| expected != first.classification())
+            || !matches!(
+                first.classification(),
+                RepositoryHistoryPartitionClassification::AuthorizedSupport
+                    | RepositoryHistoryPartitionClassification::Invalid
+                    | RepositoryHistoryPartitionClassification::Corrective
+            )
+        {
+            return Err(RepositoryContractError(
+                "deferred successor classification is not an exact routine resolution",
+            ));
+        }
+        contract_digest(
+            &DeferredRepositoryAdvanceResolutionDigestRecord {
+                advance_observation_digest: self.observation_digest().clone(),
+                resolved_history_partition_digest: partition.partition_digest().clone(),
+                first_resolved_version: first.repository_version().clone(),
+                first_resolved_classification: first.classification(),
+                first_resolved_semantic_delta_digest: first.semantic_delta_digest().clone(),
+                resulting_phase,
+            },
+            "deferred repository advance resolution digest failed",
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coverage_unknown_test_only(
+        from_cursor: RepositoryHistoryCursor,
+    ) -> Result<Self, RepositoryContractError> {
+        let gap = RepositoryHistoryCoverageGapEvidence::from_capability_adapter(
+            "repository.history.coverage-gap.v1",
+            from_cursor,
+        )?;
+        Ok(Self::CoverageUnknown(
+            CoverageUnknownDeferredRepositoryAdvance::new(&gap)?,
+        ))
     }
 }
 
@@ -688,6 +869,14 @@ impl DeferredRepositoryAdvanceConsumptionReceipt {
 
     pub(crate) const fn advance_observation_digest(&self) -> &Sha256Digest {
         &self.advance_observation_digest
+    }
+
+    pub(crate) const fn routine_update_receipt_id(&self) -> &UnicaId {
+        &self.routine_update_receipt_id
+    }
+
+    pub(crate) const fn resolved_history_partition_digest(&self) -> &Sha256Digest {
+        &self.resolved_history_partition_digest
     }
 
     pub(crate) fn receipt_digest(&self) -> &Sha256Digest {
@@ -914,9 +1103,9 @@ impl ContractDigestRecord for PostMergeHistoryGuardEvidenceDigestRecord {}
 
 /// Capability-backed post-merge closure observation for one exact partition.
 ///
-/// Task 7 deliberately exposes no raw production constructor. The atomic
-/// repository adapter must add its exact typed factory here before production
-/// can mint this token.
+/// Production construction derives its endpoints and partition digest from a
+/// validated partition; the adapter may provide only the receipt start,
+/// recomputed closure and capability identity observed atomically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PostMergeHistoryGuardAuthority {
     merge_receipt_cursor: RepositoryHistoryCursor,
@@ -924,6 +1113,30 @@ pub(crate) struct PostMergeHistoryGuardAuthority {
     partition_digest: Sha256Digest,
     recomputed_reference_closure_digest: Sha256Digest,
     atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+impl PostMergeHistoryGuardAuthority {
+    /// Seals one atomic repository-adapter observation to the exact validated
+    /// history partition that starts at the merge receipt cursor.
+    pub(crate) fn from_capability_adapter(
+        partition: &ValidatedRepositoryHistoryPartition,
+        merge_receipt_cursor: RepositoryHistoryCursor,
+        recomputed_reference_closure_digest: Sha256Digest,
+        atomic_commit_safety_capability_id: CapabilityRowId,
+    ) -> Result<Self, RepositoryContractError> {
+        if partition.start_cursor() != &merge_receipt_cursor {
+            return Err(RepositoryContractError(
+                "post-merge capability observation starts at another merge receipt cursor",
+            ));
+        }
+        Ok(Self {
+            merge_receipt_cursor,
+            classified_through_cursor: partition.through_inclusive().clone(),
+            partition_digest: partition.partition_digest().clone(),
+            recomputed_reference_closure_digest,
+            atomic_commit_safety_capability_id,
+        })
+    }
 }
 
 /// Endpoint-bound post-merge guard backed by a validated history partition.
@@ -1043,6 +1256,76 @@ impl PostMergeHistoryGuardEvidence {
     pub(crate) fn evidence_digest(&self) -> &Sha256Digest {
         &self.evidence_digest
     }
+
+    pub(crate) const fn merge_receipt_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.merge_receipt_cursor
+    }
+
+    pub(crate) const fn classified_through_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.classified_through_cursor
+    }
+
+    pub(crate) const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.partition
+    }
+
+    pub(crate) const fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        &self.atomic_commit_safety_capability_id
+    }
+
+    pub(crate) const fn recomputed_reference_closure_digest(&self) -> &Sha256Digest {
+        &self.recomputed_reference_closure_digest
+    }
+}
+
+/// Test fixture that still traverses both validated evidence constructors.
+/// It is intentionally cfg-only: production must obtain both authorities from
+/// their capability adapters rather than supplying closure/baseline digests.
+#[cfg(test)]
+pub(crate) fn empty_commit_history_evidence_fixture_test_only(
+    cursor: RepositoryHistoryCursor,
+    relevant_baseline_digest: Sha256Digest,
+    recomputed_reference_closure_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+) -> Result<(SupportGateHistoryEvidence, PostMergeHistoryGuardEvidence), RepositoryContractError> {
+    let entries = UnvalidatedRepositoryHistoryEntries(Vec::new());
+    let partition_digest = canonical_contract_digest(
+        &RepositoryHistoryPartitionDigestRecord {
+            from_exclusive: cursor.clone(),
+            through_inclusive: cursor.clone(),
+            entries: entries.clone(),
+        },
+        None,
+    )
+    .map_err(|_| RepositoryContractError("empty fixture partition digest failed"))?;
+    let partition = ValidatedRepositoryHistoryPartition {
+        wire: UnvalidatedRepositoryHistoryPartition {
+            from_exclusive: cursor.clone(),
+            through_inclusive: cursor,
+            entries,
+            partition_digest,
+        },
+        source_index_proofs: Vec::new(),
+        order_evidence: None,
+    };
+    let baseline_authority = SupportGateRelevantBaselineAuthority {
+        gate_observed_cursor: partition.start_cursor().clone(),
+        classified_through_cursor: partition.through_inclusive().clone(),
+        partition_digest: partition.partition_digest().clone(),
+        current_gate_relevant_baseline_digest: relevant_baseline_digest.clone(),
+        recomputed_relevant_baseline_digest: relevant_baseline_digest,
+    };
+    let guard_authority = PostMergeHistoryGuardAuthority {
+        merge_receipt_cursor: partition.start_cursor().clone(),
+        classified_through_cursor: partition.through_inclusive().clone(),
+        partition_digest: partition.partition_digest().clone(),
+        recomputed_reference_closure_digest,
+        atomic_commit_safety_capability_id,
+    };
+    Ok((
+        SupportGateHistoryEvidence::new(partition.clone(), &baseline_authority)?,
+        PostMergeHistoryGuardEvidence::new(partition, &guard_authority)?,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1200,6 +1483,20 @@ mod tests {
         };
     }
 
+    macro_rules! assert_not_clone {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfClone<Marker> {
+                    fn assert_not_clone() {}
+                }
+                struct ImplementsClone;
+                impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+                impl<T: ?Sized + Clone> AmbiguousIfClone<ImplementsClone> for T {}
+                let _ = <$type as AmbiguousIfClone<_>>::assert_not_clone;
+            };
+        };
+    }
+
     assert_not_deserialize_owned!(ClassifiedDeferredRepositoryAdvance);
     assert_not_deserialize_owned!(DeferredRepositoryAdvanceClassificationAuthority);
     assert_not_deserialize_owned!(UnclassifiedDeferredRepositoryAdvance);
@@ -1212,6 +1509,36 @@ mod tests {
     assert_not_deserialize_owned!(PostMergeHistoryGuardAuthority);
     assert_not_deserialize_owned!(OriginalCleanRefreshProof);
     assert_not_deserialize_owned!(OriginalCleanRefreshScanAuthority);
+    assert_not_deserialize_owned!(RoutineUpdatePhaseAuthority);
+    assert_not_clone!(RoutineUpdatePhaseAuthority);
+
+    #[test]
+    fn routine_phase_authority_derives_only_closed_live_status_transitions() {
+        assert_eq!(
+            RoutineUpdatePhaseAuthority::routine_test_only(TaskPhase::Synchronized)
+                .unwrap()
+                .into_resulting_phase(false),
+            Ok(TaskPhase::Synchronized)
+        );
+        assert_eq!(
+            RoutineUpdatePhaseAuthority::routine_test_only(TaskPhase::Synchronized)
+                .unwrap()
+                .into_resulting_phase(true),
+            Ok(TaskPhase::LocalVerified)
+        );
+        assert_eq!(
+            RoutineUpdatePhaseAuthority::routine_test_only(TaskPhase::AbandonmentReady)
+                .unwrap()
+                .into_resulting_phase(true),
+            Ok(TaskPhase::AbandonmentReady)
+        );
+        assert!(
+            RoutineUpdatePhaseAuthority::routine_test_only(TaskPhase::RecoveryRequired).is_err()
+        );
+        assert!(
+            RoutineUpdatePhaseAuthority::routine_test_only(TaskPhase::ArchivedSuccess).is_err()
+        );
+    }
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -1292,6 +1619,92 @@ mod tests {
             source_index_proofs: Vec::new(),
             order_evidence: None,
         }
+    }
+
+    fn deferred_resolution_partition(
+        classification: &str,
+        semantic_delta_digest: &str,
+    ) -> ValidatedRepositoryHistoryPartition {
+        let from_exclusive = cursor();
+        let through_inclusive = cursor_at("v2", B);
+        let entries =
+            serde_json::from_value::<super::super::UnvalidatedRepositoryHistoryEntries>(json!([{
+                "repositoryVersion": "v2",
+                "classification": classification,
+                "semanticDeltaDigest": semantic_delta_digest,
+                "sourceEvidenceRef": {
+                    "sourceKind": "contentAddressed",
+                    "evidenceKind": "supportPrerequisiteObservation",
+                    "evidenceDigest": A,
+                },
+            }]))
+            .unwrap();
+        let partition_digest = canonical_contract_digest(
+            &super::super::RepositoryHistoryPartitionDigestRecord {
+                from_exclusive: from_exclusive.clone(),
+                through_inclusive: through_inclusive.clone(),
+                entries: entries.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        ValidatedRepositoryHistoryPartition {
+            wire: super::super::UnvalidatedRepositoryHistoryPartition {
+                from_exclusive,
+                through_inclusive,
+                entries,
+                partition_digest,
+            },
+            source_index_proofs: vec![None],
+            order_evidence: None,
+        }
+    }
+
+    #[test]
+    fn deferred_routine_resolution_binds_exact_first_entry_and_result_phase() {
+        let classified = DeferredRepositoryAdvance::Classified(
+            ClassifiedDeferredRepositoryAdvance::new(&classified_authority(
+                DeferredRepositoryAdvanceClassification::AuthorizedSupport,
+                A,
+            ))
+            .unwrap(),
+        );
+        let partition = deferred_resolution_partition("authorizedSupport", A);
+        let digest = classified
+            .routine_resolution_digest(&partition, TaskPhase::LocalVerified)
+            .unwrap();
+        assert_ne!(&digest, classified.observation_digest());
+        assert!(classified
+            .routine_resolution_digest(
+                &deferred_resolution_partition("invalid", A),
+                TaskPhase::LocalVerified,
+            )
+            .is_err());
+        assert!(classified
+            .routine_resolution_digest(
+                &deferred_resolution_partition("authorizedSupport", B),
+                TaskPhase::LocalVerified,
+            )
+            .is_err());
+
+        let unclassified = DeferredRepositoryAdvance::Unclassified(
+            UnclassifiedDeferredRepositoryAdvance::new(&missing_evidence_authority(vec![
+                SupportMissingEvidenceKind::RepositoryActorUnavailable,
+            ]))
+            .unwrap(),
+        );
+        assert!(unclassified
+            .routine_resolution_digest(&partition, TaskPhase::LocalVerified)
+            .is_ok());
+        let coverage_unknown = DeferredRepositoryAdvance::CoverageUnknown(
+            CoverageUnknownDeferredRepositoryAdvance::new(&coverage_gap()).unwrap(),
+        );
+        assert!(coverage_unknown
+            .routine_resolution_digest(&partition, TaskPhase::LocalVerified)
+            .is_ok());
+        assert!(coverage_unknown
+            .routine_resolution_digest(&empty_partition(), TaskPhase::LocalVerified)
+            .is_err());
     }
 
     fn gate_baseline_authority(
@@ -1847,6 +2260,40 @@ mod tests {
         );
         let wire = serde_json::from_value(substituted).unwrap();
         assert!(PostMergeHistoryGuardEvidence::from_wire(wire, partition, &authority).is_err());
+    }
+
+    #[test]
+    fn post_merge_guard_exposes_only_its_validated_commit_lineage() {
+        let partition = empty_partition();
+        let authority = PostMergeHistoryGuardAuthority::from_capability_adapter(
+            &partition,
+            partition.start_cursor().clone(),
+            Sha256Digest::parse(B).unwrap(),
+            CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap(),
+        )
+        .unwrap();
+        let guard = PostMergeHistoryGuardEvidence::new(partition.clone(), &authority).unwrap();
+
+        assert_eq!(guard.merge_receipt_cursor(), partition.start_cursor());
+        assert_eq!(
+            guard.classified_through_cursor(),
+            partition.through_inclusive()
+        );
+        assert_eq!(
+            guard.atomic_commit_safety_capability_id(),
+            &CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap()
+        );
+        assert_eq!(
+            guard.recomputed_reference_closure_digest(),
+            &Sha256Digest::parse(B).unwrap()
+        );
+        assert!(PostMergeHistoryGuardAuthority::from_capability_adapter(
+            &partition,
+            cursor_at("v9", A),
+            Sha256Digest::parse(B).unwrap(),
+            CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap(),
+        )
+        .is_err());
     }
 
     #[test]

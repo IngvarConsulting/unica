@@ -1,7 +1,9 @@
 use super::{
-    AcquiredRepositoryUpdateLockTargets, FalseLiteral, HasTargetKey,
-    ReleasedRepositoryUpdateLockTargets, RepositoryContractError, RepositoryHistoryCursor,
-    RepositoryTargetStates, RepositoryUpdateLockTargets, TargetKey, TrueLiteral,
+    AcquiredRepositoryUpdateLockTargets, ConfigurationRootKind, FalseLiteral, HasTargetKey,
+    PresentState, ReleasedRepositoryUpdateLockTargets, RepositoryAnchor, RepositoryContractError,
+    RepositoryHistoryCursor, RepositoryTargetState, RepositoryTargetStates,
+    RepositoryUpdateLockTargets, RootPresentTargetState, TargetKey, TrueLiteral,
+    ValidatedSupportPrerequisiteHistoryProjection,
 };
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
@@ -154,6 +156,183 @@ pub(crate) struct SupportRecoverySelectiveUpdatePlanObservation {
     structural_closure_covered_targets: Vec<super::RepositoryTargetIdentity>,
 }
 
+/// One sealed adapter capability for a routine selective-update plan.
+///
+/// The token owns the exact target map together with the lock/capability
+/// observation that covers it. It is deliberately non-`Clone` and non-wire;
+/// a routine resolver may return the resulting authority but cannot return a
+/// caller-assembled plan.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RoutineSelectiveRepositoryUpdateCapabilityToken {
+    plan_authority: SelectiveRepositoryUpdatePlanAuthority,
+    structural_targets: Vec<super::RepositoryTargetIdentity>,
+}
+
+/// Sealed capability observation for one support-root plan. The target map is
+/// derived here from the exact before anchor, authorized observation version,
+/// and capability-observed after-root fingerprint; callers never provide a
+/// `SelectiveRepositoryUpdatePlan` or target list.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SupportRootSelectiveRepositoryUpdateCapabilityToken {
+    plan_authority: SelectiveRepositoryUpdatePlanAuthority,
+    before_anchor_digest: Sha256Digest,
+    history_partition_digest: Sha256Digest,
+    authorized_repository_version: super::super::scalars::RepositoryVersion,
+    authorized_root_delta_digest: Sha256Digest,
+    final_root_repository_version: super::super::scalars::RepositoryVersion,
+    observed_after_root_fingerprint: Sha256Digest,
+    update_required: bool,
+}
+
+impl SupportRootSelectiveRepositoryUpdateCapabilityToken {
+    pub(crate) fn from_capability_adapter(
+        before_anchor: &RepositoryAnchor,
+        history: &ValidatedSupportPrerequisiteHistoryProjection,
+        observed_before_root_fingerprint: Sha256Digest,
+        observed_after_root_fingerprint: Sha256Digest,
+        lock_targets: RepositoryUpdateLockTargets,
+        selective_objects_capability_id: CapabilityRowId,
+    ) -> Result<Self, RepositoryContractError> {
+        let authorized_observation = history.authorized_observation();
+        let authorized = authorized_observation
+            .authorized_support_projection()
+            .ok_or(RepositoryContractError(
+                "support-root plan requires an authorized support observation",
+            ))?;
+        if &observed_before_root_fingerprint != before_anchor.configuration_fingerprint() {
+            return Err(RepositoryContractError(
+                "support-root capability observed another before-root fingerprint",
+            ));
+        }
+        if lock_targets.as_slice().len() != 1
+            || lock_targets.as_slice()[0].target_key() != TargetKey::Root
+        {
+            return Err(RepositoryContractError(
+                "support-root capability must bind the exact root-only lock closure",
+            ));
+        }
+        let update_required = observed_before_root_fingerprint != observed_after_root_fingerprint;
+        let planned_targets = if update_required {
+            RepositoryTargetStates(vec![RepositoryTargetState::RootPresent(
+                RootPresentTargetState {
+                    target_kind: ConfigurationRootKind::Value,
+                    state: PresentState::Value,
+                    repository_version: history.final_root_repository_version().clone(),
+                    target_fingerprint: observed_after_root_fingerprint.clone(),
+                },
+            )])
+        } else {
+            RepositoryTargetStates(Vec::new())
+        };
+        let plan_authority = SelectiveRepositoryUpdatePlanAuthority::from_capability_adapter(
+            SelectiveRepositoryUpdateScope::SupportRoot,
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            None,
+            Vec::new(),
+        )?;
+        Ok(Self {
+            plan_authority,
+            before_anchor_digest: before_anchor.anchor_digest().clone(),
+            history_partition_digest: history.partition().partition_digest().clone(),
+            authorized_repository_version: authorized_observation.repository_version().clone(),
+            authorized_root_delta_digest: authorized.root_delta_digest().clone(),
+            final_root_repository_version: history.final_root_repository_version().clone(),
+            observed_after_root_fingerprint,
+            update_required,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SupportRootSelectiveRepositoryUpdatePlanAuthority {
+    token: SupportRootSelectiveRepositoryUpdateCapabilityToken,
+}
+
+impl SupportRootSelectiveRepositoryUpdatePlanAuthority {
+    pub(crate) fn from_capability_token(
+        token: SupportRootSelectiveRepositoryUpdateCapabilityToken,
+    ) -> Result<Self, RepositoryContractError> {
+        if token.plan_authority.scope != SelectiveRepositoryUpdateScope::SupportRoot
+            || token.plan_authority.structural_capability_row_id.is_some()
+        {
+            return Err(RepositoryContractError(
+                "support-root capability token has a foreign or structural plan",
+            ));
+        }
+        Ok(Self { token })
+    }
+}
+
+impl RoutineSelectiveRepositoryUpdateCapabilityToken {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_capability_adapter(
+        planned_targets: RepositoryTargetStates,
+        structural_targets: Vec<super::RepositoryTargetIdentity>,
+        lock_targets: RepositoryUpdateLockTargets,
+        selective_objects_capability_id: CapabilityRowId,
+        structural_capability_row_id: Option<CapabilityRowId>,
+        structural_closure_covered_targets: Vec<super::RepositoryTargetIdentity>,
+    ) -> Result<Self, RepositoryContractError> {
+        let has_structural_targets = !structural_targets.is_empty();
+        if structural_targets.windows(2).any(|pair| pair[0] >= pair[1])
+            || structural_targets.iter().any(|target| {
+                !planned_targets
+                    .as_slice()
+                    .iter()
+                    .any(|planned| planned.target_key() == target.target_key())
+            })
+            || structural_capability_row_id.is_some() != has_structural_targets
+        {
+            return Err(RepositoryContractError(
+                "routine structural targets and capability evidence are not exact",
+            ));
+        }
+        let structural_closure_covered_targets = structural_closure_covered_targets
+            .iter()
+            .map(HasTargetKey::target_key)
+            .collect();
+        let plan_authority = SelectiveRepositoryUpdatePlanAuthority::from_capability_adapter(
+            SelectiveRepositoryUpdateScope::RoutinePlannedObjects,
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            structural_capability_row_id,
+            structural_closure_covered_targets,
+        )?;
+        Ok(Self {
+            plan_authority,
+            structural_targets,
+        })
+    }
+}
+
+/// Resolver-returnable routine plan authority. The final factory rechecks its
+/// target-state and structural bindings against the independently folded
+/// routine history before producing a wire plan.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RoutineSelectiveRepositoryUpdatePlanAuthority {
+    plan_authority: SelectiveRepositoryUpdatePlanAuthority,
+    structural_targets: Vec<super::RepositoryTargetIdentity>,
+}
+
+impl RoutineSelectiveRepositoryUpdatePlanAuthority {
+    pub(crate) fn from_capability_token(
+        token: RoutineSelectiveRepositoryUpdateCapabilityToken,
+    ) -> Result<Self, RepositoryContractError> {
+        if token.plan_authority.scope != SelectiveRepositoryUpdateScope::RoutinePlannedObjects {
+            return Err(RepositoryContractError(
+                "routine capability token has a foreign selective-update scope",
+            ));
+        }
+        Ok(Self {
+            plan_authority: token.plan_authority,
+            structural_targets: token.structural_targets,
+        })
+    }
+}
+
 impl SupportRecoverySelectiveUpdatePlanObservation {
     pub(crate) fn from_capability_adapter(
         planned_targets: RepositoryTargetStates,
@@ -265,6 +444,59 @@ impl JsonSchema for SelectiveRepositoryUpdatePlan {
 }
 
 impl SelectiveRepositoryUpdatePlan {
+    pub(crate) fn routine_from_authority(
+        authority: RoutineSelectiveRepositoryUpdatePlanAuthority,
+        expected_planned_targets: &RepositoryTargetStates,
+        expected_structural_targets: &[super::RepositoryTargetIdentity],
+    ) -> Result<Self, RepositoryContractError> {
+        if &authority.plan_authority.planned_targets != expected_planned_targets
+            || authority.structural_targets.as_slice() != expected_structural_targets
+        {
+            return Err(RepositoryContractError(
+                "routine plan authority disagrees with the independently folded target map",
+            ));
+        }
+        Self::new(authority.plan_authority)
+    }
+
+    pub(crate) fn support_root_from_authority(
+        authority: SupportRootSelectiveRepositoryUpdatePlanAuthority,
+        before_anchor: &RepositoryAnchor,
+        history: &ValidatedSupportPrerequisiteHistoryProjection,
+    ) -> Result<(Self, bool), RepositoryContractError> {
+        let token = authority.token;
+        let authorized_observation = history.authorized_observation();
+        let authorized = authorized_observation
+            .authorized_support_projection()
+            .ok_or(RepositoryContractError(
+                "support-root plan requires its authorized observation",
+            ))?;
+        let expected_targets = if token.update_required {
+            RepositoryTargetStates(vec![RepositoryTargetState::RootPresent(
+                RootPresentTargetState {
+                    target_kind: ConfigurationRootKind::Value,
+                    state: PresentState::Value,
+                    repository_version: history.final_root_repository_version().clone(),
+                    target_fingerprint: token.observed_after_root_fingerprint.clone(),
+                },
+            )])
+        } else {
+            RepositoryTargetStates(Vec::new())
+        };
+        if token.before_anchor_digest != *before_anchor.anchor_digest()
+            || token.history_partition_digest != *history.partition().partition_digest()
+            || token.authorized_repository_version != *authorized_observation.repository_version()
+            || token.authorized_root_delta_digest != *authorized.root_delta_digest()
+            || token.final_root_repository_version != *history.final_root_repository_version()
+            || token.plan_authority.planned_targets != expected_targets
+        {
+            return Err(RepositoryContractError(
+                "support-root plan capability differs from the authorized root observation",
+            ));
+        }
+        Self::new(token.plan_authority).map(|plan| (plan, token.update_required))
+    }
+
     pub(crate) fn recovery_finalization_from_approved(
         _token: &SupportRecoveryAuthorityToken,
         observation: SupportRecoverySelectiveUpdatePlanObservation,
@@ -960,18 +1192,62 @@ impl SelectiveRepositoryUpdateProof {
     }
 }
 
+/// Cross-contract fixture for support completion tests. It still derives the
+/// plan and execution proof through the real constructors; only the external
+/// root-lock/cursor observations are supplied by the test adapter.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::domain::branched_development) fn support_root_already_exact_fixture_test_only(
+    lock_targets: RepositoryUpdateLockTargets,
+    selective_objects_capability_id: CapabilityRowId,
+    guard_receipt_id: UnicaId,
+    before_original_target_fingerprint_map_digest: Sha256Digest,
+    verified_original_target_fingerprint_digest: Sha256Digest,
+    observed_before_cursor: RepositoryHistoryCursor,
+    observed_after_cursor: RepositoryHistoryCursor,
+) -> Result<
+    (
+        SelectiveRepositoryUpdatePlan,
+        SelectiveRepositoryUpdateProof,
+    ),
+    RepositoryContractError,
+> {
+    let plan = SelectiveRepositoryUpdatePlan::new(
+        SelectiveRepositoryUpdatePlanAuthority::from_capability_adapter(
+            SelectiveRepositoryUpdateScope::SupportRoot,
+            RepositoryTargetStates(Vec::new()),
+            lock_targets,
+            selective_objects_capability_id,
+            None,
+            Vec::new(),
+        )?,
+    )?;
+    let proof = SelectiveRepositoryUpdateProof::recovery_finalization_already_exact_test_only(
+        &plan,
+        guard_receipt_id,
+        before_original_target_fingerprint_map_digest,
+        verified_original_target_fingerprint_digest,
+        observed_before_cursor,
+        observed_after_cursor,
+    )?;
+    Ok((plan, proof))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AlreadyExactAuthorityBasis, RepositoryTargetRevisionMapDigestRecord,
-        SelectiveRepositoryUpdateEffectOutcome, SelectiveRepositoryUpdateExecutionAuthority,
-        SelectiveRepositoryUpdatePlan, SelectiveRepositoryUpdatePlanAuthority,
-        SelectiveRepositoryUpdatePlanDigestRecord, SelectiveRepositoryUpdateProof,
-        SelectiveRepositoryUpdateProofDigestRecord, SelectiveRepositoryUpdateScope,
+        RoutineSelectiveRepositoryUpdateCapabilityToken,
+        RoutineSelectiveRepositoryUpdatePlanAuthority, SelectiveRepositoryUpdateEffectOutcome,
+        SelectiveRepositoryUpdateExecutionAuthority, SelectiveRepositoryUpdatePlan,
+        SelectiveRepositoryUpdatePlanAuthority, SelectiveRepositoryUpdatePlanDigestRecord,
+        SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateProofDigestRecord,
+        SelectiveRepositoryUpdateScope,
     };
     use crate::domain::branched_development::contracts::repository::{
         AcquiredRepositoryUpdateLockTargets, ReleasedRepositoryUpdateLockTargets,
-        RepositoryHistoryCursor, RepositoryTargetStates, RepositoryUpdateLockTargets,
+        RepositoryHistoryCursor, RepositoryTargetIdentity, RepositoryTargetStates,
+        RepositoryUpdateLockTargets,
     };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
     use crate::domain::branched_development::{CapabilityRowId, Sha256Digest, UnicaId};
@@ -1037,6 +1313,14 @@ mod tests {
 
     fn root_only_targets() -> RepositoryTargetStates {
         serde_json::from_value(json!([root_state()])).unwrap()
+    }
+
+    fn object_identity() -> RepositoryTargetIdentity {
+        serde_json::from_value(json!({
+            "targetKind": "developmentObject",
+            "objectId": OBJECT_A,
+        }))
+        .unwrap()
     }
 
     fn lock_targets() -> RepositoryUpdateLockTargets {
@@ -1216,6 +1500,97 @@ mod tests {
         )
         .unwrap();
         assert!(SelectiveRepositoryUpdatePlan::new(structural_authority).is_ok());
+    }
+
+    #[test]
+    fn routine_plan_authority_binds_exact_target_map_and_capability_evidence() {
+        let expected_targets = targets();
+        let token = RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+            expected_targets.clone(),
+            Vec::new(),
+            lock_targets(),
+            capability("selective.objects.v1"),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let authority =
+            RoutineSelectiveRepositoryUpdatePlanAuthority::from_capability_token(token).unwrap();
+        let plan = SelectiveRepositoryUpdatePlan::routine_from_authority(
+            authority,
+            &expected_targets,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            plan.scope(),
+            SelectiveRepositoryUpdateScope::RoutinePlannedObjects
+        );
+        assert_eq!(plan.planned_targets(), &expected_targets);
+        assert!(!plan.structural_confirmation_required());
+
+        let wrong_map_token =
+            RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+                root_only_targets(),
+                Vec::new(),
+                root_only_lock_targets(),
+                capability("selective.objects.v1"),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let wrong_map_authority =
+            RoutineSelectiveRepositoryUpdatePlanAuthority::from_capability_token(wrong_map_token)
+                .unwrap();
+        assert!(SelectiveRepositoryUpdatePlan::routine_from_authority(
+            wrong_map_authority,
+            &expected_targets,
+            &[],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn routine_plan_authority_rejects_foreign_structural_capability_binding() {
+        let structural_target = object_identity();
+        assert!(
+            RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+                targets(),
+                vec![structural_target.clone()],
+                lock_targets(),
+                capability("selective.objects.v1"),
+                None,
+                Vec::new(),
+            )
+            .is_err()
+        );
+        assert!(
+            RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+                targets(),
+                Vec::new(),
+                lock_targets(),
+                capability("selective.objects.v1"),
+                Some(capability("selective.structural.v1")),
+                Vec::new(),
+            )
+            .is_err()
+        );
+
+        let token = RoutineSelectiveRepositoryUpdateCapabilityToken::from_capability_adapter(
+            targets(),
+            vec![structural_target.clone()],
+            lock_targets(),
+            capability("selective.objects.v1"),
+            Some(capability("selective.structural.v1")),
+            Vec::new(),
+        )
+        .unwrap();
+        let authority =
+            RoutineSelectiveRepositoryUpdatePlanAuthority::from_capability_token(token).unwrap();
+        assert!(
+            SelectiveRepositoryUpdatePlan::routine_from_authority(authority, &targets(), &[],)
+                .is_err()
+        );
     }
 
     #[test]

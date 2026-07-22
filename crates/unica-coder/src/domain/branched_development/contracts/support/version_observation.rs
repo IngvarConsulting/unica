@@ -851,6 +851,60 @@ pub(crate) enum SupportObservationFrozenActionClaim<'a> {
     CorrectiveSourceRequired,
 }
 
+/// Exact non-wire projection of an authorized support observation.  Result
+/// authorities use this instead of accepting repository actor/root-delta
+/// fields a second time from a coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AuthorizedSupportObservationProjection<'a> {
+    repository_actor: &'a RepositoryActorIdentity,
+    support_action_id: &'a UnicaId,
+    support_action_digest: &'a Sha256Digest,
+    arming_receipt_id: &'a UnicaId,
+    arming_receipt_digest: &'a Sha256Digest,
+    authorized_transitions_digest: &'a Sha256Digest,
+    manual_target_mode: ManualSupportTargetMode,
+    working_infobase_identity: Option<&'a ManualWorkingInfobaseIdentity>,
+    root_delta_digest: &'a Sha256Digest,
+}
+
+impl AuthorizedSupportObservationProjection<'_> {
+    pub(crate) const fn repository_actor(&self) -> &RepositoryActorIdentity {
+        self.repository_actor
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        self.support_action_id
+    }
+
+    pub(crate) const fn support_action_digest(&self) -> &Sha256Digest {
+        self.support_action_digest
+    }
+
+    pub(crate) const fn arming_receipt_id(&self) -> &UnicaId {
+        self.arming_receipt_id
+    }
+
+    pub(crate) const fn arming_receipt_digest(&self) -> &Sha256Digest {
+        self.arming_receipt_digest
+    }
+
+    pub(crate) const fn authorized_transitions_digest(&self) -> &Sha256Digest {
+        self.authorized_transitions_digest
+    }
+
+    pub(crate) const fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        self.manual_target_mode
+    }
+
+    pub(crate) const fn working_infobase_identity(&self) -> Option<&ManualWorkingInfobaseIdentity> {
+        self.working_infobase_identity
+    }
+
+    pub(crate) const fn root_delta_digest(&self) -> &Sha256Digest {
+        self.root_delta_digest
+    }
+}
+
 impl SupportObservationTask8Projection {
     pub(crate) const fn partition_classification(
         &self,
@@ -886,6 +940,37 @@ impl SupportPrerequisiteVersionObservation {
 
     pub(crate) fn classification_digest(&self) -> &Sha256Digest {
         self.0.classification_digest()
+    }
+
+    pub(crate) fn authorized_support_projection(
+        &self,
+    ) -> Option<AuthorizedSupportObservationProjection<'_>> {
+        let projection = match &self.0 {
+            ObservationWire::AuthorizedReserved(value) => AuthorizedSupportObservationProjection {
+                repository_actor: &value.repository_actor,
+                support_action_id: &value.support_action_id,
+                support_action_digest: &value.support_action_digest,
+                arming_receipt_id: &value.arming_receipt_id,
+                arming_receipt_digest: &value.arming_receipt_digest,
+                authorized_transitions_digest: &value.authorized_transitions_digest,
+                manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+                working_infobase_identity: None,
+                root_delta_digest: &value.root_delta_digest,
+            },
+            ObservationWire::AuthorizedSeparate(value) => AuthorizedSupportObservationProjection {
+                repository_actor: &value.repository_actor,
+                support_action_id: &value.support_action_id,
+                support_action_digest: &value.support_action_digest,
+                arming_receipt_id: &value.arming_receipt_id,
+                arming_receipt_digest: &value.arming_receipt_digest,
+                authorized_transitions_digest: &value.authorized_transitions_digest,
+                manual_target_mode: ManualSupportTargetMode::SeparateWorkingInfobase,
+                working_infobase_identity: Some(&value.working_infobase_identity),
+                root_delta_digest: &value.root_delta_digest,
+            },
+            _ => return None,
+        };
+        Some(projection)
     }
 
     pub(crate) fn frozen_action_claim(&self) -> SupportObservationFrozenActionClaim<'_> {

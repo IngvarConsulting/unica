@@ -5339,7 +5339,12 @@ a classified CFU never reaches comparison/candidate/preflight logic. `data` is
 `ComparisonData { comparisonId, leftAnchor,
 rightAnchor, platformReportId, canonicalManifestId, deltaDigest, changeCount,
 unsupportedKinds[] }`. Related configurations map by UUID; name-only mapping
-fails.
+fails. `leftAnchor` and `rightAnchor` are `Sha256` digests of the exact
+completed operand-anchor records selected by the request; neither is a caller
+label or a presentation path. `unsupportedKinds` is a bounded canonical unique
+`Name[]`, strictly increasing by exact UTF-8 bytes. Its vocabulary remains
+adapter-defined evidence; no handler may infer semantics from an unregistered
+string.
 
 ### `unica.merge.prepare` — variant policy
 
@@ -5388,6 +5393,13 @@ conflictCount, mergeResolutionWorkspaceId?, baseSessionDigest,
 decisionSetDigest, resolvedSessionDigest?, supportGateId?,
 supportGateDigest?, supportGateHistoryEvidenceDigest? }`. `incomingDistributionId` follows
 the same mode presence rule as the status handle.
+`ImmutableMergeInputHashes` is the named closed record `{
+checkpointVerificationDigest, comparisonDeltaDigest, sourceArtifactSha256 }`.
+The first field equals the exact completed checkpoint-producing verification
+digest, the second equals the selected `ComparisonData.deltaDigest`, and the
+third equals the verified incoming distribution SHA-256 for
+`supportedUpdate`/`resolvedReplay` or the verified ordinary-result CF SHA-256
+for `mainIntegration`. These are not generic caller-selected hash slots.
 Completed `mainIntegration` data is `MainIntegrationPreparationData {
 preflight: SupportPreflightData, session: MergeSessionData }`; its preflight
 outcome is the literal `ready`. This makes all four support outcomes explicit
@@ -5397,8 +5409,9 @@ in the terminal response while preserving the typed session handle.
 map and evolves both after a decision and when a changed resolution receipt
 moves a current head to `replacementPending`; immutable historical decision
 records are not the active map;
-`resolvedSessionDigest` exists only when all required decisions have been
-materialized and zero conflicts remain. A resolution workspace ID appears only
+`resultDigest` and `resolvedSessionDigest` are both present exactly when all
+required decisions have been materialized and `conflictCount` is zero; both are
+absent from every conflict-bearing leaf. A resolution workspace ID appears only
 for supported-update conflicts where manual/combine work is allowed.
 `mainIntegration` requires all three support-gate/history fields,
 `conflictCount: 0`, and a
@@ -5412,6 +5425,17 @@ with `mainPreparationMismatch`, immutable comparison/difference evidence, and
 `validationFailed` for task repair. None of these outcomes enters the
 synchronization conflict state. Every preparation restores a fresh sandbox;
 authoritative IBs are unchanged.
+
+The session digests use named closed preimages. `baseSessionDigest` hashes
+`MergeSessionBaseDigestRecord`, containing the complete immutable session
+fields above plus the exact canonical immutable conflict records and the
+mode-specific optional fields. `decisionSetDigest` hashes
+`DecisionSetDigestRecord { conflicts: [{ conflictId, decisionState }] }` in
+canonical conflict order. `resolvedSessionDigest` hashes
+`ResolvedSessionDigestRecord { baseSessionDigest, decisionSetDigest,
+resultDigest, appliedDecisionIds }`, where `appliedDecisionIds` is the exact
+current-head projection in that same conflict order. No opaque producer or
+historical decision list may supply any of these digests.
 
 `MainPreparationMismatchKind` is the closed enum
 `relevantBaselineChanged`, `conflict`, `unexpectedScope`,
@@ -5674,12 +5698,16 @@ Request is a strict scope union:
 
 Omitting either adapted-decision field can produce only `equivalent`,
 `unexpected`, or `invalid`. `data` is `MergeVerificationData { verificationId,
-scope, outcome, canonicalDeltaDigest,
+scope, outcome, sessionId?, canonicalDeltaDigest,
 checkpointId?, validationReceiptIds[], supportAuditDigest,
 selectedObjectFingerprints, differenceManifestId?, differenceDigest?,
 adaptationDecisionId?, mergeReceiptId?, integrationSetDigest?,
 supportGateDigest?, supportGateHistoryEvidence?: SupportGateHistoryEvidence,
-verificationDigest }`. Both support-gate fields are required for both main
+verificationDigest }`. `sessionId` is absent only for `localCheckpoint` and is
+required for every `synchronizedTask`, `mainSandbox`, and `mainIntegration`
+leaf, equal to the exact request/session authority consumed by the verifier.
+It is included in `MergeVerificationDigestRecord`, so an otherwise equal
+verification cannot be moved between sessions. Both support-gate fields are required for both main
 scopes and absent for local/synchronized-task scopes.
 `mergeReceiptId` and `integrationSetDigest` are required together only for
 `mainIntegration`; they are absent for `localCheckpoint`, `synchronizedTask`,
@@ -5692,6 +5720,11 @@ requires a prior exact
 adapted-delta decision and a reproduced difference; otherwise the first
 non-equivalent result is `unexpected`. The use case runs configured checks
 itself; caller prose or arbitrary receipt paths are rejected.
+`SelectedObjectFingerprint` is the named closed record `{ target:
+RepositoryTargetIdentity, fingerprint: Sha256 }`.
+`selectedObjectFingerprints` is bounded, canonical, and unique by exact target
+identity in repository-target order; a display name or path cannot replace the
+target or affect ordering.
 
 Every warning from a configured verification check is materialized as an
 `invalid` outcome. Before original merge it therefore stops as
