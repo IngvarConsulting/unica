@@ -6588,8 +6588,8 @@ pub(crate) fn emit_form_input(
         lines.push(format!("{inner}<ShowInHeader>{value}</ShowInHeader>"));
     }
     for (key, tag) in [
-        ("horizontalAlign", "HorizontalAlign"),
         ("headerHorizontalAlign", "HeaderHorizontalAlign"),
+        ("horizontalAlign", "HorizontalAlign"),
     ] {
         if let Some(value) = element.get(key).and_then(Value::as_str) {
             lines.push(format!("{inner}<{tag}>{}</{tag}>", escape_xml(value)));
@@ -9735,6 +9735,8 @@ mod tests {
                     "title": "",
                     "showInHeader": false,
                     "choiceButton": false,
+                    "horizontalAlign": "Right<&",
+                    "headerHorizontalAlign": "Right",
                     "inputHint": "Меньше < и & больше"
                 }
             ]
@@ -9756,8 +9758,8 @@ mod tests {
             xml.contains(concat!(
                 "<InputField name=\"Сумма\" id=\"4\">",
                 "\n\t\t\t<DataPath>Объект.Товары.Сумма</DataPath>\n",
-                "\t\t\t<HorizontalAlign>Right</HorizontalAlign>\n",
                 "\t\t\t<HeaderHorizontalAlign>Right</HeaderHorizontalAlign>\n",
+                "\t\t\t<HorizontalAlign>Right</HorizontalAlign>\n",
                 "\t\t\t<ContextMenu name=\"СуммаКонтекстноеМеню\""
             )),
             "{xml}"
@@ -9768,6 +9770,8 @@ mod tests {
                 "\n\t\t\t<Title/>\n",
                 "\t\t\t<ChoiceButton>false</ChoiceButton>\n",
                 "\t\t\t<ShowInHeader>false</ShowInHeader>\n",
+                "\t\t\t<HeaderHorizontalAlign>Right</HeaderHorizontalAlign>\n",
+                "\t\t\t<HorizontalAlign>Right&lt;&amp;</HorizontalAlign>\n",
                 "\t\t\t<InputHint>\n",
                 "\t\t\t\t<v8:item>\n",
                 "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
