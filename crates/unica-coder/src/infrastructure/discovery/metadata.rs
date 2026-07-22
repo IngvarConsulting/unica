@@ -948,6 +948,7 @@ fn flatten_metadata_node(
             crate::infrastructure::discovery::check_cancellation(query)?;
             facts.push(crate::domain::discovery::MetadataFact {
                 artifact: current.artifact.clone(),
+                search_name: current.name.clone(),
                 artifact_kind: current.artifact_kind,
                 container: current_container.map(|(artifact, _kind)| artifact.clone()),
                 container_kind: current_container.map(|(_artifact, kind)| kind),

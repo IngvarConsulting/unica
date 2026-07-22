@@ -219,6 +219,15 @@ impl ProviderFactContract for MetadataFact {
     fn validate_contract(records: &[Self]) -> Result<(), ProviderDiagnostic> {
         let mut kinds = BTreeMap::new();
         for fact in records {
+            let search_name =
+                crate::domain::discovery::normalize_discovery_identity(&fact.search_name);
+            let artifact_leaf = fact.artifact.as_str().rsplit('.').next();
+            if artifact_leaf != Some(search_name.as_str()) {
+                return Err(provider_contract_diagnostic(
+                    "metadata_search_name_mismatch",
+                    "metadata raw search name must normalize to the canonical artifact leaf",
+                ));
+            }
             validate_artifact_kind(&mut kinds, &fact.artifact, fact.artifact_kind)?;
             match (&fact.container, fact.container_kind) {
                 (Some(container), Some(container_kind)) => {
@@ -789,7 +798,7 @@ fn metadata_contribution(
                 evidence.0.id.clone(),
             ));
         }
-        if matcher.relevant(&fact.artifact, std::iter::empty::<&str>()) {
+        if matcher.relevant(&fact.artifact, std::iter::once(fact.search_name.as_str())) {
             contribution.candidates.push((
                 fact.artifact.clone(),
                 fact.artifact_kind,
@@ -1595,15 +1604,9 @@ impl FactMatcher {
             let normalized = crate::domain::discovery::normalize_discovery_identity(value);
             self.terms
                 .iter()
-                .any(|term| normalized_embedded_prefix_matches(term, &normalized))
+                .any(|term| normalized_prefix_matches(term, &normalized))
         })
     }
-}
-
-fn normalized_embedded_prefix_matches(left: &str, right: &str) -> bool {
-    right
-        .char_indices()
-        .any(|(index, _character)| normalized_prefix_matches(left, &right[index..]))
 }
 
 fn normalized_prefix_matches(left: &str, right: &str) -> bool {
@@ -1991,6 +1994,7 @@ mod tests {
         FactBatch {
             records: vec![MetadataFact {
                 artifact: series_id(),
+                search_name: "Series".to_string(),
                 artifact_kind: ArtifactKind::TabularSection,
                 container: Some(artifact("Document.Purchase")),
                 container_kind: Some(ArtifactKind::MetadataObject),
@@ -2018,6 +2022,7 @@ mod tests {
             records: vec![
                 MetadataFact {
                     artifact: goods.clone(),
+                    search_name: "Товары".to_string(),
                     artifact_kind: ArtifactKind::TabularSection,
                     container: Some(document.clone()),
                     container_kind: Some(ArtifactKind::MetadataObject),
@@ -2028,6 +2033,7 @@ mod tests {
                     artifact: artifact(
                         "Document.ПриобретениеТоваровУслуг.TabularSection.Товары.Attribute.Серия",
                     ),
+                    search_name: "Серия".to_string(),
                     artifact_kind: ArtifactKind::Attribute,
                     container: Some(goods),
                     container_kind: Some(ArtifactKind::TabularSection),
@@ -2038,6 +2044,7 @@ mod tests {
                     artifact: artifact(&format!(
                         "Document.ПриобретениеТоваровУслуг.TabularSection.{section_name}"
                     )),
+                    search_name: section_name.to_string(),
                     artifact_kind: ArtifactKind::TabularSection,
                     container: Some(document),
                     container_kind: Some(ArtifactKind::MetadataObject),
@@ -2207,6 +2214,7 @@ mod tests {
             records: vec![
                 MetadataFact {
                     artifact: artifact("Document.Purchase"),
+                    search_name: "Purchase".to_string(),
                     artifact_kind: ArtifactKind::MetadataObject,
                     container: None,
                     container_kind: None,
@@ -2215,6 +2223,7 @@ mod tests {
                 },
                 MetadataFact {
                     artifact: artifact("Document.Purchase"),
+                    search_name: "Purchase".to_string(),
                     artifact_kind: ArtifactKind::Form,
                     container: None,
                     container_kind: None,
@@ -2237,6 +2246,46 @@ mod tests {
                 && outcome.outcome == ProviderOutcomeKind::ContractViolation
         }));
         assert!(report.related_artifacts.is_empty());
+    }
+
+    #[test]
+    fn metadata_search_name_must_normalize_to_the_artifact_leaf() {
+        let raw = b"mismatched raw metadata name";
+        let path = "DataProcessors/Readiness.xml";
+        let batch = FactBatch {
+            records: vec![MetadataFact {
+                artifact: artifact("DataProcessor.Готовность"),
+                search_name: "Товары".to_string(),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Contains,
+                location: location(path, 1),
+            }],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+
+        let report = execute(&fake, request("товаров", &[])).expect("partial report");
+
+        let metadata = report
+            .provider_outcomes
+            .iter()
+            .find(|outcome| outcome.provider == ProviderKind::MetadataCatalog)
+            .expect("metadata outcome");
+        assert_eq!(metadata.outcome, ProviderOutcomeKind::ContractViolation);
+        assert_eq!(
+            metadata
+                .diagnostic
+                .as_ref()
+                .map(|diagnostic| diagnostic.code.as_str()),
+            Some("metadata_search_name_mismatch")
+        );
+        assert!(report.candidates.is_empty());
     }
 
     #[test]
@@ -2913,6 +2962,7 @@ mod tests {
             records: vec![
                 MetadataFact {
                     artifact: artifact("DataProcessor.ParserHook"),
+                    search_name: "ParserHook".to_string(),
                     artifact_kind: ArtifactKind::MetadataObject,
                     container: None,
                     container_kind: None,
@@ -2921,6 +2971,7 @@ mod tests {
                 },
                 MetadataFact {
                     artifact: artifact("DataProcessor.РасчетHandler"),
+                    search_name: "РасчетHandler".to_string(),
                     artifact_kind: ArtifactKind::MetadataObject,
                     container: None,
                     container_kind: None,
@@ -2956,6 +3007,7 @@ mod tests {
         let batch = FactBatch {
             records: vec![MetadataFact {
                 artifact: target.clone(),
+                search_name: "ПодборСерийВДокументы".to_string(),
                 artifact_kind: ArtifactKind::MetadataObject,
                 container: None,
                 container_kind: None,
@@ -2977,6 +3029,93 @@ mod tests {
         .expect("candidate report");
 
         assert!(report.candidates.iter().any(|item| item.target == target));
+    }
+
+    #[test]
+    fn task_term_does_not_match_an_arbitrary_identifier_infix() {
+        let raw = b"metadata";
+        let path = "DataProcessors/Readiness.xml";
+        let false_positive = artifact("DataProcessor.Готовность");
+        let batch = FactBatch {
+            records: vec![MetadataFact {
+                artifact: false_positive.clone(),
+                search_name: "Готовность".to_string(),
+                artifact_kind: ArtifactKind::MetadataObject,
+                container: None,
+                container_kind: None,
+                relation: StructuralRelationKind::Contains,
+                location: location(path, 1),
+            }],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 1),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+
+        let report = execute(&fake, request("товаров", &[])).expect("candidate report");
+
+        assert!(!report
+            .candidates
+            .iter()
+            .any(|item| item.target == false_positive));
+    }
+
+    #[test]
+    fn false_infix_matches_cannot_evict_an_intended_bounded_candidate() {
+        let raw = b"metadata";
+        let path = "DataProcessors/Candidates.xml";
+        let false_positive = artifact("DataProcessor.Готовность");
+        let intended = artifact("DataProcessor.Товары");
+        let batch = FactBatch {
+            records: vec![
+                MetadataFact {
+                    artifact: false_positive,
+                    search_name: "Готовность".to_string(),
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 1),
+                },
+                MetadataFact {
+                    artifact: intended.clone(),
+                    search_name: "Товары".to_string(),
+                    artifact_kind: ArtifactKind::MetadataObject,
+                    container: None,
+                    container_kind: None,
+                    relation: StructuralRelationKind::Contains,
+                    location: location(path, 2),
+                },
+            ],
+            analyzed_files: vec![contributor(path, raw)],
+            contributors: vec![contributor(path, raw)],
+            coverage: ProviderCoverage::new(1, 1, raw.len() as u64, 2),
+        };
+        let fake = FakePorts::complete_empty()
+            .with_inventory(vec![source_file(path, raw)])
+            .with_metadata(batch);
+        let args = json!({
+            "mode": "explore",
+            "task": "товаров",
+            "limits": { "maxCandidates": 1 },
+        });
+        let Value::Object(args) = args else {
+            unreachable!("test JSON object is static")
+        };
+        let request = parse_discover_request(&args).expect("bounded candidate request");
+
+        let report = execute(&fake, request).expect("bounded candidate report");
+
+        assert_eq!(
+            report
+                .candidates
+                .iter()
+                .map(|candidate| &candidate.target)
+                .collect::<Vec<_>>(),
+            vec![&intended]
+        );
     }
 
     #[test]

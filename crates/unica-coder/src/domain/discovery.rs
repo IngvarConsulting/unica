@@ -517,6 +517,7 @@ impl<T> FactBatch<T> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MetadataFact {
     pub artifact: ArtifactId,
+    pub search_name: String,
     pub artifact_kind: ArtifactKind,
     pub container: Option<ArtifactId>,
     pub container_kind: Option<ArtifactKind>,
