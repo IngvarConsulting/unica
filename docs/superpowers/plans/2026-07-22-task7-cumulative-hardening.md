@@ -94,6 +94,6 @@
 
 - [x] Run source-root, contained-file, inventory, BSL, application, and MCP focused tests.
 - [x] Run full `unica-coder` library tests, formatting, strict relevant Clippy, platform/product gates, and diff/status checks.
-- [ ] Append RED/GREEN evidence, SHAs, bounds, and counts to the Task 7 report.
-- [ ] Dispatch a fresh independent review; fix all Critical/Important findings with another TDD cycle.
-- [ ] Confirm tracked-clean status and no Task 8 changes.
+- [x] Append RED/GREEN evidence, SHAs, bounds, and counts to the Task 7 report.
+- [x] Dispatch a fresh independent review; fix all Critical/Important findings with another TDD cycle.
+- [x] Confirm tracked-clean status and no Task 8 changes.
