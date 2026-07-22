@@ -1380,6 +1380,26 @@ mod tests {
     }
 
     #[test]
+    fn support_parser_preserves_lines_for_each_decisive_state_field() {
+        let uuid = "40000000-0000-0000-0000-000000000001";
+        let serialized = format!(
+            "{{\n6,\n0,\n1,\ndddddddd-dddd-dddd-dddd-dddddddddddd,\n0,\neeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\n\"1.0\",\n\"Vendor\",\n\"Configuration\",\n1,\n1,\n0,\n{uuid},\n{uuid}\n}}"
+        );
+        let state =
+            parse_support_state_bytes(serialized.as_bytes()).expect("valid multiline state");
+
+        assert_eq!(state.header_line(), 2);
+        assert_eq!(state.global_flag_line(), 3);
+        assert_eq!(state.object_rule_line(uuid), Some(12));
+
+        let removed =
+            parse_support_state_bytes(b"{\n6,\n0,\n0\n}").expect("valid serialized removed marker");
+        assert_eq!(removed.removed_line(), 4);
+        let legacy = parse_support_state_bytes(b"removed").expect("valid legacy removed marker");
+        assert_eq!(legacy.removed_line(), 1);
+    }
+
+    #[test]
     fn every_tracked_on_support_fixture_uses_the_supported_tuple_grammar() {
         for (case, bytes) in TRACKED_ON_SUPPORT_FIXTURES {
             let state = parse_support_state_bytes(bytes)
@@ -1975,6 +1995,9 @@ pub(crate) struct ParsedSupportState {
     global_editing_enabled: bool,
     vendor_count: usize,
     removed: bool,
+    header_line: u32,
+    global_flag_line: u32,
+    removed_line: u32,
     counts: [usize; 3],
     object_rules: BTreeMap<String, SupportObjectRule>,
     object_rule_lines: BTreeMap<String, u32>,
@@ -1994,6 +2017,18 @@ impl ParsedSupportState {
 
     pub(crate) fn removed(&self) -> bool {
         self.removed
+    }
+
+    pub(crate) fn header_line(&self) -> u32 {
+        self.header_line
+    }
+
+    pub(crate) fn global_flag_line(&self) -> u32 {
+        self.global_flag_line
+    }
+
+    pub(crate) fn removed_line(&self) -> u32 {
+        self.removed_line
     }
 
     pub(crate) fn object_rule_line(&self, object_uuid: &str) -> Option<u32> {
@@ -2190,6 +2225,9 @@ pub(crate) fn parse_support_state_bytes(
             global_editing_enabled: true,
             vendor_count: 0,
             removed: true,
+            header_line: 1,
+            global_flag_line: 1,
+            removed_line: 1,
             counts: [0, 0, 0],
             object_rules: BTreeMap::new(),
             object_rule_lines: BTreeMap::new(),
@@ -2199,21 +2237,27 @@ pub(crate) fn parse_support_state_bytes(
     let text = std::str::from_utf8(content).map_err(|_error| SupportParseError::InvalidUtf8)?;
     let tokens = tokenize_support_state(text)?;
     let mut cursor = SupportTokenCursor::new(&tokens);
-    let format = cursor.number_u8("format")?;
+    let (format, format_offset) = cursor.number_u8_at("format")?;
     if format != 6 {
         return Err(SupportParseError::InvalidHeader);
     }
-    let global_flag = cursor.number_u8("global flag")?;
+    let header_line = support_line_at(text, format_offset)?;
+    let (global_flag, global_flag_offset) = cursor.number_u8_at("global flag")?;
     if !matches!(global_flag, 0 | 1) {
         return Err(SupportParseError::InvalidGlobalFlag(global_flag));
     }
-    let vendor_count = cursor.number_usize("vendor count")?;
+    let global_flag_line = support_line_at(text, global_flag_offset)?;
+    let (vendor_count, vendor_count_offset) = cursor.number_usize_at("vendor count")?;
+    let removed_line = support_line_at(text, vendor_count_offset)?;
     if vendor_count == 0 {
         cursor.finish()?;
         return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count,
             removed: true,
+            header_line,
+            global_flag_line,
+            removed_line,
             counts: [0, 0, 0],
             object_rules: BTreeMap::new(),
             object_rule_lines: BTreeMap::new(),
@@ -2257,7 +2301,7 @@ pub(crate) fn parse_support_state_bytes(
             name,
         });
         for object_index in 0..object_count {
-            let flag = cursor.number_u8("object rule")?;
+            let (flag, flag_offset) = cursor.number_u8_at("object rule")?;
             let Some(rule) = SupportObjectRule::from_flag(flag) else {
                 return Err(SupportParseError::InvalidObjectRule(flag));
             };
@@ -2265,7 +2309,7 @@ pub(crate) fn parse_support_state_bytes(
             if marker != 0 {
                 return Err(SupportParseError::InvalidObjectMarker(marker));
             }
-            let (object_uuid, offset) = cursor.uuid("object uuid")?;
+            let (object_uuid, _uuid_offset) = cursor.uuid("object uuid")?;
             if object_index == 0 {
                 if cursor
                     .peek_bare()
@@ -2284,7 +2328,7 @@ pub(crate) fn parse_support_state_bytes(
                 return Err(SupportParseError::DuplicateObjectUuid);
             }
             counts[usize::from(flag)] += 1;
-            object_rule_lines.insert(normalized_uuid, support_line_at(text, offset)?);
+            object_rule_lines.insert(normalized_uuid, support_line_at(text, flag_offset)?);
         }
     }
     cursor.finish()?;
@@ -2292,6 +2336,9 @@ pub(crate) fn parse_support_state_bytes(
         global_editing_enabled: global_flag == 0,
         vendor_count,
         removed: false,
+        header_line,
+        global_flag_line,
+        removed_line,
         counts,
         object_rules,
         object_rule_lines,
@@ -2480,16 +2527,29 @@ impl<'a> SupportTokenCursor<'a> {
     }
 
     fn number_u8(&mut self, field: &'static str) -> Result<u8, SupportParseError> {
-        let (value, _offset) = self.bare(field)?;
+        self.number_u8_at(field).map(|(value, _offset)| value)
+    }
+
+    fn number_u8_at(&mut self, field: &'static str) -> Result<(u8, usize), SupportParseError> {
+        let (value, offset) = self.bare(field)?;
         value
             .parse::<u8>()
+            .map(|value| (value, offset))
             .map_err(|_error| SupportParseError::InvalidNumber(field))
     }
 
     fn number_usize(&mut self, field: &'static str) -> Result<usize, SupportParseError> {
-        let (value, _offset) = self.bare(field)?;
+        self.number_usize_at(field).map(|(value, _offset)| value)
+    }
+
+    fn number_usize_at(
+        &mut self,
+        field: &'static str,
+    ) -> Result<(usize, usize), SupportParseError> {
+        let (value, offset) = self.bare(field)?;
         value
             .parse::<usize>()
+            .map(|value| (value, offset))
             .map_err(|_error| SupportParseError::InvalidNumber(field))
     }
 

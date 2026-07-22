@@ -139,26 +139,33 @@ fn support_fact(
             })?,
         ),
         (Some(file), Some(state)) => {
-            let object_rule = node
-                .object_uuid
-                .as_deref()
-                .and_then(|uuid| state.object_rule(uuid));
-            let support_state = if state.removed() {
-                SupportStateKind::Removed
+            let object_uuid = node.object_uuid.as_deref();
+            let object_rule = object_uuid.and_then(|uuid| state.object_rule(uuid));
+            let (support_state, line) = if state.removed() {
+                (SupportStateKind::Removed, state.removed_line())
             } else if !state.global_editing_enabled() {
-                SupportStateKind::Locked
+                (SupportStateKind::Locked, state.global_flag_line())
             } else {
                 match object_rule {
-                    Some(SupportObjectRule::Locked) => SupportStateKind::Locked,
-                    Some(SupportObjectRule::Editable) => SupportStateKind::Editable,
-                    Some(SupportObjectRule::OffSupport) | None => SupportStateKind::NotOnSupport,
+                    Some(rule) => {
+                        let line = object_uuid
+                            .and_then(|uuid| state.object_rule_line(uuid))
+                            .ok_or_else(|| {
+                                ProviderDiagnostic::material(
+                                    "support_state_line_missing",
+                                    "parsed object support rule has no evidence line",
+                                )
+                            })?;
+                        let support_state = match rule {
+                            SupportObjectRule::Locked => SupportStateKind::Locked,
+                            SupportObjectRule::Editable => SupportStateKind::Editable,
+                            SupportObjectRule::OffSupport => SupportStateKind::NotOnSupport,
+                        };
+                        (support_state, line)
+                    }
+                    None => (SupportStateKind::NotOnSupport, state.header_line()),
                 }
             };
-            let line = node
-                .object_uuid
-                .as_deref()
-                .and_then(|uuid| state.object_rule_line(uuid))
-                .unwrap_or(1);
             (
                 support_state,
                 EvidenceLocation {
@@ -289,6 +296,96 @@ mod tests {
         assert_eq!(
             state_for(&off_support.records, "Document.Editable"),
             Some(SupportStateKind::NotOnSupport)
+        );
+    }
+
+    #[test]
+    fn support_evidence_points_to_the_decisive_global_object_or_header_field() {
+        let implicit_uuid = "40000000-0000-0000-0000-000000000003";
+        let global_lock = multiline_support_bytes(1, LOCKED_UUID, 2);
+        let global_outcome = SupportStateProvider.support(
+            &query(100),
+            &inventory(vec![
+                descriptor("Documents/Locked.xml", "Document", "Locked", LOCKED_UUID),
+                source_file("Ext/ParentConfigurations.bin", &global_lock),
+            ]),
+        );
+        let ProviderOutcome::Complete(global_batch) = global_outcome else {
+            panic!("expected global-lock support facts");
+        };
+        assert_eq!(
+            location_line_for(&global_batch.records, "Document.Locked"),
+            Some(3),
+            "global lock is decided by the global flag"
+        );
+
+        let object_editable = multiline_support_bytes(0, EDITABLE_UUID, 1);
+        let object_outcome = SupportStateProvider.support(
+            &query(100),
+            &inventory(vec![
+                descriptor(
+                    "Documents/Editable.xml",
+                    "Document",
+                    "Editable",
+                    EDITABLE_UUID,
+                ),
+                descriptor(
+                    "Documents/Implicit.xml",
+                    "Document",
+                    "Implicit",
+                    implicit_uuid,
+                ),
+                source_file("Ext/ParentConfigurations.bin", &object_editable),
+            ]),
+        );
+        let ProviderOutcome::Complete(object_batch) = object_outcome else {
+            panic!("expected object-specific support facts");
+        };
+        assert_eq!(
+            location_line_for(&object_batch.records, "Document.Editable"),
+            Some(12),
+            "object state is decided by its rule flag, not its UUID"
+        );
+        assert_eq!(
+            location_line_for(&object_batch.records, "Document.Implicit"),
+            Some(2),
+            "an absent object rule falls back to the parsed format header"
+        );
+    }
+
+    #[test]
+    fn removed_support_evidence_points_to_the_removed_marker() {
+        let descriptor = descriptor(
+            "Documents/Purchase.xml",
+            "Document",
+            "Purchase",
+            LOCKED_UUID,
+        );
+        let serialized = inventory(vec![
+            descriptor.clone(),
+            source_file("Ext/ParentConfigurations.bin", b"{\n6,\n0,\n0\n}"),
+        ]);
+        let legacy = inventory(vec![
+            descriptor,
+            source_file("Ext/ParentConfigurations.bin", b"removed"),
+        ]);
+
+        let ProviderOutcome::Complete(serialized) =
+            SupportStateProvider.support(&query(100), &serialized)
+        else {
+            panic!("expected serialized removed support facts");
+        };
+        let ProviderOutcome::Complete(legacy) = SupportStateProvider.support(&query(100), &legacy)
+        else {
+            panic!("expected legacy removed support facts");
+        };
+        assert_eq!(
+            location_line_for(&serialized.records, "Document.Purchase"),
+            Some(4)
+        );
+        assert_eq!(
+            location_line_for(&legacy.records, "Document.Purchase"),
+            Some(1)
         );
     }
 
@@ -533,6 +630,17 @@ mod tests {
             .map(|fact| fact.state)
     }
 
+    fn location_line_for(
+        records: &[crate::domain::discovery::SupportFact],
+        artifact: &str,
+    ) -> Option<u32> {
+        let artifact = ArtifactId::parse(artifact).expect("valid test artifact");
+        records
+            .iter()
+            .find(|fact| fact.artifact == artifact)
+            .and_then(|fact| fact.location.line)
+    }
+
     fn descriptor(path: &str, kind: &str, name: &str, uuid: &str) -> SourceFile {
         let bytes = format!(
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\">\n  <{kind} uuid=\"{uuid}\">\n    <Properties><Name>{name}</Name></Properties>\n  </{kind}>\n</MetaDataObject>"
@@ -551,6 +659,13 @@ mod tests {
         format!(
             "{{6,{global_flag},1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"Configuration\",{}{separator}{rules}}}",
             object_count
+        )
+        .into_bytes()
+    }
+
+    fn multiline_support_bytes(global_flag: u8, uuid: &str, rule: u8) -> Vec<u8> {
+        format!(
+            "{{\n6,\n{global_flag},\n1,\ndddddddd-dddd-dddd-dddd-dddddddddddd,\n0,\neeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\n\"1.0\",\n\"Vendor\",\n\"Configuration\",\n1,\n{rule},\n0,\n{uuid},\n{uuid}\n}}"
         )
         .into_bytes()
     }
