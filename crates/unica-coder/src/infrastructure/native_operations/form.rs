@@ -9538,6 +9538,22 @@ mod tests {
                         "italic": false,
                         "kind": "StyleItem"
                     }
+                },
+                {
+                    "button": "Secondary",
+                    "font": "style:Secondary&<Main>"
+                },
+                {
+                    "check": "Ready",
+                    "title": "Ready",
+                    "tooltip": "Check <details> & continue",
+                    "tooltipRepresentation": "Balloon"
+                },
+                {
+                    "labelField": "Status",
+                    "path": "Status",
+                    "tooltip": "Status <value> & details",
+                    "tooltipRepresentation": "Button"
                 }
             ]
         });
@@ -9581,6 +9597,43 @@ mod tests {
                 "\t\t\t<BackColor>#FFE0A0</BackColor>\n",
                 "\t\t\t<Font ref=\"style:Button&amp;Main\" bold=\"true\" italic=\"false\" kind=\"StyleItem\"/>\n",
                 "\t\t\t<ExtendedTooltip"
+            )),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<Font ref=\"style:Secondary&amp;&lt;Main&gt;\" kind=\"StyleItem\"/>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(concat!(
+                "<Title>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>Ready</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</Title>\n",
+                "\t\t\t<ToolTip>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>Check &lt;details&gt; &amp; continue</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</ToolTip>\n",
+                "\t\t\t<ToolTipRepresentation>Balloon</ToolTipRepresentation>\n",
+                "\t\t\t<CheckBoxType>Auto</CheckBoxType>"
+            )),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(concat!(
+                "<DataPath>Status</DataPath>\n",
+                "\t\t\t<ToolTip>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>Status &lt;value&gt; &amp; details</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</ToolTip>\n",
+                "\t\t\t<ToolTipRepresentation>Button</ToolTipRepresentation>\n",
+                "\t\t\t<ContextMenu"
             )),
             "{xml}"
         );
