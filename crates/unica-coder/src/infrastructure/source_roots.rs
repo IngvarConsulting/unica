@@ -205,6 +205,7 @@ fn read_marker_directory(
     }
     let remaining =
         usize::try_from(budget.limit.saturating_sub(budget.observed)).unwrap_or(usize::MAX);
+    let root_snapshot = expected_identity.is_none();
     let result = match expected_identity {
         Some(identity) => {
             read_verified_contained_directory_with_expected_identity_bounded_cancellable(
@@ -228,14 +229,33 @@ fn read_marker_directory(
     if is_cancelled() {
         return Err(DiscoveryError::Cancelled);
     }
-    let entries = result.map_err(|error| map_marker_directory_error(error, budget.limit))?;
+    let entries =
+        result.map_err(|error| map_marker_directory_error(error, budget.limit, root_snapshot))?;
     budget.observed = budget
         .observed
         .saturating_add(u32::try_from(entries.len()).unwrap_or(u32::MAX));
     Ok(entries)
 }
 
-fn map_marker_directory_error(error: VerifiedDirectoryError, limit: u32) -> DiscoveryError {
+fn map_marker_directory_error(
+    error: VerifiedDirectoryError,
+    limit: u32,
+    root_snapshot: bool,
+) -> DiscoveryError {
+    let root_establishment_error = match &error {
+        VerifiedDirectoryError::RootNotCanonical
+        | VerifiedDirectoryError::RootNotDirectory
+        | VerifiedDirectoryError::NotDirectory => true,
+        VerifiedDirectoryError::Io { operation, .. } => {
+            matches!(*operation, "resolve source root" | "inspect source root")
+        }
+        _ => false,
+    };
+    if root_snapshot && root_establishment_error {
+        return DiscoveryError::InvalidSourceRoot(format!(
+            "could not establish selected source root: {error}"
+        ));
+    }
     match error {
         VerifiedDirectoryError::Cancelled => DiscoveryError::Cancelled,
         VerifiedDirectoryError::EntryLimitExceeded { .. } => {
@@ -575,6 +595,35 @@ mod tests {
             selected.path,
             normalize_path_identity(&context.workspace_root.join("src")).unwrap()
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn missing_explicit_source_dir_is_a_source_root_error_not_a_format_error() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+
+        let error = resolve_discovery(&context, Some(Path::new("missing")))
+            .expect_err("a missing explicit source root must fail selection");
+
+        assert!(matches!(
+            error,
+            crate::domain::discovery::DiscoveryError::InvalidSourceRoot(_)
+        ));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn missing_configured_source_dir_is_a_source_root_error_not_a_format_error() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        fs::remove_dir_all(context.workspace_root.join("src")).expect("remove configured root");
+
+        let error = resolve_discovery(&context, None)
+            .expect_err("a missing configured source root must fail selection");
+
+        assert!(matches!(
+            error,
+            crate::domain::discovery::DiscoveryError::InvalidSourceRoot(_)
+        ));
         cleanup(&context);
     }
 

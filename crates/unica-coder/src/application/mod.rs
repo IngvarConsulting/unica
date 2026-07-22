@@ -1603,6 +1603,34 @@ mod tests {
     }
 
     #[test]
+    fn project_discovery_missing_explicit_root_keeps_source_root_error_identity() {
+        let root = test_workspace_root("discovery-missing-explicit-root-code");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(root)),
+            ("mode".to_string(), json!("explore")),
+            ("task".to_string(), json!("Inspect extension points")),
+            ("sourceDir".to_string(), json!("missing")),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.project.discover", &args)
+            .expect_err("missing explicit root must fail before providers");
+
+        assert!(
+            error.starts_with("discovery_invalid_source_root:"),
+            "unexpected discovery error: {error}"
+        );
+        assert!(!error.starts_with("discovery_invalid_source_format:"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mutating_tool_defaults_to_dry_run_and_reports_cache() {
         let result = UnicaApplication::new()
             .call_tool("unica.form.edit", &Map::new())
