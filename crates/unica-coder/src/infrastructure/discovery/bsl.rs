@@ -141,6 +141,7 @@ enum BslMethodKind {
 
 const MAX_BSL_SIGNATURE_LINES: usize = 64;
 const MAX_BSL_SIGNATURE_BYTES: usize = 64 * 1024;
+const MAX_BSL_LINE_BYTES: usize = 64 * 1024;
 
 struct ParsedBslMethod {
     kind: BslMethodKind,
@@ -263,15 +264,7 @@ fn contains_cancellable(
     needle: &str,
     is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<bool, String> {
-    for (offset, _character) in value.char_indices() {
-        if is_cancelled() {
-            return Err("discovery cancelled".to_string());
-        }
-        if value[offset..].starts_with(needle) {
-            return Ok(true);
-        }
-    }
-    Ok(needle.is_empty())
+    Ok(cancellable_match_offset(value, needle, is_cancelled)?.is_some())
 }
 
 fn matching_column(
@@ -310,15 +303,31 @@ fn cancellable_match_offset(
     needle: &str,
     is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Option<usize>, String> {
-    for (offset, _character) in value.char_indices() {
+    const SEARCH_CHUNK_BYTES: usize = 64 * 1_024;
+    if needle.is_empty() {
+        return Ok(Some(0));
+    }
+    let mut start = 0_usize;
+    while start < value.len() {
         if is_cancelled() {
             return Err("discovery cancelled".to_string());
         }
-        if value[offset..].starts_with(needle) {
-            return Ok(Some(offset));
+        let mut primary_end = start.saturating_add(SEARCH_CHUNK_BYTES).min(value.len());
+        while primary_end > start && !value.is_char_boundary(primary_end) {
+            primary_end -= 1;
         }
+        let mut search_end = primary_end
+            .saturating_add(needle.len().saturating_sub(1))
+            .min(value.len());
+        while search_end < value.len() && !value.is_char_boundary(search_end) {
+            search_end += 1;
+        }
+        if let Some(relative) = value[start..search_end].find(needle) {
+            return Ok(Some(start + relative));
+        }
+        start = primary_end;
     }
-    Ok(needle.is_empty().then_some(0))
+    Ok(None)
 }
 
 fn strip_source_bom(text: &str) -> &str {
@@ -355,14 +364,20 @@ fn parse_bsl_source_observing(
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
         let scanned = scan_bsl_line(line, &mut in_string, &mut is_cancelled)?;
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
         state = match state {
             BslParseState::OutsideMethod => {
-                if parse_method_end(&scanned.code).is_some() {
+                if parse_method_end(&scanned.code, &mut is_cancelled)?.is_some() {
                     return Err(format!(
                         "method terminator without declaration at line {line_number}"
                     ));
                 }
-                match parse_method_declaration(&scanned.code)? {
+                if is_cancelled() {
+                    return Err("discovery cancelled".to_string());
+                }
+                match parse_method_declaration(&scanned.code, &mut is_cancelled)? {
                     Some(declaration) => {
                         let method_index = methods.len();
                         methods.push(ParsedBslMethod {
@@ -385,6 +400,7 @@ fn parse_bsl_source_observing(
                             &scanned,
                             declaration.open_parenthesis,
                             &mut signature.depth,
+                            &mut is_cancelled,
                         )?;
                         match exported {
                             Some(exported) => {
@@ -409,7 +425,7 @@ fn parse_bsl_source_observing(
                     if trimmed.is_empty() {
                         extend_signature_bounds(&mut signature, line)?;
                         BslParseState::Signature(signature)
-                    } else if signature_line_is_export(trimmed) {
+                    } else if signature_line_is_export(trimmed, &mut is_cancelled)? {
                         extend_signature_bounds(&mut signature, line)?;
                         set_method_exported(&mut methods, signature.method_index)?;
                         BslParseState::Body(signature.method_index)
@@ -419,11 +435,17 @@ fn parse_bsl_source_observing(
                             &scanned.code,
                             line_number,
                             &mut methods,
+                            &mut is_cancelled,
                         )?
                     }
                 } else {
                     extend_signature_bounds(&mut signature, line)?;
-                    match consume_signature_line(&scanned, 0, &mut signature.depth)? {
+                    match consume_signature_line(
+                        &scanned,
+                        0,
+                        &mut signature.depth,
+                        &mut is_cancelled,
+                    )? {
                         Some(exported) => {
                             signature.closed = true;
                             if exported {
@@ -439,7 +461,13 @@ fn parse_bsl_source_observing(
             }
             BslParseState::Body(method_index) => {
                 set_line_method(&mut line_methods, zero_based_line, method_index)?;
-                process_body_line(method_index, &scanned.code, line_number, &mut methods)?
+                process_body_line(
+                    method_index,
+                    &scanned.code,
+                    line_number,
+                    &mut methods,
+                    &mut is_cancelled,
+                )?
             }
         };
         zero_based_line = zero_based_line
@@ -484,11 +512,24 @@ fn next_bsl_line<'a>(
                     index > start && text.as_bytes()[index - 1] == b'\r',
                 ))
                 .ok_or_else(|| "BSL line boundary underflowed".to_string())?;
-            return Ok(Some(&text[start..end]));
+            let line = &text[start..end];
+            validate_bsl_line_bound(line)?;
+            return Ok(Some(line));
         }
     }
     *offset = text.len();
-    Ok(Some(&text[start..]))
+    let line = &text[start..];
+    validate_bsl_line_bound(line)?;
+    Ok(Some(line))
+}
+
+fn validate_bsl_line_bound(line: &str) -> Result<(), String> {
+    if line.len() > MAX_BSL_LINE_BYTES {
+        return Err(format!(
+            "BSL line exceeds the supported bound of {MAX_BSL_LINE_BYTES} bytes"
+        ));
+    }
+    Ok(())
 }
 
 fn scan_bsl_line(
@@ -528,7 +569,10 @@ fn scan_bsl_line(
     Ok(ScannedBslLine { code, structural })
 }
 
-fn parse_method_declaration(code: &str) -> Result<Option<DeclarationStart>, String> {
+fn parse_method_declaration(
+    code: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Option<DeclarationStart>, String> {
     let trimmed = code.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -537,14 +581,14 @@ fn parse_method_declaration(code: &str) -> Result<Option<DeclarationStart>, Stri
     let Some(mut keyword) = tokens.next() else {
         return Ok(None);
     };
-    let first_normalized = normalize_discovery_identity(keyword);
+    let first_normalized = normalize_bsl_line_cancellable(keyword, is_cancelled)?;
     if matches!(first_normalized.as_str(), "async" | "асинх") {
         let Some(next) = tokens.next() else {
             return Err("async modifier has no method declaration".to_string());
         };
         keyword = next;
     }
-    let method_kind = match normalize_discovery_identity(keyword).as_str() {
+    let method_kind = match normalize_bsl_line_cancellable(keyword, is_cancelled)?.as_str() {
         "procedure" | "процедура" => BslMethodKind::Procedure,
         "function" | "функция" => BslMethodKind::Function,
         _ => return Ok(None),
@@ -612,12 +656,16 @@ fn consume_signature_line(
     scanned: &ScannedBslLine,
     start_offset: usize,
     depth: &mut usize,
+    is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Option<bool>, String> {
     let structural = scanned
         .structural
         .get(start_offset..)
         .ok_or_else(|| "method signature start is outside the source line".to_string())?;
     for (relative_offset, character) in structural.char_indices() {
+        if is_cancelled() {
+            return Err("discovery cancelled".to_string());
+        }
         match character {
             '(' => {
                 *depth = depth
@@ -636,7 +684,7 @@ fn consume_signature_line(
                     let tail = scanned.code.get(tail_offset..).ok_or_else(|| {
                         "method signature tail is outside the source line".to_string()
                     })?;
-                    return parse_signature_tail(tail).map(Some);
+                    return parse_signature_tail(tail, is_cancelled).map(Some);
                 }
             }
             _ => {}
@@ -645,12 +693,15 @@ fn consume_signature_line(
     Ok(None)
 }
 
-fn parse_signature_tail(tail: &str) -> Result<bool, String> {
+fn parse_signature_tail(
+    tail: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<bool, String> {
     let trimmed = tail.trim();
     if trimmed.is_empty() {
         return Ok(false);
     }
-    if signature_line_is_export(trimmed) {
+    if signature_line_is_export(trimmed, is_cancelled)? {
         return Ok(true);
     }
     Err(format!(
@@ -658,12 +709,15 @@ fn parse_signature_tail(tail: &str) -> Result<bool, String> {
     ))
 }
 
-fn signature_line_is_export(line: &str) -> bool {
+fn signature_line_is_export(
+    line: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<bool, String> {
     let token = line.trim().trim_end_matches(';').trim();
-    matches!(
-        normalize_discovery_identity(token).as_str(),
+    Ok(matches!(
+        normalize_bsl_line_cancellable(token, is_cancelled)?.as_str(),
         "export" | "экспорт"
-    )
+    ))
 }
 
 fn extend_signature_bounds(state: &mut SignatureState, line: &str) -> Result<(), String> {
@@ -712,14 +766,18 @@ fn process_body_line(
     code: &str,
     line_number: u32,
     methods: &mut [ParsedBslMethod],
+    is_cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<BslParseState, String> {
-    if let Some(declaration) = parse_method_declaration(code)? {
+    if let Some(declaration) = parse_method_declaration(code, is_cancelled)? {
         return Err(format!(
             "nested method declaration {:?} at line {line_number}",
             declaration.name
         ));
     }
-    let Some(end_kind) = parse_method_end(code) else {
+    if is_cancelled() {
+        return Err("discovery cancelled".to_string());
+    }
+    let Some(end_kind) = parse_method_end(code, is_cancelled)? else {
         return Ok(BslParseState::Body(method_index));
     };
     let method = methods
@@ -734,13 +792,18 @@ fn process_body_line(
     Ok(BslParseState::OutsideMethod)
 }
 
-fn parse_method_end(code: &str) -> Option<BslMethodKind> {
+fn parse_method_end(
+    code: &str,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Option<BslMethodKind>, String> {
     let keyword = code.trim().trim_end_matches(';').trim();
-    match normalize_discovery_identity(keyword).as_str() {
-        "endprocedure" | "конецпроцедуры" => Some(BslMethodKind::Procedure),
-        "endfunction" | "конецфункции" => Some(BslMethodKind::Function),
-        _ => None,
-    }
+    Ok(
+        match normalize_bsl_line_cancellable(keyword, is_cancelled)?.as_str() {
+            "endprocedure" | "конецпроцедуры" => Some(BslMethodKind::Procedure),
+            "endfunction" | "конецфункции" => Some(BslMethodKind::Function),
+            _ => None,
+        },
+    )
 }
 
 fn is_bsl_path(path: &PortableRelativePath) -> bool {
@@ -1483,6 +1546,39 @@ mod tests {
 
         assert_eq!(error, "discovery cancelled");
         assert_eq!(checks, 4);
+    }
+
+    #[test]
+    fn parser_observes_cancellation_at_the_post_scan_handoff() {
+        let source = "content ".repeat(64);
+        let cancel_at = source.chars().count() + 3;
+        let mut checks = 0_usize;
+
+        let result = super::parse_bsl_source_observing(&source, || {
+            checks += 1;
+            checks == cancel_at
+        });
+        let Err(error) = result else {
+            panic!("post-scan parsing must observe cancellation before token work");
+        };
+
+        assert_eq!(error, "discovery cancelled");
+        assert_eq!(checks, cancel_at);
+    }
+
+    #[test]
+    fn parser_rejects_a_line_larger_than_the_bounded_parse_unit() {
+        let source = "x".repeat(super::MAX_BSL_LINE_BYTES + 1);
+
+        let result = super::parse_bsl_source_observing(&source, || false);
+        let Err(error) = result else {
+            panic!("an oversized BSL line must be rejected");
+        };
+
+        assert!(
+            error.contains("BSL line exceeds"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
