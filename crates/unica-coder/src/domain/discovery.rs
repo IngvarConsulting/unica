@@ -161,10 +161,6 @@ macro_rules! digest_newtype {
         pub(crate) struct $name(String);
 
         impl $name {
-            pub(crate) fn as_str(&self) -> &str {
-                &self.0
-            }
-
             fn from_hasher(hasher: Sha256) -> Self {
                 Self(format!("{:x}", hasher.finalize()))
             }
@@ -172,10 +168,36 @@ macro_rules! digest_newtype {
     };
 }
 
+macro_rules! digest_newtype_with_as_str {
+    ($name:ident) => {
+        digest_newtype!($name);
+
+        impl $name {
+            pub(crate) fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
+
 digest_newtype!(EvidenceId);
-digest_newtype!(ContentHash);
-digest_newtype!(MappingFingerprint);
+digest_newtype_with_as_str!(ContentHash);
+digest_newtype_with_as_str!(MappingFingerprint);
 digest_newtype!(SnapshotFingerprint);
+
+#[cfg(test)]
+impl EvidenceId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl SnapshotFingerprint {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl ContentHash {
     pub(crate) fn sha256(bytes: &[u8]) -> Self {
@@ -287,7 +309,6 @@ pub(crate) enum ArtifactKind {
     TabularSection,
     Attribute,
     Form,
-    FormControl,
     Command,
     Module,
     Method,
@@ -356,7 +377,18 @@ pub(crate) enum StructuralRelationKind {
 pub(crate) enum RuntimeFlowRelationKind {
     Callback,
     Action,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reserved wire taxonomy for event-subscription discovery"
+        )
+    )]
     EventSubscription,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved wire taxonomy for call-graph discovery")
+    )]
     Calls,
 }
 
@@ -397,6 +429,13 @@ pub(crate) enum SupportStateKind {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MissingCheckMateriality {
     Material,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reserved wire taxonomy for explicitly non-material provider gaps"
+        )
+    )]
     NonMaterial,
 }
 
@@ -495,6 +534,7 @@ pub(crate) enum SourceInventoryBound {
     TraversalEntries,
 }
 
+#[cfg(test)]
 impl SourceInventory {
     pub(crate) fn empty() -> Self {
         Self {
@@ -515,6 +555,7 @@ pub(crate) struct FactBatch<T> {
     pub coverage: ProviderCoverage,
 }
 
+#[cfg(test)]
 impl<T> FactBatch<T> {
     pub(crate) fn empty() -> Self {
         Self {
@@ -670,6 +711,7 @@ impl ProviderDiagnostic {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn non_material(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
@@ -1072,7 +1114,6 @@ mod tests {
             serde_json::to_string(&ArtifactKind::TabularSection).expect("tabular section"),
             serde_json::to_string(&ArtifactKind::Attribute).expect("attribute"),
             serde_json::to_string(&ArtifactKind::Form).expect("form"),
-            serde_json::to_string(&ArtifactKind::FormControl).expect("form control"),
             serde_json::to_string(&ArtifactKind::Command).expect("command"),
             serde_json::to_string(&ArtifactKind::Module).expect("module"),
             serde_json::to_string(&ArtifactKind::Method).expect("method"),

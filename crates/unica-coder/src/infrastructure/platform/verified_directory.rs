@@ -125,6 +125,7 @@ impl std::error::Error for VerifiedDirectoryError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_verified_contained_directory(
     root: &Path,
     path: &Path,
@@ -140,6 +141,7 @@ pub(crate) fn read_verified_contained_directory(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn read_verified_contained_directory_cancellable(
     root: &Path,
     path: &Path,
@@ -176,6 +178,7 @@ pub(crate) fn read_verified_contained_directory_bounded_cancellable(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn read_verified_contained_directory_with_expected_identity(
     root: &Path,
     path: &Path,

@@ -112,6 +112,7 @@ impl std::error::Error for ContainedFileError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_contained_regular_file(
     root: &Path,
     path: &Path,

@@ -23,28 +23,20 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
         Self { ports }
     }
 
-    pub(crate) fn execute(
-        &self,
-        request: &DiscoverRequest,
-        environment: &DiscoveryEnvironment,
-    ) -> Result<DiscoveryReport, DiscoveryError> {
-        self.execute_inner(request, environment, None)
-    }
-
     pub(crate) fn execute_cancellable(
         &self,
         request: &DiscoverRequest,
         environment: &DiscoveryEnvironment,
         cancellation: &CancellationToken,
     ) -> Result<DiscoveryReport, DiscoveryError> {
-        self.execute_inner(request, environment, Some(cancellation))
+        self.execute_inner(request, environment, cancellation)
     }
 
     fn execute_inner(
         &self,
         request: &DiscoverRequest,
         environment: &DiscoveryEnvironment,
-        cancellation: Option<&CancellationToken>,
+        cancellation: &CancellationToken,
     ) -> Result<DiscoveryReport, DiscoveryError> {
         if environment.source_root().as_os_str().is_empty() {
             return Err(DiscoveryError::EmptySourceRoot);
@@ -52,7 +44,7 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
 
         let concepts = derive_concepts(request);
         let limits = request.limits();
-        let mut query = DiscoveryQuery::new(
+        let query = DiscoveryQuery::new(
             request.task(),
             &concepts,
             request.search_terms(),
@@ -64,10 +56,8 @@ impl<'a> DiscoverExtensionPointsUseCase<'a> {
                 max_candidates: limits.max_candidates().get(),
                 max_graph_depth: limits.max_graph_depth().get(),
             },
-        );
-        if let Some(cancellation) = cancellation {
-            query = query.with_cancellation(cancellation);
-        }
+        )
+        .with_cancellation(cancellation);
         let matcher = FactMatcher::new(&query);
         let mut accumulator = ReportAccumulator::new(query.limits().max_evidence as usize);
 
@@ -1887,7 +1877,11 @@ mod tests {
             PathBuf::from("src/configuration"),
             MappingFingerprint::from_identity("configuration:src/configuration"),
         );
-        DiscoverExtensionPointsUseCase::new(fake.as_ports()).execute(&request, &environment)
+        DiscoverExtensionPointsUseCase::new(fake.as_ports()).execute_cancellable(
+            &request,
+            &environment,
+            &CancellationToken::new(),
+        )
     }
 
     #[test]

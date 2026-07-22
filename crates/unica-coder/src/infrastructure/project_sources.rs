@@ -35,25 +35,6 @@ pub(crate) struct ProjectSourceDeclaration {
     pub discovery_path_is_safe: bool,
 }
 
-pub(crate) fn discover_project_source_declarations(
-    workspace_root: &Path,
-) -> Result<Vec<ProjectSourceDeclaration>, String> {
-    let Some(config_path) = find_project_config(workspace_root) else {
-        return Ok(Vec::new());
-    };
-    let (source_sets, _configured_format_raw) =
-        read_config_source_sets(workspace_root, &config_path)?;
-    Ok(source_sets
-        .into_iter()
-        .map(|source_set| ProjectSourceDeclaration {
-            name: source_set.name,
-            kind: source_set.kind,
-            path: source_set.path,
-            discovery_path_is_safe: source_set.discovery_path_is_safe,
-        })
-        .collect())
-}
-
 pub(crate) fn discover_project_source_declarations_cancellable(
     workspace_root: &Path,
     cancellation: &CancellationToken,
@@ -688,7 +669,9 @@ source-set:
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("epf")).unwrap();
 
-        let declarations = discover_project_source_declarations(&root).unwrap();
+        let declarations =
+            discover_project_source_declarations_cancellable(&root, &CancellationToken::new())
+                .unwrap();
 
         assert_eq!(declarations.len(), 2);
         assert_eq!(declarations[0].name, "app");
