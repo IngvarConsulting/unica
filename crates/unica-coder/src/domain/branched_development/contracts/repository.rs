@@ -3,6 +3,9 @@ use super::scalars::{
     RepositoryVersion, RequiredNullable,
 };
 use super::schema::{audit_json_schema, one_of_schema};
+use super::support::{
+    SupportPrerequisiteVersionObservation, SupportPrerequisiteVersionObservationDigestRecord,
+};
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
@@ -550,7 +553,7 @@ pub(crate) struct EvidenceSourceRegistryEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EvidenceSourceRegistryDigestRecord {
-    entries: Task7EvidenceSourceRegistryEntries,
+    entries: Task8EvidenceSourceRegistryEntries,
 }
 
 impl contract_digest_record_sealed::Sealed for EvidenceSourceRegistryDigestRecord {}
@@ -558,11 +561,11 @@ impl ContractDigestRecord for EvidenceSourceRegistryDigestRecord {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-struct Task7EvidenceSourceRegistryEntries([EvidenceSourceRegistryEntry; 2]);
+struct Task8EvidenceSourceRegistryEntries([EvidenceSourceRegistryEntry; 3]);
 
-impl JsonSchema for Task7EvidenceSourceRegistryEntries {
+impl JsonSchema for Task8EvidenceSourceRegistryEntries {
     fn schema_name() -> Cow<'static, str> {
-        "Task7EvidenceSourceRegistryEntries".into()
+        "Task8EvidenceSourceRegistryEntries".into()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -570,11 +573,12 @@ impl JsonSchema for Task7EvidenceSourceRegistryEntries {
             "type": "array",
             "prefixItems": [
                 registry_entry_schema(EvidenceKind::RoutineClassification, generator),
+                registry_entry_schema(EvidenceKind::SupportPrerequisiteObservation, generator),
                 registry_entry_schema(EvidenceKind::NonConflictingConcurrent, generator),
             ],
             "items": false,
-            "minItems": 2,
-            "maxItems": 2,
+            "minItems": 3,
+            "maxItems": 3,
         })
     }
 }
@@ -747,6 +751,7 @@ enum SemanticDigestProjection {
     CopyRootDeltaDigest,
     CopyContentDeltaDigest,
     CopyClassificationDigest,
+    CopyExternalSupportDisjointnessDigest,
     ExplicitNull,
     CopyEvidenceDigest,
 }
@@ -756,6 +761,12 @@ enum SemanticDigestProjection {
 enum MapperSourceCase {
     Unrelated,
     Relevant,
+    RoutineUnrelated,
+    RoutineRelevant,
+    Authorized,
+    ExternalSupport,
+    PreArmExternal,
+    Invalid,
     HarmlessNonBlockingReferenceExpansion,
 }
 
@@ -816,6 +827,24 @@ impl EvidenceClassificationMappingRow {
             corrective_instruction_digest_projection: SemanticDigestProjection::ExplicitNull,
             non_conflicting_concurrent_evidence_digest_projection:
                 SemanticDigestProjection::CopyEvidenceDigest,
+        }
+    }
+
+    const fn support_observation(
+        source_case: MapperSourceCase,
+        partition_classification: RepositoryHistoryPartitionClassification,
+        external_support_disjointness_digest_projection: SemanticDigestProjection,
+    ) -> Self {
+        Self {
+            source_case,
+            partition_classification,
+            root_delta_digest_projection: SemanticDigestProjection::CopyRootDeltaDigest,
+            content_delta_digest_projection: SemanticDigestProjection::CopyContentDeltaDigest,
+            classification_digest_projection: SemanticDigestProjection::CopyClassificationDigest,
+            external_support_disjointness_digest_projection,
+            corrective_instruction_digest_projection: SemanticDigestProjection::ExplicitNull,
+            non_conflicting_concurrent_evidence_digest_projection:
+                SemanticDigestProjection::ExplicitNull,
         }
     }
 }
@@ -909,6 +938,85 @@ impl JsonSchema for NonConflictingEvidenceMappings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct SupportObservationEvidenceMappings([EvidenceClassificationMappingRow; 6]);
+
+impl SupportObservationEvidenceMappings {
+    const fn canonical() -> Self {
+        Self([
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::RoutineUnrelated,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                SemanticDigestProjection::ExplicitNull,
+            ),
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::RoutineRelevant,
+                RepositoryHistoryPartitionClassification::RelevantRoutine,
+                SemanticDigestProjection::ExplicitNull,
+            ),
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::Authorized,
+                RepositoryHistoryPartitionClassification::AuthorizedSupport,
+                SemanticDigestProjection::ExplicitNull,
+            ),
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::ExternalSupport,
+                RepositoryHistoryPartitionClassification::ExternalSupport,
+                SemanticDigestProjection::CopyExternalSupportDisjointnessDigest,
+            ),
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::PreArmExternal,
+                RepositoryHistoryPartitionClassification::PreArmExternal,
+                SemanticDigestProjection::ExplicitNull,
+            ),
+            EvidenceClassificationMappingRow::support_observation(
+                MapperSourceCase::Invalid,
+                RepositoryHistoryPartitionClassification::Invalid,
+                SemanticDigestProjection::ExplicitNull,
+            ),
+        ])
+    }
+}
+
+impl JsonSchema for SupportObservationEvidenceMappings {
+    fn schema_name() -> Cow<'static, str> {
+        "SupportObservationEvidenceMappings".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let ordinary = [
+            "copyRootDeltaDigest",
+            "copyContentDeltaDigest",
+            "copyClassificationDigest",
+            "explicitNull",
+            "explicitNull",
+            "explicitNull",
+        ];
+        json_schema!({
+            "type": "array",
+            "prefixItems": [
+                mapping_row_schema("routineUnrelated", "unrelatedRoutine", ordinary),
+                mapping_row_schema("routineRelevant", "relevantRoutine", ordinary),
+                mapping_row_schema("authorized", "authorizedSupport", ordinary),
+                mapping_row_schema("externalSupport", "externalSupport", [
+                    "copyRootDeltaDigest",
+                    "copyContentDeltaDigest",
+                    "copyClassificationDigest",
+                    "copyExternalSupportDisjointnessDigest",
+                    "explicitNull",
+                    "explicitNull",
+                ]),
+                mapping_row_schema("preArmExternal", "preArmExternal", ordinary),
+                mapping_row_schema("invalid", "invalid", ordinary),
+            ],
+            "items": false,
+            "minItems": 6,
+            "maxItems": 6,
+        })
+    }
+}
+
 fn mapping_row_schema(
     source_case: &'static str,
     partition_classification: &'static str,
@@ -982,6 +1090,21 @@ impl contract_digest_record_sealed::Sealed
 }
 impl ContractDigestRecord for NonConflictingEvidenceClassificationMapperRevisionDigestRecord {}
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SupportObservationEvidenceClassificationMapperRevisionDigestRecord {
+    mapper_kind: EvidenceMapperKind,
+    evidence_kind: EvidenceKind,
+    validation_checks: EvidenceMapperValidationChecks,
+    mappings: SupportObservationEvidenceMappings,
+}
+
+impl contract_digest_record_sealed::Sealed
+    for SupportObservationEvidenceClassificationMapperRevisionDigestRecord
+{
+}
+impl ContractDigestRecord for SupportObservationEvidenceClassificationMapperRevisionDigestRecord {}
+
 const TASK7_ROUTINE_EVIDENCE_SCHEMA_DIGEST: &str =
     "f590a096cb42f817f2000d14de97a6dfcb47c6dde569cc916827ed747ded5bc7";
 const TASK7_ROUTINE_DIGEST_RECORD_SCHEMA_DIGEST: &str =
@@ -1000,22 +1123,33 @@ const TASK7_NCC_MAPPER_REVISION_DIGEST: &str =
     "55280fdd689ce29c16185638edc05fafe3a759fadb53e3b0aa0d65a97d150fed";
 const TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST: &str =
     "91c1d9864fe79bc37eded4e1455dead8800e2b85c7bd81888c458accb900fbbc";
+const TASK8_SUPPORT_OBSERVATION_EVIDENCE_SCHEMA_DIGEST: &str =
+    "7eb7a77b3b57b2cc6236be637ea6333f42bd6e26f5a1713385c6195273366bcd";
+const TASK8_SUPPORT_OBSERVATION_DIGEST_RECORD_SCHEMA_DIGEST: &str =
+    "499b3e4af9000dd25a8be79188972a27f68d19ba01c1b8b243fafaca3d376126";
+const TASK8_SUPPORT_OBSERVATION_LOADER_REVISION_DIGEST: &str =
+    "9959dd9df263485c20961a8be2b3c42705f3243e4779f19159e578dd6c2744e8";
+const TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST: &str =
+    "fd97e2378b0b4125531a6088c99dfbcfe7a9e81ce08e634c1d2dc109225f0a1f";
+const TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST: &str =
+    "2cb42be57491f40e046c03e0c92633cd7be5c1853dd01fdb8d21940ad570b4c2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EvidenceSourceRegistry {
-    entries: [EvidenceSourceRegistryEntry; 2],
+    entries: [EvidenceSourceRegistryEntry; 3],
     registry_digest: Sha256Digest,
 }
 
 impl EvidenceSourceRegistry {
-    pub(crate) fn task7() -> Result<Self, RepositoryContractError> {
+    pub(crate) fn task8() -> Result<Self, RepositoryContractError> {
         let entries = [
             Self::entry(EvidenceKind::RoutineClassification)?,
+            Self::entry(EvidenceKind::SupportPrerequisiteObservation)?,
             Self::entry(EvidenceKind::NonConflictingConcurrent)?,
         ];
         let registry_digest = canonical_contract_digest(
             &EvidenceSourceRegistryDigestRecord {
-                entries: Task7EvidenceSourceRegistryEntries(entries.clone()),
+                entries: Task8EvidenceSourceRegistryEntries(entries.clone()),
             },
             None,
         )
@@ -1038,11 +1172,10 @@ impl EvidenceSourceRegistry {
                 schema_digest::<NonConflictingConcurrentEvidence>()?,
                 schema_digest::<NonConflictingConcurrentEvidenceDigestRecord>()?,
             ),
-            EvidenceKind::SupportPrerequisiteObservation => {
-                return Err(RepositoryContractError(
-                    "support prerequisite evidence is not registered in Task 7",
-                ));
-            }
+            EvidenceKind::SupportPrerequisiteObservation => (
+                schema_digest::<SupportPrerequisiteVersionObservation>()?,
+                schema_digest::<SupportPrerequisiteVersionObservationDigestRecord>()?,
+            ),
         };
         let loader_revision_digest = canonical_contract_digest(
             &EvidenceLoaderRevisionDigestRecord {
@@ -1072,7 +1205,15 @@ impl EvidenceSourceRegistry {
                 },
                 None,
             ),
-            EvidenceKind::SupportPrerequisiteObservation => unreachable!(),
+            EvidenceKind::SupportPrerequisiteObservation => canonical_contract_digest(
+                &SupportObservationEvidenceClassificationMapperRevisionDigestRecord {
+                    mapper_kind: EvidenceMapperKind::RepositoryHistoryPartitionClassification,
+                    evidence_kind: kind,
+                    validation_checks: EvidenceMapperValidationChecks::canonical(),
+                    mappings: SupportObservationEvidenceMappings::canonical(),
+                },
+                None,
+            ),
         }
         .map_err(|_| RepositoryContractError("mapper revision digest failed"))?;
         Ok(EvidenceSourceRegistryEntry {
@@ -1084,8 +1225,12 @@ impl EvidenceSourceRegistry {
         })
     }
 
-    pub(crate) fn evidence_kinds(&self) -> [EvidenceKind; 2] {
-        [self.entries[0].evidence_kind, self.entries[1].evidence_kind]
+    pub(crate) fn evidence_kinds(&self) -> [EvidenceKind; 3] {
+        [
+            self.entries[0].evidence_kind,
+            self.entries[1].evidence_kind,
+            self.entries[2].evidence_kind,
+        ]
     }
 
     pub(crate) fn registry_digest(&self) -> &Sha256Digest {
@@ -1100,6 +1245,13 @@ impl EvidenceSourceRegistry {
                 TASK7_ROUTINE_DIGEST_RECORD_SCHEMA_DIGEST,
                 TASK7_ROUTINE_LOADER_REVISION_DIGEST,
                 TASK7_ROUTINE_MAPPER_REVISION_DIGEST,
+            ),
+            (
+                EvidenceKind::SupportPrerequisiteObservation,
+                TASK8_SUPPORT_OBSERVATION_EVIDENCE_SCHEMA_DIGEST,
+                TASK8_SUPPORT_OBSERVATION_DIGEST_RECORD_SCHEMA_DIGEST,
+                TASK8_SUPPORT_OBSERVATION_LOADER_REVISION_DIGEST,
+                TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
             ),
             (
                 EvidenceKind::NonConflictingConcurrent,
@@ -1122,7 +1274,7 @@ impl EvidenceSourceRegistry {
                 return Err(RepositoryContractError("registry artifact digest mismatch"));
             }
         }
-        if self.registry_digest.as_str() != TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST {
+        if self.registry_digest.as_str() != TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST {
             return Err(RepositoryContractError("registry digest mismatch"));
         }
         Ok(())
@@ -1299,9 +1451,9 @@ impl JsonSchema for EvidenceSourceAvailability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-struct Task7EvidenceSourceAvailability([EvidenceSourceAvailability; 2]);
+struct Task8EvidenceSourceAvailability([EvidenceSourceAvailability; 3]);
 
-impl Task7EvidenceSourceAvailability {
+impl Task8EvidenceSourceAvailability {
     fn row(&self, kind: EvidenceKind) -> Option<&EvidenceSourceAvailability> {
         self.0.iter().find(|row| match row {
             EvidenceSourceAvailability::Available(value) => value.evidence_kind == kind,
@@ -1310,9 +1462,9 @@ impl Task7EvidenceSourceAvailability {
     }
 }
 
-impl JsonSchema for Task7EvidenceSourceAvailability {
+impl JsonSchema for Task8EvidenceSourceAvailability {
     fn schema_name() -> Cow<'static, str> {
-        "Task7EvidenceSourceAvailability".into()
+        "Task8EvidenceSourceAvailability".into()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -1320,11 +1472,12 @@ impl JsonSchema for Task7EvidenceSourceAvailability {
             "type": "array",
             "prefixItems": [
                 availability_position_schema(EvidenceKind::RoutineClassification, generator),
+                availability_position_schema(EvidenceKind::SupportPrerequisiteObservation, generator),
                 availability_position_schema(EvidenceKind::NonConflictingConcurrent, generator),
             ],
             "items": false,
-            "minItems": 2,
-            "maxItems": 2,
+            "minItems": 3,
+            "maxItems": 3,
         })
     }
 }
@@ -1375,7 +1528,7 @@ struct EvidenceSourceIndexProofDigestRecord {
     repository_version: RepositoryVersion,
     registry_digest: Sha256Digest,
     source_index_receipt_id: UnicaId,
-    availability: Task7EvidenceSourceAvailability,
+    availability: Task8EvidenceSourceAvailability,
 }
 
 impl contract_digest_record_sealed::Sealed for EvidenceSourceIndexProofDigestRecord {}
@@ -1387,8 +1540,11 @@ pub(crate) struct EvidenceSourceIndexProof {
     repository_version: RepositoryVersion,
     registry_digest: Sha256Digest,
     source_index_receipt_id: UnicaId,
-    availability: Task7EvidenceSourceAvailability,
+    availability: Task8EvidenceSourceAvailability,
     proof_digest: Sha256Digest,
+    #[serde(skip)]
+    #[schemars(skip)]
+    validated_support_mapping: Option<ValidatedSupportObservationEntryProof>,
 }
 
 impl EvidenceSourceIndexProof {
@@ -1399,12 +1555,12 @@ impl EvidenceSourceIndexProof {
     ) -> Result<Self, RepositoryContractError> {
         if &candidate.repository_version != expected_version
             || candidate.registry_digest != *registry.registry_digest()
-            || candidate.availability.len() != 2
+            || candidate.availability.len() != 3
         {
             return Err(RepositoryContractError("source-index proof scope mismatch"));
         }
         let expected_kinds = registry.evidence_kinds();
-        let mut rows = Vec::with_capacity(2);
+        let mut rows = Vec::with_capacity(3);
         for (candidate_row, expected_kind) in candidate.availability.into_iter().zip(expected_kinds)
         {
             if candidate_row.evidence_kind() != expected_kind {
@@ -1442,7 +1598,7 @@ impl EvidenceSourceIndexProof {
             };
             rows.push(row);
         }
-        let availability = Task7EvidenceSourceAvailability(
+        let availability = Task8EvidenceSourceAvailability(
             rows.try_into()
                 .map_err(|_| RepositoryContractError("source-index row count mismatch"))?,
         );
@@ -1460,6 +1616,7 @@ impl EvidenceSourceIndexProof {
             source_index_receipt_id: record.source_index_receipt_id,
             availability: record.availability,
             proof_digest,
+            validated_support_mapping: None,
         })
     }
 
@@ -1474,6 +1631,7 @@ pub(crate) struct RepositoryHistoryOrderEvidence {
     from_exclusive: RepositoryHistoryCursor,
     through_inclusive: RepositoryHistoryCursor,
     ordered_versions: Vec<RepositoryVersion>,
+    ordered_cursors: Vec<RepositoryHistoryCursor>,
 }
 
 impl RepositoryHistoryOrderEvidence {
@@ -1481,19 +1639,24 @@ impl RepositoryHistoryOrderEvidence {
         capability_id: &str,
         from_exclusive: RepositoryHistoryCursor,
         through_inclusive: RepositoryHistoryCursor,
-        ordered_versions: Vec<RepositoryVersion>,
+        ordered_cursors: Vec<RepositoryHistoryCursor>,
     ) -> Result<Self, RepositoryContractError> {
-        if ordered_versions.is_empty() || ordered_versions.len() > 1024 {
+        if ordered_cursors.is_empty() || ordered_cursors.len() > 1024 {
             return Err(RepositoryContractError(
                 "history order evidence must be non-empty and bounded",
             ));
         }
+        let ordered_versions = ordered_cursors
+            .iter()
+            .map(|cursor| cursor.through_version.clone())
+            .collect();
         Ok(Self {
             capability_id: CapabilityRowId::parse(capability_id)
                 .map_err(|_| RepositoryContractError("invalid history-order capability"))?,
             from_exclusive,
             through_inclusive,
             ordered_versions,
+            ordered_cursors,
         })
     }
 }
@@ -1761,9 +1924,83 @@ struct CanonicalNonConflictingEvidenceRecord<'a>(&'a NonConflictingConcurrentEvi
 impl contract_digest_record_sealed::Sealed for CanonicalNonConflictingEvidenceRecord<'_> {}
 impl ContractDigestRecord for CanonicalNonConflictingEvidenceRecord<'_> {}
 
+#[derive(Serialize)]
+#[serde(transparent)]
+struct CanonicalSupportObservationRecord<'a>(&'a SupportPrerequisiteVersionObservation);
+
+impl contract_digest_record_sealed::Sealed for CanonicalSupportObservationRecord<'_> {}
+impl ContractDigestRecord for CanonicalSupportObservationRecord<'_> {}
+
 enum ResolvedHistoryEvidence {
     Routine(RoutineRepositoryVersionClassificationEvidence),
+    SupportObservation(SupportPrerequisiteVersionObservation),
     NonConflicting(NonConflictingConcurrentEvidence),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedSupportObservationEntryProof {
+    repository_version: RepositoryVersion,
+    partition_classification: RepositoryHistoryPartitionClassification,
+    semantic_delta_digest: Sha256Digest,
+    source_evidence_ref: RepositoryHistorySourceEvidenceRef,
+    registry_digest: Sha256Digest,
+    source_index_proof_digest: Sha256Digest,
+}
+
+/// Exact immediate-successor support entry proven by the Task 8 resolver.
+///
+/// The token has no wire constructor. It can be minted only from a validated
+/// partition plus independent capability evidence for that partition's first
+/// history successor. Downstream control flow must use this token rather than
+/// the intrinsic observation projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedSupportObservationHistoryEntry {
+    successor: RepositoryHistoryImmediateSuccessorEvidence,
+    repository_version: RepositoryVersion,
+    partition_classification: RepositoryHistoryPartitionClassification,
+    semantic_delta_digest: Sha256Digest,
+    source_evidence_ref: RepositoryHistorySourceEvidenceRef,
+    registry_digest: Sha256Digest,
+    source_index_proof_digest: Sha256Digest,
+}
+
+impl ValidatedSupportObservationHistoryEntry {
+    pub(crate) fn from_validated_partition(
+        partition: &ValidatedRepositoryHistoryPartition,
+        successor: &RepositoryHistoryImmediateSuccessorEvidence,
+    ) -> Result<Self, RepositoryContractError> {
+        partition.immediate_support_observation_entry(successor)
+    }
+
+    pub(crate) const fn successor(&self) -> &RepositoryHistoryImmediateSuccessorEvidence {
+        &self.successor
+    }
+
+    pub(crate) const fn repository_version(&self) -> &RepositoryVersion {
+        &self.repository_version
+    }
+
+    pub(crate) const fn partition_classification(
+        &self,
+    ) -> RepositoryHistoryPartitionClassification {
+        self.partition_classification
+    }
+
+    pub(crate) const fn semantic_delta_digest(&self) -> &Sha256Digest {
+        &self.semantic_delta_digest
+    }
+
+    pub(crate) const fn source_evidence_ref(&self) -> &RepositoryHistorySourceEvidenceRef {
+        &self.source_evidence_ref
+    }
+
+    pub(crate) const fn registry_digest(&self) -> &Sha256Digest {
+        &self.registry_digest
+    }
+
+    pub(crate) const fn source_index_proof_digest(&self) -> &Sha256Digest {
+        &self.source_index_proof_digest
+    }
 }
 
 fn load_history_evidence(
@@ -1802,9 +2039,20 @@ fn load_history_evidence(
             .map_err(|_| RepositoryContractError("concurrent evidence is not canonical"))?;
             Ok(ResolvedHistoryEvidence::NonConflicting(evidence))
         }
-        EvidenceKind::SupportPrerequisiteObservation => Err(RepositoryContractError(
-            "support prerequisite evidence is not registered in Task 7",
-        )),
+        EvidenceKind::SupportPrerequisiteObservation => {
+            let evidence = serde_json::from_value::<SupportPrerequisiteVersionObservation>(value)
+                .map_err(|_| {
+                RepositoryContractError("support observation typed decode failed")
+            })?;
+            if evidence.classification_digest() != &reference.evidence_digest {
+                return Err(RepositoryContractError(
+                    "support observation ref digest mismatch",
+                ));
+            }
+            canonical_contract_digest(&CanonicalSupportObservationRecord(&evidence), Some(&bytes))
+                .map_err(|_| RepositoryContractError("support observation is not canonical"))?;
+            Ok(ResolvedHistoryEvidence::SupportObservation(evidence))
+        }
     }
 }
 
@@ -1865,6 +2113,16 @@ impl ValidatedRepositoryHistoryPartition {
             .all(|classification| allowed.contains(&classification))
     }
 
+    /// Returns true only when capability-backed order evidence contains this
+    /// exact cursor, including its history-prefix digest. The starting cursor
+    /// is part of the closed range even for an empty partition.
+    pub(crate) fn contains_cursor(&self, cursor: &RepositoryHistoryCursor) -> bool {
+        cursor == &self.wire.from_exclusive
+            || self.order_evidence.as_ref().is_some_and(|evidence| {
+                evidence.ordered_cursors.iter().any(|known| known == cursor)
+            })
+    }
+
     pub(crate) fn non_conflicting_entries_bind_atomic_safety_capability(
         &self,
         expected_capability_id: &CapabilityRowId,
@@ -1878,6 +2136,112 @@ impl ValidatedRepositoryHistoryPartition {
             }
             RepositoryHistoryPartitionEntry::EvidenceBacked(_)
             | RepositoryHistoryPartitionEntry::TaskCommit(_) => true,
+        })
+    }
+
+    fn immediate_support_observation_entry(
+        &self,
+        successor: &RepositoryHistoryImmediateSuccessorEvidence,
+    ) -> Result<ValidatedSupportObservationHistoryEntry, RepositoryContractError> {
+        let order = self.order_evidence.as_ref().ok_or(RepositoryContractError(
+            "support successor requires non-empty history-order evidence",
+        ))?;
+        let entry = self.wire.entries.0.first().ok_or(RepositoryContractError(
+            "support successor requires a first partition entry",
+        ))?;
+        if successor.anchor_cursor() != &self.wire.from_exclusive
+            || &order.from_exclusive != successor.anchor_cursor()
+            || order.through_inclusive != self.wire.through_inclusive
+            || order.ordered_versions.first() != Some(successor.first_observed_version())
+            || entry.repository_version() != successor.first_observed_version()
+            || self.source_index_proofs.len() != self.wire.entries.0.len()
+        {
+            return Err(RepositoryContractError(
+                "support successor scope does not match the validated partition",
+            ));
+        }
+
+        let expected_partition_digest = canonical_contract_digest(
+            &RepositoryHistoryPartitionDigestRecord {
+                from_exclusive: self.wire.from_exclusive.clone(),
+                through_inclusive: self.wire.through_inclusive.clone(),
+                entries: self.wire.entries.clone(),
+            },
+            None,
+        )
+        .map_err(|_| RepositoryContractError("partition digest failed"))?;
+        if expected_partition_digest != self.wire.partition_digest {
+            return Err(RepositoryContractError(
+                "support successor partition digest mismatch",
+            ));
+        }
+
+        let entry = match entry {
+            RepositoryHistoryPartitionEntry::EvidenceBacked(value) => value,
+            RepositoryHistoryPartitionEntry::NonConflicting(_)
+            | RepositoryHistoryPartitionEntry::TaskCommit(_) => {
+                return Err(RepositoryContractError(
+                    "immediate successor is not support-observation backed",
+                ));
+            }
+        };
+        let index_proof = &self.source_index_proofs[0];
+        let validated =
+            index_proof
+                .validated_support_mapping
+                .as_ref()
+                .ok_or(RepositoryContractError(
+                    "immediate successor lacks validated support evidence",
+                ))?;
+        let support_ref = match index_proof
+            .row(EvidenceKind::SupportPrerequisiteObservation)
+            .ok_or(RepositoryContractError(
+                "missing support-observation index row",
+            ))? {
+            EvidenceSourceAvailability::Available(value) => &value.source_evidence_ref,
+            EvidenceSourceAvailability::Absent(_) => {
+                return Err(RepositoryContractError(
+                    "support-observation source is not available",
+                ));
+            }
+        };
+        let expected_index_proof_digest = canonical_contract_digest(
+            &EvidenceSourceIndexProofDigestRecord {
+                repository_version: index_proof.repository_version.clone(),
+                registry_digest: index_proof.registry_digest.clone(),
+                source_index_receipt_id: index_proof.source_index_receipt_id.clone(),
+                availability: index_proof.availability.clone(),
+            },
+            None,
+        )
+        .map_err(|_| RepositoryContractError("source-index proof digest failed"))?;
+        let partition_classification =
+            RepositoryHistoryPartitionClassification::from(entry.classification);
+        if index_proof.repository_version != entry.repository_version
+            || index_proof.registry_digest.as_str() != TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST
+            || expected_index_proof_digest != index_proof.proof_digest
+            || support_ref.evidence_kind != EvidenceKind::SupportPrerequisiteObservation
+            || support_ref != &entry.source_evidence_ref
+            || validated.repository_version != entry.repository_version
+            || validated.partition_classification != partition_classification
+            || validated.semantic_delta_digest != entry.semantic_delta_digest
+            || validated.source_evidence_ref != entry.source_evidence_ref
+            || validated.registry_digest != index_proof.registry_digest
+            || validated.source_index_proof_digest != index_proof.proof_digest
+        {
+            return Err(RepositoryContractError(
+                "support successor disagrees with validated source mapping",
+            ));
+        }
+
+        Ok(ValidatedSupportObservationHistoryEntry {
+            successor: successor.clone(),
+            repository_version: validated.repository_version.clone(),
+            partition_classification: validated.partition_classification,
+            semantic_delta_digest: validated.semantic_delta_digest.clone(),
+            source_evidence_ref: validated.source_evidence_ref.clone(),
+            registry_digest: validated.registry_digest.clone(),
+            source_index_proof_digest: validated.source_index_proof_digest.clone(),
         })
     }
 }
@@ -1946,7 +2310,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             .any(|entry| matches!(entry, RepositoryHistoryPartitionEntry::TaskCommit(_)))
         {
             return Err(RepositoryContractError(
-                "generic Task 7 validator rejects taskCommit",
+                "generic Task 8 validator rejects taskCommit",
             ));
         }
 
@@ -1963,6 +2327,13 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
         if order_evidence.from_exclusive != wire.from_exclusive
             || order_evidence.through_inclusive != wire.through_inclusive
             || order_evidence.ordered_versions != entry_versions
+            || order_evidence.ordered_cursors.len() != entry_versions.len()
+            || order_evidence
+                .ordered_cursors
+                .iter()
+                .map(|cursor| &cursor.through_version)
+                .ne(entry_versions.iter())
+            || order_evidence.ordered_cursors.last() != Some(&wire.through_inclusive)
             || unique_versions.len() != entry_versions.len()
             || entry_versions.last() != Some(&wire.through_inclusive.through_version)
         {
@@ -1976,12 +2347,12 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             let candidate = self
                 .source_index
                 .candidate_for(entry.repository_version(), self.registry)?;
-            let proof = EvidenceSourceIndexProof::from_candidate(
+            let mut proof = EvidenceSourceIndexProof::from_candidate(
                 candidate,
                 entry.repository_version(),
                 self.registry,
             )?;
-            self.validate_entry(entry, &proof)?;
+            proof.validated_support_mapping = self.validate_entry(entry, &proof)?;
             source_index_proofs.push(proof);
         }
 
@@ -1996,74 +2367,163 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
         &self,
         entry: &RepositoryHistoryPartitionEntry,
         proof: &EvidenceSourceIndexProof,
-    ) -> Result<(), RepositoryContractError> {
+    ) -> Result<Option<ValidatedSupportObservationEntryProof>, RepositoryContractError> {
+        let support_row = proof
+            .row(EvidenceKind::SupportPrerequisiteObservation)
+            .ok_or(RepositoryContractError(
+                "missing support-observation index row",
+            ))?;
         let ncc_row = proof
             .row(EvidenceKind::NonConflictingConcurrent)
             .ok_or(RepositoryContractError("missing concurrent index row"))?;
         match entry {
             RepositoryHistoryPartitionEntry::TaskCommit(_) => Err(RepositoryContractError(
-                "generic Task 7 validator rejects taskCommit",
+                "generic Task 8 validator rejects taskCommit",
             )),
-            RepositoryHistoryPartitionEntry::EvidenceBacked(entry) => {
-                if matches!(ncc_row, EvidenceSourceAvailability::Available(_)) {
-                    return Err(RepositoryContractError(
-                        "available higher-precedence concurrent source cannot fall back",
-                    ));
-                }
-                let routine_row = proof
-                    .row(EvidenceKind::RoutineClassification)
-                    .ok_or(RepositoryContractError("missing routine index row"))?;
-                let selected = match routine_row {
-                    EvidenceSourceAvailability::Available(value) => &value.source_evidence_ref,
-                    EvidenceSourceAvailability::Absent(_) => {
-                        return Err(RepositoryContractError("routine source is absent"));
+            RepositoryHistoryPartitionEntry::EvidenceBacked(entry) => match support_row {
+                EvidenceSourceAvailability::Available(value) => {
+                    let selected = &value.source_evidence_ref;
+                    if entry.source_evidence_ref != *selected
+                        || selected.evidence_kind != EvidenceKind::SupportPrerequisiteObservation
+                    {
+                        return Err(RepositoryContractError(
+                            "support-observation source ref substitution",
+                        ));
                     }
-                };
-                if entry.source_evidence_ref != *selected
-                    || selected.evidence_kind != EvidenceKind::RoutineClassification
-                {
-                    return Err(RepositoryContractError("routine source ref substitution"));
-                }
-                let evidence = match load_history_evidence(selected, self.evidence_resolver)? {
-                    ResolvedHistoryEvidence::Routine(value) => value,
-                    ResolvedHistoryEvidence::NonConflicting(_) => {
-                        return Err(RepositoryContractError("routine source type mismatch"));
+                    let observation = match load_history_evidence(selected, self.evidence_resolver)?
+                    {
+                        ResolvedHistoryEvidence::SupportObservation(value) => value,
+                        ResolvedHistoryEvidence::Routine(_)
+                        | ResolvedHistoryEvidence::NonConflicting(_) => {
+                            return Err(RepositoryContractError(
+                                "support-observation source type mismatch",
+                            ));
+                        }
+                    };
+                    if observation.repository_version() != &entry.repository_version {
+                        return Err(RepositoryContractError(
+                            "support-observation version mismatch",
+                        ));
                     }
-                };
-                if evidence.repository_version != entry.repository_version {
-                    return Err(RepositoryContractError("routine evidence version mismatch"));
-                }
-                let expected_classification = match evidence.relevance {
-                    RepositoryRelevance::Unrelated => {
-                        EvidenceBackedPartitionClassification::UnrelatedRoutine
+                    let projection =
+                        observation
+                            .task8_mapping_projection()
+                            .ok_or(RepositoryContractError(
+                                "corrective support observation is not enabled in Task 8",
+                            ))?;
+                    let partition_classification =
+                        RepositoryHistoryPartitionClassification::from(entry.classification);
+                    if partition_classification != projection.partition_classification() {
+                        return Err(RepositoryContractError(
+                            "support-observation classification mismatch",
+                        ));
                     }
-                    RepositoryRelevance::Relevant => {
-                        EvidenceBackedPartitionClassification::RelevantRoutine
+                    let semantic = RepositorySemanticDeltaDigestRecord {
+                        repository_version: entry.repository_version.clone(),
+                        partition_classification: projection.partition_classification(),
+                        root_delta_digest: projection
+                            .root_delta_digest()
+                            .map(RequiredNullable::value)
+                            .unwrap_or_else(RequiredNullable::null),
+                        content_delta_digest: projection
+                            .content_delta_digest()
+                            .map(RequiredNullable::value)
+                            .unwrap_or_else(RequiredNullable::null),
+                        classification_digest: RequiredNullable::value(
+                            projection.classification_digest(),
+                        ),
+                        external_support_disjointness_digest: projection
+                            .external_support_disjointness_digest()
+                            .map(RequiredNullable::value)
+                            .unwrap_or_else(RequiredNullable::null),
+                        corrective_instruction_digest: RequiredNullable::null(),
+                        non_conflicting_concurrent_evidence_digest: RequiredNullable::null(),
+                    };
+                    let expected = canonical_contract_digest(&semantic, None)
+                        .map_err(|_| RepositoryContractError("semantic delta digest failed"))?;
+                    if expected != entry.semantic_delta_digest {
+                        return Err(RepositoryContractError("semantic delta digest mismatch"));
                     }
-                };
-                if entry.classification != expected_classification {
-                    return Err(RepositoryContractError(
-                        "routine source classification mismatch",
-                    ));
+                    Ok(Some(ValidatedSupportObservationEntryProof {
+                        repository_version: entry.repository_version.clone(),
+                        partition_classification,
+                        semantic_delta_digest: entry.semantic_delta_digest.clone(),
+                        source_evidence_ref: entry.source_evidence_ref.clone(),
+                        registry_digest: proof.registry_digest.clone(),
+                        source_index_proof_digest: proof.proof_digest.clone(),
+                    }))
                 }
-                let semantic = RepositorySemanticDeltaDigestRecord {
-                    repository_version: entry.repository_version.clone(),
-                    partition_classification: entry.classification.into(),
-                    root_delta_digest: RequiredNullable::value(evidence.root_delta_digest),
-                    content_delta_digest: RequiredNullable::value(evidence.content_delta_digest),
-                    classification_digest: RequiredNullable::value(evidence.classification_digest),
-                    external_support_disjointness_digest: RequiredNullable::null(),
-                    corrective_instruction_digest: RequiredNullable::null(),
-                    non_conflicting_concurrent_evidence_digest: RequiredNullable::null(),
-                };
-                let expected = canonical_contract_digest(&semantic, None)
-                    .map_err(|_| RepositoryContractError("semantic delta digest failed"))?;
-                if expected != entry.semantic_delta_digest {
-                    return Err(RepositoryContractError("semantic delta digest mismatch"));
+                EvidenceSourceAvailability::Absent(_) => {
+                    if matches!(ncc_row, EvidenceSourceAvailability::Available(_)) {
+                        return Err(RepositoryContractError(
+                            "available higher-precedence concurrent source cannot fall back",
+                        ));
+                    }
+                    let routine_row = proof
+                        .row(EvidenceKind::RoutineClassification)
+                        .ok_or(RepositoryContractError("missing routine index row"))?;
+                    let selected = match routine_row {
+                        EvidenceSourceAvailability::Available(value) => &value.source_evidence_ref,
+                        EvidenceSourceAvailability::Absent(_) => {
+                            return Err(RepositoryContractError("routine source is absent"));
+                        }
+                    };
+                    if entry.source_evidence_ref != *selected
+                        || selected.evidence_kind != EvidenceKind::RoutineClassification
+                    {
+                        return Err(RepositoryContractError("routine source ref substitution"));
+                    }
+                    let evidence = match load_history_evidence(selected, self.evidence_resolver)? {
+                        ResolvedHistoryEvidence::Routine(value) => value,
+                        ResolvedHistoryEvidence::SupportObservation(_)
+                        | ResolvedHistoryEvidence::NonConflicting(_) => {
+                            return Err(RepositoryContractError("routine source type mismatch"));
+                        }
+                    };
+                    if evidence.repository_version != entry.repository_version {
+                        return Err(RepositoryContractError("routine evidence version mismatch"));
+                    }
+                    let expected_classification = match evidence.relevance {
+                        RepositoryRelevance::Unrelated => {
+                            EvidenceBackedPartitionClassification::UnrelatedRoutine
+                        }
+                        RepositoryRelevance::Relevant => {
+                            EvidenceBackedPartitionClassification::RelevantRoutine
+                        }
+                    };
+                    if entry.classification != expected_classification {
+                        return Err(RepositoryContractError(
+                            "routine source classification mismatch",
+                        ));
+                    }
+                    let semantic = RepositorySemanticDeltaDigestRecord {
+                        repository_version: entry.repository_version.clone(),
+                        partition_classification: entry.classification.into(),
+                        root_delta_digest: RequiredNullable::value(evidence.root_delta_digest),
+                        content_delta_digest: RequiredNullable::value(
+                            evidence.content_delta_digest,
+                        ),
+                        classification_digest: RequiredNullable::value(
+                            evidence.classification_digest,
+                        ),
+                        external_support_disjointness_digest: RequiredNullable::null(),
+                        corrective_instruction_digest: RequiredNullable::null(),
+                        non_conflicting_concurrent_evidence_digest: RequiredNullable::null(),
+                    };
+                    let expected = canonical_contract_digest(&semantic, None)
+                        .map_err(|_| RepositoryContractError("semantic delta digest failed"))?;
+                    if expected != entry.semantic_delta_digest {
+                        return Err(RepositoryContractError("semantic delta digest mismatch"));
+                    }
+                    Ok(None)
                 }
-                Ok(())
-            }
+            },
             RepositoryHistoryPartitionEntry::NonConflicting(entry) => {
+                if matches!(support_row, EvidenceSourceAvailability::Available(_)) {
+                    return Err(RepositoryContractError(
+                        "available higher-precedence support source cannot fall back",
+                    ));
+                }
                 let selected = match ncc_row {
                     EvidenceSourceAvailability::Available(value) => &value.source_evidence_ref,
                     EvidenceSourceAvailability::Absent(_) => {
@@ -2079,7 +2539,8 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                 }
                 let evidence = match load_history_evidence(selected, self.evidence_resolver)? {
                     ResolvedHistoryEvidence::NonConflicting(value) => value,
-                    ResolvedHistoryEvidence::Routine(_) => {
+                    ResolvedHistoryEvidence::Routine(_)
+                    | ResolvedHistoryEvidence::SupportObservation(_) => {
                         return Err(RepositoryContractError("concurrent source type mismatch"));
                     }
                 };
@@ -2108,7 +2569,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                 if expected != entry.semantic_delta_digest {
                     return Err(RepositoryContractError("semantic delta digest mismatch"));
                 }
-                Ok(())
+                Ok(None)
             }
         }
     }
@@ -2118,7 +2579,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
         validated: &ValidatedRepositoryHistoryPartition,
     ) -> Result<(), RepositoryContractError> {
         let replayed = self.validate(validated.wire.clone())?;
-        if replayed.wire != validated.wire {
+        if &replayed != validated {
             return Err(RepositoryContractError("late history audit mismatch"));
         }
         Ok(())
@@ -2539,6 +3000,7 @@ mod tests {
         UnvalidatedRepositoryHistoryPartition,
     };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
+    use crate::domain::branched_development::contracts::support::SupportObservationTask8Projection;
     use crate::domain::branched_development::Sha256Digest;
     use schemars::schema_for;
     use serde_json::{json, Value};
@@ -2553,7 +3015,7 @@ mod tests {
 
     fn assert_closed<T: schemars::JsonSchema>() {
         let schema = serde_json::to_value(schema_for!(T)).unwrap();
-        audit_json_schema(&schema).expect("Task 7 schema must be recursively closed");
+        audit_json_schema(&schema).expect("repository schema must be recursively closed");
     }
 
     fn test_digest(value: &Value) -> String {
@@ -2575,6 +3037,10 @@ mod tests {
         let _ =
             <super::ValidatedRepositoryHistoryPartition as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <super::EvidenceSourceIndexProof as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <SupportObservationTask8Projection as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <super::ValidatedSupportObservationHistoryEntry as AmbiguousIfDeserializeOwned<
+            _,
+        >>::marker;
     }
 
     #[test]
@@ -2914,19 +3380,57 @@ mod tests {
     }
 
     #[test]
-    fn task7_evidence_registry_binds_exact_ordered_schema_loader_and_mapper_digests() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+    fn task8_registry_artifact_digest_constants_match_generated_preimages() {
+        let entries = [
+            super::EvidenceSourceRegistry::entry(EvidenceKind::RoutineClassification).unwrap(),
+            super::EvidenceSourceRegistry::entry(EvidenceKind::SupportPrerequisiteObservation)
+                .unwrap(),
+            super::EvidenceSourceRegistry::entry(EvidenceKind::NonConflictingConcurrent).unwrap(),
+        ];
+        let support = &entries[1];
+        let registry_digest = super::canonical_contract_digest(
+            &super::EvidenceSourceRegistryDigestRecord {
+                entries: super::Task8EvidenceSourceRegistryEntries(entries.clone()),
+            },
+            None,
+        )
+        .unwrap();
+        let actual = [
+            support.evidence_schema_digest.as_str(),
+            support.digest_record_schema_digest.as_str(),
+            support.loader_revision_digest.as_str(),
+            support.classification_mapper_revision_digest.as_str(),
+            registry_digest.as_str(),
+        ];
+        let committed = [
+            super::TASK8_SUPPORT_OBSERVATION_EVIDENCE_SCHEMA_DIGEST,
+            super::TASK8_SUPPORT_OBSERVATION_DIGEST_RECORD_SCHEMA_DIGEST,
+            super::TASK8_SUPPORT_OBSERVATION_LOADER_REVISION_DIGEST,
+            super::TASK8_SUPPORT_OBSERVATION_MAPPER_REVISION_DIGEST,
+            super::TASK8_EVIDENCE_SOURCE_REGISTRY_DIGEST,
+        ];
+        assert_eq!(actual, committed);
+    }
+
+    #[test]
+    fn task8_evidence_registry_binds_exact_ordered_schema_loader_and_mapper_digests() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         assert_eq!(
             registry.evidence_kinds(),
             [
                 EvidenceKind::RoutineClassification,
+                EvidenceKind::SupportPrerequisiteObservation,
                 EvidenceKind::NonConflictingConcurrent,
             ]
         );
         registry.verify_committed_artifacts().unwrap();
         assert_eq!(registry.registry_digest().as_str().len(), 64);
+        assert_ne!(
+            registry.registry_digest().as_str(),
+            super::TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST
+        );
 
-        for entry_index in 0..2 {
+        for entry_index in 0..3 {
             for mutate in 0..4 {
                 let mut substituted = registry.clone();
                 let entry = &mut substituted.entries[entry_index];
@@ -2954,10 +3458,10 @@ mod tests {
     }
 
     #[test]
-    fn task7_registry_digest_record_schema_is_an_exact_two_position_tuple() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+    fn task8_registry_digest_record_schema_is_an_exact_three_position_tuple() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let record = super::EvidenceSourceRegistryDigestRecord {
-            entries: super::Task7EvidenceSourceRegistryEntries(registry.entries.clone()),
+            entries: super::Task8EvidenceSourceRegistryEntries(registry.entries.clone()),
         };
         let valid = serde_json::to_value(record).unwrap();
         let schema =
@@ -2966,9 +3470,9 @@ mod tests {
         let validator = jsonschema::validator_for(&schema).unwrap();
         assert!(validator.is_valid(&valid));
 
-        let tuple_schema = &schema["$defs"]["Task7EvidenceSourceRegistryEntries"];
-        assert_eq!(tuple_schema["minItems"], json!(2));
-        assert_eq!(tuple_schema["maxItems"], json!(2));
+        let tuple_schema = &schema["$defs"]["Task8EvidenceSourceRegistryEntries"];
+        assert_eq!(tuple_schema["minItems"], json!(3));
+        assert_eq!(tuple_schema["maxItems"], json!(3));
         assert_eq!(tuple_schema["items"], json!(false));
         assert_eq!(
             tuple_schema["prefixItems"][0]["properties"]["evidenceKind"]["const"],
@@ -2976,11 +3480,15 @@ mod tests {
         );
         assert_eq!(
             tuple_schema["prefixItems"][1]["properties"]["evidenceKind"]["const"],
+            json!("supportPrerequisiteObservation")
+        );
+        assert_eq!(
+            tuple_schema["prefixItems"][2]["properties"]["evidenceKind"]["const"],
             json!("nonConflictingConcurrent")
         );
 
         let entries = valid["entries"].as_array().unwrap();
-        for length in [0, 1, 3] {
+        for length in [0, 1, 2, 4] {
             let mut invalid = valid.clone();
             invalid["entries"] = Value::Array(
                 (0..length)
@@ -2994,11 +3502,11 @@ mod tests {
         }
 
         let mut duplicate = valid.clone();
-        duplicate["entries"] = json!([entries[0], entries[0]]);
+        duplicate["entries"] = json!([entries[0], entries[0], entries[2]]);
         assert!(!validator.is_valid(&duplicate));
 
         let mut reversed = valid.clone();
-        reversed["entries"] = json!([entries[1], entries[0]]);
+        reversed["entries"] = json!([entries[2], entries[1], entries[0]]);
         assert!(!validator.is_valid(&reversed));
 
         let mut missing_field = valid.clone();
@@ -3014,8 +3522,61 @@ mod tests {
     }
 
     #[test]
-    fn task7_registry_schema_preimages_are_closed_and_recompute_to_committed_digests() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+    fn support_observation_mapper_schema_is_the_exact_six_row_task8_table() {
+        let schema = serde_json::to_value(schema_for!(
+            super::SupportObservationEvidenceClassificationMapperRevisionDigestRecord
+        ))
+        .unwrap();
+        audit_json_schema(&schema).unwrap();
+        let rows = schema["$defs"]["SupportObservationEvidenceMappings"]["prefixItems"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 6);
+        let expected = [
+            ("routineUnrelated", "unrelatedRoutine", "explicitNull"),
+            ("routineRelevant", "relevantRoutine", "explicitNull"),
+            ("authorized", "authorizedSupport", "explicitNull"),
+            (
+                "externalSupport",
+                "externalSupport",
+                "copyExternalSupportDisjointnessDigest",
+            ),
+            ("preArmExternal", "preArmExternal", "explicitNull"),
+            ("invalid", "invalid", "explicitNull"),
+        ];
+        for (row, (source_case, classification, external_projection)) in rows.iter().zip(expected) {
+            assert_eq!(row["properties"]["sourceCase"]["const"], json!(source_case));
+            assert_eq!(
+                row["properties"]["partitionClassification"]["const"],
+                json!(classification)
+            );
+            for (field, projection) in [
+                ("rootDeltaDigestProjection", "copyRootDeltaDigest"),
+                ("contentDeltaDigestProjection", "copyContentDeltaDigest"),
+                ("classificationDigestProjection", "copyClassificationDigest"),
+                (
+                    "externalSupportDisjointnessDigestProjection",
+                    external_projection,
+                ),
+                ("correctiveInstructionDigestProjection", "explicitNull"),
+                (
+                    "nonConflictingConcurrentEvidenceDigestProjection",
+                    "explicitNull",
+                ),
+            ] {
+                assert_eq!(row["properties"][field]["const"], json!(projection));
+            }
+            assert_eq!(row["additionalProperties"], json!(false));
+        }
+        let mapping_tuple = &schema["$defs"]["SupportObservationEvidenceMappings"];
+        assert_eq!(mapping_tuple["minItems"], json!(6));
+        assert_eq!(mapping_tuple["maxItems"], json!(6));
+        assert_eq!(mapping_tuple["items"], json!(false));
+    }
+
+    #[test]
+    fn task8_registry_schema_preimages_are_closed_and_recompute_to_committed_digests() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         assert_closed::<RoutineRepositoryVersionClassificationEvidence>();
         assert_closed::<super::RoutineRepositoryVersionClassificationEvidenceDigestRecord>();
         assert_closed::<NonConflictingConcurrentEvidence>();
@@ -3023,6 +3584,10 @@ mod tests {
         assert_closed::<super::EvidenceLoaderRevisionDigestRecord>();
         assert_closed::<super::RoutineEvidenceClassificationMapperRevisionDigestRecord>();
         assert_closed::<super::NonConflictingEvidenceClassificationMapperRevisionDigestRecord>();
+        assert_closed::<super::SupportPrerequisiteVersionObservation>();
+        assert_closed::<super::SupportPrerequisiteVersionObservationDigestRecord>();
+        assert_closed::<super::SupportObservationEvidenceClassificationMapperRevisionDigestRecord>(
+        );
         assert_closed::<super::EvidenceSourceIndexProofDigestRecord>();
         assert_closed::<super::EvidenceSourceIndexProof>();
         assert_closed::<super::RepositoryHistoryPartitionDigestRecord>();
@@ -3036,6 +3601,11 @@ mod tests {
                     super::RoutineRepositoryVersionClassificationEvidenceDigestRecord,
                 >()
                 .unwrap(),
+            ),
+            (
+                super::schema_digest::<super::SupportPrerequisiteVersionObservation>().unwrap(),
+                super::schema_digest::<super::SupportPrerequisiteVersionObservationDigestRecord>()
+                    .unwrap(),
             ),
             (
                 super::schema_digest::<NonConflictingConcurrentEvidence>().unwrap(),
@@ -3218,6 +3788,9 @@ mod tests {
                     EvidenceKind::RoutineClassification,
                     vec![source_ref],
                 ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                ),
                 EvidenceSourceIndexCandidateRow::absent(EvidenceKind::NonConflictingConcurrent),
             ],
         )
@@ -3229,9 +3802,269 @@ mod tests {
             "history-order-v1",
             serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
             serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
-            vec![super::RepositoryVersion::parse("opaque-v1").unwrap()],
+            vec![serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap()],
         )
         .unwrap()
+    }
+
+    fn support_actor() -> Value {
+        json!({
+            "username":"repository-user",
+            "computer":null,
+            "infobase":null
+        })
+    }
+
+    fn finalize_support_observation(mut value: Value) -> Value {
+        let mut digest_record = value.clone();
+        digest_record
+            .as_object_mut()
+            .unwrap()
+            .remove("classificationDigest");
+        value["classificationDigest"] = json!(test_digest(&digest_record));
+        value
+    }
+
+    fn support_observation_fixture(
+        source_case: &str,
+    ) -> (Value, RepositoryHistorySourceEvidenceRef, Value) {
+        let (observation, partition_classification, root_delta, content_delta, external_digest) =
+            match source_case {
+                "routineUnrelated" | "routineRelevant" => {
+                    let relevance = if source_case == "routineUnrelated" {
+                        "unrelated"
+                    } else {
+                        "relevant"
+                    };
+                    let partition_classification = if source_case == "routineUnrelated" {
+                        "unrelatedRoutine"
+                    } else {
+                        "relevantRoutine"
+                    };
+                    (
+                        finalize_support_observation(json!({
+                            "repositoryVersion":"opaque-v1",
+                            "classification":"routine",
+                            "classificationDigest":SHA_A,
+                            "mismatchKinds":[],
+                            "repositoryActor":support_actor(),
+                            "relevance":relevance,
+                            "rootDeltaDigest":SHA_A,
+                            "contentDeltaDigest":SHA_B,
+                            "supportTransitionsDigest":CanonicalEmptyDeltaDigest::VALUE,
+                            "supportGraphUnchanged":true
+                        })),
+                        partition_classification,
+                        Some(SHA_A),
+                        Some(SHA_B),
+                        None,
+                    )
+                }
+                "authorized" => (
+                    finalize_support_observation(json!({
+                        "repositoryVersion":"opaque-v1",
+                        "classification":"authorized",
+                        "classificationDigest":SHA_A,
+                        "mismatchKinds":[],
+                        "repositoryActor":support_actor(),
+                        "supportActionId":UUID_A,
+                        "supportActionDigest":SHA_A,
+                        "armingReceiptId":UUID_A,
+                        "armingReceiptDigest":SHA_A,
+                        "firstRootSupportAfterArming":true,
+                        "actionAttributionEvidenceDigest":SHA_A,
+                        "authorizedTransitionsDigest":SHA_B,
+                        "manualTargetMode":"reservedOriginal",
+                        "rootDeltaDigest":SHA_A,
+                        "contentDeltaDigest":CanonicalEmptyDeltaDigest::VALUE,
+                        "observedSupportTransitionsDigest":SHA_B,
+                        "rootDeltaContainsOnlyAuthorizedSupportTransitions":true
+                    })),
+                    "authorizedSupport",
+                    Some(SHA_A),
+                    Some(CanonicalEmptyDeltaDigest::VALUE),
+                    None,
+                ),
+                "externalSupport" => (
+                    finalize_support_observation(json!({
+                        "repositoryVersion":"opaque-v1",
+                        "classification":"externalSupport",
+                        "classificationDigest":SHA_A,
+                        "mismatchKinds":[],
+                        "repositoryActor":support_actor(),
+                        "rootDeltaDigest":SHA_A,
+                        "contentDeltaDigest":CanonicalEmptyDeltaDigest::VALUE,
+                        "provenNotThisAction":true,
+                        "overlapWithAuthorizedTransitions":false,
+                        "supportOnlyDelta":true,
+                        "externalSupportDisjointnessDigest":SHA_B,
+                        "externalOwnershipEvidence":{
+                            "kind":"supportPrerequisiteReceipt",
+                            "receiptId":UUID_A,
+                            "receiptDigest":SHA_A
+                        }
+                    })),
+                    "externalSupport",
+                    Some(SHA_A),
+                    Some(CanonicalEmptyDeltaDigest::VALUE),
+                    Some(SHA_B),
+                ),
+                "preArmExternal" => (
+                    finalize_support_observation(json!({
+                        "repositoryVersion":"opaque-v1",
+                        "classification":"preArmExternal",
+                        "classificationDigest":SHA_A,
+                        "mismatchKinds":["armingOrderViolated"],
+                        "pendingSupportActionId":UUID_A,
+                        "pendingSupportActionDigest":SHA_A,
+                        "authorizationState":"awaitingArm",
+                        "armingReceiptAbsent":true,
+                        "repositoryActor":support_actor(),
+                        "rootDeltaDigest":SHA_A,
+                        "contentDeltaDigest":SHA_B,
+                        "supportTransitionsDigest":SHA_A,
+                        "preserveAsExternalBaseline":true
+                    })),
+                    "preArmExternal",
+                    Some(SHA_A),
+                    Some(SHA_B),
+                    None,
+                ),
+                "invalid" => (
+                    finalize_support_observation(json!({
+                        "repositoryVersion":"opaque-v1",
+                        "classification":"invalid",
+                        "classificationDigest":SHA_A,
+                        "mismatchKinds":["versionUnattributed"],
+                        "provenance":"unattributed",
+                        "repositoryActor":null,
+                        "rootDeltaDigest":null,
+                        "contentDeltaDigest":null,
+                        "missingEvidenceKinds":["repositoryActorUnavailable"]
+                    })),
+                    "invalid",
+                    None,
+                    None,
+                    None,
+                ),
+                "corrective" => (
+                    finalize_support_observation(json!({
+                        "repositoryVersion":"opaque-v1",
+                        "classification":"corrective",
+                        "classificationDigest":SHA_A,
+                        "mismatchKinds":[],
+                        "correctionKind":"actionCorrection",
+                        "repositoryActor":support_actor(),
+                        "manualTargetMode":"reservedOriginal",
+                        "rootDeltaDigest":SHA_A,
+                        "contentDeltaDigest":SHA_B,
+                        "correctiveInstructionDigest":SHA_A
+                    })),
+                    "corrective",
+                    Some(SHA_A),
+                    Some(SHA_B),
+                    None,
+                ),
+                _ => panic!("unknown support source case {source_case}"),
+            };
+
+        serde_json::from_value::<super::SupportPrerequisiteVersionObservation>(observation.clone())
+            .unwrap();
+        let classification_digest = observation["classificationDigest"].as_str().unwrap();
+        let source_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::SupportPrerequisiteObservation,
+            classification_digest,
+        )
+        .unwrap();
+        let semantic = json!({
+            "repositoryVersion":"opaque-v1",
+            "partitionClassification":partition_classification,
+            "rootDeltaDigest":root_delta,
+            "contentDeltaDigest":content_delta,
+            "classificationDigest":classification_digest,
+            "externalSupportDisjointnessDigest":external_digest,
+            "correctiveInstructionDigest":if source_case == "corrective" { Some(SHA_A) } else { None },
+            "nonConflictingConcurrentEvidenceDigest":null
+        });
+        let entry = json!({
+            "repositoryVersion":"opaque-v1",
+            "classification":partition_classification,
+            "semanticDeltaDigest":test_digest(&semantic),
+            "sourceEvidenceRef":serde_json::to_value(&source_ref).unwrap()
+        });
+        let mut partition = json!({
+            "fromExclusive":cursor("opaque-v0", SHA_A),
+            "throughInclusive":cursor("opaque-v1", SHA_B),
+            "entries":[entry]
+        });
+        recalculate_partition_digest(&mut partition);
+        (partition, source_ref, observation)
+    }
+
+    fn support_candidate(
+        registry: &EvidenceSourceRegistry,
+        source_ref: RepositoryHistorySourceEvidenceRef,
+        ncc_available: bool,
+    ) -> EvidenceSourceIndexCandidate {
+        let ncc_row = if ncc_available {
+            EvidenceSourceIndexCandidateRow::available(
+                EvidenceKind::NonConflictingConcurrent,
+                vec![RepositoryHistorySourceEvidenceRef::new(
+                    EvidenceKind::NonConflictingConcurrent,
+                    SHA_B,
+                )
+                .unwrap()],
+            )
+        } else {
+            EvidenceSourceIndexCandidateRow::absent(EvidenceKind::NonConflictingConcurrent)
+        };
+        EvidenceSourceIndexCandidate::from_capability_adapter(
+            "opaque-v1",
+            registry.registry_digest().as_str(),
+            UUID_A,
+            vec![
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::RoutineClassification,
+                    vec![RepositoryHistorySourceEvidenceRef::new(
+                        EvidenceKind::RoutineClassification,
+                        SHA_A,
+                    )
+                    .unwrap()],
+                ),
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                    vec![source_ref],
+                ),
+                ncc_row,
+            ],
+        )
+        .unwrap()
+    }
+
+    fn validate_support_fixture(
+        partition_json: Value,
+        candidate: EvidenceSourceIndexCandidate,
+        bytes: Vec<u8>,
+        source_ref: &RepositoryHistorySourceEvidenceRef,
+    ) -> Result<super::ValidatedRepositoryHistoryPartition, super::RepositoryContractError> {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let index = FakeIndex {
+            candidates: BTreeMap::from([("opaque-v1".into(), candidate)]),
+        };
+        let order = FakeOrder {
+            evidence: routine_order(),
+        };
+        let evidence_bytes = FakeEvidenceBytes {
+            bytes: BTreeMap::from([(
+                (
+                    EvidenceKind::SupportPrerequisiteObservation,
+                    source_ref.evidence_digest().as_str().to_owned(),
+                ),
+                bytes,
+            )]),
+        };
+        RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &evidence_bytes)
+            .validate(serde_json::from_value(partition_json).unwrap())
     }
 
     fn validate_routine_fixture(
@@ -3241,7 +4074,7 @@ mod tests {
         bytes: Vec<u8>,
         source_ref: &RepositoryHistorySourceEvidenceRef,
     ) -> Result<super::ValidatedRepositoryHistoryPartition, super::RepositoryContractError> {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let index = FakeIndex {
             candidates: BTreeMap::from([("opaque-v1".into(), candidate)]),
         };
@@ -3265,7 +4098,7 @@ mod tests {
 
     #[test]
     fn capability_resolver_constructs_only_a_fully_validated_routine_partition() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition_json, source_ref, evidence) = routine_partition_fixture();
         let unvalidated =
             serde_json::from_value::<UnvalidatedRepositoryHistoryPartition>(partition_json.clone())
@@ -3280,6 +4113,9 @@ mod tests {
                     EvidenceKind::RoutineClassification,
                     vec![source_ref.clone()],
                 ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                ),
                 EvidenceSourceIndexCandidateRow::absent(EvidenceKind::NonConflictingConcurrent),
             ],
         )
@@ -3292,7 +4128,7 @@ mod tests {
                 "history-order-v1",
                 serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
                 serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
-                vec![super::RepositoryVersion::parse("opaque-v1").unwrap()],
+                vec![serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap()],
             )
             .unwrap(),
         };
@@ -3315,7 +4151,7 @@ mod tests {
 
     #[test]
     fn relevant_routine_source_maps_to_the_relevant_partition_branch() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, evidence) =
             routine_partition_fixture_for("relevant", "relevantRoutine");
         let validated = validate_routine_fixture(
@@ -3334,8 +4170,403 @@ mod tests {
     }
 
     #[test]
+    fn support_observation_maps_all_six_task8_cases_with_highest_precedence() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let cases = [
+            (
+                "routineUnrelated",
+                super::RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            ),
+            (
+                "routineRelevant",
+                super::RepositoryHistoryPartitionClassification::RelevantRoutine,
+            ),
+            (
+                "authorized",
+                super::RepositoryHistoryPartitionClassification::AuthorizedSupport,
+            ),
+            (
+                "externalSupport",
+                super::RepositoryHistoryPartitionClassification::ExternalSupport,
+            ),
+            (
+                "preArmExternal",
+                super::RepositoryHistoryPartitionClassification::PreArmExternal,
+            ),
+            (
+                "invalid",
+                super::RepositoryHistoryPartitionClassification::Invalid,
+            ),
+        ];
+
+        for (source_case, expected_classification) in cases {
+            let (partition, source_ref, observation) = support_observation_fixture(source_case);
+            let validated = validate_support_fixture(
+                partition.clone(),
+                support_candidate(&registry, source_ref.clone(), true),
+                serde_json_canonicalizer::to_vec(&observation).unwrap(),
+                &source_ref,
+            )
+            .unwrap_or_else(|error| panic!("{source_case} rejected: {error}"));
+            assert_eq!(serde_json::to_value(&validated).unwrap(), partition);
+            assert_eq!(
+                validated.classifications().collect::<Vec<_>>(),
+                vec![expected_classification]
+            );
+        }
+    }
+
+    #[test]
+    fn immediate_support_entry_token_requires_the_exact_validated_mapping_and_successor() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition, source_ref, observation) = support_observation_fixture("authorized");
+        let validated = validate_support_fixture(
+            partition,
+            support_candidate(&registry, source_ref.clone(), false),
+            serde_json_canonicalizer::to_vec(&observation).unwrap(),
+            &source_ref,
+        )
+        .unwrap();
+        let successor =
+            super::RepositoryHistoryImmediateSuccessorEvidence::from_capability_adapter(
+                "history-order-v1",
+                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+                super::RepositoryVersion::parse("opaque-v1").unwrap(),
+            )
+            .unwrap();
+        let token = super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+            &validated, &successor,
+        )
+        .unwrap();
+        assert_eq!(token.successor(), &successor);
+        assert_eq!(token.repository_version().as_str(), "opaque-v1");
+        assert_eq!(
+            token.partition_classification(),
+            super::RepositoryHistoryPartitionClassification::AuthorizedSupport
+        );
+        assert_eq!(
+            token.semantic_delta_digest().as_str(),
+            serde_json::to_value(&validated).unwrap()["entries"][0]["semanticDeltaDigest"]
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            token.source_evidence_ref().evidence_kind(),
+            EvidenceKind::SupportPrerequisiteObservation
+        );
+        assert_eq!(token.registry_digest(), registry.registry_digest());
+        assert_eq!(token.source_index_proof_digest().as_str().len(), 64);
+        let index_proof_json = serde_json::to_value(&validated.source_index_proofs[0]).unwrap();
+        assert!(index_proof_json.get("validatedSupportMapping").is_none());
+        let index_proof_schema =
+            serde_json::to_value(schema_for!(super::EvidenceSourceIndexProof)).unwrap();
+        assert!(index_proof_schema["properties"]
+            .get("validatedSupportMapping")
+            .is_none());
+
+        for wrong_successor in [
+            super::RepositoryHistoryImmediateSuccessorEvidence::from_capability_adapter(
+                "history-order-v1",
+                serde_json::from_value(cursor("other-v0", SHA_A)).unwrap(),
+                super::RepositoryVersion::parse("opaque-v1").unwrap(),
+            )
+            .unwrap(),
+            super::RepositoryHistoryImmediateSuccessorEvidence::from_capability_adapter(
+                "history-order-v1",
+                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+                super::RepositoryVersion::parse("opaque-v2").unwrap(),
+            )
+            .unwrap(),
+        ] {
+            assert!(
+                super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+                    &validated,
+                    &wrong_successor,
+                )
+                .is_err()
+            );
+        }
+
+        let mut wrong_registry = validated.clone();
+        wrong_registry.source_index_proofs[0].registry_digest = Sha256Digest::parse(SHA_A).unwrap();
+        assert!(
+            super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+                &wrong_registry,
+                &successor,
+            )
+            .is_err()
+        );
+
+        let mut wrong_selected_ref = validated.clone();
+        match &mut wrong_selected_ref.source_index_proofs[0].availability.0[1] {
+            super::EvidenceSourceAvailability::Available(row) => {
+                row.source_evidence_ref = RepositoryHistorySourceEvidenceRef::new(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                    SHA_A,
+                )
+                .unwrap();
+            }
+            super::EvidenceSourceAvailability::Absent(_) => unreachable!(),
+        }
+        assert!(
+            super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+                &wrong_selected_ref,
+                &successor,
+            )
+            .is_err()
+        );
+
+        let mut wrong_semantic = validated.clone();
+        wrong_semantic.source_index_proofs[0]
+            .validated_support_mapping
+            .as_mut()
+            .unwrap()
+            .semantic_delta_digest = Sha256Digest::parse(SHA_A).unwrap();
+        assert!(
+            super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+                &wrong_semantic,
+                &successor,
+            )
+            .is_err()
+        );
+
+        let (routine_partition, routine_ref, routine_evidence) = routine_partition_fixture();
+        let routine_validated = validate_routine_fixture(
+            routine_partition,
+            routine_candidate(&registry, routine_ref.clone()),
+            routine_order(),
+            serde_json_canonicalizer::to_vec(&routine_evidence).unwrap(),
+            &routine_ref,
+        )
+        .unwrap();
+        assert!(
+            super::ValidatedSupportObservationHistoryEntry::from_validated_partition(
+                &routine_validated,
+                &successor,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn support_observation_mapping_and_loader_substitutions_fail_closed() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition, source_ref, observation) = support_observation_fixture("externalSupport");
+        let candidate = support_candidate(&registry, source_ref.clone(), true);
+        let canonical_bytes = serde_json_canonicalizer::to_vec(&observation).unwrap();
+
+        let mut wrong_classification = partition.clone();
+        wrong_classification["entries"][0]["classification"] = json!("relevantRoutine");
+        recalculate_partition_digest(&mut wrong_classification);
+        assert!(validate_support_fixture(
+            wrong_classification,
+            candidate.clone(),
+            canonical_bytes.clone(),
+            &source_ref,
+        )
+        .is_err());
+
+        let mut wrong_external_projection = partition.clone();
+        let wrong_semantic = json!({
+            "repositoryVersion":"opaque-v1",
+            "partitionClassification":"externalSupport",
+            "rootDeltaDigest":SHA_A,
+            "contentDeltaDigest":CanonicalEmptyDeltaDigest::VALUE,
+            "classificationDigest":observation["classificationDigest"],
+            "externalSupportDisjointnessDigest":null,
+            "correctiveInstructionDigest":null,
+            "nonConflictingConcurrentEvidenceDigest":null
+        });
+        wrong_external_projection["entries"][0]["semanticDeltaDigest"] =
+            json!(test_digest(&wrong_semantic));
+        recalculate_partition_digest(&mut wrong_external_projection);
+        assert!(validate_support_fixture(
+            wrong_external_projection,
+            candidate.clone(),
+            canonical_bytes.clone(),
+            &source_ref,
+        )
+        .is_err());
+
+        let mut wrong_ref = partition.clone();
+        wrong_ref["entries"][0]["sourceEvidenceRef"]["evidenceDigest"] = json!(SHA_A);
+        recalculate_partition_digest(&mut wrong_ref);
+        assert!(validate_support_fixture(
+            wrong_ref,
+            candidate.clone(),
+            canonical_bytes.clone(),
+            &source_ref,
+        )
+        .is_err());
+
+        assert!(validate_support_fixture(
+            partition.clone(),
+            candidate.clone(),
+            serde_json::to_vec_pretty(&observation).unwrap(),
+            &source_ref,
+        )
+        .is_err());
+
+        let mut wrong_kind_candidate = candidate.clone();
+        wrong_kind_candidate.availability[1] = EvidenceSourceIndexCandidateRow::available(
+            EvidenceKind::SupportPrerequisiteObservation,
+            vec![RepositoryHistorySourceEvidenceRef::new(
+                EvidenceKind::RoutineClassification,
+                SHA_A,
+            )
+            .unwrap()],
+        );
+        assert!(validate_support_fixture(
+            partition.clone(),
+            wrong_kind_candidate,
+            canonical_bytes.clone(),
+            &source_ref,
+        )
+        .is_err());
+
+        let wrong_type = RoutineRepositoryVersionClassificationEvidence::new(
+            "opaque-v1",
+            "unrelated",
+            None,
+            SHA_A,
+            SHA_B,
+        )
+        .unwrap();
+        assert!(validate_support_fixture(
+            partition.clone(),
+            candidate,
+            serde_json_canonicalizer::to_vec(&wrong_type).unwrap(),
+            &source_ref,
+        )
+        .is_err());
+
+        let mut wrong_version_observation = observation.clone();
+        wrong_version_observation["repositoryVersion"] = json!("opaque-v2");
+        let wrong_version_observation = finalize_support_observation(wrong_version_observation);
+        let wrong_version_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::SupportPrerequisiteObservation,
+            wrong_version_observation["classificationDigest"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let mut wrong_version_partition = partition.clone();
+        wrong_version_partition["entries"][0]["sourceEvidenceRef"] =
+            serde_json::to_value(&wrong_version_ref).unwrap();
+        recalculate_partition_digest(&mut wrong_version_partition);
+        assert!(validate_support_fixture(
+            wrong_version_partition,
+            support_candidate(&registry, wrong_version_ref.clone(), false),
+            serde_json_canonicalizer::to_vec(&wrong_version_observation).unwrap(),
+            &wrong_version_ref,
+        )
+        .is_err());
+
+        let substituted_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::SupportPrerequisiteObservation,
+            SHA_A,
+        )
+        .unwrap();
+        let mut substituted_partition = partition;
+        substituted_partition["entries"][0]["sourceEvidenceRef"] =
+            serde_json::to_value(&substituted_ref).unwrap();
+        recalculate_partition_digest(&mut substituted_partition);
+        assert!(validate_support_fixture(
+            substituted_partition,
+            support_candidate(&registry, substituted_ref.clone(), false),
+            canonical_bytes,
+            &substituted_ref,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn corrective_support_observation_is_wire_valid_but_task8_mapping_rejects_it() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (partition, source_ref, observation) = support_observation_fixture("corrective");
+        assert!(
+            serde_json::from_value::<super::SupportPrerequisiteVersionObservation>(
+                observation.clone()
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<UnvalidatedRepositoryHistoryPartition>(partition.clone())
+                .is_ok()
+        );
+        assert!(validate_support_fixture(
+            partition,
+            support_candidate(&registry, source_ref.clone(), false),
+            serde_json_canonicalizer::to_vec(&observation).unwrap(),
+            &source_ref,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn available_support_source_never_falls_back_to_lower_precedence_rows() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let (routine_partition, routine_ref, _routine_evidence) = routine_partition_fixture();
+        let (_support_partition, support_ref, support_observation) =
+            support_observation_fixture("externalSupport");
+        assert!(validate_support_fixture(
+            routine_partition,
+            support_candidate(&registry, support_ref.clone(), true),
+            serde_json_canonicalizer::to_vec(&support_observation).unwrap(),
+            &support_ref,
+        )
+        .is_err());
+
+        let (concurrent_partition, concurrent_ref, _) = non_conflicting_partition_fixture();
+        let concurrent_candidate = EvidenceSourceIndexCandidate::from_capability_adapter(
+            "opaque-v1",
+            registry.registry_digest().as_str(),
+            UUID_A,
+            vec![
+                EvidenceSourceIndexCandidateRow::absent(EvidenceKind::RoutineClassification),
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                    vec![support_ref],
+                ),
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::NonConflictingConcurrent,
+                    vec![concurrent_ref],
+                ),
+            ],
+        )
+        .unwrap();
+        let index = FakeIndex {
+            candidates: BTreeMap::from([("opaque-v1".into(), concurrent_candidate)]),
+        };
+        let order = FakeOrder {
+            evidence: routine_order(),
+        };
+        assert!(RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &index,
+            &order,
+            &FakeEvidenceBytes::default(),
+        )
+        .validate(serde_json::from_value(concurrent_partition).unwrap())
+        .is_err());
+
+        let mut stale_candidate = routine_candidate(&registry, routine_ref.clone());
+        stale_candidate.registry_digest =
+            Sha256Digest::parse(super::TASK7_EVIDENCE_SOURCE_REGISTRY_DIGEST).unwrap();
+        let (_, _, routine_evidence) = routine_partition_fixture();
+        assert!(validate_routine_fixture(
+            routine_partition_fixture().0,
+            stale_candidate,
+            routine_order(),
+            serde_json_canonicalizer::to_vec(&routine_evidence).unwrap(),
+            &routine_ref,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn endpoint_emptiness_and_order_evidence_are_fail_closed() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let dummy_index = FakeIndex {
             candidates: BTreeMap::new(),
         };
@@ -3404,7 +4635,7 @@ mod tests {
         let schema =
             serde_json::to_value(schema_for!(UnvalidatedRepositoryHistoryPartition)).unwrap();
         let validator = jsonschema::validator_for(&schema).unwrap();
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let dummy_index = FakeIndex {
             candidates: BTreeMap::new(),
         };
@@ -3445,7 +4676,7 @@ mod tests {
 
     #[test]
     fn structural_superset_matrix_defers_cross_item_and_capability_relations_to_runtime() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, evidence) = routine_partition_fixture();
         let partition_validator = jsonschema::validator_for(
             &serde_json::to_value(schema_for!(UnvalidatedRepositoryHistoryPartition)).unwrap(),
@@ -3489,6 +4720,9 @@ mod tests {
                 EvidenceSourceIndexCandidateRow::available(
                     EvidenceKind::RoutineClassification,
                     vec![source_ref.clone()],
+                ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
                 ),
                 EvidenceSourceIndexCandidateRow::available(
                     EvidenceKind::NonConflictingConcurrent,
@@ -3605,7 +4839,7 @@ mod tests {
 
     #[test]
     fn history_order_rejects_non_adjacent_duplicates_and_wrong_terminal_version_before_index() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (baseline, _, _) = routine_partition_fixture();
         let entry = baseline["entries"][0].clone();
         let dummy_bytes = FakeEvidenceBytes::default();
@@ -3623,7 +4857,7 @@ mod tests {
                 serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
                 ["opaque-v1", "opaque-v2", "opaque-v1"]
                     .into_iter()
-                    .map(|version| super::RepositoryVersion::parse(version).unwrap())
+                    .map(|version| serde_json::from_value(cursor(version, SHA_B)).unwrap())
                     .collect(),
             )
             .unwrap(),
@@ -3651,7 +4885,7 @@ mod tests {
                 serde_json::from_value(cursor("opaque-v3", SHA_B)).unwrap(),
                 ["opaque-v1", "opaque-v2"]
                     .into_iter()
-                    .map(|version| super::RepositoryVersion::parse(version).unwrap())
+                    .map(|version| serde_json::from_value(cursor(version, SHA_B)).unwrap())
                     .collect(),
             )
             .unwrap(),
@@ -3665,11 +4899,31 @@ mod tests {
         assert!(resolver
             .validate(serde_json::from_value(wrong_terminal).unwrap())
             .is_err());
+
+        let (wrong_cursor_digest, _, _) = routine_partition_fixture();
+        let cursor_digest_order = FakeOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "history-order-v1",
+                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+                serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
+                vec![serde_json::from_value(cursor("opaque-v1", SHA_A)).unwrap()],
+            )
+            .unwrap(),
+        };
+        let resolver = RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &UnexpectedIndex,
+            &cursor_digest_order,
+            &dummy_bytes,
+        );
+        assert!(resolver
+            .validate(serde_json::from_value(wrong_cursor_digest).unwrap())
+            .is_err());
     }
 
     #[test]
     fn index_proof_rejects_missing_duplicate_reordered_unknown_and_substituted_rows() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, evidence) = routine_partition_fixture();
         let bytes = serde_json_canonicalizer::to_vec(&evidence).unwrap();
         let baseline = routine_candidate(&registry, source_ref.clone());
@@ -3686,7 +4940,7 @@ mod tests {
         candidates.push(reordered);
         let mut unknown = baseline.clone();
         unknown.availability[1] =
-            EvidenceSourceIndexCandidateRow::unknown(EvidenceKind::NonConflictingConcurrent);
+            EvidenceSourceIndexCandidateRow::unknown(EvidenceKind::SupportPrerequisiteObservation);
         candidates.push(unknown);
         let mut wrong_registry = baseline.clone();
         wrong_registry.registry_digest = Sha256Digest::parse(SHA_A).unwrap();
@@ -3700,6 +4954,17 @@ mod tests {
             vec![source_ref.clone(), source_ref.clone()],
         );
         candidates.push(multiple);
+        let mut multiple_support = baseline.clone();
+        let support_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::SupportPrerequisiteObservation,
+            SHA_A,
+        )
+        .unwrap();
+        multiple_support.availability[1] = EvidenceSourceIndexCandidateRow::available(
+            EvidenceKind::SupportPrerequisiteObservation,
+            vec![support_ref.clone(), support_ref],
+        );
+        candidates.push(multiple_support);
 
         for candidate in candidates {
             assert!(validate_routine_fixture(
@@ -3715,7 +4980,7 @@ mod tests {
 
     #[test]
     fn loader_rejects_missing_wrong_type_noncanonical_and_digest_substitution() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, evidence) = routine_partition_fixture();
         let candidate = routine_candidate(&registry, source_ref.clone());
 
@@ -3759,8 +5024,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_support_and_task_commit_branches_exist_but_task7_generic_validation_rejects_them() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+    fn wire_task_commit_branch_exists_but_task8_generic_validation_rejects_it() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (mut support_partition, source_ref, evidence) = routine_partition_fixture();
         support_partition["entries"][0]["classification"] = json!("authorizedSupport");
         support_partition["entries"][0]["sourceEvidenceRef"]["evidenceKind"] =
@@ -3807,7 +5072,7 @@ mod tests {
 
     #[test]
     fn task_commit_is_rejected_before_any_capability_or_source_lookup() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let mut task_commit = json!({
             "fromExclusive":cursor("opaque-v0", SHA_A),
             "throughInclusive":cursor("opaque-v1", SHA_B),
@@ -3883,13 +5148,23 @@ mod tests {
         source_ref: &RepositoryHistorySourceEvidenceRef,
         evidence: &NonConflictingConcurrentEvidence,
     ) -> Result<super::ValidatedRepositoryHistoryPartition, super::RepositoryContractError> {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let candidate = EvidenceSourceIndexCandidate::from_capability_adapter(
             "opaque-v1",
             registry.registry_digest().as_str(),
             UUID_A,
             vec![
-                EvidenceSourceIndexCandidateRow::absent(EvidenceKind::RoutineClassification),
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::RoutineClassification,
+                    vec![RepositoryHistorySourceEvidenceRef::new(
+                        EvidenceKind::RoutineClassification,
+                        SHA_A,
+                    )
+                    .unwrap()],
+                ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                ),
                 EvidenceSourceIndexCandidateRow::available(
                     EvidenceKind::NonConflictingConcurrent,
                     vec![source_ref.clone()],
@@ -3918,14 +5193,23 @@ mod tests {
 
     #[test]
     fn concurrent_source_has_precedence_and_requires_exact_inline_evidence() {
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
         let (partition, source_ref, evidence) = non_conflicting_partition_fixture();
+        let routine_ref =
+            RepositoryHistorySourceEvidenceRef::new(EvidenceKind::RoutineClassification, SHA_A)
+                .unwrap();
         let candidate = EvidenceSourceIndexCandidate::from_capability_adapter(
             "opaque-v1",
             registry.registry_digest().as_str(),
             UUID_A,
             vec![
-                EvidenceSourceIndexCandidateRow::absent(EvidenceKind::RoutineClassification),
+                EvidenceSourceIndexCandidateRow::available(
+                    EvidenceKind::RoutineClassification,
+                    vec![routine_ref],
+                ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                ),
                 EvidenceSourceIndexCandidateRow::available(
                     EvidenceKind::NonConflictingConcurrent,
                     vec![source_ref.clone()],
@@ -3983,6 +5267,9 @@ mod tests {
                     EvidenceKind::RoutineClassification,
                     vec![routine_ref.clone()],
                 ),
+                EvidenceSourceIndexCandidateRow::absent(
+                    EvidenceKind::SupportPrerequisiteObservation,
+                ),
                 EvidenceSourceIndexCandidateRow::available(
                     EvidenceKind::NonConflictingConcurrent,
                     vec![source_ref],
@@ -4017,7 +5304,7 @@ mod tests {
             "correctiveInstructionDigest",
             "nonConflictingConcurrentEvidenceDigest",
         ];
-        let registry = EvidenceSourceRegistry::task7().unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
 
         let (routine_partition, routine_ref, routine_evidence) = routine_partition_fixture();
         let routine_record = super::RepositorySemanticDeltaDigestRecord {

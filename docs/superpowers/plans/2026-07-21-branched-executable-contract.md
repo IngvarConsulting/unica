@@ -488,12 +488,12 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/support.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/instructions.rs`
 
-- [ ] RED: all support transition/candidate/blocker/gap, manual target identity,
+- [x] RED: all support transition/candidate/blocker/gap, manual target identity,
   baseline, root observation/proof, authorization/arming, version observation,
   recovery handoff/distribution and the eight `NextAction` external-instruction
   branches. Cover every exact digest record, discriminator, collection order,
   duplicate, explicit-null, cross-mode, and omitted/extra-field negative.
-- [ ] Register `SupportPrerequisiteVersionObservation` as the exact typed
+- [x] Register `SupportPrerequisiteVersionObservation` as the exact typed
   `supportPrerequisiteObservation` content-addressed history source and extend
   the Task 7 registry/index proof with that exact third kind and its evidence-
   schema, digest-record-schema, loader-revision, and mapper-revision digests.
@@ -510,29 +510,29 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   construction until Task 9 can bind it to the exact historical corrective
   instruction. Until this Task 8 extension succeeds, every raw support-backed
   partition remains unvalidated and unusable.
-- [ ] Preserve exact manual-mode presence rules and explicit null-versus-absent
+- [x] Preserve exact manual-mode presence rules and explicit null-versus-absent
   fields by reusing Task 6's `RequiredNullable<T>` and its field-level required
   deserializer on every physical required-nullable member. Do not fabricate
   object/layer IDs for global evidence gaps. Treat `SupportRootLockProof`
   terminalization presence as an outer authorization/result invariant because
   the nested proof has no target mode; never infer one.
-- [ ] Give all four `SupportTransition` leaves the required `transitionKind`
+- [x] Give all four `SupportTransition` leaves the required `transitionKind`
   discriminator. Implement the closed `SupportCandidateReason` and
   `VendorSupportDecision` vocabularies and validated semantic collection types
   for candidates, blockers, gaps, transitions, conflicts, mismatch/missing-kind
   projections, and allowed decisions. Comparators use typed identities and
   capability-proven history order, never displays or lexical/numeric ordering of
   opaque `RepositoryVersion`.
-- [ ] Implement the acyclic named digest-input records for candidate set,
+- [x] Implement the acyclic named digest-input records for candidate set,
   replaceable-history-independent support gate, immutable support action,
   manual-IB identities/baselines, reserved-original/root observations/proofs,
   arming/stale/inventory/lease evidence, and instruction digests. Reuse the
   existing Task 7 `pub(super)` canonical helper; no local JCS/SHA path is legal.
-- [ ] Keep authorization terminal records distinct from active resume-handle
+- [x] Keep authorization terminal records distinct from active resume-handle
   projections. `supportActionDigest` excludes its own field plus mutable
   arming/state/freeze members; `supportGateDigest` excludes the replaceable
   history evidence/cursor and action projection.
-- [ ] Encode exactly `AcquireSupportRootInstruction`,
+- [x] Encode exactly `AcquireSupportRootInstruction`,
   `ReleaseRepositoryLocksInstruction`, `ManualSupportInstruction`,
   `CleanManualWorkingInfobaseInstruction`,
   `CloseReservedOriginalDesignerInstruction`, `SupportConflictInstruction`,
@@ -540,11 +540,11 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   data. Add and verify `lockInstructionDigest` and
   `supportEvidenceInstructionDigest`; no free-form prose or user-selectable
   effect boolean is legal.
-- [ ] Keep retention-provider and manual-readability fields as typed
+- [x] Keep retention-provider and manual-readability fields as typed
   `CapabilityRowId` references only. Do not implement the Phase 3 manifest-row
   parser or duplicate its case vocabulary in Task 8.
-- [ ] Add negative mode/field splice tests and digest-lineage constructor checks.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Add negative mode/field splice tests and digest-lineage constructor checks.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 9: Change receipts and support terminalization
 

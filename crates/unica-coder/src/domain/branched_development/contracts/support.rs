@@ -1,6 +1,25 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[path = "support/authorization.rs"]
+mod authorization;
+#[path = "support/evidence.rs"]
+mod evidence;
+#[path = "support/model.rs"]
+mod model;
+#[path = "support/preflight.rs"]
+mod preflight;
+#[path = "support/version_observation.rs"]
+mod version_observation;
+
+pub(crate) use authorization::*;
+#[allow(unused_imports)]
+pub(crate) use evidence::*;
+pub(crate) use model::*;
+#[allow(unused_imports)]
+pub(crate) use preflight::*;
+pub(crate) use version_observation::*;
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]

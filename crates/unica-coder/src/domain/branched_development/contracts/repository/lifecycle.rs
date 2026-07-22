@@ -734,6 +734,42 @@ pub(crate) struct SupportGateRelevantBaselineAuthority {
     recomputed_relevant_baseline_digest: Sha256Digest,
 }
 
+/// Capability boundary that folds the exact validated history partition into
+/// the gate's relevant-baseline projection. Implementations are platform
+/// adapters; callers cannot supply the claimed recomputed digest directly.
+pub(crate) trait SupportGateRelevantBaselineResolver {
+    fn recompute_relevant_baseline_digest(
+        &self,
+        partition: &ValidatedRepositoryHistoryPartition,
+        current_gate_relevant_baseline_digest: &Sha256Digest,
+    ) -> Result<Sha256Digest, RepositoryContractError>;
+}
+
+impl SupportGateRelevantBaselineAuthority {
+    pub(crate) fn resolve(
+        partition: &ValidatedRepositoryHistoryPartition,
+        current_gate_relevant_baseline_digest: Sha256Digest,
+        resolver: &dyn SupportGateRelevantBaselineResolver,
+    ) -> Result<Self, RepositoryContractError> {
+        let recomputed_relevant_baseline_digest = resolver.recompute_relevant_baseline_digest(
+            partition,
+            &current_gate_relevant_baseline_digest,
+        )?;
+        if current_gate_relevant_baseline_digest != recomputed_relevant_baseline_digest {
+            return Err(RepositoryContractError(
+                "support-gate current and recomputed relevant baselines disagree",
+            ));
+        }
+        Ok(Self {
+            gate_observed_cursor: partition.start_cursor().clone(),
+            classified_through_cursor: partition.through_inclusive().clone(),
+            partition_digest: partition.partition_digest().clone(),
+            current_gate_relevant_baseline_digest,
+            recomputed_relevant_baseline_digest,
+        })
+    }
+}
+
 /// Endpoint-bound, validated all-routine history evidence for reuse of a support gate.
 ///
 /// Deliberately not `Deserialize`: the nested partition can only come from the
@@ -828,6 +864,25 @@ impl SupportGateHistoryEvidence {
 
     pub(crate) fn evidence_digest(&self) -> &Sha256Digest {
         &self.evidence_digest
+    }
+
+    pub(crate) fn gate_observed_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.gate_observed_cursor
+    }
+
+    pub(crate) fn classified_through_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.classified_through_cursor
+    }
+
+    pub(crate) fn relevant_baseline_digest(&self) -> &Sha256Digest {
+        &self.relevant_baseline_digest
+    }
+
+    /// Publication evidence is anchored at one cursor and therefore has no
+    /// intervening history entries. Later gate reuse may replace it only with
+    /// a validated all-unrelated prefix.
+    pub(crate) fn partition_is_empty(&self) -> bool {
+        self.partition.classifications().next().is_none()
     }
 }
 

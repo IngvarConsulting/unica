@@ -7,6 +7,8 @@ pub(crate) mod envelope;
 #[allow(dead_code)]
 pub(crate) mod errors;
 #[allow(dead_code)]
+pub(crate) mod instructions;
+#[allow(dead_code)]
 pub(crate) mod registry;
 #[allow(dead_code)]
 pub(crate) mod repository;

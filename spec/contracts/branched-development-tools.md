@@ -265,6 +265,20 @@ The companion contract for general mutations is producer-neutral:
     `explicitNull`, `explicitNull`, `explicitNull`, `explicitNull`, and
     `copyEvidenceDigest`.
 
+  Task 8 adds `supportPrerequisiteObservation` with exactly six rows in the
+  fixed tuple order `routineUnrelated`, `routineRelevant`, `authorized`,
+  `externalSupport`, `preArmExternal`, `invalid`. Their partition
+  classifications are respectively `unrelatedRoutine`, `relevantRoutine`,
+  `authorizedSupport`, `externalSupport`, `preArmExternal`, and `invalid`.
+  Every row copies root, content, and classification digests and uses
+  `explicitNull` for the corrective and non-conflicting slots. The
+  `externalSupport` row alone uses
+  `copyExternalSupportDisjointnessDigest` for the external-support slot; every
+  other row uses `explicitNull` there. The `invalid` row's copy projections
+  preserve the observation's explicit `null` root/content values for the
+  unattributed leaf. The structurally representable `corrective` observation
+  has no mapper row until Task 9 binds it to an exact historical instruction.
+
   Those named member strings and literal values are the canonical preimage;
   `null` is not used inside the descriptor row because `explicitNull` describes
   the mapper's output policy.
@@ -2127,16 +2141,21 @@ change outside the exact `MergeResolutionPhaseTransition` pair.
 
 Schema tests reject a missing/unknown outer or inner tag, a leaf with a field
 from another leaf, an optional-field union matching both/neither outcome,
-equal changed hashes, before/after fields on a no-change leaf, a `contentSha256`
-on a changed leaf, non-empty no-change event/evidence/supersession lists,
-missing/duplicate targets or IDs, a resolution receipt with a
+before/after fields on a no-change leaf, a `contentSha256` on a changed leaf,
+non-empty no-change event/evidence/supersession lists, a missing or structurally
+duplicate target/ID, more than one superseded decision, any phase pair outside
+the exact closed transition union, and an out-of-range sequence. Draft 2020-12
+cannot compare sibling values, prove semantic ordering/completeness, query
+durable state, or recompute SHA-256; the generated schema is intentionally only
+a structural superset for those invariants. Strict wire promotion and
+authority-backed contract tests additionally reject equal changed hashes,
+semantic duplicate or noncanonical targets/IDs, a resolution receipt with a
 non-singleton/wrong-kind/wrong-object/property target, an incomplete or
-misordered receipt-supersession set, more than one superseded decision, an
-omitted/extra/wrong current or pending decision head, a singleton superseded
-decision unequal to the pending ID, unequal changed decision-set digests with
-no pending decision or equal digests with one, any phase pair outside the exact
-closed transition union, an out-of-range sequence or one reused by a different
-receipt, a stale base/generation, and any `changeReceiptDigest` mismatch.
+misordered receipt-supersession set, an omitted/extra/wrong current or pending
+decision head, a singleton superseded decision unequal to the pending ID,
+unequal changed decision-set digests with no pending decision or equal digests
+with one, a sequence reused by a different receipt, a stale base/generation,
+and any `changeReceiptDigest` mismatch.
 
 Before a compatible general-tool result crosses the public MCP boundary, a
 recursive branched-result projection examines every field, including
