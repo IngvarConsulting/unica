@@ -719,6 +719,67 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_mcp_text_contains_an_object_data_field_instead_of_json_stdout() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-code-patch-mcp-{}-{nanos}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let module = src.join("CommonModules/Sample/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+        let args = json!({
+            "cwd": root,
+            "sourceDir": "src",
+            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "operation": "insert",
+            "selector": {"method": "Run"},
+            "content": "Procedure Added()\nEndProcedure",
+            "position": "after"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let text = call_tool(&UnicaApplication::new(), "unica.code.patch", &args).unwrap();
+        let result: Value = serde_json::from_str(&text).unwrap();
+
+        assert!(result["data"].is_object());
+        assert_eq!(result["data"]["validation"]["status"], "passed");
+        assert!(result.get("stdout").is_none());
+
+        let before_invalid = std::fs::read(&module).unwrap();
+        let mut invalid_args = args;
+        invalid_args.insert("selector".to_string(), json!({"anchor": "EndProcedure"}));
+        invalid_args.insert("position".to_string(), json!("before"));
+        invalid_args.insert("content".to_string(), json!("    If True Then"));
+        invalid_args.insert("dryRun".to_string(), json!(false));
+
+        let failed_text =
+            call_tool(&UnicaApplication::new(), "unica.code.patch", &invalid_args).unwrap();
+        let failed: Value = serde_json::from_str(&failed_text).unwrap();
+        assert_eq!(failed["ok"], false);
+        assert_eq!(failed["data"]["validation"]["status"], "failed");
+        assert!(failed["data"]["validation"]["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| !diagnostics.is_empty()));
+        assert!(failed.get("stdout").is_none());
+        assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn mcp_rejects_oversized_jsonl_without_allocating_the_line() {
         let mut input = vec![b'x'; MCP_INPUT_LINE_LIMIT + 1];
         input.push(b'\n');

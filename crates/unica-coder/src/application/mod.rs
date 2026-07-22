@@ -67,7 +67,7 @@ pub enum RuntimeJobAction {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OperationData {
+struct OperationData {
     discovery: DiscoveryReport,
 }
 
@@ -89,9 +89,9 @@ pub struct OperationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub job: Option<Value>,
+    pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<OperationData>,
+    pub job: Option<Value>,
 }
 
 pub struct UnicaApplication {
@@ -332,6 +332,16 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
+            name: "unica.code.patch",
+            description: "Insert content into one selected existing BSL *Module.bsl file.",
+            mutating: true,
+            cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "code-patch",
+                event: Some(DomainEventKind::ModuleChanged),
+            },
+        },
+        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             mutating: false,
@@ -409,8 +419,8 @@ fn call_tool(
             stderr: outcome.stderr,
             command: outcome.command,
             diagnostics: None,
-            job: None,
             data: None,
+            job: None,
         });
     }
     let mut support_guard_warning = if spec.mutating && !dry_run {
@@ -431,8 +441,8 @@ fn call_tool(
                     stderr: outcome.stderr,
                     command: outcome.command,
                     diagnostics: None,
-                    job: None,
                     data: None,
+                    job: None,
                 });
             }
         }
@@ -460,8 +470,8 @@ fn call_tool(
                     stderr: blocked.stderr,
                     command: blocked.command,
                     diagnostics: None,
-                    job: None,
                     data: None,
+                    job: None,
                 });
             }
         }
@@ -492,8 +502,8 @@ fn call_tool(
         stderr: outcome.stderr,
         command: outcome.command,
         diagnostics,
+        data: handler_outcome.data,
         job: handler_outcome.job,
-        data: None,
     })
 }
 
@@ -520,6 +530,8 @@ fn call_project_discover(
         }
     };
     let cache = ports.cache_report(&context, &[], false, spec.cache_access)?;
+    let data = serde_json::to_value(OperationData { discovery })
+        .map_err(|error| format!("failed to serialize typed discovery result: {error}"))?;
 
     Ok(OperationResult {
         ok: true,
@@ -533,8 +545,8 @@ fn call_project_discover(
         stderr: None,
         command: None,
         diagnostics: None,
+        data: Some(data),
         job: None,
-        data: Some(OperationData { discovery }),
     })
 }
 
@@ -597,6 +609,9 @@ fn should_emit_events(
     outcome: &AdapterOutcome,
 ) -> bool {
     if !spec.mutating || !outcome.ok {
+        return false;
+    }
+    if dry_run && spec.name == "unica.code.patch" {
         return false;
     }
     if !dry_run {
@@ -1456,8 +1471,11 @@ mod tests {
             stderr: None,
             command: None,
             diagnostics: None,
+            data: Some(
+                serde_json::to_value(OperationData { discovery })
+                    .expect("typed discovery data serializes"),
+            ),
             job: None,
-            data: Some(OperationData { discovery }),
         };
 
         let payload = serde_json::to_value(result).expect("typed result serializes");
@@ -1511,8 +1529,6 @@ mod tests {
 
     #[test]
     fn default_application_composes_read_only_discovery_providers() {
-        use crate::domain::discovery::{DiscoveryStatus, ProviderKind, ProviderOutcomeKind};
-
         let root = test_workspace_root("real-discovery-dispatch");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
@@ -1534,17 +1550,22 @@ mod tests {
         let result = UnicaApplication::new()
             .call_tool("unica.project.discover", &args)
             .expect("real discovery providers execute");
-        let report = result.data.expect("typed discovery data").discovery;
+        let data = result.data.expect("typed discovery data");
+        let report = &data["discovery"];
 
-        assert_eq!(report.status, DiscoveryStatus::Partial);
-        assert!(report.provider_outcomes.iter().any(|outcome| {
-            outcome.provider == ProviderKind::RuntimeFlow
-                && outcome.outcome == ProviderOutcomeKind::Unavailable
-        }));
-        assert!(report
-            .missing_checks
+        assert_eq!(report["status"], "partial");
+        assert!(report["providerOutcomes"]
+            .as_array()
+            .expect("provider outcomes")
             .iter()
-            .any(|check| check.code == "runtime_flow_unavailable"));
+            .any(|outcome| {
+                outcome["provider"] == "runtime_flow" && outcome["outcome"] == "unavailable"
+            }));
+        assert!(report["missingChecks"]
+            .as_array()
+            .expect("missing checks")
+            .iter()
+            .any(|check| check["code"] == "runtime_flow_unavailable"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1628,6 +1649,190 @@ mod tests {
         );
         assert!(!error.starts_with("discovery_invalid_source_format:"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn operation_result_serializes_typed_data_and_omits_absent_data() {
+        fn result(data: Option<Value>) -> OperationResult {
+            OperationResult {
+                ok: true,
+                summary: "test".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                cache: CacheReport {
+                    mode: "read".to_string(),
+                    root: ".build/unica".to_string(),
+                    workspace_epoch: 1,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                },
+                stdout: None,
+                stderr: None,
+                command: None,
+                diagnostics: None,
+                data,
+                job: None,
+            }
+        }
+
+        let plain = serde_json::to_value(result(None)).expect("plain result must serialize");
+        assert!(plain.get("data").is_none());
+
+        let data = json!({"path": "src/Module.bsl", "noOp": false});
+        let structured =
+            serde_json::to_value(result(Some(data.clone()))).expect("typed result must serialize");
+        assert_eq!(structured["data"], data);
+        assert!(structured.get("stdout").is_none());
+    }
+
+    #[test]
+    fn code_patch_public_result_is_typed_and_emits_only_applied_change_events() {
+        let root = test_workspace_root("unica-code-patch-public-result");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let module = src.join("CommonModules/Sample/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            &module,
+            "Procedure Run()\n    Message(\"ok\");\nEndProcedure\n",
+        )
+        .unwrap();
+        let app = UnicaApplication::new();
+        let mut args = json!({
+            "cwd": workspace,
+            "sourceDir": "src",
+            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "operation": "insert",
+            "selector": {"method": "Run"},
+            "content": "Procedure Added()\nEndProcedure",
+            "position": "after"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let preview = app.call_tool("unica.code.patch", &args).unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert!(preview.stdout.is_none());
+        assert!(preview.cache.events.is_empty());
+        assert_eq!(preview.data.as_ref().unwrap()["sourceSet"], "main");
+        assert_eq!(
+            preview.data.as_ref().unwrap()["affectedTarget"]["owner"],
+            "CommonModule.Sample"
+        );
+        assert_eq!(
+            preview.data.as_ref().unwrap()["validation"]["status"],
+            "passed"
+        );
+        let serialized = serde_json::to_value(&preview).unwrap();
+        assert!(serialized["data"].is_object());
+        assert!(serialized.get("stdout").is_none());
+        assert!(!std::fs::read_to_string(&module)
+            .unwrap()
+            .contains("Procedure Added"));
+
+        args.insert("dryRun".to_string(), json!(false));
+        let applied = app.call_tool("unica.code.patch", &args).unwrap();
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(applied.cache.events, vec!["ModuleChanged"]);
+        assert_eq!(applied.cache.mode, "applied");
+
+        let repeated = app.call_tool("unica.code.patch", &args).unwrap();
+        assert!(repeated.ok, "{:?}", repeated.errors);
+        assert!(repeated.cache.events.is_empty());
+        assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
+
+        let before_invalid = std::fs::read(&module).unwrap();
+        args.insert(
+            "selector".to_string(),
+            json!({"anchor": "Message(\"ok\");"}),
+        );
+        args.insert("content".to_string(), json!("    If True Then"));
+        let rejected = app.call_tool("unica.code.patch", &args).unwrap();
+        assert!(!rejected.ok);
+        assert!(rejected.cache.events.is_empty());
+        assert_eq!(
+            rejected.data.as_ref().unwrap()["validation"]["status"],
+            "failed"
+        );
+        assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_apply_is_blocked_for_a_locked_supported_object() {
+        let root = test_workspace_root("unica-code-patch-support-guard");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let module = src.join("Catalogs/Items/Ext/ObjectModule.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(src.join("Ext")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Catalogs/Items.xml"),
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Ext/ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        )
+        .unwrap();
+        let before = b"Procedure Run()\nEndProcedure\n";
+        std::fs::write(&module, before).unwrap();
+        let args = json!({
+            "cwd": workspace,
+            "dryRun": false,
+            "sourceDir": "src",
+            "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+            "operation": "insert",
+            "selector": {"method": "Run"},
+            "content": "Procedure Added()\nEndProcedure",
+            "position": "after"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.code.patch", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result.errors.join("\n").contains("на замке"));
+        assert!(result.data.is_none());
+        assert!(result.cache.events.is_empty());
+        assert_eq!(std::fs::read(&module).unwrap(), before);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1867,6 +2072,23 @@ mod tests {
             &args,
             true,
             &AdapterOutcome::ok("generic dry run")
+        ));
+
+        let code_patch_spec = ToolSpec {
+            name: "unica.code.patch",
+            description: "test",
+            mutating: true,
+            cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
+            handler: ToolHandler::NativeOperation {
+                operation: "code-patch",
+                event: Some(DomainEventKind::ModuleChanged),
+            },
+        };
+        assert!(!should_emit_events(
+            code_patch_spec,
+            &args,
+            true,
+            &AdapterOutcome::ok("code patch preview")
         ));
 
         let form_edit_spec = ToolSpec {

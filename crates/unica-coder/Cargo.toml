@@ -14,6 +14,9 @@ name = "unica_coder"
 path = "src/lib.rs"
 
 [dependencies]
+bsl-parser.workspace = true
+bsl-syntax.workspace = true
+diffy.workspace = true
 fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,3 +32,6 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true

@@ -178,15 +178,20 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ))));
         }
         match spec.handler {
-            ToolHandler::NativeOperation { operation, .. } => NativeOperationAdapter::invoke(
-                operation,
-                spec.name,
-                args,
-                context,
-                dry_run,
-                spec.mutating,
-            )
-            .map(HandlerOutcome::plain),
+            ToolHandler::NativeOperation { operation, .. } => {
+                NativeOperationAdapter::invoke_with_data(
+                    operation,
+                    spec.name,
+                    args,
+                    context,
+                    dry_run,
+                    spec.mutating,
+                )
+                .map(|outcome| match outcome.data {
+                    Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
+                    None => HandlerOutcome::plain(outcome.adapter),
+                })
+            }
             ToolHandler::ProjectStatus => {
                 let source_map =
                     crate::infrastructure::project_sources::discover_project_source_map(
@@ -264,6 +269,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             )
             .map(|outcome| HandlerOutcome {
                 adapter: outcome.outcome,
+                data: None,
                 job: outcome.job,
             }),
             ToolHandler::CodeAdapter { command } if command == ["search"] => {

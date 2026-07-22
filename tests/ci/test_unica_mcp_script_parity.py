@@ -4379,6 +4379,25 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                         json_path.parent.mkdir(parents=True, exist_ok=True)
                         json_path.write_text("{}\n", encoding="utf-8")
                         arguments["JsonPath"] = str(json_path.relative_to(workspace))
+                elif example.skill == "code-patch":
+                    module_path = workspace / arguments["path"]
+                    module_path.parent.mkdir(parents=True, exist_ok=True)
+                    module_path.write_text(
+                        """Процедура ПриСозданииНаСервере()\n
+    Сообщить(\"Готово\");\n
+КонецПроцедуры\n""",
+                        encoding="utf-8",
+                    )
+                    owner_directory = module_path.parent.parent
+                    descriptor_path = (
+                        owner_directory.parent / f"{owner_directory.name}.xml"
+                    )
+                    descriptor_path.write_text(
+                        "<MetaDataObject/>\n", encoding="utf-8"
+                    )
+                    (workspace / "src" / "cf" / "Configuration.xml").write_text(
+                        "<MetaDataObject/>\n", encoding="utf-8"
+                    )
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)

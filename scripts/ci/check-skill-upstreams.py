@@ -24,6 +24,7 @@ ALLOWED_ROLES = {
 }
 ALLOWED_STATUSES = {
     "adapted",
+    "inspiration-only",
     "ported-to-unica",
     "test-fixture-only",
     "still-local-script",
@@ -202,6 +203,33 @@ def validate_index(
 
             if not entry.get("localPaths") and not entry.get("contractPaths"):
                 warnings.append(f"{entry_label}: entry has no localPaths or contractPaths")
+
+    unica_owned_skills = data.get("unicaOwnedSkills", [])
+    if not isinstance(unica_owned_skills, list):
+        errors.append(f"{index_file}: unicaOwnedSkills must be a list")
+        unica_owned_skills = []
+    for entry_index, entry in enumerate(unica_owned_skills):
+        entry_label = f"unicaOwnedSkills[{entry_index}]"
+        for key in ("skill", "notes"):
+            if not isinstance(entry.get(key), str) or not entry.get(key):
+                errors.append(f"{entry_label}: {key} is required")
+        skill = entry.get("skill")
+        if isinstance(skill, str) and skill:
+            if skill in indexed_skills:
+                errors.append(f"{entry_label}: skill is already attributed to an upstream: {skill}")
+            indexed_skills.add(skill)
+        for key in ("localPaths", "contractPaths"):
+            values = entry.get(key)
+            if values is not None and not isinstance(values, list):
+                errors.append(f"{entry_label}: {key} must be a list")
+                continue
+            for rel_path in values or []:
+                if not isinstance(rel_path, str):
+                    errors.append(f"{entry_label}: {key} item must be a string")
+                else:
+                    validate_relative_existing_path(repo_root, rel_path, errors, f"{entry_label}.{key}")
+        if not entry.get("localPaths") and not entry.get("contractPaths"):
+            warnings.append(f"{entry_label}: entry has no localPaths or contractPaths")
 
     if local_skills:
         for skill in sorted(local_skills - indexed_skills):

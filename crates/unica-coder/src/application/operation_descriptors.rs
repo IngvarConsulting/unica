@@ -69,6 +69,8 @@ const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
+const CODE_PATCH_PATH: &[&str] = &["path"];
+const CODE_PATCH_REQUIRED: &[&str] = &["path", "operation", "selector", "content", "position"];
 
 pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
     NATIVE_OPERATION_DESCRIPTORS
@@ -77,6 +79,16 @@ pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static Op
 }
 
 pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
+    descriptor(
+        "code-patch",
+        CODE_PATCH_REQUIRED,
+        CODE_PATCH_PATH,
+        CODE_PATCH_PATH,
+        Some(path_guard(
+            CODE_PATCH_PATH,
+            SupportGuardRequirement::Editable,
+        )),
+    ),
     descriptor(
         "cf-edit",
         EMPTY,

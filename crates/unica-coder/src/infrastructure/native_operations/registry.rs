@@ -7,6 +7,18 @@ use super::{
     cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypedMutationHandler {
+    CodePatch,
+}
+
+pub(crate) fn typed_mutation_handler(operation: &str) -> Option<TypedMutationHandler> {
+    match operation {
+        "code-patch" => Some(TypedMutationHandler::CodePatch),
+        _ => None,
+    }
+}
+
 pub(crate) fn invoke_read(
     operation: &str,
     tool_name: &str,
@@ -148,7 +160,7 @@ pub(crate) fn invoke_mutation(
 
 #[cfg(test)]
 mod tests {
-    use super::invoke_mutation;
+    use super::{invoke_mutation, typed_mutation_handler};
     use crate::application::{tools, ToolHandler};
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
@@ -165,7 +177,8 @@ mod tests {
             };
             let context = mutation_probe_context(operation);
             assert!(
-                invoke_mutation(operation, tool.name, &args, &context).is_some(),
+                invoke_mutation(operation, tool.name, &args, &context).is_some()
+                    || typed_mutation_handler(operation).is_some(),
                 "{} routes to native mutation operation `{}` without a registered handler",
                 tool.name,
                 operation
