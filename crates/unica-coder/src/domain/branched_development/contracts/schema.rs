@@ -204,20 +204,50 @@ impl SchemaAuditor<'_> {
                     for (index, item) in prefix_items.iter().enumerate() {
                         self.audit(item, &format!("{path}.prefixItems[{index}]"))?;
                     }
-                    if object.get("items") != Some(&Value::Bool(false)) {
-                        return Err(error(
-                            path,
-                            "positional arrays must close their tail with items false",
-                        ));
-                    }
-                    let exact_length = Value::Number(Number::from(prefix_items.len()));
-                    if object.get("minItems") != Some(&exact_length)
-                        || object.get("maxItems") != Some(&exact_length)
-                    {
-                        return Err(error(
-                            path,
-                            "positional arrays must fix minItems and maxItems to prefix length",
-                        ));
+                    match object.get("items") {
+                        Some(Value::Bool(false)) => {
+                            let exact_length = Value::Number(Number::from(prefix_items.len()));
+                            if object.get("minItems") != Some(&exact_length)
+                                || object.get("maxItems") != Some(&exact_length)
+                            {
+                                return Err(error(
+                                    path,
+                                    "closed positional arrays must fix minItems and maxItems to prefix length",
+                                ));
+                            }
+                        }
+                        Some(items @ Value::Object(_)) => {
+                            self.audit(items, &format!("{path}.items"))?;
+                            let Some(min_items) = object.get("minItems").and_then(Value::as_u64)
+                            else {
+                                return Err(error(
+                                    path,
+                                    "typed positional tails must require their complete prefix",
+                                ));
+                            };
+                            if min_items < prefix_items.len() as u64 {
+                                return Err(error(
+                                    path,
+                                    "typed positional tails must require their complete prefix",
+                                ));
+                            }
+                            if object
+                                .get("maxItems")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|max_items| max_items < min_items)
+                            {
+                                return Err(error(
+                                    path,
+                                    "array maxItems must not be smaller than minItems",
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(error(
+                                path,
+                                "positional arrays must close or strictly type their tail",
+                            ));
+                        }
                     }
                 }
                 None => {

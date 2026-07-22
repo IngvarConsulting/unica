@@ -11,6 +11,10 @@ pub(crate) mod errors;
 #[allow(dead_code)]
 pub(crate) mod instructions;
 #[allow(dead_code)]
+pub(crate) mod prearm_recovery;
+#[allow(dead_code)]
+pub(crate) mod recovery;
+#[allow(dead_code)]
 pub(crate) mod registry;
 #[allow(dead_code)]
 pub(crate) mod repository;
@@ -405,10 +409,40 @@ mod tests {
         });
         assert!(audit_json_schema(&exact).is_ok());
 
+        let typed_suffix = json!({
+            "type": "array",
+            "prefixItems": [{ "type": "string", "const": "anchor" }],
+            "items": { "type": "integer" },
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true
+        });
+        assert!(audit_json_schema(&typed_suffix).is_ok());
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&typed_suffix)
+            .unwrap();
+        for valid in [json!(["anchor"]), json!(["anchor", 1, 2])] {
+            assert!(validator.is_valid(&valid), "rejected {valid}");
+        }
+        for invalid in [
+            json!([]),
+            json!([1]),
+            json!(["other"]),
+            json!(["anchor", "not-an-integer"]),
+            json!(["anchor", 1, "not-an-integer"]),
+            json!(["anchor", 1, 2, 3]),
+        ] {
+            assert!(!validator.is_valid(&invalid), "accepted {invalid}");
+        }
+
         for invalid in [
             json!({"type": "array", "prefixItems": [], "items": false}),
             json!({"type": "array", "prefixItems": [{"type": "string"}]}),
             json!({"type": "array", "prefixItems": [{"type": "string"}], "items": true}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}], "items": {}, "minItems": 1}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}], "items": {"type": "integer"}, "minItems": 0}),
+            json!({"type": "array", "prefixItems": [{"type": "string"}], "items": {"type": "object", "properties": {}}, "minItems": 1}),
             json!({"type": "array", "prefixItems": [{"type": "string"}], "items": false, "minItems": 0, "maxItems": 1}),
             json!({"type": "array", "prefixItems": [{"type": "object", "properties": {}}], "items": false, "minItems": 1, "maxItems": 1}),
         ] {

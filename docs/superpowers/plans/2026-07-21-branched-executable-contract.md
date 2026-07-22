@@ -606,22 +606,39 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 **Files:**
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/prearm_recovery.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/recovery.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/schema.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository/update.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
 
-- [ ] RED: pre-arm effect receipt/ref, selective update progress/evidence,
+- [x] RED: pre-arm effect receipt/ref, selective update progress/evidence,
   observation, receipt plan, recheck policy/evidence/path/progress/audit/blocker,
   finalization plan, and all recovery subject/action/outcome/unknown branches.
-- [ ] Preserve every effect barrier and receipt reference as a closed tagged
+- [x] Preserve every effect barrier and receipt reference as a closed tagged
   union; `observed` must never become an operation state.
-- [ ] Model reapproval and compensation evidence without overwriting immutable
+- [x] Model reapproval and compensation evidence without overwriting immutable
   prior attempts.
-- [ ] Prove unsupported target/effect/action combinations are unrepresentable.
-- [ ] Run focused/schema tests, format, clippy; commit and review.
+- [x] Preserve each action's declared observation order end to end; digest
+  ordering is never a substitute for `expectedObservations` ordering.
+- [x] Reject an empty cleanup-recovery target set and bind archive release
+  actions/receipts exactly to the finishing action's release projection.
+- [x] Keep standalone effect-observation, progress, attempt-audit, blocker, and
+  finalization semantic mints
+  test-only until the later plan-aware producer validates their exact current
+  plan, path, receipts, mode evidence, and append-only attempt lineage.
+- [x] Prove unsupported target/effect/action combinations are unrepresentable.
+- [x] Run focused/schema tests, format, clippy; commit and review.
 
 ## Task 11: Status and storage schema types
 
 **Files:**
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/status.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/storage.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/recovery.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/instructions.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support/authorization.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support/model.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support_terminalization.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/operation.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
 
@@ -632,6 +649,10 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   hashing. Instantiate storage tests only with one private recursively
   closed `TestTerminalEnvelope`; assert that no production terminal alias,
   terminal catalog, operation-record snapshot, or expected digest exists yet.
+- [ ] Task 11 owns the closed `ExistingTaskStatusData` and reusable status/
+  recovery projections. Task 12 owns only the read-only result envelope that
+  selects `notCreated | existing`; it must not duplicate or weaken these
+  presence rules.
 - [ ] `ActiveOperationStatus.state` accepts only registered/intent-written/
   effect-unknown; terminal evidence is separate. Status projects the exact typed
   `operation: TaskOperationSelector`, not a variant-losing `toolName` field.

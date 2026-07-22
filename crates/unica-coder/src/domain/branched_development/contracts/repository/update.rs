@@ -234,6 +234,24 @@ impl JsonSchema for SelectiveRepositoryUpdatePlan {
 }
 
 impl SelectiveRepositoryUpdatePlan {
+    #[cfg(test)]
+    pub(crate) fn recovery_finalization_test_only(
+        planned_targets: RepositoryTargetStates,
+        lock_targets: RepositoryUpdateLockTargets,
+        selective_objects_capability_id: CapabilityRowId,
+        structural_capability_row_id: Option<CapabilityRowId>,
+    ) -> Result<Self, RepositoryContractError> {
+        SelectiveRepositoryUpdatePlanAuthority::from_capability_adapter(
+            SelectiveRepositoryUpdateScope::RecoveryFinalization,
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            structural_capability_row_id,
+            Vec::new(),
+        )
+        .and_then(Self::new)
+    }
+
     pub(crate) fn new(
         authority: SelectiveRepositoryUpdatePlanAuthority,
     ) -> Result<Self, RepositoryContractError> {

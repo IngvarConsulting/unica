@@ -3397,7 +3397,9 @@ modeLeaseRelease | rootGuardRelease | recoveryFinalization`.
 receiptKind: preArmCancellationEffect, receiptId, effectKind:
 PreArmCancellationEffectKind, effectIntentDigest, producerActionId,
 producerActionDigest, terminalObservationDigests: Sha256[], receiptDigest }`.
-Its observation list is non-empty/canonical and `receiptDigest ==
+Its observation list is non-empty, unique, and preserves the enclosing action's
+exact `expectedObservations` order; `canonical` here means the canonical action
+projection in that order, never lexical sorting by digest. `receiptDigest ==
 sha256(canonical(receipt-without-receiptDigest))`.
 
 `PreArmCancellationReceiptRef` is the closed `source`-tagged `oneOf` of
@@ -3919,6 +3921,14 @@ old approved recovery digest is retained only as `previousRecoveryDigest`.
 contains neither the fresh `RecoveryPlanStatus` nor its recovery/finalization
 digest, so persisting it in that plan creates no hash cycle.
 
+The effect observation, progress, audit, blocker, and finalization-plan records
+are closed values, not standalone execution authority. A producer may
+materialize them only while validating the current immutable plan, exact
+selected path, receipt refs, attempt lineage, mode-specific stop evidence, and
+required instruction as one operation. A schema-valid record or a constructor
+that receives only the record itself cannot authorize an effect or publish
+terminal progress.
+
 `PreArmCancellationFinalizationPlan` is the closed `{
 finalizationAttemptId, priorOperationId, supportActionId, expectedSupportActionDigest,
 approvedCancellationDigest, effectObservationDigest,
@@ -3996,8 +4006,12 @@ by the prior operation. The plan can
 update only the original configuration's exact selective root target; it never
 creates a repository version, changes support settings, or grants edit
 authority. `plannedResultPhase` is the approved cancellation preview's bound
-`cancelledPhase` or `relevantAdvancePhase`, with relevant/pre-arm external
-history forcing the latter. `protectedUpdateReady` also unconditionally requires
+`cancelledPhase` or `relevantAdvancePhase`, with `relevantRoutine`,
+`externalSupport`, or `preArmExternal` history forcing the latter.
+The phase pair comes only from the digest-validated approved-cancellation
+authority bound by `approvedCancellationDigest`; the effect-observation wire
+record and its digest do not duplicate either phase field.
+`protectedUpdateReady` also unconditionally requires
 `plannedResultPhase == relevantAdvancePhase`, matching its pessimistic policy;
 no schema-valid byte-identical terminal can select `cancelledPhase`. The plan digest covers every field except itself.
 The execution-path plan contains only action IDs, not action digests or the
@@ -4061,10 +4075,13 @@ action kind, permutation, or duplicate is schema-valid:
 | `preArmSupportCancellation / reconcileOnly` | tagged `observeOutcome` contains exactly `observePreArmCancellationOutcome` and can only publish a freshly digest-bound `finalize` plan. Tagged `finalize` uses the closed `PreArmCancellationFinalizationExecutionPathPlan`: `actions[]` is the canonical de-duplicated action catalog in success-path order, while each selected success, capability-breach stop, or compensation path is one exact listed action-ID sequence. The success sequence contains `acquirePreArmRootGuard` iff its acquisition ref is `finalizationPlan`; `acquirePreArmModeLease` iff its ref is `finalizationPlan`; exactly `recheckPreArmCancellationFinalization`; `applyPreArmCancellationSelectiveUpdate` iff `selectiveUpdateDisposition=perform`; `persistPreArmSupportCancellation` iff the cancellation ref is `finalizationPlan`; `releasePreArmModeLease` iff its release ref is `finalizationPlan`; `releasePreArmRootGuard` iff its release ref is `finalizationPlan`; and exactly `finishPreArmCancellationRecovery` last. Compensation sequences are the exact reverse-release branches defined above and omit update/cancellation/finalization by construction, rather than skipping entries of a linear success execution. Every effect action maps to exactly one receipt-plan ref/outcome; prior-operation receipts generate no duplicate action |
 | `manualWorkingInfobaseLease / reconcileOnly` | `observeWorkingInfobaseLease`, followed by `releaseWorkingInfobaseLease` iff the pre-authorization lease is held |
 | `artifact / quarantine` | `quarantineArtifact` or `resumeQuarantine`, followed by exact presence observation through its action projection |
-| `archive / cleanup` | exactly `observeArchiveStaging`, then retention-lease observations/releases in canonical handoff order, then exactly `finishArchive` |
-| `cleanup / cleanup` | zero or more `resumeOwnedTargetQuarantine` actions in canonical owned-target order, then exactly `finishCleanup` |
+| `archive / cleanup` | exactly `observeArchiveStaging`, then one `observeRetentionLease`, `releaseRetentionLease` pair for every lease in canonical handoff order, then exactly `finishArchive` |
+| `cleanup / cleanup` | one or more `resumeOwnedTargetQuarantine` actions in canonical owned-target order, then exactly `finishCleanup` |
 
-Every other target/effect pair is rejected by the schema snapshot. The armed
+An empty owned-target set requires no cleanup-recovery plan and completes
+directly; it cannot manufacture the otherwise mandatory non-empty action
+postconditions for `finishCleanup`. Every other target/effect pair is rejected
+by the schema snapshot. The armed
 support-prerequisite variant additionally carries its disposition and manual
 target mode, so only working-IB actions are legal in separate mode and only
 reserved-original lease actions in reserved mode. Negative schema tests inject
@@ -4279,11 +4296,19 @@ For `finishArchive`, `expectedReleases` is canonical and unique by lease ID,
 its lease projection equals `retentionLeaseIds`, and
 `expectedReleaseSetDigest == sha256(canonical(expectedReleases))`.
 Every `releaseRetentionLease` and `finishArchive` action repeats the exact
-`ArchiveStagingReceipt.stagingReceiptId`/`receiptDigest` and handoff lineage
-bound by the preceding successful `observeArchiveStaging` outcome. The schema
+`ArchiveStagingReceipt.stagingReceiptId`/`receiptDigest`; `finishArchive` also
+repeats the handoff lineage, while each release binds that lineage transitively
+through the exact staging receipt digest. These values are bound by the
+preceding successful `observeArchiveStaging` outcome. The schema
 forbids release actions before that outcome or with stale/substituted staging
-evidence. An unknown staging write/observation remains archive recovery with all
-leases held.
+evidence. Every observed lease, including one already reported as `released`,
+retains its exact release action: a held lease completes it as `performed`,
+while an already released lease must recover the byte-identical durable receipt
+as `recoveredReceipt`. In both cases the action's
+`expectedReleaseReceiptId` and derived receipt digest equal its
+`expectedReleases` entry. A bare released-state observation cannot prove that
+receipt or authorize `finishArchive`. An unknown staging write/observation
+remains archive recovery with all leases held.
 `EffectReceipt` is the closed `receiptKind`-tagged `oneOf` of
 `recoveryAction { receiptKind: recoveryAction, receiptId, producerActionId,
 producerActionDigest, terminalObservationDigests: Sha256[], receiptDigest }` or
