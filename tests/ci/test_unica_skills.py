@@ -376,6 +376,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Name": "МояКонфигурация"',
         '"Version": "1.0.0.1"',
         '"Vendor": "Фирма 1С"',
+        "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
         '"name": "unica.cf.info"',
         '"name": "unica.cf.validate"',

@@ -3203,13 +3203,13 @@ pub(crate) fn create_configuration_scaffold(
             ));
         }
 
-        let uuid_cfg = stable_uuid(0);
+        let uuid_cfg = uuid::Uuid::new_v4().to_string();
         let uuid_lang = stable_uuid(1);
         let contained_object_ids = (2..9).map(stable_uuid).collect::<Vec<_>>();
         let open_panel_inst = stable_uuid(9);
         let sections_panel_inst = stable_uuid(10);
         let compatibility = string_arg(args, &["compatibilityMode", "CompatibilityMode"])
-            .unwrap_or("Version8_3_24");
+            .unwrap_or("Version8_3_27");
         let vendor_xml = string_arg(args, &["vendor", "Vendor"])
             .map(escape_xml)
             .unwrap_or_default();
@@ -3431,6 +3431,7 @@ pub(crate) fn mobile_functionality_xml() -> String {
         ("Geofences", "false"),
         ("IncomingShareRequests", "false"),
         ("AllIncomingShareRequestsTypesProcessing", "false"),
+        ("TextToSpeech", "false"),
     ];
 
     let mut xml = String::new();
