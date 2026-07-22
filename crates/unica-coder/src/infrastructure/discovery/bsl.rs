@@ -1,0 +1,1443 @@
+use crate::application::discovery::ports::{BslSearchPort, DefinitionPort, RuntimeFlowPort};
+use crate::domain::discovery::{
+    normalize_discovery_identity, AnalyzedFile, ArtifactId, ArtifactKind, BslFact, DefinitionFact,
+    DiscoveryQuery, EvidenceLocation, FactBatch, PortableRelativePath, ProviderDiagnostic,
+    ProviderOutcome, RuntimeFlowFact, SourceFile, SourceInventory,
+};
+use crate::infrastructure::discovery::metadata::{
+    build_batch, contributors_for_records, inventory_is_bounded, validate_platform_identifier,
+};
+use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
+use crate::infrastructure::platform::contained_file::{
+    read_contained_regular_file, ContainedFileError,
+};
+use crate::infrastructure::workspace_index::{
+    find_indexed_definitions, BslIndexStatus, IndexQueryError, IndexedMethodHit, IndexedMethodKind,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+pub(crate) struct InventoryBslSearchProvider;
+
+impl BslSearchPort for InventoryBslSearchProvider {
+    fn search(
+        &self,
+        query: &DiscoveryQuery<'_>,
+        files: &SourceInventory,
+    ) -> ProviderOutcome<FactBatch<BslFact>> {
+        match collect_lexical_facts(query, files) {
+            Ok(BslCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
+            Ok(BslCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
+                data: batch,
+                diagnostic,
+            },
+            Err(diagnostic) => ProviderOutcome::ContractViolation(diagnostic),
+        }
+    }
+}
+
+enum BslCollection<T> {
+    Complete(FactBatch<T>),
+    Bounded {
+        batch: FactBatch<T>,
+        diagnostic: ProviderDiagnostic,
+    },
+}
+
+fn collect_lexical_facts(
+    query: &DiscoveryQuery<'_>,
+    inventory: &SourceInventory,
+) -> Result<BslCollection<BslFact>, ProviderDiagnostic> {
+    let terms = query_terms(query);
+    let mut analyzed_files = Vec::new();
+    let mut records = Vec::new();
+    for file in inventory
+        .files
+        .iter()
+        .filter(|file| is_bsl_path(&file.relative_path))
+    {
+        analyzed_files.push(file.analyzed_file());
+        records.extend(lexical_facts_for_file(file, &terms).map_err(|message| {
+            ProviderDiagnostic::material(
+                "bsl_malformed",
+                format!(
+                    "BSL source {} is malformed: {message}",
+                    file.relative_path.as_str()
+                ),
+            )
+        })?);
+    }
+    records.sort();
+    records.dedup();
+    let evidence_bounded = records.len() > usize::from(query.limits().max_evidence);
+    if evidence_bounded {
+        records.truncate(usize::from(query.limits().max_evidence));
+    }
+    let contributors = contributors_for_records(&records, &analyzed_files);
+    let batch = build_batch(records, analyzed_files, contributors)?;
+    if evidence_bounded {
+        Ok(BslCollection::Bounded {
+            batch,
+            diagnostic: ProviderDiagnostic::material(
+                "bsl_evidence_bound",
+                "BSL lexical facts stopped at the maxEvidence limit",
+            ),
+        })
+    } else if inventory_is_bounded(inventory) {
+        Ok(BslCollection::Bounded {
+            batch,
+            diagnostic: ProviderDiagnostic::material(
+                "bsl_inventory_bounded",
+                "BSL lexical scope is incomplete because source inventory was truncated",
+            ),
+        })
+    } else {
+        Ok(BslCollection::Complete(batch))
+    }
+}
+
+fn query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    for term in std::iter::once(query.task())
+        .chain(query.search_terms().iter().map(String::as_str))
+        .chain(
+            query
+                .concepts()
+                .iter()
+                .map(|concept| concept.value.as_str()),
+        )
+    {
+        let normalized = normalize_discovery_identity(term);
+        if !normalized.is_empty() {
+            terms.insert(normalized);
+        }
+    }
+    terms.into_iter().collect()
+}
+
+fn raw_query_terms(query: &DiscoveryQuery<'_>) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    for term in std::iter::once(query.task())
+        .chain(query.search_terms().iter().map(String::as_str))
+        .chain(
+            query
+                .concepts()
+                .iter()
+                .map(|concept| concept.value.as_str()),
+        )
+    {
+        let trimmed = term.trim();
+        let normalized = normalize_discovery_identity(trimmed);
+        if !normalized.is_empty() {
+            terms.insert(trimmed.to_string());
+        }
+    }
+    terms.into_iter().collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BslMethodKind {
+    Procedure,
+    Function,
+}
+
+fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<BslFact>, String> {
+    let text = std::str::from_utf8(&file.bytes)
+        .map_err(|error| format!("input is not UTF-8: {error}"))?
+        .trim_start_matches('\u{feff}');
+    let module = module_artifact_for_path(&file.relative_path)?;
+    let mut active_method: Option<(BslMethodKind, ArtifactId)> = None;
+    let mut facts = Vec::new();
+    for (zero_based_line, line) in text.lines().enumerate() {
+        let line_number = zero_based_line
+            .checked_add(1)
+            .and_then(|line| u32::try_from(line).ok())
+            .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
+        if let Some((method_kind, name)) = parse_method_declaration(line)? {
+            if active_method.is_some() {
+                return Err(format!(
+                    "nested method declaration {name:?} at line {line_number}"
+                ));
+            }
+            let method = method_artifact(&module, name)?;
+            active_method = Some((method_kind, method));
+        }
+
+        let normalized_line = normalize_discovery_identity(line);
+        let artifact = match active_method.as_ref() {
+            Some((_kind, artifact)) => (artifact.clone(), ArtifactKind::Method),
+            None => (module.clone(), ArtifactKind::Module),
+        };
+        for term in terms
+            .iter()
+            .filter(|term| normalized_line.contains(term.as_str()))
+        {
+            facts.push(BslFact {
+                artifact: artifact.0.clone(),
+                artifact_kind: artifact.1,
+                matched_text: term.clone(),
+                location: EvidenceLocation {
+                    relative_path: file.relative_path.clone(),
+                    line: Some(line_number),
+                    column: matching_column(line, term),
+                    xml_path: None,
+                },
+            });
+        }
+
+        if let Some(end_kind) = parse_method_end(line) {
+            let Some((active_kind, _artifact)) = active_method.take() else {
+                return Err(format!(
+                    "method terminator without declaration at line {line_number}"
+                ));
+            };
+            if active_kind != end_kind {
+                return Err(format!(
+                    "mismatched method terminator at line {line_number}"
+                ));
+            }
+        }
+    }
+    if active_method.is_some() {
+        return Err("method declaration has no terminator".to_string());
+    }
+    Ok(facts)
+}
+
+fn matching_column(line: &str, normalized_term: &str) -> Option<u32> {
+    let mut normalized_line = String::new();
+    let mut original_columns = Vec::new();
+    for (zero_based_column, character) in line.chars().enumerate() {
+        let column = zero_based_column.checked_add(1)?;
+        let column = u32::try_from(column).ok()?;
+        for lowercase in character.to_lowercase() {
+            original_columns.push((normalized_line.len(), column));
+            normalized_line.push(lowercase);
+        }
+    }
+    let byte_offset = normalized_line.find(normalized_term)?;
+    original_columns
+        .binary_search_by_key(&byte_offset, |(offset, _column)| *offset)
+        .ok()
+        .and_then(|index| original_columns.get(index).map(|(_offset, column)| *column))
+}
+
+fn parse_method_declaration(line: &str) -> Result<Option<(BslMethodKind, &str)>, String> {
+    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let mut tokens = trimmed.split_whitespace();
+    let Some(mut keyword) = tokens.next() else {
+        return Ok(None);
+    };
+    let first_normalized = normalize_discovery_identity(keyword);
+    if matches!(first_normalized.as_str(), "async" | "асинх") {
+        let Some(next) = tokens.next() else {
+            return Err("async modifier has no method declaration".to_string());
+        };
+        keyword = next;
+    }
+    let method_kind = match normalize_discovery_identity(keyword).as_str() {
+        "procedure" | "процедура" => BslMethodKind::Procedure,
+        "function" | "функция" => BslMethodKind::Function,
+        _ => return Ok(None),
+    };
+    let keyword_offset = trimmed
+        .find(keyword)
+        .ok_or_else(|| "method keyword offset is invalid".to_string())?;
+    let rest_offset = keyword_offset
+        .checked_add(keyword.len())
+        .ok_or_else(|| "method keyword offset overflowed".to_string())?;
+    let rest = trimmed
+        .get(rest_offset..)
+        .ok_or_else(|| "method declaration boundary is invalid".to_string())?
+        .trim_start();
+    let name_end = match rest.find(|character: char| character == '(' || character.is_whitespace())
+    {
+        Some(name_end) => name_end,
+        None => rest.len(),
+    };
+    let name = rest
+        .get(..name_end)
+        .ok_or_else(|| "method name boundary is invalid".to_string())?;
+    if name.is_empty() {
+        return Err("method name must not be empty".to_string());
+    }
+    validate_platform_identifier(name)
+        .map_err(|message| format!("method name {name:?} is invalid: {message}"))?;
+    let after_name = rest
+        .get(name_end..)
+        .ok_or_else(|| "method signature boundary is invalid".to_string())?
+        .trim_start();
+    if !after_name.starts_with('(') {
+        return Err(format!("method {name:?} has no parameter list"));
+    }
+    Ok(Some((method_kind, name)))
+}
+
+fn parse_method_end(line: &str) -> Option<BslMethodKind> {
+    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
+    let keyword = code.split_whitespace().next()?;
+    match normalize_discovery_identity(keyword).as_str() {
+        "endprocedure" | "конецпроцедуры" => Some(BslMethodKind::Procedure),
+        "endfunction" | "конецфункции" => Some(BslMethodKind::Function),
+        _ => None,
+    }
+}
+
+fn is_bsl_path(path: &PortableRelativePath) -> bool {
+    path.as_str()
+        .rsplit_once('.')
+        .is_some_and(|(_stem, extension)| extension.eq_ignore_ascii_case("bsl"))
+}
+
+fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, String> {
+    let components = path.as_str().split('/').collect::<Vec<_>>();
+    let artifact = if components.len() == 7
+        && components
+            .get(2)
+            .is_some_and(|part| part.eq_ignore_ascii_case("Forms"))
+        && components
+            .get(4)
+            .is_some_and(|part| part.eq_ignore_ascii_case("Ext"))
+        && components
+            .get(5)
+            .is_some_and(|part| part.eq_ignore_ascii_case("Form"))
+        && components
+            .last()
+            .is_some_and(|part| part.eq_ignore_ascii_case("Module.bsl"))
+    {
+        let kind = metadata_kind_by_directory(components[0])
+            .ok_or_else(|| "form module uses an unknown metadata directory".to_string())?;
+        format!(
+            "{}.{}.Form.{}.Module.FormModule",
+            kind.tag, components[1], components[3]
+        )
+    } else if components.len() == 6
+        && components[2].eq_ignore_ascii_case("Commands")
+        && components[4].eq_ignore_ascii_case("Ext")
+        && components[5].eq_ignore_ascii_case("CommandModule.bsl")
+    {
+        let kind = metadata_kind_by_directory(components[0])
+            .ok_or_else(|| "command module uses an unknown metadata directory".to_string())?;
+        format!(
+            "{}.{}.Command.{}.Module.CommandModule",
+            kind.tag, components[1], components[3]
+        )
+    } else if components.len() == 4
+        && components[2].eq_ignore_ascii_case("Ext")
+        && components[3]
+            .rsplit_once('.')
+            .is_some_and(|(_stem, extension)| extension.eq_ignore_ascii_case("bsl"))
+    {
+        let kind = metadata_kind_by_directory(components[0])
+            .ok_or_else(|| "module uses an unknown metadata directory".to_string())?;
+        if kind.tag == "CommonModule" && components[3].eq_ignore_ascii_case("Module.bsl") {
+            format!("{}.{}", kind.tag, components[1])
+        } else {
+            let module_name = components[3]
+                .rsplit_once('.')
+                .map(|(stem, _extension)| stem)
+                .ok_or_else(|| "module filename has no extension".to_string())?;
+            format!("{}.{}.Module.{module_name}", kind.tag, components[1])
+        }
+    } else if components.len() == 2 && components[0].eq_ignore_ascii_case("Ext") {
+        let module_name = components[1]
+            .rsplit_once('.')
+            .map(|(stem, _extension)| stem)
+            .ok_or_else(|| "configuration module filename has no extension".to_string())?;
+        format!("Configuration.Root.Module.{module_name}")
+    } else {
+        return Err("BSL path does not identify a supported canonical module".to_string());
+    };
+    ArtifactId::parse(&artifact)
+        .map_err(|error| format!("module artifact {artifact:?} is invalid: {error}"))
+}
+
+fn method_artifact(module: &ArtifactId, name: &str) -> Result<ArtifactId, String> {
+    ArtifactId::parse(&format!("{}.Method.{name}", module.as_str()))
+        .map_err(|error| format!("method artifact {name:?} is invalid: {error}"))
+}
+
+pub(crate) struct ExistingIndexDefinitionProvider<'a> {
+    selected_root: &'a Path,
+    inventory: &'a SourceInventory,
+    status: Option<&'a BslIndexStatus>,
+}
+
+impl<'a> ExistingIndexDefinitionProvider<'a> {
+    pub(crate) fn new(
+        selected_root: &'a Path,
+        inventory: &'a SourceInventory,
+        status: Option<&'a BslIndexStatus>,
+    ) -> Self {
+        Self {
+            selected_root,
+            inventory,
+            status,
+        }
+    }
+
+    fn collect(
+        &self,
+        query: &DiscoveryQuery<'_>,
+    ) -> Result<BslCollection<DefinitionFact>, DefinitionCollectionError> {
+        let db_path = self.validated_db_path()?;
+        let inventory = self.inventory_files()?;
+        let inventory_bounded = inventory_is_bounded(self.inventory);
+        let max_evidence = usize::from(query.limits().max_evidence);
+        let sqlite_limit = query.limits().max_evidence.checked_add(1).ok_or_else(|| {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_definition_limit_overflow",
+                "definition evidence limit overflowed",
+            ))
+        })?;
+        let mut hit_set = BTreeSet::new();
+        for term in raw_query_terms(query) {
+            let rows = find_indexed_definitions(&db_path, &term, sqlite_limit)
+                .map_err(classify_index_query_error)?;
+            hit_set.extend(rows);
+            if hit_set.len() > max_evidence {
+                break;
+            }
+        }
+        let mut hits = hit_set.into_iter().collect::<Vec<_>>();
+        let bounded = hits.len() > max_evidence;
+        if bounded {
+            hits.truncate(max_evidence);
+        }
+
+        let mut validated_files: BTreeMap<PortableRelativePath, AnalyzedFile> = BTreeMap::new();
+        let mut records = Vec::new();
+        for hit in hits {
+            let relative_path = PortableRelativePath::parse(&hit.module_path).map_err(|error| {
+                DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                    "bsl_index_path_invalid",
+                    format!("indexed module path is not canonical and portable: {error}"),
+                ))
+            })?;
+            if !inventory.contains_key(&relative_path) && inventory_bounded {
+                continue;
+            }
+            let analyzed = match validated_files.get(&relative_path) {
+                Some(analyzed) => analyzed.clone(),
+                None => {
+                    let analyzed = self.validate_indexed_file(&relative_path, &inventory)?;
+                    validated_files.insert(relative_path.clone(), analyzed.clone());
+                    analyzed
+                }
+            };
+            let owner = module_artifact_for_path(&relative_path).map_err(|message| {
+                DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                    "bsl_index_module_identity",
+                    message,
+                ))
+            })?;
+            let source = inventory.get(&relative_path).ok_or_else(|| {
+                DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                    "bsl_index_stale",
+                    "validated indexed module disappeared from the inventory map",
+                ))
+            })?;
+            validate_indexed_method_source(&hit, source)?;
+            validate_hit_identity(&hit, &owner)?;
+            let definition = method_artifact(&owner, &hit.name).map_err(|message| {
+                DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                    "bsl_index_method_identity",
+                    message,
+                ))
+            })?;
+            records.push(DefinitionFact {
+                owner,
+                definition,
+                name: hit.name,
+                location: EvidenceLocation {
+                    relative_path: analyzed.relative_path,
+                    line: Some(hit.line),
+                    column: None,
+                    xml_path: None,
+                },
+            });
+        }
+        records.sort();
+        records.dedup();
+        let analyzed_files = validated_files.into_values().collect::<Vec<_>>();
+        let contributors = contributors_for_records(&records, &analyzed_files);
+        let batch = build_batch(records, analyzed_files, contributors)
+            .map_err(DefinitionCollectionError::ContractViolation)?;
+        if bounded {
+            Ok(BslCollection::Bounded {
+                batch,
+                diagnostic: ProviderDiagnostic::material(
+                    "bsl_definition_evidence_bound",
+                    "indexed definition facts stopped at the maxEvidence limit",
+                ),
+            })
+        } else if inventory_bounded {
+            Ok(BslCollection::Bounded {
+                batch,
+                diagnostic: ProviderDiagnostic::material(
+                    "bsl_definition_inventory_bounded",
+                    "definition scope is incomplete because source inventory was truncated",
+                ),
+            })
+        } else {
+            Ok(BslCollection::Complete(batch))
+        }
+    }
+
+    fn validated_db_path(&self) -> Result<PathBuf, DefinitionCollectionError> {
+        let selected_root = std::fs::canonicalize(self.selected_root).map_err(|error| {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_selected_root_invalid",
+                format!("selected source root is not canonical: {error}"),
+            ))
+        })?;
+        if selected_root != self.selected_root {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_selected_root_invalid",
+                    "selected source root must already be canonical",
+                ),
+            ));
+        }
+        let Some(status) = self.status else {
+            return Err(DefinitionCollectionError::Unavailable(
+                ProviderDiagnostic::material(
+                    "bsl_index_missing",
+                    "no existing RLM index status is available",
+                ),
+            ));
+        };
+        match status.status.as_str() {
+            "ready" => {}
+            "stale" | "building" => {
+                return Err(DefinitionCollectionError::Unavailable(
+                    ProviderDiagnostic::material(
+                        "bsl_index_stale",
+                        "the existing RLM index is not fresh",
+                    ),
+                ))
+            }
+            "failed" | "unavailable" => {
+                return Err(DefinitionCollectionError::Unavailable(
+                    ProviderDiagnostic::material(
+                        "bsl_index_unavailable",
+                        "the existing RLM index is unavailable",
+                    ),
+                ))
+            }
+            value => {
+                return Err(DefinitionCollectionError::ContractViolation(
+                    ProviderDiagnostic::material(
+                        "bsl_index_status_invalid",
+                        format!("RLM index status {value:?} is not recognized"),
+                    ),
+                ))
+            }
+        }
+        let stored_root = status.source_root.as_deref().ok_or_else(|| {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_index_status_invalid",
+                "ready RLM index status has no source root",
+            ))
+        })?;
+        let stored_root_path = Path::new(stored_root);
+        if !stored_root_path.is_absolute() {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_status_invalid",
+                    "ready RLM index source root must be absolute",
+                ),
+            ));
+        }
+        let stored_root = std::fs::canonicalize(stored_root_path).map_err(|error| {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_stale",
+                format!("indexed source root is no longer available: {error}"),
+            ))
+        })?;
+        if stored_root != selected_root {
+            return Err(DefinitionCollectionError::Unavailable(
+                ProviderDiagnostic::material(
+                    "bsl_index_stale",
+                    "the existing RLM index belongs to a different source root",
+                ),
+            ));
+        }
+        let db_path = status.db_path.as_deref().ok_or_else(|| {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_index_status_invalid",
+                "ready RLM index status has no database path",
+            ))
+        })?;
+        let db_path = PathBuf::from(db_path);
+        if !db_path.is_absolute() {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_status_invalid",
+                    "ready RLM index database path must be absolute",
+                ),
+            ));
+        }
+        let metadata = std::fs::symlink_metadata(&db_path).map_err(|error| {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_missing",
+                format!("RLM index database is unavailable: {error}"),
+            ))
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_database_invalid",
+                    "RLM index database must be a regular non-link file",
+                ),
+            ));
+        }
+        Ok(db_path)
+    }
+
+    fn inventory_files(
+        &self,
+    ) -> Result<BTreeMap<PortableRelativePath, &SourceFile>, DefinitionCollectionError> {
+        let mut files = BTreeMap::new();
+        for file in self
+            .inventory
+            .files
+            .iter()
+            .filter(|file| is_bsl_path(&file.relative_path))
+        {
+            if files.insert(file.relative_path.clone(), file).is_some() {
+                return Err(DefinitionCollectionError::ContractViolation(
+                    ProviderDiagnostic::material(
+                        "bsl_inventory_path_conflict",
+                        "source inventory contains duplicate canonical BSL paths",
+                    ),
+                ));
+            }
+        }
+        Ok(files)
+    }
+
+    fn validate_indexed_file(
+        &self,
+        relative_path: &PortableRelativePath,
+        inventory: &BTreeMap<PortableRelativePath, &SourceFile>,
+    ) -> Result<AnalyzedFile, DefinitionCollectionError> {
+        let Some(expected) = inventory.get(relative_path) else {
+            return Err(DefinitionCollectionError::Unavailable(
+                ProviderDiagnostic::material(
+                    "bsl_index_stale",
+                    format!(
+                        "indexed module {} is absent from the verified source inventory",
+                        relative_path.as_str()
+                    ),
+                ),
+            ));
+        };
+        let max_bytes = u64::try_from(expected.bytes.len()).map_err(|_error| {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_inventory_byte_count_overflow",
+                "inventory byte count is not representable as u64",
+            ))
+        })?;
+        let full_path = self.selected_root.join(relative_path.as_str());
+        let verified = read_contained_regular_file(self.selected_root, &full_path, max_bytes)
+            .map_err(classify_indexed_file_error)?;
+        if verified.relative_path != expected.relative_path
+            || verified.bytes_read != max_bytes
+            || verified.raw_sha256 != expected.raw_hash
+            || verified.bytes != expected.bytes
+        {
+            return Err(DefinitionCollectionError::Unavailable(
+                ProviderDiagnostic::material(
+                    "bsl_index_stale",
+                    format!(
+                        "indexed module {} changed after inventory capture",
+                        relative_path.as_str()
+                    ),
+                ),
+            ));
+        }
+        Ok(expected.analyzed_file())
+    }
+}
+
+impl DefinitionPort for ExistingIndexDefinitionProvider<'_> {
+    fn definitions(
+        &self,
+        query: &DiscoveryQuery<'_>,
+    ) -> ProviderOutcome<FactBatch<DefinitionFact>> {
+        match self.collect(query) {
+            Ok(BslCollection::Complete(batch)) => ProviderOutcome::Complete(batch),
+            Ok(BslCollection::Bounded { batch, diagnostic }) => ProviderOutcome::Bounded {
+                data: batch,
+                diagnostic,
+            },
+            Err(DefinitionCollectionError::Unavailable(diagnostic)) => {
+                ProviderOutcome::Unavailable(diagnostic)
+            }
+            Err(DefinitionCollectionError::Failed(diagnostic)) => {
+                ProviderOutcome::Failed(diagnostic)
+            }
+            Err(DefinitionCollectionError::ContractViolation(diagnostic)) => {
+                ProviderOutcome::ContractViolation(diagnostic)
+            }
+        }
+    }
+}
+
+enum DefinitionCollectionError {
+    Unavailable(ProviderDiagnostic),
+    Failed(ProviderDiagnostic),
+    ContractViolation(ProviderDiagnostic),
+}
+
+fn classify_index_query_error(error: IndexQueryError) -> DefinitionCollectionError {
+    match error {
+        IndexQueryError::Unavailable(message) => DefinitionCollectionError::Unavailable(
+            ProviderDiagnostic::material("bsl_index_missing", message),
+        ),
+        IndexQueryError::MalformedSchema(message) => DefinitionCollectionError::ContractViolation(
+            ProviderDiagnostic::material("bsl_index_schema_invalid", message),
+        ),
+        IndexQueryError::MalformedRow(message) => DefinitionCollectionError::ContractViolation(
+            ProviderDiagnostic::material("bsl_index_row_invalid", message),
+        ),
+        IndexQueryError::Failed(message) => DefinitionCollectionError::Failed(
+            ProviderDiagnostic::material("bsl_index_query_failed", message),
+        ),
+    }
+}
+
+fn classify_indexed_file_error(error: ContainedFileError) -> DefinitionCollectionError {
+    match error {
+        ContainedFileError::UnsupportedHost => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_validation_unavailable",
+                "verified indexed-file validation is unavailable on this host",
+            ))
+        }
+        ContainedFileError::SizeLimitExceeded { limit: _ } => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_stale",
+                "indexed module grew after inventory capture",
+            ))
+        }
+        ContainedFileError::Io { operation, source } if source.kind() == ErrorKind::NotFound => {
+            DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+                "bsl_index_stale",
+                format!("indexed module disappeared during {operation}: {source}"),
+            ))
+        }
+        ContainedFileError::Io { operation, source } => {
+            DefinitionCollectionError::Failed(ProviderDiagnostic::material(
+                "bsl_index_validation_failed",
+                format!("indexed module validation failed during {operation}: {source}"),
+            ))
+        }
+        error @ (ContainedFileError::RootNotCanonical
+        | ContainedFileError::RootNotDirectory
+        | ContainedFileError::PathOutsideRoot
+        | ContainedFileError::FinalPathOutsideRoot
+        | ContainedFileError::FinalPathMismatch
+        | ContainedFileError::AmbiguousHostPath
+        | ContainedFileError::InvalidRelativePath(_)
+        | ContainedFileError::SymlinkOrReparsePoint
+        | ContainedFileError::NotRegularFile
+        | ContainedFileError::IdentityChanged
+        | ContainedFileError::LengthOverflow) => {
+            DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                "bsl_index_file_contract",
+                format!("indexed module failed contained validation: {error}"),
+            ))
+        }
+    }
+}
+
+fn validate_hit_identity(
+    hit: &IndexedMethodHit,
+    owner: &ArtifactId,
+) -> Result<(), DefinitionCollectionError> {
+    validate_platform_identifier(&hit.name).map_err(|message| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_method_identity",
+            format!("indexed method name {:?} is invalid: {message}", hit.name),
+        ))
+    })?;
+    let path = PortableRelativePath::parse(&hit.module_path).map_err(|error| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_path_invalid",
+            format!("indexed module path is not canonical and portable: {error}"),
+        ))
+    })?;
+    let components = path.as_str().split('/').collect::<Vec<_>>();
+    let expected_category = owner.as_str().split('.').next().ok_or_else(|| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_module_identity",
+            "canonical module owner has no category segment",
+        ))
+    })?;
+    if let Some(category) = hit.category.as_deref() {
+        if normalize_discovery_identity(category) != normalize_discovery_identity(expected_category)
+        {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_module_identity",
+                    "indexed category conflicts with its canonical module path",
+                ),
+            ));
+        }
+    }
+    if let (Some(object_name), Some(expected_object)) =
+        (hit.object_name.as_deref(), components.get(1))
+    {
+        if normalize_discovery_identity(object_name)
+            != normalize_discovery_identity(expected_object)
+        {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_module_identity",
+                    "indexed object name conflicts with its canonical module path",
+                ),
+            ));
+        }
+    }
+    if let Some(module_type) = hit.module_type.as_deref() {
+        let expected_module_type = if components
+            .iter()
+            .any(|component| component.eq_ignore_ascii_case("Forms"))
+        {
+            Some("FormModule")
+        } else {
+            components
+                .last()
+                .and_then(|file_name| file_name.rsplit_once('.').map(|(stem, _extension)| stem))
+        };
+        if expected_module_type.is_some_and(|expected| {
+            normalize_discovery_identity(module_type) != normalize_discovery_identity(expected)
+        }) {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_index_module_identity",
+                    "indexed module type conflicts with its canonical module path",
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_indexed_method_source(
+    hit: &IndexedMethodHit,
+    source: &SourceFile,
+) -> Result<(), DefinitionCollectionError> {
+    let text = std::str::from_utf8(&source.bytes).map_err(|error| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_malformed",
+            format!(
+                "indexed BSL source {} is not UTF-8: {error}",
+                source.relative_path.as_str()
+            ),
+        ))
+    })?;
+    let line_index = hit.line.checked_sub(1).ok_or_else(|| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_row_invalid",
+            "indexed method line must be one-based",
+        ))
+    })?;
+    let line_index = usize::try_from(line_index).map_err(|_error| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_row_invalid",
+            "indexed method line is not representable on this host",
+        ))
+    })?;
+    let Some(declaration_line) = text.lines().nth(line_index) else {
+        return Err(stale_method_location(hit));
+    };
+    let declaration = parse_method_declaration(declaration_line).map_err(|message| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_malformed",
+            format!(
+                "indexed BSL source {} is malformed at line {}: {message}",
+                source.relative_path.as_str(),
+                hit.line
+            ),
+        ))
+    })?;
+    let Some((kind, name)) = declaration else {
+        return Err(stale_method_location(hit));
+    };
+    let indexed_kind = match hit.method_kind {
+        IndexedMethodKind::Procedure => BslMethodKind::Procedure,
+        IndexedMethodKind::Function => BslMethodKind::Function,
+    };
+    if kind != indexed_kind
+        || normalize_discovery_identity(name) != normalize_discovery_identity(&hit.name)
+        || declaration_is_exported(declaration_line) != hit.exported
+    {
+        return Err(stale_method_location(hit));
+    }
+
+    let mut terminator_line = None;
+    let body_start = line_index.checked_add(1).ok_or_else(|| {
+        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+            "bsl_index_row_invalid",
+            "indexed method line overflowed",
+        ))
+    })?;
+    for (offset, line) in text.lines().skip(body_start).enumerate() {
+        if parse_method_declaration(line)
+            .map_err(|message| {
+                DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                    "bsl_malformed",
+                    format!(
+                        "indexed BSL source {} is malformed: {message}",
+                        source.relative_path.as_str()
+                    ),
+                ))
+            })?
+            .is_some()
+        {
+            return Err(DefinitionCollectionError::ContractViolation(
+                ProviderDiagnostic::material(
+                    "bsl_malformed",
+                    format!(
+                        "indexed BSL source {} contains nested methods",
+                        source.relative_path.as_str()
+                    ),
+                ),
+            ));
+        }
+        if let Some(end_kind) = parse_method_end(line) {
+            if end_kind != indexed_kind {
+                return Err(DefinitionCollectionError::ContractViolation(
+                    ProviderDiagnostic::material(
+                        "bsl_malformed",
+                        format!(
+                            "indexed BSL source {} contains a mismatched method terminator",
+                            source.relative_path.as_str()
+                        ),
+                    ),
+                ));
+            }
+            let one_based = line_index
+                .checked_add(offset)
+                .and_then(|line| line.checked_add(2))
+                .and_then(|line| u32::try_from(line).ok())
+                .ok_or_else(|| {
+                    DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
+                        "bsl_index_row_invalid",
+                        "indexed method terminator line overflowed",
+                    ))
+                })?;
+            terminator_line = Some(one_based);
+            break;
+        }
+    }
+    if terminator_line != Some(hit.end_line) {
+        return Err(stale_method_location(hit));
+    }
+    Ok(())
+}
+
+fn declaration_is_exported(line: &str) -> bool {
+    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
+    code.split(|character: char| !character.is_alphanumeric() && character != '_')
+        .map(normalize_discovery_identity)
+        .any(|token| matches!(token.as_str(), "export" | "экспорт"))
+}
+
+fn stale_method_location(hit: &IndexedMethodHit) -> DefinitionCollectionError {
+    DefinitionCollectionError::Unavailable(ProviderDiagnostic::material(
+        "bsl_index_stale",
+        format!(
+            "indexed method {:?} no longer matches {}:{}-{}",
+            hit.name,
+            hit.module_path.display(),
+            hit.line,
+            hit.end_line
+        ),
+    ))
+}
+
+pub(crate) struct UnavailableRuntimeFlowProvider;
+
+impl RuntimeFlowPort for UnavailableRuntimeFlowProvider {
+    fn runtime_flow(
+        &self,
+        _query: &DiscoveryQuery<'_>,
+    ) -> ProviderOutcome<FactBatch<RuntimeFlowFact>> {
+        ProviderOutcome::Unavailable(ProviderDiagnostic::material(
+            "runtime_flow_unavailable",
+            "no validated typed runtime-flow graph is available without starting workspace services",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ExistingIndexDefinitionProvider, InventoryBslSearchProvider, UnavailableRuntimeFlowProvider,
+    };
+    use crate::application::discovery::ports::{BslSearchPort, DefinitionPort, RuntimeFlowPort};
+    use crate::domain::discovery::{
+        ArtifactId, ArtifactKind, ContentHash, DiscoveryQuery, DiscoveryQueryLimits,
+        PortableRelativePath, ProviderCoverage, ProviderOutcome, SourceFile, SourceInventory,
+    };
+    use crate::infrastructure::workspace_index::BslIndexStatus;
+    use rusqlite::Connection;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const MODULE_PATH: &str = "CommonModules/Серии/Ext/Module.bsl";
+    const BSL: &[u8] = b"// module\n\
+\xD0\x9F\xD1\x80\xD0\xBE\xD1\x86\xD0\xB5\xD0\xB4\xD1\x83\xD1\x80\xD0\xB0 \
+\xD0\xA0\xD0\xB0\xD1\x81\xD1\x81\xD1\x87\xD0\xB8\xD1\x82\xD0\xB0\xD1\x82\xD1\x8C\
+\xD0\xA1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x8E() \
+\xD0\xAD\xD0\xBA\xD1\x81\xD0\xBF\xD0\xBE\xD1\x80\xD1\x82\n\
+    // body\n\
+\xD0\x9A\xD0\xBE\xD0\xBD\xD0\xB5\xD1\x86\xD0\x9F\xD1\x80\xD0\xBE\xD1\x86\xD0\xB5\xD0\xB4\xD1\x83\xD1\x80\xD1\x8B\n\
+\xD0\xA4\xD1\x83\xD0\xBD\xD0\xBA\xD1\x86\xD0\xB8\xD1\x8F \
+\xD0\x9F\xD0\xBE\xD0\xBB\xD1\x83\xD1\x87\xD0\xB8\xD1\x82\xD1\x8C\
+\xD0\xA1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x8E(\xD0\x9A\xD0\xBE\xD0\xB4)\n\
+    \xD0\x92\xD0\xBE\xD0\xB7\xD0\xB2\xD1\x80\xD0\xB0\xD1\x82 \xD0\x9A\xD0\xBE\xD0\xB4;\n\
+\xD0\x9A\xD0\xBE\xD0\xBD\xD0\xB5\xD1\x86\xD0\xA4\xD1\x83\xD0\xBD\xD0\xBA\xD1\x86\xD0\xB8\xD0\xB8\n";
+
+    #[test]
+    fn lexical_scan_extracts_cyrillic_procedure_and_function_matches_at_exact_lines() {
+        let inventory = inventory(vec![source_file(MODULE_PATH, BSL)]);
+        let search_terms = vec!["получитьсерию".to_string()];
+        let query = query("рассчитатьсерию", &search_terms, 10);
+
+        let outcome = InventoryBslSearchProvider.search(&query, &inventory);
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("expected complete lexical evidence");
+        };
+        assert_eq!(batch.records.len(), 2);
+        assert!(batch
+            .records
+            .iter()
+            .all(|record| record.artifact_kind == ArtifactKind::Method));
+        let mut lines = batch
+            .records
+            .iter()
+            .map(|record| record.location.line)
+            .collect::<Vec<_>>();
+        lines.sort();
+        assert_eq!(lines, vec![Some(2), Some(5)]);
+        assert_eq!(
+            batch
+                .records
+                .iter()
+                .find(|record| record.location.line == Some(2))
+                .map(|record| &record.artifact),
+            Some(&artifact("CommonModule.Серии.Method.РассчитатьСерию"))
+        );
+        assert_eq!(batch.contributors, batch.analyzed_files);
+    }
+
+    #[test]
+    fn canonical_module_identity_covers_form_and_command_modules() {
+        assert_eq!(
+            super::module_artifact_for_path(&path(
+                "Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form/Module.bsl"
+            )),
+            Ok(artifact(
+                "Catalog.Товары.Form.ФормаЭлемента.Module.FormModule"
+            ))
+        );
+        assert_eq!(
+            super::module_artifact_for_path(&path(
+                "Documents/Заказ/Commands/Заполнить/Ext/CommandModule.bsl"
+            )),
+            Ok(artifact(
+                "Document.Заказ.Command.Заполнить.Module.CommandModule"
+            ))
+        );
+    }
+
+    #[test]
+    fn lexical_no_match_is_complete_but_invalid_utf8_and_malformed_bsl_are_violations() {
+        let no_match = InventoryBslSearchProvider.search(
+            &query("НесуществующийМетод", &[], 10),
+            &inventory(vec![source_file(MODULE_PATH, BSL)]),
+        );
+        let ProviderOutcome::Complete(no_match) = no_match else {
+            panic!("expected complete no-match evidence");
+        };
+        assert!(no_match.records.is_empty());
+        assert_eq!(no_match.analyzed_files.len(), 1);
+        assert!(no_match.contributors.is_empty());
+
+        for bytes in [
+            vec![0xff, 0xfe],
+            "Процедура ()\nКонецПроцедуры\n".as_bytes().to_vec(),
+        ] {
+            let outcome = InventoryBslSearchProvider.search(
+                &query("Процедура", &[], 10),
+                &inventory(vec![source_file(MODULE_PATH, &bytes)]),
+            );
+            assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+        }
+    }
+
+    #[test]
+    fn lexical_evidence_and_inventory_truncation_are_bounded() {
+        let evidence = InventoryBslSearchProvider.search(
+            &query("сер", &["получить".to_string()], 1),
+            &inventory(vec![source_file(MODULE_PATH, BSL)]),
+        );
+        let ProviderOutcome::Bounded { data, diagnostic } = evidence else {
+            panic!("expected evidence bound");
+        };
+        assert_eq!(data.records.len(), 1);
+        assert_eq!(diagnostic.code, "bsl_evidence_bound");
+
+        let file = source_file(MODULE_PATH, BSL);
+        let bounded_inventory = SourceInventory {
+            files: vec![file.clone()],
+            coverage: ProviderCoverage::new(2, 1, file.bytes.len() as u64, 1),
+        };
+        let outcome = InventoryBslSearchProvider
+            .search(&query("НесуществующийМетод", &[], 10), &bounded_inventory);
+        assert!(matches!(outcome, ProviderOutcome::Bounded { .. }));
+    }
+
+    #[test]
+    fn existing_index_definitions_are_structural_and_snapshot_validated() {
+        let fixture = Fixture::new("definition-ready");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = inventory(vec![source]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let search_terms = vec!["ПолучитьСерию".to_string()];
+
+        let outcome = provider.definitions(&query("Найти серию", &search_terms, 10));
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("expected complete definition evidence");
+        };
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.records[0].owner, artifact("CommonModule.Серии"));
+        assert_eq!(
+            batch.records[0].definition,
+            artifact("CommonModule.Серии.Method.ПолучитьСерию")
+        );
+        assert_eq!(batch.records[0].location.line, Some(5));
+        assert_eq!(batch.contributors, batch.analyzed_files);
+    }
+
+    #[test]
+    fn definition_query_preserves_distinct_cyrillic_term_spelling() {
+        let fixture = Fixture::new("definition-cyrillic-case");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = inventory(vec![source]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 5, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+        let provider =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status));
+        let search_terms = vec!["ПолучитьСерию".to_string()];
+
+        let outcome = provider.definitions(&query("получитьсерию", &search_terms, 10));
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("expected exact Cyrillic search term to remain queryable");
+        };
+        assert_eq!(batch.records.len(), 1);
+    }
+
+    #[test]
+    fn missing_or_stale_existing_index_is_unavailable_without_starting_work() {
+        let fixture = Fixture::new("definition-unavailable");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let missing = ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, None)
+            .definitions(&query("Найти", &[], 10));
+        assert!(matches!(missing, ProviderOutcome::Unavailable(_)));
+
+        let stale = BslIndexStatus {
+            status: "stale".to_string(),
+            source_root: Some(fixture.source_root.display().to_string()),
+            db_path: Some(fixture.root.join("index.db").display().to_string()),
+            message: None,
+            updated_at: 0,
+            last_run: None,
+        };
+        let stale =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&stale))
+                .definitions(&query("Найти", &[], 10));
+        assert!(matches!(stale, ProviderOutcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn out_of_root_or_malformed_index_rows_are_contract_violations() {
+        let fixture = Fixture::new("definition-invalid");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+
+        let escaped_db = fixture.root.join("escaped.db");
+        create_index(&escaped_db, "../outside.bsl", 5, 7);
+        let escaped_status = ready_status(&fixture.source_root, &escaped_db);
+        let escaped = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &inventory,
+            Some(&escaped_status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+        assert!(matches!(escaped, ProviderOutcome::ContractViolation(_)));
+
+        let malformed_db = fixture.root.join("malformed.db");
+        Connection::open(&malformed_db).unwrap();
+        let malformed_status = ready_status(&fixture.source_root, &malformed_db);
+        let malformed = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &inventory,
+            Some(&malformed_status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+        assert!(matches!(malformed, ProviderOutcome::ContractViolation(_)));
+
+        let identity_db = fixture.root.join("identity.db");
+        create_index(&identity_db, MODULE_PATH, 5, 7);
+        Connection::open(&identity_db)
+            .unwrap()
+            .execute("UPDATE modules SET category = 'Document'", ())
+            .unwrap();
+        let identity_status = ready_status(&fixture.source_root, &identity_db);
+        let identity = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &inventory,
+            Some(&identity_status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+        assert!(matches!(identity, ProviderOutcome::ContractViolation(_)));
+    }
+
+    #[test]
+    fn stale_index_path_or_changed_source_bytes_are_unavailable_not_negative_complete() {
+        let fixture = Fixture::new("definition-stale-row");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = inventory(vec![source]);
+
+        let missing_db = fixture.root.join("missing-row.db");
+        create_index(&missing_db, "CommonModules/Нет/Ext/Module.bsl", 1, 2);
+        let missing_status = ready_status(&fixture.source_root, &missing_db);
+        let missing = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &inventory,
+            Some(&missing_status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+        assert!(matches!(missing, ProviderOutcome::Unavailable(_)));
+
+        let changed_db = fixture.root.join("changed.db");
+        create_index(&changed_db, MODULE_PATH, 5, 7);
+        fs::write(fixture.source_root.join(MODULE_PATH), b"changed").unwrap();
+        let changed_status = ready_status(&fixture.source_root, &changed_db);
+        let changed = ExistingIndexDefinitionProvider::new(
+            &fixture.source_root,
+            &inventory,
+            Some(&changed_status),
+        )
+        .definitions(&query("ПолучитьСерию", &[], 10));
+        assert!(matches!(changed, ProviderOutcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn stale_index_line_range_is_unavailable_not_definition_evidence() {
+        let fixture = Fixture::new("definition-stale-lines");
+        let inventory = inventory(vec![fixture.write_source(MODULE_PATH, BSL)]);
+        let db_path = fixture.root.join("stale-lines.db");
+        create_index(&db_path, MODULE_PATH, 4, 7);
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("ПолучитьСерию", &[], 10));
+
+        assert!(matches!(outcome, ProviderOutcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn bounded_inventory_prevents_negative_complete_definition_evidence() {
+        let fixture = Fixture::new("definition-bounded-inventory");
+        let source = fixture.write_source(MODULE_PATH, BSL);
+        let inventory = SourceInventory {
+            files: vec![source.clone()],
+            coverage: ProviderCoverage::new(2, 1, source.bytes.len() as u64, 1),
+        };
+        let db_path = fixture.root.join("empty.db");
+        create_empty_index(&db_path);
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("НесуществующийМетод", &[], 10));
+
+        let ProviderOutcome::Bounded { data, diagnostic } = outcome else {
+            panic!("bounded inventory must keep definition evidence partial");
+        };
+        assert!(data.records.is_empty());
+        assert_eq!(diagnostic.code, "bsl_definition_inventory_bounded");
+    }
+
+    #[test]
+    fn runtime_flow_gap_is_explicit_and_material() {
+        let outcome = UnavailableRuntimeFlowProvider.runtime_flow(&query("Найти", &[], 10));
+
+        let ProviderOutcome::Unavailable(diagnostic) = outcome else {
+            panic!("expected unavailable runtime flow");
+        };
+        assert_eq!(diagnostic.code, "runtime_flow_unavailable");
+        assert_eq!(
+            diagnostic.materiality,
+            crate::domain::discovery::MissingCheckMateriality::Material
+        );
+    }
+
+    fn query<'a>(
+        task: &'a str,
+        search_terms: &'a [String],
+        max_evidence: u16,
+    ) -> DiscoveryQuery<'a> {
+        DiscoveryQuery::new(
+            task,
+            &[],
+            search_terms,
+            &[],
+            DiscoveryQueryLimits {
+                max_files: 100,
+                max_bytes: 1_000_000,
+                max_evidence,
+                max_candidates: 10,
+                max_graph_depth: 3,
+            },
+        )
+    }
+
+    fn inventory(files: Vec<SourceFile>) -> SourceInventory {
+        let count = u32::try_from(files.len()).unwrap();
+        let bytes = files.iter().map(|file| file.bytes.len() as u64).sum();
+        SourceInventory {
+            files,
+            coverage: ProviderCoverage::new(count, count, bytes, count),
+        }
+    }
+
+    fn source_file(path: &str, bytes: &[u8]) -> SourceFile {
+        SourceFile {
+            relative_path: PortableRelativePath::parse_str(path).unwrap(),
+            bytes: bytes.to_vec(),
+            raw_hash: ContentHash::sha256(bytes),
+        }
+    }
+
+    fn artifact(value: &str) -> ArtifactId {
+        ArtifactId::parse(value).unwrap()
+    }
+
+    fn path(value: &str) -> PortableRelativePath {
+        PortableRelativePath::parse(Path::new(value)).unwrap()
+    }
+
+    struct Fixture {
+        root: PathBuf,
+        source_root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("unica-bsl-{name}-{nanos}"));
+            let source_root = root.join("src");
+            fs::create_dir_all(&source_root).unwrap();
+            let source_root = fs::canonicalize(source_root).unwrap();
+            Self { root, source_root }
+        }
+
+        fn write_source(&self, path: &str, bytes: &[u8]) -> SourceFile {
+            let full_path = self.source_root.join(path);
+            fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+            fs::write(full_path, bytes).unwrap();
+            source_file(path, bytes)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn ready_status(source_root: &Path, db_path: &Path) -> BslIndexStatus {
+        BslIndexStatus {
+            status: "ready".to_string(),
+            source_root: Some(source_root.display().to_string()),
+            db_path: Some(db_path.display().to_string()),
+            message: None,
+            updated_at: 0,
+            last_run: None,
+        }
+    }
+
+    fn create_index(db_path: &Path, module_path: &str, line: i64, end_line: i64) {
+        let connection = Connection::open(db_path).unwrap();
+        create_index_schema(&connection);
+        connection
+            .execute(
+                "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+                 VALUES (1, ?1, 'CommonModule', 'Серии', 'Module')",
+                (module_path,),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods
+                 (id, module_id, name, type, is_export, line, end_line, params)
+                 VALUES (1, 1, 'ПолучитьСерию', 'Function', 0, ?1, ?2, 'Код')",
+                (line, end_line),
+            )
+            .unwrap();
+    }
+
+    fn create_empty_index(db_path: &Path) {
+        let connection = Connection::open(db_path).unwrap();
+        create_index_schema(&connection);
+    }
+
+    fn create_index_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE modules (
+                    id INTEGER PRIMARY KEY,
+                    rel_path TEXT NOT NULL,
+                    category TEXT,
+                    object_name TEXT,
+                    module_type TEXT
+                );
+                CREATE TABLE methods (
+                    id INTEGER PRIMARY KEY,
+                    module_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    is_export INTEGER NOT NULL,
+                    line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    params TEXT
+                );",
+            )
+            .unwrap();
+    }
+}

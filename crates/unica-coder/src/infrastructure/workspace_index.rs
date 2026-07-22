@@ -7,6 +7,7 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use fs2::FileExt;
+use rusqlite::{params, Connection, OpenFlags, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -24,6 +25,254 @@ const LOCK_SCHEMA_VERSION: u32 = 1;
 const RLM_INDEX_DIR_NAME: &str = "rlm-tools-bsl";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct IndexedMethodHit {
+    pub name: String,
+    pub method_kind: IndexedMethodKind,
+    pub exported: bool,
+    pub line: u32,
+    pub end_line: u32,
+    pub module_path: PathBuf,
+    pub object_name: Option<String>,
+    pub parameters: String,
+    pub category: Option<String>,
+    pub module_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum IndexedMethodKind {
+    Procedure,
+    Function,
+}
+
+impl IndexedMethodKind {
+    pub(crate) const fn display_name(self) -> &'static str {
+        match self {
+            Self::Procedure => "Procedure",
+            Self::Function => "Function",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IndexQueryError {
+    Unavailable(String),
+    MalformedSchema(String),
+    MalformedRow(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for IndexQueryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) => write!(formatter, "RLM index is unavailable: {message}"),
+            Self::MalformedSchema(message) => {
+                write!(formatter, "RLM index schema is malformed: {message}")
+            }
+            Self::MalformedRow(message) => {
+                write!(formatter, "RLM index row is malformed: {message}")
+            }
+            Self::Failed(message) => write!(formatter, "RLM index query failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for IndexQueryError {}
+
+pub(crate) fn search_indexed_methods(
+    db_path: &Path,
+    query: &str,
+    limit: u16,
+) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    if query.trim().is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let connection = open_existing_index(db_path)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT m.name, m.type, m.is_export, m.line, m.end_line, \
+                    mod.rel_path, m.params, NULL, mod.object_name, NULL \
+             FROM methods_fts \
+             JOIN methods m ON m.id = methods_fts.rowid \
+             JOIN modules mod ON mod.id = m.module_id \
+             WHERE methods_fts MATCH ? \
+             ORDER BY methods_fts.rank, mod.rel_path, m.line, m.id \
+             LIMIT ?",
+        )
+        .map_err(|error| IndexQueryError::MalformedSchema(error.to_string()))?;
+    let escaped = format!("\"{}\"", query.trim().replace('"', "\"\""));
+    let rows = statement
+        .query_map(params![escaped, i64::from(limit)], raw_indexed_method)
+        .map_err(|error| IndexQueryError::Failed(error.to_string()))?;
+    collect_indexed_methods(rows)
+}
+
+pub(crate) fn find_indexed_definitions(
+    db_path: &Path,
+    name: &str,
+    limit: u16,
+) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    find_indexed_definitions_with_module_hint(db_path, name, None, limit)
+}
+
+pub(crate) fn find_indexed_definitions_with_module_hint(
+    db_path: &Path,
+    name: &str,
+    module_hint: Option<&str>,
+    limit: u16,
+) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    if name.trim().is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let connection = open_existing_index(db_path)?;
+    let (sql, hint) = match module_hint.map(str::trim).filter(|hint| !hint.is_empty()) {
+        Some(hint) => (
+            "SELECT m.name, m.type, m.is_export, m.line, m.end_line, \
+                    mod.rel_path, m.params, mod.category, mod.object_name, mod.module_type \
+             FROM methods m \
+             JOIN modules mod ON mod.id = m.module_id \
+             WHERE m.name = ? COLLATE NOCASE \
+               AND (mod.rel_path LIKE ? OR mod.object_name LIKE ?) \
+             ORDER BY m.is_export DESC, mod.rel_path, m.line, m.id \
+             LIMIT ?",
+            Some(format!("%{hint}%")),
+        ),
+        None => (
+            "SELECT m.name, m.type, m.is_export, m.line, m.end_line, \
+                    mod.rel_path, m.params, mod.category, mod.object_name, mod.module_type \
+             FROM methods m \
+             JOIN modules mod ON mod.id = m.module_id \
+             WHERE m.name = ? COLLATE NOCASE \
+             ORDER BY m.is_export DESC, mod.rel_path, m.line, m.id \
+             LIMIT ?",
+            None,
+        ),
+    };
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| IndexQueryError::MalformedSchema(error.to_string()))?;
+    let rows = match hint {
+        Some(hint) => statement.query_map(
+            params![name.trim(), hint, hint, i64::from(limit)],
+            raw_indexed_method,
+        ),
+        None => statement.query_map(params![name.trim(), i64::from(limit)], raw_indexed_method),
+    }
+    .map_err(|error| IndexQueryError::Failed(error.to_string()))?;
+    collect_indexed_methods(rows)
+}
+
+fn open_existing_index(db_path: &Path) -> Result<Connection, IndexQueryError> {
+    if !db_path.is_file() {
+        return Err(IndexQueryError::Unavailable(format!(
+            "database file does not exist: {}",
+            db_path.display()
+        )));
+    }
+    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| IndexQueryError::Unavailable(error.to_string()))
+}
+
+struct RawIndexedMethod {
+    name: String,
+    method_type: String,
+    is_export: i64,
+    line: i64,
+    end_line: i64,
+    module_path: String,
+    parameters: Option<String>,
+    category: Option<String>,
+    object_name: Option<String>,
+    module_type: Option<String>,
+}
+
+fn raw_indexed_method(row: &Row<'_>) -> rusqlite::Result<RawIndexedMethod> {
+    Ok(RawIndexedMethod {
+        name: row.get(0)?,
+        method_type: row.get(1)?,
+        is_export: row.get(2)?,
+        line: row.get(3)?,
+        end_line: row.get(4)?,
+        module_path: row.get(5)?,
+        parameters: row.get(6)?,
+        category: row.get(7)?,
+        object_name: row.get(8)?,
+        module_type: row.get(9)?,
+    })
+}
+
+fn collect_indexed_methods(
+    rows: impl Iterator<Item = rusqlite::Result<RawIndexedMethod>>,
+) -> Result<Vec<IndexedMethodHit>, IndexQueryError> {
+    let mut hits = Vec::new();
+    for row in rows {
+        let row = row.map_err(|error| IndexQueryError::MalformedRow(error.to_string()))?;
+        let method_kind = match row.method_type.as_str() {
+            "Procedure" => IndexedMethodKind::Procedure,
+            "Function" => IndexedMethodKind::Function,
+            value => {
+                return Err(IndexQueryError::MalformedRow(format!(
+                    "unsupported method type {value:?}"
+                )))
+            }
+        };
+        let exported = match row.is_export {
+            0 => false,
+            1 => true,
+            value => {
+                return Err(IndexQueryError::MalformedRow(format!(
+                    "is_export must be 0 or 1, got {value}"
+                )))
+            }
+        };
+        let line = u32::try_from(row.line).map_err(|_error| {
+            IndexQueryError::MalformedRow(format!("line is outside u32: {}", row.line))
+        })?;
+        let end_line = u32::try_from(row.end_line).map_err(|_error| {
+            IndexQueryError::MalformedRow(format!("end_line is outside u32: {}", row.end_line))
+        })?;
+        if line == 0 || end_line < line {
+            return Err(IndexQueryError::MalformedRow(format!(
+                "invalid method line range {line}..={end_line}"
+            )));
+        }
+        if row.name.trim().is_empty() {
+            return Err(IndexQueryError::MalformedRow(
+                "method name must not be empty".to_string(),
+            ));
+        }
+        if row.module_path.trim().is_empty() {
+            return Err(IndexQueryError::MalformedRow(
+                "module path must not be empty".to_string(),
+            ));
+        }
+        hits.push(IndexedMethodHit {
+            name: row.name,
+            method_kind,
+            exported,
+            line,
+            end_line,
+            module_path: PathBuf::from(row.module_path),
+            object_name: row.object_name.filter(|value| !value.is_empty()),
+            parameters: optional_string_or_empty(row.parameters),
+            category: row.category.filter(|value| !value.is_empty()),
+            module_type: row.module_type.filter(|value| !value.is_empty()),
+        });
+    }
+    Ok(hits)
+}
+
+#[allow(
+    clippy::manual_unwrap_or_default,
+    reason = "Task 6 discovery production paths avoid unwrap-family calls"
+)]
+fn optional_string_or_empty(value: Option<String>) -> String {
+    match value {
+        Some(value) => value,
+        None => String::new(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexReadiness {
@@ -1152,7 +1401,92 @@ mod tests {
     use super::*;
     use crate::domain::cancellation::CancellationToken;
     use crate::infrastructure::platform::testing;
+    use rusqlite::Connection;
     use std::cell::RefCell;
+
+    #[test]
+    fn typed_method_queries_extract_procedures_and_functions_with_exact_locations() {
+        let context = test_context("typed-method-rows");
+        let db_path = context.cache_root.join("typed-method-rows.db");
+        create_method_index(&db_path);
+
+        let search =
+            search_indexed_methods(&db_path, "Рассчитать", 10).expect("typed method search");
+        let definitions =
+            find_indexed_definitions(&db_path, "ПолучитьСерию", 10).expect("typed definitions");
+
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].name, "РассчитатьСерию");
+        assert_eq!(search[0].method_kind, IndexedMethodKind::Procedure);
+        assert!(search[0].exported);
+        assert_eq!(search[0].line, 3);
+        assert_eq!(search[0].end_line, 7);
+        assert_eq!(
+            search[0].module_path,
+            PathBuf::from("CommonModules/Серии/Ext/Module.bsl")
+        );
+        assert_eq!(search[0].object_name.as_deref(), Some("Серии"));
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].method_kind, IndexedMethodKind::Function);
+        assert!(!definitions[0].exported);
+        assert_eq!(definitions[0].line, 10);
+        assert_eq!(definitions[0].end_line, 14);
+        assert_eq!(definitions[0].parameters, "Код");
+        assert_eq!(definitions[0].category.as_deref(), Some("CommonModule"));
+        assert_eq!(definitions[0].module_type.as_deref(), Some("Module"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn typed_method_search_quotes_fts_control_syntax_as_literal_text() {
+        let context = test_context("typed-method-query-escape");
+        let db_path = context.cache_root.join("typed-method-query-escape.db");
+        create_method_index(&db_path);
+
+        let hits = search_indexed_methods(&db_path, "\" OR ПолучитьСерию", 10)
+            .expect("quoted control syntax must remain a valid literal query");
+
+        assert!(hits.is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn typed_method_queries_reject_malformed_schema_and_row_values() {
+        let context = test_context("typed-method-malformed");
+        let malformed_schema = context.cache_root.join("malformed-schema.db");
+        fs::create_dir_all(malformed_schema.parent().unwrap()).unwrap();
+        Connection::open(&malformed_schema).unwrap();
+
+        assert!(matches!(
+            find_indexed_definitions(&malformed_schema, "Needle", 10),
+            Err(IndexQueryError::MalformedSchema(_))
+        ));
+
+        let malformed_row = context.cache_root.join("malformed-row.db");
+        create_method_index(&malformed_row);
+        Connection::open(&malformed_row)
+            .unwrap()
+            .execute("UPDATE methods SET line = -1 WHERE id = 2", ())
+            .unwrap();
+        assert!(matches!(
+            find_indexed_definitions(&malformed_row, "ПолучитьСерию", 10),
+            Err(IndexQueryError::MalformedRow(_))
+        ));
+
+        Connection::open(&malformed_row)
+            .unwrap()
+            .execute("UPDATE methods SET line = 10 WHERE id = 2", ())
+            .unwrap();
+        Connection::open(&malformed_row)
+            .unwrap()
+            .execute("UPDATE modules SET rel_path = '' WHERE id = 1", ())
+            .unwrap();
+        assert!(matches!(
+            find_indexed_definitions(&malformed_row, "ПолучитьСерию", 10),
+            Err(IndexQueryError::MalformedRow(_))
+        ));
+        cleanup(&context);
+    }
 
     #[test]
     fn dry_run_does_not_start_indexing_or_write_state() {
@@ -2022,6 +2356,62 @@ source-set:
             BslIndexStatus::building(action, Some(&context.workspace_root.join("src")));
         status.updated_at = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
         write_status(context, status).unwrap();
+    }
+
+    fn create_method_index(db_path: &Path) {
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let connection = Connection::open(db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE modules (
+                    id INTEGER PRIMARY KEY,
+                    rel_path TEXT NOT NULL,
+                    category TEXT,
+                    object_name TEXT,
+                    module_type TEXT
+                );
+                CREATE TABLE methods (
+                    id INTEGER PRIMARY KEY,
+                    module_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    is_export INTEGER NOT NULL,
+                    line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    params TEXT
+                );
+                CREATE VIRTUAL TABLE methods_fts USING fts5(
+                    name, object_name, tokenize='trigram'
+                );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO modules (id, rel_path, category, object_name, module_type)
+                 VALUES (1, 'CommonModules/Серии/Ext/Module.bsl', 'CommonModule', 'Серии', 'Module')",
+                (),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods
+                 (id, module_id, name, type, is_export, line, end_line, params)
+                 VALUES
+                 (1, 1, 'РассчитатьСерию', 'Procedure', 1, 3, 7, ''),
+                 (2, 1, 'ПолучитьСерию', 'Function', 0, 10, 14, 'Код')",
+                (),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO methods_fts (rowid, name, object_name) VALUES
+                 (1, 'РассчитатьСерию', 'Серии'),
+                 (2, 'ПолучитьСерию', 'Серии')",
+                (),
+            )
+            .unwrap();
     }
 
     fn cleanup(context: &WorkspaceContext) {

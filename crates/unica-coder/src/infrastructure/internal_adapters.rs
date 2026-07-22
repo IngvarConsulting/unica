@@ -20,10 +20,11 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_index::{
-    IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
+    find_indexed_definitions_with_module_hint, search_indexed_methods, IndexReadiness, IndexRunner,
+    IndexedMethodHit, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
 };
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -1519,10 +1520,7 @@ fn process_timeout_error(label: &str, timeout: Option<Duration>) -> String {
     }
 }
 
-fn search_rlm_index(
-    db_path: &PathBuf,
-    args: &Map<String, Value>,
-) -> Result<Option<String>, String> {
+fn search_rlm_index(db_path: &Path, args: &Map<String, Value>) -> Result<Option<String>, String> {
     let Some(query) = args.get("query").and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -1533,46 +1531,13 @@ fn search_rlm_index(
     let limit = args
         .get("limit")
         .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(20);
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
-    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
-    let mut stmt = conn
-        .prepare(
-            "SELECT \
-               m.name, m.type, m.is_export, m.line, m.end_line, m.params, \
-               mod.rel_path AS module_path, mod.object_name, methods_fts.rank \
-             FROM methods_fts \
-             JOIN methods m ON m.id = methods_fts.rowid \
-             JOIN modules mod ON mod.id = m.module_id \
-             WHERE methods_fts MATCH ? \
-             ORDER BY methods_fts.rank \
-             LIMIT ?",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![fts_query, limit as i64], |row| {
-            let method_type: String = row.get(1)?;
-            let is_export: i64 = row.get(2)?;
-            let params: Option<String> = row.get(5)?;
-            let params = params.unwrap_or_default();
-            let signature_params = format!("({})", params.trim());
-            Ok(format!(
-                "- {}:{} {} {}{}{}",
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(3)?,
-                method_type,
-                row.get::<_, String>(0)?,
-                signature_params,
-                if is_export != 0 { " export" } else { "" }
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-
-    let mut lines = Vec::new();
-    for row in rows {
-        lines.push(row.map_err(|error| error.to_string())?);
-    }
+        .map(|value| u16::try_from(value).map_or(u16::MAX, std::convert::identity))
+        .map_or(20, std::convert::identity);
+    let lines = search_indexed_methods(db_path, query, limit)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(search_result_line)
+        .collect::<Vec<_>>();
     if lines.is_empty() {
         Ok(Some("No RLM method matches.".to_string()))
     } else {
@@ -2058,52 +2023,15 @@ impl ProfileIdentity {
     }
 }
 
-fn find_definitions(db_path: &PathBuf, args: &Map<String, Value>) -> Result<String, String> {
+fn find_definitions(db_path: &Path, args: &Map<String, Value>) -> Result<String, String> {
     let name = required_string(args, "name")?;
-    let limit = read_limit(args, 50);
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
-    let mut lines = Vec::new();
-    if let Some(module_hint) = args.get("moduleHint").and_then(Value::as_str) {
-        let hint = format!("%{}%", module_hint.trim());
-        let mut stmt = conn
-            .prepare(
-                "SELECT \
-                   m.name, m.type, m.is_export, m.line, m.end_line, m.params, \
-                   mod.rel_path, mod.category, mod.object_name, mod.module_type \
-                 FROM methods m \
-                 JOIN modules mod ON mod.id = m.module_id \
-                 WHERE m.name = ? COLLATE NOCASE \
-                   AND (mod.rel_path LIKE ? OR mod.object_name LIKE ?) \
-                 ORDER BY m.is_export DESC, mod.rel_path, m.line \
-                 LIMIT ?",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = stmt
-            .query_map(params![name, hint, hint, limit as i64], definition_line)
-            .map_err(|error| error.to_string())?;
-        for row in rows {
-            lines.push(row.map_err(|error| error.to_string())?);
-        }
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT \
-                   m.name, m.type, m.is_export, m.line, m.end_line, m.params, \
-                   mod.rel_path, mod.category, mod.object_name, mod.module_type \
-                 FROM methods m \
-                 JOIN modules mod ON mod.id = m.module_id \
-                 WHERE m.name = ? COLLATE NOCASE \
-                 ORDER BY m.is_export DESC, mod.rel_path, m.line \
-                 LIMIT ?",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = stmt
-            .query_map(params![name, limit as i64], definition_line)
-            .map_err(|error| error.to_string())?;
-        for row in rows {
-            lines.push(row.map_err(|error| error.to_string())?);
-        }
-    }
+    let limit = u16::try_from(read_limit(args, 50)).map_or(u16::MAX, std::convert::identity);
+    let module_hint = args.get("moduleHint").and_then(Value::as_str);
+    let lines = find_indexed_definitions_with_module_hint(db_path, name, module_hint, limit)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(definition_line)
+        .collect::<Vec<_>>();
 
     if lines.is_empty() {
         Ok(format!("No RLM definitions found for `{name}`."))
@@ -2112,39 +2040,44 @@ fn find_definitions(db_path: &PathBuf, args: &Map<String, Value>) -> Result<Stri
     }
 }
 
-fn definition_line(row: &Row<'_>) -> rusqlite::Result<String> {
-    let method_type: String = row.get(1)?;
-    let is_export: i64 = row.get(2)?;
-    let params: Option<String> = row.get(5)?;
-    let category: Option<String> = row.get(7)?;
-    let object_name: Option<String> = row.get(8)?;
-    let module_type: Option<String> = row.get(9)?;
+fn search_result_line(hit: &IndexedMethodHit) -> String {
+    format!(
+        "- {}:{} {} {}({}){}",
+        hit.module_path.display(),
+        hit.line,
+        hit.method_kind.display_name(),
+        hit.name,
+        hit.parameters.trim(),
+        if hit.exported { " export" } else { "" }
+    )
+}
+
+fn definition_line(hit: &IndexedMethodHit) -> String {
     let mut meta = Vec::new();
-    if let Some(category) = category.filter(|value| !value.is_empty()) {
+    if let Some(category) = hit.category.as_deref() {
         meta.push(format!("category={category}"));
     }
-    if let Some(object_name) = object_name.filter(|value| !value.is_empty()) {
+    if let Some(object_name) = hit.object_name.as_deref() {
         meta.push(format!("object={object_name}"));
     }
-    if let Some(module_type) = module_type.filter(|value| !value.is_empty()) {
+    if let Some(module_type) = hit.module_type.as_deref() {
         meta.push(format!("moduleType={module_type}"));
     }
-    let signature_params = format!("({})", params.unwrap_or_default().trim());
     let suffix = if meta.is_empty() {
         String::new()
     } else {
         format!(" [{}]", meta.join(", "))
     };
-    Ok(format!(
+    format!(
         "- {}:{} {} {}{}{}{}",
-        row.get::<_, String>(6)?,
-        row.get::<_, i64>(3)?,
-        method_type,
-        row.get::<_, String>(0)?,
-        signature_params,
-        if is_export != 0 { " export" } else { "" },
+        hit.module_path.display(),
+        hit.line,
+        hit.method_kind.display_name(),
+        hit.name,
+        format_args!("({})", hit.parameters.trim()),
+        if hit.exported { " export" } else { "" },
         suffix
-    ))
+    )
 }
 
 fn module_outline(
