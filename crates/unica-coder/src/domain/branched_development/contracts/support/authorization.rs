@@ -2,18 +2,30 @@
 mod tests {
     use super::super::evidence::{
         SupportRecoveryDistributionHandoff, SupportRecoveryDistributionHandoffInputs,
-        SupportRecoveryDistributionSet, UserVisibleCfFileName,
+        SupportRecoveryDistributionSet, SupportRootLockObservation, UserVisibleCfFileName,
     };
     use super::super::model::{RootReachableSupportLayerSet, SupportTransition};
     use super::*;
+    use crate::domain::branched_development::canonical_json::{
+        canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
+    };
     use crate::domain::branched_development::contracts::instructions::AcquireSupportRootInstruction;
+    use crate::domain::branched_development::contracts::repository::{
+        EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceRegistry,
+        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
+        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
+        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
+        RepositoryOwnerIdentity, UnvalidatedRepositoryHistoryPartition,
+        ValidatedRepositoryHistoryPartition,
+    };
     use crate::domain::branched_development::contracts::scalars::{
-        DisplayPath, RepositoryIdentityComponent, RepositoryTargetDisplay,
+        DisplayPath, RepositoryIdentityComponent, RepositoryTargetDisplay, RequiredNullable,
     };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
     use crate::domain::branched_development::{ProfileArtifactRefId, SupportLayerId};
     use schemars::{schema_for, JsonSchema};
     use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serde_json::{json, Value};
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -37,6 +49,90 @@ mod tests {
         serde_json::from_value(json!({
             "throughVersion": "v1",
             "historyPrefixDigest": A,
+        }))
+        .unwrap()
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EmptyPartitionDigestRecord {
+        from_exclusive: RepositoryHistoryCursor,
+        through_inclusive: RepositoryHistoryCursor,
+        entries: Vec<Value>,
+    }
+
+    impl contract_digest_record_sealed::Sealed for EmptyPartitionDigestRecord {}
+    impl ContractDigestRecord for EmptyPartitionDigestRecord {}
+
+    struct UnexpectedIndex;
+
+    impl EvidenceSourceIndex for UnexpectedIndex {
+        fn candidate_for(
+            &self,
+            _repository_version: &crate::domain::branched_development::contracts::scalars::RepositoryVersion,
+            _registry: &EvidenceSourceRegistry,
+        ) -> Result<EvidenceSourceIndexCandidate, RepositoryContractError> {
+            panic!("empty history partition must not consult the source index")
+        }
+    }
+
+    struct UnexpectedOrder;
+
+    impl RepositoryHistoryOrderResolver for UnexpectedOrder {
+        fn order_evidence(
+            &self,
+            _from_exclusive: &RepositoryHistoryCursor,
+            _through_inclusive: &RepositoryHistoryCursor,
+        ) -> Result<RepositoryHistoryOrderEvidence, RepositoryContractError> {
+            panic!("empty history partition must not consult history order")
+        }
+    }
+
+    struct UnexpectedBytes;
+
+    impl RepositoryHistoryEvidenceBytesResolver for UnexpectedBytes {
+        fn load_canonical_evidence_bytes(
+            &self,
+            _reference: &RepositoryHistorySourceEvidenceRef,
+        ) -> Result<Vec<u8>, RepositoryContractError> {
+            panic!("empty history partition must not load evidence")
+        }
+    }
+
+    fn empty_partition(endpoint: &RepositoryHistoryCursor) -> ValidatedRepositoryHistoryPartition {
+        let partition_digest = canonical_contract_digest(
+            &EmptyPartitionDigestRecord {
+                from_exclusive: endpoint.clone(),
+                through_inclusive: endpoint.clone(),
+                entries: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        let wire = serde_json::from_value::<UnvalidatedRepositoryHistoryPartition>(json!({
+            "fromExclusive": endpoint,
+            "throughInclusive": endpoint,
+            "entries": [],
+            "partitionDigest": partition_digest,
+        }))
+        .unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &UnexpectedIndex,
+            &UnexpectedOrder,
+            &UnexpectedBytes,
+        )
+        .validate(wire)
+        .unwrap()
+    }
+
+    fn owner(username: &str) -> RepositoryOwnerIdentity {
+        serde_json::from_value(json!({
+            "username": username,
+            "computer": null,
+            "infobase": null,
+            "lockedAt": null,
         }))
         .unwrap()
     }
@@ -453,10 +549,75 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn frozen_armed_projection_retains_the_exact_task11_recovery_binding() {
+        let authority = SupportActionAuthorizationAuthority::reserved_original(
+            inputs("reserved-user"),
+            CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+            digest(),
+        )
+        .unwrap();
+        let active = ActiveSupportActionResumeHandle::publish(authority).unwrap();
+        let ActiveSupportActionResumeHandle::AwaitingArm(record) = &active else {
+            panic!("fresh action must await arming")
+        };
+        let endpoint = record.immutable.expected_before_history_cursor.clone();
+        let expected_owner = owner("reserved-user");
+        let root_lock =
+            SupportRootLockObservation::new(RequiredNullable::value(expected_owner.clone()))
+                .unwrap();
+        let receipt = SupportActionArmingReceipt::new(
+            id(ID_2),
+            record.immutable.support_action_id.clone(),
+            record.support_action_digest.clone(),
+            endpoint.clone(),
+            endpoint.clone(),
+            empty_partition(&endpoint),
+            record.immutable.support_gate_digest.clone(),
+            record.immutable.candidate_set_digest.clone(),
+            record.immutable.expected_relevant_baseline_digest.clone(),
+            record.expected_support_graph_digest.clone(),
+            record
+                .immutable
+                .support_recovery_distribution_set_digest
+                .clone(),
+            record.immutable.expected_original_fingerprint.clone(),
+            record.immutable.manual_target_mode,
+            root_lock,
+            &expected_owner,
+        )
+        .unwrap();
+        let frozen = active
+            .arm(receipt.clone())
+            .unwrap()
+            .freeze_armed_action()
+            .unwrap();
+        let projection = frozen
+            .frozen_support_recovery_projection()
+            .expect("only a frozen armed action projects recovery authority");
+        let binding = projection
+            .armed_binding()
+            .expect("production frozen projection must retain its armed binding");
+
+        assert_eq!(
+            binding.purpose(),
+            SupportActionPurpose::MainIntegrationPrerequisite
+        );
+        assert_eq!(binding.expected_before_history_cursor(), &endpoint);
+        assert_eq!(binding.expected_support_graph_digest(), &digest());
+        assert_eq!(binding.arming_receipt(), &receipt);
+        assert_eq!(binding.cancelled_phase(), TaskPhase::Synchronized);
+        assert_eq!(binding.relevant_advance_phase(), TaskPhase::LocalVerified);
+        assert_eq!(binding.post_reconcile_phase(), TaskPhase::LocalVerified);
+        assert_eq!(binding.support_recovery_distributions().len(), 1);
+        assert!(binding.manual_working_infobase_baseline().is_none());
+    }
 }
 use super::super::repository::RepositoryHistoryCursor;
 use super::super::scalars::RepositoryUsername;
 use super::super::schema::one_of_schema;
+use super::super::support_recovery_authority::SupportRecoveryAuthorityToken;
 use super::evidence::{
     SupportActionArmingReceipt, SupportRecoveryDistributionCoverageAuthority,
     SupportRecoveryDistributionEvidence,
@@ -890,6 +1051,91 @@ struct SupportActionAuthorizationRecord {
 /// guard construction cannot choose a manual mode or splice lease evidence from
 /// another authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrozenArmedSupportRecoveryBinding {
+    purpose: SupportActionPurpose,
+    expected_before_history_cursor: RepositoryHistoryCursor,
+    expected_relevant_baseline_digest: Sha256Digest,
+    expected_support_graph_digest: Sha256Digest,
+    authorized_transitions: SupportTransitions,
+    authorized_transitions_digest: Sha256Digest,
+    support_recovery_distributions: Vec<SupportRecoveryDistributionEvidence>,
+    manual_working_infobase_identity: Option<ManualWorkingInfobaseIdentity>,
+    manual_working_infobase_baseline: Option<ManualWorkingInfobaseBaseline>,
+    origin_phase: TaskPhase,
+    cancelled_phase: TaskPhase,
+    relevant_advance_phase: TaskPhase,
+    post_reconcile_phase: TaskPhase,
+    phase_evidence_digest: Sha256Digest,
+    arming_receipt: SupportActionArmingReceipt,
+}
+
+impl FrozenArmedSupportRecoveryBinding {
+    pub(crate) const fn purpose(&self) -> SupportActionPurpose {
+        self.purpose
+    }
+
+    pub(crate) const fn expected_before_history_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.expected_before_history_cursor
+    }
+
+    pub(crate) const fn expected_relevant_baseline_digest(&self) -> &Sha256Digest {
+        &self.expected_relevant_baseline_digest
+    }
+
+    pub(crate) const fn expected_support_graph_digest(&self) -> &Sha256Digest {
+        &self.expected_support_graph_digest
+    }
+
+    pub(crate) const fn authorized_transitions(&self) -> &SupportTransitions {
+        &self.authorized_transitions
+    }
+
+    pub(crate) const fn authorized_transitions_digest(&self) -> &Sha256Digest {
+        &self.authorized_transitions_digest
+    }
+
+    pub(crate) fn support_recovery_distributions(&self) -> &[SupportRecoveryDistributionEvidence] {
+        &self.support_recovery_distributions
+    }
+
+    pub(crate) const fn manual_working_infobase_identity(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseIdentity> {
+        self.manual_working_infobase_identity.as_ref()
+    }
+
+    pub(crate) const fn manual_working_infobase_baseline(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseBaseline> {
+        self.manual_working_infobase_baseline.as_ref()
+    }
+
+    pub(crate) const fn origin_phase(&self) -> TaskPhase {
+        self.origin_phase
+    }
+
+    pub(crate) const fn cancelled_phase(&self) -> TaskPhase {
+        self.cancelled_phase
+    }
+
+    pub(crate) const fn relevant_advance_phase(&self) -> TaskPhase {
+        self.relevant_advance_phase
+    }
+
+    pub(crate) const fn post_reconcile_phase(&self) -> TaskPhase {
+        self.post_reconcile_phase
+    }
+
+    pub(crate) const fn phase_evidence_digest(&self) -> &Sha256Digest {
+        &self.phase_evidence_digest
+    }
+
+    pub(crate) const fn arming_receipt(&self) -> &SupportActionArmingReceipt {
+        &self.arming_receipt
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FrozenSupportRecoveryAuthorizationProjection {
     support_action_id: UnicaId,
     support_action_digest: Sha256Digest,
@@ -899,6 +1145,7 @@ pub(crate) struct FrozenSupportRecoveryAuthorizationProjection {
     reserved_original_identity_digest: Sha256Digest,
     reserved_original_lease_capability_id: Option<CapabilityRowId>,
     expected_original_fingerprint: Sha256Digest,
+    armed_binding: Option<FrozenArmedSupportRecoveryBinding>,
 }
 
 impl FrozenSupportRecoveryAuthorizationProjection {
@@ -922,6 +1169,7 @@ impl FrozenSupportRecoveryAuthorizationProjection {
             reserved_original_identity_digest,
             reserved_original_lease_capability_id: Some(reserved_original_lease_capability_id),
             expected_original_fingerprint,
+            armed_binding: None,
         }
     }
 
@@ -942,6 +1190,7 @@ impl FrozenSupportRecoveryAuthorizationProjection {
             reserved_original_identity_digest,
             reserved_original_lease_capability_id: None,
             expected_original_fingerprint,
+            armed_binding: None,
         }
     }
 
@@ -975,6 +1224,13 @@ impl FrozenSupportRecoveryAuthorizationProjection {
 
     pub(crate) const fn expected_original_fingerprint(&self) -> &Sha256Digest {
         &self.expected_original_fingerprint
+    }
+
+    /// Complete immutable recovery binding retained only by the real
+    /// frozen-armed transition. Task-9 fixtures deliberately return `None` and
+    /// therefore cannot be promoted into Task-11 production authority.
+    pub(crate) const fn armed_binding(&self) -> Option<&FrozenArmedSupportRecoveryBinding> {
+        self.armed_binding.as_ref()
     }
 }
 
@@ -1335,6 +1591,10 @@ impl ActiveSupportActionResumeHandle {
                 return None
             }
         };
+        let arming_receipt = record
+            .arming_receipt
+            .as_ref()
+            .expect("a frozen armed action always retains its accepted arming receipt");
         Some(FrozenSupportRecoveryAuthorizationProjection {
             support_action_id: record.immutable.support_action_id.clone(),
             support_action_digest: record.support_action_digest.clone(),
@@ -1353,6 +1613,41 @@ impl ActiveSupportActionResumeHandle {
                 .reserved_original_lease_capability_id
                 .clone(),
             expected_original_fingerprint: record.immutable.expected_original_fingerprint.clone(),
+            armed_binding: Some(FrozenArmedSupportRecoveryBinding {
+                purpose: record.immutable.purpose,
+                expected_before_history_cursor: record
+                    .immutable
+                    .expected_before_history_cursor
+                    .clone(),
+                expected_relevant_baseline_digest: record
+                    .immutable
+                    .expected_relevant_baseline_digest
+                    .clone(),
+                expected_support_graph_digest: record.expected_support_graph_digest.clone(),
+                authorized_transitions: record.immutable.authorized_transitions.clone(),
+                authorized_transitions_digest: record
+                    .immutable
+                    .authorized_transitions_digest
+                    .clone(),
+                support_recovery_distributions: record
+                    .immutable
+                    .support_recovery_distributions
+                    .clone(),
+                manual_working_infobase_identity: record
+                    .immutable
+                    .manual_working_infobase_identity
+                    .clone(),
+                manual_working_infobase_baseline: record
+                    .immutable
+                    .manual_working_infobase_baseline
+                    .clone(),
+                origin_phase: record.immutable.origin_phase,
+                cancelled_phase: record.immutable.cancelled_phase,
+                relevant_advance_phase: record.immutable.relevant_advance_phase,
+                post_reconcile_phase: record.immutable.post_reconcile_phase,
+                phase_evidence_digest: record.immutable.phase_evidence_digest.clone(),
+                arming_receipt: arming_receipt.clone(),
+            }),
         })
     }
 
@@ -1368,8 +1663,14 @@ impl ActiveSupportActionResumeHandle {
         Ok(Self::FrozenPreArmCancellationEffect(record))
     }
 
-    #[cfg(test)]
-    pub(crate) fn freeze_armed_action(self) -> Result<Self, SupportContractError> {
+    pub(crate) fn freeze_armed_action_from_recovery(
+        self,
+        _token: &SupportRecoveryAuthorityToken,
+    ) -> Result<Self, SupportContractError> {
+        self.freeze_armed_action_inner()
+    }
+
+    fn freeze_armed_action_inner(self) -> Result<Self, SupportContractError> {
         let Self::Armed(mut record) = self else {
             return Err(SupportContractError(
                 "armed-action freeze requires an armed action",
@@ -1378,6 +1679,11 @@ impl ActiveSupportActionResumeHandle {
         record.state = SupportActionState::FrozenForRecovery;
         record.freeze_kind = Some(SupportActionFreezeKind::ArmedAction);
         Ok(Self::FrozenArmedAction(record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn freeze_armed_action(self) -> Result<Self, SupportContractError> {
+        self.freeze_armed_action_inner()
     }
 
     #[cfg(test)]

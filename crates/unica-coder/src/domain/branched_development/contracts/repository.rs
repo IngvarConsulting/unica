@@ -44,7 +44,9 @@ pub(crate) use lifecycle::{
 pub(crate) use update::{
     SelectiveRepositoryUpdateExecutionAuthority, SelectiveRepositoryUpdatePlan,
     SelectiveRepositoryUpdatePlanAuthority, SelectiveRepositoryUpdateProof,
-    SelectiveRepositoryUpdateScope,
+    SelectiveRepositoryUpdateScope, SupportRecoverySelectiveUpdateEffectObservation,
+    SupportRecoverySelectiveUpdateExecutionObservation,
+    SupportRecoverySelectiveUpdatePlanObservation,
 };
 
 const CANONICAL_EMPTY_DELTA_DIGEST: &str =
@@ -175,6 +177,12 @@ impl JsonSchema for CanonicalEmptyDeltaDigest {
 pub(crate) struct RepositoryHistoryCursor {
     through_version: RepositoryVersion,
     history_prefix_digest: Sha256Digest,
+}
+
+impl RepositoryHistoryCursor {
+    pub(crate) const fn through_version(&self) -> &RepositoryVersion {
+        &self.through_version
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -477,6 +485,14 @@ impl NonConflictingConcurrentEvidence {
             blocks_approved_deletion: record.blocks_approved_deletion,
             evidence_digest,
         }
+    }
+
+    pub(crate) const fn repository_version(&self) -> &RepositoryVersion {
+        &self.repository_version
+    }
+
+    pub(crate) const fn evidence_digest(&self) -> &Sha256Digest {
+        &self.evidence_digest
     }
 
     fn digest_record(&self) -> NonConflictingConcurrentEvidenceDigestRecord {
@@ -2169,6 +2185,32 @@ struct ValidatedSupportObservationEntryProof {
     source_evidence_ref: RepositoryHistorySourceEvidenceRef,
     registry_digest: Sha256Digest,
     source_index_proof_digest: Sha256Digest,
+    corrective_source_action_id: Option<UnicaId>,
+}
+
+/// Typed, non-wire view of one validated recovery-history entry. Authority
+/// code consumes this projection directly and never reconstructs security
+/// bindings by traversing serialized JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidatedSupportRecoveryHistoryEntryRef<'a> {
+    SupportObservation {
+        repository_version: &'a RepositoryVersion,
+        partition_classification: RepositoryHistoryPartitionClassification,
+        semantic_delta_digest: &'a Sha256Digest,
+        source_evidence_digest: &'a Sha256Digest,
+        corrective_source_action_id: Option<&'a UnicaId>,
+    },
+    NonConflicting {
+        repository_version: &'a RepositoryVersion,
+        semantic_delta_digest: &'a Sha256Digest,
+        source_evidence_digest: &'a Sha256Digest,
+        evidence: &'a NonConflictingConcurrentEvidence,
+    },
+    Unsupported {
+        repository_version: &'a RepositoryVersion,
+        partition_classification: RepositoryHistoryPartitionClassification,
+        semantic_delta_digest: &'a Sha256Digest,
+    },
 }
 
 /// Exact immediate-successor support entry proven by the Task 8 resolver.
@@ -2378,6 +2420,78 @@ impl ValidatedRepositoryHistoryPartition {
             .0
             .iter()
             .map(|entry| entry.classification())
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.wire.entries.0.len()
+    }
+
+    pub(crate) fn support_recovery_entries(
+        &self,
+    ) -> impl Iterator<Item = ValidatedSupportRecoveryHistoryEntryRef<'_>> + '_ {
+        self.wire
+            .entries
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| match entry {
+                RepositoryHistoryPartitionEntry::EvidenceBacked(value) => self
+                    .source_index_proofs
+                    .get(index)
+                    .and_then(|proof| proof.validated_support_mapping.as_ref())
+                    .map_or_else(
+                        || ValidatedSupportRecoveryHistoryEntryRef::Unsupported {
+                            repository_version: &value.repository_version,
+                            partition_classification: value.classification.into(),
+                            semantic_delta_digest: &value.semantic_delta_digest,
+                        },
+                        |validated| ValidatedSupportRecoveryHistoryEntryRef::SupportObservation {
+                            repository_version: &validated.repository_version,
+                            partition_classification: validated.partition_classification,
+                            semantic_delta_digest: &validated.semantic_delta_digest,
+                            source_evidence_digest: validated.source_evidence_ref.evidence_digest(),
+                            corrective_source_action_id: validated
+                                .corrective_source_action_id
+                                .as_ref(),
+                        },
+                    ),
+                RepositoryHistoryPartitionEntry::NonConflicting(value) => {
+                    ValidatedSupportRecoveryHistoryEntryRef::NonConflicting {
+                        repository_version: &value.repository_version,
+                        semantic_delta_digest: &value.semantic_delta_digest,
+                        source_evidence_digest: value.source_evidence_ref.evidence_digest(),
+                        evidence: &value.non_conflicting_concurrent_evidence,
+                    }
+                }
+                RepositoryHistoryPartitionEntry::TaskCommit(value) => {
+                    ValidatedSupportRecoveryHistoryEntryRef::Unsupported {
+                        repository_version: &value.repository_version,
+                        partition_classification:
+                            RepositoryHistoryPartitionClassification::TaskCommit,
+                        semantic_delta_digest: &value.semantic_delta_digest,
+                    }
+                }
+            })
+    }
+
+    pub(crate) fn has_exact_entry_prefix(&self, prefix: &Self) -> bool {
+        self.start_cursor() == prefix.start_cursor()
+            && self.contains_cursor(prefix.through_inclusive())
+            && self
+                .wire
+                .entries
+                .0
+                .starts_with(prefix.wire.entries.0.as_slice())
+    }
+
+    pub(crate) fn contains_repository_version(&self, version: &RepositoryVersion) -> bool {
+        version == self.start_cursor().through_version()
+            || self
+                .wire
+                .entries
+                .0
+                .iter()
+                .any(|entry| entry.repository_version() == version)
     }
 
     pub(crate) fn all_entries_are_one_of(
@@ -2699,6 +2813,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                         classification_digest,
                         external_support_disjointness_digest,
                         corrective_instruction_digest,
+                        corrective_source_action_id,
                     ) = if let Some(projection) = observation.task8_mapping_projection() {
                         (
                             projection.partition_classification(),
@@ -2706,6 +2821,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                             projection.content_delta_digest(),
                             projection.classification_digest(),
                             projection.external_support_disjointness_digest(),
+                            None,
                             None,
                         )
                     } else {
@@ -2773,6 +2889,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                                     observation.classification_digest().clone(),
                                     None,
                                     Some(corrective_instruction_digest),
+                                    Some(resolver.frozen_support_action_id().clone()),
                                 )
                             }
                             SupportObservationCorrectiveProjection::ExternalConflictCorrection {
@@ -2833,6 +2950,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                                     observation.classification_digest().clone(),
                                     None,
                                     Some(support_conflict_instruction_digest),
+                                    Some(resolver.frozen_support_action_id().clone()),
                                 )
                             }
                         }
@@ -2872,6 +2990,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                         source_evidence_ref: entry.source_evidence_ref.clone(),
                         registry_digest: proof.registry_digest.clone(),
                         source_index_proof_digest: proof.proof_digest.clone(),
+                        corrective_source_action_id,
                     }))
                 }
                 EvidenceSourceAvailability::Absent(_) => {
@@ -3077,6 +3196,46 @@ pub(crate) enum RepositoryTargetState {
     ObjectAbsent(ObjectAbsentTargetState),
 }
 
+/// Borrowed, typed projection used by recovery authority.  Keeping this
+/// projection in the repository contract prevents an approval decision from
+/// depending on a lossy `serde_json::Value` round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepositoryTargetStateRef<'a> {
+    RootPresent {
+        repository_version: &'a RepositoryVersion,
+        target_fingerprint: &'a Sha256Digest,
+    },
+    ObjectPresent {
+        object_id: &'a MetadataObjectId,
+        repository_version: &'a RepositoryVersion,
+        target_fingerprint: &'a Sha256Digest,
+    },
+    ObjectAbsent {
+        object_id: &'a MetadataObjectId,
+        absence_established_at_version: &'a RepositoryVersion,
+    },
+}
+
+impl RepositoryTargetState {
+    pub(crate) const fn as_ref(&self) -> RepositoryTargetStateRef<'_> {
+        match self {
+            Self::RootPresent(value) => RepositoryTargetStateRef::RootPresent {
+                repository_version: &value.repository_version,
+                target_fingerprint: &value.target_fingerprint,
+            },
+            Self::ObjectPresent(value) => RepositoryTargetStateRef::ObjectPresent {
+                object_id: &value.object_id,
+                repository_version: &value.repository_version,
+                target_fingerprint: &value.target_fingerprint,
+            },
+            Self::ObjectAbsent(value) => RepositoryTargetStateRef::ObjectAbsent {
+                object_id: &value.object_id,
+                absence_established_at_version: &value.absence_established_at_version,
+            },
+        }
+    }
+}
+
 impl JsonSchema for RepositoryTargetState {
     fn schema_name() -> Cow<'static, str> {
         "RepositoryTargetState".into()
@@ -3127,6 +3286,17 @@ impl Ord for RepositoryTargetIdentity {
 impl PartialOrd for RepositoryTargetIdentity {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl HasTargetKey for RepositoryTargetIdentity {
+    fn target_key(&self) -> TargetKey {
+        match self {
+            Self::ConfigurationRoot(_) => TargetKey::Root,
+            Self::DevelopmentObject(value) => {
+                TargetKey::Object(value.object_id.as_str().to_owned())
+            }
+        }
     }
 }
 
@@ -3275,6 +3445,37 @@ pub(crate) enum RepositoryUpdateLockTarget {
     DevelopmentObject(ObjectUpdateLockTarget),
 }
 
+/// Borrowed lock projection for exact cross-contract binding without JSON
+/// inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepositoryUpdateLockTargetRef<'a> {
+    ConfigurationRoot {
+        object_display: &'a RepositoryTargetDisplay,
+        reasons: &'a [RepositoryUpdateLockReason],
+    },
+    DevelopmentObject {
+        object_id: &'a MetadataObjectId,
+        object_display: &'a RepositoryTargetDisplay,
+        reasons: &'a [RepositoryUpdateLockReason],
+    },
+}
+
+impl RepositoryUpdateLockTarget {
+    pub(crate) fn as_ref(&self) -> RepositoryUpdateLockTargetRef<'_> {
+        match self {
+            Self::ConfigurationRoot(value) => RepositoryUpdateLockTargetRef::ConfigurationRoot {
+                object_display: &value.object_display,
+                reasons: &value.reasons.0,
+            },
+            Self::DevelopmentObject(value) => RepositoryUpdateLockTargetRef::DevelopmentObject {
+                object_id: &value.object_id,
+                object_display: &value.object_display,
+                reasons: &value.reasons.0,
+            },
+        }
+    }
+}
+
 impl JsonSchema for RepositoryUpdateLockTarget {
     fn schema_name() -> Cow<'static, str> {
         "RepositoryUpdateLockTarget".into()
@@ -3387,6 +3588,12 @@ macro_rules! validated_target_collection {
                 })
             }
         }
+
+        impl $name {
+            pub(crate) fn as_slice(&self) -> &[$item] {
+                &self.0
+            }
+        }
     };
 }
 
@@ -3439,7 +3646,7 @@ mod tests {
         RepositoryTargetIdentity, RepositoryTargetKind, RepositoryTargetStates,
         RepositoryUpdateLockReason, RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
         RoutineRepositoryVersionClassificationEvidence, SupportCorrectiveEvidenceResolver,
-        UnvalidatedRepositoryHistoryPartition,
+        UnvalidatedRepositoryHistoryPartition, ValidatedSupportRecoveryHistoryEntryRef,
     };
     use crate::domain::branched_development::contracts::instructions::{
         SupportConflictInstruction, SupportCorrectiveInstruction,
@@ -6709,6 +6916,29 @@ mod tests {
             .validate(serde_json::from_value(partition.clone()).unwrap())
             .unwrap();
         assert_eq!(serde_json::to_value(validated).unwrap(), partition);
+
+        let validated = resolver
+            .validate(serde_json::from_value(partition.clone()).unwrap())
+            .unwrap();
+        let entries = validated.support_recovery_entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let ValidatedSupportRecoveryHistoryEntryRef::NonConflicting {
+            repository_version,
+            semantic_delta_digest,
+            source_evidence_digest,
+            evidence: projected_evidence,
+        } = entries[0]
+        else {
+            panic!("validated NCC entry must retain its typed evidence")
+        };
+        assert_eq!(repository_version.as_str(), "opaque-v1");
+        assert_eq!(
+            semantic_delta_digest.as_str(),
+            partition["entries"][0]["semanticDeltaDigest"]
+        );
+        assert_eq!(source_evidence_digest, evidence.evidence_digest());
+        assert_eq!(projected_evidence, &evidence);
+        assert!(validated.has_exact_entry_prefix(&validated));
 
         let replacement = NonConflictingConcurrentEvidence::new(
             "opaque-v1",

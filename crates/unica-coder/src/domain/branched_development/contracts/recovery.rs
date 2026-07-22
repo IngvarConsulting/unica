@@ -1,11 +1,34 @@
 use super::artifacts::OwnedTargetLocator;
-use super::prearm_recovery::{
-    PreArmCancellationEffectKind, PreArmCancellationEffectReceipt, PreArmCancellationReceiptRef,
-    PreArmCancellationReceiptSource,
+use super::instructions::{
+    CleanManualWorkingInfobaseInstruction, CloseReservedOriginalDesignerInstruction,
+    ReleaseRepositoryLocksInstruction, ReservedOriginalSupportCorrectiveInstructionSchema,
+    SeparateWorkingInfobaseSupportCorrectiveInstructionSchema, SupportConflictInstruction,
+    SupportCorrectiveInstruction, SupportEvidenceInstruction, SupportRecoveryExternalAction,
+    SupportRecoveryExternalActionRef,
 };
-use super::repository::RepositoryHistoryCursor;
+use super::prearm_recovery::{
+    PreArmCancellationEffectKind, PreArmCancellationEffectObservation,
+    PreArmCancellationEffectReceipt, PreArmCancellationFinalizationAttemptProgress,
+    PreArmCancellationFinalizationExecutionPathKind, PreArmCancellationFinalizationPlan,
+    PreArmCancellationKnownBlocker, PreArmCancellationReceiptRef, PreArmCancellationReceiptSource,
+};
+use super::repository::{
+    NonConflictingConcurrentEvidence, RepositoryHistoryCursor, ValidatedRepositoryHistoryPartition,
+};
 use super::schema::one_of_schema;
-use super::support::ManualWorkingInfobaseIdentity;
+use super::support::{
+    ManualSupportTargetMode, ManualWorkingInfobaseIdentity, ReservedOriginalLeaseStopEvidence,
+    SupportPrerequisiteVersionObservation, SupportRecoveryDisposition,
+};
+use super::support_recovery_authority::SupportRecoveryAuthorityToken;
+use super::support_terminalization::{
+    BlockedSupportRecoveryTargetRef, ManualWorkingInfobaseClosurePlan,
+    ManualWorkingInfobaseStopEvidence, ReservedBlockedAfterPartialGuardProofSchema,
+    ReservedBlockedBeforeRootGuardProofSchema, ReservedStoppedAfterCompleteGuardProofSchema,
+    SeparateBlockedAfterPartialGuardProofSchema, SeparateBlockedBeforeRootGuardProofSchema,
+    SeparateStoppedAfterCompleteGuardProofSchema, SupportRecoveryFinalizationPlan,
+    SupportRecoveryGuardProof,
+};
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
@@ -17,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
-const MAX_RECOVERY_ITEMS: usize = 100_000;
+const MAX_RECOVERY_ITEMS: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecoveryContractError(&'static str);
@@ -75,6 +98,8 @@ wire_literal!(RetentionLeaseSubjectKind, "retentionLease");
 wire_literal!(MatchesOutcome, "matches");
 wire_literal!(DiffersOutcome, "differs");
 wire_literal!(UnknownOutcome, "unknown");
+wire_literal!(QuarantinedOwnedTargetState, "quarantined");
+wire_literal!(AbsentOwnedTargetState, "absent");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NullLiteral;
@@ -339,6 +364,7 @@ pub(crate) enum RecoveryObservationKind {
     ArchiveStagingPresence,
     ArchivePresence,
     QuarantinePresence,
+    OwnedTargetAbsence,
 }
 
 #[derive(
@@ -375,6 +401,59 @@ impl RecoveryExpectedObservation {
     fn canonical_key(&self) -> Result<(RecoveryObservationKind, Vec<u8>), RecoveryContractError> {
         Ok((self.observation_kind, self.subject.canonical_key()?))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QuarantinedOwnedTargetDigestRecord {
+    state: QuarantinedOwnedTargetState,
+    owned_target: OwnedTargetLocator,
+    quarantine_id: UnicaId,
+}
+
+impl contract_digest_record_sealed::Sealed for QuarantinedOwnedTargetDigestRecord {}
+impl ContractDigestRecord for QuarantinedOwnedTargetDigestRecord {}
+
+fn expected_quarantined_owned_target_digest(
+    owned_target: &OwnedTargetLocator,
+    quarantine_id: &UnicaId,
+) -> Result<Sha256Digest, RecoveryContractError> {
+    contract_digest(
+        &QuarantinedOwnedTargetDigestRecord {
+            state: QuarantinedOwnedTargetState::Value,
+            owned_target: owned_target.clone(),
+            quarantine_id: quarantine_id.clone(),
+        },
+        "quarantined owned-target digest failed",
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AbsentOwnedTargetDigestRecord {
+    state: AbsentOwnedTargetState,
+    archive_id: UnicaId,
+    finish_action_id: UnicaId,
+    owned_target: OwnedTargetLocator,
+}
+
+impl contract_digest_record_sealed::Sealed for AbsentOwnedTargetDigestRecord {}
+impl ContractDigestRecord for AbsentOwnedTargetDigestRecord {}
+
+fn expected_absent_owned_target_digest(
+    archive_id: &UnicaId,
+    finish_action_id: &UnicaId,
+    owned_target: &OwnedTargetLocator,
+) -> Result<Sha256Digest, RecoveryContractError> {
+    contract_digest(
+        &AbsentOwnedTargetDigestRecord {
+            state: AbsentOwnedTargetState::Value,
+            archive_id: archive_id.clone(),
+            finish_action_id: finish_action_id.clone(),
+            owned_target: owned_target.clone(),
+        },
+        "absent owned-target digest failed",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -619,7 +698,7 @@ impl RecoveryObservation {
         }
     }
 
-    fn observation_digest(&self) -> &Sha256Digest {
+    pub(crate) fn observation_digest(&self) -> &Sha256Digest {
         match &self.0 {
             RecoveryObservationKindWire::Matched(value) => &value.observation_digest,
             RecoveryObservationKindWire::Differed(value) => &value.observation_digest,
@@ -1761,6 +1840,887 @@ recovery_action_union!(
     FinishCleanup: FinishCleanupActionDigestRecord => FinishCleanupAction,
 );
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwaitExternalSupportCorrectionPostconditionAuthority {
+    expected_support_graph_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoveryLockReleasePostconditionObservation {
+    blocked_guard_proof_digest: Sha256Digest,
+    subject: RecoverySubjectRef,
+    expected_unlocked_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManualWorkingInfobaseAvailablePostconditionObservation {
+    closure_plan_digest: Sha256Digest,
+    working_infobase_identity: ManualWorkingInfobaseIdentity,
+    expected_available_lease_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReservedOriginalAvailablePostconditionObservation {
+    reserved_original_identity_digest: Sha256Digest,
+    exclusive_lease_capability_id: CapabilityRowId,
+    expected_available_lease_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwaitExternalSupportConflictPostconditionAuthority {
+    required_final_baseline_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoveryEvidencePostconditionObservation {
+    support_evidence_instruction_digest: Sha256Digest,
+    evidence_artifact_id: UnicaId,
+    expected_evidence_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SupportRecoveryExternalWaitAuthorityKind {
+    Corrective {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: AwaitExternalSupportCorrectionPostconditionAuthority,
+    },
+    ReleaseLocks {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: SupportRecoveryLockReleasePostconditionObservation,
+    },
+    CleanWorkingInfobase {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: ManualWorkingInfobaseAvailablePostconditionObservation,
+    },
+    CloseReservedOriginal {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: ReservedOriginalAvailablePostconditionObservation,
+    },
+    Conflict {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: AwaitExternalSupportConflictPostconditionAuthority,
+    },
+    Evidence {
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        postcondition: SupportRecoveryEvidencePostconditionObservation,
+    },
+}
+
+/// One authority-minted external blocker and its exact recovery wait action.
+/// The private leaf payloads prevent callers from pairing an instruction with
+/// another wait kind or from supplying generic recovery observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoveryExternalWaitAuthority(SupportRecoveryExternalWaitAuthorityKind);
+
+fn blocked_recovery_subject(
+    proof: &SupportRecoveryGuardProof,
+) -> Result<RecoverySubjectRef, RecoveryContractError> {
+    match proof.blocked_target_ref() {
+        Some(BlockedSupportRecoveryTargetRef::ConfigurationRoot) => {
+            Ok(RecoverySubjectRef::configuration_root())
+        }
+        Some(BlockedSupportRecoveryTargetRef::DevelopmentObject(object_id)) => {
+            Ok(RecoverySubjectRef::metadata_object(object_id.clone()))
+        }
+        None => Err(RecoveryContractError(
+            "lock-release wait requires a blocked support recovery guard proof",
+        )),
+    }
+}
+
+impl SupportRecoveryLockReleasePostconditionObservation {
+    pub(crate) fn from_capability_adapter(
+        blocked_guard_proof: &SupportRecoveryGuardProof,
+        expected_unlocked_digest: Sha256Digest,
+    ) -> Result<Self, RecoveryContractError> {
+        Ok(Self {
+            blocked_guard_proof_digest: blocked_guard_proof.proof_digest().clone(),
+            subject: blocked_recovery_subject(blocked_guard_proof)?,
+            expected_unlocked_digest,
+        })
+    }
+}
+
+impl ManualWorkingInfobaseAvailablePostconditionObservation {
+    pub(crate) fn from_capability_adapter(
+        closure_plan: &ManualWorkingInfobaseClosurePlan,
+        stop: &ManualWorkingInfobaseStopEvidence,
+        expected_available_lease_digest: Sha256Digest,
+    ) -> Result<Self, RecoveryContractError> {
+        if stop.working_infobase_identity() != closure_plan.working_infobase_identity()
+            || stop.closure_plan_digest() != closure_plan.plan_digest()
+        {
+            return Err(RecoveryContractError(
+                "working-infobase availability observation belongs to another closure stop",
+            ));
+        }
+        Ok(Self {
+            closure_plan_digest: closure_plan.plan_digest().clone(),
+            working_infobase_identity: closure_plan.working_infobase_identity().clone(),
+            expected_available_lease_digest,
+        })
+    }
+}
+
+impl ReservedOriginalAvailablePostconditionObservation {
+    pub(crate) fn from_capability_adapter(
+        stop: &ReservedOriginalLeaseStopEvidence,
+        expected_available_lease_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            reserved_original_identity_digest: stop.reserved_original_identity_digest().clone(),
+            exclusive_lease_capability_id: stop.exclusive_lease_capability_id().clone(),
+            expected_available_lease_digest,
+        }
+    }
+}
+
+impl SupportRecoveryEvidencePostconditionObservation {
+    pub(crate) fn from_capability_adapter(
+        instruction: &SupportEvidenceInstruction,
+        evidence_artifact_id: UnicaId,
+        expected_evidence_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            support_evidence_instruction_digest: instruction
+                .support_evidence_instruction_digest()
+                .clone(),
+            evidence_artifact_id,
+            expected_evidence_digest,
+        }
+    }
+}
+
+impl SupportRecoveryExternalWaitAuthority {
+    pub(crate) fn corrective_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        instruction: SupportCorrectiveInstruction,
+    ) -> Self {
+        let postcondition = AwaitExternalSupportCorrectionPostconditionAuthority {
+            expected_support_graph_digest: instruction.desired_support_graph_digest().clone(),
+        };
+        let external_action =
+            SupportRecoveryExternalAction::corrective_from_approved(token, instruction);
+        Self(SupportRecoveryExternalWaitAuthorityKind::Corrective {
+            action_id,
+            external_action,
+            postcondition,
+        })
+    }
+
+    pub(crate) fn release_locks_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        blocked_guard_proof: &SupportRecoveryGuardProof,
+        postcondition: SupportRecoveryLockReleasePostconditionObservation,
+    ) -> Result<Self, RecoveryContractError> {
+        let subject = blocked_recovery_subject(blocked_guard_proof)?;
+        if postcondition.blocked_guard_proof_digest != *blocked_guard_proof.proof_digest()
+            || postcondition.subject != subject
+        {
+            return Err(RecoveryContractError(
+                "lock-release postcondition belongs to another blocked guard proof",
+            ));
+        }
+        let instruction =
+            ReleaseRepositoryLocksInstruction::from_support_recovery_blocked_approved(
+                token,
+                blocked_guard_proof,
+            )
+            .map_err(|_| {
+                RecoveryContractError(
+                    "blocked support recovery proof could not mint its lock-release instruction",
+                )
+            })?;
+        Ok(Self(
+            SupportRecoveryExternalWaitAuthorityKind::ReleaseLocks {
+                action_id,
+                external_action: SupportRecoveryExternalAction::release_locks_from_approved(
+                    token,
+                    instruction,
+                ),
+                postcondition,
+            },
+        ))
+    }
+
+    pub(crate) fn clean_working_infobase_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        closure_plan: &ManualWorkingInfobaseClosurePlan,
+        stop: &ManualWorkingInfobaseStopEvidence,
+        postcondition: ManualWorkingInfobaseAvailablePostconditionObservation,
+    ) -> Result<Self, RecoveryContractError> {
+        let instruction =
+            CleanManualWorkingInfobaseInstruction::from_support_recovery_stop_approved(
+                token,
+                closure_plan,
+                stop,
+            )
+            .map_err(|_| {
+                RecoveryContractError(
+                    "working-infobase stop could not mint its cleanup instruction",
+                )
+            })?;
+        if postcondition.closure_plan_digest != *closure_plan.plan_digest()
+            || postcondition.working_infobase_identity != *instruction.working_infobase_identity()
+        {
+            return Err(RecoveryContractError(
+                "working-infobase postcondition belongs to another closure plan",
+            ));
+        }
+        Ok(Self(
+            SupportRecoveryExternalWaitAuthorityKind::CleanWorkingInfobase {
+                action_id,
+                external_action:
+                    SupportRecoveryExternalAction::clean_working_infobase_from_approved(
+                        token,
+                        instruction,
+                    ),
+                postcondition,
+            },
+        ))
+    }
+
+    pub(crate) fn close_reserved_original_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        stop: &ReservedOriginalLeaseStopEvidence,
+        postcondition: ReservedOriginalAvailablePostconditionObservation,
+    ) -> Result<Self, RecoveryContractError> {
+        let instruction =
+            CloseReservedOriginalDesignerInstruction::from_support_recovery_stop_approved(
+                token, stop,
+            );
+        if postcondition.reserved_original_identity_digest
+            != *instruction.reserved_original_identity_digest()
+            || postcondition.exclusive_lease_capability_id
+                != *instruction.exclusive_lease_capability_id()
+        {
+            return Err(RecoveryContractError(
+                "reserved-original postcondition belongs to another lease stop",
+            ));
+        }
+        Ok(Self(
+            SupportRecoveryExternalWaitAuthorityKind::CloseReservedOriginal {
+                action_id,
+                external_action:
+                    SupportRecoveryExternalAction::close_reserved_original_from_approved(
+                        token,
+                        instruction,
+                    ),
+                postcondition,
+            },
+        ))
+    }
+
+    pub(crate) fn conflict_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        instruction: SupportConflictInstruction,
+    ) -> Self {
+        let postcondition = AwaitExternalSupportConflictPostconditionAuthority {
+            required_final_baseline_digest: instruction.required_final_baseline_digest().clone(),
+        };
+        let external_action =
+            SupportRecoveryExternalAction::conflict_from_approved(token, instruction);
+        Self(SupportRecoveryExternalWaitAuthorityKind::Conflict {
+            action_id,
+            external_action,
+            postcondition,
+        })
+    }
+
+    pub(crate) fn evidence_from_approved(
+        token: &SupportRecoveryAuthorityToken,
+        action_id: UnicaId,
+        instruction: SupportEvidenceInstruction,
+        postcondition: SupportRecoveryEvidencePostconditionObservation,
+    ) -> Result<Self, RecoveryContractError> {
+        if postcondition.support_evidence_instruction_digest
+            != *instruction.support_evidence_instruction_digest()
+        {
+            return Err(RecoveryContractError(
+                "support-evidence postcondition belongs to another instruction",
+            ));
+        }
+        let external_action =
+            SupportRecoveryExternalAction::evidence_from_approved(token, instruction);
+        Ok(Self(SupportRecoveryExternalWaitAuthorityKind::Evidence {
+            action_id,
+            external_action,
+            postcondition,
+        }))
+    }
+
+    fn action_id(&self) -> &UnicaId {
+        match &self.0 {
+            SupportRecoveryExternalWaitAuthorityKind::Corrective { action_id, .. }
+            | SupportRecoveryExternalWaitAuthorityKind::ReleaseLocks { action_id, .. }
+            | SupportRecoveryExternalWaitAuthorityKind::CleanWorkingInfobase {
+                action_id, ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::CloseReservedOriginal {
+                action_id, ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::Conflict { action_id, .. }
+            | SupportRecoveryExternalWaitAuthorityKind::Evidence { action_id, .. } => action_id,
+        }
+    }
+
+    fn validate_plan_binding(
+        &self,
+        support_action_id: &UnicaId,
+        manual_target_mode: ManualSupportTargetMode,
+        closure_plan: Option<&ManualWorkingInfobaseClosurePlan>,
+    ) -> Result<(), RecoveryContractError> {
+        let external_action = match &self.0 {
+            SupportRecoveryExternalWaitAuthorityKind::Corrective {
+                external_action, ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::ReleaseLocks {
+                external_action, ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::CleanWorkingInfobase {
+                external_action,
+                ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::CloseReservedOriginal {
+                external_action,
+                ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::Conflict {
+                external_action, ..
+            }
+            | SupportRecoveryExternalWaitAuthorityKind::Evidence {
+                external_action, ..
+            } => external_action,
+        };
+        let valid = match external_action.as_ref() {
+            SupportRecoveryExternalActionRef::Corrective(instruction) => {
+                instruction.support_action_id() == support_action_id
+                    && instruction.manual_target_mode() == manual_target_mode
+            }
+            SupportRecoveryExternalActionRef::ReleaseLocks(_) => true,
+            SupportRecoveryExternalActionRef::CleanWorkingInfobase(instruction) => {
+                manual_target_mode == ManualSupportTargetMode::SeparateWorkingInfobase
+                    && closure_plan.is_some_and(|plan| {
+                        instruction.working_infobase_identity() == plan.working_infobase_identity()
+                            && instruction.closure_plan_digest() == plan.plan_digest()
+                            && instruction.exclusive_lease_capability_id()
+                                == plan.exclusive_lease_capability_id()
+                    })
+            }
+            SupportRecoveryExternalActionRef::CloseReservedOriginal(_) => {
+                manual_target_mode == ManualSupportTargetMode::ReservedOriginal
+                    && closure_plan.is_none()
+            }
+            SupportRecoveryExternalActionRef::Conflict(_)
+            | SupportRecoveryExternalActionRef::Evidence(_) => true,
+        };
+        valid.then_some(()).ok_or(RecoveryContractError(
+            "support recovery external wait differs from its action, mode, or closure plan",
+        ))
+    }
+
+    fn into_parts(
+        self,
+        support_action_id: &UnicaId,
+    ) -> Result<(RecoveryAction, SupportRecoveryExternalAction), RecoveryContractError> {
+        match self.0 {
+            SupportRecoveryExternalWaitAuthorityKind::Corrective {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::Corrective(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "corrective wait lost its corrective instruction",
+                    ));
+                };
+                if instruction.support_action_id() != support_action_id
+                    || instruction.desired_support_graph_digest()
+                        != &postcondition.expected_support_graph_digest
+                {
+                    return Err(RecoveryContractError(
+                        "corrective wait differs from its support action or desired graph",
+                    ));
+                }
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::SupportGraph,
+                        RecoverySubjectRef::configuration_root(),
+                        postcondition.expected_support_graph_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitExternalSupportCorrection(
+                        AwaitExternalSupportCorrectionActionDigestRecord {
+                            action_kind: AwaitExternalSupportCorrectionActionKind::Value,
+                            action_id,
+                            support_action_id: support_action_id.clone(),
+                            corrective_instruction_digest: instruction
+                                .corrective_instruction_digest()
+                                .clone(),
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+            SupportRecoveryExternalWaitAuthorityKind::ReleaseLocks {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::ReleaseLocks(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "lock-release wait lost its release instruction",
+                    ));
+                };
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::LockOwnership,
+                        postcondition.subject.clone(),
+                        postcondition.expected_unlocked_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitExternalLockRelease(
+                        AwaitExternalLockReleaseActionDigestRecord {
+                            action_kind: AwaitExternalLockReleaseActionKind::Value,
+                            action_id,
+                            lock_instruction_digest: instruction.lock_instruction_digest().clone(),
+                            subjects: RecoverySubjects::new(vec![postcondition.subject])?,
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+            SupportRecoveryExternalWaitAuthorityKind::CleanWorkingInfobase {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::CleanWorkingInfobase(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "working-infobase wait lost its cleanup instruction",
+                    ));
+                };
+                if instruction.working_infobase_identity()
+                    != &postcondition.working_infobase_identity
+                {
+                    return Err(RecoveryContractError(
+                        "working-infobase wait identity differs from its instruction",
+                    ));
+                }
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::WorkingInfobaseLease,
+                        RecoverySubjectRef::external_working_infobase(
+                            postcondition.working_infobase_identity.clone(),
+                        ),
+                        postcondition.expected_available_lease_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitManualWorkingInfobaseClosure(
+                        AwaitManualWorkingInfobaseClosureActionDigestRecord {
+                            action_kind: AwaitManualWorkingInfobaseClosureActionKind::Value,
+                            action_id,
+                            working_infobase_identity: instruction
+                                .working_infobase_identity()
+                                .clone(),
+                            closure_plan_digest: instruction.closure_plan_digest().clone(),
+                            exclusive_lease_capability_id: instruction
+                                .exclusive_lease_capability_id()
+                                .clone(),
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+            SupportRecoveryExternalWaitAuthorityKind::CloseReservedOriginal {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::CloseReservedOriginal(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "reserved-original wait lost its closure instruction",
+                    ));
+                };
+                if instruction.reserved_original_identity_digest()
+                    != &postcondition.reserved_original_identity_digest
+                {
+                    return Err(RecoveryContractError(
+                        "reserved-original wait identity differs from its instruction",
+                    ));
+                }
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::ReservedOriginalLease,
+                        RecoverySubjectRef::reserved_original_infobase(
+                            postcondition.reserved_original_identity_digest.clone(),
+                        ),
+                        postcondition.expected_available_lease_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitReservedOriginalClosure(
+                        AwaitReservedOriginalClosureActionDigestRecord {
+                            action_kind: AwaitReservedOriginalClosureActionKind::Value,
+                            action_id,
+                            reserved_original_identity_digest: instruction
+                                .reserved_original_identity_digest()
+                                .clone(),
+                            exclusive_lease_capability_id: instruction
+                                .exclusive_lease_capability_id()
+                                .clone(),
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+            SupportRecoveryExternalWaitAuthorityKind::Conflict {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::Conflict(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "support-conflict wait lost its conflict instruction",
+                    ));
+                };
+                if instruction.required_final_baseline_digest()
+                    != &postcondition.required_final_baseline_digest
+                {
+                    return Err(RecoveryContractError(
+                        "support-conflict wait differs from its required final baseline",
+                    ));
+                }
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::SupportGraph,
+                        RecoverySubjectRef::configuration_root(),
+                        postcondition.required_final_baseline_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitExternalSupportConflictResolution(
+                        AwaitExternalSupportConflictResolutionActionDigestRecord {
+                            action_kind: AwaitExternalSupportConflictResolutionActionKind::Value,
+                            action_id,
+                            support_action_id: support_action_id.clone(),
+                            support_conflict_instruction_digest: instruction
+                                .support_conflict_instruction_digest()
+                                .clone(),
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+            SupportRecoveryExternalWaitAuthorityKind::Evidence {
+                action_id,
+                external_action,
+                postcondition,
+            } => {
+                let SupportRecoveryExternalActionRef::Evidence(instruction) =
+                    external_action.as_ref()
+                else {
+                    return Err(RecoveryContractError(
+                        "support-evidence wait lost its evidence instruction",
+                    ));
+                };
+                let (expected_observations, expected_postcondition_digest) =
+                    expected_postcondition(vec![RecoveryExpectedObservation::new(
+                        RecoveryObservationKind::ArtifactPresence,
+                        RecoverySubjectRef::registered(postcondition.evidence_artifact_id),
+                        postcondition.expected_evidence_digest,
+                    )])?;
+                let action = RecoveryAction::from_record(
+                    RecoveryActionDigestRecordKind::AwaitSupportRecoveryEvidence(
+                        AwaitSupportRecoveryEvidenceActionDigestRecord {
+                            action_kind: AwaitSupportRecoveryEvidenceActionKind::Value,
+                            action_id,
+                            support_action_id: support_action_id.clone(),
+                            support_evidence_instruction_digest: instruction
+                                .support_evidence_instruction_digest()
+                                .clone(),
+                            expected_observations,
+                            expected_postcondition_digest,
+                        },
+                    ),
+                )?;
+                Ok((action, external_action))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_external_action_test_only(
+        action_id: UnicaId,
+        external_action: SupportRecoveryExternalAction,
+        expected_digest: Sha256Digest,
+    ) -> Result<Self, RecoveryContractError> {
+        Ok(match external_action.as_ref() {
+            SupportRecoveryExternalActionRef::Corrective(instruction) => {
+                Self(SupportRecoveryExternalWaitAuthorityKind::Corrective {
+                    action_id,
+                    postcondition: AwaitExternalSupportCorrectionPostconditionAuthority {
+                        expected_support_graph_digest: instruction
+                            .desired_support_graph_digest()
+                            .clone(),
+                    },
+                    external_action,
+                })
+            }
+            SupportRecoveryExternalActionRef::ReleaseLocks(_) => {
+                Self(SupportRecoveryExternalWaitAuthorityKind::ReleaseLocks {
+                    action_id,
+                    postcondition: SupportRecoveryLockReleasePostconditionObservation {
+                        blocked_guard_proof_digest: expected_digest.clone(),
+                        subject: RecoverySubjectRef::configuration_root(),
+                        expected_unlocked_digest: expected_digest,
+                    },
+                    external_action,
+                })
+            }
+            SupportRecoveryExternalActionRef::CleanWorkingInfobase(instruction) => Self(
+                SupportRecoveryExternalWaitAuthorityKind::CleanWorkingInfobase {
+                    action_id,
+                    postcondition: ManualWorkingInfobaseAvailablePostconditionObservation {
+                        closure_plan_digest: instruction.closure_plan_digest().clone(),
+                        working_infobase_identity: instruction.working_infobase_identity().clone(),
+                        expected_available_lease_digest: expected_digest,
+                    },
+                    external_action,
+                },
+            ),
+            SupportRecoveryExternalActionRef::CloseReservedOriginal(instruction) => Self(
+                SupportRecoveryExternalWaitAuthorityKind::CloseReservedOriginal {
+                    action_id,
+                    postcondition: ReservedOriginalAvailablePostconditionObservation {
+                        reserved_original_identity_digest: instruction
+                            .reserved_original_identity_digest()
+                            .clone(),
+                        exclusive_lease_capability_id: instruction
+                            .exclusive_lease_capability_id()
+                            .clone(),
+                        expected_available_lease_digest: expected_digest,
+                    },
+                    external_action,
+                },
+            ),
+            SupportRecoveryExternalActionRef::Conflict(instruction) => {
+                Self(SupportRecoveryExternalWaitAuthorityKind::Conflict {
+                    action_id,
+                    postcondition: AwaitExternalSupportConflictPostconditionAuthority {
+                        required_final_baseline_digest: instruction
+                            .required_final_baseline_digest()
+                            .clone(),
+                    },
+                    external_action,
+                })
+            }
+            SupportRecoveryExternalActionRef::Evidence(instruction) => {
+                Self(SupportRecoveryExternalWaitAuthorityKind::Evidence {
+                    action_id,
+                    postcondition: SupportRecoveryEvidencePostconditionObservation {
+                        support_evidence_instruction_digest: instruction
+                            .support_evidence_instruction_digest()
+                            .clone(),
+                        evidence_artifact_id: UnicaId::parse(
+                            "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                        )
+                        .expect("test evidence artifact ID is valid"),
+                        expected_evidence_digest: expected_digest,
+                    },
+                    external_action,
+                })
+            }
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_recovery_action_test_only(
+        self,
+        support_action_id: UnicaId,
+    ) -> Result<RecoveryAction, RecoveryContractError> {
+        self.into_parts(&support_action_id)
+            .map(|(action, _)| action)
+    }
+}
+
+/// Exact ID catalog for the fixed history/[external wait]/finalization support
+/// recovery sequence. Construction enforces the optional wait and uniqueness
+/// before any digest-bearing action is minted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoveryActionCatalogAuthority {
+    history_action_id: UnicaId,
+    external_wait: Option<SupportRecoveryExternalWaitAuthority>,
+    finalization_action_id: UnicaId,
+}
+
+impl SupportRecoveryActionCatalogAuthority {
+    fn new(
+        history_action_id: UnicaId,
+        external_wait: Option<SupportRecoveryExternalWaitAuthority>,
+        finalization_action_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        if history_action_id == finalization_action_id
+            || external_wait.as_ref().is_some_and(|wait| {
+                wait.action_id() == &history_action_id
+                    || wait.action_id() == &finalization_action_id
+            })
+        {
+            return Err(RecoveryContractError(
+                "support recovery action IDs must be pairwise distinct",
+            ));
+        }
+        Ok(Self {
+            history_action_id,
+            external_wait,
+            finalization_action_id,
+        })
+    }
+
+    pub(crate) fn without_external_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        history_action_id: UnicaId,
+        finalization_action_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::new(history_action_id, None, finalization_action_id)
+    }
+
+    pub(crate) fn with_external_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        history_action_id: UnicaId,
+        external_wait: SupportRecoveryExternalWaitAuthority,
+        finalization_action_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::new(
+            history_action_id,
+            Some(external_wait),
+            finalization_action_id,
+        )
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        UnicaId,
+        Option<SupportRecoveryExternalWaitAuthority>,
+        UnicaId,
+    ) {
+        (
+            self.history_action_id,
+            self.external_wait,
+            self.finalization_action_id,
+        )
+    }
+
+    #[cfg(test)]
+    fn test_only(
+        history_action_id: UnicaId,
+        external_wait: Option<SupportRecoveryExternalWaitAuthority>,
+        finalization_action_id: UnicaId,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::new(history_action_id, external_wait, finalization_action_id)
+    }
+}
+
+/// A matched absence observation that has been checked against one exact
+/// `finishCleanup` action. This is the only production authority from which a
+/// cleanup receipt may project an owned-target absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FinishCleanupAbsenceObservation {
+    owned_target: OwnedTargetLocator,
+    observation_digest: Sha256Digest,
+}
+
+impl FinishCleanupAbsenceObservation {
+    pub(crate) const fn owned_target(&self) -> &OwnedTargetLocator {
+        &self.owned_target
+    }
+
+    pub(crate) const fn observation_digest(&self) -> &Sha256Digest {
+        &self.observation_digest
+    }
+}
+
+impl RecoveryAction {
+    pub(crate) fn match_finish_cleanup_absence(
+        &self,
+        owned_target: &OwnedTargetLocator,
+        observation: &RecoveryObservation,
+    ) -> Result<FinishCleanupAbsenceObservation, RecoveryContractError> {
+        let RecoveryActionKindWire::FinishCleanup(finish) = &self.0 else {
+            return Err(RecoveryContractError(
+                "cleanup absence authority requires a finishCleanup action",
+            ));
+        };
+        let Some(index) = finish
+            .owned_targets
+            .0
+            .iter()
+            .position(|candidate| candidate == owned_target)
+        else {
+            return Err(RecoveryContractError(
+                "cleanup absence target is outside the finish action",
+            ));
+        };
+        let expected = &finish.expected_observations.as_slice()[index];
+        let expected_absent_digest = expected_absent_owned_target_digest(
+            &finish.archive_id,
+            &finish.action_id,
+            owned_target,
+        )?;
+        let RecoveryObservationKindWire::Matched(matched) = &observation.0 else {
+            return Err(RecoveryContractError(
+                "cleanup absence authority requires a matched observation",
+            ));
+        };
+        if expected.observation_kind != RecoveryObservationKind::OwnedTargetAbsence
+            || !expected.subject.is_owned_role(owned_target)
+            || expected.expected_digest != expected_absent_digest
+            || matched.observation_kind != expected.observation_kind
+            || matched.subject != expected.subject
+            || matched.expected_digest != expected.expected_digest
+            || matched.observed_digest != expected.expected_digest
+        {
+            return Err(RecoveryContractError(
+                "cleanup absence observation is not the exact fresh finish projection",
+            ));
+        }
+        Ok(FinishCleanupAbsenceObservation {
+            owned_target: owned_target.clone(),
+            observation_digest: matched.observation_digest.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum RecoveryObservationSubjectSchema {
     Any,
@@ -1877,24 +2837,13 @@ fn allowed_recovery_observations_schema(
 }
 
 fn support_history_observations_schema(generator: &mut SchemaGenerator) -> Schema {
-    let anchor = recovery_expected_observation_schema(
+    exact_recovery_observation_sequence_schema(
         generator,
-        "repositoryAnchor",
-        RecoveryObservationSubjectSchema::Registered,
-    );
-    let version = recovery_expected_observation_schema(
-        generator,
-        "repositoryVersion",
-        RecoveryObservationSubjectSchema::Registered,
-    );
-    json_schema!({
-        "type": "array",
-        "prefixItems": [anchor],
-        "items": version,
-        "minItems": 1,
-        "maxItems": MAX_RECOVERY_ITEMS,
-        "uniqueItems": true
-    })
+        &[(
+            "repositoryAnchor",
+            RecoveryObservationSubjectSchema::Registered,
+        )],
+    )
 }
 
 fn recovery_action_leaf_schema<T: JsonSchema>(
@@ -2264,7 +3213,7 @@ impl JsonSchema for RecoveryAction {
                 exact(generator, &[("archivePresence", Subject::Registered)])
             }),
             recovery_action_leaf_schema::<FinishCleanupAction>(generator, |generator| {
-                allowed(generator, &[("quarantinePresence", Subject::OwnedRole)])
+                allowed(generator, &[("ownedTargetAbsence", Subject::OwnedRole)])
             }),
         ])
     }
@@ -2762,21 +3711,17 @@ fn validate_recovery_action_record(
         }
         RecoveryActionDigestRecordKind::ObserveSupportPrerequisiteHistory(value) => {
             common!(value);
-            let Some((anchor, versions)) = value.expected_observations.as_slice().split_first()
-            else {
+            let [anchor] = value.expected_observations.as_slice() else {
                 return Err(RecoveryContractError(
-                    "support history requires its repository anchor",
+                    "support history requires exactly its repository anchor",
                 ));
             };
             if anchor.observation_kind != RecoveryObservationKind::RepositoryAnchor
-                || !matches!(anchor.subject.0, RecoverySubjectRefKind::Registered(_))
-                || versions.iter().any(|observation| {
-                    observation.observation_kind != RecoveryObservationKind::RepositoryVersion
-                        || !matches!(observation.subject.0, RecoverySubjectRefKind::Registered(_))
-                })
+                || !anchor.subject.is_registered(&value.support_action_id)
+                || anchor.expected_digest != value.expected_partition_digest
             {
                 return Err(RecoveryContractError(
-                    "support history requires one anchor followed only by versions",
+                    "support history anchor differs from its action or partition",
                 ));
             }
             Ok(())
@@ -2958,6 +3903,15 @@ fn validate_recovery_action_record(
         }
         RecoveryActionDigestRecordKind::ResumeOwnedTargetQuarantine(value) => {
             common!(value);
+            let expected_quarantined_digest = expected_quarantined_owned_target_digest(
+                &value.owned_target,
+                &value.quarantine_id,
+            )?;
+            if value.expected_quarantined_digest != expected_quarantined_digest {
+                return Err(RecoveryContractError(
+                    "resume owned-target quarantine digest does not describe its named quarantine",
+                ));
+            }
             require_exact_single_observation(
                 &value.expected_observations,
                 RecoveryObservationKind::QuarantinePresence,
@@ -2997,20 +3951,30 @@ fn validate_recovery_action_record(
         }
         RecoveryActionDigestRecordKind::FinishCleanup(value) => {
             common!(value);
-            if value.expected_observations.as_slice().len() != value.owned_targets.0.len()
-                || value
-                    .expected_observations
-                    .as_slice()
-                    .iter()
-                    .zip(&value.owned_targets.0)
-                    .any(|(observation, target)| {
-                        observation.observation_kind != RecoveryObservationKind::QuarantinePresence
-                            || !observation.subject.is_owned_role(target)
-                    })
-            {
+            if value.expected_observations.as_slice().len() != value.owned_targets.0.len() {
                 return Err(RecoveryContractError(
                     "finish cleanup observation/owned-target projection mismatch",
                 ));
+            }
+            for (observation, target) in value
+                .expected_observations
+                .as_slice()
+                .iter()
+                .zip(&value.owned_targets.0)
+            {
+                let expected_absent_digest = expected_absent_owned_target_digest(
+                    &value.archive_id,
+                    &value.action_id,
+                    target,
+                )?;
+                if observation.observation_kind != RecoveryObservationKind::OwnedTargetAbsence
+                    || !observation.subject.is_owned_role(target)
+                    || observation.expected_digest != expected_absent_digest
+                {
+                    return Err(RecoveryContractError(
+                        "finish cleanup observation does not prove fresh absence for its target",
+                    ));
+                }
             }
             Ok(())
         }
@@ -3408,6 +4372,2337 @@ fn validate_cleanup_action_grammar(
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct RecoveryPlanObservations(Vec<RecoveryObservation>);
+
+impl JsonSchema for RecoveryPlanObservations {
+    fn schema_name() -> Cow<'static, str> {
+        "RecoveryPlanObservations".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "array",
+            "items": generator.subschema_for::<RecoveryObservation>(),
+            "minItems": 0,
+            "maxItems": MAX_RECOVERY_ITEMS,
+            "uniqueItems": true
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct RecoveryPlanUnknowns(Vec<RecoveryUnknown>);
+
+impl JsonSchema for RecoveryPlanUnknowns {
+    fn schema_name() -> Cow<'static, str> {
+        "RecoveryPlanRemainingUnknowns".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "array",
+            "items": generator.subschema_for::<RecoveryUnknown>(),
+            "minItems": 0,
+            "maxItems": MAX_RECOVERY_ITEMS,
+            "uniqueItems": true
+        })
+    }
+}
+
+fn validated_plan_observations(
+    values: Vec<RecoveryObservation>,
+) -> Result<(RecoveryPlanObservations, RecoveryPlanUnknowns), RecoveryContractError> {
+    if values.len() > MAX_RECOVERY_ITEMS {
+        return Err(RecoveryContractError(
+            "recovery plan observations exceed the general collection bound",
+        ));
+    }
+    let mut previous = None;
+    let mut unknowns = Vec::new();
+    for value in &values {
+        let key = value.expected_projection().canonical_key()?;
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return Err(RecoveryContractError(
+                "recovery plan observations must be canonical and unique",
+            ));
+        }
+        previous = Some(key);
+        if matches!(value.0, RecoveryObservationKindWire::Unknown(_)) {
+            unknowns.push(RecoveryUnknown::from_observation(value)?);
+        }
+    }
+    Ok((
+        RecoveryPlanObservations(values),
+        RecoveryPlanUnknowns(unknowns),
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct RecoveryPlanActions(Vec<RecoveryAction>);
+
+impl RecoveryPlanActions {
+    fn new(values: Vec<RecoveryAction>) -> Result<Self, RecoveryContractError> {
+        if values.len() > MAX_RECOVERY_ITEMS {
+            return Err(RecoveryContractError(
+                "recovery actions exceed the general collection bound",
+            ));
+        }
+        for (index, action) in values.iter().enumerate() {
+            if values[..index]
+                .iter()
+                .any(|prior| prior.action_id() == action.action_id())
+            {
+                return Err(RecoveryContractError(
+                    "recovery actions repeat an action ID",
+                ));
+            }
+        }
+        Ok(Self(values))
+    }
+
+    fn as_slice(&self) -> &[RecoveryAction] {
+        &self.0
+    }
+}
+
+fn exact_action_array_schema(items: Vec<Schema>) -> Schema {
+    let length = items.len();
+    if items.is_empty() {
+        return json_schema!({
+            "type": "array",
+            "items": { "type": "string", "const": "__no_recovery_action__" },
+            "minItems": 0,
+            "maxItems": 0,
+            "uniqueItems": true
+        });
+    }
+    json_schema!({
+        "type": "array",
+        "prefixItems": items,
+        "items": false,
+        "minItems": length,
+        "maxItems": length,
+        "uniqueItems": true
+    })
+}
+
+fn ordered_terminal_action_array_schema(
+    first: Schema,
+    middle: Vec<Schema>,
+    terminal: Schema,
+    min_items: usize,
+) -> Schema {
+    let mut tail = middle;
+    tail.push(terminal.clone());
+    json_schema!({
+        "type": "array",
+        "prefixItems": [first],
+        "items": one_of_schema(tail),
+        "minItems": min_items,
+        "maxItems": MAX_RECOVERY_ITEMS,
+        "uniqueItems": true,
+        "contains": terminal,
+        "minContains": 1,
+        "maxContains": 1
+    })
+}
+
+fn prearm_finalize_action_array_schema(generator: &mut SchemaGenerator) -> Schema {
+    let acquire_root = generator.subschema_for::<AcquirePreArmRootGuardAction>();
+    let acquire_mode = generator.subschema_for::<AcquirePreArmModeLeaseAction>();
+    let recheck = generator.subschema_for::<RecheckPreArmCancellationFinalizationAction>();
+    let apply = generator.subschema_for::<ApplyPreArmCancellationSelectiveUpdateAction>();
+    let persist = generator.subschema_for::<PersistPreArmSupportCancellationAction>();
+    let release_mode = generator.subschema_for::<ReleasePreArmModeLeaseAction>();
+    let release_root = generator.subschema_for::<ReleasePreArmRootGuardAction>();
+    let finish = generator.subschema_for::<FinishPreArmCancellationRecoveryAction>();
+
+    let mut variants = Vec::with_capacity(64);
+    for mask in 0_u8..64 {
+        let mut items = Vec::with_capacity(8);
+        if mask & 1 != 0 {
+            items.push(acquire_root.clone());
+        }
+        if mask & 2 != 0 {
+            items.push(acquire_mode.clone());
+        }
+        items.push(recheck.clone());
+        if mask & 4 != 0 {
+            items.push(apply.clone());
+        }
+        if mask & 8 != 0 {
+            items.push(persist.clone());
+        }
+        if mask & 16 != 0 {
+            items.push(release_mode.clone());
+        }
+        if mask & 32 != 0 {
+            items.push(release_root.clone());
+        }
+        items.push(finish.clone());
+        variants.push(exact_action_array_schema(items));
+    }
+    one_of_schema(variants)
+}
+
+macro_rules! recovery_plan_action_wrapper {
+    ($name:ident, |$actions:ident| $validate:block, |$generator:ident| $schema:block) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        #[serde(transparent)]
+        struct $name(RecoveryPlanActions);
+
+        impl $name {
+            fn from_actions(actions: Vec<RecoveryAction>) -> Result<Self, RecoveryContractError> {
+                let actions = RecoveryPlanActions::new(actions)?;
+                let $actions = actions.as_slice();
+                ($validate)?;
+                Ok(Self(actions))
+            }
+
+            fn as_slice(&self) -> &[RecoveryAction] {
+                self.0.as_slice()
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema($generator: &mut SchemaGenerator) -> Schema $schema
+        }
+    };
+}
+
+recovery_plan_action_wrapper!(
+    TaskConfigurationRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::TaskConfiguration,
+            RecoveryEffectClass::Rollback,
+            actions,
+        )
+    },
+    |generator| {
+        one_of_schema(vec![
+            exact_action_array_schema(vec![
+                generator.subschema_for::<RestoreTaskCheckpointAction>()
+            ]),
+            exact_action_array_schema(
+                vec![generator.subschema_for::<RecreateTaskInfobaseAction>()],
+            ),
+            exact_action_array_schema(vec![
+                generator.subschema_for::<VerifyTaskFingerprintAction>()
+            ]),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    RepositoryLocksRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::RepositoryLocks,
+            RecoveryEffectClass::Compensate,
+            actions,
+        )
+    },
+    |generator| {
+        exact_action_array_schema(vec![generator.subschema_for::<ReleaseOwnedLocksAction>()])
+    }
+);
+recovery_plan_action_wrapper!(
+    OriginalConfigurationRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::OriginalConfiguration,
+            RecoveryEffectClass::Rollback,
+            actions,
+        )
+    },
+    |generator| {
+        one_of_schema(vec![
+            exact_action_array_schema(vec![generator.subschema_for::<RestoreOriginalAction>()]),
+            exact_action_array_schema(vec![
+                generator.subschema_for::<RestoreOriginalAction>(),
+                generator.subschema_for::<ReleaseOwnedLocksAction>(),
+            ]),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    RepositoryCommitObserveRecoveryActions,
+    |actions| {
+        matches!(
+            actions,
+            [RecoveryAction(RecoveryActionKindWire::ObserveCommit(_))]
+        )
+        .then_some(())
+        .ok_or(RecoveryContractError(
+            "repository commit observation wrapper requires observeCommit",
+        ))
+    },
+    |generator| {
+        exact_action_array_schema(vec![generator.subschema_for::<ObserveCommitAction>()])
+    }
+);
+recovery_plan_action_wrapper!(
+    RepositoryCommitCommittedRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::RepositoryCommit,
+            RecoveryEffectClass::ReconcileOnly,
+            actions,
+        )
+    },
+    |generator| {
+        one_of_schema(vec![
+            exact_action_array_schema(Vec::new()),
+            exact_action_array_schema(vec![generator.subschema_for::<ReleaseOwnedLocksAction>()]),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    RepositoryCommitNotCommittedRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::RepositoryCommit,
+            RecoveryEffectClass::Rollback,
+            actions,
+        )
+    },
+    |generator| {
+        exact_action_array_schema(vec![
+            generator.subschema_for::<RestoreOriginalAction>(),
+            generator.subschema_for::<ReleaseOwnedLocksAction>(),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    SupportPrerequisiteRecoveryActions,
+    |actions| { validate_support_recovery_action_shape(actions) },
+    |generator| {
+        ordered_terminal_action_array_schema(
+            generator.subschema_for::<ObserveSupportPrerequisiteHistoryAction>(),
+            vec![
+                generator.subschema_for::<AwaitExternalSupportCorrectionAction>(),
+                generator.subschema_for::<AwaitExternalLockReleaseAction>(),
+                generator.subschema_for::<AwaitManualWorkingInfobaseClosureAction>(),
+                generator.subschema_for::<AwaitReservedOriginalClosureAction>(),
+                generator.subschema_for::<AwaitExternalSupportConflictResolutionAction>(),
+                generator.subschema_for::<AwaitSupportRecoveryEvidenceAction>(),
+                generator.subschema_for::<ObserveWorkingInfobaseLeaseAction>(),
+                generator.subschema_for::<ReleaseWorkingInfobaseLeaseAction>(),
+                generator.subschema_for::<ObserveReservedOriginalLeaseAction>(),
+                generator.subschema_for::<ReleaseReservedOriginalLeaseAction>(),
+                generator.subschema_for::<UpdateOriginalSelectedTargetsAction>(),
+            ],
+            generator.subschema_for::<FinalizeSupportPrerequisiteRecoveryAction>(),
+            2,
+        )
+    }
+);
+recovery_plan_action_wrapper!(
+    PreArmObserveRecoveryActions,
+    |actions| {
+        matches!(
+            actions,
+            [RecoveryAction(
+                RecoveryActionKindWire::ObservePreArmCancellationOutcome(_)
+            )]
+        )
+        .then_some(())
+        .ok_or(RecoveryContractError(
+            "pre-arm observation wrapper requires its single observation action",
+        ))
+    },
+    |generator| {
+        exact_action_array_schema(vec![
+            generator.subschema_for::<ObservePreArmCancellationOutcomeAction>()
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    PreArmFinalizeRecoveryActions,
+    |actions| { validate_prearm_finalize_action_shape(actions) },
+    |generator| { prearm_finalize_action_array_schema(generator) }
+);
+recovery_plan_action_wrapper!(
+    ManualWorkingInfobaseLeaseRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::ManualWorkingInfobaseLease,
+            RecoveryEffectClass::ReconcileOnly,
+            actions,
+        )
+    },
+    |generator| {
+        one_of_schema(vec![
+            exact_action_array_schema(vec![
+                generator.subschema_for::<ObserveWorkingInfobaseLeaseAction>()
+            ]),
+            exact_action_array_schema(vec![
+                generator.subschema_for::<ObserveWorkingInfobaseLeaseAction>(),
+                generator.subschema_for::<ReleaseWorkingInfobaseLeaseAction>(),
+            ]),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    ArtifactRecoveryActions,
+    |actions| {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::Artifact,
+            RecoveryEffectClass::Quarantine,
+            actions,
+        )
+    },
+    |generator| {
+        one_of_schema(vec![
+            exact_action_array_schema(vec![generator.subschema_for::<QuarantineArtifactAction>()]),
+            exact_action_array_schema(vec![generator.subschema_for::<ResumeQuarantineAction>()]),
+        ])
+    }
+);
+recovery_plan_action_wrapper!(
+    ArchiveRecoveryActions,
+    |actions| { validate_archive_action_grammar(actions) },
+    |generator| {
+        ordered_terminal_action_array_schema(
+            generator.subschema_for::<ObserveArchiveStagingAction>(),
+            vec![
+                generator.subschema_for::<ObserveRetentionLeaseAction>(),
+                generator.subschema_for::<ReleaseRetentionLeaseAction>(),
+            ],
+            generator.subschema_for::<FinishArchiveAction>(),
+            2,
+        )
+    }
+);
+recovery_plan_action_wrapper!(
+    CleanupRecoveryActions,
+    |actions| { validate_cleanup_action_grammar(actions) },
+    |generator| {
+        ordered_terminal_action_array_schema(
+            generator.subschema_for::<ResumeOwnedTargetQuarantineAction>(),
+            vec![generator.subschema_for::<ResumeOwnedTargetQuarantineAction>()],
+            generator.subschema_for::<FinishCleanupAction>(),
+            2,
+        )
+    }
+);
+
+wire_literal!(TaskConfigurationRecoveryTarget, "taskConfiguration");
+wire_literal!(RepositoryLocksRecoveryTarget, "repositoryLocks");
+wire_literal!(OriginalConfigurationRecoveryTarget, "originalConfiguration");
+wire_literal!(RepositoryCommitRecoveryTarget, "repositoryCommit");
+wire_literal!(SupportPrerequisiteRecoveryTarget, "supportPrerequisite");
+wire_literal!(
+    PreArmSupportCancellationRecoveryTarget,
+    "preArmSupportCancellation"
+);
+wire_literal!(
+    ManualWorkingInfobaseLeaseRecoveryTarget,
+    "manualWorkingInfobaseLease"
+);
+wire_literal!(ArtifactRecoveryTarget, "artifact");
+wire_literal!(ArchiveRecoveryTarget, "archive");
+wire_literal!(CleanupRecoveryTarget, "cleanup");
+wire_literal!(CompensateRecoveryEffectClass, "compensate");
+wire_literal!(RollbackRecoveryEffectClass, "rollback");
+wire_literal!(ReconcileOnlyRecoveryEffectClass, "reconcileOnly");
+wire_literal!(QuarantineRecoveryEffectClass, "quarantine");
+wire_literal!(CleanupRecoveryEffectClass, "cleanup");
+wire_literal!(ObserveOutcomeCommitRecoveryStage, "observeOutcome");
+wire_literal!(CommittedCommitRecoveryStage, "committed");
+wire_literal!(NotCommittedCommitRecoveryStage, "notCommitted");
+wire_literal!(ObserveOutcomePreArmRecoveryStage, "observeOutcome");
+wire_literal!(FinalizePreArmRecoveryStage, "finalize");
+
+/// One exact source-evidence value for one recovery-history partition entry.
+/// NCC is a first-class typed branch because it is legal in the recovery
+/// range but cannot masquerade as a support-prerequisite observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum SupportRecoveryHistoryEvidence {
+    SupportObservation(SupportPrerequisiteVersionObservation),
+    NonConflictingConcurrent(NonConflictingConcurrentEvidence),
+}
+
+impl SupportRecoveryHistoryEvidence {
+    pub(crate) fn repository_version(&self) -> &super::scalars::RepositoryVersion {
+        match self {
+            Self::SupportObservation(value) => value.repository_version(),
+            Self::NonConflictingConcurrent(value) => value.repository_version(),
+        }
+    }
+
+    pub(crate) const fn support_observation(
+        &self,
+    ) -> Option<&SupportPrerequisiteVersionObservation> {
+        match self {
+            Self::SupportObservation(value) => Some(value),
+            Self::NonConflictingConcurrent(_) => None,
+        }
+    }
+
+    pub(crate) const fn non_conflicting_concurrent(
+        &self,
+    ) -> Option<&NonConflictingConcurrentEvidence> {
+        match self {
+            Self::SupportObservation(_) => None,
+            Self::NonConflictingConcurrent(value) => Some(value),
+        }
+    }
+}
+
+impl From<SupportPrerequisiteVersionObservation> for SupportRecoveryHistoryEvidence {
+    fn from(value: SupportPrerequisiteVersionObservation) -> Self {
+        Self::SupportObservation(value)
+    }
+}
+
+impl From<NonConflictingConcurrentEvidence> for SupportRecoveryHistoryEvidence {
+    fn from(value: NonConflictingConcurrentEvidence) -> Self {
+        Self::NonConflictingConcurrent(value)
+    }
+}
+
+impl JsonSchema for SupportRecoveryHistoryEvidence {
+    fn schema_name() -> Cow<'static, str> {
+        "SupportRecoveryHistoryEvidence".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<SupportPrerequisiteVersionObservation>(),
+            generator.subschema_for::<NonConflictingConcurrentEvidence>(),
+        ])
+    }
+}
+
+/// Ordered, bounded version evidence retained by an armed support-recovery
+/// plan. Every value corresponds one-to-one with the partition entry in the
+/// same position; duplicate repository versions are rejected across branches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct SupportRecoveryVersionObservations(Vec<SupportRecoveryHistoryEvidence>);
+
+impl SupportRecoveryVersionObservations {
+    pub(crate) fn new(
+        values: Vec<SupportRecoveryHistoryEvidence>,
+    ) -> Result<Self, RecoveryContractError> {
+        if values.len() > MAX_RECOVERY_ITEMS {
+            return Err(RecoveryContractError(
+                "support recovery version observations exceed the general collection bound",
+            ));
+        }
+        let mut versions = std::collections::BTreeSet::new();
+        if values
+            .iter()
+            .any(|value| !versions.insert(value.repository_version().as_str()))
+        {
+            return Err(RecoveryContractError(
+                "support recovery version observations repeat a repository version",
+            ));
+        }
+        Ok(Self(values))
+    }
+
+    pub(crate) fn as_slice(&self) -> &[SupportRecoveryHistoryEvidence] {
+        &self.0
+    }
+
+    pub(crate) fn digest(&self) -> Result<Sha256Digest, RecoveryContractError> {
+        contract_digest(
+            &SupportRecoveryVersionObservationDigestRecord(self.clone()),
+            "support recovery version-observation digest failed",
+        )
+    }
+}
+
+impl JsonSchema for SupportRecoveryVersionObservations {
+    fn schema_name() -> Cow<'static, str> {
+        "SupportRecoveryVersionObservations".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "array",
+            "items": generator.subschema_for::<SupportRecoveryHistoryEvidence>(),
+            "minItems": 0,
+            "maxItems": MAX_RECOVERY_ITEMS,
+            "uniqueItems": true
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(transparent)]
+pub(crate) struct SupportRecoveryVersionObservationDigestRecord(SupportRecoveryVersionObservations);
+
+impl contract_digest_record_sealed::Sealed for SupportRecoveryVersionObservationDigestRecord {}
+impl ContractDigestRecord for SupportRecoveryVersionObservationDigestRecord {}
+
+macro_rules! recovery_plan_digest_record {
+    ($name:ty) => {
+        impl contract_digest_record_sealed::Sealed for $name {}
+        impl ContractDigestRecord for $name {}
+    };
+}
+
+macro_rules! recovery_plan_leaf {
+    ($name:ident, $record:ty) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $name {
+            #[serde(flatten)]
+            record: $record,
+            recovery_digest: Sha256Digest,
+        }
+
+        impl $name {
+            fn new(record: $record) -> Result<Self, RecoveryContractError> {
+                let recovery_digest = contract_digest(&record, "recovery plan digest failed")?;
+                Ok(Self {
+                    record,
+                    recovery_digest,
+                })
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskConfigurationRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: TaskConfigurationRecoveryTarget,
+    effect_class: RollbackRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: TaskConfigurationRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(TaskConfigurationRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    TaskConfigurationRecoveryPlanStatus,
+    TaskConfigurationRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepositoryLocksRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: RepositoryLocksRecoveryTarget,
+    effect_class: CompensateRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: RepositoryLocksRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(RepositoryLocksRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    RepositoryLocksRecoveryPlanStatus,
+    RepositoryLocksRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OriginalConfigurationRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: OriginalConfigurationRecoveryTarget,
+    effect_class: RollbackRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: OriginalConfigurationRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(OriginalConfigurationRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    OriginalConfigurationRecoveryPlanStatus,
+    OriginalConfigurationRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepositoryCommitObserveRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: RepositoryCommitRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    repository_commit_stage: ObserveOutcomeCommitRecoveryStage,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: RepositoryCommitObserveRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(RepositoryCommitObserveRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    RepositoryCommitObserveRecoveryPlanStatus,
+    RepositoryCommitObserveRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepositoryCommitCommittedRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: RepositoryCommitRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    repository_commit_stage: CommittedCommitRecoveryStage,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: RepositoryCommitCommittedRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(RepositoryCommitCommittedRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    RepositoryCommitCommittedRecoveryPlanStatus,
+    RepositoryCommitCommittedRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepositoryCommitNotCommittedRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: RepositoryCommitRecoveryTarget,
+    effect_class: RollbackRecoveryEffectClass,
+    repository_commit_stage: NotCommittedCommitRecoveryStage,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: RepositoryCommitNotCommittedRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(RepositoryCommitNotCommittedRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    RepositoryCommitNotCommittedRecoveryPlanStatus,
+    RepositoryCommitNotCommittedRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArmedSupportRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: SupportPrerequisiteRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: SupportPrerequisiteRecoveryActions,
+    support_version_observations: SupportRecoveryVersionObservations,
+    support_version_observation_digest: Sha256Digest,
+    support_history_from_cursor: RepositoryHistoryCursor,
+    support_history_through_cursor: RepositoryHistoryCursor,
+    support_history_partition: ValidatedRepositoryHistoryPartition,
+    support_recovery_disposition: SupportRecoveryDisposition,
+    support_late_relevant_result_phase: TaskPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    successful_integration_forbidden: Option<TrueLiteral>,
+    support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_support_recovery_guard_proof: Option<SupportRecoveryGuardProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_working_infobase_closure_plan: Option<ManualWorkingInfobaseClosurePlan>,
+    manual_target_mode: ManualSupportTargetMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required_external_action: Option<SupportRecoveryExternalAction>,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(ArmedSupportRecoveryPlanDigestRecord);
+
+macro_rules! armed_support_exact_actions_schema {
+    ($name:ident $(, $wait:ty)?) => {
+        #[allow(dead_code)]
+        struct $name;
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                let mut items = vec![
+                    generator.subschema_for::<ObserveSupportPrerequisiteHistoryAction>(),
+                ];
+                $(items.push(generator.subschema_for::<$wait>());)?
+                items.push(
+                    generator.subschema_for::<FinalizeSupportPrerequisiteRecoveryAction>(),
+                );
+                exact_action_array_schema(items)
+            }
+        }
+    };
+}
+
+armed_support_exact_actions_schema!(ArmedSupportNoExternalWaitActionsSchema);
+armed_support_exact_actions_schema!(
+    ArmedSupportCorrectionWaitActionsSchema,
+    AwaitExternalSupportCorrectionAction
+);
+armed_support_exact_actions_schema!(
+    ArmedSupportLockReleaseWaitActionsSchema,
+    AwaitExternalLockReleaseAction
+);
+armed_support_exact_actions_schema!(
+    ArmedSupportWorkingInfobaseClosureWaitActionsSchema,
+    AwaitManualWorkingInfobaseClosureAction
+);
+armed_support_exact_actions_schema!(
+    ArmedSupportReservedOriginalClosureWaitActionsSchema,
+    AwaitReservedOriginalClosureAction
+);
+armed_support_exact_actions_schema!(
+    ArmedSupportConflictWaitActionsSchema,
+    AwaitExternalSupportConflictResolutionAction
+);
+armed_support_exact_actions_schema!(
+    ArmedSupportEvidenceWaitActionsSchema,
+    AwaitSupportRecoveryEvidenceAction
+);
+
+#[allow(dead_code)]
+struct ReservedBlockedSupportRecoveryGuardProofSchema;
+
+impl JsonSchema for ReservedBlockedSupportRecoveryGuardProofSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "ReservedBlockedSupportRecoveryGuardProofSchema".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<ReservedBlockedBeforeRootGuardProofSchema>(),
+            generator.subschema_for::<ReservedBlockedAfterPartialGuardProofSchema>(),
+        ])
+    }
+}
+
+#[allow(dead_code)]
+struct SeparateBlockedSupportRecoveryGuardProofSchema;
+
+impl JsonSchema for SeparateBlockedSupportRecoveryGuardProofSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "SeparateBlockedSupportRecoveryGuardProofSchema".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<SeparateBlockedBeforeRootGuardProofSchema>(),
+            generator.subschema_for::<SeparateBlockedAfterPartialGuardProofSchema>(),
+        ])
+    }
+}
+
+macro_rules! reserved_armed_support_schema_branch {
+    ($name:ident, $actions:ty $(, external = $external:ty)? $(, proof = $proof:ty)?) => {
+        #[allow(dead_code)]
+        #[derive(JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $name {
+            prior_operation_id: OperationId,
+            target: SupportPrerequisiteRecoveryTarget,
+            effect_class: ReconcileOnlyRecoveryEffectClass,
+            planned_result_phase: TaskPhase,
+            observations: RecoveryPlanObservations,
+            actions: $actions,
+            support_version_observations: SupportRecoveryVersionObservations,
+            support_version_observation_digest: Sha256Digest,
+            support_history_from_cursor: RepositoryHistoryCursor,
+            support_history_through_cursor: RepositoryHistoryCursor,
+            support_history_partition: ValidatedRepositoryHistoryPartition,
+            support_recovery_disposition: SupportRecoveryDisposition,
+            support_late_relevant_result_phase: TaskPhase,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            successful_integration_forbidden: Option<TrueLiteral>,
+            support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+            $(latest_support_recovery_guard_proof: $proof,)?
+            manual_target_mode: ReservedOriginalModeLiteral,
+            $(required_external_action: $external,)?
+            remaining_unknowns: RecoveryPlanUnknowns,
+            recovery_digest: Sha256Digest,
+        }
+    };
+}
+
+macro_rules! separate_armed_support_schema_branch {
+    ($name:ident, $actions:ty $(, external = $external:ty)? $(, proof = $proof:ty)?) => {
+        #[allow(dead_code)]
+        #[derive(JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $name {
+            prior_operation_id: OperationId,
+            target: SupportPrerequisiteRecoveryTarget,
+            effect_class: ReconcileOnlyRecoveryEffectClass,
+            planned_result_phase: TaskPhase,
+            observations: RecoveryPlanObservations,
+            actions: $actions,
+            support_version_observations: SupportRecoveryVersionObservations,
+            support_version_observation_digest: Sha256Digest,
+            support_history_from_cursor: RepositoryHistoryCursor,
+            support_history_through_cursor: RepositoryHistoryCursor,
+            support_history_partition: ValidatedRepositoryHistoryPartition,
+            support_recovery_disposition: SupportRecoveryDisposition,
+            support_late_relevant_result_phase: TaskPhase,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            successful_integration_forbidden: Option<TrueLiteral>,
+            support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+            $(latest_support_recovery_guard_proof: $proof,)?
+            manual_working_infobase_closure_plan: ManualWorkingInfobaseClosurePlan,
+            manual_target_mode: SeparateWorkingInfobaseModeLiteral,
+            $(required_external_action: $external,)?
+            remaining_unknowns: RecoveryPlanUnknowns,
+            recovery_digest: Sha256Digest,
+        }
+    };
+}
+
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportWithoutExternalWaitStatusSchema,
+    ArmedSupportNoExternalWaitActionsSchema
+);
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportCorrectionWaitStatusSchema,
+    ArmedSupportCorrectionWaitActionsSchema,
+    external = ReservedOriginalSupportCorrectiveInstructionSchema
+);
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportLockReleaseWaitStatusSchema,
+    ArmedSupportLockReleaseWaitActionsSchema,
+    external = ReleaseRepositoryLocksInstruction,
+    proof = ReservedBlockedSupportRecoveryGuardProofSchema
+);
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportClosureWaitStatusSchema,
+    ArmedSupportReservedOriginalClosureWaitActionsSchema,
+    external = CloseReservedOriginalDesignerInstruction,
+    proof = ReservedStoppedAfterCompleteGuardProofSchema
+);
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportConflictWaitStatusSchema,
+    ArmedSupportConflictWaitActionsSchema,
+    external = SupportConflictInstruction
+);
+reserved_armed_support_schema_branch!(
+    ReservedArmedSupportEvidenceWaitStatusSchema,
+    ArmedSupportEvidenceWaitActionsSchema,
+    external = SupportEvidenceInstruction
+);
+
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportWithoutExternalWaitStatusSchema,
+    ArmedSupportNoExternalWaitActionsSchema
+);
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportCorrectionWaitStatusSchema,
+    ArmedSupportCorrectionWaitActionsSchema,
+    external = SeparateWorkingInfobaseSupportCorrectiveInstructionSchema
+);
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportLockReleaseWaitStatusSchema,
+    ArmedSupportLockReleaseWaitActionsSchema,
+    external = ReleaseRepositoryLocksInstruction,
+    proof = SeparateBlockedSupportRecoveryGuardProofSchema
+);
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportClosureWaitStatusSchema,
+    ArmedSupportWorkingInfobaseClosureWaitActionsSchema,
+    external = CleanManualWorkingInfobaseInstruction,
+    proof = SeparateStoppedAfterCompleteGuardProofSchema
+);
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportConflictWaitStatusSchema,
+    ArmedSupportConflictWaitActionsSchema,
+    external = SupportConflictInstruction
+);
+separate_armed_support_schema_branch!(
+    SeparateArmedSupportEvidenceWaitStatusSchema,
+    ArmedSupportEvidenceWaitActionsSchema,
+    external = SupportEvidenceInstruction
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArmedSupportRecoveryPlanStatus {
+    #[serde(flatten)]
+    record: ArmedSupportRecoveryPlanDigestRecord,
+    recovery_digest: Sha256Digest,
+}
+
+impl ArmedSupportRecoveryPlanStatus {
+    fn new(record: ArmedSupportRecoveryPlanDigestRecord) -> Result<Self, RecoveryContractError> {
+        let recovery_digest = contract_digest(&record, "recovery plan digest failed")?;
+        Ok(Self {
+            record,
+            recovery_digest,
+        })
+    }
+}
+
+impl JsonSchema for ArmedSupportRecoveryPlanStatus {
+    fn schema_name() -> Cow<'static, str> {
+        "ArmedSupportRecoveryPlanStatus".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<ReservedArmedSupportWithoutExternalWaitStatusSchema>(),
+            generator.subschema_for::<ReservedArmedSupportCorrectionWaitStatusSchema>(),
+            generator.subschema_for::<ReservedArmedSupportLockReleaseWaitStatusSchema>(),
+            generator.subschema_for::<ReservedArmedSupportClosureWaitStatusSchema>(),
+            generator.subschema_for::<ReservedArmedSupportConflictWaitStatusSchema>(),
+            generator.subschema_for::<ReservedArmedSupportEvidenceWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportWithoutExternalWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportCorrectionWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportLockReleaseWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportClosureWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportConflictWaitStatusSchema>(),
+            generator.subschema_for::<SeparateArmedSupportEvidenceWaitStatusSchema>(),
+        ])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreArmObserveRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: PreArmSupportCancellationRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    pre_arm_cancellation_stage: ObserveOutcomePreArmRecoveryStage,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: PreArmObserveRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(PreArmObserveRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    PreArmObserveRecoveryPlanStatus,
+    PreArmObserveRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreArmFinalizeRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: PreArmSupportCancellationRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    pre_arm_cancellation_stage: FinalizePreArmRecoveryStage,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: PreArmFinalizeRecoveryActions,
+    pre_arm_cancellation_effect_observation: PreArmCancellationEffectObservation,
+    pre_arm_cancellation_finalization_plan: PreArmCancellationFinalizationPlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pre_arm_cancellation_known_blocker: Option<PreArmCancellationKnownBlocker>,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(PreArmFinalizeRecoveryPlanDigestRecord);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreArmFinalizeRecoveryPlanStatus {
+    #[serde(flatten)]
+    record: PreArmFinalizeRecoveryPlanDigestRecord,
+    pre_arm_cancellation_finalization_progress: PreArmCancellationFinalizationAttemptProgress,
+    recovery_digest: Sha256Digest,
+}
+
+impl PreArmFinalizeRecoveryPlanStatus {
+    fn new(
+        record: PreArmFinalizeRecoveryPlanDigestRecord,
+        pre_arm_cancellation_finalization_progress: PreArmCancellationFinalizationAttemptProgress,
+    ) -> Result<Self, RecoveryContractError> {
+        let recovery_digest = contract_digest(&record, "pre-arm recovery plan digest failed")?;
+        Ok(Self {
+            record,
+            pre_arm_cancellation_finalization_progress,
+            recovery_digest,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManualWorkingInfobaseLeaseRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: ManualWorkingInfobaseLeaseRecoveryTarget,
+    effect_class: ReconcileOnlyRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: ManualWorkingInfobaseLeaseRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(ManualWorkingInfobaseLeaseRecoveryPlanDigestRecord);
+recovery_plan_leaf!(
+    ManualWorkingInfobaseLeaseRecoveryPlanStatus,
+    ManualWorkingInfobaseLeaseRecoveryPlanDigestRecord
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArtifactRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: ArtifactRecoveryTarget,
+    effect_class: QuarantineRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: ArtifactRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(ArtifactRecoveryPlanDigestRecord);
+recovery_plan_leaf!(ArtifactRecoveryPlanStatus, ArtifactRecoveryPlanDigestRecord);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArchiveRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: ArchiveRecoveryTarget,
+    effect_class: CleanupRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: ArchiveRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(ArchiveRecoveryPlanDigestRecord);
+recovery_plan_leaf!(ArchiveRecoveryPlanStatus, ArchiveRecoveryPlanDigestRecord);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CleanupRecoveryPlanDigestRecord {
+    prior_operation_id: OperationId,
+    target: CleanupRecoveryTarget,
+    effect_class: CleanupRecoveryEffectClass,
+    planned_result_phase: TaskPhase,
+    observations: RecoveryPlanObservations,
+    actions: CleanupRecoveryActions,
+    remaining_unknowns: RecoveryPlanUnknowns,
+}
+recovery_plan_digest_record!(CleanupRecoveryPlanDigestRecord);
+recovery_plan_leaf!(CleanupRecoveryPlanStatus, CleanupRecoveryPlanDigestRecord);
+
+fn validate_support_recovery_action_shape(
+    actions: &[RecoveryAction],
+) -> Result<(), RecoveryContractError> {
+    let Some((first, remainder)) = actions.split_first() else {
+        return Err(RecoveryContractError("support recovery actions are empty"));
+    };
+    let Some((last, middle)) = remainder.split_last() else {
+        return Err(RecoveryContractError(
+            "support recovery requires history observation and finalization",
+        ));
+    };
+    if !matches!(
+        first,
+        RecoveryAction(RecoveryActionKindWire::ObserveSupportPrerequisiteHistory(_))
+    ) || !matches!(
+        last,
+        RecoveryAction(RecoveryActionKindWire::FinalizeSupportPrerequisiteRecovery(
+            _
+        ))
+    ) {
+        return Err(RecoveryContractError(
+            "support recovery history and finalization are not in their terminal positions",
+        ));
+    }
+
+    let mut seen = [false; 11];
+    let mut previous_rank = 0;
+    let mut external_waits = 0;
+    let mut has_working_infobase_action = false;
+    let mut has_reserved_original_action = false;
+    for action in middle {
+        let (rank, key, is_external_wait, is_working, is_reserved) = match &action.0 {
+            RecoveryActionKindWire::AwaitExternalSupportCorrection(_) => (0, 0, true, false, false),
+            RecoveryActionKindWire::AwaitExternalLockRelease(_) => (0, 1, true, false, false),
+            RecoveryActionKindWire::AwaitExternalSupportConflictResolution(_) => {
+                (0, 2, true, false, false)
+            }
+            RecoveryActionKindWire::AwaitSupportRecoveryEvidence(_) => (0, 3, true, false, false),
+            RecoveryActionKindWire::ObserveWorkingInfobaseLease(_) => (1, 4, false, true, false),
+            RecoveryActionKindWire::ObserveReservedOriginalLease(_) => (1, 5, false, false, true),
+            RecoveryActionKindWire::AwaitManualWorkingInfobaseClosure(_) => {
+                (2, 6, true, true, false)
+            }
+            RecoveryActionKindWire::AwaitReservedOriginalClosure(_) => (2, 7, true, false, true),
+            RecoveryActionKindWire::ReleaseWorkingInfobaseLease(_) => (3, 8, false, true, false),
+            RecoveryActionKindWire::ReleaseReservedOriginalLease(_) => (3, 9, false, false, true),
+            RecoveryActionKindWire::UpdateOriginalSelectedTargets(_) => {
+                (4, 10, false, false, false)
+            }
+            _ => {
+                return Err(RecoveryContractError(
+                    "support recovery contains an action from another target row",
+                ));
+            }
+        };
+        if rank < previous_rank || seen[key] {
+            return Err(RecoveryContractError(
+                "support recovery actions are duplicated or out of canonical order",
+            ));
+        }
+        previous_rank = rank;
+        seen[key] = true;
+        external_waits += usize::from(is_external_wait);
+        has_working_infobase_action |= is_working;
+        has_reserved_original_action |= is_reserved;
+    }
+    if external_waits > 1 {
+        return Err(RecoveryContractError(
+            "support recovery has more than one required external wait",
+        ));
+    }
+    if has_working_infobase_action && has_reserved_original_action {
+        return Err(RecoveryContractError(
+            "support recovery mixes manual target modes",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_prearm_finalize_action_shape(
+    actions: &[RecoveryAction],
+) -> Result<(), RecoveryContractError> {
+    let mut seen = [false; 8];
+    let mut previous_rank = 0;
+    for action in actions {
+        let rank = match &action.0 {
+            RecoveryActionKindWire::AcquirePreArmRootGuard(_) => 0,
+            RecoveryActionKindWire::AcquirePreArmModeLease(_) => 1,
+            RecoveryActionKindWire::RecheckPreArmCancellationFinalization(_) => 2,
+            RecoveryActionKindWire::ApplyPreArmCancellationSelectiveUpdate(_) => 3,
+            RecoveryActionKindWire::PersistPreArmSupportCancellation(_) => 4,
+            RecoveryActionKindWire::ReleasePreArmModeLease(_) => 5,
+            RecoveryActionKindWire::ReleasePreArmRootGuard(_) => 6,
+            RecoveryActionKindWire::FinishPreArmCancellationRecovery(_) => 7,
+            _ => {
+                return Err(RecoveryContractError(
+                    "pre-arm finalization contains an action from another target row",
+                ));
+            }
+        };
+        if rank < previous_rank || seen[rank] {
+            return Err(RecoveryContractError(
+                "pre-arm finalization actions are duplicated or out of canonical order",
+            ));
+        }
+        previous_rank = rank;
+        seen[rank] = true;
+    }
+    if !seen[2]
+        || !seen[7]
+        || !matches!(
+            actions.last(),
+            Some(RecoveryAction(
+                RecoveryActionKindWire::FinishPreArmCancellationRecovery(_)
+            ))
+        )
+    {
+        return Err(RecoveryContractError(
+            "pre-arm finalization requires one recheck and one final action last",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_support_recovery_action_grammar(
+    actions: &[RecoveryAction],
+    mode: ManualSupportTargetMode,
+    disposition: SupportRecoveryDisposition,
+    finalization_plan_digest: &Sha256Digest,
+) -> Result<(), RecoveryContractError> {
+    validate_support_recovery_action_shape(actions)?;
+    let Some((first, remainder)) = actions.split_first() else {
+        return Err(RecoveryContractError("support recovery actions are empty"));
+    };
+    let Some((last, middle)) = remainder.split_last() else {
+        return Err(RecoveryContractError(
+            "support recovery requires history observation and finalization",
+        ));
+    };
+    let RecoveryAction(RecoveryActionKindWire::ObserveSupportPrerequisiteHistory(history)) = first
+    else {
+        return Err(RecoveryContractError(
+            "support recovery must observe its history first",
+        ));
+    };
+    let RecoveryAction(RecoveryActionKindWire::FinalizeSupportPrerequisiteRecovery(finalize)) =
+        last
+    else {
+        return Err(RecoveryContractError(
+            "support recovery must finalize exactly once and last",
+        ));
+    };
+    let expected_outcome = match disposition {
+        SupportRecoveryDisposition::RestoreThenReauthorize
+        | SupportRecoveryDisposition::PreserveExternalAndReauthorize => {
+            FinalizeSupportAuthorizationOutcome::Cancelled
+        }
+        SupportRecoveryDisposition::RestoreThenAbandon => {
+            FinalizeSupportAuthorizationOutcome::AbandonmentFinalized
+        }
+    };
+    if history.support_action_id != finalize.support_action_id
+        || &finalize.finalization_plan_digest != finalization_plan_digest
+        || finalize.authorization_outcome != expected_outcome
+    {
+        return Err(RecoveryContractError(
+            "support recovery finalization does not bind its history, plan, or disposition",
+        ));
+    }
+
+    for action in middle {
+        let legal = matches!(
+            (&action.0, mode),
+            (
+                RecoveryActionKindWire::ObserveWorkingInfobaseLease(_)
+                    | RecoveryActionKindWire::ReleaseWorkingInfobaseLease(_)
+                    | RecoveryActionKindWire::AwaitManualWorkingInfobaseClosure(_),
+                ManualSupportTargetMode::SeparateWorkingInfobase,
+            ) | (
+                RecoveryActionKindWire::ObserveReservedOriginalLease(_)
+                    | RecoveryActionKindWire::ReleaseReservedOriginalLease(_)
+                    | RecoveryActionKindWire::AwaitReservedOriginalClosure(_),
+                ManualSupportTargetMode::ReservedOriginal,
+            ) | (
+                RecoveryActionKindWire::AwaitExternalSupportCorrection(_)
+                    | RecoveryActionKindWire::AwaitExternalLockRelease(_)
+                    | RecoveryActionKindWire::AwaitExternalSupportConflictResolution(_)
+                    | RecoveryActionKindWire::AwaitSupportRecoveryEvidence(_)
+                    | RecoveryActionKindWire::UpdateOriginalSelectedTargets(_),
+                _,
+            )
+        );
+        if !legal {
+            return Err(RecoveryContractError(
+                "support recovery action is illegal for its manual target mode",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_prearm_observe_action_grammar(
+    prior_operation_id: &OperationId,
+    actions: &[RecoveryAction],
+) -> Result<(), RecoveryContractError> {
+    let [RecoveryAction(RecoveryActionKindWire::ObservePreArmCancellationOutcome(action))] =
+        actions
+    else {
+        return Err(RecoveryContractError(
+            "pre-arm observation stage requires exactly its outcome observation action",
+        ));
+    };
+    if &action.prior_operation_id != prior_operation_id {
+        return Err(RecoveryContractError(
+            "pre-arm outcome observation belongs to another operation",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_prearm_finalize_action_grammar(
+    observation: &PreArmCancellationEffectObservation,
+    plan: &PreArmCancellationFinalizationPlan,
+    progress: &PreArmCancellationFinalizationAttemptProgress,
+    actions: &[RecoveryAction],
+) -> Result<(), RecoveryContractError> {
+    validate_prearm_finalize_action_shape(actions)?;
+    if observation.prior_operation_id() != plan.prior_operation_id()
+        || observation.support_action_id() != plan.support_action_id()
+        || observation.expected_support_action_digest() != plan.expected_support_action_digest()
+        || observation.approved_cancellation_digest() != plan.approved_cancellation_digest()
+        || observation.observation_digest() != plan.effect_observation_digest()
+        || progress.finalization_attempt_id() != plan.finalization_attempt_id()
+    {
+        return Err(RecoveryContractError(
+            "pre-arm finalization observation, plan, and progress bindings disagree",
+        ));
+    }
+
+    let success_path = plan
+        .execution_path_plan()
+        .paths()
+        .iter()
+        .find(|path| path.path_kind() == PreArmCancellationFinalizationExecutionPathKind::Success)
+        .ok_or(RecoveryContractError(
+            "pre-arm finalization plan lacks its success path",
+        ))?;
+    if success_path.action_ids().len() != actions.len()
+        || success_path
+            .action_ids()
+            .iter()
+            .zip(actions)
+            .any(|(expected, action)| expected != action.action_id())
+    {
+        return Err(RecoveryContractError(
+            "pre-arm recovery actions do not equal the finalization success catalog",
+        ));
+    }
+    for action in actions {
+        let encoded = serde_json::to_value(action)
+            .map_err(|_| RecoveryContractError("pre-arm action serialization failed"))?;
+        if encoded
+            .get("finalizationAttemptId")
+            .is_some_and(|value| value != plan.finalization_attempt_id().as_str())
+            || encoded
+                .get("finalizationPlanDigest")
+                .is_some_and(|value| value != plan.finalization_plan_digest().as_str())
+        {
+            return Err(RecoveryContractError(
+                "pre-arm recovery action belongs to another finalization plan",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum RecoveryPlanStatusKind {
+    TaskConfiguration(TaskConfigurationRecoveryPlanStatus),
+    RepositoryLocks(RepositoryLocksRecoveryPlanStatus),
+    OriginalConfiguration(OriginalConfigurationRecoveryPlanStatus),
+    RepositoryCommitObserve(RepositoryCommitObserveRecoveryPlanStatus),
+    RepositoryCommitCommitted(RepositoryCommitCommittedRecoveryPlanStatus),
+    RepositoryCommitNotCommitted(RepositoryCommitNotCommittedRecoveryPlanStatus),
+    SupportPrerequisite(Box<ArmedSupportRecoveryPlanStatus>),
+    PreArmObserve(PreArmObserveRecoveryPlanStatus),
+    PreArmFinalize(Box<PreArmFinalizeRecoveryPlanStatus>),
+    ManualWorkingInfobaseLease(ManualWorkingInfobaseLeaseRecoveryPlanStatus),
+    Artifact(ArtifactRecoveryPlanStatus),
+    Archive(ArchiveRecoveryPlanStatus),
+    Cleanup(CleanupRecoveryPlanStatus),
+}
+
+/// Complete current recovery authority. It is a physical target/effect/stage
+/// union and deliberately has no `Deserialize` or raw-field constructor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct RecoveryPlanStatus(RecoveryPlanStatusKind);
+
+/// Exact cleanup finalization lineage retained by an archived-cleanup status.
+/// Callers cannot manufacture it independently of a validated cleanup plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CleanupRecoveryBinding<'a> {
+    archive_id: &'a UnicaId,
+    planned_result_phase: TaskPhase,
+}
+
+impl CleanupRecoveryBinding<'_> {
+    pub(crate) const fn archive_id(&self) -> &UnicaId {
+        self.archive_id
+    }
+
+    pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
+        self.planned_result_phase
+    }
+}
+
+impl JsonSchema for RecoveryPlanStatus {
+    fn schema_name() -> Cow<'static, str> {
+        "RecoveryPlanStatus".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<TaskConfigurationRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryLocksRecoveryPlanStatus>(),
+            generator.subschema_for::<OriginalConfigurationRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitObserveRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitCommittedRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitNotCommittedRecoveryPlanStatus>(),
+            generator.subschema_for::<ArmedSupportRecoveryPlanStatus>(),
+            generator.subschema_for::<PreArmObserveRecoveryPlanStatus>(),
+            generator.subschema_for::<PreArmFinalizeRecoveryPlanStatus>(),
+            generator.subschema_for::<ManualWorkingInfobaseLeaseRecoveryPlanStatus>(),
+            generator.subschema_for::<ArtifactRecoveryPlanStatus>(),
+            generator.subschema_for::<ArchiveRecoveryPlanStatus>(),
+            generator.subschema_for::<CleanupRecoveryPlanStatus>(),
+        ])
+    }
+}
+
+/// Schema-only recovery context for an effect that happened before a task
+/// workspace became durable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreWorkspaceRecoveryPlanStatusSchema;
+
+impl JsonSchema for PreWorkspaceRecoveryPlanStatusSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "PreWorkspaceRecoveryPlanStatus".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<TaskConfigurationRecoveryPlanStatus>(),
+            generator.subschema_for::<ArtifactRecoveryPlanStatus>(),
+        ])
+    }
+}
+
+/// Schema-only recovery context while the task workspace still exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceRecoveryPlanStatusSchema;
+
+impl JsonSchema for WorkspaceRecoveryPlanStatusSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "WorkspaceRecoveryPlanStatus".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        one_of_schema(vec![
+            generator.subschema_for::<TaskConfigurationRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryLocksRecoveryPlanStatus>(),
+            generator.subschema_for::<OriginalConfigurationRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitObserveRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitCommittedRecoveryPlanStatus>(),
+            generator.subschema_for::<RepositoryCommitNotCommittedRecoveryPlanStatus>(),
+            generator.subschema_for::<ArmedSupportRecoveryPlanStatus>(),
+            generator.subschema_for::<PreArmObserveRecoveryPlanStatus>(),
+            generator.subschema_for::<PreArmFinalizeRecoveryPlanStatus>(),
+            generator.subschema_for::<ManualWorkingInfobaseLeaseRecoveryPlanStatus>(),
+            generator.subschema_for::<ArtifactRecoveryPlanStatus>(),
+            generator.subschema_for::<ArchiveRecoveryPlanStatus>(),
+        ])
+    }
+}
+
+/// Schema-only recovery context after archive completion and before cleanup
+/// completion. No target other than cleanup is legal here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchivedCleanupRecoveryPlanStatusSchema;
+
+impl JsonSchema for ArchivedCleanupRecoveryPlanStatusSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "ArchivedCleanupRecoveryPlanStatus".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<CleanupRecoveryPlanStatus>()
+    }
+}
+
+impl RecoveryPlanStatus {
+    #[cfg(test)]
+    pub(crate) fn task_configuration_fixture_test_only(
+        prior_operation_id: OperationId,
+    ) -> Result<Self, RecoveryContractError> {
+        let fingerprint =
+            Sha256Digest::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .map_err(|_| RecoveryContractError("test fingerprint is invalid"))?;
+        let action_id = UnicaId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            .map_err(|_| RecoveryContractError("test action ID is invalid"))?;
+        let (expected_observations, expected_postcondition_digest) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::TaskFingerprint,
+                RecoverySubjectRef::registered(action_id.clone()),
+                fingerprint.clone(),
+            )])?;
+        let action =
+            RecoveryAction::from_record(RecoveryActionDigestRecordKind::VerifyTaskFingerprint(
+                VerifyTaskFingerprintActionDigestRecord {
+                    action_kind: VerifyTaskFingerprintActionKind::Value,
+                    action_id,
+                    expected_task_fingerprint: fingerprint,
+                    expected_observations,
+                    expected_postcondition_digest,
+                },
+            ))?;
+        Self::task_configuration_test_only(
+            prior_operation_id,
+            TaskPhase::LocalVerified,
+            Vec::new(),
+            vec![action],
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_fixture_test_only(
+        prior_operation_id: OperationId,
+        archive_id: UnicaId,
+        owned_target: OwnedTargetLocator,
+        planned_result_phase: TaskPhase,
+    ) -> Result<Self, RecoveryContractError> {
+        let quarantine_id = UnicaId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+            .map_err(|_| RecoveryContractError("test quarantine ID is invalid"))?;
+        let expected_quarantined_digest =
+            expected_quarantined_owned_target_digest(&owned_target, &quarantine_id)?;
+        let resume_observation = RecoveryExpectedObservation::new(
+            RecoveryObservationKind::QuarantinePresence,
+            RecoverySubjectRef::owned_role(owned_target.clone()),
+            expected_quarantined_digest.clone(),
+        );
+        let (resume_observations, resume_postcondition) =
+            expected_postcondition(vec![resume_observation])?;
+        let resume = RecoveryAction::from_record(
+            RecoveryActionDigestRecordKind::ResumeOwnedTargetQuarantine(
+                ResumeOwnedTargetQuarantineActionDigestRecord {
+                    action_kind: ResumeOwnedTargetQuarantineActionKind::Value,
+                    action_id: UnicaId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                        .map_err(|_| RecoveryContractError("test action ID is invalid"))?,
+                    owned_target: owned_target.clone(),
+                    quarantine_id,
+                    expected_quarantined_digest,
+                    expected_observations: resume_observations,
+                    expected_postcondition_digest: resume_postcondition,
+                },
+            ),
+        )?;
+        let finish_action_id = UnicaId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            .map_err(|_| RecoveryContractError("test action ID is invalid"))?;
+        let expected_absent_digest =
+            expected_absent_owned_target_digest(&archive_id, &finish_action_id, &owned_target)?;
+        let finish_observation = RecoveryExpectedObservation::new(
+            RecoveryObservationKind::OwnedTargetAbsence,
+            RecoverySubjectRef::owned_role(owned_target.clone()),
+            expected_absent_digest,
+        );
+        let (finish_observations, finish_postcondition) =
+            expected_postcondition(vec![finish_observation])?;
+        let finish = RecoveryAction::from_record(RecoveryActionDigestRecordKind::FinishCleanup(
+            FinishCleanupActionDigestRecord {
+                action_kind: FinishCleanupActionKind::Value,
+                action_id: finish_action_id,
+                archive_id,
+                owned_targets: RecoveryOwnedTargets::new(vec![owned_target])?,
+                expected_all_absent: TrueLiteral,
+                expected_observations: finish_observations,
+                expected_postcondition_digest: finish_postcondition,
+            },
+        ))?;
+        let (observations, remaining_unknowns) = validated_plan_observations(Vec::new())?;
+        let actions = CleanupRecoveryActions::from_actions(vec![resume, finish])?;
+        Ok(Self(RecoveryPlanStatusKind::Cleanup(
+            CleanupRecoveryPlanStatus::new(CleanupRecoveryPlanDigestRecord {
+                prior_operation_id,
+                target: CleanupRecoveryTarget::Value,
+                effect_class: CleanupRecoveryEffectClass::Value,
+                planned_result_phase,
+                observations,
+                actions,
+                remaining_unknowns,
+            })?,
+        )))
+    }
+
+    #[cfg(test)]
+    fn task_configuration_test_only(
+        prior_operation_id: OperationId,
+        planned_result_phase: TaskPhase,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::TaskConfiguration,
+            RecoveryEffectClass::Rollback,
+            &actions,
+        )?;
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = TaskConfigurationRecoveryActions::from_actions(actions)?;
+        Ok(Self(RecoveryPlanStatusKind::TaskConfiguration(
+            TaskConfigurationRecoveryPlanStatus::new(TaskConfigurationRecoveryPlanDigestRecord {
+                prior_operation_id,
+                target: TaskConfigurationRecoveryTarget::Value,
+                effect_class: RollbackRecoveryEffectClass::Value,
+                planned_result_phase,
+                observations,
+                actions,
+                remaining_unknowns,
+            })?,
+        )))
+    }
+
+    #[cfg(test)]
+    fn repository_commit_observe_test_only(
+        prior_operation_id: OperationId,
+        planned_result_phase: TaskPhase,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        if !matches!(
+            actions.as_slice(),
+            [RecoveryAction(RecoveryActionKindWire::ObserveCommit(_))]
+        ) {
+            return Err(RecoveryContractError(
+                "repository commit observe stage requires exactly observeCommit",
+            ));
+        }
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = RepositoryCommitObserveRecoveryActions::from_actions(actions)?;
+        Ok(Self(RecoveryPlanStatusKind::RepositoryCommitObserve(
+            RepositoryCommitObserveRecoveryPlanStatus::new(
+                RepositoryCommitObserveRecoveryPlanDigestRecord {
+                    prior_operation_id,
+                    target: RepositoryCommitRecoveryTarget::Value,
+                    effect_class: ReconcileOnlyRecoveryEffectClass::Value,
+                    repository_commit_stage: ObserveOutcomeCommitRecoveryStage::Value,
+                    planned_result_phase,
+                    observations,
+                    actions,
+                    remaining_unknowns,
+                },
+            )?,
+        )))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn repository_commit_committed_test_only(
+        prior_operation_id: OperationId,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::RepositoryCommit,
+            RecoveryEffectClass::ReconcileOnly,
+            &actions,
+        )?;
+        if !matches!(
+            actions.as_slice(),
+            [] | [RecoveryAction(RecoveryActionKindWire::ReleaseOwnedLocks(_))]
+        ) {
+            return Err(RecoveryContractError(
+                "committed recovery branch is release-only",
+            ));
+        }
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = RepositoryCommitCommittedRecoveryActions::from_actions(actions)?;
+        Ok(Self(RecoveryPlanStatusKind::RepositoryCommitCommitted(
+            RepositoryCommitCommittedRecoveryPlanStatus::new(
+                RepositoryCommitCommittedRecoveryPlanDigestRecord {
+                    prior_operation_id,
+                    target: RepositoryCommitRecoveryTarget::Value,
+                    effect_class: ReconcileOnlyRecoveryEffectClass::Value,
+                    repository_commit_stage: CommittedCommitRecoveryStage::Value,
+                    planned_result_phase: TaskPhase::CommittedAndUnlocked,
+                    observations,
+                    actions,
+                    remaining_unknowns,
+                },
+            )?,
+        )))
+    }
+
+    #[cfg(test)]
+    fn repository_commit_not_committed_test_only(
+        prior_operation_id: OperationId,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        validate_target_effect_action_grammar(
+            RecoveryTarget::RepositoryCommit,
+            RecoveryEffectClass::Rollback,
+            &actions,
+        )?;
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = RepositoryCommitNotCommittedRecoveryActions::from_actions(actions)?;
+        Ok(Self(RecoveryPlanStatusKind::RepositoryCommitNotCommitted(
+            RepositoryCommitNotCommittedRecoveryPlanStatus::new(
+                RepositoryCommitNotCommittedRecoveryPlanDigestRecord {
+                    prior_operation_id,
+                    target: RepositoryCommitRecoveryTarget::Value,
+                    effect_class: RollbackRecoveryEffectClass::Value,
+                    repository_commit_stage: NotCommittedCommitRecoveryStage::Value,
+                    planned_result_phase: TaskPhase::Synchronized,
+                    observations,
+                    actions,
+                    remaining_unknowns,
+                },
+            )?,
+        )))
+    }
+
+    #[cfg(test)]
+    fn prearm_observe_test_only(
+        prior_operation_id: OperationId,
+        planned_result_phase: TaskPhase,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        validate_prearm_observe_action_grammar(&prior_operation_id, &actions)?;
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = PreArmObserveRecoveryActions::from_actions(actions)?;
+        Ok(Self(RecoveryPlanStatusKind::PreArmObserve(
+            PreArmObserveRecoveryPlanStatus::new(PreArmObserveRecoveryPlanDigestRecord {
+                prior_operation_id,
+                target: PreArmSupportCancellationRecoveryTarget::Value,
+                effect_class: ReconcileOnlyRecoveryEffectClass::Value,
+                pre_arm_cancellation_stage: ObserveOutcomePreArmRecoveryStage::Value,
+                planned_result_phase,
+                observations,
+                actions,
+                remaining_unknowns,
+            })?,
+        )))
+    }
+
+    #[cfg(test)]
+    fn prearm_finalize_test_only(
+        observation: PreArmCancellationEffectObservation,
+        plan: PreArmCancellationFinalizationPlan,
+        progress: PreArmCancellationFinalizationAttemptProgress,
+        known_blocker: Option<PreArmCancellationKnownBlocker>,
+        observations: Vec<RecoveryObservation>,
+        actions: Vec<RecoveryAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        validate_prearm_finalize_action_grammar(&observation, &plan, &progress, &actions)?;
+        let (observations, remaining_unknowns) = validated_plan_observations(observations)?;
+        let actions = PreArmFinalizeRecoveryActions::from_actions(actions)?;
+        let planned_result_phase = plan.planned_result_phase();
+        let prior_operation_id = observation.prior_operation_id().clone();
+        Ok(Self(RecoveryPlanStatusKind::PreArmFinalize(Box::new(
+            PreArmFinalizeRecoveryPlanStatus::new(
+                PreArmFinalizeRecoveryPlanDigestRecord {
+                    prior_operation_id,
+                    target: PreArmSupportCancellationRecoveryTarget::Value,
+                    effect_class: ReconcileOnlyRecoveryEffectClass::Value,
+                    pre_arm_cancellation_stage: FinalizePreArmRecoveryStage::Value,
+                    planned_result_phase,
+                    observations,
+                    actions,
+                    pre_arm_cancellation_effect_observation: observation,
+                    pre_arm_cancellation_finalization_plan: plan,
+                    pre_arm_cancellation_known_blocker: known_blocker,
+                    remaining_unknowns,
+                },
+                progress,
+            )?,
+        ))))
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> &Sha256Digest {
+        match &self.0 {
+            RecoveryPlanStatusKind::TaskConfiguration(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::RepositoryLocks(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::OriginalConfiguration(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::RepositoryCommitObserve(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::RepositoryCommitCommitted(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::RepositoryCommitNotCommitted(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::SupportPrerequisite(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::PreArmObserve(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::PreArmFinalize(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::ManualWorkingInfobaseLease(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::Artifact(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::Archive(value) => &value.recovery_digest,
+            RecoveryPlanStatusKind::Cleanup(value) => &value.recovery_digest,
+        }
+    }
+
+    pub(crate) const fn prior_operation_id(&self) -> &OperationId {
+        match &self.0 {
+            RecoveryPlanStatusKind::TaskConfiguration(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::RepositoryLocks(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::OriginalConfiguration(value) => {
+                &value.record.prior_operation_id
+            }
+            RecoveryPlanStatusKind::RepositoryCommitObserve(value) => {
+                &value.record.prior_operation_id
+            }
+            RecoveryPlanStatusKind::RepositoryCommitCommitted(value) => {
+                &value.record.prior_operation_id
+            }
+            RecoveryPlanStatusKind::RepositoryCommitNotCommitted(value) => {
+                &value.record.prior_operation_id
+            }
+            RecoveryPlanStatusKind::SupportPrerequisite(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::PreArmObserve(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::PreArmFinalize(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::ManualWorkingInfobaseLease(value) => {
+                &value.record.prior_operation_id
+            }
+            RecoveryPlanStatusKind::Artifact(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::Archive(value) => &value.record.prior_operation_id,
+            RecoveryPlanStatusKind::Cleanup(value) => &value.record.prior_operation_id,
+        }
+    }
+
+    pub(crate) const fn target(&self) -> RecoveryTarget {
+        match &self.0 {
+            RecoveryPlanStatusKind::TaskConfiguration(_) => RecoveryTarget::TaskConfiguration,
+            RecoveryPlanStatusKind::RepositoryLocks(_) => RecoveryTarget::RepositoryLocks,
+            RecoveryPlanStatusKind::OriginalConfiguration(_) => {
+                RecoveryTarget::OriginalConfiguration
+            }
+            RecoveryPlanStatusKind::RepositoryCommitObserve(_)
+            | RecoveryPlanStatusKind::RepositoryCommitCommitted(_)
+            | RecoveryPlanStatusKind::RepositoryCommitNotCommitted(_) => {
+                RecoveryTarget::RepositoryCommit
+            }
+            RecoveryPlanStatusKind::SupportPrerequisite(_) => RecoveryTarget::SupportPrerequisite,
+            RecoveryPlanStatusKind::PreArmObserve(_)
+            | RecoveryPlanStatusKind::PreArmFinalize(_) => {
+                RecoveryTarget::PreArmSupportCancellation
+            }
+            RecoveryPlanStatusKind::ManualWorkingInfobaseLease(_) => {
+                RecoveryTarget::ManualWorkingInfobaseLease
+            }
+            RecoveryPlanStatusKind::Artifact(_) => RecoveryTarget::Artifact,
+            RecoveryPlanStatusKind::Archive(_) => RecoveryTarget::Archive,
+            RecoveryPlanStatusKind::Cleanup(_) => RecoveryTarget::Cleanup,
+        }
+    }
+
+    pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
+        match &self.0 {
+            RecoveryPlanStatusKind::TaskConfiguration(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::RepositoryLocks(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::OriginalConfiguration(value) => {
+                value.record.planned_result_phase
+            }
+            RecoveryPlanStatusKind::RepositoryCommitObserve(value) => {
+                value.record.planned_result_phase
+            }
+            RecoveryPlanStatusKind::RepositoryCommitCommitted(value) => {
+                value.record.planned_result_phase
+            }
+            RecoveryPlanStatusKind::RepositoryCommitNotCommitted(value) => {
+                value.record.planned_result_phase
+            }
+            RecoveryPlanStatusKind::SupportPrerequisite(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::PreArmObserve(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::PreArmFinalize(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::ManualWorkingInfobaseLease(value) => {
+                value.record.planned_result_phase
+            }
+            RecoveryPlanStatusKind::Artifact(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::Archive(value) => value.record.planned_result_phase,
+            RecoveryPlanStatusKind::Cleanup(value) => value.record.planned_result_phase,
+        }
+    }
+
+    pub(crate) fn cleanup_binding(
+        &self,
+    ) -> Result<CleanupRecoveryBinding<'_>, RecoveryContractError> {
+        let RecoveryPlanStatusKind::Cleanup(value) = &self.0 else {
+            return Err(RecoveryContractError("recovery plan is not a cleanup plan"));
+        };
+        let actions = value.record.actions.as_slice();
+        validate_cleanup_action_grammar(actions)?;
+        let Some(RecoveryAction(RecoveryActionKindWire::FinishCleanup(finish))) = actions.last()
+        else {
+            return Err(RecoveryContractError(
+                "validated cleanup plan has no final cleanup action",
+            ));
+        };
+        Ok(CleanupRecoveryBinding {
+            archive_id: &finish.archive_id,
+            planned_result_phase: value.record.planned_result_phase,
+        })
+    }
+
+    pub(crate) fn armed_support_recovery_projection(
+        &self,
+    ) -> Result<ArmedSupportRecoveryPlanProjection, RecoveryContractError> {
+        let RecoveryPlanStatusKind::SupportPrerequisite(value) = &self.0 else {
+            return Err(RecoveryContractError(
+                "recovery plan is not an armed support-prerequisite plan",
+            ));
+        };
+        Ok(ArmedSupportRecoveryPlanProjection::from_status(
+            value.as_ref().clone(),
+        ))
+    }
+}
+
+/// Opaque owned projection consumed by the sole support-recovery approval and
+/// execution authority. Its fields remain private so no caller can splice a
+/// different history, plan, guard proof, or ordered action catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArmedSupportRecoveryPlanProjection {
+    sealed_status: ArmedSupportRecoveryPlanStatus,
+    recovery_digest: Sha256Digest,
+    prior_operation_id: OperationId,
+    support_action_id: UnicaId,
+    manual_target_mode: ManualSupportTargetMode,
+    planned_result_phase: TaskPhase,
+    support_history_from_cursor: RepositoryHistoryCursor,
+    support_history_through_cursor: RepositoryHistoryCursor,
+    support_history_partition: ValidatedRepositoryHistoryPartition,
+    support_version_observations: SupportRecoveryVersionObservations,
+    support_version_observation_digest: Sha256Digest,
+    support_recovery_disposition: SupportRecoveryDisposition,
+    support_late_relevant_result_phase: TaskPhase,
+    support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+    latest_support_recovery_guard_proof: Option<SupportRecoveryGuardProof>,
+    manual_working_infobase_closure_plan: Option<ManualWorkingInfobaseClosurePlan>,
+    required_external_action: Option<SupportRecoveryExternalAction>,
+    actions: Vec<RecoveryAction>,
+}
+
+impl ArmedSupportRecoveryPlanProjection {
+    fn from_status(value: ArmedSupportRecoveryPlanStatus) -> Self {
+        Self {
+            sealed_status: value.clone(),
+            recovery_digest: value.recovery_digest.clone(),
+            prior_operation_id: value.record.prior_operation_id.clone(),
+            support_action_id: match &value.record.actions.as_slice()[0].0 {
+                RecoveryActionKindWire::ObserveSupportPrerequisiteHistory(action) => {
+                    action.support_action_id.clone()
+                }
+                _ => unreachable!("armed support status constructor validates its first action"),
+            },
+            manual_target_mode: value.record.manual_target_mode,
+            planned_result_phase: value.record.planned_result_phase,
+            support_history_from_cursor: value.record.support_history_from_cursor.clone(),
+            support_history_through_cursor: value.record.support_history_through_cursor.clone(),
+            support_history_partition: value.record.support_history_partition.clone(),
+            support_version_observations: value.record.support_version_observations.clone(),
+            support_version_observation_digest: value
+                .record
+                .support_version_observation_digest
+                .clone(),
+            support_recovery_disposition: value.record.support_recovery_disposition,
+            support_late_relevant_result_phase: value.record.support_late_relevant_result_phase,
+            support_recovery_finalization_plan: value
+                .record
+                .support_recovery_finalization_plan
+                .clone(),
+            latest_support_recovery_guard_proof: value
+                .record
+                .latest_support_recovery_guard_proof
+                .clone(),
+            manual_working_infobase_closure_plan: value
+                .record
+                .manual_working_infobase_closure_plan
+                .clone(),
+            required_external_action: value.record.required_external_action.clone(),
+            actions: value.record.actions.as_slice().to_vec(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts(
+        prior_operation_id: OperationId,
+        action_catalog: SupportRecoveryActionCatalogAuthority,
+        support_action_id: UnicaId,
+        planned_result_phase: TaskPhase,
+        support_history_from_cursor: RepositoryHistoryCursor,
+        support_history_through_cursor: RepositoryHistoryCursor,
+        support_history_partition: ValidatedRepositoryHistoryPartition,
+        support_version_observations: SupportRecoveryVersionObservations,
+        support_recovery_disposition: SupportRecoveryDisposition,
+        support_late_relevant_result_phase: TaskPhase,
+        support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+        latest_support_recovery_guard_proof: Option<SupportRecoveryGuardProof>,
+        manual_working_infobase_closure_plan: Option<ManualWorkingInfobaseClosurePlan>,
+        manual_target_mode: ManualSupportTargetMode,
+    ) -> Result<Self, RecoveryContractError> {
+        let (history_action_id, external_wait, finalization_action_id) =
+            action_catalog.into_parts();
+        if support_history_partition.start_cursor() != &support_history_from_cursor
+            || support_history_partition.through_inclusive() != &support_history_through_cursor
+            || support_history_partition.classifications().count()
+                != support_version_observations.as_slice().len()
+            || (manual_target_mode == ManualSupportTargetMode::SeparateWorkingInfobase)
+                != manual_working_infobase_closure_plan.is_some()
+        {
+            return Err(RecoveryContractError(
+                "armed support recovery history or manual-mode presence mismatch",
+            ));
+        }
+        if let Some(wait) = &external_wait {
+            wait.validate_plan_binding(
+                &support_action_id,
+                manual_target_mode,
+                manual_working_infobase_closure_plan.as_ref(),
+            )?;
+        }
+        if support_recovery_disposition
+            == SupportRecoveryDisposition::PreserveExternalAndReauthorize
+            && planned_result_phase != support_late_relevant_result_phase
+            || support_recovery_disposition == SupportRecoveryDisposition::RestoreThenAbandon
+                && (planned_result_phase != TaskPhase::AbandonmentReady
+                    || support_late_relevant_result_phase != TaskPhase::AbandonmentReady)
+        {
+            return Err(RecoveryContractError(
+                "armed support recovery phases disagree with its disposition",
+            ));
+        }
+
+        let (history_expected_observations, history_expected_postcondition_digest) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::RepositoryAnchor,
+                RecoverySubjectRef::registered(support_action_id.clone()),
+                support_history_partition.partition_digest().clone(),
+            )])?;
+        let history_action = RecoveryAction::from_record(
+            RecoveryActionDigestRecordKind::ObserveSupportPrerequisiteHistory(
+                ObserveSupportPrerequisiteHistoryActionDigestRecord {
+                    action_kind: ObserveSupportPrerequisiteHistoryActionKind::Value,
+                    action_id: history_action_id,
+                    support_action_id: support_action_id.clone(),
+                    from_cursor: support_history_from_cursor.clone(),
+                    through_cursor: support_history_through_cursor.clone(),
+                    expected_partition_digest: support_history_partition.partition_digest().clone(),
+                    expected_observations: history_expected_observations,
+                    expected_postcondition_digest: history_expected_postcondition_digest,
+                },
+            ),
+        )?;
+        let (finish_expected_observations, finish_expected_postcondition_digest) =
+            expected_postcondition(vec![
+                RecoveryExpectedObservation::new(
+                    RecoveryObservationKind::SupportGraph,
+                    RecoverySubjectRef::configuration_root(),
+                    support_recovery_finalization_plan
+                        .desired_support_graph_digest()
+                        .clone(),
+                ),
+                RecoveryExpectedObservation::new(
+                    RecoveryObservationKind::SupportActionAuthorization,
+                    RecoverySubjectRef::registered(support_action_id.clone()),
+                    support_recovery_finalization_plan.plan_digest().clone(),
+                ),
+            ])?;
+        let authorization_outcome = match support_recovery_disposition {
+            SupportRecoveryDisposition::RestoreThenReauthorize
+            | SupportRecoveryDisposition::PreserveExternalAndReauthorize => {
+                FinalizeSupportAuthorizationOutcome::Cancelled
+            }
+            SupportRecoveryDisposition::RestoreThenAbandon => {
+                FinalizeSupportAuthorizationOutcome::AbandonmentFinalized
+            }
+        };
+        let finish_action = RecoveryAction::from_record(
+            RecoveryActionDigestRecordKind::FinalizeSupportPrerequisiteRecovery(
+                FinalizeSupportPrerequisiteRecoveryActionDigestRecord {
+                    action_kind: FinalizeSupportPrerequisiteRecoveryActionKind::Value,
+                    action_id: finalization_action_id,
+                    support_action_id: support_action_id.clone(),
+                    finalization_plan_digest: support_recovery_finalization_plan
+                        .plan_digest()
+                        .clone(),
+                    authorization_outcome,
+                    expected_observations: finish_expected_observations,
+                    expected_postcondition_digest: finish_expected_postcondition_digest,
+                },
+            ),
+        )?;
+        let (external_wait_action, required_external_action) = match external_wait {
+            Some(wait) => {
+                let (action, external_action) = wait.into_parts(&support_action_id)?;
+                (Some(action), Some(external_action))
+            }
+            None => (None, None),
+        };
+        let mut actions = Vec::with_capacity(2 + usize::from(external_wait_action.is_some()));
+        actions.push(history_action);
+        actions.extend(external_wait_action);
+        actions.push(finish_action);
+        validate_support_recovery_action_grammar(
+            &actions,
+            manual_target_mode,
+            support_recovery_disposition,
+            support_recovery_finalization_plan.plan_digest(),
+        )?;
+        let actions = SupportPrerequisiteRecoveryActions::from_actions(actions)?;
+        let (observations, remaining_unknowns) = validated_plan_observations(Vec::new())?;
+        let successful_integration_forbidden = (support_recovery_disposition
+            == SupportRecoveryDisposition::RestoreThenAbandon)
+            .then_some(TrueLiteral);
+        let support_version_observation_digest = support_version_observations.digest()?;
+        let status = ArmedSupportRecoveryPlanStatus::new(ArmedSupportRecoveryPlanDigestRecord {
+            prior_operation_id,
+            target: SupportPrerequisiteRecoveryTarget::Value,
+            effect_class: ReconcileOnlyRecoveryEffectClass::Value,
+            planned_result_phase,
+            observations,
+            actions,
+            support_version_observations,
+            support_version_observation_digest,
+            support_history_from_cursor,
+            support_history_through_cursor,
+            support_history_partition,
+            support_recovery_disposition,
+            support_late_relevant_result_phase,
+            successful_integration_forbidden,
+            support_recovery_finalization_plan,
+            latest_support_recovery_guard_proof,
+            manual_working_infobase_closure_plan,
+            manual_target_mode,
+            required_external_action,
+            remaining_unknowns,
+        })?;
+        Ok(Self::from_status(status))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        prior_operation_id: OperationId,
+        action_catalog: SupportRecoveryActionCatalogAuthority,
+        support_action_id: UnicaId,
+        planned_result_phase: TaskPhase,
+        support_history_from_cursor: RepositoryHistoryCursor,
+        support_history_through_cursor: RepositoryHistoryCursor,
+        support_history_partition: ValidatedRepositoryHistoryPartition,
+        support_version_observations: SupportRecoveryVersionObservations,
+        support_recovery_disposition: SupportRecoveryDisposition,
+        support_late_relevant_result_phase: TaskPhase,
+        support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+        latest_support_recovery_guard_proof: Option<SupportRecoveryGuardProof>,
+        manual_working_infobase_closure_plan: Option<ManualWorkingInfobaseClosurePlan>,
+        manual_target_mode: ManualSupportTargetMode,
+    ) -> Result<Self, RecoveryContractError> {
+        Self::from_parts(
+            prior_operation_id,
+            action_catalog,
+            support_action_id,
+            planned_result_phase,
+            support_history_from_cursor,
+            support_history_through_cursor,
+            support_history_partition,
+            support_version_observations,
+            support_recovery_disposition,
+            support_late_relevant_result_phase,
+            support_recovery_finalization_plan,
+            latest_support_recovery_guard_proof,
+            manual_working_infobase_closure_plan,
+            manual_target_mode,
+        )
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn test_only(
+        prior_operation_id: OperationId,
+        support_action_id: UnicaId,
+        planned_result_phase: TaskPhase,
+        support_history_from_cursor: RepositoryHistoryCursor,
+        support_history_through_cursor: RepositoryHistoryCursor,
+        support_history_partition: ValidatedRepositoryHistoryPartition,
+        support_version_observations: SupportRecoveryVersionObservations,
+        support_recovery_disposition: SupportRecoveryDisposition,
+        support_late_relevant_result_phase: TaskPhase,
+        support_recovery_finalization_plan: SupportRecoveryFinalizationPlan,
+        latest_support_recovery_guard_proof: Option<SupportRecoveryGuardProof>,
+        manual_working_infobase_closure_plan: Option<ManualWorkingInfobaseClosurePlan>,
+        manual_target_mode: ManualSupportTargetMode,
+        required_external_action: Option<SupportRecoveryExternalAction>,
+    ) -> Result<Self, RecoveryContractError> {
+        let external_wait = required_external_action
+            .map(|action| {
+                SupportRecoveryExternalWaitAuthority::from_external_action_test_only(
+                    UnicaId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+                        .expect("test external wait action ID is valid"),
+                    action,
+                    Sha256Digest::parse(
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    )
+                    .expect("test external wait postcondition digest is valid"),
+                )
+            })
+            .transpose()?;
+        let action_catalog = SupportRecoveryActionCatalogAuthority::test_only(
+            UnicaId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                .expect("test history action ID is valid"),
+            external_wait,
+            UnicaId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+                .expect("test finalization action ID is valid"),
+        )?;
+        Self::from_parts(
+            prior_operation_id,
+            action_catalog,
+            support_action_id,
+            planned_result_phase,
+            support_history_from_cursor,
+            support_history_through_cursor,
+            support_history_partition,
+            support_version_observations,
+            support_recovery_disposition,
+            support_late_relevant_result_phase,
+            support_recovery_finalization_plan,
+            latest_support_recovery_guard_proof,
+            manual_working_infobase_closure_plan,
+            manual_target_mode,
+        )
+    }
+
+    pub(crate) const fn recovery_digest(&self) -> &Sha256Digest {
+        &self.recovery_digest
+    }
+
+    pub(crate) const fn prior_operation_id(&self) -> &OperationId {
+        &self.prior_operation_id
+    }
+
+    pub(crate) fn recovery_plan_status(&self) -> RecoveryPlanStatus {
+        RecoveryPlanStatus(RecoveryPlanStatusKind::SupportPrerequisite(Box::new(
+            self.sealed_status.clone(),
+        )))
+    }
+
+    pub(crate) fn into_recovery_plan_status(self) -> RecoveryPlanStatus {
+        RecoveryPlanStatus(RecoveryPlanStatusKind::SupportPrerequisite(Box::new(
+            self.sealed_status,
+        )))
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        self.manual_target_mode
+    }
+
+    pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
+        self.planned_result_phase
+    }
+
+    pub(crate) const fn support_history_from_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.support_history_from_cursor
+    }
+
+    pub(crate) const fn support_history_through_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.support_history_through_cursor
+    }
+
+    pub(crate) const fn support_history_partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.support_history_partition
+    }
+
+    pub(crate) const fn support_version_observations(&self) -> &SupportRecoveryVersionObservations {
+        &self.support_version_observations
+    }
+
+    pub(crate) const fn support_version_observation_digest(&self) -> &Sha256Digest {
+        &self.support_version_observation_digest
+    }
+
+    pub(crate) const fn support_recovery_disposition(&self) -> SupportRecoveryDisposition {
+        self.support_recovery_disposition
+    }
+
+    pub(crate) const fn support_late_relevant_result_phase(&self) -> TaskPhase {
+        self.support_late_relevant_result_phase
+    }
+
+    pub(crate) const fn support_recovery_finalization_plan(
+        &self,
+    ) -> &SupportRecoveryFinalizationPlan {
+        &self.support_recovery_finalization_plan
+    }
+
+    pub(crate) const fn latest_support_recovery_guard_proof(
+        &self,
+    ) -> Option<&SupportRecoveryGuardProof> {
+        self.latest_support_recovery_guard_proof.as_ref()
+    }
+
+    pub(crate) const fn manual_working_infobase_closure_plan(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseClosurePlan> {
+        self.manual_working_infobase_closure_plan.as_ref()
+    }
+
+    pub(crate) const fn required_external_action(&self) -> Option<&SupportRecoveryExternalAction> {
+        self.required_external_action.as_ref()
+    }
+
+    pub(crate) fn actions(&self) -> &[RecoveryAction] {
+        &self.actions
+    }
 }
 
 wire_literal!(RecoveryActionReceiptKind, "recoveryAction");
@@ -4156,15 +7451,45 @@ impl ArchiveStagingReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::branched_development::contracts::instructions::{
+        ManualWorkingInfobaseCleanupReason, SupportCorrectiveInstructionAuthority,
+        SupportRecoveryTransition,
+    };
     use crate::domain::branched_development::contracts::prearm_recovery::PreArmCancellationEffectReceiptAuthority;
+    use crate::domain::branched_development::contracts::repository::{
+        EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceRegistry,
+        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
+        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
+        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
+        RepositoryUpdateLockReason, UnvalidatedRepositoryHistoryPartition,
+    };
+    use crate::domain::branched_development::contracts::scalars::{
+        Diagnostic, RepositoryTargetDisplay, RepositoryUsername, RepositoryVersion,
+        RequiredNullable,
+    };
     use crate::domain::branched_development::contracts::schema::audit_json_schema;
+    use crate::domain::branched_development::contracts::support::{
+        ManualActorLockInventoryProof, SupportActionPurpose, SupportBlockers, SupportContractError,
+        SupportEvidenceGaps, SupportHistoryOrderAuthority, SupportTransition,
+        SupportTransitionConflict, SupportTransitionConflicts, SupportTransitionOverlapKind,
+    };
+    use crate::domain::branched_development::contracts::support_terminalization::{
+        ManualWorkingInfobaseClosurePlanAuthority, ManualWorkingInfobaseStopAuthority,
+        SupportRecoveryDesiredTarget, SupportRecoveryDesiredTargets,
+        SupportRecoveryFinalizationPlanAuthority, SupportRecoveryLockTarget,
+        SupportRecoveryLockTargets,
+    };
+    use crate::domain::branched_development::SupportLayerId;
     use schemars::{schema_for, JsonSchema};
     use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serde_json::{json, Value};
+    use std::cmp::Ordering;
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const ID_1: &str = "11111111-1111-4111-8111-111111111111";
+    const ID_2: &str = "22222222-2222-4222-8222-222222222222";
 
     fn digest(value: &str) -> Sha256Digest {
         Sha256Digest::parse(value).unwrap()
@@ -4234,6 +7559,66 @@ mod tests {
             ReleaseOwnedLocksActionDigestRecord {
                 action_kind: ReleaseOwnedLocksActionKind::Value,
                 action_id: id(ID_1),
+                subjects: RecoverySubjects::new(vec![subject])?,
+                expected_owned_lock_set_digest: digest(A),
+                expected_observations,
+                expected_postcondition_digest,
+            },
+        ))
+    }
+
+    fn observe_commit_action() -> Result<RecoveryAction, RecoveryContractError> {
+        let integration_set_id = id("22222222-2222-4222-8222-222222222222");
+        let (expected_observations, expected_postcondition_digest) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::RepositoryVersion,
+                RecoverySubjectRef::registered(integration_set_id.clone()),
+                digest(A),
+            )])?;
+        runtime_action(RecoveryActionDigestRecordKind::ObserveCommit(
+            ObserveCommitActionDigestRecord {
+                action_kind: ObserveCommitActionKind::Value,
+                action_id: id(ID_1),
+                operation_id: OperationId::parse("33333333-3333-4333-8333-333333333333").unwrap(),
+                integration_set_id,
+                expected_integration_set_digest: digest(A),
+                expected_observations,
+                expected_postcondition_digest,
+            },
+        ))
+    }
+
+    fn restore_original_action() -> Result<RecoveryAction, RecoveryContractError> {
+        let (expected_observations, expected_postcondition_digest) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::ObjectFingerprint,
+                RecoverySubjectRef::reserved_original_infobase(digest(B)),
+                digest(A),
+            )])?;
+        runtime_action(RecoveryActionDigestRecordKind::RestoreOriginal(
+            RestoreOriginalActionDigestRecord {
+                action_kind: RestoreOriginalActionKind::Value,
+                action_id: id(ID_1),
+                checkpoint_id: id("33333333-3333-4333-8333-333333333333"),
+                expected_original_fingerprint: digest(A),
+                expected_observations,
+                expected_postcondition_digest,
+            },
+        ))
+    }
+
+    fn release_root_lock_action_two() -> Result<RecoveryAction, RecoveryContractError> {
+        let subject = RecoverySubjectRef::configuration_root();
+        let (expected_observations, expected_postcondition_digest) =
+            expected_postcondition(vec![RecoveryExpectedObservation::new(
+                RecoveryObservationKind::LockOwnership,
+                subject.clone(),
+                digest(A),
+            )])?;
+        runtime_action(RecoveryActionDigestRecordKind::ReleaseOwnedLocks(
+            ReleaseOwnedLocksActionDigestRecord {
+                action_kind: ReleaseOwnedLocksActionKind::Value,
+                action_id: id("22222222-2222-4222-8222-222222222222"),
                 subjects: RecoverySubjects::new(vec![subject])?,
                 expected_owned_lock_set_digest: digest(A),
                 expected_observations,
@@ -4417,6 +7802,415 @@ mod tests {
         .unwrap()
     }
 
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EmptyPartitionDigestRecord {
+        from_exclusive: RepositoryHistoryCursor,
+        through_inclusive: RepositoryHistoryCursor,
+        entries: Vec<Value>,
+    }
+
+    impl contract_digest_record_sealed::Sealed for EmptyPartitionDigestRecord {}
+    impl ContractDigestRecord for EmptyPartitionDigestRecord {}
+
+    struct UnexpectedEvidenceIndex;
+
+    impl EvidenceSourceIndex for UnexpectedEvidenceIndex {
+        fn candidate_for(
+            &self,
+            _repository_version: &RepositoryVersion,
+            _registry: &EvidenceSourceRegistry,
+        ) -> Result<EvidenceSourceIndexCandidate, RepositoryContractError> {
+            panic!("empty history partition must not consult the evidence index")
+        }
+    }
+
+    struct UnexpectedHistoryOrder;
+
+    impl RepositoryHistoryOrderResolver for UnexpectedHistoryOrder {
+        fn order_evidence(
+            &self,
+            _from_exclusive: &RepositoryHistoryCursor,
+            _through_inclusive: &RepositoryHistoryCursor,
+        ) -> Result<RepositoryHistoryOrderEvidence, RepositoryContractError> {
+            panic!("empty history partition must not consult repository history")
+        }
+    }
+
+    struct UnexpectedEvidenceBytes;
+
+    impl RepositoryHistoryEvidenceBytesResolver for UnexpectedEvidenceBytes {
+        fn load_canonical_evidence_bytes(
+            &self,
+            _reference: &RepositoryHistorySourceEvidenceRef,
+        ) -> Result<Vec<u8>, RepositoryContractError> {
+            panic!("empty history partition must not load evidence bytes")
+        }
+    }
+
+    fn empty_history_partition(
+        endpoint: &RepositoryHistoryCursor,
+    ) -> ValidatedRepositoryHistoryPartition {
+        let partition_digest = contract_digest(
+            &EmptyPartitionDigestRecord {
+                from_exclusive: endpoint.clone(),
+                through_inclusive: endpoint.clone(),
+                entries: Vec::new(),
+            },
+            "empty test partition digest failed",
+        )
+        .unwrap();
+        let wire = serde_json::from_value::<UnvalidatedRepositoryHistoryPartition>(json!({
+            "fromExclusive": endpoint,
+            "throughInclusive": endpoint,
+            "entries": [],
+            "partitionDigest": partition_digest,
+        }))
+        .unwrap();
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &UnexpectedEvidenceIndex,
+            &UnexpectedHistoryOrder,
+            &UnexpectedEvidenceBytes,
+        )
+        .validate(wire)
+        .unwrap()
+    }
+
+    fn support_finalization_plan(
+        endpoint: RepositoryHistoryCursor,
+    ) -> SupportRecoveryFinalizationPlan {
+        let display = RepositoryTargetDisplay::parse("Configuration").unwrap();
+        let lock_targets = support_lock_targets();
+        let desired_targets =
+            SupportRecoveryDesiredTargets::new(vec![SupportRecoveryDesiredTarget::root_present(
+                display,
+                digest(B),
+            )])
+            .unwrap();
+        SupportRecoveryFinalizationPlan::new(
+            SupportRecoveryFinalizationPlanAuthority::desired_test_only(
+                SupportRecoveryDisposition::RestoreThenReauthorize,
+                lock_targets,
+                desired_targets,
+                endpoint,
+                digest(A),
+                digest(B),
+            ),
+        )
+        .unwrap()
+    }
+
+    fn support_lock_targets() -> SupportRecoveryLockTargets {
+        SupportRecoveryLockTargets::new(vec![SupportRecoveryLockTarget::configuration_root(
+            RepositoryTargetDisplay::parse("Configuration").unwrap(),
+            vec![
+                RepositoryUpdateLockReason::SupportGraphGuard,
+                RepositoryUpdateLockReason::UpdateTarget,
+            ],
+        )
+        .unwrap()])
+        .unwrap()
+    }
+
+    struct TrivialSupportHistoryOrder;
+
+    impl SupportHistoryOrderAuthority for TrivialSupportHistoryOrder {
+        fn compare_versions(
+            &self,
+            _left: &RepositoryVersion,
+            _right: &RepositoryVersion,
+        ) -> Result<Ordering, SupportContractError> {
+            Ok(Ordering::Equal)
+        }
+
+        fn compare_cursors(
+            &self,
+            _left: &RepositoryHistoryCursor,
+            _right: &RepositoryHistoryCursor,
+        ) -> Result<Ordering, SupportContractError> {
+            Ok(Ordering::Equal)
+        }
+    }
+
+    fn corrective_external_action(
+        mode: ManualSupportTargetMode,
+        cursor: RepositoryHistoryCursor,
+    ) -> SupportRecoveryExternalAction {
+        let transition =
+            SupportRecoveryTransition::ordinary(SupportTransition::enable_configuration_changes(
+                RepositoryTargetDisplay::parse("Configuration").unwrap(),
+                SupportLayerId::parse("layer-a").unwrap(),
+            ));
+        let authority = SupportCorrectiveInstructionAuthority::test_only(
+            id("22222222-2222-4222-8222-222222222222"),
+            SupportActionPurpose::MainIntegrationPrerequisite,
+            mode,
+            RepositoryUsername::parse("support-user").unwrap(),
+            (mode == ManualSupportTargetMode::SeparateWorkingInfobase).then(working_identity),
+            cursor,
+            support_lock_targets(),
+            support_lock_targets(),
+            vec![transition],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            digest(A),
+            digest(B),
+        )
+        .unwrap();
+        SupportRecoveryExternalAction::corrective(
+            SupportCorrectiveInstruction::new(authority).unwrap(),
+        )
+    }
+
+    fn conflict_external_action() -> SupportRecoveryExternalAction {
+        let transition = SupportTransition::enable_configuration_changes(
+            RepositoryTargetDisplay::parse("Configuration").unwrap(),
+            SupportLayerId::parse("layer-a").unwrap(),
+        );
+        let conflict = SupportTransitionConflict::from_capability_adapter(
+            RepositoryVersion::parse("v2").unwrap(),
+            RequiredNullable::null(),
+            None,
+            RepositoryTargetDisplay::parse("Configuration").unwrap(),
+            SupportLayerId::parse("layer-a").unwrap(),
+            transition,
+            digest(A),
+            SupportTransitionOverlapKind::SameTarget,
+            Diagnostic::parse("redacted").unwrap(),
+        )
+        .unwrap();
+        let conflicts =
+            SupportTransitionConflicts::new(vec![conflict], &TrivialSupportHistoryOrder).unwrap();
+        SupportRecoveryExternalAction::conflict(
+            SupportConflictInstruction::new(
+                id("55555555-5555-4555-8555-555555555555"),
+                conflicts,
+                digest(B),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn evidence_external_action() -> SupportRecoveryExternalAction {
+        SupportRecoveryExternalAction::evidence(
+            SupportEvidenceInstruction::new(
+                SupportBlockers::new(Vec::new()).unwrap(),
+                SupportEvidenceGaps::new(Vec::new(), &TrivialSupportHistoryOrder).unwrap(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[derive(Clone, Copy)]
+    enum ArmedSupportBlockerFixture {
+        Absent,
+        Corrective,
+        ReleaseLocks,
+        CleanWorkingInfobase,
+        CloseReservedOriginal,
+        Conflict,
+        Evidence,
+    }
+
+    fn armed_support_closure_plan(
+        endpoint: &RepositoryHistoryCursor,
+    ) -> ManualWorkingInfobaseClosurePlan {
+        ManualWorkingInfobaseClosurePlan::new(
+            ManualWorkingInfobaseClosurePlanAuthority::materialized_test_only(
+                working_identity(),
+                digest(A),
+                digest(B),
+                digest(A),
+                digest(B),
+                endpoint.clone(),
+                digest(A),
+                CapabilityRowId::parse("manual-working-infobase-lease.v1").unwrap(),
+            ),
+        )
+        .unwrap()
+    }
+
+    fn blocked_guard_proof_fixture(mode: ManualSupportTargetMode, status: &Value) -> Value {
+        json!({
+            "outcome": "blockedBeforeRoot",
+            "guardReceiptId": ID_1,
+            "manualTargetMode": match mode {
+                ManualSupportTargetMode::ReservedOriginal => "reservedOriginal",
+                ManualSupportTargetMode::SeparateWorkingInfobase => "separateWorkingInfobase",
+            },
+            "finalizationPlanDigest": status["supportRecoveryFinalizationPlan"]["planDigest"],
+            "plannedLockTargets": status["supportRecoveryFinalizationPlan"]["lockTargets"],
+            "acquiredInOrder": [],
+            "failedTarget": { "targetKind": "configurationRoot" },
+            "failedTargetDisplay": "Configuration",
+            "lockedBy": null,
+            "authorizationOutcome": "unchanged",
+            "releasedInReverseOrder": [],
+            "releaseVerified": true,
+            "proofDigest": B,
+        })
+    }
+
+    fn stopped_guard_proof_fixture(mode: ManualSupportTargetMode, status: &Value) -> Value {
+        let mut proof = json!({
+            "outcome": "stoppedAfterCompleteGuard",
+            "guardReceiptId": ID_1,
+            "guardReleaseReceiptId": ID_2,
+            "manualTargetMode": match mode {
+                ManualSupportTargetMode::ReservedOriginal => "reservedOriginal",
+                ManualSupportTargetMode::SeparateWorkingInfobase => "separateWorkingInfobase",
+            },
+            "finalizationPlanDigest": status["supportRecoveryFinalizationPlan"]["planDigest"],
+            "plannedLockTargets": status["supportRecoveryFinalizationPlan"]["lockTargets"],
+            "acquiredInOrder": status["supportRecoveryFinalizationPlan"]["lockTargets"],
+            "historyFromCursor": status["supportHistoryFromCursor"],
+            "historyThroughCursor": status["supportHistoryThroughCursor"],
+            "historyPartitionDigest": status["supportHistoryPartition"]["partitionDigest"],
+            "supportGraphRecheckedUnderGuard": true,
+            "correctiveBeforeStateBindingVerified": true,
+            "contentRecheckedUnderGuard": true,
+            "originalRecheckedUnderGuard": true,
+            "selectiveUpdatePerformed": false,
+            "authorizationOutcome": "unchanged",
+            "releasedInReverseOrder": status["supportRecoveryFinalizationPlan"]["lockTargets"],
+            "releaseVerified": true,
+            "proofDigest": B,
+        });
+        match mode {
+            ManualSupportTargetMode::ReservedOriginal => {
+                proof["manualActorLockInventoryProof"] = serde_json::to_value(
+                    ManualActorLockInventoryProof::new(
+                        RepositoryUsername::parse("support-user").unwrap(),
+                        digest(A),
+                        digest(A),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                proof["reservedOriginalLeaseStopEvidence"] = serde_json::to_value(
+                    ReservedOriginalLeaseStopEvidence::new(
+                        digest(A),
+                        CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                        RequiredNullable::null(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            ManualSupportTargetMode::SeparateWorkingInfobase => {
+                let plan = armed_support_closure_plan(&history_cursor("v1", A));
+                proof["manualWorkingInfobaseStopEvidence"] = serde_json::to_value(
+                    ManualWorkingInfobaseStopEvidence::new(
+                        &plan,
+                        ManualWorkingInfobaseStopAuthority::lease_busy_test_only(
+                            &plan,
+                            RequiredNullable::null(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        proof
+    }
+
+    fn armed_support_status_fixture(
+        mode: ManualSupportTargetMode,
+        blocker: ArmedSupportBlockerFixture,
+    ) -> Value {
+        let mut status = serde_json::to_value(
+            armed_support_projection_fixture(mode, blocker).into_recovery_plan_status(),
+        )
+        .unwrap();
+        let proof = match blocker {
+            ArmedSupportBlockerFixture::ReleaseLocks => {
+                Some(blocked_guard_proof_fixture(mode, &status))
+            }
+            ArmedSupportBlockerFixture::CleanWorkingInfobase
+            | ArmedSupportBlockerFixture::CloseReservedOriginal => {
+                Some(stopped_guard_proof_fixture(mode, &status))
+            }
+            ArmedSupportBlockerFixture::Absent
+            | ArmedSupportBlockerFixture::Corrective
+            | ArmedSupportBlockerFixture::Conflict
+            | ArmedSupportBlockerFixture::Evidence => None,
+        };
+        if let Some(proof) = proof {
+            status["latestSupportRecoveryGuardProof"] = proof;
+        }
+        status
+    }
+
+    fn armed_support_projection_fixture(
+        mode: ManualSupportTargetMode,
+        blocker: ArmedSupportBlockerFixture,
+    ) -> ArmedSupportRecoveryPlanProjection {
+        let endpoint = history_cursor("v1", A);
+        let closure_plan = (mode == ManualSupportTargetMode::SeparateWorkingInfobase)
+            .then(|| armed_support_closure_plan(&endpoint));
+        let required_external_action = match blocker {
+            ArmedSupportBlockerFixture::Absent => None,
+            ArmedSupportBlockerFixture::Corrective => {
+                Some(corrective_external_action(mode, endpoint.clone()))
+            }
+            ArmedSupportBlockerFixture::ReleaseLocks => {
+                Some(SupportRecoveryExternalAction::release_locks(
+                    ReleaseRepositoryLocksInstruction::new(
+                        RequiredNullable::null(),
+                        vec![RepositoryTargetDisplay::parse("Configuration").unwrap()],
+                    )
+                    .unwrap(),
+                ))
+            }
+            ArmedSupportBlockerFixture::CleanWorkingInfobase => {
+                let plan = closure_plan
+                    .as_ref()
+                    .expect("clean fixture requires separate-working-infobase mode");
+                Some(SupportRecoveryExternalAction::clean_working_infobase(
+                    CleanManualWorkingInfobaseInstruction::new(
+                        plan.working_infobase_identity().clone(),
+                        plan.plan_digest().clone(),
+                        plan.exclusive_lease_capability_id().clone(),
+                        plan.desired_base_fingerprint().clone(),
+                        ManualWorkingInfobaseCleanupReason::LeaseBusy,
+                    ),
+                ))
+            }
+            ArmedSupportBlockerFixture::CloseReservedOriginal => {
+                Some(SupportRecoveryExternalAction::close_reserved_original(
+                    CloseReservedOriginalDesignerInstruction::new(
+                        digest(A),
+                        CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                    ),
+                ))
+            }
+            ArmedSupportBlockerFixture::Conflict => Some(conflict_external_action()),
+            ArmedSupportBlockerFixture::Evidence => Some(evidence_external_action()),
+        };
+        ArmedSupportRecoveryPlanProjection::test_only(
+            OperationId::parse("44444444-4444-4444-8444-444444444444").unwrap(),
+            id("22222222-2222-4222-8222-222222222222"),
+            TaskPhase::LocalVerified,
+            endpoint.clone(),
+            endpoint.clone(),
+            empty_history_partition(&endpoint),
+            SupportRecoveryVersionObservations::new(Vec::new()).unwrap(),
+            SupportRecoveryDisposition::RestoreThenReauthorize,
+            TaskPhase::LocalVerified,
+            support_finalization_plan(endpoint),
+            None,
+            closure_plan,
+            mode,
+            required_external_action,
+        )
+        .unwrap()
+    }
+
     fn observe_history_action(
         observations: Vec<RecoveryExpectedObservation>,
     ) -> Result<RecoveryAction, RecoveryContractError> {
@@ -4507,6 +8301,569 @@ mod tests {
     #[test]
     fn recovery_subject_contract_exists() {
         let _ = std::mem::size_of::<RecoverySubjectRef>();
+    }
+
+    #[test]
+    fn recovery_plan_status_is_a_closed_physical_target_effect_stage_union() {
+        let contract = schema::<RecoveryPlanStatus>();
+        audit_json_schema(&contract).unwrap();
+        assert_eq!(contract["oneOf"].as_array().map(Vec::len), Some(13));
+        let encoded = serde_json::to_string(&contract).unwrap();
+        for literal in [
+            "taskConfiguration",
+            "repositoryLocks",
+            "originalConfiguration",
+            "repositoryCommit",
+            "supportPrerequisite",
+            "preArmSupportCancellation",
+            "manualWorkingInfobaseLease",
+            "artifact",
+            "archive",
+            "cleanup",
+            "observeOutcome",
+            "committed",
+            "notCommitted",
+            "finalize",
+        ] {
+            assert!(encoded.contains(literal), "missing plan branch {literal}");
+        }
+        for collection in [
+            schema::<RecoveryPlanObservations>(),
+            schema::<RecoveryPlanUnknowns>(),
+            schema::<SupportRecoveryVersionObservations>(),
+            schema::<RecoveryExpectedObservations>(),
+        ] {
+            assert_eq!(collection["maxItems"], 1024);
+        }
+        assert_eq!(
+            schema::<SupportRecoveryHistoryEvidence>()["oneOf"]
+                .as_array()
+                .map(Vec::len),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn armed_support_schema_binds_mode_external_blocker_and_exact_wait_tuple() {
+        let reserved_without_blocker = armed_support_status_fixture(
+            ManualSupportTargetMode::ReservedOriginal,
+            ArmedSupportBlockerFixture::Absent,
+        );
+        let separate_without_blocker = armed_support_status_fixture(
+            ManualSupportTargetMode::SeparateWorkingInfobase,
+            ArmedSupportBlockerFixture::Absent,
+        );
+        let reserved_blockers = [
+            ArmedSupportBlockerFixture::Corrective,
+            ArmedSupportBlockerFixture::ReleaseLocks,
+            ArmedSupportBlockerFixture::CloseReservedOriginal,
+            ArmedSupportBlockerFixture::Conflict,
+            ArmedSupportBlockerFixture::Evidence,
+        ]
+        .map(|blocker| {
+            armed_support_status_fixture(ManualSupportTargetMode::ReservedOriginal, blocker)
+        });
+        let separate_blockers = [
+            ArmedSupportBlockerFixture::Corrective,
+            ArmedSupportBlockerFixture::ReleaseLocks,
+            ArmedSupportBlockerFixture::CleanWorkingInfobase,
+            ArmedSupportBlockerFixture::Conflict,
+            ArmedSupportBlockerFixture::Evidence,
+        ]
+        .map(|blocker| {
+            armed_support_status_fixture(ManualSupportTargetMode::SeparateWorkingInfobase, blocker)
+        });
+
+        for valid in std::iter::once(&reserved_without_blocker)
+            .chain(reserved_blockers.iter())
+            .chain(std::iter::once(&separate_without_blocker))
+            .chain(separate_blockers.iter())
+        {
+            assert!(schema_accepts::<ArmedSupportRecoveryPlanStatus>(valid));
+            assert!(schema_accepts::<RecoveryPlanStatus>(valid));
+        }
+
+        for statuses in [&reserved_blockers, &separate_blockers] {
+            for index in [1, 2] {
+                let mut missing_proof = statuses[index].clone();
+                missing_proof
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("latestSupportRecoveryGuardProof");
+                assert!(
+                    !schema_accepts::<ArmedSupportRecoveryPlanStatus>(&missing_proof),
+                    "guard-bound blocker {index} accepted a missing latest proof",
+                );
+            }
+            for index in [0, 3, 4] {
+                let mut extra_proof = statuses[index].clone();
+                extra_proof["latestSupportRecoveryGuardProof"] =
+                    statuses[1]["latestSupportRecoveryGuardProof"].clone();
+                assert!(
+                    !schema_accepts::<ArmedSupportRecoveryPlanStatus>(&extra_proof),
+                    "pre-guard blocker {index} accepted a latest proof",
+                );
+            }
+
+            let mut lock_with_stopped = statuses[1].clone();
+            lock_with_stopped["latestSupportRecoveryGuardProof"] =
+                statuses[2]["latestSupportRecoveryGuardProof"].clone();
+            assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+                &lock_with_stopped,
+            ));
+
+            let mut closure_with_blocked = statuses[2].clone();
+            closure_with_blocked["latestSupportRecoveryGuardProof"] =
+                statuses[1]["latestSupportRecoveryGuardProof"].clone();
+            assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+                &closure_with_blocked,
+            ));
+
+            let mut completed_outcome = statuses[1].clone();
+            completed_outcome["latestSupportRecoveryGuardProof"]["outcome"] = json!("completed");
+            assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+                &completed_outcome,
+            ));
+        }
+
+        let mut no_blocker_with_proof = reserved_without_blocker.clone();
+        no_blocker_with_proof["latestSupportRecoveryGuardProof"] =
+            reserved_blockers[1]["latestSupportRecoveryGuardProof"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &no_blocker_with_proof,
+        ));
+
+        for index in [1, 2] {
+            let mut reserved_with_separate_proof = reserved_blockers[index].clone();
+            reserved_with_separate_proof["latestSupportRecoveryGuardProof"] =
+                separate_blockers[index]["latestSupportRecoveryGuardProof"].clone();
+            assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+                &reserved_with_separate_proof,
+            ));
+
+            let mut separate_with_reserved_proof = separate_blockers[index].clone();
+            separate_with_reserved_proof["latestSupportRecoveryGuardProof"] =
+                reserved_blockers[index]["latestSupportRecoveryGuardProof"].clone();
+            assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+                &separate_with_reserved_proof,
+            ));
+        }
+
+        let mut action_without_wait = reserved_without_blocker.clone();
+        action_without_wait["requiredExternalAction"] =
+            reserved_blockers[2]["requiredExternalAction"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &action_without_wait
+        ));
+
+        let mut wait_without_action = reserved_without_blocker.clone();
+        wait_without_action["actions"]
+            .as_array_mut()
+            .unwrap()
+            .insert(1, reserved_blockers[2]["actions"][1].clone());
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &wait_without_action
+        ));
+
+        for statuses in [&reserved_blockers, &separate_blockers] {
+            for index in 0..statuses.len() {
+                let other = (index + 1) % statuses.len();
+                let mut wrong_wait = statuses[index].clone();
+                wrong_wait["actions"][1] = statuses[other]["actions"][1].clone();
+                assert!(
+                    !schema_accepts::<ArmedSupportRecoveryPlanStatus>(&wrong_wait),
+                    "external blocker {index} accepted wait {other}",
+                );
+
+                let mut wrong_instruction = statuses[index].clone();
+                wrong_instruction["requiredExternalAction"] =
+                    statuses[other]["requiredExternalAction"].clone();
+                assert!(
+                    !schema_accepts::<ArmedSupportRecoveryPlanStatus>(&wrong_instruction),
+                    "wait {index} accepted external blocker {other}",
+                );
+            }
+        }
+
+        let mut reserved_with_working_infobase_blocker = reserved_without_blocker.clone();
+        reserved_with_working_infobase_blocker["requiredExternalAction"] =
+            separate_blockers[2]["requiredExternalAction"].clone();
+        reserved_with_working_infobase_blocker["actions"] = separate_blockers[2]["actions"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &reserved_with_working_infobase_blocker
+        ));
+
+        let mut separate_with_reserved_original_blocker = separate_without_blocker.clone();
+        separate_with_reserved_original_blocker["requiredExternalAction"] =
+            reserved_blockers[2]["requiredExternalAction"].clone();
+        separate_with_reserved_original_blocker["actions"] =
+            reserved_blockers[2]["actions"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &separate_with_reserved_original_blocker
+        ));
+
+        let mut reserved_with_separate_corrective_payload = reserved_blockers[0].clone();
+        reserved_with_separate_corrective_payload["requiredExternalAction"] =
+            separate_blockers[0]["requiredExternalAction"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &reserved_with_separate_corrective_payload
+        ));
+
+        let mut separate_with_reserved_corrective_payload = separate_blockers[0].clone();
+        separate_with_reserved_corrective_payload["requiredExternalAction"] =
+            reserved_blockers[0]["requiredExternalAction"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &separate_with_reserved_corrective_payload
+        ));
+
+        let mut reserved_with_closure_plan = reserved_without_blocker.clone();
+        reserved_with_closure_plan["manualWorkingInfobaseClosurePlan"] =
+            separate_without_blocker["manualWorkingInfobaseClosurePlan"].clone();
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &reserved_with_closure_plan
+        ));
+
+        let mut separate_without_closure_plan = separate_without_blocker.clone();
+        separate_without_closure_plan
+            .as_object_mut()
+            .unwrap()
+            .remove("manualWorkingInfobaseClosurePlan");
+        assert!(!schema_accepts::<ArmedSupportRecoveryPlanStatus>(
+            &separate_without_closure_plan
+        ));
+
+        assert_eq!(
+            schema::<ArmedSupportRecoveryPlanStatus>()["oneOf"]
+                .as_array()
+                .map(Vec::len),
+            Some(12),
+        );
+        audit_json_schema(&schema::<ArmedSupportRecoveryPlanStatus>()).unwrap();
+    }
+
+    #[test]
+    fn armed_support_action_catalog_rejects_every_duplicate_id_position() {
+        let first = id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let second = id("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let third = id("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        assert!(SupportRecoveryActionCatalogAuthority::test_only(
+            first.clone(),
+            None,
+            first.clone(),
+        )
+        .is_err());
+
+        let external_action = SupportRecoveryExternalAction::close_reserved_original(
+            CloseReservedOriginalDesignerInstruction::new(
+                digest(A),
+                CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+            ),
+        );
+        let wait = SupportRecoveryExternalWaitAuthority::from_external_action_test_only(
+            first.clone(),
+            external_action,
+            digest(B),
+        )
+        .unwrap();
+        assert!(SupportRecoveryActionCatalogAuthority::test_only(
+            first.clone(),
+            Some(wait.clone()),
+            second.clone(),
+        )
+        .is_err());
+        assert!(SupportRecoveryActionCatalogAuthority::test_only(
+            second.clone(),
+            Some(wait),
+            first.clone(),
+        )
+        .is_err());
+
+        let distinct_wait = SupportRecoveryExternalWaitAuthority::from_external_action_test_only(
+            second.clone(),
+            SupportRecoveryExternalAction::close_reserved_original(
+                CloseReservedOriginalDesignerInstruction::new(
+                    digest(A),
+                    CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                ),
+            ),
+            digest(B),
+        )
+        .unwrap();
+        assert!(SupportRecoveryActionCatalogAuthority::test_only(
+            first,
+            Some(distinct_wait),
+            third,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn armed_support_projection_preserves_sealed_status_lineage_and_observation_digest() {
+        let projection = armed_support_projection_fixture(
+            ManualSupportTargetMode::ReservedOriginal,
+            ArmedSupportBlockerFixture::Absent,
+        );
+        let expected_operation_id =
+            OperationId::parse("44444444-4444-4444-8444-444444444444").unwrap();
+        let expected_observation_digest = SupportRecoveryVersionObservations::new(Vec::new())
+            .unwrap()
+            .digest()
+            .unwrap();
+
+        assert_eq!(projection.prior_operation_id(), &expected_operation_id);
+        assert_eq!(
+            projection.support_version_observation_digest(),
+            &expected_observation_digest
+        );
+
+        let cloned_status = projection.recovery_plan_status();
+        let cloned_wire = serde_json::to_value(&cloned_status).unwrap();
+        let owned_wire =
+            serde_json::to_value(projection.clone().into_recovery_plan_status()).unwrap();
+        assert_eq!(cloned_wire, owned_wire);
+        assert_eq!(
+            cloned_wire["priorOperationId"],
+            expected_operation_id.as_str()
+        );
+        assert_eq!(
+            cloned_wire["supportVersionObservationDigest"],
+            expected_observation_digest.as_str()
+        );
+
+        let reprojected = cloned_status.armed_support_recovery_projection().unwrap();
+        assert_eq!(reprojected.recovery_digest(), projection.recovery_digest());
+        assert_eq!(
+            reprojected.prior_operation_id(),
+            projection.prior_operation_id()
+        );
+        assert_eq!(
+            reprojected.support_version_observation_digest(),
+            projection.support_version_observation_digest()
+        );
+    }
+
+    #[test]
+    fn dynamic_recovery_action_schemas_and_wrappers_freeze_the_structural_boundary() {
+        let unrelated_actions = vec![
+            verify_task_action(
+                RecoveryObservationKind::TaskFingerprint,
+                digest(A),
+                digest(A),
+            )
+            .unwrap(),
+            release_root_lock_action_two().unwrap(),
+        ];
+        let unrelated = serde_json::to_value(&unrelated_actions).unwrap();
+        assert!(!schema_accepts::<SupportPrerequisiteRecoveryActions>(
+            &unrelated
+        ));
+        assert!(!schema_accepts::<PreArmFinalizeRecoveryActions>(&unrelated));
+        assert!(
+            SupportPrerequisiteRecoveryActions::from_actions(unrelated_actions.clone()).is_err()
+        );
+        assert!(PreArmFinalizeRecoveryActions::from_actions(unrelated_actions).is_err());
+
+        let plan = RecoveryPlanStatus::cleanup_fixture_test_only(
+            OperationId::parse("22222222-2222-4222-8222-222222222222").unwrap(),
+            id("33333333-3333-4333-8333-333333333333"),
+            serde_json::from_value(json!({
+                "projectId": ID_1,
+                "instanceId": ID_1,
+                "role": "quarantine"
+            }))
+            .unwrap(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let RecoveryPlanStatusKind::Cleanup(cleanup) = &plan.0 else {
+            panic!("fixture must be cleanup");
+        };
+        let [resume, finish] = cleanup.record.actions.as_slice() else {
+            panic!("fixture must contain resume and finish actions");
+        };
+        let mut runtime_actions = cleanup.record.actions.as_slice().to_vec();
+        runtime_actions.reverse();
+        assert!(CleanupRecoveryActions::from_actions(runtime_actions).is_err());
+        let mut actions = serde_json::to_value(&plan).unwrap()["actions"]
+            .as_array()
+            .unwrap()
+            .clone();
+        actions.reverse();
+        assert!(!schema_accepts::<CleanupRecoveryActions>(&json!(actions)));
+
+        let second_plan = RecoveryPlanStatus::cleanup_fixture_test_only(
+            OperationId::parse("44444444-4444-4444-8444-444444444444").unwrap(),
+            id("33333333-3333-4333-8333-333333333333"),
+            serde_json::from_value(json!({
+                "projectId": ID_1,
+                "instanceId": ID_1,
+                "role": "artifact"
+            }))
+            .unwrap(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let RecoveryPlanStatusKind::Cleanup(second_cleanup) = &second_plan.0 else {
+            panic!("fixture must be cleanup");
+        };
+        let [second_resume, second_finish] = second_cleanup.record.actions.as_slice() else {
+            panic!("fixture must contain resume and finish actions");
+        };
+
+        let missing_terminal = vec![resume.clone(), second_resume.clone()];
+        assert!(!schema_accepts::<CleanupRecoveryActions>(
+            &serde_json::to_value(&missing_terminal).unwrap()
+        ));
+        let duplicate_terminal = vec![resume.clone(), finish.clone(), second_finish.clone()];
+        assert!(!schema_accepts::<CleanupRecoveryActions>(
+            &serde_json::to_value(&duplicate_terminal).unwrap()
+        ));
+
+        // Draft 2020-12 cannot express a variable-length "last item" relation
+        // without enumerating every length. The wire schema intentionally
+        // admits this structural permutation; only the sealed constructor can
+        // reject it using the complete ordered catalog.
+        let terminal_before_last = vec![resume.clone(), finish.clone(), second_resume.clone()];
+        assert!(schema_accepts::<CleanupRecoveryActions>(
+            &serde_json::to_value(&terminal_before_last).unwrap()
+        ));
+        assert!(CleanupRecoveryActions::from_actions(terminal_before_last).is_err());
+    }
+
+    #[test]
+    fn task_recovery_plan_derives_exact_unknowns_actions_and_digest() {
+        let unknown = RecoveryObservation::unknown_test_only(
+            RecoveryObservationKind::TaskFingerprint,
+            RecoverySubjectRef::registered(id(ID_1)),
+            digest(A),
+            RecoveryUnknownReason::EffectOutcomeUnavailable,
+        )
+        .unwrap();
+        let action = verify_task_action(
+            RecoveryObservationKind::TaskFingerprint,
+            digest(A),
+            digest(A),
+        )
+        .unwrap();
+        let plan = RecoveryPlanStatus::task_configuration_test_only(
+            OperationId::parse("22222222-2222-4222-8222-222222222222").unwrap(),
+            TaskPhase::LocalVerified,
+            vec![unknown],
+            vec![action],
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&plan).unwrap();
+        assert_eq!(encoded["target"], "taskConfiguration");
+        assert_eq!(encoded["effectClass"], "rollback");
+        assert_eq!(encoded["remainingUnknowns"].as_array().unwrap().len(), 1);
+        assert!(encoded.get("recoveryDigest").is_some());
+        assert!(schema_accepts::<RecoveryPlanStatus>(&encoded));
+
+        let wrong_action = release_root_lock_action().unwrap();
+        assert!(RecoveryPlanStatus::task_configuration_test_only(
+            OperationId::parse("22222222-2222-4222-8222-222222222222").unwrap(),
+            TaskPhase::LocalVerified,
+            Vec::new(),
+            vec![wrong_action],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn repository_commit_recovery_stages_have_disjoint_action_grammars() {
+        let prior_operation_id =
+            OperationId::parse("44444444-4444-4444-8444-444444444444").unwrap();
+        let observe = RecoveryPlanStatus::repository_commit_observe_test_only(
+            prior_operation_id.clone(),
+            TaskPhase::CommittedUnverified,
+            Vec::new(),
+            vec![observe_commit_action().unwrap()],
+        )
+        .unwrap();
+        let observe_json = serde_json::to_value(observe).unwrap();
+        assert_eq!(observe_json["repositoryCommitStage"], "observeOutcome");
+        assert!(schema_accepts::<RecoveryPlanStatus>(&observe_json));
+
+        let committed = RecoveryPlanStatus::repository_commit_committed_test_only(
+            prior_operation_id.clone(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let committed_json = serde_json::to_value(committed).unwrap();
+        assert_eq!(committed_json["repositoryCommitStage"], "committed");
+        assert_eq!(committed_json["plannedResultPhase"], "committedAndUnlocked");
+        assert!(schema_accepts::<RecoveryPlanStatus>(&committed_json));
+
+        let restore = restore_original_action().unwrap();
+        let release = release_root_lock_action_two().unwrap();
+        let not_committed = RecoveryPlanStatus::repository_commit_not_committed_test_only(
+            prior_operation_id.clone(),
+            Vec::new(),
+            vec![restore.clone(), release.clone()],
+        )
+        .unwrap();
+        let not_committed_json = serde_json::to_value(not_committed).unwrap();
+        assert_eq!(not_committed_json["repositoryCommitStage"], "notCommitted");
+        assert_eq!(not_committed_json["plannedResultPhase"], "synchronized");
+        assert!(schema_accepts::<RecoveryPlanStatus>(&not_committed_json));
+
+        assert!(
+            RecoveryPlanStatus::repository_commit_not_committed_test_only(
+                prior_operation_id.clone(),
+                Vec::new(),
+                vec![release, restore],
+            )
+            .is_err()
+        );
+        assert!(RecoveryPlanStatus::repository_commit_committed_test_only(
+            prior_operation_id,
+            Vec::new(),
+            vec![observe_commit_action().unwrap()],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn prearm_recovery_observe_and_finalize_stages_are_physically_disjoint() {
+        let mode_observation = RecoveryExpectedObservation::new(
+            RecoveryObservationKind::ReservedOriginalLease,
+            RecoverySubjectRef::reserved_original_infobase(digest(A)),
+            digest(A),
+        );
+        let action =
+            observe_prearm_outcome_action(prearm_terminal_observations(mode_observation)).unwrap();
+        let prior_operation_id =
+            OperationId::parse("55555555-5555-4555-8555-555555555555").unwrap();
+        let plan = RecoveryPlanStatus::prearm_observe_test_only(
+            prior_operation_id.clone(),
+            TaskPhase::RecoveryRequired,
+            Vec::new(),
+            vec![action.clone()],
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(plan).unwrap();
+        assert_eq!(encoded["preArmCancellationStage"], "observeOutcome");
+        assert!(encoded.get("preArmCancellationEffectObservation").is_none());
+        assert!(encoded
+            .get("preArmCancellationFinalizationProgress")
+            .is_none());
+        assert!(schema_accepts::<RecoveryPlanStatus>(&encoded));
+
+        assert!(RecoveryPlanStatus::prearm_observe_test_only(
+            OperationId::parse("66666666-6666-4666-8666-666666666666").unwrap(),
+            TaskPhase::RecoveryRequired,
+            Vec::new(),
+            vec![action],
+        )
+        .is_err());
+
+        let digest_schema = schema::<PreArmFinalizeRecoveryPlanDigestRecord>();
+        let status_schema = schema::<PreArmFinalizeRecoveryPlanStatus>();
+        let digest_schema = serde_json::to_string(&digest_schema).unwrap();
+        let status_schema = serde_json::to_string(&status_schema).unwrap();
+        assert!(!digest_schema.contains("preArmCancellationFinalizationProgress"));
+        assert!(status_schema.contains("preArmCancellationFinalizationProgress"));
     }
 
     #[test]
@@ -5068,48 +9425,39 @@ mod tests {
     }
 
     #[test]
-    fn support_history_requires_one_anchor_prefix_followed_only_by_versions() {
+    fn support_history_requires_exact_bound_anchor_only() {
         let anchor = RecoveryExpectedObservation::new(
             RecoveryObservationKind::RepositoryAnchor,
-            RecoverySubjectRef::registered(id(ID_1)),
+            RecoverySubjectRef::registered(id("22222222-2222-4222-8222-222222222222")),
             digest(A),
         );
         let version = RecoveryExpectedObservation::new(
             RecoveryObservationKind::RepositoryVersion,
-            RecoverySubjectRef::registered(id("22222222-2222-4222-8222-222222222222")),
+            RecoverySubjectRef::registered(id(ID_1)),
             digest(B),
         );
-        let valid = observe_history_action(vec![anchor.clone(), version.clone()]).unwrap();
-        assert!(observe_history_action(vec![anchor.clone()]).is_ok());
-
-        let duplicate_anchor = RecoveryExpectedObservation::new(
-            RecoveryObservationKind::RepositoryAnchor,
-            RecoverySubjectRef::registered(id("33333333-3333-4333-8333-333333333333")),
-            digest(A),
-        );
-        assert!(
-            observe_history_action(vec![anchor.clone(), duplicate_anchor, version.clone(),])
-                .is_err()
-        );
+        let valid = observe_history_action(vec![anchor.clone()]).unwrap();
+        assert!(observe_history_action(vec![anchor.clone(), version.clone()]).is_err());
         assert!(observe_history_action(vec![version.clone()]).is_err());
-        assert!(observe_history_action(vec![version.clone(), anchor.clone()]).is_err());
-        assert!(
-            observe_history_action(vec![RecoveryExpectedObservation::new(
+        for wrong_anchor in [
+            RecoveryExpectedObservation::new(
                 RecoveryObservationKind::RepositoryAnchor,
                 RecoverySubjectRef::configuration_root(),
                 digest(A),
-            )])
-            .is_err()
-        );
-        assert!(observe_history_action(vec![
-            anchor.clone(),
+            ),
             RecoveryExpectedObservation::new(
-                RecoveryObservationKind::RepositoryVersion,
-                RecoverySubjectRef::configuration_root(),
+                RecoveryObservationKind::RepositoryAnchor,
+                RecoverySubjectRef::registered(id(ID_1)),
+                digest(A),
+            ),
+            RecoveryExpectedObservation::new(
+                RecoveryObservationKind::RepositoryAnchor,
+                RecoverySubjectRef::registered(id("22222222-2222-4222-8222-222222222222")),
                 digest(B),
             ),
-        ])
-        .is_err());
+        ] {
+            assert!(observe_history_action(vec![wrong_anchor]).is_err());
+        }
 
         let action_schema = schema::<RecoveryAction>();
         let validator = jsonschema::options()
@@ -5119,12 +9467,12 @@ mod tests {
         let valid = serde_json::to_value(valid).unwrap();
         assert!(validator.is_valid(&valid));
 
-        let mut duplicate = valid.clone();
-        duplicate["expectedObservations"]
+        let mut extra_version = valid.clone();
+        extra_version["expectedObservations"]
             .as_array_mut()
             .unwrap()
-            .insert(1, serde_json::to_value(anchor.clone()).unwrap());
-        assert!(!validator.is_valid(&duplicate));
+            .push(serde_json::to_value(version).unwrap());
+        assert!(!validator.is_valid(&extra_version));
 
         let mut missing = valid.clone();
         missing["expectedObservations"]
@@ -5133,12 +9481,9 @@ mod tests {
             .remove(0);
         assert!(!validator.is_valid(&missing));
 
-        let mut anchor_after_version = valid;
-        anchor_after_version["expectedObservations"]
-            .as_array_mut()
-            .unwrap()
-            .swap(0, 1);
-        assert!(!validator.is_valid(&anchor_after_version));
+        let mut wrong_kind = valid;
+        wrong_kind["expectedObservations"][0]["observationKind"] = json!("repositoryVersion");
+        assert!(!validator.is_valid(&wrong_kind));
     }
 
     #[test]
@@ -5628,6 +9973,24 @@ mod tests {
         let exact_finish = finish_action(exact_release.clone());
         let mut exact_actions = prefix.clone();
         exact_actions.push(exact_finish.clone());
+        let exact_action_json = serde_json::to_value(
+            ArchiveRecoveryActions::from_actions(exact_actions.clone()).unwrap(),
+        )
+        .unwrap();
+        assert!(schema_accepts::<ArchiveRecoveryActions>(&exact_action_json));
+        let mut permuted_action_json = exact_action_json.as_array().unwrap().clone();
+        permuted_action_json.swap(0, 3);
+        assert!(!schema_accepts::<ArchiveRecoveryActions>(&json!(
+            permuted_action_json
+        )));
+        let mut pair_permuted = exact_actions.clone();
+        pair_permuted.swap(1, 2);
+        // Pair adjacency is the second documented variable-length schema
+        // superset; the sealed constructor remains the authority boundary.
+        assert!(schema_accepts::<ArchiveRecoveryActions>(
+            &serde_json::to_value(&pair_permuted).unwrap()
+        ));
+        assert!(ArchiveRecoveryActions::from_actions(pair_permuted).is_err());
         let held_plan = RecoveryActionPlan::test_only(
             RecoveryTarget::Archive,
             RecoveryEffectClass::Cleanup,
@@ -5816,5 +10179,71 @@ mod tests {
             Vec::new(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_quarantined_observation_cannot_masquerade_as_cleanup_absence() {
+        let target: OwnedTargetLocator = serde_json::from_value(json!({
+            "projectId": ID_1,
+            "instanceId": ID_1,
+            "role": "quarantine"
+        }))
+        .unwrap();
+        let plan = RecoveryPlanStatus::cleanup_fixture_test_only(
+            OperationId::parse("22222222-2222-4222-8222-222222222222").unwrap(),
+            id("33333333-3333-4333-8333-333333333333"),
+            target.clone(),
+            TaskPhase::CleanedSuccess,
+        )
+        .unwrap();
+        let RecoveryPlanStatusKind::Cleanup(plan) = &plan.0 else {
+            panic!("fixture must be cleanup");
+        };
+        let [resume, finish] = plan.record.actions.as_slice() else {
+            panic!("fixture must retain resume and finish actions");
+        };
+        let RecoveryActionKindWire::ResumeOwnedTargetQuarantine(resume_body) = &resume.0 else {
+            panic!("fixture must resume quarantine first");
+        };
+        let quarantined_digest = resume_body.expected_quarantined_digest.clone();
+        let quarantined = RecoveryObservation::matched_test_only(
+            RecoveryObservationKind::QuarantinePresence,
+            RecoverySubjectRef::owned_role(target.clone()),
+            quarantined_digest.clone(),
+            quarantined_digest,
+        )
+        .unwrap();
+        assert!(finish
+            .match_finish_cleanup_absence(&target, &quarantined)
+            .is_err());
+
+        let RecoveryActionKindWire::FinishCleanup(finish_body) = &finish.0 else {
+            panic!("fixture must finish cleanup last");
+        };
+        let absent_digest = finish_body.expected_observations.as_slice()[0]
+            .expected_digest
+            .clone();
+        let wrong_kind = RecoveryObservation::matched_test_only(
+            RecoveryObservationKind::QuarantinePresence,
+            RecoverySubjectRef::owned_role(target.clone()),
+            absent_digest.clone(),
+            absent_digest.clone(),
+        )
+        .unwrap();
+        assert!(finish
+            .match_finish_cleanup_absence(&target, &wrong_kind)
+            .is_err());
+        let absent = RecoveryObservation::matched_test_only(
+            RecoveryObservationKind::OwnedTargetAbsence,
+            RecoverySubjectRef::owned_role(target.clone()),
+            absent_digest.clone(),
+            absent_digest,
+        )
+        .unwrap();
+        let authority = finish
+            .match_finish_cleanup_absence(&target, &absent)
+            .unwrap();
+        assert_eq!(authority.owned_target(), &target);
+        assert_eq!(authority.observation_digest(), absent.observation_digest());
     }
 }

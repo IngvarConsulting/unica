@@ -4,6 +4,8 @@ use serde_json::{Map, Number, Value};
 use std::collections::HashSet;
 use std::fmt;
 
+const MAX_I_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+
 // Draft 2020-12 treats `format` as an annotation unless a validator opts in.
 // Contract validators must register these exact predicates and assert formats;
 // the runtime scalar deserializers call the same predicates below.
@@ -186,7 +188,14 @@ impl SchemaAuditor<'_> {
         if object.keys().any(|keyword| {
             matches!(
                 keyword.as_str(),
-                "items" | "prefixItems" | "minItems" | "maxItems" | "uniqueItems"
+                "items"
+                    | "prefixItems"
+                    | "minItems"
+                    | "maxItems"
+                    | "uniqueItems"
+                    | "contains"
+                    | "minContains"
+                    | "maxContains"
             )
         }) && !array_typed
         {
@@ -263,6 +272,30 @@ impl SchemaAuditor<'_> {
             audit_non_negative_integer(object.get("minItems"), path, "minItems")?;
             audit_non_negative_integer(object.get("maxItems"), path, "maxItems")?;
             audit_boolean(object.get("uniqueItems"), path, "uniqueItems")?;
+            match object.get("contains") {
+                Some(contains @ Value::Object(_)) => {
+                    self.audit(contains, &format!("{path}.contains"))?;
+                }
+                Some(_) => {
+                    return Err(error(path, "contains must be an audited schema"));
+                }
+                None if object.contains_key("minContains")
+                    || object.contains_key("maxContains") =>
+                {
+                    return Err(error(path, "minContains and maxContains require contains"));
+                }
+                None => {}
+            }
+            audit_i_json_non_negative_integer(object.get("minContains"), path, "minContains")?;
+            audit_i_json_non_negative_integer(object.get("maxContains"), path, "maxContains")?;
+            if let (Some(minimum), Some(maximum)) = (
+                object.get("minContains").and_then(Value::as_u64),
+                object.get("maxContains").and_then(Value::as_u64),
+            ) {
+                if minimum > maximum {
+                    return Err(error(path, "minContains must not exceed maxContains"));
+                }
+            }
         }
 
         if object.keys().any(|keyword| {
@@ -483,6 +516,9 @@ fn is_supported_keyword(keyword: &str) -> bool {
             | "minItems"
             | "maxItems"
             | "uniqueItems"
+            | "contains"
+            | "minContains"
+            | "maxContains"
             | "minLength"
             | "maxLength"
             | "pattern"
@@ -620,6 +656,27 @@ fn audit_non_negative_integer(
     }
 }
 
+fn audit_i_json_non_negative_integer(
+    value: Option<&Value>,
+    path: &str,
+    _keyword: &'static str,
+) -> Result<(), SchemaAuditError> {
+    match value {
+        Some(Value::Number(number))
+            if number
+                .as_u64()
+                .is_some_and(|value| value <= MAX_I_JSON_INTEGER) =>
+        {
+            Ok(())
+        }
+        None => Ok(()),
+        Some(_) => Err(error(
+            path,
+            "keyword must contain an I-JSON-safe non-negative integer",
+        )),
+    }
+}
+
 fn audit_number(
     value: Option<&Value>,
     path: &str,
@@ -628,5 +685,66 @@ fn audit_number(
     match value {
         Some(Value::Number(_)) | None => Ok(()),
         Some(_) => Err(error(path, "keyword must contain a number")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audit_json_schema;
+    use serde_json::json;
+
+    #[test]
+    fn schema_auditor_accepts_exact_contains_cardinality() {
+        assert!(audit_json_schema(&json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "maxItems": 3,
+            "contains": { "type": "string", "const": "finish" },
+            "minContains": 1,
+            "maxContains": 1
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn schema_auditor_rejects_unsafe_contains_shapes() {
+        for invalid in [
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "minContains": 1
+            }),
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "contains": true
+            }),
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "contains": { "type": "string" },
+                "minContains": -1
+            }),
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "contains": { "type": "string" },
+                "minContains": 2,
+                "maxContains": 1
+            }),
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "contains": { "type": "string" },
+                "maxContains": 9_007_199_254_740_992_u64
+            }),
+            json!({
+                "type": "string",
+                "contains": { "type": "string" }
+            }),
+        ] {
+            assert!(audit_json_schema(&invalid).is_err(), "accepted {invalid}");
+        }
     }
 }

@@ -5241,6 +5241,30 @@ impl PreArmCancellationFinalizationPlan {
         &self.finalization_attempt_id
     }
 
+    pub(crate) const fn prior_operation_id(&self) -> &OperationId {
+        &self.prior_operation_id
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn expected_support_action_digest(&self) -> &Sha256Digest {
+        &self.expected_support_action_digest
+    }
+
+    pub(crate) const fn approved_cancellation_digest(&self) -> &Sha256Digest {
+        &self.approved_cancellation_digest
+    }
+
+    pub(crate) const fn effect_observation_digest(&self) -> &Sha256Digest {
+        &self.effect_observation_digest
+    }
+
+    pub(crate) const fn planned_result_phase(&self) -> TaskPhase {
+        self.planned_result_phase
+    }
+
     pub(crate) const fn receipt_plan(&self) -> &PreArmCancellationReceiptPlan {
         &self.receipt_plan
     }

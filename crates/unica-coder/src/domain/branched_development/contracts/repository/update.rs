@@ -7,6 +7,7 @@ use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
 use crate::domain::branched_development::contracts::schema::one_of_schema;
+use crate::domain::branched_development::contracts::support_recovery_authority::SupportRecoveryAuthorityToken;
 use crate::domain::branched_development::{CapabilityRowId, Sha256Digest, UnicaId};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
@@ -141,6 +142,36 @@ pub(crate) struct SelectiveRepositoryUpdatePlanAuthority {
     structural_capability_row_id: Option<CapabilityRowId>,
 }
 
+/// Raw capability observation for a recovery-finalization selective plan.
+/// It is intentionally not a plan authority: only the recovery token can turn
+/// this typed observation into the opaque, digest-bound plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoverySelectiveUpdatePlanObservation {
+    planned_targets: RepositoryTargetStates,
+    lock_targets: RepositoryUpdateLockTargets,
+    selective_objects_capability_id: CapabilityRowId,
+    structural_capability_row_id: Option<CapabilityRowId>,
+    structural_closure_covered_targets: Vec<super::RepositoryTargetIdentity>,
+}
+
+impl SupportRecoverySelectiveUpdatePlanObservation {
+    pub(crate) fn from_capability_adapter(
+        planned_targets: RepositoryTargetStates,
+        lock_targets: RepositoryUpdateLockTargets,
+        selective_objects_capability_id: CapabilityRowId,
+        structural_capability_row_id: Option<CapabilityRowId>,
+        structural_closure_covered_targets: Vec<super::RepositoryTargetIdentity>,
+    ) -> Self {
+        Self {
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            structural_capability_row_id,
+            structural_closure_covered_targets,
+        }
+    }
+}
+
 impl SelectiveRepositoryUpdatePlanAuthority {
     fn from_capability_adapter(
         scope: SelectiveRepositoryUpdateScope,
@@ -234,6 +265,32 @@ impl JsonSchema for SelectiveRepositoryUpdatePlan {
 }
 
 impl SelectiveRepositoryUpdatePlan {
+    pub(crate) fn recovery_finalization_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        observation: SupportRecoverySelectiveUpdatePlanObservation,
+    ) -> Result<Self, RepositoryContractError> {
+        let SupportRecoverySelectiveUpdatePlanObservation {
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            structural_capability_row_id,
+            structural_closure_covered_targets,
+        } = observation;
+        let covered_targets = structural_closure_covered_targets
+            .iter()
+            .map(HasTargetKey::target_key)
+            .collect();
+        SelectiveRepositoryUpdatePlanAuthority::from_capability_adapter(
+            SelectiveRepositoryUpdateScope::RecoveryFinalization,
+            planned_targets,
+            lock_targets,
+            selective_objects_capability_id,
+            structural_capability_row_id,
+            covered_targets,
+        )
+        .and_then(Self::new)
+    }
+
     #[cfg(test)]
     pub(crate) fn recovery_finalization_test_only(
         planned_targets: RepositoryTargetStates,
@@ -345,6 +402,63 @@ enum SelectiveRepositoryUpdateEffectOutcome {
         update_effect_receipt_id: UnicaId,
         update_effect_receipt_digest: Sha256Digest,
     },
+}
+
+/// Capability-observed effect branch for one recovery finalization.  The
+/// branch is raw evidence only and cannot mint a repository proof by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupportRecoverySelectiveUpdateEffectObservation {
+    AlreadyExact,
+    Performed {
+        update_effect_receipt_id: UnicaId,
+        update_effect_receipt_digest: Sha256Digest,
+    },
+}
+
+/// Typed observations retained from the selective-update window.  Construction
+/// is available to an adapter, while proof construction remains token-gated in
+/// this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportRecoverySelectiveUpdateExecutionObservation {
+    guard_receipt_id: UnicaId,
+    observed_before_targets: RepositoryTargetStates,
+    applied_targets: RepositoryTargetStates,
+    acquired_root_first: AcquiredRepositoryUpdateLockTargets,
+    released_in_reverse_order: ReleasedRepositoryUpdateLockTargets,
+    before_original_target_fingerprint_map_digest: Sha256Digest,
+    outcome: SupportRecoverySelectiveUpdateEffectObservation,
+    verified_original_target_fingerprint_digest: Sha256Digest,
+    observed_before_cursor: RepositoryHistoryCursor,
+    observed_after_cursor: RepositoryHistoryCursor,
+}
+
+impl SupportRecoverySelectiveUpdateExecutionObservation {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_capability_adapter(
+        guard_receipt_id: UnicaId,
+        observed_before_targets: RepositoryTargetStates,
+        applied_targets: RepositoryTargetStates,
+        acquired_root_first: AcquiredRepositoryUpdateLockTargets,
+        released_in_reverse_order: ReleasedRepositoryUpdateLockTargets,
+        before_original_target_fingerprint_map_digest: Sha256Digest,
+        outcome: SupportRecoverySelectiveUpdateEffectObservation,
+        verified_original_target_fingerprint_digest: Sha256Digest,
+        observed_before_cursor: RepositoryHistoryCursor,
+        observed_after_cursor: RepositoryHistoryCursor,
+    ) -> Self {
+        Self {
+            guard_receipt_id,
+            observed_before_targets,
+            applied_targets,
+            acquired_root_first,
+            released_in_reverse_order,
+            before_original_target_fingerprint_map_digest,
+            outcome,
+            verified_original_target_fingerprint_digest,
+            observed_before_cursor,
+            observed_after_cursor,
+        }
+    }
 }
 
 /// Capability-derived observation of one complete selective-update lock window.
@@ -554,6 +668,89 @@ impl JsonSchema for SelectiveRepositoryUpdateProof {
 }
 
 impl SelectiveRepositoryUpdateProof {
+    pub(crate) fn recovery_finalization_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: &SelectiveRepositoryUpdatePlan,
+        observation: SupportRecoverySelectiveUpdateExecutionObservation,
+    ) -> Result<Self, RepositoryContractError> {
+        let SupportRecoverySelectiveUpdateExecutionObservation {
+            guard_receipt_id,
+            observed_before_targets,
+            applied_targets,
+            acquired_root_first,
+            released_in_reverse_order,
+            before_original_target_fingerprint_map_digest,
+            outcome,
+            verified_original_target_fingerprint_digest,
+            observed_before_cursor,
+            observed_after_cursor,
+        } = observation;
+        let outcome = match outcome {
+            SupportRecoverySelectiveUpdateEffectObservation::AlreadyExact => {
+                SelectiveRepositoryUpdateEffectOutcome::AlreadyExact {
+                    basis: AlreadyExactAuthorityBasis::GuardedCurrentObservation,
+                }
+            }
+            SupportRecoverySelectiveUpdateEffectObservation::Performed {
+                update_effect_receipt_id,
+                update_effect_receipt_digest,
+            } => SelectiveRepositoryUpdateEffectOutcome::Performed {
+                update_effect_receipt_id,
+                update_effect_receipt_digest,
+            },
+        };
+        Self::new(
+            plan,
+            SelectiveRepositoryUpdateExecutionAuthority {
+                plan_digest: plan.plan_digest.clone(),
+                guard_receipt_id,
+                observed_before_targets,
+                applied_targets,
+                acquired_root_first,
+                released_in_reverse_order,
+                before_original_target_fingerprint_map_digest,
+                outcome,
+                verified_original_target_fingerprint_digest,
+                observed_before_cursor,
+                observed_after_cursor,
+            },
+        )
+    }
+
+    /// Cross-contract fixture for Task 11 completion tests. The caller may
+    /// select only receipt/cursor/fingerprint observations; targets, lock
+    /// acquisition/release order, plan digest, and capabilities are copied
+    /// from the already validated plan and still pass through `Self::new`.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::domain::branched_development) fn recovery_finalization_already_exact_test_only(
+        plan: &SelectiveRepositoryUpdatePlan,
+        guard_receipt_id: UnicaId,
+        before_original_target_fingerprint_map_digest: Sha256Digest,
+        verified_original_target_fingerprint_digest: Sha256Digest,
+        observed_before_cursor: RepositoryHistoryCursor,
+        observed_after_cursor: RepositoryHistoryCursor,
+    ) -> Result<Self, RepositoryContractError> {
+        let authority = SelectiveRepositoryUpdateExecutionAuthority {
+            plan_digest: plan.plan_digest.clone(),
+            guard_receipt_id,
+            observed_before_targets: plan.planned_targets.clone(),
+            applied_targets: plan.planned_targets.clone(),
+            acquired_root_first: AcquiredRepositoryUpdateLockTargets(plan.lock_targets.0.clone()),
+            released_in_reverse_order: ReleasedRepositoryUpdateLockTargets(
+                plan.lock_targets.0.iter().rev().cloned().collect(),
+            ),
+            before_original_target_fingerprint_map_digest,
+            outcome: SelectiveRepositoryUpdateEffectOutcome::AlreadyExact {
+                basis: AlreadyExactAuthorityBasis::GuardedCurrentObservation,
+            },
+            verified_original_target_fingerprint_digest,
+            observed_before_cursor,
+            observed_after_cursor,
+        };
+        Self::new(plan, authority)
+    }
+
     pub(crate) fn new(
         plan: &SelectiveRepositoryUpdatePlan,
         authority: SelectiveRepositoryUpdateExecutionAuthority,

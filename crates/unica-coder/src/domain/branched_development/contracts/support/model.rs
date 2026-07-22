@@ -699,6 +699,46 @@ impl SupportTransition {
             Self::RestoreConfigurationChangesDisabled { .. } | Self::RestoreObjectLocked { .. }
         )
     }
+
+    /// Returns true only for the exact inverse of one immutable transition
+    /// authorized by the frozen support action. Displays are part of the
+    /// binding as well as stable IDs so a corrective instruction cannot
+    /// silently retarget an otherwise equivalent transition.
+    pub(crate) fn is_exact_inverse_of(&self, authorized: &Self) -> bool {
+        match (self, authorized) {
+            (
+                Self::RestoreConfigurationChangesDisabled {
+                    configuration_display,
+                    layer_id,
+                    ..
+                },
+                Self::EnableConfigurationChanges {
+                    configuration_display: authorized_display,
+                    layer_id: authorized_layer,
+                    ..
+                },
+            ) => configuration_display == authorized_display && layer_id == authorized_layer,
+            (
+                Self::RestoreObjectLocked {
+                    object_id,
+                    object_display,
+                    layer_id,
+                    ..
+                },
+                Self::MakeObjectEditable {
+                    object_id: authorized_object,
+                    object_display: authorized_display,
+                    layer_id: authorized_layer,
+                    ..
+                },
+            ) => {
+                object_id == authorized_object
+                    && object_display == authorized_display
+                    && layer_id == authorized_layer
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2358,6 +2398,26 @@ impl ManualWorkingInfobaseBaseline {
 
     pub(crate) const fn working_infobase_identity(&self) -> &ManualWorkingInfobaseIdentity {
         &self.working_infobase_identity
+    }
+
+    pub(crate) const fn repository_base_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.repository_base_cursor
+    }
+
+    pub(crate) const fn recorded_object_version_map_digest(&self) -> &Sha256Digest {
+        &self.recorded_object_version_map_digest
+    }
+
+    pub(crate) const fn base_fingerprint(&self) -> &Sha256Digest {
+        &self.base_fingerprint
+    }
+
+    pub(crate) const fn current_fingerprint(&self) -> &Sha256Digest {
+        &self.current_fingerprint
+    }
+
+    pub(crate) const fn baseline_inspection_receipt_id(&self) -> &UnicaId {
+        &self.baseline_inspection_receipt_id
     }
 
     pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {

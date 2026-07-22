@@ -4,6 +4,34 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{fmt, sync::Arc};
 
+/// Exact bytes that passed strict I-JSON parsing, object-shape validation, and
+/// the top-level durable-policy poison check. Other preflight outcomes cannot
+/// be converted into this type.
+pub(super) struct OpaqueOperationRecordCandidate {
+    source_bytes: Arc<[u8]>,
+    observed_digest: Sha256Digest,
+}
+
+impl fmt::Debug for OpaqueOperationRecordCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpaqueOperationRecordCandidate")
+            .field("observed_digest", &self.observed_digest)
+            .field("source_byte_len", &self.source_bytes.len())
+            .finish()
+    }
+}
+
+impl OpaqueOperationRecordCandidate {
+    pub(super) fn source_bytes(&self) -> &Arc<[u8]> {
+        &self.source_bytes
+    }
+
+    pub(super) fn observed_digest(&self) -> &Sha256Digest {
+        &self.observed_digest
+    }
+}
+
 pub(super) enum OperationPreflight {
     StrictJsonFailure {
         source_bytes: Arc<[u8]>,
@@ -17,10 +45,7 @@ pub(super) enum OperationPreflight {
         source_bytes: Arc<[u8]>,
         observed_digest: Sha256Digest,
     },
-    OpaqueCandidate {
-        source_bytes: Arc<[u8]>,
-        observed_digest: Sha256Digest,
-    },
+    OpaqueCandidate(OpaqueOperationRecordCandidate),
 }
 
 impl fmt::Debug for OperationPreflight {
@@ -38,10 +63,11 @@ impl fmt::Debug for OperationPreflight {
                 source_bytes,
                 observed_digest,
             } => ("ForbiddenReadOnlyPolicy", source_bytes, observed_digest),
-            Self::OpaqueCandidate {
-                source_bytes,
-                observed_digest,
-            } => ("OpaqueCandidate", source_bytes, observed_digest),
+            Self::OpaqueCandidate(candidate) => (
+                "OpaqueCandidate",
+                candidate.source_bytes(),
+                candidate.observed_digest(),
+            ),
         };
 
         formatter
@@ -65,8 +91,8 @@ impl OperationPreflight {
         match self {
             Self::StrictJsonFailure { source_bytes, .. }
             | Self::TopLevelNotObject { source_bytes, .. }
-            | Self::ForbiddenReadOnlyPolicy { source_bytes, .. }
-            | Self::OpaqueCandidate { source_bytes, .. } => source_bytes,
+            | Self::ForbiddenReadOnlyPolicy { source_bytes, .. } => source_bytes,
+            Self::OpaqueCandidate(candidate) => candidate.source_bytes(),
         }
     }
 
@@ -87,10 +113,18 @@ impl OperationPreflight {
             }
             | Self::ForbiddenReadOnlyPolicy {
                 observed_digest, ..
-            }
-            | Self::OpaqueCandidate {
-                observed_digest, ..
             } => observed_digest,
+            Self::OpaqueCandidate(candidate) => candidate.observed_digest(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_opaque_candidate(self) -> Option<OpaqueOperationRecordCandidate> {
+        match self {
+            Self::OpaqueCandidate(candidate) => Some(candidate),
+            Self::StrictJsonFailure { .. }
+            | Self::TopLevelNotObject { .. }
+            | Self::ForbiddenReadOnlyPolicy { .. } => None,
         }
     }
 }
@@ -118,10 +152,10 @@ pub(super) fn preflight(source_bytes: Arc<[u8]>) -> OperationPreflight {
                     observed_digest,
                 }
             } else {
-                OperationPreflight::OpaqueCandidate {
+                OperationPreflight::OpaqueCandidate(OpaqueOperationRecordCandidate {
                     source_bytes,
                     observed_digest,
-                }
+                })
             }
         }
         Ok(_) => OperationPreflight::TopLevelNotObject {
@@ -180,11 +214,11 @@ mod tests {
 
         assert!(matches!(
             compact_result,
-            OperationPreflight::OpaqueCandidate { .. }
+            OperationPreflight::OpaqueCandidate(_)
         ));
         assert!(matches!(
             whitespace_changed_result,
-            OperationPreflight::OpaqueCandidate { .. }
+            OperationPreflight::OpaqueCandidate(_)
         ));
         assert_retains_exact_bytes(&compact_result, &compact);
         assert_retains_exact_bytes(&whitespace_changed_result, &whitespace_changed);
@@ -203,11 +237,11 @@ mod tests {
 
         assert!(matches!(
             a_then_b_result,
-            OperationPreflight::OpaqueCandidate { .. }
+            OperationPreflight::OpaqueCandidate(_)
         ));
         assert!(matches!(
             b_then_a_result,
-            OperationPreflight::OpaqueCandidate { .. }
+            OperationPreflight::OpaqueCandidate(_)
         ));
         assert_retains_exact_bytes(&a_then_b_result, &a_then_b);
         assert_retains_exact_bytes(&b_then_a_result, &b_then_a);
@@ -264,7 +298,7 @@ mod tests {
         let bytes = source(br#"{"nested":{"policy":"readOnly"},"policy":"contained"}"#);
         let result = preflight(Arc::clone(&bytes));
 
-        assert!(matches!(result, OperationPreflight::OpaqueCandidate { .. }));
+        assert!(matches!(result, OperationPreflight::OpaqueCandidate(_)));
         assert_retains_exact_bytes(&result, &bytes);
     }
 
@@ -315,8 +349,26 @@ mod tests {
             let bytes = source(format!(r#"{{"policy":"{policy}"}}"#).as_bytes());
             let result = preflight(Arc::clone(&bytes));
 
-            assert!(matches!(result, OperationPreflight::OpaqueCandidate { .. }));
+            assert!(matches!(result, OperationPreflight::OpaqueCandidate(_)));
             assert_retains_exact_bytes(&result, &bytes);
         }
+    }
+
+    #[test]
+    fn only_the_validated_object_branch_can_yield_a_storage_candidate() {
+        for bytes in [
+            invalid_utf8_source(),
+            source(br#"[]"#),
+            source(br#"{"policy":"readOnly"}"#),
+        ] {
+            assert!(preflight(bytes).into_opaque_candidate().is_none());
+        }
+
+        let bytes = source(br#"{"policy":"contained"}"#);
+        let candidate = preflight(Arc::clone(&bytes))
+            .into_opaque_candidate()
+            .expect("durable strict object must yield the sealed candidate");
+        assert!(Arc::ptr_eq(candidate.source_bytes(), &bytes));
+        assert_eq!(candidate.observed_digest(), &digest(&bytes));
     }
 }

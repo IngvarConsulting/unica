@@ -179,10 +179,21 @@ mod tests {
         });
         let before = serde_json::to_value(cursor("19", B)).unwrap();
         let after = before.clone();
+        let closure_proof = working_closure_proof();
+        let terminalization_receipt =
+            SupportRecoveryAuthorizationTerminalizationReceipt::from_fields(
+                id(ID_1),
+                digest(A),
+                id(ID_3),
+                CompletedSupportRecoveryAuthorizationOutcome::Cancelled,
+            )
+            .unwrap();
         json!({
             "outcome": "completed",
             "guardReceiptId": ID_1,
+            "guardReleaseReceiptId": ID_2,
             "manualTargetMode": "separateWorkingInfobase",
+            "manualWorkingInfobaseClosureProof": closure_proof,
             "finalizationPlanDigest": A,
             "plannedLockTargets": [root_lock.clone()],
             "acquiredInOrder": [root_lock.clone()],
@@ -220,6 +231,7 @@ mod tests {
                 "entries": [],
                 "partitionDigest": A,
             },
+            "authorizationTerminalizationReceipt": terminalization_receipt,
             "authorizationOutcome": "cancelled",
             "releasedInReverseOrder": [root_lock],
             "releaseVerified": true,
@@ -241,6 +253,30 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    fn working_stop_evidence() -> ManualWorkingInfobaseStopEvidence {
+        let plan = materialized_closure_plan();
+        ManualWorkingInfobaseStopEvidence::new(
+            &plan,
+            ManualWorkingInfobaseStopAuthority::lease_busy_test_only(
+                &plan,
+                RequiredNullable::null(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn working_closure_proof() -> ManualWorkingInfobaseClosureProof {
+        let plan = materialized_closure_plan();
+        let authority = ManualWorkingInfobaseClosureExecutionAuthority::matching_test_only(
+            &plan,
+            id(ID_1),
+            id(ID_2),
+        )
+        .unwrap();
+        ManualWorkingInfobaseClosureProof::new(&plan, authority).unwrap()
     }
 
     fn schema<T: JsonSchema>() -> Value {
@@ -559,7 +595,18 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let before_json = serde_json::to_value(before_root).unwrap();
+        assert!(matches!(
+            before_root.blocked_target_ref(),
+            Some(BlockedSupportRecoveryTargetRef::ConfigurationRoot)
+        ));
+        assert_eq!(
+            before_root.blocked_target_display(),
+            Some(&display("Configuration"))
+        );
+        assert!(before_root
+            .blocked_owner()
+            .is_some_and(|owner| owner.as_ref().is_none()));
+        let before_json = serde_json::to_value(&before_root).unwrap();
         assert_eq!(before_json["outcome"], "blockedBeforeRoot");
         assert_eq!(before_json["acquiredInOrder"], json!([]));
         assert_eq!(before_json["releasedInReverseOrder"], json!([]));
@@ -596,7 +643,16 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let partial_json = serde_json::to_value(partial).unwrap();
+        assert!(matches!(
+            partial.blocked_target_ref(),
+            Some(BlockedSupportRecoveryTargetRef::DevelopmentObject(object_id))
+                if object_id == &object(OBJECT_A)
+        ));
+        assert_eq!(
+            partial.blocked_target_display(),
+            Some(&display("Catalog.A"))
+        );
+        let partial_json = serde_json::to_value(&partial).unwrap();
         assert_eq!(partial_json["outcome"], "blockedAfterPartial");
         assert_eq!(partial_json["acquiredInOrder"].as_array().unwrap().len(), 1);
 
@@ -653,8 +709,10 @@ mod tests {
             SupportRecoveryGuardAuthority::stopped_after_complete_guard_test_only(
                 separate,
                 id(ID_1),
+                id(ID_2),
                 None,
                 None,
+                Some(working_stop_evidence()),
                 cursor("17", A),
                 cursor("19", B),
                 digest(C),
@@ -672,6 +730,9 @@ mod tests {
         assert!(stopped_json
             .get("reservedOriginalLeaseStopEvidence")
             .is_none());
+        assert!(stopped_json
+            .get("manualWorkingInfobaseStopEvidence")
+            .is_some());
 
         let inventory = ManualActorLockInventoryProof::new(
             RepositoryUsername::parse("reserved").unwrap(),
@@ -704,8 +765,10 @@ mod tests {
             SupportRecoveryGuardAuthority::stopped_after_complete_guard_test_only(
                 reserved,
                 id(ID_2),
+                id(ID_3),
                 Some(inventory.clone()),
                 Some(reserved_stop),
+                None,
                 cursor("17", A),
                 cursor("19", B),
                 digest(C),
@@ -738,6 +801,7 @@ mod tests {
             SupportRecoveryGuardAuthority::stopped_after_complete_guard_test_only(
                 wrong_mode,
                 id(ID_3),
+                id(ID_1),
                 Some(
                     ManualActorLockInventoryProof::new(
                         RepositoryUsername::parse("reserved").unwrap(),
@@ -754,6 +818,7 @@ mod tests {
                     )
                     .unwrap(),
                 ),
+                None,
                 cursor("17", A),
                 cursor("19", B),
                 digest(C),
@@ -783,6 +848,10 @@ mod tests {
             serde_json::to_value(&inventory).unwrap();
         reserved_completed["reservedOriginalTerminalizationProof"] =
             serde_json::to_value(&terminalization_proof).unwrap();
+        reserved_completed
+            .as_object_mut()
+            .unwrap()
+            .remove("manualWorkingInfobaseClosureProof");
         assert!(schema_accepts::<SupportRecoveryGuardProof>(
             &reserved_completed
         ));
@@ -841,8 +910,10 @@ mod tests {
             SupportRecoveryGuardAuthority::stopped_after_complete_guard_test_only(
                 plan.clone(),
                 id(ID_2),
+                id(ID_3),
                 Some(foreign_inventory),
                 Some(foreign_stop),
+                None,
                 cursor("17", A),
                 cursor("19", B),
                 digest(C),
@@ -889,8 +960,10 @@ mod tests {
                 SupportRecoveryGuardAuthority::stopped_after_complete_guard_test_only(
                     plan.clone(),
                     id(ID_2),
+                    id(ID_3),
                     Some(inventory),
                     Some(stop),
+                    None,
                     cursor("17", A),
                     cursor("19", B),
                     digest(C),
@@ -927,6 +1000,7 @@ mod tests {
             &plan,
             Some(&inventory),
             Some(&terminalization),
+            None,
         ));
         let foreign_inventory = ManualActorLockInventoryProof::new(
             RepositoryUsername::parse("reserved").unwrap(),
@@ -938,6 +1012,7 @@ mod tests {
             &plan,
             Some(&foreign_inventory),
             Some(&terminalization),
+            None,
         ));
         let foreign_actor_inventory = ManualActorLockInventoryProof::new(
             RepositoryUsername::parse("other-actor").unwrap(),
@@ -949,6 +1024,7 @@ mod tests {
             &plan,
             Some(&foreign_actor_inventory),
             Some(&terminalization),
+            None,
         ));
 
         let foreign_identity = ReservedOriginalTerminalizationProof::new(
@@ -983,6 +1059,7 @@ mod tests {
                 &plan,
                 Some(&inventory),
                 Some(&foreign),
+                None,
             ));
         }
 
@@ -1002,21 +1079,37 @@ mod tests {
             &separate,
             Some(&inventory),
             None,
+            None,
         ));
         assert!(!stopped_mode_evidence_matches_authorization(
             &separate,
             None,
             Some(&lease_stop),
+            None,
         ));
         assert!(!completed_mode_evidence_matches_authorization(
             &separate,
             Some(&inventory),
+            None,
             None,
         ));
         assert!(!completed_mode_evidence_matches_authorization(
             &separate,
             None,
             Some(&terminalization),
+            None,
+        ));
+        assert!(stopped_mode_evidence_matches_authorization(
+            &separate,
+            None,
+            None,
+            Some(&working_stop_evidence()),
+        ));
+        assert!(completed_mode_evidence_matches_authorization(
+            &separate,
+            None,
+            None,
+            Some(&working_closure_proof()),
         ));
     }
 }
@@ -1032,6 +1125,7 @@ use super::support::{
     ManualSupportTargetMode, ManualWorkingInfobaseIdentity, ReservedOriginalLeaseStopEvidence,
     ReservedOriginalTerminalizationProof, SupportRecoveryDisposition,
 };
+use super::support_recovery_authority::SupportRecoveryAuthorityToken;
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
@@ -1093,6 +1187,98 @@ wire_literal!(
 pub(crate) enum CompletedSupportRecoveryAuthorizationOutcome {
     Cancelled,
     AbandonmentFinalized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SupportRecoveryAuthorizationTerminalizationReceiptDigestRecord {
+    support_action_id: UnicaId,
+    support_action_digest: Sha256Digest,
+    terminalization_receipt_id: UnicaId,
+    authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
+}
+
+impl contract_digest_record_sealed::Sealed
+    for SupportRecoveryAuthorizationTerminalizationReceiptDigestRecord
+{
+}
+impl ContractDigestRecord for SupportRecoveryAuthorizationTerminalizationReceiptDigestRecord {}
+
+/// Capability-backed durable authorization terminalization.  The receipt is
+/// minted only behind the support-recovery token and is retained in the final
+/// guard proof, so `authorizationOutcome` is no longer a bare derived literal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SupportRecoveryAuthorizationTerminalizationReceipt {
+    support_action_id: UnicaId,
+    support_action_digest: Sha256Digest,
+    terminalization_receipt_id: UnicaId,
+    authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
+    receipt_digest: Sha256Digest,
+}
+
+impl SupportRecoveryAuthorizationTerminalizationReceipt {
+    pub(crate) fn from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        support_action_id: UnicaId,
+        support_action_digest: Sha256Digest,
+        terminalization_receipt_id: UnicaId,
+        authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::from_fields(
+            support_action_id,
+            support_action_digest,
+            terminalization_receipt_id,
+            authorization_outcome,
+        )
+    }
+
+    fn from_fields(
+        support_action_id: UnicaId,
+        support_action_digest: Sha256Digest,
+        terminalization_receipt_id: UnicaId,
+        authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        let record = SupportRecoveryAuthorizationTerminalizationReceiptDigestRecord {
+            support_action_id,
+            support_action_digest,
+            terminalization_receipt_id,
+            authorization_outcome,
+        };
+        let receipt_digest = terminalization_digest(
+            &record,
+            "support recovery authorization terminalization receipt digest failed",
+        )?;
+        Ok(Self {
+            support_action_id: record.support_action_id,
+            support_action_digest: record.support_action_digest,
+            terminalization_receipt_id: record.terminalization_receipt_id,
+            authorization_outcome: record.authorization_outcome,
+            receipt_digest,
+        })
+    }
+
+    pub(crate) const fn support_action_id(&self) -> &UnicaId {
+        &self.support_action_id
+    }
+
+    pub(crate) const fn support_action_digest(&self) -> &Sha256Digest {
+        &self.support_action_digest
+    }
+
+    pub(crate) const fn terminalization_receipt_id(&self) -> &UnicaId {
+        &self.terminalization_receipt_id
+    }
+
+    pub(crate) const fn authorization_outcome(
+        &self,
+    ) -> CompletedSupportRecoveryAuthorizationOutcome {
+        self.authorization_outcome
+    }
+
+    pub(crate) const fn receipt_digest(&self) -> &Sha256Digest {
+        &self.receipt_digest
+    }
 }
 
 const fn completed_authorization_outcome(
@@ -1287,6 +1473,12 @@ enum SupportRecoveryLockTargetKind {
     DevelopmentObject(ObjectSupportRecoveryLockTarget),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockedSupportRecoveryTargetRef<'a> {
+    ConfigurationRoot,
+    DevelopmentObject(&'a MetadataObjectId),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct SupportRecoveryLockTarget(SupportRecoveryLockTargetKind);
@@ -1344,6 +1536,45 @@ impl SupportRecoveryLockTarget {
             SupportRecoveryLockTargetKind::DevelopmentObject(value) => {
                 SupportRecoveryTargetKey::Object(value.object_id.as_str().to_owned())
             }
+        }
+    }
+
+    fn blocked_target_ref(&self) -> BlockedSupportRecoveryTargetRef<'_> {
+        match &self.0 {
+            SupportRecoveryLockTargetKind::ConfigurationRoot(_) => {
+                BlockedSupportRecoveryTargetRef::ConfigurationRoot
+            }
+            SupportRecoveryLockTargetKind::DevelopmentObject(value) => {
+                BlockedSupportRecoveryTargetRef::DevelopmentObject(&value.object_id)
+            }
+        }
+    }
+
+    pub(crate) fn binds_repository_lock_target(
+        &self,
+        target: super::repository::RepositoryUpdateLockTargetRef<'_>,
+    ) -> bool {
+        match (&self.0, target) {
+            (
+                SupportRecoveryLockTargetKind::ConfigurationRoot(expected),
+                super::repository::RepositoryUpdateLockTargetRef::ConfigurationRoot {
+                    object_display,
+                    reasons,
+                },
+            ) => &expected.object_display == object_display && expected.reasons.0 == reasons,
+            (
+                SupportRecoveryLockTargetKind::DevelopmentObject(expected),
+                super::repository::RepositoryUpdateLockTargetRef::DevelopmentObject {
+                    object_id,
+                    object_display,
+                    reasons,
+                },
+            ) => {
+                &expected.object_id == object_id
+                    && &expected.object_display == object_display
+                    && expected.reasons.0 == reasons
+            }
+            _ => false,
         }
     }
 
@@ -1405,7 +1636,7 @@ macro_rules! target_collection {
                     ))
             }
 
-            fn as_slice(&self) -> &[SupportRecoveryLockTarget] {
+            pub(crate) fn as_slice(&self) -> &[SupportRecoveryLockTarget] {
                 &self.0
             }
         }
@@ -1559,6 +1790,36 @@ impl SupportRecoveryDesiredTarget {
             }
         }
     }
+
+    pub(crate) fn binds_repository_target_state(
+        &self,
+        target: super::repository::RepositoryTargetStateRef<'_>,
+    ) -> bool {
+        match (self, target) {
+            (
+                Self::RootPresent(expected),
+                super::repository::RepositoryTargetStateRef::RootPresent {
+                    target_fingerprint, ..
+                },
+            ) => &expected.desired_fingerprint == target_fingerprint,
+            (
+                Self::ObjectPresent(expected),
+                super::repository::RepositoryTargetStateRef::ObjectPresent {
+                    object_id,
+                    target_fingerprint,
+                    ..
+                },
+            ) => {
+                &expected.object_id == object_id
+                    && &expected.desired_fingerprint == target_fingerprint
+            }
+            (
+                Self::ObjectAbsent(expected),
+                super::repository::RepositoryTargetStateRef::ObjectAbsent { object_id, .. },
+            ) => &expected.object_id == object_id,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1579,6 +1840,10 @@ impl SupportRecoveryDesiredTargets {
             .ok_or(SupportTerminalizationContractError(
                 "desired support recovery targets must be root-first, canonical, and unique",
             ))
+    }
+
+    pub(crate) fn as_slice(&self) -> &[SupportRecoveryDesiredTarget] {
+        &self.0
     }
 }
 
@@ -1609,6 +1874,28 @@ pub(crate) struct SupportRecoveryFinalizationPlanAuthority {
 }
 
 impl SupportRecoveryFinalizationPlanAuthority {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        disposition: SupportRecoveryDisposition,
+        lock_targets: SupportRecoveryLockTargets,
+        desired_targets: SupportRecoveryDesiredTargets,
+        history_from_cursor: RepositoryHistoryCursor,
+        materialized_selective_update_plan: Option<SelectiveRepositoryUpdatePlan>,
+        desired_support_graph_digest: Sha256Digest,
+        desired_repository_content_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            disposition,
+            lock_targets,
+            desired_targets,
+            history_from_cursor,
+            materialized_selective_update_plan,
+            desired_support_graph_digest,
+            desired_repository_content_digest,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn desired_test_only(
         disposition: SupportRecoveryDisposition,
@@ -1696,8 +1983,26 @@ impl SupportRecoveryFinalizationPlan {
         &self.plan_digest
     }
 
+    pub(crate) const fn disposition(&self) -> SupportRecoveryDisposition {
+        self.disposition
+    }
+
     pub(crate) const fn lock_targets(&self) -> &SupportRecoveryLockTargets {
         &self.lock_targets
+    }
+
+    pub(crate) const fn desired_targets(&self) -> &SupportRecoveryDesiredTargets {
+        &self.desired_targets
+    }
+
+    pub(crate) const fn history_from_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.history_from_cursor
+    }
+
+    pub(crate) const fn materialized_selective_update_plan(
+        &self,
+    ) -> Option<&SelectiveRepositoryUpdatePlan> {
+        self.materialized_selective_update_plan.as_ref()
     }
 
     pub(crate) const fn desired_support_graph_digest(&self) -> &Sha256Digest {
@@ -1730,6 +2035,53 @@ pub(crate) struct ManualWorkingInfobaseClosurePlanAuthority {
 }
 
 impl ManualWorkingInfobaseClosurePlanAuthority {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn desired_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        working_infobase_identity: ManualWorkingInfobaseIdentity,
+        authorization_baseline_digest: Sha256Digest,
+        desired_base_fingerprint: Sha256Digest,
+        desired_object_fingerprint_map_digest: Sha256Digest,
+        desired_support_graph_digest: Sha256Digest,
+        exclusive_lease_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self {
+            working_infobase_identity,
+            authorization_baseline_digest,
+            desired_base_fingerprint,
+            desired_object_fingerprint_map_digest,
+            desired_support_graph_digest,
+            exclusive_lease_capability_id,
+            kind: ClosurePlanAuthorityKind::Desired,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn materialized_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        working_infobase_identity: ManualWorkingInfobaseIdentity,
+        authorization_baseline_digest: Sha256Digest,
+        desired_base_fingerprint: Sha256Digest,
+        desired_object_fingerprint_map_digest: Sha256Digest,
+        desired_support_graph_digest: Sha256Digest,
+        working_infobase_base_cursor: RepositoryHistoryCursor,
+        recorded_object_version_map_digest: Sha256Digest,
+        exclusive_lease_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self {
+            working_infobase_identity,
+            authorization_baseline_digest,
+            desired_base_fingerprint,
+            desired_object_fingerprint_map_digest,
+            desired_support_graph_digest,
+            exclusive_lease_capability_id,
+            kind: ClosurePlanAuthorityKind::Materialized {
+                working_infobase_base_cursor,
+                recorded_object_version_map_digest,
+            },
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn desired_test_only(
         working_infobase_identity: ManualWorkingInfobaseIdentity,
@@ -1960,7 +2312,7 @@ impl ManualWorkingInfobaseClosurePlan {
         }
     }
 
-    fn materialized(
+    pub(crate) fn materialized(
         &self,
     ) -> Result<&MaterializedManualWorkingInfobaseClosurePlan, SupportTerminalizationContractError>
     {
@@ -1969,6 +2321,69 @@ impl ManualWorkingInfobaseClosurePlan {
             Self::Desired(_) => Err(SupportTerminalizationContractError(
                 "working-infobase closure plan is not materialized",
             )),
+        }
+    }
+
+    pub(crate) fn plan_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::Desired(value) => &value.plan_digest,
+            Self::Materialized(value) => &value.plan_digest,
+        }
+    }
+
+    pub(crate) fn working_infobase_identity(&self) -> &ManualWorkingInfobaseIdentity {
+        match self {
+            Self::Desired(value) => &value.working_infobase_identity,
+            Self::Materialized(value) => &value.working_infobase_identity,
+        }
+    }
+
+    pub(crate) fn authorization_baseline_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::Desired(value) => &value.authorization_baseline_digest,
+            Self::Materialized(value) => &value.authorization_baseline_digest,
+        }
+    }
+
+    pub(crate) fn desired_base_fingerprint(&self) -> &Sha256Digest {
+        match self {
+            Self::Desired(value) => &value.desired_base_fingerprint,
+            Self::Materialized(value) => &value.desired_base_fingerprint,
+        }
+    }
+
+    pub(crate) fn desired_object_fingerprint_map_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::Desired(value) => &value.desired_object_fingerprint_map_digest,
+            Self::Materialized(value) => &value.desired_object_fingerprint_map_digest,
+        }
+    }
+
+    pub(crate) fn desired_support_graph_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::Desired(value) => &value.desired_support_graph_digest,
+            Self::Materialized(value) => &value.desired_support_graph_digest,
+        }
+    }
+
+    pub(crate) fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        match self {
+            Self::Desired(value) => &value.exclusive_lease_capability_id,
+            Self::Materialized(value) => &value.exclusive_lease_capability_id,
+        }
+    }
+
+    pub(crate) fn working_infobase_base_cursor(&self) -> Option<&RepositoryHistoryCursor> {
+        match self {
+            Self::Desired(_) => None,
+            Self::Materialized(value) => Some(&value.working_infobase_base_cursor),
+        }
+    }
+
+    pub(crate) fn recorded_object_version_map_digest(&self) -> Option<&Sha256Digest> {
+        match self {
+            Self::Desired(_) => None,
+            Self::Materialized(value) => Some(&value.recorded_object_version_map_digest),
         }
     }
 }
@@ -1990,6 +2405,36 @@ pub(crate) struct ManualWorkingInfobaseClosureExecutionAuthority {
 }
 
 impl ManualWorkingInfobaseClosureExecutionAuthority {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_approved_observation(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: &ManualWorkingInfobaseClosurePlan,
+        exclusive_lease_receipt_id: UnicaId,
+        exclusive_lease_release_receipt_id: UnicaId,
+        working_infobase_base_cursor: RepositoryHistoryCursor,
+        recorded_object_version_map_digest: Sha256Digest,
+        final_current_fingerprint: Sha256Digest,
+        final_base_fingerprint: Sha256Digest,
+        final_object_fingerprint_map_digest: Sha256Digest,
+        final_support_graph_digest: Sha256Digest,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        let materialized = plan.materialized()?;
+        Ok(Self {
+            plan_digest: materialized.plan_digest.clone(),
+            working_infobase_identity: materialized.working_infobase_identity.clone(),
+            authorization_baseline_digest: materialized.authorization_baseline_digest.clone(),
+            exclusive_lease_capability_id: materialized.exclusive_lease_capability_id.clone(),
+            exclusive_lease_receipt_id,
+            exclusive_lease_release_receipt_id,
+            working_infobase_base_cursor,
+            recorded_object_version_map_digest,
+            final_current_fingerprint,
+            final_base_fingerprint,
+            final_object_fingerprint_map_digest,
+            final_support_graph_digest,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn matching_test_only(
         plan: &ManualWorkingInfobaseClosurePlan,
@@ -2135,6 +2580,26 @@ impl ManualWorkingInfobaseClosureProof {
             proof_digest,
         })
     }
+
+    pub(crate) const fn working_infobase_identity(&self) -> &ManualWorkingInfobaseIdentity {
+        &self.working_infobase_identity
+    }
+
+    pub(crate) const fn plan_digest(&self) -> &Sha256Digest {
+        &self.plan_digest
+    }
+
+    pub(crate) const fn exclusive_lease_receipt_id(&self) -> &UnicaId {
+        &self.exclusive_lease_receipt_id
+    }
+
+    pub(crate) const fn exclusive_lease_release_receipt_id(&self) -> &UnicaId {
+        &self.exclusive_lease_release_receipt_id
+    }
+
+    pub(crate) const fn proof_digest(&self) -> &Sha256Digest {
+        &self.proof_digest
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2160,8 +2625,23 @@ pub(crate) struct ManualWorkingInfobaseStopAuthority {
 }
 
 impl ManualWorkingInfobaseStopAuthority {
+    pub(crate) fn lease_busy_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: &ManualWorkingInfobaseClosurePlan,
+        lease_owner: RequiredNullable<RepositoryOwnerIdentity>,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::lease_busy(plan, lease_owner)
+    }
+
     #[cfg(test)]
     pub(crate) fn lease_busy_test_only(
+        plan: &ManualWorkingInfobaseClosurePlan,
+        lease_owner: RequiredNullable<RepositoryOwnerIdentity>,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::lease_busy(plan, lease_owner)
+    }
+
+    fn lease_busy(
         plan: &ManualWorkingInfobaseClosurePlan,
         lease_owner: RequiredNullable<RepositoryOwnerIdentity>,
     ) -> Result<Self, SupportTerminalizationContractError> {
@@ -2175,8 +2655,42 @@ impl ManualWorkingInfobaseStopAuthority {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lease_acquired_dirty_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: &ManualWorkingInfobaseClosurePlan,
+        observed_working_infobase_fingerprint: Sha256Digest,
+        observed_support_graph_digest: Sha256Digest,
+        exclusive_lease_receipt_id: UnicaId,
+        exclusive_lease_release_receipt_id: UnicaId,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::lease_acquired_dirty(
+            plan,
+            observed_working_infobase_fingerprint,
+            observed_support_graph_digest,
+            exclusive_lease_receipt_id,
+            exclusive_lease_release_receipt_id,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn lease_acquired_dirty_test_only(
+        plan: &ManualWorkingInfobaseClosurePlan,
+        observed_working_infobase_fingerprint: Sha256Digest,
+        observed_support_graph_digest: Sha256Digest,
+        exclusive_lease_receipt_id: UnicaId,
+        exclusive_lease_release_receipt_id: UnicaId,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::lease_acquired_dirty(
+            plan,
+            observed_working_infobase_fingerprint,
+            observed_support_graph_digest,
+            exclusive_lease_receipt_id,
+            exclusive_lease_release_receipt_id,
+        )
+    }
+
+    fn lease_acquired_dirty(
         plan: &ManualWorkingInfobaseClosurePlan,
         observed_working_infobase_fingerprint: Sha256Digest,
         observed_support_graph_digest: Sha256Digest,
@@ -2381,6 +2895,20 @@ impl ManualWorkingInfobaseStopEvidence {
             }
         }
     }
+
+    pub(crate) fn working_infobase_identity(&self) -> &ManualWorkingInfobaseIdentity {
+        match self {
+            Self::LeaseBusy(value) => &value.working_infobase_identity,
+            Self::LeaseAcquiredDirty(value) => &value.working_infobase_identity,
+        }
+    }
+
+    pub(crate) fn closure_plan_digest(&self) -> &Sha256Digest {
+        match self {
+            Self::LeaseBusy(value) => &value.closure_plan_digest,
+            Self::LeaseAcquiredDirty(value) => &value.closure_plan_digest,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2394,12 +2922,27 @@ pub(crate) struct SupportRecoveryGuardPlanAuthority {
 }
 
 impl SupportRecoveryGuardPlanAuthority {
+    pub(crate) fn from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        authorization: FrozenSupportRecoveryAuthorizationProjection,
+        finalization_plan: &SupportRecoveryFinalizationPlan,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::from_materialized_finalization_plan(authorization, finalization_plan)
+    }
+
     /// Task 9 owns only the closed guard wire/digest contract. Production
     /// materialization stays unavailable until Task 11 can bind the exact
     /// frozen action, approved history partition, materialized plan, and
     /// capability-backed under-guard recheck as one opaque authority.
     #[cfg(test)]
     pub(crate) fn from_materialized_finalization_plan_test_only(
+        authorization: FrozenSupportRecoveryAuthorizationProjection,
+        finalization_plan: &SupportRecoveryFinalizationPlan,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::from_materialized_finalization_plan(authorization, finalization_plan)
+    }
+
+    fn from_materialized_finalization_plan(
         authorization: FrozenSupportRecoveryAuthorizationProjection,
         finalization_plan: &SupportRecoveryFinalizationPlan,
     ) -> Result<Self, SupportTerminalizationContractError> {
@@ -2461,6 +3004,8 @@ struct BlockedAfterPartialGuardAuthority {
 struct StoppedAfterCompleteGuardAuthority {
     manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
     reserved_original_lease_stop_evidence: Option<ReservedOriginalLeaseStopEvidence>,
+    manual_working_infobase_stop_evidence: Option<ManualWorkingInfobaseStopEvidence>,
+    guard_release_receipt_id: UnicaId,
     history_from_cursor: RepositoryHistoryCursor,
     history_through_cursor: RepositoryHistoryCursor,
     history_partition_digest: Sha256Digest,
@@ -2471,6 +3016,8 @@ struct StoppedAfterCompleteGuardAuthority {
 struct CompletedGuardAuthority {
     manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
     reserved_original_terminalization_proof: Option<ReservedOriginalTerminalizationProof>,
+    manual_working_infobase_closure_proof: Option<ManualWorkingInfobaseClosureProof>,
+    guard_release_receipt_id: UnicaId,
     history_from_cursor: RepositoryHistoryCursor,
     history_through_cursor: RepositoryHistoryCursor,
     history_partition_digest: Sha256Digest,
@@ -2478,6 +3025,7 @@ struct CompletedGuardAuthority {
     post_release_observed_history_cursor: RepositoryHistoryCursor,
     post_release_history_partition: ValidatedRepositoryHistoryPartition,
     deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+    authorization_terminalization_receipt: SupportRecoveryAuthorizationTerminalizationReceipt,
     authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
     released_in_reverse_order: SupportRecoveryReleasedLockTargets,
 }
@@ -2508,6 +3056,7 @@ fn stopped_mode_evidence_matches_authorization(
     plan: &SupportRecoveryGuardPlanAuthority,
     inventory: Option<&ManualActorLockInventoryProof>,
     lease_stop: Option<&ReservedOriginalLeaseStopEvidence>,
+    working_infobase_stop: Option<&ManualWorkingInfobaseStopEvidence>,
 ) -> bool {
     match plan.manual_target_mode() {
         ManualSupportTargetMode::ReservedOriginal => {
@@ -2522,9 +3071,10 @@ fn stopped_mode_evidence_matches_authorization(
                 && lease_stop.reserved_original_identity_digest()
                     == plan.authorization.reserved_original_identity_digest()
                 && lease_stop.exclusive_lease_capability_id() == expected_capability
+                && working_infobase_stop.is_none()
         }
         ManualSupportTargetMode::SeparateWorkingInfobase => {
-            inventory.is_none() && lease_stop.is_none()
+            inventory.is_none() && lease_stop.is_none() && working_infobase_stop.is_some()
         }
     }
 }
@@ -2533,6 +3083,7 @@ fn completed_mode_evidence_matches_authorization(
     plan: &SupportRecoveryGuardPlanAuthority,
     inventory: Option<&ManualActorLockInventoryProof>,
     terminalization: Option<&ReservedOriginalTerminalizationProof>,
+    working_infobase_closure: Option<&ManualWorkingInfobaseClosureProof>,
 ) -> bool {
     match plan.manual_target_mode() {
         ManualSupportTargetMode::ReservedOriginal => {
@@ -2549,16 +3100,50 @@ fn completed_mode_evidence_matches_authorization(
                 && terminalization.exclusive_lease_capability_id() == expected_capability
                 && terminalization.expected_repository_fingerprint()
                     == plan.authorization.expected_original_fingerprint()
+                && working_infobase_closure.is_none()
         }
         ManualSupportTargetMode::SeparateWorkingInfobase => {
-            inventory.is_none() && terminalization.is_none()
+            inventory.is_none() && terminalization.is_none() && working_infobase_closure.is_some()
         }
     }
 }
 
 impl SupportRecoveryGuardAuthority {
+    pub(crate) fn blocked_before_root_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        failed_target: RepositoryTargetIdentity,
+        failed_target_display: RepositoryTargetDisplay,
+        locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::blocked_before_root(
+            plan,
+            guard_receipt_id,
+            failed_target,
+            failed_target_display,
+            locked_by,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn blocked_before_root_test_only(
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        failed_target: RepositoryTargetIdentity,
+        failed_target_display: RepositoryTargetDisplay,
+        locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::blocked_before_root(
+            plan,
+            guard_receipt_id,
+            failed_target,
+            failed_target_display,
+            locked_by,
+        )
+    }
+
+    fn blocked_before_root(
         plan: SupportRecoveryGuardPlanAuthority,
         guard_receipt_id: UnicaId,
         failed_target: RepositoryTargetIdentity,
@@ -2586,9 +3171,52 @@ impl SupportRecoveryGuardAuthority {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn blocked_after_partial_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        acquired_in_order: SupportRecoveryAcquiredLockTargets,
+        failed_target: RepositoryTargetIdentity,
+        failed_target_display: RepositoryTargetDisplay,
+        locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+        released_in_reverse_order: SupportRecoveryReleasedLockTargets,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::blocked_after_partial(
+            plan,
+            guard_receipt_id,
+            acquired_in_order,
+            failed_target,
+            failed_target_display,
+            locked_by,
+            released_in_reverse_order,
+        )
+    }
+
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn blocked_after_partial_test_only(
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        acquired_in_order: SupportRecoveryAcquiredLockTargets,
+        failed_target: RepositoryTargetIdentity,
+        failed_target_display: RepositoryTargetDisplay,
+        locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+        released_in_reverse_order: SupportRecoveryReleasedLockTargets,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::blocked_after_partial(
+            plan,
+            guard_receipt_id,
+            acquired_in_order,
+            failed_target,
+            failed_target_display,
+            locked_by,
+            released_in_reverse_order,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn blocked_after_partial(
         plan: SupportRecoveryGuardPlanAuthority,
         guard_receipt_id: UnicaId,
         acquired_in_order: SupportRecoveryAcquiredLockTargets,
@@ -2627,13 +3255,66 @@ impl SupportRecoveryGuardAuthority {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stopped_after_complete_guard_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
+        manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
+        reserved_original_lease_stop_evidence: Option<ReservedOriginalLeaseStopEvidence>,
+        manual_working_infobase_stop_evidence: Option<ManualWorkingInfobaseStopEvidence>,
+        history_from_cursor: RepositoryHistoryCursor,
+        history_through_cursor: RepositoryHistoryCursor,
+        history_partition_digest: Sha256Digest,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::stopped_after_complete_guard(
+            plan,
+            guard_receipt_id,
+            guard_release_receipt_id,
+            manual_actor_lock_inventory_proof,
+            reserved_original_lease_stop_evidence,
+            manual_working_infobase_stop_evidence,
+            history_from_cursor,
+            history_through_cursor,
+            history_partition_digest,
+        )
+    }
+
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stopped_after_complete_guard_test_only(
         plan: SupportRecoveryGuardPlanAuthority,
         guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
         manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
         reserved_original_lease_stop_evidence: Option<ReservedOriginalLeaseStopEvidence>,
+        manual_working_infobase_stop_evidence: Option<ManualWorkingInfobaseStopEvidence>,
+        history_from_cursor: RepositoryHistoryCursor,
+        history_through_cursor: RepositoryHistoryCursor,
+        history_partition_digest: Sha256Digest,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::stopped_after_complete_guard(
+            plan,
+            guard_receipt_id,
+            guard_release_receipt_id,
+            manual_actor_lock_inventory_proof,
+            reserved_original_lease_stop_evidence,
+            manual_working_infobase_stop_evidence,
+            history_from_cursor,
+            history_through_cursor,
+            history_partition_digest,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stopped_after_complete_guard(
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
+        manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
+        reserved_original_lease_stop_evidence: Option<ReservedOriginalLeaseStopEvidence>,
+        manual_working_infobase_stop_evidence: Option<ManualWorkingInfobaseStopEvidence>,
         history_from_cursor: RepositoryHistoryCursor,
         history_through_cursor: RepositoryHistoryCursor,
         history_partition_digest: Sha256Digest,
@@ -2642,8 +3323,12 @@ impl SupportRecoveryGuardAuthority {
             &plan,
             manual_actor_lock_inventory_proof.as_ref(),
             reserved_original_lease_stop_evidence.as_ref(),
+            manual_working_infobase_stop_evidence.as_ref(),
         );
-        if !mode_presence_is_valid || history_from_cursor != plan.history_from_cursor {
+        if !mode_presence_is_valid
+            || guard_receipt_id == guard_release_receipt_id
+            || history_from_cursor != plan.history_from_cursor
+        {
             return Err(SupportTerminalizationContractError(
                 "complete stopped guard violates mode presence or history anchor",
             ));
@@ -2664,6 +3349,8 @@ impl SupportRecoveryGuardAuthority {
             stopped_after_complete_guard: Some(StoppedAfterCompleteGuardAuthority {
                 manual_actor_lock_inventory_proof,
                 reserved_original_lease_stop_evidence,
+                manual_working_infobase_stop_evidence,
+                guard_release_receipt_id,
                 history_from_cursor,
                 history_through_cursor,
                 history_partition_digest,
@@ -2671,6 +3358,36 @@ impl SupportRecoveryGuardAuthority {
             }),
             completed: None,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn completed_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
+        manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
+        reserved_original_terminalization_proof: Option<ReservedOriginalTerminalizationProof>,
+        manual_working_infobase_closure_proof: Option<ManualWorkingInfobaseClosureProof>,
+        current_history_partition: &ValidatedRepositoryHistoryPartition,
+        selective_update_proof: SelectiveRepositoryUpdateProof,
+        post_release_history_partition: ValidatedRepositoryHistoryPartition,
+        deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+        authorization_terminalization_receipt: SupportRecoveryAuthorizationTerminalizationReceipt,
+    ) -> Result<Self, SupportTerminalizationContractError> {
+        Self::completed(
+            plan,
+            guard_receipt_id,
+            guard_release_receipt_id,
+            manual_actor_lock_inventory_proof,
+            reserved_original_terminalization_proof,
+            manual_working_infobase_closure_proof,
+            current_history_partition,
+            selective_update_proof,
+            post_release_history_partition,
+            deferred_repository_advance,
+            authorization_terminalization_receipt,
+        )
     }
 
     /// Schema/constructor fixture only. The production completion mint is
@@ -2681,17 +3398,57 @@ impl SupportRecoveryGuardAuthority {
     pub(crate) fn completed_test_only(
         plan: SupportRecoveryGuardPlanAuthority,
         guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
         manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
         reserved_original_terminalization_proof: Option<ReservedOriginalTerminalizationProof>,
+        manual_working_infobase_closure_proof: Option<ManualWorkingInfobaseClosureProof>,
         current_history_partition: &ValidatedRepositoryHistoryPartition,
         selective_update_proof: SelectiveRepositoryUpdateProof,
         post_release_history_partition: ValidatedRepositoryHistoryPartition,
         deferred_repository_advance: Option<DeferredRepositoryAdvance>,
     ) -> Result<Self, SupportTerminalizationContractError> {
+        let authorization_terminalization_receipt =
+            SupportRecoveryAuthorizationTerminalizationReceipt::from_fields(
+                plan.authorization.support_action_id().clone(),
+                plan.authorization.support_action_digest().clone(),
+                UnicaId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+                    .expect("test terminalization receipt id is valid"),
+                completed_authorization_outcome(plan.disposition),
+            )?;
+        Self::completed(
+            plan,
+            guard_receipt_id,
+            guard_release_receipt_id,
+            manual_actor_lock_inventory_proof,
+            reserved_original_terminalization_proof,
+            manual_working_infobase_closure_proof,
+            current_history_partition,
+            selective_update_proof,
+            post_release_history_partition,
+            deferred_repository_advance,
+            authorization_terminalization_receipt,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn completed(
+        plan: SupportRecoveryGuardPlanAuthority,
+        guard_receipt_id: UnicaId,
+        guard_release_receipt_id: UnicaId,
+        manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
+        reserved_original_terminalization_proof: Option<ReservedOriginalTerminalizationProof>,
+        manual_working_infobase_closure_proof: Option<ManualWorkingInfobaseClosureProof>,
+        current_history_partition: &ValidatedRepositoryHistoryPartition,
+        selective_update_proof: SelectiveRepositoryUpdateProof,
+        post_release_history_partition: ValidatedRepositoryHistoryPartition,
+        deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+        authorization_terminalization_receipt: SupportRecoveryAuthorizationTerminalizationReceipt,
+    ) -> Result<Self, SupportTerminalizationContractError> {
         let mode_presence_is_valid = completed_mode_evidence_matches_authorization(
             &plan,
             manual_actor_lock_inventory_proof.as_ref(),
             reserved_original_terminalization_proof.as_ref(),
+            manual_working_infobase_closure_proof.as_ref(),
         );
         let history_from_cursor = current_history_partition.start_cursor().clone();
         let history_through_cursor = current_history_partition.through_inclusive().clone();
@@ -2700,7 +3457,9 @@ impl SupportRecoveryGuardAuthority {
         let deferred_anchor_is_valid = deferred_repository_advance
             .as_ref()
             .is_none_or(|advance| advance.anchor_cursor() == &post_release_observed_history_cursor);
+        let authorization_outcome = completed_authorization_outcome(plan.disposition);
         if !mode_presence_is_valid
+            || guard_receipt_id == guard_release_receipt_id
             || history_from_cursor != plan.history_from_cursor
             || selective_update_proof.plan_digest()
                 != &plan.materialized_selective_update_plan_digest
@@ -2710,6 +3469,12 @@ impl SupportRecoveryGuardAuthority {
             || !post_release_history_partition
                 .contains_cursor(selective_update_proof.observed_after_cursor())
             || !deferred_anchor_is_valid
+            || authorization_terminalization_receipt.support_action_id()
+                != plan.authorization.support_action_id()
+            || authorization_terminalization_receipt.support_action_digest()
+                != plan.authorization.support_action_digest()
+            || authorization_terminalization_receipt.authorization_outcome()
+                != authorization_outcome
         {
             return Err(SupportTerminalizationContractError(
                 "completed guard evidence does not bind the materialized plan and history windows",
@@ -2723,7 +3488,6 @@ impl SupportRecoveryGuardAuthority {
                 .cloned()
                 .collect(),
         )?;
-        let authorization_outcome = completed_authorization_outcome(plan.disposition);
         Ok(Self {
             plan,
             guard_receipt_id,
@@ -2733,6 +3497,8 @@ impl SupportRecoveryGuardAuthority {
             completed: Some(CompletedGuardAuthority {
                 manual_actor_lock_inventory_proof,
                 reserved_original_terminalization_proof,
+                manual_working_infobase_closure_proof,
+                guard_release_receipt_id,
                 history_from_cursor,
                 history_through_cursor,
                 history_partition_digest: current_history_partition.partition_digest().clone(),
@@ -2740,6 +3506,7 @@ impl SupportRecoveryGuardAuthority {
                 post_release_observed_history_cursor,
                 post_release_history_partition,
                 deferred_repository_advance,
+                authorization_terminalization_receipt,
                 authorization_outcome,
                 released_in_reverse_order,
             }),
@@ -2783,13 +3550,77 @@ struct BlockedAfterPartialGuardProofDigestRecord {
     release_verified: TrueLiteral,
 }
 
+macro_rules! define_blocked_before_root_guard_schema {
+    ($name:ident, $mode:ty) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub(crate) struct $name {
+            outcome: BlockedBeforeRootOutcome,
+            guard_receipt_id: UnicaId,
+            manual_target_mode: $mode,
+            finalization_plan_digest: Sha256Digest,
+            planned_lock_targets: SupportRecoveryLockTargets,
+            acquired_in_order: EmptySupportRecoveryLockTargets,
+            failed_target: RepositoryTargetIdentity,
+            failed_target_display: RepositoryTargetDisplay,
+            #[serde(deserialize_with = "RequiredNullable::deserialize_required")]
+            locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+            authorization_outcome: UnchangedAuthorizationOutcome,
+            released_in_reverse_order: EmptySupportRecoveryLockTargets,
+            release_verified: TrueLiteral,
+            proof_digest: Sha256Digest,
+        }
+    };
+}
+
+macro_rules! define_blocked_after_partial_guard_schema {
+    ($name:ident, $mode:ty) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub(crate) struct $name {
+            outcome: BlockedAfterPartialOutcome,
+            guard_receipt_id: UnicaId,
+            manual_target_mode: $mode,
+            finalization_plan_digest: Sha256Digest,
+            planned_lock_targets: SupportRecoveryLockTargets,
+            acquired_in_order: SupportRecoveryAcquiredLockTargets,
+            failed_target: RepositoryTargetIdentity,
+            failed_target_display: RepositoryTargetDisplay,
+            #[serde(deserialize_with = "RequiredNullable::deserialize_required")]
+            locked_by: RequiredNullable<RepositoryOwnerIdentity>,
+            authorization_outcome: UnchangedAuthorizationOutcome,
+            released_in_reverse_order: SupportRecoveryReleasedLockTargets,
+            release_verified: TrueLiteral,
+            proof_digest: Sha256Digest,
+        }
+    };
+}
+
+define_blocked_before_root_guard_schema!(
+    ReservedBlockedBeforeRootGuardProofSchema,
+    ReservedOriginalModeLiteral
+);
+define_blocked_after_partial_guard_schema!(
+    ReservedBlockedAfterPartialGuardProofSchema,
+    ReservedOriginalModeLiteral
+);
+define_blocked_before_root_guard_schema!(
+    SeparateBlockedBeforeRootGuardProofSchema,
+    SeparateWorkingInfobaseModeLiteral
+);
+define_blocked_after_partial_guard_schema!(
+    SeparateBlockedAfterPartialGuardProofSchema,
+    SeparateWorkingInfobaseModeLiteral
+);
+
 macro_rules! define_stopped_guard_schema {
     ($name:ident, $mode:ty, { $($mode_fields:tt)* }, { $($suffix:tt)* }) => {
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        struct $name {
+        pub(crate) struct $name {
             outcome: StoppedAfterCompleteGuardOutcome,
             guard_receipt_id: UnicaId,
+            guard_release_receipt_id: UnicaId,
             manual_target_mode: $mode,
             $($mode_fields)*
             finalization_plan_digest: Sha256Digest,
@@ -2814,7 +3645,9 @@ macro_rules! define_stopped_guard_schema {
 define_stopped_guard_schema!(
     SeparateStoppedAfterCompleteGuardProofDigestSchema,
     SeparateWorkingInfobaseModeLiteral,
-    {},
+    {
+        manual_working_infobase_stop_evidence: ManualWorkingInfobaseStopEvidence,
+    },
     {}
 );
 define_stopped_guard_schema!(
@@ -2829,7 +3662,9 @@ define_stopped_guard_schema!(
 define_stopped_guard_schema!(
     SeparateStoppedAfterCompleteGuardProofSchema,
     SeparateWorkingInfobaseModeLiteral,
-    {},
+    {
+        manual_working_infobase_stop_evidence: ManualWorkingInfobaseStopEvidence,
+    },
     { proof_digest: Sha256Digest, }
 );
 define_stopped_guard_schema!(
@@ -2847,11 +3682,14 @@ define_stopped_guard_schema!(
 struct StoppedAfterCompleteGuardProofDigestRecord {
     outcome: StoppedAfterCompleteGuardOutcome,
     guard_receipt_id: UnicaId,
+    guard_release_receipt_id: UnicaId,
     manual_target_mode: ManualSupportTargetMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reserved_original_lease_stop_evidence: Option<ReservedOriginalLeaseStopEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_working_infobase_stop_evidence: Option<ManualWorkingInfobaseStopEvidence>,
     finalization_plan_digest: Sha256Digest,
     planned_lock_targets: SupportRecoveryLockTargets,
     acquired_in_order: SupportRecoveryLockTargets,
@@ -2888,6 +3726,7 @@ macro_rules! define_completed_guard_schema {
         struct $name {
             outcome: CompletedGuardOutcome,
             guard_receipt_id: UnicaId,
+            guard_release_receipt_id: UnicaId,
             manual_target_mode: $mode,
             $($mode_fields)*
             finalization_plan_digest: Sha256Digest,
@@ -2905,6 +3744,7 @@ macro_rules! define_completed_guard_schema {
             post_release_history_partition: ValidatedRepositoryHistoryPartition,
             #[serde(skip_serializing_if = "Option::is_none")]
             deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+            authorization_terminalization_receipt: SupportRecoveryAuthorizationTerminalizationReceipt,
             authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
             released_in_reverse_order: SupportRecoveryReleasedLockTargets,
             release_verified: TrueLiteral,
@@ -2916,7 +3756,9 @@ macro_rules! define_completed_guard_schema {
 define_completed_guard_schema!(
     SeparateCompletedGuardProofDigestSchema,
     SeparateWorkingInfobaseModeLiteral,
-    {},
+    {
+        manual_working_infobase_closure_proof: ManualWorkingInfobaseClosureProof,
+    },
     {}
 );
 define_completed_guard_schema!(
@@ -2931,7 +3773,9 @@ define_completed_guard_schema!(
 define_completed_guard_schema!(
     SeparateCompletedGuardProofSchema,
     SeparateWorkingInfobaseModeLiteral,
-    {},
+    {
+        manual_working_infobase_closure_proof: ManualWorkingInfobaseClosureProof,
+    },
     { proof_digest: Sha256Digest, }
 );
 define_completed_guard_schema!(
@@ -2949,11 +3793,14 @@ define_completed_guard_schema!(
 struct CompletedGuardProofDigestRecord {
     outcome: CompletedGuardOutcome,
     guard_receipt_id: UnicaId,
+    guard_release_receipt_id: UnicaId,
     manual_target_mode: ManualSupportTargetMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     manual_actor_lock_inventory_proof: Option<ManualActorLockInventoryProof>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reserved_original_terminalization_proof: Option<ReservedOriginalTerminalizationProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_working_infobase_closure_proof: Option<ManualWorkingInfobaseClosureProof>,
     finalization_plan_digest: Sha256Digest,
     planned_lock_targets: SupportRecoveryLockTargets,
     acquired_in_order: SupportRecoveryLockTargets,
@@ -2969,6 +3816,7 @@ struct CompletedGuardProofDigestRecord {
     post_release_history_partition: ValidatedRepositoryHistoryPartition,
     #[serde(skip_serializing_if = "Option::is_none")]
     deferred_repository_advance: Option<DeferredRepositoryAdvance>,
+    authorization_terminalization_receipt: SupportRecoveryAuthorizationTerminalizationReceipt,
     authorization_outcome: CompletedSupportRecoveryAuthorizationOutcome,
     released_in_reverse_order: SupportRecoveryReleasedLockTargets,
     release_verified: TrueLiteral,
@@ -3248,6 +4096,8 @@ impl SupportRecoveryGuardProof {
                 Some(StoppedAfterCompleteGuardAuthority {
                     manual_actor_lock_inventory_proof,
                     reserved_original_lease_stop_evidence,
+                    manual_working_infobase_stop_evidence,
+                    guard_release_receipt_id,
                     history_from_cursor,
                     history_through_cursor,
                     history_partition_digest,
@@ -3258,9 +4108,11 @@ impl SupportRecoveryGuardProof {
                 let record = StoppedAfterCompleteGuardProofDigestRecord {
                     outcome: StoppedAfterCompleteGuardOutcome::Value,
                     guard_receipt_id,
+                    guard_release_receipt_id,
                     manual_target_mode: plan.manual_target_mode(),
                     manual_actor_lock_inventory_proof,
                     reserved_original_lease_stop_evidence,
+                    manual_working_infobase_stop_evidence,
                     finalization_plan_digest: plan.finalization_plan_digest,
                     acquired_in_order: plan.planned_lock_targets.clone(),
                     planned_lock_targets: plan.planned_lock_targets,
@@ -3294,6 +4146,8 @@ impl SupportRecoveryGuardProof {
                 Some(CompletedGuardAuthority {
                     manual_actor_lock_inventory_proof,
                     reserved_original_terminalization_proof,
+                    manual_working_infobase_closure_proof,
+                    guard_release_receipt_id,
                     history_from_cursor,
                     history_through_cursor,
                     history_partition_digest,
@@ -3301,6 +4155,7 @@ impl SupportRecoveryGuardProof {
                     post_release_observed_history_cursor,
                     post_release_history_partition,
                     deferred_repository_advance,
+                    authorization_terminalization_receipt,
                     authorization_outcome,
                     released_in_reverse_order,
                 }),
@@ -3308,9 +4163,11 @@ impl SupportRecoveryGuardProof {
                 let record = CompletedGuardProofDigestRecord {
                     outcome: CompletedGuardOutcome::Value,
                     guard_receipt_id,
+                    guard_release_receipt_id,
                     manual_target_mode: plan.manual_target_mode(),
                     manual_actor_lock_inventory_proof,
                     reserved_original_terminalization_proof,
+                    manual_working_infobase_closure_proof,
                     finalization_plan_digest: plan.finalization_plan_digest,
                     acquired_in_order: plan.planned_lock_targets.clone(),
                     planned_lock_targets: plan.planned_lock_targets,
@@ -3325,6 +4182,7 @@ impl SupportRecoveryGuardProof {
                     post_release_observed_history_cursor,
                     post_release_history_partition,
                     deferred_repository_advance,
+                    authorization_terminalization_receipt,
                     authorization_outcome,
                     released_in_reverse_order,
                     release_verified: TrueLiteral,
@@ -3341,6 +4199,112 @@ impl SupportRecoveryGuardProof {
                 "support recovery guard authority must contain exactly one outcome",
             )),
         }
+    }
+
+    pub(crate) fn finalization_plan_digest(&self) -> &Sha256Digest {
+        match (
+            &self.record.blocked_before_root,
+            &self.record.blocked_after_partial,
+            &self.record.stopped_after_complete_guard,
+            &self.record.completed,
+        ) {
+            (Some(value), None, None, None) => &value.finalization_plan_digest,
+            (None, Some(value), None, None) => &value.finalization_plan_digest,
+            (None, None, Some(value), None) => &value.finalization_plan_digest,
+            (None, None, None, Some(value)) => &value.finalization_plan_digest,
+            _ => unreachable!("guard proof constructor preserves exactly one outcome"),
+        }
+    }
+
+    pub(crate) fn manual_target_mode(&self) -> ManualSupportTargetMode {
+        match (
+            &self.record.blocked_before_root,
+            &self.record.blocked_after_partial,
+            &self.record.stopped_after_complete_guard,
+            &self.record.completed,
+        ) {
+            (Some(value), None, None, None) => value.manual_target_mode,
+            (None, Some(value), None, None) => value.manual_target_mode,
+            (None, None, Some(value), None) => value.manual_target_mode,
+            (None, None, None, Some(value)) => value.manual_target_mode,
+            _ => unreachable!("guard proof constructor preserves exactly one outcome"),
+        }
+    }
+
+    pub(crate) fn blocked_target_ref(&self) -> Option<BlockedSupportRecoveryTargetRef<'_>> {
+        match (
+            &self.record.blocked_before_root,
+            &self.record.blocked_after_partial,
+            &self.record.stopped_after_complete_guard,
+            &self.record.completed,
+        ) {
+            (Some(value), None, None, None) => value
+                .planned_lock_targets
+                .as_slice()
+                .first()
+                .map(SupportRecoveryLockTarget::blocked_target_ref),
+            (None, Some(value), None, None) => value
+                .planned_lock_targets
+                .as_slice()
+                .get(value.acquired_in_order.as_slice().len())
+                .map(SupportRecoveryLockTarget::blocked_target_ref),
+            (None, None, Some(_), None) | (None, None, None, Some(_)) => None,
+            _ => unreachable!("guard proof constructor preserves exactly one outcome"),
+        }
+    }
+
+    pub(crate) fn blocked_target_display(&self) -> Option<&RepositoryTargetDisplay> {
+        match (
+            &self.record.blocked_before_root,
+            &self.record.blocked_after_partial,
+            &self.record.stopped_after_complete_guard,
+            &self.record.completed,
+        ) {
+            (Some(value), None, None, None) => Some(&value.failed_target_display),
+            (None, Some(value), None, None) => Some(&value.failed_target_display),
+            (None, None, Some(_), None) | (None, None, None, Some(_)) => None,
+            _ => unreachable!("guard proof constructor preserves exactly one outcome"),
+        }
+    }
+
+    pub(crate) fn blocked_owner(&self) -> Option<&RequiredNullable<RepositoryOwnerIdentity>> {
+        match (
+            &self.record.blocked_before_root,
+            &self.record.blocked_after_partial,
+            &self.record.stopped_after_complete_guard,
+            &self.record.completed,
+        ) {
+            (Some(value), None, None, None) => Some(&value.locked_by),
+            (None, Some(value), None, None) => Some(&value.locked_by),
+            (None, None, Some(_), None) | (None, None, None, Some(_)) => None,
+            _ => unreachable!("guard proof constructor preserves exactly one outcome"),
+        }
+    }
+
+    pub(crate) const fn is_completed(&self) -> bool {
+        self.record.completed.is_some()
+    }
+
+    pub(crate) fn manual_working_infobase_stop_evidence(
+        &self,
+    ) -> Option<&ManualWorkingInfobaseStopEvidence> {
+        self.record
+            .stopped_after_complete_guard
+            .as_ref()
+            .and_then(|record| record.manual_working_infobase_stop_evidence.as_ref())
+    }
+
+    pub(crate) fn reserved_original_lease_stop_evidence(
+        &self,
+    ) -> Option<&ReservedOriginalLeaseStopEvidence> {
+        self.record
+            .stopped_after_complete_guard
+            .as_ref()
+            .and_then(|record| record.reserved_original_lease_stop_evidence.as_ref())
+    }
+
+    pub(crate) const fn proof_digest(&self) -> &Sha256Digest {
+        &self.proof_digest
     }
 }
 

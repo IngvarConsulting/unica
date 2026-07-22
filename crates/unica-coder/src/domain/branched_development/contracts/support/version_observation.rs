@@ -823,6 +823,34 @@ pub(crate) enum SupportObservationCorrectiveProjection {
     },
 }
 
+/// Typed claim carried by a validated support observation about the frozen
+/// action that owns the recovery. This projection is intentionally not wire
+/// serializable: recovery authority compares it directly with the accepted
+/// arming receipt and immutable action binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportObservationFrozenActionClaim<'a> {
+    Unscoped,
+    ExactArmedAction {
+        support_action_id: &'a UnicaId,
+        support_action_digest: &'a Sha256Digest,
+        arming_receipt_id: &'a UnicaId,
+        arming_receipt_digest: &'a Sha256Digest,
+        authorized_transitions_digest: &'a Sha256Digest,
+        manual_target_mode: ManualSupportTargetMode,
+        working_infobase_identity: Option<&'a ManualWorkingInfobaseIdentity>,
+        first_root_support_after_arming: bool,
+    },
+    ExactArmingReceipt {
+        arming_receipt_id: &'a UnicaId,
+        arming_receipt_digest: &'a Sha256Digest,
+        manual_target_mode: ManualSupportTargetMode,
+        working_infobase_identity: Option<&'a ManualWorkingInfobaseIdentity>,
+        first_root_support_after_arming: bool,
+    },
+    PendingAction,
+    CorrectiveSourceRequired,
+}
+
 impl SupportObservationTask8Projection {
     pub(crate) const fn partition_classification(
         &self,
@@ -858,6 +886,67 @@ impl SupportPrerequisiteVersionObservation {
 
     pub(crate) fn classification_digest(&self) -> &Sha256Digest {
         self.0.classification_digest()
+    }
+
+    pub(crate) fn frozen_action_claim(&self) -> SupportObservationFrozenActionClaim<'_> {
+        match &self.0 {
+            ObservationWire::AuthorizedReserved(value) => {
+                SupportObservationFrozenActionClaim::ExactArmedAction {
+                    support_action_id: &value.support_action_id,
+                    support_action_digest: &value.support_action_digest,
+                    arming_receipt_id: &value.arming_receipt_id,
+                    arming_receipt_digest: &value.arming_receipt_digest,
+                    authorized_transitions_digest: &value.authorized_transitions_digest,
+                    manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+                    working_infobase_identity: None,
+                    first_root_support_after_arming: true,
+                }
+            }
+            ObservationWire::AuthorizedSeparate(value) => {
+                SupportObservationFrozenActionClaim::ExactArmedAction {
+                    support_action_id: &value.support_action_id,
+                    support_action_digest: &value.support_action_digest,
+                    arming_receipt_id: &value.arming_receipt_id,
+                    arming_receipt_digest: &value.arming_receipt_digest,
+                    authorized_transitions_digest: &value.authorized_transitions_digest,
+                    manual_target_mode: ManualSupportTargetMode::SeparateWorkingInfobase,
+                    working_infobase_identity: Some(&value.working_infobase_identity),
+                    first_root_support_after_arming: true,
+                }
+            }
+            ObservationWire::InvalidThisActionReserved(value) => {
+                SupportObservationFrozenActionClaim::ExactArmingReceipt {
+                    arming_receipt_id: &value.arming_receipt_id,
+                    arming_receipt_digest: &value.arming_receipt_digest,
+                    manual_target_mode: ManualSupportTargetMode::ReservedOriginal,
+                    working_infobase_identity: None,
+                    first_root_support_after_arming: value.first_root_support_after_arming,
+                }
+            }
+            ObservationWire::InvalidThisActionSeparate(value) => {
+                SupportObservationFrozenActionClaim::ExactArmingReceipt {
+                    arming_receipt_id: &value.arming_receipt_id,
+                    arming_receipt_digest: &value.arming_receipt_digest,
+                    manual_target_mode: ManualSupportTargetMode::SeparateWorkingInfobase,
+                    working_infobase_identity: Some(&value.working_infobase_identity),
+                    first_root_support_after_arming: value.first_root_support_after_arming,
+                }
+            }
+            ObservationWire::PreArmAwaiting(_) | ObservationWire::PreArmFrozen(_) => {
+                SupportObservationFrozenActionClaim::PendingAction
+            }
+            ObservationWire::ActionCorrectionReserved(_)
+            | ObservationWire::ActionCorrectionSeparate(_)
+            | ObservationWire::ExternalConflictCorrection(_) => {
+                SupportObservationFrozenActionClaim::CorrectiveSourceRequired
+            }
+            ObservationWire::Routine(_)
+            | ObservationWire::ExternalSupport(_)
+            | ObservationWire::InvalidExternalActor(_)
+            | ObservationWire::InvalidUnattributed(_) => {
+                SupportObservationFrozenActionClaim::Unscoped
+            }
+        }
     }
 
     pub(crate) fn task8_mapping_projection(&self) -> Option<SupportObservationTask8Projection> {
@@ -1175,7 +1264,20 @@ mod tests {
             "observedSupportTransitionsDigest":SHA_A,
             "rootDeltaContainsOnlyAuthorizedSupportTransitions":true
         }));
-        accepts(authorized_reserved.clone());
+        let authorized_observation = accepts(authorized_reserved.clone());
+        assert!(matches!(
+            authorized_observation.frozen_action_claim(),
+            super::SupportObservationFrozenActionClaim::ExactArmedAction {
+                support_action_id,
+                support_action_digest,
+                arming_receipt_id,
+                arming_receipt_digest,
+                ..
+            } if support_action_id.as_str() == UUID_A
+                && support_action_digest.as_str() == SHA_A
+                && arming_receipt_id.as_str() == UUID_A
+                && arming_receipt_digest.as_str() == SHA_A
+        ));
         let mut cross_mode = authorized_reserved;
         cross_mode["workingInfobaseIdentity"] = json!({
             "computer":"HOST",

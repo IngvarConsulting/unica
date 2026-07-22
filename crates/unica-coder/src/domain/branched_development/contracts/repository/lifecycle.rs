@@ -678,6 +678,18 @@ impl DeferredRepositoryAdvanceConsumptionReceipt {
         )
     }
 
+    pub(crate) const fn consumption_receipt_id(&self) -> &UnicaId {
+        &self.consumption_receipt_id
+    }
+
+    pub(crate) const fn terminal_receipt_id(&self) -> &UnicaId {
+        &self.terminal_receipt_id
+    }
+
+    pub(crate) const fn advance_observation_digest(&self) -> &Sha256Digest {
+        &self.advance_observation_digest
+    }
+
     pub(crate) fn receipt_digest(&self) -> &Sha256Digest {
         &self.receipt_digest
     }
@@ -1626,6 +1638,9 @@ mod tests {
             TaskPhase::Synchronized,
         )
         .unwrap();
+        assert_eq!(value.consumption_receipt_id().as_str(), ID_1);
+        assert_eq!(value.terminal_receipt_id().as_str(), ID_2);
+        assert_eq!(value.advance_observation_digest().as_str(), A);
         assert_eq!(value.resulting_phase(), TaskPhase::Synchronized);
         assert_digest_and_shape(&value, "receiptDigest");
 

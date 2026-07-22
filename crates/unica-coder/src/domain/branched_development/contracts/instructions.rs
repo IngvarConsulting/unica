@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::branched_development::contracts::recovery::SupportRecoveryExternalWaitAuthority;
     use crate::domain::branched_development::contracts::repository::RepositoryUpdateLockReason;
     use crate::domain::branched_development::contracts::scalars::{
         Diagnostic, DisplayPath, RepositoryIdentityComponent, RepositoryVersion,
@@ -1178,7 +1179,103 @@ mod tests {
                 &cross_leaf
             ));
         }
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| match leaf.as_ref() {
+                    SupportRecoveryExternalActionRef::Corrective(_) => "corrective",
+                    SupportRecoveryExternalActionRef::ReleaseLocks(_) => "releaseLocks",
+                    SupportRecoveryExternalActionRef::CleanWorkingInfobase(_) =>
+                        "cleanWorkingInfobase",
+                    SupportRecoveryExternalActionRef::CloseReservedOriginal(_) =>
+                        "closeReservedOriginal",
+                    SupportRecoveryExternalActionRef::Conflict(_) => "conflict",
+                    SupportRecoveryExternalActionRef::Evidence(_) => "evidence",
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                "corrective",
+                "releaseLocks",
+                "cleanWorkingInfobase",
+                "closeReservedOriginal",
+                "conflict",
+                "evidence",
+            ]
+        );
         assert_schema_closed::<SupportRecoveryExternalAction>();
+    }
+
+    #[test]
+    fn every_external_action_projects_to_its_exact_recovery_wait_action() {
+        let leaves = vec![
+            SupportRecoveryExternalAction::corrective(corrective_instruction(
+                ManualSupportTargetMode::ReservedOriginal,
+                None,
+            )),
+            SupportRecoveryExternalAction::release_locks(
+                ReleaseRepositoryLocksInstruction::new(
+                    RequiredNullable::null(),
+                    vec![RepositoryTargetDisplay::parse("Configuration").unwrap()],
+                )
+                .unwrap(),
+            ),
+            SupportRecoveryExternalAction::clean_working_infobase(
+                CleanManualWorkingInfobaseInstruction::new(
+                    working_identity(),
+                    digest(A),
+                    CapabilityRowId::parse("manual-lease.v1").unwrap(),
+                    digest(A),
+                    ManualWorkingInfobaseCleanupReason::LeaseBusy,
+                ),
+            ),
+            SupportRecoveryExternalAction::close_reserved_original(
+                CloseReservedOriginalDesignerInstruction::new(
+                    digest(A),
+                    CapabilityRowId::parse("reserved-original-lease.v1").unwrap(),
+                ),
+            ),
+            SupportRecoveryExternalAction::conflict(
+                SupportConflictInstruction::new(id(ID_1), conflicts(), digest(A)).unwrap(),
+            ),
+            SupportRecoveryExternalAction::evidence(
+                SupportEvidenceInstruction::new(blockers(), evidence_gaps()).unwrap(),
+            ),
+        ];
+        let action_kinds = leaves
+            .into_iter()
+            .enumerate()
+            .map(|(index, external_action)| {
+                let wait = SupportRecoveryExternalWaitAuthority::from_external_action_test_only(
+                    id([
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6",
+                    ][index]),
+                    external_action,
+                    digest(B),
+                )
+                .unwrap();
+                serde_json::to_value(wait.into_recovery_action_test_only(id(ID_1)).unwrap())
+                    .unwrap()["actionKind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            action_kinds,
+            vec![
+                "awaitExternalSupportCorrection",
+                "awaitExternalLockRelease",
+                "awaitManualWorkingInfobaseClosure",
+                "awaitReservedOriginalClosure",
+                "awaitExternalSupportConflictResolution",
+                "awaitSupportRecoveryEvidence",
+            ]
+        );
     }
 
     #[test]
@@ -1285,15 +1382,19 @@ use super::scalars::{
 use super::schema::one_of_schema;
 use super::support::{
     ArmedSupportInstructionProjection, AwaitingSupportInstructionProjection,
-    ManualSupportTargetMode, ManualWorkingInfobaseIdentity, SupportActionPurpose, SupportBlockers,
-    SupportEvidenceGaps, SupportHistoryOrderAuthority, SupportMissingEvidenceKinds,
-    SupportRecoveryDistributionHandoff, SupportRecoveryHandoffRevalidation, SupportTransition,
-    SupportTransitionConflict, SupportTransitionConflicts, SupportTransitionOverlapKind,
-    SupportTransitions, VendorSupportDecisions,
+    ManualSupportTargetMode, ManualWorkingInfobaseIdentity, ReservedOriginalLeaseStopEvidence,
+    SupportActionPurpose, SupportBlockers, SupportEvidenceGaps, SupportHistoryOrderAuthority,
+    SupportMissingEvidenceKinds, SupportRecoveryDistributionHandoff,
+    SupportRecoveryHandoffRevalidation, SupportTransition, SupportTransitionConflict,
+    SupportTransitionConflicts, SupportTransitionOverlapKind, SupportTransitions,
+    VendorSupportDecisions,
 };
-#[cfg(test)]
-use super::support_terminalization::SupportRecoveryFinalizationPlan;
-use super::support_terminalization::{SupportRecoveryLockTarget, SupportRecoveryLockTargets};
+use super::support_recovery_authority::SupportRecoveryAuthorityToken;
+use super::support_terminalization::{
+    ManualWorkingInfobaseClosurePlan, ManualWorkingInfobaseStopEvidence,
+    SupportRecoveryFinalizationPlan, SupportRecoveryGuardProof, SupportRecoveryLockTarget,
+    SupportRecoveryLockTargets,
+};
 use crate::domain::branched_development::canonical_json::{
     canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
 };
@@ -1639,6 +1740,25 @@ impl contract_digest_record_sealed::Sealed for ReleaseRepositoryLocksInstruction
 impl ContractDigestRecord for ReleaseRepositoryLocksInstructionDigestRecord {}
 
 impl ReleaseRepositoryLocksInstruction {
+    pub(crate) fn from_support_recovery_blocked_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        proof: &SupportRecoveryGuardProof,
+    ) -> Result<Self, InstructionContractError> {
+        let owner = proof
+            .blocked_owner()
+            .ok_or(InstructionContractError(
+                "support recovery lock instruction requires a blocked guard proof",
+            ))?
+            .clone();
+        let display = proof
+            .blocked_target_display()
+            .ok_or(InstructionContractError(
+                "support recovery lock instruction lost its blocked target display",
+            ))?
+            .clone();
+        Self::new(owner, vec![display])
+    }
+
     pub(crate) fn new(
         owner: RequiredNullable<RepositoryOwnerIdentity>,
         object_displays: Vec<RepositoryTargetDisplay>,
@@ -1888,8 +2008,53 @@ pub(crate) struct CleanManualWorkingInfobaseInstruction {
 }
 
 impl CleanManualWorkingInfobaseInstruction {
+    pub(crate) fn from_support_recovery_stop_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        closure_plan: &ManualWorkingInfobaseClosurePlan,
+        stop: &ManualWorkingInfobaseStopEvidence,
+    ) -> Result<Self, InstructionContractError> {
+        if stop.working_infobase_identity() != closure_plan.working_infobase_identity()
+            || stop.closure_plan_digest() != closure_plan.plan_digest()
+        {
+            return Err(InstructionContractError(
+                "working-infobase cleanup instruction belongs to another closure plan",
+            ));
+        }
+        let reason = match stop {
+            ManualWorkingInfobaseStopEvidence::LeaseBusy(_) => {
+                ManualWorkingInfobaseCleanupReason::LeaseBusy
+            }
+            ManualWorkingInfobaseStopEvidence::LeaseAcquiredDirty(_) => {
+                ManualWorkingInfobaseCleanupReason::LocalChanges
+            }
+        };
+        Ok(Self::from_parts(
+            closure_plan.working_infobase_identity().clone(),
+            closure_plan.plan_digest().clone(),
+            closure_plan.exclusive_lease_capability_id().clone(),
+            closure_plan.desired_base_fingerprint().clone(),
+            reason,
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
+        working_infobase_identity: ManualWorkingInfobaseIdentity,
+        closure_plan_digest: Sha256Digest,
+        exclusive_lease_capability_id: CapabilityRowId,
+        expected_repository_fingerprint: Sha256Digest,
+        reason: ManualWorkingInfobaseCleanupReason,
+    ) -> Self {
+        Self::from_parts(
+            working_infobase_identity,
+            closure_plan_digest,
+            exclusive_lease_capability_id,
+            expected_repository_fingerprint,
+            reason,
+        )
+    }
+
+    fn from_parts(
         working_infobase_identity: ManualWorkingInfobaseIdentity,
         closure_plan_digest: Sha256Digest,
         exclusive_lease_capability_id: CapabilityRowId,
@@ -1907,6 +2072,18 @@ impl CleanManualWorkingInfobaseInstruction {
             resume_with: BranchedStatusResume::Value,
         }
     }
+
+    pub(crate) const fn working_infobase_identity(&self) -> &ManualWorkingInfobaseIdentity {
+        &self.working_infobase_identity
+    }
+
+    pub(crate) const fn closure_plan_digest(&self) -> &Sha256Digest {
+        &self.closure_plan_digest
+    }
+
+    pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        &self.exclusive_lease_capability_id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1920,8 +2097,28 @@ pub(crate) struct CloseReservedOriginalDesignerInstruction {
 }
 
 impl CloseReservedOriginalDesignerInstruction {
+    pub(crate) fn from_support_recovery_stop_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        stop: &ReservedOriginalLeaseStopEvidence,
+    ) -> Self {
+        Self::from_parts(
+            stop.reserved_original_identity_digest().clone(),
+            stop.exclusive_lease_capability_id().clone(),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
+        reserved_original_identity_digest: Sha256Digest,
+        exclusive_lease_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self::from_parts(
+            reserved_original_identity_digest,
+            exclusive_lease_capability_id,
+        )
+    }
+
+    fn from_parts(
         reserved_original_identity_digest: Sha256Digest,
         exclusive_lease_capability_id: CapabilityRowId,
     ) -> Self {
@@ -1932,6 +2129,14 @@ impl CloseReservedOriginalDesignerInstruction {
             close_designer_session: InstructionTrueLiteral,
             resume_with: BranchedStatusResume::Value,
         }
+    }
+
+    pub(crate) const fn reserved_original_identity_digest(&self) -> &Sha256Digest {
+        &self.reserved_original_identity_digest
+    }
+
+    pub(crate) const fn exclusive_lease_capability_id(&self) -> &CapabilityRowId {
+        &self.exclusive_lease_capability_id
     }
 }
 
@@ -2384,18 +2589,30 @@ impl SupportRecoveryTransition {
         })
     }
 
-    fn recovery_handoff_binding(&self) -> Option<(&SupportLayerId, &UnicaId, &UnicaId)> {
+    pub(crate) fn ordinary_transition(&self) -> Option<&SupportTransition> {
+        match &self.0 {
+            SupportRecoveryTransitionKind::Ordinary(value) => Some(value),
+            SupportRecoveryTransitionKind::RestoreVendorConfigurationSupport(_)
+            | SupportRecoveryTransitionKind::RestoreVendorObjectSupport(_) => None,
+        }
+    }
+
+    pub(crate) fn recovery_handoff_binding(
+        &self,
+    ) -> Option<(&SupportLayerId, &UnicaId, &UnicaId, &CapabilityRowId)> {
         match &self.0 {
             SupportRecoveryTransitionKind::Ordinary(_) => None,
             SupportRecoveryTransitionKind::RestoreVendorConfigurationSupport(value) => Some((
                 &value.layer_id,
                 &value.vendor_distribution_artifact_id,
                 &value.recovery_distribution_handoff_id,
+                &value.capability_row_id,
             )),
             SupportRecoveryTransitionKind::RestoreVendorObjectSupport(value) => Some((
                 &value.layer_id,
                 &value.vendor_distribution_artifact_id,
                 &value.recovery_distribution_handoff_id,
+                &value.capability_row_id,
             )),
         }
     }
@@ -2570,6 +2787,10 @@ impl SupportRecoveryHandoffRevalidations {
             }
         }
         Ok(Self(values))
+    }
+
+    fn as_slice(&self) -> &[SupportRecoveryHandoffRevalidation] {
+        &self.0
     }
 }
 
@@ -2752,14 +2973,12 @@ pub(crate) struct SupportCorrectiveInstructionAuthority {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) enum SupportCorrectiveLockClosureResolutionError {
     Unavailable,
 }
 
-/// Test fixture for the future capability boundary that resolves a correction
-/// lock closure from an action-bound recovery projection.
-#[cfg(test)]
+/// Capability boundary that resolves a correction lock closure from an
+/// action-bound recovery projection.
 pub(crate) trait SupportCorrectiveLockClosureResolver {
     fn resolve_correction_lock_targets(
         &self,
@@ -2769,6 +2988,38 @@ pub(crate) trait SupportCorrectiveLockClosureResolver {
 }
 
 impl SupportCorrectiveInstructionAuthority {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        support_action_id: UnicaId,
+        purpose: SupportActionPurpose,
+        manual_target_mode: ManualSupportTargetMode,
+        repository_username: RepositoryUsername,
+        working_infobase_identity: Option<ManualWorkingInfobaseIdentity>,
+        correction_base_cursor: RepositoryHistoryCursor,
+        required_root_transitions: Vec<SupportRecoveryTransition>,
+        required_content_restorations: Vec<SupportContentRestoration>,
+        distribution_handoffs: Vec<SupportRecoveryDistributionHandoff>,
+        handoff_revalidations: Vec<SupportRecoveryHandoffRevalidation>,
+        finalization_plan: &SupportRecoveryFinalizationPlan,
+        lock_closure_resolver: &dyn SupportCorrectiveLockClosureResolver,
+    ) -> Result<Self, InstructionContractError> {
+        Self::from_lock_closure_resolver(
+            support_action_id,
+            purpose,
+            manual_target_mode,
+            repository_username,
+            working_infobase_identity,
+            correction_base_cursor,
+            required_root_transitions,
+            required_content_restorations,
+            distribution_handoffs,
+            handoff_revalidations,
+            finalization_plan,
+            lock_closure_resolver,
+        )
+    }
+
     /// Task 9 fixture for the corrective wire/digest contract. Production mint
     /// stays unavailable until Task 11 can supply one opaque action-bound
     /// recovery projection containing the approved delta, handoffs, history,
@@ -2776,6 +3027,37 @@ impl SupportCorrectiveInstructionAuthority {
     #[allow(clippy::too_many_arguments)]
     #[cfg(test)]
     pub(crate) fn from_lock_closure_resolver_test_only(
+        support_action_id: UnicaId,
+        purpose: SupportActionPurpose,
+        manual_target_mode: ManualSupportTargetMode,
+        repository_username: RepositoryUsername,
+        working_infobase_identity: Option<ManualWorkingInfobaseIdentity>,
+        correction_base_cursor: RepositoryHistoryCursor,
+        required_root_transitions: Vec<SupportRecoveryTransition>,
+        required_content_restorations: Vec<SupportContentRestoration>,
+        distribution_handoffs: Vec<SupportRecoveryDistributionHandoff>,
+        handoff_revalidations: Vec<SupportRecoveryHandoffRevalidation>,
+        finalization_plan: &SupportRecoveryFinalizationPlan,
+        lock_closure_resolver: &dyn SupportCorrectiveLockClosureResolver,
+    ) -> Result<Self, InstructionContractError> {
+        Self::from_lock_closure_resolver(
+            support_action_id,
+            purpose,
+            manual_target_mode,
+            repository_username,
+            working_infobase_identity,
+            correction_base_cursor,
+            required_root_transitions,
+            required_content_restorations,
+            distribution_handoffs,
+            handoff_revalidations,
+            finalization_plan,
+            lock_closure_resolver,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_lock_closure_resolver(
         support_action_id: UnicaId,
         purpose: SupportActionPurpose,
         manual_target_mode: ManualSupportTargetMode,
@@ -2936,7 +3218,8 @@ impl SupportCorrectiveInstructionAuthority {
 
         let mut referenced_handoffs = BTreeSet::new();
         for transition in required_root_transitions.as_slice() {
-            let Some((layer_id, artifact_id, handoff_id)) = transition.recovery_handoff_binding()
+            let Some((layer_id, artifact_id, handoff_id, _capability_row_id)) =
+                transition.recovery_handoff_binding()
             else {
                 continue;
             };
@@ -3116,6 +3399,36 @@ impl JsonSchema for SupportCorrectiveInstruction {
             generator.subschema_for::<ReservedOriginalSupportCorrectiveInstruction>(),
             generator.subschema_for::<SeparateWorkingInfobaseSupportCorrectiveInstruction>(),
         ])
+    }
+}
+
+/// Mode-specific schema projection used by enclosing contracts that already
+/// selected `reservedOriginal`. The runtime instruction remains the sealed
+/// two-mode union; exposing only this zero-sized schema wrapper prevents an
+/// outer reserved branch from re-admitting the separate-IB leaf.
+pub(crate) struct ReservedOriginalSupportCorrectiveInstructionSchema;
+
+impl JsonSchema for ReservedOriginalSupportCorrectiveInstructionSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "ReservedOriginalSupportCorrectiveInstructionSchema".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<ReservedOriginalSupportCorrectiveInstruction>()
+    }
+}
+
+/// Mode-specific schema projection used by enclosing contracts that already
+/// selected `separateWorkingInfobase`.
+pub(crate) struct SeparateWorkingInfobaseSupportCorrectiveInstructionSchema;
+
+impl JsonSchema for SeparateWorkingInfobaseSupportCorrectiveInstructionSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "SeparateWorkingInfobaseSupportCorrectiveInstructionSchema".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<SeparateWorkingInfobaseSupportCorrectiveInstruction>()
     }
 }
 
@@ -3402,6 +3715,72 @@ impl SupportCorrectiveInstruction {
             }
             SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
                 &value.correction_base_cursor
+            }
+        }
+    }
+
+    pub(crate) fn correction_lock_targets(&self) -> &SupportRecoveryLockTargets {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                &value.correction_lock_targets
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                &value.correction_lock_targets
+            }
+        }
+    }
+
+    pub(crate) fn finalization_lock_targets(&self) -> &SupportRecoveryLockTargets {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                &value.finalization_lock_targets
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                &value.finalization_lock_targets
+            }
+        }
+    }
+
+    pub(crate) fn required_root_transitions(&self) -> &[SupportRecoveryTransition] {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                value.required_root_transitions.as_slice()
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                value.required_root_transitions.as_slice()
+            }
+        }
+    }
+
+    pub(crate) fn required_content_restorations(&self) -> &[SupportContentRestoration] {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                value.required_content_restorations.as_slice()
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                value.required_content_restorations.as_slice()
+            }
+        }
+    }
+
+    pub(crate) fn distribution_handoffs(&self) -> &[SupportRecoveryDistributionHandoff] {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                value.distribution_handoffs.as_slice()
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                value.distribution_handoffs.as_slice()
+            }
+        }
+    }
+
+    pub(crate) fn handoff_revalidations(&self) -> &[SupportRecoveryHandoffRevalidation] {
+        match &self.0 {
+            SupportCorrectiveInstructionKind::ReservedOriginal(value) => {
+                value.handoff_revalidations.as_slice()
+            }
+            SupportCorrectiveInstructionKind::SeparateWorkingInfobase(value) => {
+                value.handoff_revalidations.as_slice()
             }
         }
     }
@@ -3942,33 +4321,129 @@ enum SupportRecoveryExternalActionKind {
 #[serde(transparent)]
 pub(crate) struct SupportRecoveryExternalAction(SupportRecoveryExternalActionKind);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportRecoveryExternalActionRef<'a> {
+    Corrective(&'a SupportCorrectiveInstruction),
+    ReleaseLocks(&'a ReleaseRepositoryLocksInstruction),
+    CleanWorkingInfobase(&'a CleanManualWorkingInfobaseInstruction),
+    CloseReservedOriginal(&'a CloseReservedOriginalDesignerInstruction),
+    Conflict(&'a SupportConflictInstruction),
+    Evidence(&'a SupportEvidenceInstruction),
+}
+
 impl SupportRecoveryExternalAction {
+    pub(crate) fn corrective_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: SupportCorrectiveInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::Corrective(value))
+    }
+
+    pub(crate) fn release_locks_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: ReleaseRepositoryLocksInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::ReleaseLocks(value))
+    }
+
+    pub(crate) fn clean_working_infobase_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: CleanManualWorkingInfobaseInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::CleanWorkingInfobase(
+            value,
+        ))
+    }
+
+    pub(crate) fn close_reserved_original_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: CloseReservedOriginalDesignerInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::CloseReservedOriginal(
+            value,
+        ))
+    }
+
+    pub(crate) fn conflict_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: SupportConflictInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::Conflict(value))
+    }
+
+    pub(crate) fn evidence_from_approved(
+        _token: &SupportRecoveryAuthorityToken,
+        value: SupportEvidenceInstruction,
+    ) -> Self {
+        Self(SupportRecoveryExternalActionKind::Evidence(value))
+    }
+
+    #[cfg(test)]
     pub(crate) fn corrective(value: SupportCorrectiveInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::Corrective(value))
     }
 
+    #[cfg(test)]
     pub(crate) fn release_locks(value: ReleaseRepositoryLocksInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::ReleaseLocks(value))
     }
 
+    #[cfg(test)]
     pub(crate) fn clean_working_infobase(value: CleanManualWorkingInfobaseInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::CleanWorkingInfobase(
             value,
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn close_reserved_original(value: CloseReservedOriginalDesignerInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::CloseReservedOriginal(
             value,
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn conflict(value: SupportConflictInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::Conflict(value))
     }
 
+    #[cfg(test)]
     pub(crate) fn evidence(value: SupportEvidenceInstruction) -> Self {
         Self(SupportRecoveryExternalActionKind::Evidence(value))
+    }
+
+    pub(crate) const fn corrective_instruction(&self) -> Option<&SupportCorrectiveInstruction> {
+        match &self.0 {
+            SupportRecoveryExternalActionKind::Corrective(value) => Some(value),
+            SupportRecoveryExternalActionKind::ReleaseLocks(_)
+            | SupportRecoveryExternalActionKind::CleanWorkingInfobase(_)
+            | SupportRecoveryExternalActionKind::CloseReservedOriginal(_)
+            | SupportRecoveryExternalActionKind::Conflict(_)
+            | SupportRecoveryExternalActionKind::Evidence(_) => None,
+        }
+    }
+
+    pub(crate) const fn as_ref(&self) -> SupportRecoveryExternalActionRef<'_> {
+        match &self.0 {
+            SupportRecoveryExternalActionKind::Corrective(value) => {
+                SupportRecoveryExternalActionRef::Corrective(value)
+            }
+            SupportRecoveryExternalActionKind::ReleaseLocks(value) => {
+                SupportRecoveryExternalActionRef::ReleaseLocks(value)
+            }
+            SupportRecoveryExternalActionKind::CleanWorkingInfobase(value) => {
+                SupportRecoveryExternalActionRef::CleanWorkingInfobase(value)
+            }
+            SupportRecoveryExternalActionKind::CloseReservedOriginal(value) => {
+                SupportRecoveryExternalActionRef::CloseReservedOriginal(value)
+            }
+            SupportRecoveryExternalActionKind::Conflict(value) => {
+                SupportRecoveryExternalActionRef::Conflict(value)
+            }
+            SupportRecoveryExternalActionKind::Evidence(value) => {
+                SupportRecoveryExternalActionRef::Evidence(value)
+            }
+        }
     }
 }
 

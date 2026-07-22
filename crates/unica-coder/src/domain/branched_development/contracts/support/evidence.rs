@@ -1716,6 +1716,18 @@ impl SupportRecoveryDistributionEvidence {
         &self.layer_id
     }
 
+    pub(crate) const fn distribution_artifact_id(&self) -> &UnicaId {
+        &self.distribution_artifact_id
+    }
+
+    pub(crate) const fn capability_row_id(&self) -> &CapabilityRowId {
+        &self.capability_row_id
+    }
+
+    pub(crate) const fn handoff(&self) -> &SupportRecoveryDistributionHandoff {
+        &self.handoff
+    }
+
     pub(crate) const fn evidence_digest(&self) -> &Sha256Digest {
         &self.evidence_digest
     }
@@ -2175,6 +2187,10 @@ impl SupportActionArmingReceipt {
 
     pub(crate) const fn arming_cursor(&self) -> &RepositoryHistoryCursor {
         &self.arming_cursor
+    }
+
+    pub(crate) const fn history_partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.history_partition
     }
 
     pub(crate) const fn receipt_digest(&self) -> &Sha256Digest {

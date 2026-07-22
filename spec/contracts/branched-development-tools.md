@@ -391,7 +391,10 @@ The companion contract for general mutations is producer-neutral:
   In support-recovery ranges, observation `authorized` maps to
   `authorizedSupport`; routine relevance maps
   to `unrelatedRoutine`/`relevantRoutine`; the remaining discriminator names
-  map directly, and neither commit-only classification is legal. In a
+  map directly. `taskCommit` is illegal in a support-recovery range;
+  `nonConflictingConcurrent` is legal only with the exact typed capability
+  evidence described below and occupies one position in the same one-to-one
+  ordered recovery-evidence list. In a
   post-commit range, `taskCommit` names exactly the task's own version;
   `nonConflictingConcurrent` requires capability evidence that the entry changed
   no integration content, validation input, support graph, locked target/root,
@@ -3138,14 +3141,27 @@ The named status records are closed:
 Every array above is canonical and duplicate-free by its identity key.
 `activeOperation` is absent when no journaled operation is non-terminal;
 `archive` is present exactly in `archivedSuccess`, `archivedAbandoned`,
-`cleanedSuccess`, and `cleanedAbandoned`, while cleanup retains that immutable
-archive record. `cleanupReceipt` is required exactly in the two `cleaned*`
-phases and absent before terminal cleanup. These
+`cleanedSuccess`, and `cleanedAbandoned`, plus `recoveryRequired` exactly while
+recovering an interrupted cleanup; cleanup and cleanup recovery retain that
+immutable archive record. `cleanupReceipt` is required exactly in the two
+`cleaned*` phases and absent before terminal cleanup. A `recoveryRequired`
+status is a physical presence union: a pre-deployment recovery has neither
+`taskWorkspaceId` nor `archive`; a post-deployment pre-cleanup recovery has
+`taskWorkspaceId` and no `archive`; cleanup recovery has `archive` and no
+`taskWorkspaceId`. The cleanup-recovery leaf accepts only a cleanup-target
+`RecoveryPlanStatus`; its terminal `finishCleanup.archiveId` equals the retained
+archive and cleanup-eligibility archive ID, while `plannedResultPhase` is
+`cleanedSuccess` or `cleanedAbandoned` exactly as required by that archive's
+outcome.
+These
 records are status projections only and cannot be supplied as mutation input.
-`taskWorkspaceId` appears from successful deployment until cleanup and lets a
-new client resume typed tools without learning a path. `resumeHandles` is a
-closed `handleKind`-tagged union containing only current non-invalidated
-records. Every branch below includes `handleKind` with the literal branch name
+`taskWorkspaceId` appears from successful deployment through the archived
+pre-cleanup phases and lets a new client resume typed tools without learning a
+path; it is absent once cleanup starts or completes. `resumeHandles` is a
+closed `handleKind`-tagged union containing current non-invalidated producer
+records plus only the explicitly named immutable terminal, consumed, and
+historical audit leaves below; an invalidated generation or an unmarked stale
+producer record is never projected. Every branch below includes `handleKind` with the literal branch name
 (`artifact`, `workspace`, `mergeResolutionWorkspace`, `checkpoint`,
 `comparison`, `supportPreflight`, `supportActionAuthorization`,
 `supportPrerequisite`, `supportCancellation`, `supportRecovery`,
@@ -3290,6 +3306,17 @@ any branch-local `kind` or `decisionKind` field:
   `fromCursor` and discover the immediate successor without inventing one. A
   preview only binds/reports this resolution and leaves the handle current;
   only a verified approved routine apply atomically consumes it;
+
+  The non-wire no-terminal status authority is derived from the complete exact
+  `resumeHandles` set and therefore cannot hide either a terminal support receipt
+  or a current deferred advance behind a caller-supplied empty marker. The latest
+  terminal support receipt is not inferred from UUID ordering, array order, or
+  `recentOperations`: the typed terminal producer mints a sealed latest-terminal
+  authority together with that receipt. Status revalidates the authority's exact
+  receipt ID and optional deferred-observation digest against the retained handle,
+  then permits exactly the current-handle or matching-consumption-receipt branch.
+  There is no production raw-scalar constructor for this pointer.
+
 - `mergeSession { sessionId, mode, checkpointId, incomingDistributionId?,
   comparisonId, supportGateId?, supportGateDigest?, baseSessionDigest,
   supportGateHistoryEvidenceDigest?, decisionSetDigest,
@@ -4029,6 +4056,7 @@ When present, `recovery` is the complete closed `RecoveryPlanStatus {
 priorOperationId, target, effectClass, plannedResultPhase,
 observations: RecoveryObservation[], actions: RecoveryAction[],
 supportVersionObservations?: SupportPrerequisiteVersionObservation[],
+supportVersionObservationDigest?: Sha256Digest,
 supportHistoryFromCursor?: RepositoryHistoryCursor,
 supportHistoryThroughCursor?: RepositoryHistoryCursor,
 supportHistoryPartition?: RepositoryHistoryPartition,
@@ -4038,7 +4066,9 @@ successfulIntegrationForbidden?: true,
 supportRecoveryFinalizationPlan?: SupportRecoveryFinalizationPlan,
 latestSupportRecoveryGuardProof?: SupportRecoveryGuardProof,
 manualWorkingInfobaseClosurePlan?: ManualWorkingInfobaseClosurePlan,
+manualTargetMode?: ManualSupportTargetMode,
 requiredExternalAction?: SupportRecoveryExternalAction,
+repositoryCommitStage?: observeOutcome | committed | notCommitted,
 preArmCancellationStage?: observeOutcome | finalize,
 preArmCancellationEffectObservation?: PreArmCancellationEffectObservation,
 preArmCancellationFinalizationPlan?: PreArmCancellationFinalizationPlan,
@@ -4060,9 +4090,11 @@ preserves the exact action lineage and follows the matching closed presence
 rules below.
 `effectClass` is
 `compensate`, `rollback`, `reconcileOnly`, `quarantine`, or `cleanup`.
-`RecoveryPlanStatus` is a closed target/effect tagged union whose action array
-is further discriminated by the following exhaustive mapping; no cross-row
-action kind, permutation, or duplicate is schema-valid:
+`RecoveryPlanStatus` is a closed target/effect tagged union whose sealed action
+catalog follows the following exhaustive mapping. Fixed-length rows and the
+finite pre-arm catalog are schema-exact. Armed support is also schema-exact as
+a fixed two- or three-action tuple. Only the variable-length archive and
+cleanup rows use the explicit structural boundary described below:
 
 | Target / effect class | Required ordered action grammar |
 | --- | --- |
@@ -4071,7 +4103,7 @@ action kind, permutation, or duplicate is schema-valid:
 | `originalConfiguration / rollback` | `restoreOriginal`, optionally followed by `releaseOwnedLocks` when the recorded operation owns locks |
 | `repositoryCommit / reconcileOnly` | tagged `observeOutcome` contains exactly `observeCommit` and can only publish a freshly digest-bound branch plan; tagged `committed` binds that prior positive observation and contains exactly `releaseOwnedLocks` when locks remain |
 | `repositoryCommit / rollback` | tagged `notCommitted` binds the prior negative/known-failed observation and contains `restoreOriginal` followed by `releaseOwnedLocks`; it proves the checkpoint fingerprint before the safe phase |
-| `supportPrerequisite / reconcileOnly` | one or more support-history/required external-evidence observations, then mode-specific lease observe/release and optional `updateOriginalSelectedTargets`, then exactly `finalizeSupportPrerequisiteRecovery`; waits stop before terminal finalization |
+| `supportPrerequisite / reconcileOnly` | exactly `observeSupportPrerequisiteHistory`, optionally followed by exactly one await action whose kind matches the full `requiredExternalAction`, then exactly `finalizeSupportPrerequisiteRecovery`; the no-blocker form is the exact two-action tuple and each blocker form is the exact three-action tuple |
 | `preArmSupportCancellation / reconcileOnly` | tagged `observeOutcome` contains exactly `observePreArmCancellationOutcome` and can only publish a freshly digest-bound `finalize` plan. Tagged `finalize` uses the closed `PreArmCancellationFinalizationExecutionPathPlan`: `actions[]` is the canonical de-duplicated action catalog in success-path order, while each selected success, capability-breach stop, or compensation path is one exact listed action-ID sequence. The success sequence contains `acquirePreArmRootGuard` iff its acquisition ref is `finalizationPlan`; `acquirePreArmModeLease` iff its ref is `finalizationPlan`; exactly `recheckPreArmCancellationFinalization`; `applyPreArmCancellationSelectiveUpdate` iff `selectiveUpdateDisposition=perform`; `persistPreArmSupportCancellation` iff the cancellation ref is `finalizationPlan`; `releasePreArmModeLease` iff its release ref is `finalizationPlan`; `releasePreArmRootGuard` iff its release ref is `finalizationPlan`; and exactly `finishPreArmCancellationRecovery` last. Compensation sequences are the exact reverse-release branches defined above and omit update/cancellation/finalization by construction, rather than skipping entries of a linear success execution. Every effect action maps to exactly one receipt-plan ref/outcome; prior-operation receipts generate no duplicate action |
 | `manualWorkingInfobaseLease / reconcileOnly` | `observeWorkingInfobaseLease`, followed by `releaseWorkingInfobaseLease` iff the pre-authorization lease is held |
 | `artifact / quarantine` | `quarantineArtifact` or `resumeQuarantine`, followed by exact presence observation through its action projection |
@@ -4081,11 +4113,27 @@ action kind, permutation, or duplicate is schema-valid:
 An empty owned-target set requires no cleanup-recovery plan and completes
 directly; it cannot manufacture the otherwise mandatory non-empty action
 postconditions for `finishCleanup`. Every other target/effect pair is rejected
-by the schema snapshot. The armed
-support-prerequisite variant additionally carries its disposition and manual
-target mode, so only working-IB actions are legal in separate mode and only
-reserved-original lease actions in reserved mode. Negative schema tests inject
-every action kind into every other row and permute required terminal actions.
+by the schema snapshot. For each variable-length row, the schema rejects every
+cross-row action kind, a wrong first action, a missing or duplicate terminal,
+and a byte-identical duplicate. Draft 2020-12 cannot compactly require the sole
+terminal to occupy the last index or express repeated pair adjacency without
+enumerating every length up to 1024. The schema is therefore intentionally a
+structural superset only for archive `observeRetentionLease`/
+`releaseRetentionLease` adjacency, cleanup terminal position, and semantic
+duplicate action IDs whose surrounding records differ.
+The output-only sealed constructors validate the complete ordered catalog and
+reject every such superset value before it can become a recovery authority.
+Tests freeze both sides of this boundary: terminal cardinality remains
+schema-exact, while a structurally admissible order permutation is rejected by
+the constructor. The armed support-prerequisite variant has twelve closed
+physical schema branches: for each manual target mode, one no-blocker branch,
+four common blocker branches, and the one mode-specific closure branch. Each
+branch binds the mode-specific corrective payload, full external instruction,
+and matching await tuple; cross-mode cleanup/closure and corrective payloads
+are schema-invalid. Negative schema tests inject every action kind into every
+other row and alter required first actions or terminal cardinality;
+sealed-constructor tests permute only the remaining variable archive/cleanup
+middle and terminal positions.
 The pre-arm variant instead binds the interrupted cancellation operation and
 has no disposition, corrective instruction, support-recovery distribution, or
 arming receipt. Its `observeOutcome` stage never publishes a lifecycle success.
@@ -4111,8 +4159,9 @@ after checkpoint fingerprint restoration and complete release are proven.
 `objectFingerprint`, `taskFingerprint`, `lockOwnership`,
 `workingInfobaseLease`, `reservedOriginalLease`, `retentionLease`,
 `finalizationPolicy`,
-`artifactPresence`, `archiveStagingPresence`, `archivePresence`, or
-`quarantinePresence`. `RecoveryObservation` is the closed tagged `oneOf` of:
+`artifactPresence`, `archiveStagingPresence`, `archivePresence`,
+`quarantinePresence`, or `ownedTargetAbsence`. `RecoveryObservation` is the
+closed tagged `oneOf` of:
 
 - `matched { outcome: matches, observationKind: RecoveryObservationKind,
   subject: RecoverySubjectRef, expectedDigest, observedDigest,
@@ -4386,15 +4435,15 @@ are invalid even when their digests happen to match:
 | `releasePreArmRootGuard` | exactly one root `lockOwnership` observation proving the attempt owns no root lock |
 | `finishPreArmCancellationRecovery` | fresh authorization-cancelled, selected original-target, support-graph, mode-lease-released, and root-unlocked observations bound by the complete receipt plan; it never observes or creates an arming receipt or repeats an external effect |
 | `quarantineArtifact`, `resumeQuarantine` | exact `artifactPresence` plus `quarantinePresence` observations for the named artifact/quarantine |
-| `resumeOwnedTargetQuarantine` | one `quarantinePresence` observation for the exact `ownedRole` subject proving its named quarantine state; no artifact ID is legal |
-| `observeSupportPrerequisiteHistory` | the exact anchor and one ordered `repositoryVersion` observation per entry in the bound contiguous partition |
+| `resumeOwnedTargetQuarantine` | one `quarantinePresence` observation for the exact `ownedRole` subject whose expected digest is the canonical `{ state: quarantined, ownedTarget, quarantineId }`; no artifact ID is legal |
+| `observeSupportPrerequisiteHistory` | exactly one anchor whose registered subject is the bound `supportActionId` and whose expected digest is the bound contiguous partition digest; the partition and ordered per-entry evidence remain in the plan-level typed history/observation records and their aggregate digest |
 | `updateOriginalSelectedTargets` | one `objectFingerprint` observation per root/metadata target in the bound selective plan |
 | working-IB/reserved-original/retention lease observe or release | exactly one matching lease-kind observation for the exact external-IB/retention-lease subject and capability-bound destination |
 | `observeArchiveStaging` | exactly one `archiveStagingPresence` observation whose subject/expected digest equal the named durable staging receipt |
 | each `awaitExternal*`/`awaitSupportRecoveryEvidence` action | only the exact repository-version, support-graph, lock, IB, or retained-artifact observations named by its immutable instruction digest |
 | `finalizeSupportPrerequisiteRecovery` | exact `supportActionAuthorization` terminal state plus destination `supportGraph` observations |
 | `finishArchive` | exactly one `archivePresence` observation; its staging-receipt and release-set digests bind the preceding durable staging and lease-release outcome receipts one-to-one, so their observations are not reused |
-| `finishCleanup` | one fresh exact `quarantinePresence`/owned-role observation proving `absent` for every owned target after deletion; a merely quarantined target cannot complete cleanup and no earlier resume observation is reused |
+| `finishCleanup` | one fresh exact `ownedTargetAbsence`/owned-role observation per owned target whose expected digest is the canonical `{ state: absent, archiveId, finishActionId, ownedTarget }`; the distinct observation kind and finish-action binding prevent a merely quarantined target or an observation from an earlier cleanup attempt from completing cleanup |
 
 The schema snapshot encodes these as action-discriminated observation tuples;
 an action cannot carry the observation projection of another row.
@@ -4442,7 +4491,15 @@ digest.
 For a frozen armed support authorization, both support-history cursors,
 `supportHistoryPartition`, `supportVersionObservations`,
 `supportRecoveryDisposition`, `supportRecoveryFinalizationPlan`, and
-`supportLateRelevantResultPhase` are required;
+`supportLateRelevantResultPhase` are required. The support action ID is the
+single equal value repeated by the required first history-observation action,
+the finalization action, and every applicable await action; it is projected from
+that validated action grammar rather than duplicated at plan top level. The
+expected support-action digest remains in the frozen authorization and accepted
+arming receipt. Task 11's sole integrated authority validates that exact frozen
+ID/digest and byte-identical arming prefix against this plan before producing
+any corrective, guard, completion, or stop value; a plan shape alone cannot
+mint those values;
 `supportHistoryFromCursor` equals the frozen authorization's
 `expectedBeforeHistoryCursor`, as does
 `supportRecoveryFinalizationPlan.historyFromCursor`; the partition endpoints
@@ -4452,8 +4509,11 @@ canonical semantic-delta digest. `supportVersionObservationDigest ==
 sha256(canonical(supportVersionObservations))`; the status handle, terminal
 recovery result, recovery receipt, and archive lineage use that byte-identical
 digest for this exact ordered list. Its arming prefix equals the immutable arming
-receipt partition; the first root/support observation after the receipt cursor
-is the action version or the exact invalid/conflict observation that froze it;
+receipt partition. Neutral `unrelatedRoutine`/`relevantRoutine` and
+capability-proven `nonConflictingConcurrent` entries may precede the first
+post-arming root/support observation; that first actionable observation is the
+exact action version or the exact invalid observation that froze it. An
+external-support or corrective observation cannot precede that exact claim;
 for `restoreThenReauthorize`, `plannedResultPhase` equals the authorization's
 `cancelledPhase` and the late-relevant field equals its bound
 `relevantAdvancePhase`; for `preserveExternalAndReauthorize`, both equal the
@@ -4485,6 +4545,13 @@ absent from the recomputed plan's `latest` field. Current-plan lock-blocked and
 working-IB/reserved-original closure stops expose
 `supportRecoveryGuardProof` byte-for-byte equal to the
 nested latest proof.
+The nested schema makes this presence exact: no-blocker, corrective,
+conflict, and evidence branches omit `latestSupportRecoveryGuardProof`; a
+lock-release branch requires a same-mode `blockedBeforeRoot` or
+`blockedAfterPartial` proof; and a closure branch requires the same-mode
+`stoppedAfterCompleteGuard` proof. Replanning after blocker resolution moves
+the stopped proof to immutable prior-attempt audit rather than retaining it in
+the new nested plan.
 The working-IB closure plan is required exactly for
 `separateWorkingInfobase` recovery and absent in reserved mode. It is `desired`
 while a corrective/conflict version is still future, becomes `materialized`
@@ -4537,7 +4604,8 @@ including every invalid/corrective version and recovery disposition, is
 archived even when the task is later abandoned.
 Terminal recovery selects exactly `supportLateRelevantResultPhase` when either
 the approved history partition or the post-release partition contains a relevant
-routine or external-support version; otherwise it selects
+routine, external-support, or capability-proven `nonConflictingConcurrent`
+version; otherwise it selects
 `plannedResultPhase` only when the post-release tail is entirely
 `unrelatedRoutine`. The post-release partition ends immediately before any
 authorized/invalid/corrective/unattributed support successor. Finalization and

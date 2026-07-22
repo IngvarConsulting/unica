@@ -633,53 +633,92 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
 **Files:**
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/status.rs`
 - Create: `crates/unica-coder/src/domain/branched_development/contracts/storage.rs`
+- Create: `crates/unica-coder/src/domain/branched_development/contracts/support_recovery_authority.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/recovery.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/prearm_recovery.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository/lifecycle.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/repository/update.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/instructions.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/support/authorization.rs`
+- Modify: `crates/unica-coder/src/domain/branched_development/contracts/support/evidence.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/support/model.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/support_terminalization.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/contracts/mod.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/operation.rs`
 - Modify: `crates/unica-coder/src/domain/branched_development/operation_preflight.rs`
 
-- [ ] RED: complete status projections, resume handles, recent terminal results,
+- [x] RED: complete status projections, resume handles, recent terminal results,
   archive/cleanup status, operation lease, and the generic operation-record
   presence matrix. RED also substitutes every lease digest/input and the
   terminal-envelope digest; JSON Schema shape success must not bypass semantic
   hashing. Instantiate storage tests only with one private recursively
   closed `TestTerminalEnvelope`; assert that no production terminal alias,
   terminal catalog, operation-record snapshot, or expected digest exists yet.
-- [ ] Task 11 owns the closed `ExistingTaskStatusData` and reusable status/
+- [x] General status/recovery/result arrays use the normative 1024-item bound;
+  the 100000-item bound remains only on explicitly named metadata collections.
+  Cleanup receipt authority validates target/absence-observation pairs before
+  projecting both wire arrays in the same target order, including paired-empty
+  direct completion; it never sorts digests independently.
+- [x] Task 11 owns the closed `ExistingTaskStatusData` and reusable status/
   recovery projections. Task 12 owns only the read-only result envelope that
   selects `notCreated | existing`; it must not duplicate or weaken these
   presence rules.
-- [ ] `ActiveOperationStatus.state` accepts only registered/intent-written/
+- [x] Derive the no-terminal deferred state from the exact `ResumeHandles` set;
+  no raw `None` constructor is a production authority. The latest support
+  terminal is never inferred from UUID or canonical handle order. Task 11
+  defines a sealed `LatestTerminalSupportAuthority` consumer surface; Tasks
+  15-16 mint that authority only alongside their typed terminal producer and
+  bind its exact optional deferred-advance digest before current/consumed XOR
+  projection.
+- [x] Split recovery status physically by retained lifecycle context:
+  pre-workspace has neither workspace nor archive, post-deployment/pre-cleanup
+  has the exact workspace and no archive, and cleanup recovery retains the
+  exact archive with no workspace. Bind active effect-unknown, recovery handle,
+  archive/workspace handles, cleanup eligibility, and deferred-advance
+  handle-or-consumption receipt to the same authoritative records and digests.
+- [x] Define `RecoveryPlanStatus` as the exact physical target/effect/stage
+  union, with action grammar, remaining unknowns, current-attempt progress, and
+  recovery-digest rules enforced by schema shape and sealed constructors.
+  Fixed-length rows, armed support's exact two/three-action tuple, and the
+  finite pre-arm catalog are schema-exact. Variable archive/cleanup rows make
+  action kinds, first action, and terminal cardinality schema-exact, document
+  their Draft 2020-12 order/adjacency structural superset, and enforce the
+  complete ordered grammar in their sealed constructors. A generic
+  `RecoveryActionPlan` is never standalone recovery authority.
+- [x] `ActiveOperationStatus.state` accepts only registered/intent-written/
   effect-unknown; terminal evidence is separate. Status projects the exact typed
   `operation: TaskOperationSelector`, not a variant-losing `toolName` field.
-- [ ] Define only crate-private `OperationRecord<TerminalEnvelope>`. Its generic
+- [x] Define only crate-private `OperationRecord<TerminalEnvelope>`. Its generic
   structure uses `DurableExecutionPolicy`, the exact four state variants, and
   the lease/terminal/recovery presence matrix; it has no embedded schema
   version/digest. Persist exactly one typed `operation: TaskOperationSelector`
   producer discriminator and forbid sibling `toolName`/`requestVariant` fields;
   the one-way `canonicalInputDigest` cannot recover a physical variant.
   Production code cannot instantiate or alias it in this task.
-- [ ] Add the closed `OperationScope` union: pre-task, original-workspace-scoped `startAttempt`
+- [x] Add the closed `OperationScope` union: pre-task, original-workspace-scoped `startAttempt`
   contains the canonical original-workspace identity digest and `taskId`, while
   normal `task` scope contains `projectId`, `taskId`, and `instanceId`. The
   generic loader compares the complete scope with the start-attempt storage key
   or authoritative parent task record/locator before constructing any status or
   replay view; copied/cross-scope records fail. Do not persist a path or hash the
-  caller's unnormalized `cwd` spelling.
-- [ ] Validate `heartbeatDigest` and `leaseDigest` from their exact canonical
+  caller's unnormalized `cwd` spelling. For effect-unknown and terminal records,
+  that same sealed locator supplies the authoritative final lease digest and the
+  loader rejects a substituted `lastOperationLeaseDigest`.
+- [x] Validate `heartbeatDigest` and `leaseDigest` from their exact canonical
   records, and validate
   `terminalEnvelopeDigest == sha256(canonical(terminalEnvelope))` generically.
   These value checks are mandatory after shape validation and before any replay
   view; no caller-supplied digest is trusted merely because its scalar schema is
   valid.
-- [ ] Add the sole production support-recovery corrective/finalization/
+- [x] The generic test loader consumes only an opaque-candidate newtype emitted
+  by the Task 5A preflight branch. Strict-JSON poison, non-object, and forbidden
+  read-only outcomes cannot be converted into a storage candidate; replay keeps
+  the exact typed selector and complete scope rather than only a tool name.
+- [x] Add the sole production support-recovery corrective/finalization/
   completion authority here, after `RecoveryPlanStatus` exists. It atomically
-  binds the exact frozen action ID/digest and approved history through-cursor/
-  partition digest to the corrective delta/handoffs and materialized
+  retains the sealed `RecoveryPlanStatus`, binds the prior operation ID, exact
+  frozen action ID/digest, approved history through-cursor/partition digest,
+  and aggregate `supportVersionObservationDigest` to the corrective delta/handoffs and materialized
   finalization/selective-update plan and capability-proven working-IB
   cursor/object map, validates current desired support/content/target state
   under the typed acquire/release receipt window, and accepts only the
@@ -688,17 +727,49 @@ plan: it does not add names to `application::tools()` or MCP `tools/list`.
   also the sole production execution/stop authority for the Task 9 working-IB
   closure and guard records; none of their fixture constructors becomes a
   production mint independently.
-- [ ] Keep Task 5A opaque candidates unbound to a production record. A test-only
+- [x] Bind every support-recovery partition entry one-to-one to the ordered
+  typed evidence union, including full `NonConflictingConcurrentEvidence`.
+  Neutral routine/NCC entries may precede the first post-arming exact action or
+  receipt claim; external, invalid-unscoped, and corrective entries may not.
+  Accepted arming-prefix rows remain audit history and are never rebound to the
+  newly frozen action.
+- [x] Keep finalization adapters observation-only: the integrated authority is
+  the sole mint for selective plans/proofs and durable authorization
+  terminalization receipts. Completion consumes non-`Clone` typestates in the
+  exact order acquire mode lease, inspect, guarded selective update, durable
+  authorization terminalization, release mode lease, release repository guard.
+  Reserved-original stop/completion similarly consumes capability observations
+  rather than caller-supplied inventory, lease-stop, or terminal proofs.
+- [x] Mint and bind all six `requiredExternalAction` leaves through the sealed
+  recovery action catalog. Initial corrective planning uses the bootstrap's
+  frozen action/history and one consuming, non-`Clone`, capability-derived
+  finalization/working-IB destination typestate. The private pair, unique
+  bootstrap lineage, action catalog, and prepared projection remain inseparable
+  through approval; callers cannot select or splice raw disposition, target,
+  graph, content, closure, or same-identity bootstrap fields. Replans likewise
+  retain the exact approved destination and carry their lineage plus prior
+  recovery digest through a consuming prepared projection. Lock/lease waits
+  consume the current guard or stop typestate; conflict/evidence waits consume
+  their validated source authority.
+  A production plan carries exactly one matching await action or no external
+  action at all. The no-blocker/corrective/conflict/evidence branches omit the
+  latest guard proof; lock branches require the same-mode blocked proof and
+  closure branches require the same-mode stopped proof from that exact attempt.
+  Until a typed immutable resolution transition atomically appends/reclassifies
+  history and moves any stopped proof to prior-attempt audit, replan fails
+  closed: it may retain the byte-identical current wait but cannot clear or
+  substitute it.
+- [x] Keep Task 5A opaque candidates unbound to a production record. A test-only
   typed loader may validate `OperationRecord<TestTerminalEnvelope>` and construct
   a test replay view; the production opaque-loader binding waits for Task 16.
-- [ ] Prove the generic schema/status/storage foundation rejects
+- [x] Prove the generic schema/status/storage foundation rejects
   `policy: readOnly` and no poison/preflight failure can reach replay/status
   construction. Read-only selector-variant and terminal-producer binding waits
   for the real result union in Task 16.
-- [ ] Do not generate or commit the final operation-record schema, expected
+- [x] Do not generate or commit the final operation-record schema, expected
   digest, schema catalog, or storage snapshots. Task 17 first does so after
   Tasks 12-16 close and bind every production terminal variant.
-- [ ] Run focused/schema/doc compile-fail tests, format, clippy; commit and review.
+- [x] Run focused/schema/doc compile-fail tests, format, clippy; commit and review.
 
 ## Task 12: Completed lifecycle and delivery result data
 

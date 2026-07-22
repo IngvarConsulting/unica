@@ -11,7 +11,7 @@ pub(crate) use identifiers::{
     CapabilityRowId, MetadataObjectId, ProfileArtifactRefId, ProjectId, SupportLayerId, UnicaId,
 };
 pub use identifiers::{IdentifierError, OperationId, Sha256Digest, TaskId};
-pub use operation::{OperationInvariantError, OperationOwnerState, OperationState};
+pub use operation::{OperationOwnerState, OperationState};
 pub use vocabulary::{
     BranchedLifecycleToolName, DurableExecutionPolicy, ExecutionPolicy,
     NonDurableExecutionPolicyError, TaskPhase,

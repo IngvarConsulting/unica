@@ -27,7 +27,13 @@ pub(crate) mod schema;
 #[allow(dead_code)]
 pub(crate) mod selectors;
 #[allow(dead_code)]
+pub(crate) mod status;
+#[allow(dead_code)]
+pub(crate) mod storage;
+#[allow(dead_code)]
 pub(crate) mod support;
+#[allow(dead_code)]
+pub(crate) mod support_recovery_authority;
 #[allow(dead_code)]
 pub(crate) mod support_terminalization;
 
