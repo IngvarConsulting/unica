@@ -188,7 +188,7 @@
 ```json
 [
   { "input": "Сумма", "path": "Объект.Товары.Сумма", "horizontalAlign": "Right", "headerHorizontalAlign": "Right" },
-  { "input": "Заполнитель", "title": "", "showInHeader": false, "readOnly": true, "horizontalStretch": true }
+  { "input": "Отступ", "title": "", "showInHeader": false, "readOnly": true, "horizontalStretch": true }
 ]
 ```
 
