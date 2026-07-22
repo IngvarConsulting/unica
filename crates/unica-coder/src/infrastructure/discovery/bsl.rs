@@ -142,31 +142,72 @@ enum BslMethodKind {
     Function,
 }
 
+const MAX_BSL_SIGNATURE_LINES: usize = 64;
+const MAX_BSL_SIGNATURE_BYTES: usize = 64 * 1024;
+
+struct ParsedBslMethod {
+    kind: BslMethodKind,
+    name: String,
+    exported: bool,
+    declaration_line: u32,
+    end_line: u32,
+}
+
+struct ParsedBslSource {
+    methods: Vec<ParsedBslMethod>,
+    line_methods: Vec<Option<usize>>,
+}
+
+enum BslParseState {
+    OutsideMethod,
+    Signature(SignatureState),
+    Body(usize),
+}
+
+struct SignatureState {
+    method_index: usize,
+    depth: usize,
+    lines: usize,
+    bytes: usize,
+    closed: bool,
+}
+
+struct DeclarationStart {
+    kind: BslMethodKind,
+    name: String,
+    open_parenthesis: usize,
+}
+
+struct ScannedBslLine {
+    code: String,
+    structural: String,
+}
+
 fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<BslFact>, String> {
-    let text = std::str::from_utf8(&file.bytes)
-        .map_err(|error| format!("input is not UTF-8: {error}"))?
-        .trim_start_matches('\u{feff}');
+    let text =
+        std::str::from_utf8(&file.bytes).map_err(|error| format!("input is not UTF-8: {error}"))?;
+    let text = strip_source_bom(text);
     let module = module_artifact_for_path(&file.relative_path)?;
-    let mut active_method: Option<(BslMethodKind, ArtifactId)> = None;
+    let parsed = parse_bsl_source(text)?;
+    let method_artifacts = parsed
+        .methods
+        .iter()
+        .map(|method| method_artifact(&module, &method.name))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut facts = Vec::new();
     for (zero_based_line, line) in text.lines().enumerate() {
         let line_number = zero_based_line
             .checked_add(1)
             .and_then(|line| u32::try_from(line).ok())
             .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
-        if let Some((method_kind, name)) = parse_method_declaration(line)? {
-            if active_method.is_some() {
-                return Err(format!(
-                    "nested method declaration {name:?} at line {line_number}"
-                ));
-            }
-            let method = method_artifact(&module, name)?;
-            active_method = Some((method_kind, method));
-        }
-
         let normalized_line = normalize_discovery_identity(line);
-        let artifact = match active_method.as_ref() {
-            Some((_kind, artifact)) => (artifact.clone(), ArtifactKind::Method),
+        let artifact = match parsed.line_methods.get(zero_based_line).copied().flatten() {
+            Some(method_index) => {
+                let method = method_artifacts
+                    .get(method_index)
+                    .ok_or_else(|| "BSL method line ownership is invalid".to_string())?;
+                (method.clone(), ArtifactKind::Method)
+            }
             None => (module.clone(), ArtifactKind::Module),
         };
         for term in terms
@@ -185,22 +226,6 @@ fn lexical_facts_for_file(file: &SourceFile, terms: &[String]) -> Result<Vec<Bsl
                 },
             });
         }
-
-        if let Some(end_kind) = parse_method_end(line) {
-            let Some((active_kind, _artifact)) = active_method.take() else {
-                return Err(format!(
-                    "method terminator without declaration at line {line_number}"
-                ));
-            };
-            if active_kind != end_kind {
-                return Err(format!(
-                    "mismatched method terminator at line {line_number}"
-                ));
-            }
-        }
-    }
-    if active_method.is_some() {
-        return Err("method declaration has no terminator".to_string());
     }
     Ok(facts)
 }
@@ -223,8 +248,162 @@ fn matching_column(line: &str, normalized_term: &str) -> Option<u32> {
         .and_then(|index| original_columns.get(index).map(|(_offset, column)| *column))
 }
 
-fn parse_method_declaration(line: &str) -> Result<Option<(BslMethodKind, &str)>, String> {
-    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
+fn strip_source_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}')
+        .map_or(text, std::convert::identity)
+}
+
+fn parse_bsl_source(text: &str) -> Result<ParsedBslSource, String> {
+    let text = strip_source_bom(text);
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut methods = Vec::new();
+    let mut line_methods = vec![None; lines.len()];
+    let mut state = BslParseState::OutsideMethod;
+    let mut in_string = false;
+
+    for (zero_based_line, line) in lines.iter().enumerate() {
+        let line_number = zero_based_line
+            .checked_add(1)
+            .and_then(|line| u32::try_from(line).ok())
+            .ok_or_else(|| "BSL line number exceeds u32".to_string())?;
+        let scanned = scan_bsl_line(line, &mut in_string);
+        state = match state {
+            BslParseState::OutsideMethod => {
+                if parse_method_end(&scanned.code).is_some() {
+                    return Err(format!(
+                        "method terminator without declaration at line {line_number}"
+                    ));
+                }
+                match parse_method_declaration(&scanned.code)? {
+                    Some(declaration) => {
+                        let method_index = methods.len();
+                        methods.push(ParsedBslMethod {
+                            kind: declaration.kind,
+                            name: declaration.name,
+                            exported: false,
+                            declaration_line: line_number,
+                            end_line: 0,
+                        });
+                        set_line_method(&mut line_methods, zero_based_line, method_index)?;
+                        let mut signature = SignatureState {
+                            method_index,
+                            depth: 0,
+                            lines: 0,
+                            bytes: 0,
+                            closed: false,
+                        };
+                        extend_signature_bounds(&mut signature, line)?;
+                        let exported = consume_signature_line(
+                            &scanned,
+                            declaration.open_parenthesis,
+                            &mut signature.depth,
+                        )?;
+                        match exported {
+                            Some(exported) => {
+                                signature.closed = true;
+                                if exported {
+                                    set_method_exported(&mut methods, method_index)?;
+                                    BslParseState::Body(method_index)
+                                } else {
+                                    BslParseState::Signature(signature)
+                                }
+                            }
+                            None => BslParseState::Signature(signature),
+                        }
+                    }
+                    None => BslParseState::OutsideMethod,
+                }
+            }
+            BslParseState::Signature(mut signature) => {
+                set_line_method(&mut line_methods, zero_based_line, signature.method_index)?;
+                if signature.closed {
+                    let trimmed = scanned.code.trim();
+                    if trimmed.is_empty() {
+                        extend_signature_bounds(&mut signature, line)?;
+                        BslParseState::Signature(signature)
+                    } else if signature_line_is_export(trimmed) {
+                        extend_signature_bounds(&mut signature, line)?;
+                        set_method_exported(&mut methods, signature.method_index)?;
+                        BslParseState::Body(signature.method_index)
+                    } else {
+                        process_body_line(
+                            signature.method_index,
+                            &scanned.code,
+                            line_number,
+                            &mut methods,
+                        )?
+                    }
+                } else {
+                    extend_signature_bounds(&mut signature, line)?;
+                    match consume_signature_line(&scanned, 0, &mut signature.depth)? {
+                        Some(exported) => {
+                            signature.closed = true;
+                            if exported {
+                                set_method_exported(&mut methods, signature.method_index)?;
+                                BslParseState::Body(signature.method_index)
+                            } else {
+                                BslParseState::Signature(signature)
+                            }
+                        }
+                        None => BslParseState::Signature(signature),
+                    }
+                }
+            }
+            BslParseState::Body(method_index) => {
+                set_line_method(&mut line_methods, zero_based_line, method_index)?;
+                process_body_line(method_index, &scanned.code, line_number, &mut methods)?
+            }
+        };
+    }
+
+    if in_string {
+        return Err("BSL source has an unterminated string literal".to_string());
+    }
+    match state {
+        BslParseState::OutsideMethod => Ok(ParsedBslSource {
+            methods,
+            line_methods,
+        }),
+        BslParseState::Signature(signature) if !signature.closed => {
+            Err("method signature has no balanced closing parenthesis".to_string())
+        }
+        BslParseState::Signature(_) | BslParseState::Body(_) => {
+            Err("method declaration has no terminator".to_string())
+        }
+    }
+}
+
+fn scan_bsl_line(line: &str, in_string: &mut bool) -> ScannedBslLine {
+    let mut code = String::new();
+    let mut structural = String::new();
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '"' {
+            code.push(character);
+            structural.push(' ');
+            if *in_string && characters.peek() == Some(&'"') {
+                code.push('"');
+                structural.push(' ');
+                let _next = characters.next();
+            } else {
+                *in_string = !*in_string;
+            }
+            continue;
+        }
+        if !*in_string && character == '/' && characters.peek() == Some(&'/') {
+            break;
+        }
+        code.push(character);
+        if *in_string && matches!(character, '(' | ')') {
+            structural.push(' ');
+        } else {
+            structural.push(character);
+        }
+    }
+    ScannedBslLine { code, structural }
+}
+
+fn parse_method_declaration(code: &str) -> Result<Option<DeclarationStart>, String> {
     let trimmed = code.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -251,10 +430,14 @@ fn parse_method_declaration(line: &str) -> Result<Option<(BslMethodKind, &str)>,
     let rest_offset = keyword_offset
         .checked_add(keyword.len())
         .ok_or_else(|| "method keyword offset overflowed".to_string())?;
-    let rest = trimmed
+    let rest_with_leading = trimmed
         .get(rest_offset..)
-        .ok_or_else(|| "method declaration boundary is invalid".to_string())?
-        .trim_start();
+        .ok_or_else(|| "method declaration boundary is invalid".to_string())?;
+    let rest = rest_with_leading.trim_start();
+    let leading_name_whitespace = rest_with_leading
+        .len()
+        .checked_sub(rest.len())
+        .ok_or_else(|| "method name whitespace is invalid".to_string())?;
     let name_end = match rest.find(|character: char| character == '(' || character.is_whitespace())
     {
         Some(name_end) => name_end,
@@ -275,12 +458,159 @@ fn parse_method_declaration(line: &str) -> Result<Option<(BslMethodKind, &str)>,
     if !after_name.starts_with('(') {
         return Err(format!("method {name:?} has no parameter list"));
     }
-    Ok(Some((method_kind, name)))
+    let after_name_offset = rest_offset
+        .checked_add(name_end)
+        .ok_or_else(|| "method signature offset overflowed".to_string())?;
+    let whitespace_bytes = rest
+        .get(name_end..)
+        .ok_or_else(|| "method signature boundary is invalid".to_string())?
+        .len()
+        .checked_sub(after_name.len())
+        .ok_or_else(|| "method signature whitespace is invalid".to_string())?;
+    let trimmed_offset = code
+        .len()
+        .checked_sub(code.trim_start().len())
+        .ok_or_else(|| "method declaration trim offset is invalid".to_string())?;
+    let open_parenthesis = trimmed_offset
+        .checked_add(after_name_offset)
+        .and_then(|offset| offset.checked_add(leading_name_whitespace))
+        .and_then(|offset| offset.checked_add(whitespace_bytes))
+        .ok_or_else(|| "method signature offset overflowed".to_string())?;
+    Ok(Some(DeclarationStart {
+        kind: method_kind,
+        name: name.to_string(),
+        open_parenthesis,
+    }))
 }
 
-fn parse_method_end(line: &str) -> Option<BslMethodKind> {
-    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
-    let keyword = code.split_whitespace().next()?;
+fn consume_signature_line(
+    scanned: &ScannedBslLine,
+    start_offset: usize,
+    depth: &mut usize,
+) -> Result<Option<bool>, String> {
+    let structural = scanned
+        .structural
+        .get(start_offset..)
+        .ok_or_else(|| "method signature start is outside the source line".to_string())?;
+    for (relative_offset, character) in structural.char_indices() {
+        match character {
+            '(' => {
+                *depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| "method signature nesting overflowed".to_string())?;
+            }
+            ')' => {
+                *depth = depth.checked_sub(1).ok_or_else(|| {
+                    "method signature has an unmatched closing parenthesis".to_string()
+                })?;
+                if *depth == 0 {
+                    let tail_offset = start_offset
+                        .checked_add(relative_offset)
+                        .and_then(|offset| offset.checked_add(character.len_utf8()))
+                        .ok_or_else(|| "method signature tail offset overflowed".to_string())?;
+                    let tail = scanned.code.get(tail_offset..).ok_or_else(|| {
+                        "method signature tail is outside the source line".to_string()
+                    })?;
+                    return parse_signature_tail(tail).map(Some);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+fn parse_signature_tail(tail: &str) -> Result<bool, String> {
+    let trimmed = tail.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    if signature_line_is_export(trimmed) {
+        return Ok(true);
+    }
+    Err(format!(
+        "unexpected content after method signature: {trimmed:?}"
+    ))
+}
+
+fn signature_line_is_export(line: &str) -> bool {
+    let token = line.trim().trim_end_matches(';').trim();
+    matches!(
+        normalize_discovery_identity(token).as_str(),
+        "export" | "экспорт"
+    )
+}
+
+fn extend_signature_bounds(state: &mut SignatureState, line: &str) -> Result<(), String> {
+    state.lines = state
+        .lines
+        .checked_add(1)
+        .ok_or_else(|| "method signature line count overflowed".to_string())?;
+    let line_bytes = line
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| "method signature byte count overflowed".to_string())?;
+    state.bytes = state
+        .bytes
+        .checked_add(line_bytes)
+        .ok_or_else(|| "method signature byte count overflowed".to_string())?;
+    if state.lines > MAX_BSL_SIGNATURE_LINES || state.bytes > MAX_BSL_SIGNATURE_BYTES {
+        return Err(format!(
+            "method signature exceeds {MAX_BSL_SIGNATURE_LINES} lines or {MAX_BSL_SIGNATURE_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn set_line_method(
+    line_methods: &mut [Option<usize>],
+    line_index: usize,
+    method_index: usize,
+) -> Result<(), String> {
+    let slot = line_methods
+        .get_mut(line_index)
+        .ok_or_else(|| "BSL line ownership index is invalid".to_string())?;
+    *slot = Some(method_index);
+    Ok(())
+}
+
+fn set_method_exported(methods: &mut [ParsedBslMethod], method_index: usize) -> Result<(), String> {
+    let method = methods
+        .get_mut(method_index)
+        .ok_or_else(|| "BSL method index is invalid".to_string())?;
+    method.exported = true;
+    Ok(())
+}
+
+fn process_body_line(
+    method_index: usize,
+    code: &str,
+    line_number: u32,
+    methods: &mut [ParsedBslMethod],
+) -> Result<BslParseState, String> {
+    if let Some(declaration) = parse_method_declaration(code)? {
+        return Err(format!(
+            "nested method declaration {:?} at line {line_number}",
+            declaration.name
+        ));
+    }
+    let Some(end_kind) = parse_method_end(code) else {
+        return Ok(BslParseState::Body(method_index));
+    };
+    let method = methods
+        .get_mut(method_index)
+        .ok_or_else(|| "BSL method index is invalid".to_string())?;
+    if method.kind != end_kind {
+        return Err(format!(
+            "mismatched method terminator at line {line_number}"
+        ));
+    }
+    method.end_line = line_number;
+    Ok(BslParseState::OutsideMethod)
+}
+
+fn parse_method_end(code: &str) -> Option<BslMethodKind> {
+    let keyword = code.trim().trim_end_matches(';').trim();
     match normalize_discovery_identity(keyword).as_str() {
         "endprocedure" | "конецпроцедуры" => Some(BslMethodKind::Procedure),
         "endfunction" | "конецфункции" => Some(BslMethodKind::Function),
@@ -296,7 +626,17 @@ fn is_bsl_path(path: &PortableRelativePath) -> bool {
 
 fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, String> {
     let components = path.as_str().split('/').collect::<Vec<_>>();
-    let artifact = if components.len() == 7
+    let artifact = if components.len() == 5
+        && components[0].eq_ignore_ascii_case("CommonForms")
+        && components[2].eq_ignore_ascii_case("Ext")
+        && components[3].eq_ignore_ascii_case("Form")
+        && components[4].eq_ignore_ascii_case("Module.bsl")
+    {
+        validate_module_component(components[1], "common form name")?;
+        let kind = metadata_kind_by_directory(components[0])
+            .ok_or_else(|| "common form module uses an unknown metadata directory".to_string())?;
+        format!("{}.{}.Module.FormModule", kind.tag, components[1])
+    } else if components.len() == 7
         && components
             .get(2)
             .is_some_and(|part| part.eq_ignore_ascii_case("Forms"))
@@ -312,6 +652,8 @@ fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, S
     {
         let kind = metadata_kind_by_directory(components[0])
             .ok_or_else(|| "form module uses an unknown metadata directory".to_string())?;
+        validate_module_component(components[1], "metadata object name")?;
+        validate_module_component(components[3], "form name")?;
         format!(
             "{}.{}.Form.{}.Module.FormModule",
             kind.tag, components[1], components[3]
@@ -323,6 +665,8 @@ fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, S
     {
         let kind = metadata_kind_by_directory(components[0])
             .ok_or_else(|| "command module uses an unknown metadata directory".to_string())?;
+        validate_module_component(components[1], "metadata object name")?;
+        validate_module_component(components[3], "command name")?;
         format!(
             "{}.{}.Command.{}.Module.CommandModule",
             kind.tag, components[1], components[3]
@@ -335,13 +679,15 @@ fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, S
     {
         let kind = metadata_kind_by_directory(components[0])
             .ok_or_else(|| "module uses an unknown metadata directory".to_string())?;
+        validate_module_component(components[1], "metadata object name")?;
+        let module_name = components[3]
+            .rsplit_once('.')
+            .map(|(stem, _extension)| stem)
+            .ok_or_else(|| "module filename has no extension".to_string())?;
+        validate_module_component(module_name, "module name")?;
         if kind.tag == "CommonModule" && components[3].eq_ignore_ascii_case("Module.bsl") {
-            format!("{}.{}", kind.tag, components[1])
+            format!("{}.{}.Module.Module", kind.tag, components[1])
         } else {
-            let module_name = components[3]
-                .rsplit_once('.')
-                .map(|(stem, _extension)| stem)
-                .ok_or_else(|| "module filename has no extension".to_string())?;
             format!("{}.{}.Module.{module_name}", kind.tag, components[1])
         }
     } else if components.len() == 2 && components[0].eq_ignore_ascii_case("Ext") {
@@ -349,12 +695,18 @@ fn module_artifact_for_path(path: &PortableRelativePath) -> Result<ArtifactId, S
             .rsplit_once('.')
             .map(|(stem, _extension)| stem)
             .ok_or_else(|| "configuration module filename has no extension".to_string())?;
+        validate_module_component(module_name, "configuration module name")?;
         format!("Configuration.Root.Module.{module_name}")
     } else {
         return Err("BSL path does not identify a supported canonical module".to_string());
     };
     ArtifactId::parse(&artifact)
         .map_err(|error| format!("module artifact {artifact:?} is invalid: {error}"))
+}
+
+fn validate_module_component(value: &str, role: &str) -> Result<(), String> {
+    validate_platform_identifier(value)
+        .map_err(|message| format!("{role} {value:?} is invalid: {message}"))
 }
 
 fn method_artifact(module: &ArtifactId, name: &str) -> Result<ArtifactId, String> {
@@ -808,8 +1160,11 @@ fn validate_hit_identity(
     }
     if let Some(module_type) = hit.module_type.as_deref() {
         let expected_module_type = if components
-            .iter()
-            .any(|component| component.eq_ignore_ascii_case("Forms"))
+            .first()
+            .is_some_and(|component| component.eq_ignore_ascii_case("CommonForms"))
+            || components
+                .iter()
+                .any(|component| component.eq_ignore_ascii_case("Forms"))
         {
             Some("FormModule")
         } else {
@@ -844,112 +1199,34 @@ fn validate_indexed_method_source(
             ),
         ))
     })?;
-    let line_index = hit.line.checked_sub(1).ok_or_else(|| {
-        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-            "bsl_index_row_invalid",
-            "indexed method line must be one-based",
-        ))
-    })?;
-    let line_index = usize::try_from(line_index).map_err(|_error| {
-        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-            "bsl_index_row_invalid",
-            "indexed method line is not representable on this host",
-        ))
-    })?;
-    let Some(declaration_line) = text.lines().nth(line_index) else {
-        return Err(stale_method_location(hit));
-    };
-    let declaration = parse_method_declaration(declaration_line).map_err(|message| {
+    let parsed = parse_bsl_source(text).map_err(|message| {
         DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
             "bsl_malformed",
             format!(
-                "indexed BSL source {} is malformed at line {}: {message}",
-                source.relative_path.as_str(),
-                hit.line
+                "indexed BSL source {} is malformed: {message}",
+                source.relative_path.as_str()
             ),
         ))
     })?;
-    let Some((kind, name)) = declaration else {
+    let Some(method) = parsed
+        .methods
+        .iter()
+        .find(|method| method.declaration_line == hit.line)
+    else {
         return Err(stale_method_location(hit));
     };
     let indexed_kind = match hit.method_kind {
         IndexedMethodKind::Procedure => BslMethodKind::Procedure,
         IndexedMethodKind::Function => BslMethodKind::Function,
     };
-    if kind != indexed_kind
-        || normalize_discovery_identity(name) != normalize_discovery_identity(&hit.name)
-        || declaration_is_exported(declaration_line) != hit.exported
+    if method.kind != indexed_kind
+        || normalize_discovery_identity(&method.name) != normalize_discovery_identity(&hit.name)
+        || method.exported != hit.exported
+        || method.end_line != hit.end_line
     {
         return Err(stale_method_location(hit));
     }
-
-    let mut terminator_line = None;
-    let body_start = line_index.checked_add(1).ok_or_else(|| {
-        DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-            "bsl_index_row_invalid",
-            "indexed method line overflowed",
-        ))
-    })?;
-    for (offset, line) in text.lines().skip(body_start).enumerate() {
-        if parse_method_declaration(line)
-            .map_err(|message| {
-                DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-                    "bsl_malformed",
-                    format!(
-                        "indexed BSL source {} is malformed: {message}",
-                        source.relative_path.as_str()
-                    ),
-                ))
-            })?
-            .is_some()
-        {
-            return Err(DefinitionCollectionError::ContractViolation(
-                ProviderDiagnostic::material(
-                    "bsl_malformed",
-                    format!(
-                        "indexed BSL source {} contains nested methods",
-                        source.relative_path.as_str()
-                    ),
-                ),
-            ));
-        }
-        if let Some(end_kind) = parse_method_end(line) {
-            if end_kind != indexed_kind {
-                return Err(DefinitionCollectionError::ContractViolation(
-                    ProviderDiagnostic::material(
-                        "bsl_malformed",
-                        format!(
-                            "indexed BSL source {} contains a mismatched method terminator",
-                            source.relative_path.as_str()
-                        ),
-                    ),
-                ));
-            }
-            let one_based = line_index
-                .checked_add(offset)
-                .and_then(|line| line.checked_add(2))
-                .and_then(|line| u32::try_from(line).ok())
-                .ok_or_else(|| {
-                    DefinitionCollectionError::ContractViolation(ProviderDiagnostic::material(
-                        "bsl_index_row_invalid",
-                        "indexed method terminator line overflowed",
-                    ))
-                })?;
-            terminator_line = Some(one_based);
-            break;
-        }
-    }
-    if terminator_line != Some(hit.end_line) {
-        return Err(stale_method_location(hit));
-    }
     Ok(())
-}
-
-fn declaration_is_exported(line: &str) -> bool {
-    let code = line.split_once("//").map_or(line, |(code, _comment)| code);
-    code.split(|character: char| !character.is_alphanumeric() && character != '_')
-        .map(normalize_discovery_identity)
-        .any(|token| matches!(token.as_str(), "export" | "экспорт"))
 }
 
 fn stale_method_location(hit: &IndexedMethodHit) -> DefinitionCollectionError {
@@ -1038,7 +1315,9 @@ mod tests {
                 .iter()
                 .find(|record| record.location.line == Some(2))
                 .map(|record| &record.artifact),
-            Some(&artifact("CommonModule.Серии.Method.РассчитатьСерию"))
+            Some(&artifact(
+                "CommonModule.Серии.Module.Module.Method.РассчитатьСерию"
+            ))
         );
         assert_eq!(batch.contributors, batch.analyzed_files);
     }
@@ -1061,6 +1340,35 @@ mod tests {
                 "Document.Заказ.Command.Заполнить.Module.CommandModule"
             ))
         );
+        assert_eq!(
+            super::module_artifact_for_path(&path("CommonForms/ВыборСерии/Ext/Form/Module.bsl")),
+            Ok(artifact("CommonForm.ВыборСерии.Module.FormModule"))
+        );
+        assert_eq!(
+            super::module_artifact_for_path(&path("CommonModules/Серии/Ext/Module.bsl")),
+            Ok(artifact("CommonModule.Серии.Module.Module"))
+        );
+    }
+
+    #[test]
+    fn canonical_module_identity_rejects_hostile_variable_components() {
+        for raw_path in [
+            "CommonModules/Bad Name/Ext/Module.bsl",
+            "CommonModules/Bad.Name/Ext/Module.bsl",
+            "CommonModules/Bad\u{0085}Name/Ext/Module.bsl",
+            "Catalogs/Товары/Forms/Bad Name/Ext/Form/Module.bsl",
+            "Documents/Заказ/Commands/Bad.Name/Ext/CommandModule.bsl",
+            "Catalogs/Товары/Ext/Bad Name.bsl",
+        ] {
+            let outcome = InventoryBslSearchProvider.search(
+                &query("Несуществующий", &[], 10),
+                &inventory(vec![source_file(raw_path, b"// valid module\n")]),
+            );
+            assert!(
+                matches!(outcome, ProviderOutcome::ContractViolation(_)),
+                "hostile path component must fail: {raw_path:?}"
+            );
+        }
     }
 
     #[test]
@@ -1083,6 +1391,140 @@ mod tests {
             let outcome = InventoryBslSearchProvider.search(
                 &query("Процедура", &[], 10),
                 &inventory(vec![source_file(MODULE_PATH, &bytes)]),
+            );
+            assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
+        }
+    }
+
+    #[test]
+    fn lexical_parser_handles_bom_multiline_export_and_url_default_strings() {
+        let source = "\u{feff}Функция ПолучитьСерию(\n\
+    Адрес = \"http://example.test/a//b\",\n\
+    Текст = \"Он сказал \"\"Да // именно\"\"\"\n\
+)\n\
+Экспорт\n\
+    Возврат Адрес;\n\
+КонецФункции\n";
+        let terms = vec!["http://example.test/a//b".to_string()];
+
+        let outcome = InventoryBslSearchProvider.search(
+            &query("ПолучитьСерию", &terms, 10),
+            &inventory(vec![source_file(MODULE_PATH, source.as_bytes())]),
+        );
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("expected valid multiline BSL signature");
+        };
+        assert!(batch.records.iter().all(|fact| {
+            fact.artifact == artifact("CommonModule.Серии.Module.Module.Method.ПолучитьСерию")
+                && fact.artifact_kind == ArtifactKind::Method
+        }));
+        let url = batch
+            .records
+            .iter()
+            .find(|fact| fact.matched_text.contains("http://"))
+            .expect("URL default evidence");
+        assert_eq!(url.location.line, Some(2));
+        assert_eq!(url.location.column, Some(10));
+    }
+
+    #[test]
+    fn definition_revalidation_uses_multiline_signature_and_later_export() {
+        let fixture = Fixture::new("definition-multiline-signature");
+        let source_bytes = "\u{feff}Функция ПолучитьСерию(\n\
+    Адрес = \"http://example.test/a//b\",\n\
+    Текст = \"Он сказал \"\"Да // именно\"\"\"\n\
+)\n\
+Экспорт\n\
+    Возврат Адрес;\n\
+КонецФункции\n"
+            .as_bytes();
+        let source = fixture.write_source(MODULE_PATH, source_bytes);
+        let inventory = inventory(vec![source]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, MODULE_PATH, 1, 7);
+        Connection::open(&db_path)
+            .unwrap()
+            .execute("UPDATE methods SET is_export = 1", ())
+            .unwrap();
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let outcome =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("ПолучитьСерию", &[], 10));
+
+        let ProviderOutcome::Complete(batch) = outcome else {
+            panic!("expected validated multiline indexed definition");
+        };
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(
+            batch.records[0].owner,
+            artifact("CommonModule.Серии.Module.Module")
+        );
+        assert_eq!(batch.records[0].location.line, Some(1));
+    }
+
+    #[test]
+    fn common_form_lexical_and_definition_method_identities_agree() {
+        let fixture = Fixture::new("common-form-method-identity");
+        let module_path = "CommonForms/ВыборСерии/Ext/Form/Module.bsl";
+        let source_bytes = "Функция ПолучитьСерию(Код)\nКонецФункции\n".as_bytes();
+        let source = fixture.write_source(module_path, source_bytes);
+        let inventory = inventory(vec![source]);
+        let db_path = fixture.root.join("index.db");
+        create_index(&db_path, module_path, 1, 2);
+        Connection::open(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE modules
+                 SET category = 'CommonForm', object_name = 'ВыборСерии',
+                     module_type = 'FormModule'",
+                (),
+            )
+            .unwrap();
+        let status = ready_status(&fixture.source_root, &db_path);
+
+        let lexical =
+            InventoryBslSearchProvider.search(&query("ПолучитьСерию", &[], 10), &inventory);
+        let definitions =
+            ExistingIndexDefinitionProvider::new(&fixture.source_root, &inventory, Some(&status))
+                .definitions(&query("ПолучитьСерию", &[], 10));
+
+        let ProviderOutcome::Complete(lexical) = lexical else {
+            panic!("expected common-form lexical evidence");
+        };
+        let ProviderOutcome::Complete(definitions) = definitions else {
+            panic!("expected common-form definition evidence");
+        };
+        assert_eq!(lexical.records.len(), 1);
+        assert_eq!(definitions.records.len(), 1);
+        assert_eq!(
+            lexical.records[0].artifact,
+            definitions.records[0].definition
+        );
+        assert_eq!(
+            definitions.records[0].owner,
+            artifact("CommonForm.ВыборСерии.Module.FormModule")
+        );
+    }
+
+    #[test]
+    fn lexical_parser_rejects_unbalanced_or_unbounded_signatures() {
+        let unbalanced = "Функция ПолучитьСерию(Адрес = \"http://example.test\"\n\
+КонецФункции\n";
+        let too_many_lines = format!(
+            "Функция ПолучитьСерию(\n{}\n)\nКонецФункции\n",
+            "Параметр,\n".repeat(65)
+        );
+        let oversized = format!(
+            "Функция ПолучитьСерию(Текст = \"{}\")\nКонецФункции\n",
+            "x".repeat(65 * 1024)
+        );
+
+        for source in [unbalanced.to_string(), too_many_lines, oversized] {
+            let outcome = InventoryBslSearchProvider.search(
+                &query("ПолучитьСерию", &[], 10),
+                &inventory(vec![source_file(MODULE_PATH, source.as_bytes())]),
             );
             assert!(matches!(outcome, ProviderOutcome::ContractViolation(_)));
         }
@@ -1128,10 +1570,13 @@ mod tests {
             panic!("expected complete definition evidence");
         };
         assert_eq!(batch.records.len(), 1);
-        assert_eq!(batch.records[0].owner, artifact("CommonModule.Серии"));
+        assert_eq!(
+            batch.records[0].owner,
+            artifact("CommonModule.Серии.Module.Module")
+        );
         assert_eq!(
             batch.records[0].definition,
-            artifact("CommonModule.Серии.Method.ПолучитьСерию")
+            artifact("CommonModule.Серии.Module.Module.Method.ПолучитьСерию")
         );
         assert_eq!(batch.records[0].location.line, Some(5));
         assert_eq!(batch.contributors, batch.analyzed_files);
