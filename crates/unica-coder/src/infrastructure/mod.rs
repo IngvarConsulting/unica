@@ -6,6 +6,7 @@ pub(crate) mod metadata_kinds;
 pub mod native_operations;
 pub mod path_policy;
 pub(crate) mod platform;
+pub(crate) mod platform_xml_owner;
 pub mod plugin_runtime;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;

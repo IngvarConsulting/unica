@@ -6196,8 +6196,13 @@ fn plan_meta_compile(
     let defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("failed to parse metadata JSON: {err}"))?;
     let mut transaction = CompileTransaction::new();
-    let (stdout, _planned_artifacts) =
-        compile_meta_value(defn, &output_dir_label, &output_dir, &mut transaction)?;
+    let (stdout, _planned_artifacts) = compile_meta_value(
+        defn,
+        &output_dir_label,
+        &output_dir,
+        context,
+        &mut transaction,
+    )?;
     Ok((stdout, transaction))
 }
 
@@ -6205,11 +6210,14 @@ fn compile_meta_value(
     defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     match defn {
-        Value::Array(items) => compile_meta_batch(items, output_dir_label, output_dir, transaction),
-        single => compile_meta_object(single, output_dir_label, output_dir, transaction),
+        Value::Array(items) => {
+            compile_meta_batch(items, output_dir_label, output_dir, context, transaction)
+        }
+        single => compile_meta_object(single, output_dir_label, output_dir, context, transaction),
     }
 }
 
@@ -6217,6 +6225,7 @@ fn compile_meta_batch(
     items: Vec<Value>,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     let total = items.len();
@@ -6225,7 +6234,7 @@ fn compile_meta_batch(
     let mut failed = Vec::<String>::new();
 
     for (index, item) in items.into_iter().enumerate() {
-        match compile_meta_object(item, output_dir_label, output_dir, transaction) {
+        match compile_meta_object(item, output_dir_label, output_dir, context, transaction) {
             Ok((item_stdout, mut item_artifacts)) => {
                 stdout.push_str(&item_stdout);
                 artifacts.append(&mut item_artifacts);
@@ -6254,6 +6263,7 @@ fn compile_meta_object(
     mut defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<(String, Vec<PathBuf>), String> {
     if defn.get("type").is_none() {
@@ -6312,7 +6322,7 @@ fn compile_meta_object(
             ));
         }
     }
-    let format_version = detect_format_version(output_dir)?.to_string();
+    let format_version = detect_format_version(output_dir, context)?.to_string();
     let (metadata_xml, uid) =
         meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
     transaction.create_utf8_bom_text(&main_xml_path, &metadata_xml)?;

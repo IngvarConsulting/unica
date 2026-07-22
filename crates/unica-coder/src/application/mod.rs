@@ -3860,6 +3860,44 @@ mod tests {
     }
 
     #[test]
+    fn mutating_platform_xml_operations_declare_effective_format_paths() {
+        use operation_descriptors::{FormatGuardPolicy, FormatPathPolicy};
+
+        let specialized = [
+            ("help-add", FormatPathPolicy::DefaultSrcObject),
+            ("form-compile", FormatPathPolicy::FormCompile),
+            ("form-remove", FormatPathPolicy::DefaultSrcObject),
+            ("template-add", FormatPathPolicy::DefaultSrcObject),
+            ("template-remove", FormatPathPolicy::DefaultSrcObject),
+        ];
+        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+            if matches!(descriptor.format_guard, FormatGuardPolicy::None) {
+                continue;
+            }
+            assert!(
+                !descriptor.source_path_args.is_empty(),
+                "{operation} must declare its platform-XML read/target path arguments"
+            );
+            let expected = specialized
+                .iter()
+                .find_map(|(name, policy)| (*name == operation).then_some(*policy))
+                .unwrap_or(FormatPathPolicy::DeclaredArgs);
+            assert_eq!(descriptor.format_path_policy, expected, "{operation}");
+        }
+        assert_eq!(
+            operation_descriptors::native_operation_descriptor("mxl-compile")
+                .unwrap()
+                .format_guard,
+            FormatGuardPolicy::ExistingDump,
+            "mxl.compile must guard an existing owner while allowing standalone output"
+        );
+    }
+
+    #[test]
     fn incompatible_format_blocks_before_native_handler() {
         let root = std::env::temp_dir().join(format!(
             "unica-application-format-guard-{}",
@@ -3893,6 +3931,104 @@ mod tests {
             "formatMigrationAvailable"
         );
         assert_eq!(std::fs::read_to_string(config).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-application-format-guard-mxl-old-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let output = src.join("Reports/Sales/Templates/Print/Ext/Template.xml");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject version="2.19"/>"#,
+        )
+        .unwrap();
+        std::fs::write(&output, b"original bytes").unwrap();
+        let before = std::fs::read(&output).unwrap();
+        let json_path = root.join("mxl.json");
+        std::fs::write(
+            &json_path,
+            r#"{"columns":1,"areas":[{"name":"A","rows":[{"cells":[{"col":1,"text":"x"}]}]}]}"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+        args.insert(
+            "JsonPath".into(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert(
+            "OutputPath".into(),
+            Value::String(output.display().to_string()),
+        );
+        args.insert("dryRun".into(), Value::Bool(false));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.mxl.compile", &args)
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(
+            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
+            "2.19"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mxl_compile_allows_new_standalone_output() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-application-format-guard-mxl-standalone-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject version="2.19"/>"#,
+        )
+        .unwrap();
+        let json_path = root.join("mxl.json");
+        std::fs::write(
+            &json_path,
+            r#"{"columns":1,"areas":[{"name":"A","rows":[{"cells":[{"col":1,"text":"x"}]}]}]}"#,
+        )
+        .unwrap();
+        let output = root.join("generated/standalone.xml");
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+        args.insert(
+            "JsonPath".into(),
+            Value::String(json_path.display().to_string()),
+        );
+        args.insert(
+            "OutputPath".into(),
+            Value::String(output.display().to_string()),
+        );
+        args.insert("dryRun".into(), Value::Bool(false));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.mxl.compile", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(output.is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 

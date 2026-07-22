@@ -1374,7 +1374,7 @@ fn compile_subsystem_internal(
 
         let output_dir = required_path(args, &["outputDir", "OutputDir"], "OutputDir")
             .map(|path| absolutize(path, &context.cwd))?;
-        let format_version = detect_format_version(&output_dir)?.to_string();
+        let format_version = detect_format_version(&output_dir, context)?.to_string();
 
         let synonym = json_string_field(&defn, "synonym")
             .filter(|value| !value.is_empty())

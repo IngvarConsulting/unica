@@ -1199,7 +1199,7 @@ fn compile_role_internal(
         }
 
         let output_dir = absolutize(output_dir_raw.clone(), &context.cwd);
-        let format_version = detect_format_version(&output_dir)?.to_string();
+        let format_version = detect_format_version(&output_dir, context)?.to_string();
         let mut stderr = String::new();
         let mut parsed_objects = Vec::<RoleObject>::new();
         if let Some(objects) = defn.get("objects").and_then(Value::as_array) {

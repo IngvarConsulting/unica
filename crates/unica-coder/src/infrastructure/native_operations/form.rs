@@ -2014,9 +2014,7 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
             .to_string();
         let mut object_text = object_source_text.clone();
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
-        let format_version =
-            detect_format_version(object_xml_full.parent().unwrap_or(context.cwd.as_path()))?
-                .to_string();
+        let format_version = detect_format_version(&object_xml_full, context)?.to_string();
 
         let purpose = normalize_form_purpose(purpose_raw);
         validate_form_purpose(&object_type, &purpose)?;
@@ -3626,7 +3624,7 @@ fn plan_form_compile(
     };
 
     let format_version =
-        detect_format_version(output_path.parent().unwrap_or(&context.cwd))?.to_string();
+        detect_format_version(output_path.parent().unwrap_or(&context.cwd), context)?.to_string();
     let (xml, stats) = form_compile_xml(&defn, &format_version)?;
     Ok(FormCompilePlan {
         output_label,
@@ -7861,7 +7859,7 @@ mod tests {
     fn empty_catalog_xml(line_ending: &str, trailing_newline: bool) -> String {
         let mut text = [
             r#"<?xml version="1.0" encoding="utf-8"?>"#,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">"#,
             r#"	<Catalog uuid="00000000-0000-0000-0000-000000000001">"#,
             r#"		<Properties>"#,
             r#"			<Name>Goods</Name>"#,

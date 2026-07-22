@@ -36,7 +36,7 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
             ));
         }
 
-        let format_version = detect_format_version(&ext_dir)?.to_string();
+        let format_version = detect_format_version(&target.object_dir, context)?.to_string();
         let help_xml = help_metadata_xml(lang, &format_version);
         write_utf8_bom(&help_xml_path, &help_xml)?;
 

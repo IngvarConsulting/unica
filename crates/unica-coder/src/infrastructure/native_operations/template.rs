@@ -85,7 +85,7 @@ pub(crate) fn add_template(
             ));
         }
 
-        let format_version = detect_format_version(&src_dir_abs)?.to_string();
+        let format_version = detect_format_version(&root_xml_path, context)?.to_string();
         let template_ext_dir = templates_dir_abs.join(template_name).join("Ext");
         fs::create_dir_all(&template_ext_dir)
             .map_err(|err| format!("failed to create {}: {err}", template_ext_dir.display()))?;

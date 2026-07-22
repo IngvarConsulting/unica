@@ -1573,22 +1573,19 @@ pub(crate) fn extension_name_prefix(config: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn detect_format_version(start: &Path) -> Result<ExportFormatVersion, String> {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        let cfg_path = dir.join("Configuration.xml");
-        if cfg_path.is_file() {
-            let text = fs::read_to_string(&cfg_path)
-                .map_err(|error| format!("failed to read {}: {error}", cfg_path.display()))?;
-            let document = Document::parse(text.trim_start_matches('\u{feff}'))
-                .map_err(|error| format!("failed to parse {}: {error}", cfg_path.display()))?;
-            return match classify_root_version(document.root_element().attribute("version")) {
-                Ok(FormatCompatibility::Supported { actual }) => Ok(actual),
-                Ok(compatibility) => Err(format_compatibility_warning(&compatibility)),
-                Err(error) => Err(error.to_string()),
-            };
-        }
-        current = dir.parent();
+pub(crate) fn detect_format_version(
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<ExportFormatVersion, String> {
+    if let Some(owner) =
+        crate::infrastructure::platform_xml_owner::resolve_platform_xml_owner(target, context)
+            .map_err(|error| error.message)?
+    {
+        return match classify_root_version(owner.version.as_deref()) {
+            Ok(FormatCompatibility::Supported { actual }) => Ok(actual),
+            Ok(compatibility) => Err(format_compatibility_warning(&compatibility)),
+            Err(error) => Err(error.to_string()),
+        };
     }
     ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
         .map_err(|error| error.to_string())

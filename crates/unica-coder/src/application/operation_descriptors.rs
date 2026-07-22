@@ -10,8 +10,16 @@ pub(crate) struct OperationDescriptor {
     pub required_args: &'static [&'static str],
     pub write_path_args: &'static [&'static str],
     pub source_path_args: &'static [&'static str],
+    pub format_path_policy: FormatPathPolicy,
     pub format_guard: FormatGuardPolicy,
     pub support_guard: Option<SupportGuardPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormatPathPolicy {
+    DeclaredArgs,
+    DefaultSrcObject,
+    FormCompile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,11 +213,13 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OBJECT_PATH,
         None,
     ),
-    descriptor(
+    descriptor_with_paths(
         "help-add",
         OBJECT_NAME_REQUIRED,
         SRC_DIR,
         SRC_DIR,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::DefaultSrcObject,
         Some(object_name_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor(
@@ -219,11 +229,13 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OBJECT_PATH,
         Some(path_guard(OBJECT_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor(
+    descriptor_with_paths(
         "form-compile",
         FORM_COMPILE_REQUIRED,
         OUTPUT_PATH,
         OUTPUT_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::FormCompile,
         Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
     ),
     descriptor(
@@ -234,11 +246,13 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         Some(path_guard(FORM_PATH, SupportGuardRequirement::Editable)),
     ),
     descriptor("form-info", FORM_PATH_REQUIRED, EMPTY, FORM_PATH, None),
-    descriptor(
+    descriptor_with_paths(
         "form-remove",
         EMPTY,
         SRC_DIR,
         SRC_DIR,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::DefaultSrcObject,
         Some(object_name_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor("form-validate", FORM_PATH_REQUIRED, EMPTY, FORM_PATH, None),
@@ -287,18 +301,22 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         SUBSYSTEM_PATH,
         None,
     ),
-    descriptor(
+    descriptor_with_paths(
         "template-add",
         EMPTY,
         SRC_DIR,
         SRC_DIR,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::DefaultSrcObject,
         Some(object_name_guard(SupportGuardRequirement::Editable)),
     ),
-    descriptor(
+    descriptor_with_paths(
         "template-remove",
         EMPTY,
         SRC_DIR,
         SRC_DIR,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::DefaultSrcObject,
         Some(object_name_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor(
@@ -334,7 +352,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         MXL_COMPILE_REQUIRED,
         OUTPUT_PATH,
         OUTPUT_PATH,
-        FormatGuardPolicy::NewDump,
+        FormatGuardPolicy::ExistingDump,
         Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
     ),
     descriptor(
@@ -393,6 +411,7 @@ const fn descriptor(
         required_args,
         write_path_args,
         source_path_args,
+        format_path_policy: FormatPathPolicy::DeclaredArgs,
         format_guard: FormatGuardPolicy::ExistingDump,
         support_guard,
     }
@@ -411,6 +430,27 @@ const fn descriptor_with_format(
         required_args,
         write_path_args,
         source_path_args,
+        format_path_policy: FormatPathPolicy::DeclaredArgs,
+        format_guard,
+        support_guard,
+    }
+}
+
+const fn descriptor_with_paths(
+    operation: &'static str,
+    required_args: &'static [&'static str],
+    write_path_args: &'static [&'static str],
+    source_path_args: &'static [&'static str],
+    format_guard: FormatGuardPolicy,
+    format_path_policy: FormatPathPolicy,
+    support_guard: Option<SupportGuardPolicy>,
+) -> OperationDescriptor {
+    OperationDescriptor {
+        operation,
+        required_args,
+        write_path_args,
+        source_path_args,
+        format_path_policy,
         format_guard,
         support_guard,
     }

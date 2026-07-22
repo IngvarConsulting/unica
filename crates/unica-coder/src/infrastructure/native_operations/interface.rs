@@ -51,8 +51,7 @@ pub(crate) fn edit_interface(
 
         let mut ci_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")
             .map(|path| absolutize(path, &context.cwd))?;
-        let format_version =
-            detect_format_version(ci_path.parent().unwrap_or(context.cwd.as_path()))?.to_string();
+        let format_version = detect_format_version(&ci_path, context)?.to_string();
 
         let mut stdout = String::new();
         let source_exists = ci_path.is_file();
