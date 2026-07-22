@@ -149,7 +149,7 @@ Add an extractor for the UX section and assert equality. Assert the pinned sourc
 - [ ] **Step 2: Prove the current PR prose is incomplete**
 
 ```bash
-python3.12 -m unittest tests.ci.test_unica_skills.UnicaSkillContractTests -v
+python3.12 -m unittest tests.ci.test_unica_skills.UnicaSkillRoutingTests -v
 ```
 
 Expected: FAIL on missing sections, divergent mirrors, and invalid DSL keys.
