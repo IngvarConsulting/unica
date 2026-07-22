@@ -390,6 +390,56 @@ mod tests {
     }
 
     #[test]
+    fn only_explicit_short_removed_markers_are_valid_discovery_inputs() {
+        for marker in [b"".as_slice(), b"removed".as_slice(), b"{6,0,0}".as_slice()] {
+            let outcome = SupportStateProvider.support(
+                &query(100),
+                &inventory(vec![
+                    descriptor(
+                        "Documents/Purchase.xml",
+                        "Document",
+                        "Purchase",
+                        LOCKED_UUID,
+                    ),
+                    source_file("Ext/ParentConfigurations.bin", marker),
+                ]),
+            );
+            let ProviderOutcome::Complete(batch) = outcome else {
+                panic!("explicit removed marker must be complete: {marker:?}");
+            };
+            assert_eq!(
+                state_for(&batch.records, "Document.Purchase"),
+                Some(SupportStateKind::Removed)
+            );
+        }
+
+        for malformed in [
+            b"garbage".as_slice(),
+            b"\xff".as_slice(),
+            b"0".as_slice(),
+            b"removed\n".as_slice(),
+            b"{6,0".as_slice(),
+        ] {
+            let outcome = SupportStateProvider.support(
+                &query(100),
+                &inventory(vec![
+                    descriptor(
+                        "Documents/Purchase.xml",
+                        "Document",
+                        "Purchase",
+                        LOCKED_UUID,
+                    ),
+                    source_file("Ext/ParentConfigurations.bin", malformed),
+                ]),
+            );
+            assert!(
+                matches!(outcome, ProviderOutcome::ContractViolation(_)),
+                "ambiguous short payload must invalidate discovery: {malformed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn removed_and_malformed_support_inputs_are_distinct_typed_outcomes() {
         let descriptor = descriptor(
             "Documents/Purchase.xml",

@@ -2398,7 +2398,7 @@ mod tests {
     }
 
     #[test]
-    fn mutating_cf_edit_blocks_malformed_support_even_when_guard_override_is_off() {
+    fn mutating_cf_edit_blocks_short_malformed_support_even_when_guard_override_is_off() {
         let root = std::env::temp_dir().join(format!(
             "unica-cf-guard-malformed-state-{}",
             std::process::id()
@@ -2423,7 +2423,7 @@ mod tests {
             support_test_configuration_xml("11111111-1111-1111-1111-111111111111"),
         )
         .unwrap();
-        std::fs::write(ext.join("ParentConfigurations.bin"), b"{6,0,1}").unwrap();
+        std::fs::write(ext.join("ParentConfigurations.bin"), b"garbage").unwrap();
         let before = std::fs::read_to_string(&config_path).unwrap();
         let mut args = Map::new();
         args.insert(
@@ -4005,6 +4005,67 @@ mod tests {
         assert!(result.summary.contains("не на поддержке"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_rejects_short_malformed_state_without_mutation() {
+        let (root, workspace, bin_path) =
+            support_test_workspace("unica-support-edit-short-malformed", "garbage".to_string());
+        let before = std::fs::read(&bin_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert("Path".to_string(), Value::String("src".to_string()));
+        args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.support.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result
+            .errors
+            .join("\n")
+            .contains("ParentConfigurations.bin"));
+        assert_eq!(std::fs::read(&bin_path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_edit_keeps_explicit_removed_markers_as_safe_noops() {
+        for (case, marker) in [
+            ("empty", ""),
+            ("legacy", "removed"),
+            ("serialized", "{6,0,0}"),
+        ] {
+            let (root, workspace, bin_path) = support_test_workspace(
+                &format!("unica-support-edit-removed-{case}"),
+                marker.to_string(),
+            );
+            let before = std::fs::read(&bin_path).unwrap();
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            args.insert("Path".to_string(), Value::String("src".to_string()));
+            args.insert("Capability".to_string(), Value::String("on".to_string()));
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.support.edit", &args)
+                .unwrap();
+
+            assert!(result.ok, "{case}: {:?}", result.errors);
+            assert!(result.changes.is_empty(), "{case}");
+            assert_eq!(std::fs::read(&bin_path).unwrap(), before, "{case}");
+
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -6105,6 +6166,54 @@ mod tests {
         assert!(std::fs::read_to_string(&object_path)
             .unwrap()
             .contains("<Name>Changed</Name>"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_meta_edit_blocks_short_malformed_support_even_in_warn_mode() {
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-meta-guard-short-malformed-warn",
+            "garbage".to_string(),
+        );
+        std::fs::write(
+            workspace.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"warn"}"#,
+        )
+        .unwrap();
+        let object_path = workspace.join("src/Catalogs/Items.xml");
+        let before = std::fs::read_to_string(&object_path).unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/Catalogs/Items.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("modify-property".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("Name=Changed".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.summary.contains("support guard"));
+        assert!(result
+            .errors
+            .join("\n")
+            .contains("ParentConfigurations.bin"));
+        assert!(result.cache.events.is_empty());
+        assert_eq!(std::fs::read_to_string(&object_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
     }

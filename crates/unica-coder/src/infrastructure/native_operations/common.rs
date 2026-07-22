@@ -1400,6 +1400,35 @@ mod tests {
     }
 
     #[test]
+    fn support_parser_accepts_only_explicit_legacy_removed_markers() {
+        for valid in [
+            b"".as_slice(),
+            b"removed".as_slice(),
+            b"\xef\xbb\xbfremoved".as_slice(),
+            b"{6,0,0}".as_slice(),
+            b"\xef\xbb\xbf \n { 6, 0, 0 } \n".as_slice(),
+        ] {
+            let state = parse_support_state_bytes(valid)
+                .unwrap_or_else(|error| panic!("explicit removed marker must parse: {error}"));
+            assert!(state.removed());
+        }
+
+        for malformed in [
+            b"garbage".as_slice(),
+            b"\xff".as_slice(),
+            b"0".as_slice(),
+            b" removed".as_slice(),
+            b"removed\n".as_slice(),
+            b"{6,0".as_slice(),
+        ] {
+            assert!(
+                parse_support_state_bytes(malformed).is_err(),
+                "ambiguous short payload must be rejected: {malformed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_tracked_on_support_fixture_uses_the_supported_tuple_grammar() {
         for (case, bytes) in TRACKED_ON_SUPPORT_FIXTURES {
             let state = parse_support_state_bytes(bytes)
@@ -1937,7 +1966,7 @@ pub(crate) fn support_guard_violation(
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
     let state = match read_support_state_checked(&bin_path) {
         Ok(SupportStateRead::Missing) => return None,
-        Ok(SupportStateRead::Parsed(state)) => state,
+        Ok(SupportStateRead::Parsed { state, .. }) => state,
         Err(error) => {
             return Some(SupportGuardViolation {
                 code: "support-state-invalid",
@@ -2163,7 +2192,10 @@ pub(crate) struct SupportVendor {
 #[derive(Debug)]
 pub(crate) enum SupportStateRead {
     Missing,
-    Parsed(ParsedSupportState),
+    Parsed {
+        state: ParsedSupportState,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -2188,7 +2220,7 @@ impl std::error::Error for SupportStateReadError {}
 
 pub(crate) fn read_support_state(bin_path: &Path) -> Option<ParsedSupportState> {
     match read_support_state_checked(bin_path) {
-        Ok(SupportStateRead::Parsed(state)) => Some(state),
+        Ok(SupportStateRead::Parsed { state, .. }) => Some(state),
         Ok(SupportStateRead::Missing) | Err(_) => None,
     }
 }
@@ -2203,9 +2235,8 @@ pub(crate) fn read_support_state_checked(
         }
         Err(error) => return Err(SupportStateReadError::Read(error)),
     };
-    parse_support_state_bytes(&data)
-        .map(SupportStateRead::Parsed)
-        .map_err(SupportStateReadError::Parse)
+    let state = parse_support_state_bytes(&data).map_err(SupportStateReadError::Parse)?;
+    Ok(SupportStateRead::Parsed { state, bytes: data })
 }
 
 pub(crate) fn parse_support_state_bytes(
@@ -2215,12 +2246,7 @@ pub(crate) fn parse_support_state_bytes(
         Some(content) => content,
         None => data,
     };
-    let looks_serialized = content
-        .iter()
-        .copied()
-        .find(|byte| !byte.is_ascii_whitespace())
-        == Some(b'{');
-    if data.len() <= 32 && !looks_serialized {
+    if content.is_empty() || content == b"removed" {
         return Ok(ParsedSupportState {
             global_editing_enabled: true,
             vendor_count: 0,
