@@ -581,20 +581,20 @@ impl IndexLockLease {
         self.lock.lock_id.as_str()
     }
 
-    fn refresh(&mut self, child_pid: u32) {
-        if !self.current_file_still_owned() {
-            return;
+    fn refresh(&mut self, child_pid: u32) -> bool {
+        if !self.validate_ownership() {
+            return false;
         }
         self.lock.updated_at = now_secs();
         self.lock.child_pid = Some(child_pid);
-        let _ = write_lock_file_to_open(&mut self.file, &self.lock);
+        write_lock_file_to_open(&mut self.file, &self.lock).is_ok()
     }
 
     fn release(&mut self) {
         if self.released {
             return;
         }
-        let still_owned = self.current_file_still_owned();
+        let still_owned = self.validate_ownership();
         unregister_active_lock(&self.path, self.lock_id());
         if still_owned {
             self.lock.mark_released();
@@ -604,15 +604,18 @@ impl IndexLockLease {
         self.released = true;
     }
 
-    fn current_file_still_owned(&self) -> bool {
+    fn validate_ownership(&self) -> bool {
+        let registered = active_index_locks()
+            .lock()
+            .ok()
+            .and_then(|locks| locks.get(&self.path).cloned())
+            .is_some_and(|lock_id| lock_id == self.lock.lock_id);
+        if !registered || !self.path.exists() {
+            return false;
+        }
         match read_lock_path(&self.path) {
             Ok(index_lock) => index_lock.lock_id == self.lock.lock_id,
-            Err(_) => active_index_locks()
-                .lock()
-                .ok()
-                .and_then(|locks| locks.get(&self.path).cloned())
-                .map(|lock_id| lock_id == self.lock.lock_id)
-                .unwrap_or(false),
+            Err(_) => registered,
         }
     }
 }
@@ -714,11 +717,14 @@ where
 {
     let mut job = job;
     let started_at = now_secs();
-    let primary = match run(&job.primary, &mut job.lock_lease) {
+    let Some(primary) = run_background_command(&job.primary, &mut job.lock_lease, &mut run) else {
+        return;
+    };
+    let primary = match primary {
         Ok(output) => output,
         Err(error) => {
-            let _ = write_status_path(
-                &job.status_path,
+            write_background_status(
+                &job,
                 BslIndexStatus::failed(error.as_str(), Some(&job.source_root)),
             );
             return;
@@ -729,19 +735,23 @@ where
         BslIndexRunMetrics::from_output(&job.action, started_at, primary_finished_at, &primary);
     if !primary.status_success || primary.cancelled || primary.timed_out {
         let message = command_failure_message(&job.action, &primary);
-        let _ = write_status_path(
-            &job.status_path,
+        write_background_status(
+            &job,
             BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                 .with_last_run(primary_metrics),
         );
         return;
     }
 
-    let post_primary = match run(&job.info, &mut job.lock_lease) {
+    let Some(post_primary) = run_background_command(&job.info, &mut job.lock_lease, &mut run)
+    else {
+        return;
+    };
+    let post_primary = match post_primary {
         Ok(info) => readiness_from_info(&info),
         Err(error) => {
-            let _ = write_status_path(
-                &job.status_path,
+            write_background_status(
+                &job,
                 BslIndexStatus::failed(error.as_str(), Some(&job.source_root))
                     .with_last_run(primary_metrics),
             );
@@ -750,34 +760,39 @@ where
     };
     match post_primary {
         IndexReadiness::Ready { db_path } => {
-            let _ = write_status_path(
-                &job.status_path,
+            write_background_status(
+                &job,
                 BslIndexStatus::ready(&job.source_root, &db_path).with_last_run(primary_metrics),
             );
         }
         readiness if readiness.is_stale_content() && job.recovery_build.is_some() => {
             let reason = "stale (content) after update";
-            let _ = write_status_path(
-                &job.status_path,
+            if !write_background_status(
+                &job,
                 BslIndexStatus::building(
                     "build recovery after stale (content)",
                     Some(&job.source_root),
                 ),
-            );
-            let recovery = run(
+            ) {
+                return;
+            }
+            let Some(recovery) = run_background_command(
                 job.recovery_build
                     .as_ref()
                     .expect("guarded recovery command"),
                 &mut job.lock_lease,
-            );
+                &mut run,
+            ) else {
+                return;
+            };
             let recovery = match recovery {
                 Ok(output) => output,
                 Err(error) => {
                     let message = format!(
                         "rlm index update finished with stale (content) after update; recovery build failed: {error}"
                     );
-                    let _ = write_status_path(
-                        &job.status_path,
+                    write_background_status(
+                        &job,
                         BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                             .with_last_run(primary_metrics),
                     );
@@ -789,8 +804,8 @@ where
                 let message = format!(
                     "rlm index update finished with stale (content) after update; recovery build failed: {detail}"
                 );
-                let _ = write_status_path(
-                    &job.status_path,
+                write_background_status(
+                    &job,
                     BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                         .with_last_run(primary_metrics),
                 );
@@ -811,14 +826,19 @@ where
                 finished_at,
                 primary.duration_ms.saturating_add(recovery.duration_ms),
             );
-            let final_readiness = match run(&job.info, &mut job.lock_lease) {
+            let Some(final_readiness) =
+                run_background_command(&job.info, &mut job.lock_lease, &mut run)
+            else {
+                return;
+            };
+            let final_readiness = match final_readiness {
                 Ok(info) => readiness_from_info(&info),
                 Err(error) => {
                     let message = format!(
                         "rlm index update finished but info is stale (content); recovery build info failed: {error}"
                     );
-                    let _ = write_status_path(
-                        &job.status_path,
+                    write_background_status(
+                        &job,
                         BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                             .with_last_run(recovery_metrics),
                     );
@@ -827,8 +847,8 @@ where
             };
             match final_readiness {
                 IndexReadiness::Ready { db_path } => {
-                    let _ = write_status_path(
-                        &job.status_path,
+                    write_background_status(
+                        &job,
                         BslIndexStatus::ready(&job.source_root, &db_path)
                             .with_last_run(recovery_metrics),
                     );
@@ -841,8 +861,8 @@ where
                     let message = format!(
                         "rlm index update finished but info is stale (content); recovery build finished but info is still {final_status}"
                     );
-                    let _ = write_status_path(
-                        &job.status_path,
+                    write_background_status(
+                        &job,
                         BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                             .with_last_run(recovery_metrics),
                     );
@@ -851,13 +871,36 @@ where
         }
         other => {
             let message = format!("rlm index {} finished but info is {other:?}", job.action);
-            let _ = write_status_path(
-                &job.status_path,
+            write_background_status(
+                &job,
                 BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
                     .with_last_run(primary_metrics),
             );
         }
     }
+}
+
+fn run_background_command<F>(
+    command: &IndexCommand,
+    lease: &mut IndexLockLease,
+    run: &mut F,
+) -> Option<Result<IndexOutput, String>>
+where
+    F: FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>,
+{
+    if !lease.validate_ownership() {
+        return None;
+    }
+    let result = run(command, lease);
+    lease.validate_ownership().then_some(result)
+}
+
+fn write_background_status(job: &IndexBackgroundJob, status: BslIndexStatus) -> bool {
+    if !job.lock_lease.validate_ownership() {
+        return false;
+    }
+    let _ = write_status_path(&job.status_path, status);
+    true
 }
 
 fn command_failure_message(action: &str, output: &IndexOutput) -> String {
@@ -882,6 +925,12 @@ fn run_index_command_with_heartbeat(
     command: &IndexCommand,
     mut heartbeat: Option<&mut IndexLockLease>,
 ) -> Result<IndexOutput, String> {
+    if heartbeat
+        .as_deref()
+        .is_some_and(|lease| !lease.validate_ownership())
+    {
+        return Err("RLM index lock ownership lost before command start".to_string());
+    }
     let started = Instant::now();
     let mut child = ManagedChild::spawn(ManagedCommand {
         program: command.program.clone(),
@@ -898,19 +947,36 @@ fn run_index_command_with_heartbeat(
     .map_err(|error| format!("failed to execute RLM index process: {error}"))?;
     let child_pid = child.id();
     let mut last_heartbeat = Instant::now();
+    let ownership_cancellation = command.cancellation.clone();
+    let mut ownership_lost = false;
     if let Some(lease) = heartbeat.as_mut() {
-        (*lease).refresh(child_pid);
+        if !(*lease).refresh(child_pid) {
+            ownership_lost = true;
+            ownership_cancellation.cancel();
+        }
     }
     let output = child
         .wait_for_output_with_poll(Duration::from_millis(50), || {
             if let Some(lease) = heartbeat.as_mut() {
+                if !(*lease).validate_ownership() {
+                    ownership_lost = true;
+                    ownership_cancellation.cancel();
+                    return;
+                }
                 if last_heartbeat.elapsed() >= LOCK_HEARTBEAT_INTERVAL {
-                    (*lease).refresh(child_pid);
+                    if !(*lease).refresh(child_pid) {
+                        ownership_lost = true;
+                        ownership_cancellation.cancel();
+                        return;
+                    }
                     last_heartbeat = Instant::now();
                 }
             }
         })
         .map_err(|error| format!("failed to collect RLM index output: {error}"))?;
+    if ownership_lost && !output.cancelled {
+        return Err("RLM index command stopped after lock ownership was lost".to_string());
+    }
     Ok(map_managed_output(output, started.elapsed()))
 }
 
@@ -1910,6 +1976,79 @@ source-set:
     }
 
     #[test]
+    fn displaced_update_worker_does_not_launch_recovery_or_overwrite_replacement_state() {
+        let context = test_context("stale-content-recovery-displaced");
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let replacement_status =
+            BslIndexStatus::building("replacement owner", Some(&job.source_root));
+        let mut commands = Vec::new();
+
+        run_background_job_with(job, |command, _lease| {
+            commands.push(command.args[0..2].to_vec());
+            match commands.len() {
+                1 => Ok(IndexOutput::success("Updated in 0.1s")),
+                2 => {
+                    let mut replacement =
+                        BslIndexLock::new("build", &context.workspace_root.join("src"));
+                    replacement.lock_id = "replacement-owner".to_string();
+                    write_lock_path(&lock_path(&context), replacement).unwrap();
+                    write_status_path(&status_path(&context), replacement_status.clone()).unwrap();
+                    Ok(IndexOutput::success(
+                        "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
+                    ))
+                }
+                3 => Ok(IndexOutput::success("Index built in 1.2s")),
+                4 => Ok(IndexOutput::success(
+                    "Index: /tmp/bsl_index.db\n  Status:   fresh\n",
+                )),
+                _ => panic!("displaced worker ran an unexpected command"),
+            }
+        });
+
+        assert_eq!(
+            commands,
+            vec![
+                vec!["index".to_string(), "update".to_string()],
+                vec!["index".to_string(), "info".to_string()],
+            ]
+        );
+        let marker = read_lock_path(&lock_path(&context)).unwrap();
+        assert_eq!(marker.lock_id, "replacement-owner");
+        assert_eq!(marker.state, "active");
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "building");
+        assert_eq!(
+            status.message.as_deref(),
+            Some("rlm index replacement owner started")
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn running_command_is_cancelled_when_registered_ownership_is_replaced() {
+        let context = test_context("running-command-displaced");
+        let mut job = test_background_job(&context, "update");
+        let command = long_running_index_command(&context);
+        let lock = lock_path(&context);
+        let replacement = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            register_active_lock(&lock, "replacement-owner");
+        });
+
+        let started = Instant::now();
+        let output = run_index_command_with_heartbeat(&command, Some(&mut job.lock_lease))
+            .expect("ownership loss should return a managed child output");
+        replacement.join().unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(output.cancelled);
+        unregister_active_lock(&lock_path(&context), "replacement-owner");
+        drop(job);
+        cleanup(&context);
+    }
+
+    #[test]
     fn successful_background_job_records_last_run_metrics_in_status() {
         let context = test_context("metrics");
         let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
@@ -2312,6 +2451,18 @@ source-set:
             cwd: context.workspace_root.clone(),
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn long_running_index_command(context: &WorkspaceContext) -> IndexCommand {
+        let command = testing::long_running_command();
+        IndexCommand {
+            program: command.program,
+            args: command.args,
+            cwd: context.workspace_root.clone(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(30),
             cancellation: CancellationToken::new(),
         }
     }
