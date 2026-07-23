@@ -568,7 +568,7 @@ pub(crate) struct NonConflictingConcurrentEvidence {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UncheckedNonConflictingConcurrentEvidence {
+struct UnvalidatedNonConflictingConcurrentEvidence {
     repository_version: RepositoryVersion,
     reason: NonConflictingConcurrentReason,
     atomic_commit_safety_capability_id: CapabilityRowId,
@@ -587,7 +587,36 @@ struct UncheckedNonConflictingConcurrentEvidence {
     evidence_digest: Sha256Digest,
 }
 
+impl UnvalidatedNonConflictingConcurrentEvidence {
+    fn into_audited_evidence(
+        self,
+    ) -> Result<NonConflictingConcurrentEvidence, RepositoryContractError> {
+        let evidence = NonConflictingConcurrentEvidence {
+            repository_version: self.repository_version,
+            reason: self.reason,
+            atomic_commit_safety_capability_id: self.atomic_commit_safety_capability_id,
+            locked_target_set_digest: self.locked_target_set_digest,
+            changed_object_set_digest: self.changed_object_set_digest,
+            before_reference_closure_digest: self.before_reference_closure_digest,
+            after_reference_closure_digest: self.after_reference_closure_digest,
+            added_reference_edge_set_digest: self.added_reference_edge_set_digest,
+            closure_delta_only_adds_non_blocking_references: self
+                .closure_delta_only_adds_non_blocking_references,
+            disjoint_from_integration_content: self.disjoint_from_integration_content,
+            support_graph_unchanged: self.support_graph_unchanged,
+            validation_inputs_unaffected: self.validation_inputs_unaffected,
+            root_unchanged: self.root_unchanged,
+            locked_targets_unchanged: self.locked_targets_unchanged,
+            blocks_approved_deletion: self.blocks_approved_deletion,
+            evidence_digest: self.evidence_digest,
+        };
+        evidence.validate_digest()?;
+        Ok(evidence)
+    }
+}
+
 impl NonConflictingConcurrentEvidence {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         repository_version: &str,
@@ -624,6 +653,7 @@ impl NonConflictingConcurrentEvidence {
         Ok(Self::from_record(record, evidence_digest))
     }
 
+    #[cfg(test)]
     fn from_record(
         record: NonConflictingConcurrentEvidenceDigestRecord,
         evidence_digest: Sha256Digest,
@@ -689,34 +719,15 @@ impl NonConflictingConcurrentEvidence {
     }
 }
 
-impl<'de> Deserialize<'de> for NonConflictingConcurrentEvidence {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let unchecked = UncheckedNonConflictingConcurrentEvidence::deserialize(deserializer)?;
-        let value = Self {
-            repository_version: unchecked.repository_version,
-            reason: unchecked.reason,
-            atomic_commit_safety_capability_id: unchecked.atomic_commit_safety_capability_id,
-            locked_target_set_digest: unchecked.locked_target_set_digest,
-            changed_object_set_digest: unchecked.changed_object_set_digest,
-            before_reference_closure_digest: unchecked.before_reference_closure_digest,
-            after_reference_closure_digest: unchecked.after_reference_closure_digest,
-            added_reference_edge_set_digest: unchecked.added_reference_edge_set_digest,
-            closure_delta_only_adds_non_blocking_references: unchecked
-                .closure_delta_only_adds_non_blocking_references,
-            disjoint_from_integration_content: unchecked.disjoint_from_integration_content,
-            support_graph_unchanged: unchecked.support_graph_unchanged,
-            validation_inputs_unaffected: unchecked.validation_inputs_unaffected,
-            root_unchanged: unchecked.root_unchanged,
-            locked_targets_unchanged: unchecked.locked_targets_unchanged,
-            blocks_approved_deletion: unchecked.blocks_approved_deletion,
-            evidence_digest: unchecked.evidence_digest,
-        };
-        value.validate_digest().map_err(D::Error::custom)?;
-        Ok(value)
-    }
+fn deserialize_audited_non_conflicting_concurrent_evidence<'de, D>(
+    deserializer: D,
+) -> Result<NonConflictingConcurrentEvidence, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    UnvalidatedNonConflictingConcurrentEvidence::deserialize(deserializer)?
+        .into_audited_evidence()
+        .map_err(D::Error::custom)
 }
 
 #[derive(
@@ -2171,6 +2182,7 @@ struct NonConflictingHistoryPartitionEntry {
     classification: NonConflictingClassification,
     semantic_delta_digest: Sha256Digest,
     source_evidence_ref: RepositoryHistorySourceEvidenceRef,
+    #[serde(deserialize_with = "deserialize_audited_non_conflicting_concurrent_evidence")]
     non_conflicting_concurrent_evidence: NonConflictingConcurrentEvidence,
 }
 
@@ -2584,8 +2596,15 @@ fn load_history_evidence(
             Ok(ResolvedHistoryEvidence::Routine(evidence))
         }
         EvidenceKind::NonConflictingConcurrent => {
-            let evidence = serde_json::from_value::<NonConflictingConcurrentEvidence>(value)
-                .map_err(|_| RepositoryContractError("concurrent evidence typed decode failed"))?;
+            let evidence =
+                serde_json::from_value::<UnvalidatedNonConflictingConcurrentEvidence>(value)
+                    .map_err(|_| {
+                        RepositoryContractError("concurrent evidence typed decode failed")
+                    })?
+                    .into_audited_evidence()
+                    .map_err(|_| {
+                        RepositoryContractError("concurrent evidence typed decode failed")
+                    })?;
             if evidence.evidence_digest != reference.evidence_digest {
                 return Err(RepositoryContractError(
                     "concurrent evidence ref digest mismatch",
@@ -5011,6 +5030,7 @@ mod tests {
 
     #[test]
     fn capability_derived_authority_types_have_no_deserialize_backdoor() {
+        let _ = <NonConflictingConcurrentEvidence as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ =
             <super::ValidatedRepositoryHistoryPartition as AmbiguousIfDeserializeOwned<_>>::marker;
         let _ = <super::EvidenceSourceIndexProof as AmbiguousIfDeserializeOwned<_>>::marker;
@@ -5320,21 +5340,28 @@ mod tests {
             assert_eq!(value[field], json!(true));
         }
         assert_eq!(value["blocksApprovedDeletion"], json!(false));
-        serde_json::from_value::<NonConflictingConcurrentEvidence>(value.clone()).unwrap();
+        serde_json::from_value::<super::UnvalidatedNonConflictingConcurrentEvidence>(value.clone())
+            .unwrap()
+            .into_audited_evidence()
+            .unwrap();
 
         let mut wrong_literal = value.as_object().unwrap().clone();
         wrong_literal.insert("rootUnchanged".into(), json!(false));
         assert!(
-            serde_json::from_value::<NonConflictingConcurrentEvidence>(Value::Object(
-                wrong_literal
-            ))
+            serde_json::from_value::<super::UnvalidatedNonConflictingConcurrentEvidence>(
+                Value::Object(wrong_literal)
+            )
             .is_err()
         );
         let mut wrong_digest = value.as_object().unwrap().clone();
         wrong_digest.insert("evidenceDigest".into(), json!(SHA_A));
         assert!(
-            serde_json::from_value::<NonConflictingConcurrentEvidence>(Value::Object(wrong_digest))
-                .is_err()
+            serde_json::from_value::<super::UnvalidatedNonConflictingConcurrentEvidence>(
+                Value::Object(wrong_digest)
+            )
+            .unwrap()
+            .into_audited_evidence()
+            .is_err()
         );
         assert_closed::<NonConflictingConcurrentEvidence>();
     }
