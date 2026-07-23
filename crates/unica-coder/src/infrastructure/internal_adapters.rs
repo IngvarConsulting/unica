@@ -2674,7 +2674,8 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
     match readiness {
         IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
         IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
-        IndexReadiness::Stale { .. } | IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Stale { status } => format!("rlm index stale: {status}"),
+        IndexReadiness::Building => "rlm index building".to_string(),
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
         {
@@ -3919,6 +3920,30 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn only_active_building_readiness_reports_index_building() {
+        assert_eq!(
+            readiness_warning(IndexReadiness::Building),
+            "rlm index building"
+        );
+        assert_eq!(
+            readiness_warning(IndexReadiness::Stale {
+                status: "stale (content)".to_string(),
+            }),
+            "rlm index stale: stale (content)"
+        );
+    }
+
+    #[test]
+    fn failed_readiness_reports_original_reason() {
+        assert_eq!(
+            readiness_warning(IndexReadiness::Failed(
+                "update left stale (content); recovery build failed: disk full".to_string(),
+            )),
+            "rlm index unavailable: update left stale (content); recovery build failed: disk full"
+        );
+    }
 
     #[test]
     fn code_grep_does_not_start_rlm_index_side_effect() {

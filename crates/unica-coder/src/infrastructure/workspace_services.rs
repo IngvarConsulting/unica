@@ -1662,9 +1662,10 @@ impl ServiceResponse {
                 warnings,
                 ..Self::default()
             },
-            IndexReadiness::Stale { .. } => Self {
+            IndexReadiness::Stale { status } => Self {
                 ok: true,
                 index_status: Some("stale".to_string()),
+                error: Some(status),
                 warnings,
                 ..Self::default()
             },
@@ -1706,7 +1707,7 @@ impl ServiceResponse {
                 }),
             Some("missing") => IndexReadiness::Missing,
             Some("stale") => IndexReadiness::Stale {
-                status: "stale".to_string(),
+                status: self.error.clone().unwrap_or_else(|| "stale".to_string()),
             },
             Some("building") => IndexReadiness::Building,
             Some("failed") => IndexReadiness::Failed(self.error.clone().unwrap_or_default()),
@@ -3165,6 +3166,40 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn service_response_preserves_exact_stale_status() {
+        let response = ServiceResponse::from_readiness(
+            IndexReadiness::Stale {
+                status: "stale (content)".to_string(),
+            },
+            Vec::new(),
+        );
+
+        assert_eq!(
+            response.index_readiness(),
+            IndexReadiness::Stale {
+                status: "stale (content)".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn service_response_preserves_failed_index_message() {
+        let response = ServiceResponse::from_readiness(
+            IndexReadiness::Failed(
+                "update left stale (content); recovery build failed".to_string(),
+            ),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            response.index_readiness(),
+            IndexReadiness::Failed(
+                "update left stale (content); recovery build failed".to_string(),
+            )
+        );
+    }
 
     #[derive(Default)]
     struct BlockingWorkspaceState {
