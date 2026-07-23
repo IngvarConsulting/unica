@@ -4336,6 +4336,17 @@ pub(crate) fn repository_history_partition_fixture_test_only(
     })
 }
 
+/// Test-only adversarial fixture for the otherwise validated partition shape.
+/// Production constructors never remove history-order evidence once validation
+/// has succeeded.
+#[cfg(test)]
+pub(crate) fn repository_history_partition_without_order_evidence_fixture_test_only(
+    mut partition: ValidatedRepositoryHistoryPartition,
+) -> ValidatedRepositoryHistoryPartition {
+    partition.order_evidence = None;
+    partition
+}
+
 /// Adversarial result-layer fixture. Production taskCommit authorities are
 /// minted only by `RepositoryHistoryPartitionResolver`; this helper can forge
 /// malformed shapes so the completion boundary remains defense in depth.
@@ -6132,6 +6143,10 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::cmp::Ordering;
     use std::collections::BTreeMap;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        Arc,
+    };
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -10159,6 +10174,7 @@ mod tests {
     enum ScopedNccScanMutation {
         None,
         PortError,
+        MissingNccFacts,
         MissingRow,
         ExtraRow,
         ReorderedRows,
@@ -10533,6 +10549,7 @@ mod tests {
         witness: super::ScopedNccHistoryScanBatchWitness,
         observation: super::ScopedNccHistoryScanObservation,
         binds: bool,
+        observation_consumptions: Option<Arc<AtomicUsize>>,
     }
 
     impl super::ScopedNccHistoryScanLease for FixtureScopedNccLease {
@@ -10545,14 +10562,25 @@ mod tests {
         }
 
         fn into_observation(self: Box<Self>) -> super::ScopedNccHistoryScanObservation {
+            if let Some(observation_consumptions) = &self.observation_consumptions {
+                observation_consumptions.fetch_add(1, AtomicOrdering::SeqCst);
+            }
             self.observation
         }
+    }
+
+    #[derive(Default)]
+    struct FixtureScopedNccCompletionCapture {
+        completion_marker: Option<Arc<super::ScopedNccHistoryScanInvocationMarker>>,
+        lease_witness_marker: Option<Arc<super::ScopedNccHistoryScanInvocationMarker>>,
+        observation_consumptions: Arc<AtomicUsize>,
     }
 
     struct FixtureScopedNccPort {
         facts: super::ScopedNccRowFacts,
         mutation: ScopedNccScanMutation,
         calls: usize,
+        capture: Option<FixtureScopedNccCompletionCapture>,
     }
 
     impl super::ScopedNccHistoryScanPort for FixtureScopedNccPort {
@@ -10600,6 +10628,7 @@ mod tests {
                 ScopedNccScanMutation::MissingRow => {
                     rows.pop();
                 }
+                ScopedNccScanMutation::MissingNccFacts => rows[1].facts = None,
                 ScopedNccScanMutation::ExtraRow => {
                     let row = request.row(request.row_count() - 1).unwrap();
                     rows.push(
@@ -10680,12 +10709,21 @@ mod tests {
                 witness: lease_witness,
                 observation,
                 binds: !matches!(self.mutation, ScopedNccScanMutation::LeaseBindsFalse),
+                observation_consumptions: self
+                    .capture
+                    .as_ref()
+                    .map(|capture| Arc::clone(&capture.observation_consumptions)),
             }));
             if matches!(
                 self.mutation,
                 ScopedNccScanMutation::ForeignCompletionCapability
             ) {
                 completion.completion = foreign_invocation.completion();
+            }
+            if let Some(capture) = &mut self.capture {
+                capture.completion_marker = Some(Arc::clone(&completion.completion.0));
+                capture.lease_witness_marker =
+                    Some(Arc::clone(&completion.lease.batch_witness().0));
             }
             Ok(completion)
         }
@@ -10705,6 +10743,7 @@ mod tests {
             facts,
             mutation: scan_mutation,
             calls: 0,
+            capture: None,
         };
         super::ScopedNccHistoryScanAuthority::resolve(
             partition,
@@ -10719,6 +10758,47 @@ mod tests {
     ) -> super::ScopedNccHistoryScanBlockedAuthority {
         *run_scoped_ncc_scan(scan_mutation, evidence_mutation)
             .expect_err("fixture mutation must be retained as a blocked scoped NCC scan")
+    }
+
+    fn scoped_ncc_blocked_with_completion_capture(
+        scan_mutation: ScopedNccScanMutation,
+    ) -> (
+        super::ScopedNccHistoryScanBlockedAuthority,
+        FixtureScopedNccCompletionCapture,
+    ) {
+        let facts = scoped_ncc_safe_facts();
+        let partition = scoped_ncc_partition(&facts, ScopedNccEvidenceMutation::None);
+        let mut port = FixtureScopedNccPort {
+            facts,
+            mutation: scan_mutation,
+            calls: 0,
+            capture: Some(FixtureScopedNccCompletionCapture::default()),
+        };
+        let blocked = super::ScopedNccHistoryScanAuthority::resolve(
+            partition,
+            CapabilityRowId::parse(UUID_A).unwrap(),
+            &mut port,
+        )
+        .expect_err("completion fixture mutation must retain the owning completion");
+        (
+            *blocked,
+            port.capture
+                .take()
+                .expect("fixture must capture the completion and lease payload"),
+        )
+    }
+
+    fn assert_scoped_ncc_retained_source(
+        source: &super::ScopedNccHistoryScanFailureSource,
+        expected_entries: usize,
+        expected_order_evidence: bool,
+    ) {
+        assert_eq!(source.partition.entry_count(), expected_entries);
+        assert_eq!(source.expected_capability_id.as_str(), UUID_A);
+        assert_eq!(
+            source.partition.order_evidence.is_some(),
+            expected_order_evidence
+        );
     }
 
     #[test]
@@ -10744,7 +10824,45 @@ mod tests {
     }
 
     #[test]
-    fn gate_b3_scoped_ncc_invalid_source_retains_source_without_calling_port() {
+    fn gate_b3_scoped_ncc_source_failures_retain_exact_stage_and_never_call_the_port() {
+        let facts = scoped_ncc_safe_facts();
+        let partition =
+            super::repository_history_partition_without_order_evidence_fixture_test_only(
+                scoped_ncc_partition(&facts, ScopedNccEvidenceMutation::None),
+            );
+        let expected_digest = partition.partition_digest().clone();
+        let mut port = FixtureScopedNccPort {
+            facts: facts.clone(),
+            mutation: ScopedNccScanMutation::None,
+            calls: 0,
+            capture: None,
+        };
+        let blocked = super::ScopedNccHistoryScanAuthority::resolve(
+            partition,
+            CapabilityRowId::parse(UUID_A).unwrap(),
+            &mut port,
+        )
+        .expect_err("missing order evidence must retain an owning blocked result");
+        assert_eq!(port.calls, 0);
+        assert_scoped_ncc_retained_source(&blocked.source, 2, false);
+        assert_eq!(
+            blocked.source.partition.partition_digest(),
+            &expected_digest
+        );
+        match blocked.evidence {
+            super::ScopedNccHistoryScanFailureEvidence::InvalidSource { stage, error } => {
+                assert_eq!(
+                    stage,
+                    super::ScopedNccHistoryScanSourceFailureStage::MissingOrderEvidence
+                );
+                assert_eq!(
+                    error.0,
+                    "scoped NCC scan requires non-empty validated history order"
+                );
+            }
+            evidence => panic!("expected invalid-source evidence, got {evidence:?}"),
+        }
+
         let from = RepositoryHistoryCursor::new(
             RepositoryVersion::parse("opaque-v0").unwrap(),
             Sha256Digest::parse(SHA_A).unwrap(),
@@ -10763,6 +10881,7 @@ mod tests {
             facts: scoped_ncc_safe_facts(),
             mutation: ScopedNccScanMutation::None,
             calls: 0,
+            capture: None,
         };
         let blocked = super::ScopedNccHistoryScanAuthority::resolve(
             partition,
@@ -10771,12 +10890,20 @@ mod tests {
         )
         .expect_err("partition without an NCC row must be an owning blocked result");
         assert_eq!(port.calls, 0);
-        assert_eq!(blocked.source.partition.entry_count(), 1);
-        assert_eq!(blocked.source.expected_capability_id.as_str(), UUID_A);
-        assert!(matches!(
-            blocked.evidence,
-            super::ScopedNccHistoryScanFailureEvidence::InvalidSource { .. }
-        ));
+        assert_scoped_ncc_retained_source(&blocked.source, 1, true);
+        match blocked.evidence {
+            super::ScopedNccHistoryScanFailureEvidence::InvalidSource { stage, error } => {
+                assert_eq!(
+                    stage,
+                    super::ScopedNccHistoryScanSourceFailureStage::InvalidCoverage
+                );
+                assert_eq!(
+                    error.0,
+                    "scoped NCC scan requires exact non-empty NCC history coverage"
+                );
+            }
+            evidence => panic!("expected invalid-source evidence, got {evidence:?}"),
+        }
     }
 
     #[test]
@@ -10785,69 +10912,409 @@ mod tests {
             ScopedNccScanMutation::PortError,
             ScopedNccEvidenceMutation::None,
         );
-        assert_eq!(blocked.source.partition.entry_count(), 2);
-        assert_eq!(blocked.source.expected_capability_id.as_str(), UUID_A);
-        assert!(matches!(
-            blocked.evidence,
-            super::ScopedNccHistoryScanFailureEvidence::Port { .. }
-        ));
-    }
-
-    #[test]
-    fn gate_b3_scoped_ncc_preconsumption_failures_retain_completion_and_source() {
-        for mutation in [
-            ScopedNccScanMutation::ForeignCompletionCapability,
-            ScopedNccScanMutation::ForeignLeaseWitness,
-            ScopedNccScanMutation::LeaseBindsFalse,
-        ] {
-            let blocked = scoped_ncc_blocked(mutation, ScopedNccEvidenceMutation::None);
-            assert_eq!(blocked.source.partition.entry_count(), 2);
-            assert!(matches!(
-                blocked.evidence,
-                super::ScopedNccHistoryScanFailureEvidence::Completion { .. }
-            ));
+        assert_scoped_ncc_retained_source(&blocked.source, 2, true);
+        match blocked.evidence {
+            super::ScopedNccHistoryScanFailureEvidence::Port { error } => {
+                assert_eq!(error.0, "scoped NCC fixture port error");
+            }
+            evidence => panic!("expected port evidence, got {evidence:?}"),
         }
     }
 
     #[test]
-    fn gate_b3_scoped_ncc_postconsumption_batch_failure_retains_observation_and_source() {
-        let blocked = scoped_ncc_blocked(
-            ScopedNccScanMutation::ForeignPartition,
-            ScopedNccEvidenceMutation::None,
-        );
-        assert_eq!(blocked.source.partition.entry_count(), 2);
-        assert!(matches!(
-            blocked.evidence,
-            super::ScopedNccHistoryScanFailureEvidence::Observation { .. }
-        ));
-    }
-
-    #[test]
-    fn gate_b3_scoped_ncc_postconsumption_row_failures_retain_observation() {
-        for mutation in [
-            ScopedNccScanMutation::MissingRow,
-            ScopedNccScanMutation::ReorderedRows,
-            ScopedNccScanMutation::ForeignCursor,
-            ScopedNccScanMutation::ForeignVersion,
+    fn gate_b3_scoped_ncc_completion_failures_retain_exact_stage_and_complete_payload() {
+        for (mutation, expected_stage, expected_error) in [
+            (
+                ScopedNccScanMutation::ForeignCompletionCapability,
+                super::ScopedNccHistoryScanCompletionFailureStage::ForeignCompletion,
+                "scoped NCC scan completion is foreign to the request",
+            ),
+            (
+                ScopedNccScanMutation::ForeignLeaseWitness,
+                super::ScopedNccHistoryScanCompletionFailureStage::ForeignLeaseWitness,
+                "scoped NCC scan lease is foreign to the request",
+            ),
+            (
+                ScopedNccScanMutation::LeaseBindsFalse,
+                super::ScopedNccHistoryScanCompletionFailureStage::LeaseBindingMismatch,
+                "scoped NCC scan lease does not bind the request",
+            ),
         ] {
-            let blocked = scoped_ncc_blocked(mutation, ScopedNccEvidenceMutation::None);
-            assert!(matches!(
-                blocked.evidence,
-                super::ScopedNccHistoryScanFailureEvidence::Observation { .. }
-            ));
+            let (blocked, capture) = scoped_ncc_blocked_with_completion_capture(mutation);
+            assert_scoped_ncc_retained_source(&blocked.source, 2, true);
+            let expected_start = blocked.source.partition.start_cursor().clone();
+            let expected_end = blocked.source.partition.through_inclusive().clone();
+            let expected_digest = blocked.source.partition.partition_digest().clone();
+            let expected_facts = scoped_ncc_safe_facts();
+            match blocked.evidence {
+                super::ScopedNccHistoryScanFailureEvidence::Completion {
+                    stage,
+                    error,
+                    completion,
+                } => {
+                    assert_eq!(stage, expected_stage);
+                    assert_eq!(error.0, expected_error);
+                    assert!(Arc::ptr_eq(
+                        &completion.completion.0,
+                        capture
+                            .completion_marker
+                            .as_ref()
+                            .expect("captured completion marker"),
+                    ));
+                    assert!(Arc::ptr_eq(
+                        &completion.lease.batch_witness().0,
+                        capture
+                            .lease_witness_marker
+                            .as_ref()
+                            .expect("captured lease witness marker"),
+                    ));
+                    assert_eq!(
+                        capture
+                            .observation_consumptions
+                            .load(AtomicOrdering::SeqCst),
+                        0,
+                        "pre-consumption failure must retain, not consume, the lease"
+                    );
+                    let observation = completion.lease.into_observation();
+                    assert_eq!(observation.from_exclusive, expected_start);
+                    assert_eq!(observation.through_inclusive, expected_end);
+                    assert_eq!(observation.partition_digest, expected_digest);
+                    assert_eq!(observation.rows.len(), 2);
+                    assert!(observation.rows[0].facts.is_none());
+                    assert_eq!(observation.rows[1].facts.as_ref(), Some(&expected_facts));
+                    assert_eq!(
+                        capture
+                            .observation_consumptions
+                            .load(AtomicOrdering::SeqCst),
+                        1,
+                        "the retained lease must expose its original observation exactly once"
+                    );
+                }
+                evidence => panic!("expected completion evidence, got {evidence:?}"),
+            }
         }
     }
 
     #[test]
-    fn gate_b3_scoped_ncc_postconsumption_fact_failure_retains_observation() {
-        let blocked = scoped_ncc_blocked(
-            ScopedNccScanMutation::None,
-            ScopedNccEvidenceMutation::Capability,
-        );
-        assert!(matches!(
-            blocked.evidence,
-            super::ScopedNccHistoryScanFailureEvidence::Observation { .. }
-        ));
+    fn gate_b3_scoped_ncc_observation_failures_retain_exact_stage_and_full_observation() {
+        for (scan_mutation, evidence_mutation, expected_stage, expected_error) in [
+            (
+                ScopedNccScanMutation::ForeignBatchWitness,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::ForeignBatchWitness,
+                "scoped NCC scan batch witness is foreign to the request",
+            ),
+            (
+                ScopedNccScanMutation::ForeignStartEndpoint,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::FromExclusiveMismatch,
+                "scoped NCC scan batch start differs from the validated partition",
+            ),
+            (
+                ScopedNccScanMutation::ForeignEndpoint,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::ThroughInclusiveMismatch,
+                "scoped NCC scan batch end differs from the validated partition",
+            ),
+            (
+                ScopedNccScanMutation::ForeignPartition,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::PartitionDigestMismatch,
+                "scoped NCC scan batch digest differs from the validated partition",
+            ),
+            (
+                ScopedNccScanMutation::MissingRow,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowCountMismatch,
+                "scoped NCC scan batch row count differs from the validated partition",
+            ),
+            (
+                ScopedNccScanMutation::ExtraRow,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowCountMismatch,
+                "scoped NCC scan batch row count differs from the validated partition",
+            ),
+            (
+                ScopedNccScanMutation::CrossScanRowSplice,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowWitnessMismatch,
+                "scoped NCC row witness is foreign to the request",
+            ),
+            (
+                ScopedNccScanMutation::ReorderedRows,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowPositionMismatch,
+                "scoped NCC row position differs from its exact ordered history position",
+            ),
+            (
+                ScopedNccScanMutation::DuplicatePosition,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowPositionMismatch,
+                "scoped NCC row position differs from its exact ordered history position",
+            ),
+            (
+                ScopedNccScanMutation::ForeignCursor,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowCursorMismatch,
+                "scoped NCC row cursor differs from its exact ordered history position",
+            ),
+            (
+                ScopedNccScanMutation::ForeignVersion,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::RowVersionMismatch,
+                "scoped NCC row version differs from its exact ordered history position",
+            ),
+            (
+                ScopedNccScanMutation::MissingNccFacts,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::MissingNccFacts,
+                "scoped NCC history position lacks its detailed observation",
+            ),
+            (
+                ScopedNccScanMutation::FactsAtRoutinePosition,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::UnexpectedNccFacts,
+                "non-NCC history position carries NCC facts",
+            ),
+            (
+                ScopedNccScanMutation::ForeignCapability,
+                ScopedNccEvidenceMutation::None,
+                super::ScopedNccHistoryScanObservationFailureStage::NccFactsMismatch,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+        ] {
+            let blocked = scoped_ncc_blocked(scan_mutation, evidence_mutation);
+            let super::ScopedNccHistoryScanBlockedAuthority { source, evidence } = blocked;
+            assert_scoped_ncc_retained_source(&source, 2, true);
+            let super::ScopedNccHistoryScanFailureEvidence::Observation {
+                stage,
+                error,
+                observation,
+            } = evidence
+            else {
+                panic!("expected observation evidence");
+            };
+            assert_eq!(stage, expected_stage);
+            assert_eq!(error.0, expected_error);
+
+            let expected_start = source.partition.start_cursor().clone();
+            let expected_end = source.partition.through_inclusive().clone();
+            let expected_digest = source.partition.partition_digest().clone();
+            assert_eq!(
+                observation.rows.len(),
+                if matches!(scan_mutation, ScopedNccScanMutation::MissingRow) {
+                    1
+                } else if matches!(scan_mutation, ScopedNccScanMutation::ExtraRow) {
+                    3
+                } else {
+                    2
+                }
+            );
+            if !matches!(scan_mutation, ScopedNccScanMutation::ForeignStartEndpoint) {
+                assert_eq!(observation.from_exclusive, expected_start);
+            }
+            if !matches!(scan_mutation, ScopedNccScanMutation::ForeignEndpoint) {
+                assert_eq!(observation.through_inclusive, expected_end);
+            }
+            if !matches!(scan_mutation, ScopedNccScanMutation::ForeignPartition) {
+                assert_eq!(observation.partition_digest, expected_digest);
+            }
+            match scan_mutation {
+                ScopedNccScanMutation::ForeignStartEndpoint => assert_eq!(
+                    observation.from_exclusive,
+                    serde_json::from_value(cursor("opaque-v-foreign", SHA_A)).unwrap()
+                ),
+                ScopedNccScanMutation::ForeignEndpoint => assert_eq!(
+                    observation.through_inclusive,
+                    serde_json::from_value(cursor("opaque-v-foreign", SHA_A)).unwrap()
+                ),
+                ScopedNccScanMutation::ForeignPartition => assert_eq!(
+                    observation.partition_digest,
+                    Sha256Digest::parse(SHA_A).unwrap()
+                ),
+                ScopedNccScanMutation::ReorderedRows => assert_eq!(
+                    observation
+                        .rows
+                        .iter()
+                        .map(|row| row.position)
+                        .collect::<Vec<_>>(),
+                    vec![2, 1]
+                ),
+                ScopedNccScanMutation::DuplicatePosition => assert_eq!(
+                    observation
+                        .rows
+                        .iter()
+                        .map(|row| row.position)
+                        .collect::<Vec<_>>(),
+                    vec![1, 1]
+                ),
+                ScopedNccScanMutation::ForeignCursor => assert_eq!(
+                    observation.rows[1].cursor,
+                    serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap()
+                ),
+                ScopedNccScanMutation::ForeignVersion => assert_eq!(
+                    observation.rows[1].repository_version.as_str(),
+                    "opaque-v-foreign"
+                ),
+                ScopedNccScanMutation::MissingNccFacts => {
+                    assert!(observation.rows[1].facts.is_none())
+                }
+                ScopedNccScanMutation::FactsAtRoutinePosition => {
+                    assert!(observation.rows[0].facts.is_some())
+                }
+                ScopedNccScanMutation::ForeignCapability => assert_eq!(
+                    observation.rows[1]
+                        .facts
+                        .as_ref()
+                        .expect("mutated NCC facts must be retained")
+                        .atomic_commit_safety_capability_id
+                        .as_str(),
+                    UUID_B
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_safety_and_evidence_mutations_retain_exact_ncc_fact_stage() {
+        for (scan_mutation, evidence_mutation, expected_error) in [
+            (
+                ScopedNccScanMutation::RemovedReferenceEdge,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::NoGenuineExpansion,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::AddedEdgeSetMismatch,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::IntegrationOverlap,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::ChangedLockedOverlap,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::ChangedReferrerMismatch,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::RootChangedReferrer,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::SupportGraphChanged,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::ValidationInputsChanged,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::RootStateChanged,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::LockedStateChanged,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::AbsentLockedState,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::BlocksApprovedDeletion,
+                ScopedNccEvidenceMutation::None,
+                "scoped NCC observations do not derive every audited safety literal",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::RepositoryVersion,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::Capability,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::LockedTargetDigest,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::ChangedTargetDigest,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::BeforeClosureDigest,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::AfterClosureDigest,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+            (
+                ScopedNccScanMutation::None,
+                ScopedNccEvidenceMutation::AddedEdgeDigest,
+                "scoped NCC facts differ from the audited evidence record",
+            ),
+        ] {
+            let blocked = scoped_ncc_blocked(scan_mutation, evidence_mutation);
+            let super::ScopedNccHistoryScanBlockedAuthority { source, evidence } = blocked;
+            assert_scoped_ncc_retained_source(&source, 2, true);
+            match evidence {
+                super::ScopedNccHistoryScanFailureEvidence::Observation {
+                    stage,
+                    error,
+                    observation,
+                } => {
+                    assert_eq!(
+                        stage,
+                        super::ScopedNccHistoryScanObservationFailureStage::NccFactsMismatch
+                    );
+                    assert_eq!(error.0, expected_error);
+                    assert_eq!(observation.rows.len(), source.partition.entry_count());
+                    assert_eq!(observation.from_exclusive, *source.partition.start_cursor());
+                    assert_eq!(
+                        observation.through_inclusive,
+                        *source.partition.through_inclusive()
+                    );
+                    assert_eq!(
+                        observation.partition_digest,
+                        *source.partition.partition_digest()
+                    );
+                    let mut expected_facts = scoped_ncc_safe_facts();
+                    apply_scoped_ncc_safety_mutation(&mut expected_facts, scan_mutation);
+                    assert_eq!(
+                        observation.rows[1].facts.as_ref(),
+                        Some(&expected_facts),
+                        "the blocked observation must retain the exact NCC facts that failed validation"
+                    );
+                }
+                evidence => panic!("expected NCC-fact observation evidence, got {evidence:?}"),
+            }
+        }
     }
 
     #[test]
@@ -10865,6 +11332,13 @@ mod tests {
         assert_eq!(authority.history_entry_count(), 2);
         assert_eq!(authority.ncc_entry_count(), 1);
         assert_eq!(authority.partition().entry_count(), 2);
+        assert_eq!(authority.expected_capability_id().as_str(), UUID_A);
+        assert_eq!(
+            authority.partition().partition_digest().as_str(),
+            scoped_ncc_partition(&scoped_ncc_safe_facts(), ScopedNccEvidenceMutation::None)
+                .partition_digest()
+                .as_str()
+        );
     }
 
     #[test]
@@ -11011,6 +11485,7 @@ mod tests {
             facts: scoped_ncc_safe_facts(),
             mutation: ScopedNccScanMutation::None,
             calls: 0,
+            capture: None,
         };
         assert!(super::ScopedNccHistoryScanAuthority::resolve(
             partition,
