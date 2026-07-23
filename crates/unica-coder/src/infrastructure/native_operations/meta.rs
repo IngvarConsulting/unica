@@ -2601,7 +2601,6 @@ pub(crate) fn meta_validate_localized_values(
                 && child.tag_name().name() == "item"
                 && child.tag_name().namespace() == Some(V8_CORE_NS)
         })
-        .into_iter()
         .filter_map(|item| {
             let child_text = |name| {
                 item.children()
