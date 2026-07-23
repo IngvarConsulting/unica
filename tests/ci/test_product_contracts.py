@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_contract_module():
@@ -21,6 +22,69 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_v8_runner_partial_load_list_requires_bom_crlf_and_cyrillic_path(self) -> None:
+        module = load_contract_module()
+        expected_path = str(
+            Path("Catalogs.Товары") / "Ext" / "ObjectModule.bsl"
+        )
+        payload = b"\xef\xbb\xbf" + expected_path.encode("utf-8") + b"\r\n"
+
+        self.assertEqual(
+            module.validate_v8_runner_partial_load_list(payload, expected_path),
+            [],
+        )
+        self.assertIn(
+            "UTF-8 BOM",
+            "\n".join(
+                module.validate_v8_runner_partial_load_list(
+                    payload.removeprefix(b"\xef\xbb\xbf"),
+                    expected_path,
+                )
+            ),
+        )
+        self.assertIn(
+            "CRLF",
+            "\n".join(
+                module.validate_v8_runner_partial_load_list(
+                    b"\xef\xbb\xbf" + expected_path.encode("utf-8") + b"\n",
+                    expected_path,
+                )
+            ),
+        )
+
+    def test_v8_runner_partial_load_smoke_rejects_missing_binary(self) -> None:
+        module = load_contract_module()
+
+        errors = module.check_v8_runner_partial_load_contract(
+            Path("/missing/v8-runner"),
+            "linux-x64",
+        )
+
+        self.assertEqual(
+            errors,
+            ["v8-runner partial-load contract: binary not found: /missing/v8-runner"],
+        )
+
+    def test_targeted_tool_contracts_run_v8_runner_partial_load_smoke(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            runner = tools_dir / "v8-runner"
+            runner.write_bytes(b"runner")
+            with (
+                patch.object(module, "TOOL_HELP_CHECKS", []),
+                patch.object(
+                    module,
+                    "check_v8_runner_partial_load_contract",
+                    return_value=["behavioral failure"],
+                ) as behavioral_check,
+            ):
+                errors = module.check_tool_contracts(tools_dir, "linux-x64")
+
+        self.assertEqual(errors, ["behavioral failure"])
+        behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
+
     BSL_ANALYZER_HELP = (
         "#!/usr/bin/env sh\n"
         "case \"$*\" in\n"
