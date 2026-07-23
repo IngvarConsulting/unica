@@ -1226,6 +1226,22 @@ if props_node is not None:
             report_warn(f"10. {md_type}: no Dimensions, Resources, or Attributes \u2014 platform will reject")
             check10_issues += 1
 
+    # InformationRegister: subordinate registers are not exposed to the command interface
+    if md_type == 'InformationRegister':
+        write_mode = find(props_node, 'md:WriteMode')
+        use_standard_commands = find(props_node, 'md:UseStandardCommands')
+        if (
+            write_mode is not None
+            and inner_text(write_mode) == 'RecorderSubordinate'
+            and use_standard_commands is not None
+            and inner_text(use_standard_commands) == 'true'
+        ):
+            report_warn(
+                "10. InformationRegister: WriteMode=RecorderSubordinate with UseStandardCommands=true "
+                "(subordinate registers are not shown in the command interface)"
+            )
+            check10_issues += 1
+
     # Document: RegisterRecords references should point to existing objects in config
     if md_type == 'Document' and config_dir:
         reg_records = find(props_node, 'md:RegisterRecords')
