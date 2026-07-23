@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -71,6 +72,9 @@ RLM_SCHEMA_COLUMNS = {
 RLM_REQUIRED_META = {
     "builder_version": "14",
 }
+
+V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
+V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 
 
 def validate_v8_runner_partial_load_list(payload: bytes, expected_path: str) -> list[str]:
@@ -242,6 +246,228 @@ fn main() {
         ]
 
 
+def validate_v8_runner_bounded_external_epf_result(
+    envelope: object,
+    execute: Path,
+    output: Path,
+    stderr_output: Path,
+    output_marker: str,
+    stderr_marker: str,
+) -> list[str]:
+    errors: list[str] = []
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+    wait = data.get("external_epf_wait") if isinstance(data, dict) else None
+    if not isinstance(wait, dict):
+        return ["runner JSON is missing data.external_epf_wait"]
+
+    pid = wait.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        errors.append(f"external_epf_wait.pid must be a positive integer, got {pid!r}")
+    if wait.get("exit_code") != 7:
+        errors.append(
+            f"external_epf_wait.exit_code must be 7, got {wait.get('exit_code')!r}"
+        )
+    if wait.get("timed_out") is not False:
+        errors.append(
+            f"external_epf_wait.timed_out must be false, got {wait.get('timed_out')!r}"
+        )
+
+    expected_paths = {
+        "execute_path": execute,
+        "output_path": output,
+        "stderr_path": stderr_output,
+    }
+    for field, expected in expected_paths.items():
+        actual = wait.get(field)
+        if not isinstance(actual, str):
+            errors.append(f"external_epf_wait.{field} must be a path string, got {actual!r}")
+            continue
+        if Path(actual).resolve() != expected.resolve():
+            errors.append(
+                f"external_epf_wait.{field} must be {expected.resolve()}, got {actual}"
+            )
+
+    if not output.is_file():
+        errors.append(f"platform /Out artifact was not created: {output}")
+    else:
+        try:
+            output_contents = output.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append(f"platform /Out artifact could not be read: {error}")
+        else:
+            if output_marker not in output_contents:
+                errors.append(
+                    "platform /Out artifact does not contain expected marker: "
+                    f"{output_marker}"
+                )
+            if stderr_marker in output_contents:
+                errors.append(
+                    "platform /Out artifact unexpectedly contains stderr marker: "
+                    f"{stderr_marker}"
+                )
+    if not stderr_output.is_file():
+        errors.append(f"stderr artifact was not created: {stderr_output}")
+    else:
+        try:
+            stderr_contents = stderr_output.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append(f"stderr artifact could not be read: {error}")
+        else:
+            if stderr_marker not in stderr_contents:
+                errors.append(
+                    f"stderr artifact does not contain expected marker: {stderr_marker}"
+                )
+            if output_marker in stderr_contents:
+                errors.append(
+                    "stderr artifact unexpectedly contains platform /Out marker: "
+                    f"{output_marker}"
+                )
+    return errors
+
+
+def check_v8_runner_bounded_external_epf_contract(
+    runner: Path,
+    target: str,
+) -> list[str]:
+    label = "v8-runner bounded external EPF contract"
+    if not runner.is_file():
+        return [f"{label}: binary not found: {runner}"]
+
+    with tempfile.TemporaryDirectory(prefix="unica-v8-runner-110-") as directory:
+        root = Path(directory)
+        project_root = root / "project"
+        work_path = root / "work"
+        infobase_path = root / "ib"
+        platform_root = root / "platform"
+        platform_bin = platform_root / "bin"
+        execute = root / "processor.epf"
+        output = root / "platform.log"
+        stderr_output = root / "client.stderr.log"
+        project_root.mkdir()
+        work_path.mkdir()
+        infobase_path.mkdir()
+        platform_bin.mkdir(parents=True)
+        execute.write_bytes(b"bounded external EPF contract\n")
+
+        stub_source = root / "platform-stub.rs"
+        stub_source.write_text(
+            f"""
+use std::{{env, fs, process}};
+
+fn main() {{
+    let executable = env::current_exe().expect("resolve platform stub");
+    let name = executable
+        .file_stem()
+        .expect("platform stub name")
+        .to_string_lossy();
+    if !name.eq_ignore_ascii_case("1cv8c") {{
+        return;
+    }}
+
+    let arguments: Vec<_> = env::args_os().skip(1).collect();
+    for pair in arguments.windows(2) {{
+        if pair[0].to_string_lossy().eq_ignore_ascii_case("/Out") {{
+            fs::write(&pair[1], b"{V8_RUNNER_BOUNDED_OUTPUT_MARKER}\\n")
+                .expect("write /Out log");
+        }}
+    }}
+    eprintln!("{V8_RUNNER_BOUNDED_STDERR_MARKER}");
+    process::exit(7);
+}}
+""".lstrip(),
+            encoding="utf-8",
+        )
+        suffix = ".exe" if target == "win-x64" else ""
+        client_platform = platform_bin / f"1cv8c{suffix}"
+        gui_platform = platform_bin / f"1cv8{suffix}"
+        compiled = subprocess.run(
+            ["rustc", "--edition=2021", str(stub_source), "-o", str(client_platform)],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if compiled.returncode != 0:
+            return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+        shutil.copy2(client_platform, gui_platform)
+
+        def yaml_path(path: Path) -> str:
+            return str(path).replace("'", "''")
+
+        config = root / "v8project.yaml"
+        config.write_text(
+            "\n".join(
+                [
+                    f"workPath: '{yaml_path(work_path)}'",
+                    "format: DESIGNER",
+                    "builder: DESIGNER",
+                    "infobase:",
+                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "source-set:",
+                    "  - name: main",
+                    "    type: CONFIGURATION",
+                    "    path: project",
+                    "tools:",
+                    "  platform:",
+                    f"    path: '{yaml_path(platform_root)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        command = [
+            str(runner),
+            "--config",
+            str(config),
+            "--json-message",
+            "launch",
+            "thin",
+            "--execute",
+            str(execute),
+            "--output",
+            str(output),
+            "--stderr-output",
+            str(stderr_output),
+            "--wait-for-exit",
+            "--wait-timeout-ms",
+            "30000",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return [f"{label}: runner did not exit within 60 seconds"]
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            return [
+                f"{label}: runner OS process exited with {result.returncode}; "
+                f"expected 0 for external EPF exit 7: {detail}"
+            ]
+        try:
+            envelope = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            return [f"{label}: runner returned invalid JSON: {error}"]
+        return [
+            f"{label}: {error}"
+            for error in validate_v8_runner_bounded_external_epf_result(
+                envelope,
+                execute,
+                output,
+                stderr_output,
+                V8_RUNNER_BOUNDED_OUTPUT_MARKER,
+                V8_RUNNER_BOUNDED_STDERR_MARKER,
+            )
+        ]
+
+
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
     suffix = Path(command[0]).suffix.lower()
     if suffix == ".py":
@@ -307,6 +533,12 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
     if target is not None:
         errors.extend(
             check_v8_runner_partial_load_contract(
+                tool_executable(tools_dir, "v8-runner", target),
+                target,
+            )
+        )
+        errors.extend(
+            check_v8_runner_bounded_external_epf_contract(
                 tool_executable(tools_dir, "v8-runner", target),
                 target,
             )

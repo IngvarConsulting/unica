@@ -29,6 +29,7 @@ Operation-specific guardrails:
 - `convert` does not accept ad hoc `path`, `format`, or `extension`; use configured source-sets.
 - `load` does not support `mode=update`; use `mode=load` or `mode=merge` with `settings`.
 - `test` uses `fullOutput=true` for v8-runner `--full`; it is not a build full rebuild.
-- Bounded external EPF launch requires distinct stdout/stderr paths and rejects `/C`, `/Execute`, and `/Out` aliases in `rawKeys`; ordinary launch remains asynchronous.
+- Bounded external EPF launch requires distinct paths: `output` is the platform `/Out` log, while `stderrOutput` captures stderr from the 1C client process. It rejects `/C`, `/Execute`, and `/Out` aliases in `rawKeys`; ordinary launch remains asynchronous.
 - Put the external processor command-line payload in typed `c` (mapped to `/C`), not in `rawKeys`; Vanessa Automation commonly uses `StartFeaturePlayer;VAParams=<path>`.
+- Prepare Vanessa Automation with `operation=tools-download`, `tool=vanessa`, then launch the default managed `build/tools/vanessa-automation-single.epf` or the effective `tools.va.epf_path` override.
 - `tools-download` supports `sources=true` only for `tool=yaxunit` or `tool=client-mcp`.

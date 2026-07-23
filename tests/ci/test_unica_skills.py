@@ -694,14 +694,42 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn('"sourceSet": "external-reports"', text)
         self.assertIn('"output": "build/external"', text)
 
-    def test_v8_runner_documents_c_parameter_for_bounded_external_epf(self) -> None:
-        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
-        text = skill_doc.read_text(encoding="utf-8")
+    def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
+        skill_dir = self.skill_root() / "v8-runner"
+        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        reference_text = "\n".join(
+            (skill_dir / relative_path).read_text(encoding="utf-8")
+            for relative_path in [
+                "references/command-selection.md",
+                "references/project-workflows.md",
+            ]
+        )
+        all_text = f"{skill_text}\n{reference_text}"
 
-        self.assertIn('"waitForExit": true', text)
-        self.assertIn('"c": "StartFeaturePlayer;', text)
-        self.assertIn("типизированное поле `c`", text)
-        self.assertIn("не через `rawKeys`", text)
+        self.assertIn('"waitForExit": true', skill_text)
+        self.assertIn('"c": "StartFeaturePlayer;', skill_text)
+        self.assertIn("типизированное поле `c`", skill_text)
+        self.assertIn("не через `rawKeys`", skill_text)
+        self.assertIn('"operation": "tools-download"', skill_text)
+        self.assertIn('"tool": "vanessa"', skill_text)
+        self.assertIn(
+            '"execute": "build/tools/vanessa-automation-single.epf"',
+            skill_text,
+        )
+        self.assertIn('"output": "build/va.platform-out.log"', skill_text)
+        self.assertIn(
+            '"stderrOutput": "build/va.client.stderr.log"',
+            skill_text,
+        )
+        self.assertIn("`tools.va.epf_path`", skill_text)
+        self.assertIn("платформенный `/Out`", all_text)
+        self.assertIn("stderr клиентского процесса 1С", all_text)
+        self.assertIn(
+            "`unica.runtime.job.start` не принимает bounded-поля",
+            skill_text,
+        )
+        self.assertIn("`data.external_epf_wait`", skill_text)
+        self.assertIn("`diagnostics.external_epf_wait`", skill_text)
 
     def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"

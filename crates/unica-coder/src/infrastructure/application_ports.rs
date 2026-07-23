@@ -131,7 +131,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
-                .invoke_cancellable(
+                .invoke_cancellable_with_data(
                     spec.name,
                     args,
                     context,
@@ -139,7 +139,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     spec.mutating,
                     cancellation,
                 )
-                .map(HandlerOutcome::plain),
+                .map(|outcome| match outcome.data {
+                    Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
+                    None => HandlerOutcome::plain(outcome.outcome),
+                }),
             ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke(
                 action, spec.name, args, context, dry_run,
             )

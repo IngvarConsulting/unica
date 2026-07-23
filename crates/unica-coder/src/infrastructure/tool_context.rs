@@ -248,10 +248,24 @@ fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.write_path_args)
             .unwrap_or(&[]),
-        ToolHandler::RuntimeAdapter => &["config", "path", "output", "settings", "mcpConfig"],
+        ToolHandler::RuntimeAdapter => &[
+            "config",
+            "path",
+            "output",
+            "stderrOutput",
+            "settings",
+            "mcpConfig",
+        ],
         ToolHandler::RuntimeJob {
             action: RuntimeJobAction::Start,
-        } => &["config", "path", "output", "settings", "mcpConfig"],
+        } => &[
+            "config",
+            "path",
+            "output",
+            "stderrOutput",
+            "settings",
+            "mcpConfig",
+        ],
         _ => &[],
     }
 }
@@ -301,5 +315,96 @@ fn external_init_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
         "unica.epf.init" => Some(SourceSetKind::ExternalProcessor),
         "unica.erf.init" => Some(SourceSetKind::ExternalReport),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::tools;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture(label: &str) -> (PathBuf, WorkspaceContext) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-tool-context-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        (root, context)
+    }
+
+    fn runtime_write_tools() -> Vec<ToolSpec> {
+        tools()
+            .into_iter()
+            .filter(|tool| {
+                matches!(
+                    tool.name,
+                    "unica.runtime.execute" | "unica.runtime.job.start"
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_stderr_output_rejects_lexical_workspace_escape() {
+        let (root, context) = fixture("stderr-lexical-escape");
+        let args = json!({"stderrOutput": "../outside/stderr.log"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        for tool in runtime_write_tools() {
+            let error = validate_tool_context(tool, &args, false, &context)
+                .expect_err("stderrOutput must be protected by workspace write policy");
+            assert!(error.contains("outside workspace root"), "{error}");
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_stderr_output_rejects_symlink_workspace_escape() {
+        let (root, context) = fixture("stderr-symlink-escape");
+        let outside = root.join("outside.log");
+        let link = context.workspace_root.join("stderr.log");
+        std::fs::write(&outside, "outside").unwrap();
+        match create_file_link_fixture_for_test(&outside, &link).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        }
+        let args = json!({"stderrOutput": "stderr.log"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        for tool in runtime_write_tools() {
+            let error = validate_tool_context(tool, &args, false, &context)
+                .expect_err("stderrOutput must not traverse a symlink outside the workspace");
+            assert!(
+                error.contains("through symlink outside workspace root"),
+                "{error}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

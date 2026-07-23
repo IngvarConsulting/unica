@@ -465,7 +465,13 @@ fn call_tool(
     if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
-    let diagnostics = runtime_result_diagnostics(spec, args, &context, &outcome);
+    let diagnostics = runtime_result_diagnostics(
+        spec,
+        args,
+        &context,
+        &outcome,
+        handler_outcome.data.as_ref(),
+    );
 
     Ok(OperationResult {
         ok: outcome.ok,
@@ -584,14 +590,64 @@ fn runtime_result_diagnostics(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     outcome: &AdapterOutcome,
+    data: Option<&Value>,
 ) -> Option<Value> {
-    if !matches!(spec.handler, ToolHandler::RuntimeAdapter) || outcome.ok {
+    if !matches!(spec.handler, ToolHandler::RuntimeAdapter) {
         return None;
     }
     let operation = args
         .get("operation")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    if let Some(wait) = data
+        .and_then(|data| data.get("external_epf_wait"))
+        .and_then(Value::as_object)
+    {
+        let timed_out = wait
+            .get("timed_out")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let exit_code = wait.get("exit_code").cloned().unwrap_or(Value::Null);
+        let outcome_kind = if timed_out {
+            "timeout"
+        } else if exit_code.as_i64() == Some(0) {
+            "success"
+        } else {
+            "exit"
+        };
+        let failure_kind = (outcome_kind != "success").then_some(outcome_kind);
+        let status = if timed_out {
+            Some("timeout".to_string())
+        } else {
+            exit_code
+                .as_i64()
+                .map(|code| format!("exit status: {code}"))
+        };
+        let argv = outcome.command.clone().unwrap_or_default();
+        let executable = argv.first().cloned();
+        return Some(json!({
+            "type": "process",
+            "tool": "v8-runner",
+            "operation": operation,
+            "outcome_kind": outcome_kind,
+            "failure_kind": failure_kind,
+            "executable": executable,
+            "argv": argv,
+            "cwd": context.cwd.display().to_string(),
+            "status": status,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "timeout_ms": args.get("waitTimeoutMs"),
+            "timeout_source": "v8-runner-external-epf",
+            "stdout_tail": result_tail(outcome.stdout.as_deref().unwrap_or_default()),
+            "stderr_tail": result_tail(outcome.stderr.as_deref().unwrap_or_default()),
+            "error": outcome.errors.first(),
+            "external_epf_wait": wait,
+        }));
+    }
+    if outcome.ok {
+        return None;
+    }
     let failure_kind = runtime_failure_kind(outcome);
     let status = runtime_failure_status(outcome, failure_kind);
     let argv = outcome.command.clone().unwrap_or_default();
@@ -1569,6 +1625,7 @@ mod tests {
 
         let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+            data: None,
         }))
         .call_tool("unica.runtime.execute", &args)
         .unwrap();
@@ -1590,6 +1647,7 @@ mod tests {
         let root = test_workspace_root("runtime-incremental-dump-guard");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+            data: None,
         }));
 
         for (tool, include_operation) in [
@@ -1618,6 +1676,7 @@ mod tests {
         let root = test_workspace_root("runtime-explicit-full-dump-guard");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+            data: None,
         }));
 
         for (tool, include_operation) in [
@@ -1653,6 +1712,7 @@ mod tests {
         let root = test_workspace_root("runtime-cancelled-dump-guard");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+            data: None,
         }));
         let mut args = Map::new();
         args.insert("cwd".to_string(), json!(root));
@@ -1678,6 +1738,7 @@ mod tests {
         let root = test_workspace_root("runtime-safe-dump-modes");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter invoked"),
+            data: None,
         }));
         let mut full_args = Map::new();
         full_args.insert("cwd".to_string(), json!(root));
@@ -1942,6 +2003,154 @@ mod tests {
         assert!(!serde_json::to_string(&diagnostics)
             .unwrap()
             .contains("token-secret"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_runtime_success_exposes_typed_exit_and_execute_receipt() {
+        let root = test_workspace_root("runtime-bounded-success-diagnostics");
+        let result = call_runtime_with_outcome_and_data(
+            &root,
+            AdapterOutcome {
+                ok: true,
+                summary:
+                    "unica.runtime.execute completed through internal v8-runner runtime adapter"
+                        .to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![
+                    "build/smoke.out.log".to_string(),
+                    "build/smoke.stderr.log".to_string(),
+                ],
+                stdout: Some("{\"ok\":true}".to_string()),
+                stderr: Some(String::new()),
+                command: Some(vec![
+                    "/tmp/unica/plugins/unica/bin/darwin-arm64/v8-runner".to_string(),
+                    "--json-message".to_string(),
+                    "launch".to_string(),
+                    "thin".to_string(),
+                ]),
+            },
+            Some(json!({
+                "external_epf_wait": {
+                    "pid": 42,
+                    "execute_path": "tests/Smoke.epf",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "output_path": "build/smoke.out.log",
+                    "stderr_path": "build/smoke.stderr.log"
+                }
+            })),
+        );
+
+        assert!(result.ok);
+        assert_eq!(
+            result.data.as_ref().unwrap()["external_epf_wait"]["pid"],
+            42
+        );
+        let diagnostics = result.diagnostics.unwrap();
+        assert_eq!(diagnostics["outcome_kind"], "success");
+        assert!(diagnostics["failure_kind"].is_null());
+        assert_eq!(diagnostics["exit_code"], 0);
+        assert_eq!(diagnostics["timed_out"], false);
+        assert_eq!(
+            diagnostics["external_epf_wait"]["execute_path"],
+            "tests/Smoke.epf"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_runtime_nonzero_exit_preserves_external_exit_code() {
+        let root = test_workspace_root("runtime-bounded-nonzero-diagnostics");
+        let result = call_runtime_with_outcome_and_data(
+            &root,
+            AdapterOutcome {
+                ok: false,
+                summary: "unica.runtime.execute failed through internal v8-runner runtime adapter"
+                    .to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec!["bounded external EPF exited with code 7".to_string()],
+                artifacts: vec![
+                    "build/smoke.out.log".to_string(),
+                    "build/smoke.stderr.log".to_string(),
+                ],
+                stdout: Some("{\"ok\":true}".to_string()),
+                stderr: Some(String::new()),
+                command: Some(vec![
+                    "/tmp/unica/plugins/unica/bin/darwin-arm64/v8-runner".to_string(),
+                    "--json-message".to_string(),
+                    "launch".to_string(),
+                    "thin".to_string(),
+                ]),
+            },
+            Some(json!({
+                "external_epf_wait": {
+                    "pid": 42,
+                    "execute_path": "tests/Smoke.epf",
+                    "exit_code": 7,
+                    "timed_out": false,
+                    "output_path": "build/smoke.out.log",
+                    "stderr_path": "build/smoke.stderr.log"
+                }
+            })),
+        );
+
+        assert!(!result.ok);
+        let diagnostics = result.diagnostics.unwrap();
+        assert_eq!(diagnostics["outcome_kind"], "exit");
+        assert_eq!(diagnostics["failure_kind"], "exit");
+        assert_eq!(diagnostics["exit_code"], 7);
+        assert_eq!(diagnostics["timed_out"], false);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_runtime_timeout_uses_external_process_diagnostics() {
+        let root = test_workspace_root("runtime-bounded-timeout-diagnostics");
+        let result = call_runtime_with_outcome_and_data(
+            &root,
+            AdapterOutcome {
+                ok: false,
+                summary: "unica.runtime.execute failed through internal v8-runner runtime adapter"
+                    .to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec!["bounded external EPF launch timed out".to_string()],
+                artifacts: vec![
+                    "build/smoke.out.log".to_string(),
+                    "build/smoke.stderr.log".to_string(),
+                ],
+                stdout: Some("{\"ok\":false}".to_string()),
+                stderr: Some(String::new()),
+                command: Some(vec![
+                    "/tmp/unica/plugins/unica/bin/darwin-arm64/v8-runner".to_string(),
+                    "--json-message".to_string(),
+                    "launch".to_string(),
+                    "thin".to_string(),
+                ]),
+            },
+            Some(json!({
+                "external_epf_wait": {
+                    "pid": 42,
+                    "execute_path": "tests/Smoke.epf",
+                    "exit_code": null,
+                    "timed_out": true,
+                    "output_path": "build/smoke.out.log",
+                    "stderr_path": "build/smoke.stderr.log"
+                }
+            })),
+        );
+
+        assert!(!result.ok);
+        let diagnostics = result.diagnostics.unwrap();
+        assert_eq!(diagnostics["outcome_kind"], "timeout");
+        assert_eq!(diagnostics["failure_kind"], "timeout");
+        assert!(diagnostics["exit_code"].is_null());
+        assert_eq!(diagnostics["timed_out"], true);
+        assert_eq!(diagnostics["status"], "timeout");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5872,6 +6081,7 @@ mod tests {
 
     struct FixedOutcomePorts {
         outcome: AdapterOutcome,
+        data: Option<Value>,
     }
 
     impl ports::ApplicationPorts for FixedOutcomePorts {
@@ -5915,7 +6125,10 @@ mod tests {
             _dry_run: bool,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
-            Ok(ports::HandlerOutcome::plain(self.outcome.clone()))
+            Ok(match self.data.clone() {
+                Some(data) => ports::HandlerOutcome::with_data(self.outcome.clone(), data),
+                None => ports::HandlerOutcome::plain(self.outcome.clone()),
+            })
         }
 
         fn cache_report(
@@ -5971,7 +6184,38 @@ mod tests {
                 Value::String("build/config.cf".to_string()),
             );
         }
-        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts { outcome }))
+        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap()
+    }
+
+    fn call_runtime_with_outcome_and_data(
+        workspace: &std::path::Path,
+        outcome: AdapterOutcome,
+        data: Option<Value>,
+    ) -> OperationResult {
+        let mut args = json!({
+            "cwd": workspace,
+            "dryRun": false,
+            "operation": "launch",
+            "clientMode": "thin",
+            "execute": "tests/Smoke.epf",
+            "output": "build/smoke.out.log",
+            "stderrOutput": "build/smoke.stderr.log",
+            "waitForExit": true,
+            "waitTimeoutMs": 30_000
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        UnicaApplication::with_ports(Arc::new(FixedOutcomePorts { outcome, data }))
             .call_tool("unica.runtime.execute", &args)
             .unwrap()
     }
