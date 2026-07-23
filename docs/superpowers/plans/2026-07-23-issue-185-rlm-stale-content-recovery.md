@@ -641,7 +641,12 @@ where
 {
     let mut job = job;
     let started_at = now_secs();
-    let primary = match run(&job.primary, &mut job.lock_lease) {
+    let Some(primary) =
+        run_background_command(&job.primary, &mut job.lock_lease, &mut run)
+    else {
+        return;
+    };
+    let primary = match primary {
         Ok(output) => output,
         Err(error) => {
             let _ = write_status_path(
@@ -668,7 +673,12 @@ where
         return;
     }
 
-    let post_primary = match run(&job.info, &mut job.lock_lease) {
+    let Some(post_primary) =
+        run_background_command(&job.info, &mut job.lock_lease, &mut run)
+    else {
+        return;
+    };
+    let post_primary = match post_primary {
         Ok(info) => readiness_from_info(&info),
         Err(error) => {
             let _ = write_status_path(
@@ -696,12 +706,15 @@ where
                     Some(&job.source_root),
                 ),
             );
-            let recovery = run(
+            let Some(recovery) = run_background_command(
                 job.recovery_build
                     .as_ref()
                     .expect("guarded recovery command"),
                 &mut job.lock_lease,
-            );
+                &mut run,
+            ) else {
+                return;
+            };
             let recovery = match recovery {
                 Ok(output) => output,
                 Err(error) => {
@@ -748,7 +761,12 @@ where
                     .duration_ms
                     .saturating_add(recovery.duration_ms),
             );
-            let final_readiness = match run(&job.info, &mut job.lock_lease) {
+            let Some(final_readiness) =
+                run_background_command(&job.info, &mut job.lock_lease, &mut run)
+            else {
+                return;
+            };
+            let final_readiness = match final_readiness {
                 Ok(info) => readiness_from_info(&info),
                 Err(error) => {
                     let message = format!(
@@ -1061,7 +1079,7 @@ cargo test -p unica-coder
 
 Expected: all tests pass.
 
-- [x] **Step 3: Run package-contract checks** *(product contracts passed 16/16; the bundled-tool checker is not executable from this source checkout because the CI-built bundle is absent and its approved clean-bundle download stalled at 0 bytes)*
+- [ ] **Step 3: Run package-contract checks** *(blocked: product contracts passed 16/16, but the bundled-tool checker could not run because the CI-built bundle is absent and its approved clean-bundle download stalled at 0 bytes)*
 
 Run:
 
@@ -1070,8 +1088,15 @@ python -m pytest tests/ci/test_product_contracts.py
 python scripts/ci/check-tool-contracts.py
 ```
 
-Expected: both commands pass; the public server remains `unica` and no bundled
-tool contract changes are detected.
+Current result:
+
+- `tests/ci/test_product_contracts.py`: PASS, 16/16;
+- `scripts/ci/check-tool-contracts.py`: BLOCKED until a CI-built bundle is
+  available.
+
+Expected after the missing bundle is available: the bundled-tool checker passes,
+the public server remains `unica`, and no bundled tool contract changes are
+detected.
 
 - [x] **Step 4: Inspect the final diff**
 
@@ -1080,7 +1105,7 @@ Run:
 ```powershell
 git diff --check
 git status --short
-git diff HEAD~3 -- crates/unica-coder/src/infrastructure/workspace_index.rs crates/unica-coder/src/infrastructure/workspace_services.rs crates/unica-coder/src/infrastructure/internal_adapters.rs
+git diff upstream/main...HEAD -- crates/unica-coder/src/infrastructure/workspace_index.rs crates/unica-coder/src/infrastructure/workspace_services.rs crates/unica-coder/src/infrastructure/internal_adapters.rs
 ```
 
 Expected:

@@ -615,6 +615,14 @@ impl IndexLockLease {
         self.lock.lock_id.as_str()
     }
 
+    fn registered_ownership_is_current(&self) -> bool {
+        active_index_locks()
+            .lock()
+            .ok()
+            .and_then(|locks| locks.get(&self.path).cloned())
+            .is_some_and(|lock_id| lock_id == self.lock.lock_id)
+    }
+
     fn refresh(&mut self, child_pid: u32) -> bool {
         if !self.validate_ownership() {
             return false;
@@ -639,11 +647,7 @@ impl IndexLockLease {
     }
 
     fn validate_ownership(&self) -> bool {
-        let registered = active_index_locks()
-            .lock()
-            .ok()
-            .and_then(|locks| locks.get(&self.path).cloned())
-            .is_some_and(|lock_id| lock_id == self.lock.lock_id);
+        let registered = self.registered_ownership_is_current();
         if !registered || !self.path.exists() {
             return false;
         }
@@ -1013,7 +1017,7 @@ fn run_index_command_with_heartbeat(
     let output = child
         .wait_for_output_with_poll(Duration::from_millis(50), || {
             if let Some(lease) = heartbeat.as_mut() {
-                if !(*lease).validate_ownership() {
+                if !(*lease).registered_ownership_is_current() {
                     ownership_lost = true;
                     ownership_cancellation.cancel();
                     return;
@@ -2325,6 +2329,21 @@ source-set:
             status.message.as_deref(),
             Some("rlm index replacement owner started")
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn registered_ownership_check_detects_replacement_without_disk_validation() {
+        let context = test_context("registered-ownership");
+        let job = test_background_job(&context, "update");
+        let lock = lock_path(&context);
+
+        assert!(job.lock_lease.registered_ownership_is_current());
+        register_active_lock(&lock, "replacement-owner");
+        assert!(!job.lock_lease.registered_ownership_is_current());
+
+        unregister_active_lock(&lock, "replacement-owner");
+        drop(job);
         cleanup(&context);
     }
 
