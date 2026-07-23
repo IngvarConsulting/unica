@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 pub(crate) mod lifecycle;
 pub(crate) mod update;
@@ -3059,6 +3060,891 @@ impl ValidatedRepositoryHistoryPartition {
     }
 }
 
+/// Canonical repository-target set used by a scoped NCC observation. Empty is
+/// valid for sets such as approved deletion targets; call sites that require a
+/// non-empty set use `NonEmptyCanonicalRepositoryTargetSet` instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct CanonicalRepositoryTargetSet(Vec<RepositoryTargetIdentity>);
+
+impl CanonicalRepositoryTargetSet {
+    pub(crate) fn new(
+        targets: Vec<RepositoryTargetIdentity>,
+    ) -> Result<Self, RepositoryContractError> {
+        if targets.len() > MAX_METADATA_ITEMS || targets.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(RepositoryContractError(
+                "repository target set is not canonical and unique",
+            ));
+        }
+        Ok(Self(targets))
+    }
+
+    fn as_slice(&self) -> &[RepositoryTargetIdentity] {
+        &self.0
+    }
+
+    fn contains(&self, target: &RepositoryTargetIdentity) -> bool {
+        self.0.binary_search(target).is_ok()
+    }
+
+    fn is_disjoint(&self, other: &Self) -> bool {
+        let mut left = self.0.iter().peekable();
+        let mut right = other.0.iter().peekable();
+        while let (Some(left_target), Some(right_target)) = (left.peek(), right.peek()) {
+            match left_target.cmp(right_target) {
+                Ordering::Less => {
+                    left.next();
+                }
+                Ordering::Greater => {
+                    right.next();
+                }
+                Ordering::Equal => return false,
+            }
+        }
+        true
+    }
+
+    fn digest(&self) -> Result<Sha256Digest, RepositoryContractError> {
+        canonical_contract_digest(
+            &CanonicalRepositoryTargetSetDigestRecord(self.as_slice()),
+            None,
+        )
+        .map_err(|_| RepositoryContractError("repository target-set digest failed"))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct CanonicalRepositoryTargetSetDigestRecord<'a>(&'a [RepositoryTargetIdentity]);
+
+impl contract_digest_record_sealed::Sealed for CanonicalRepositoryTargetSetDigestRecord<'_> {}
+impl ContractDigestRecord for CanonicalRepositoryTargetSetDigestRecord<'_> {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct NonEmptyCanonicalRepositoryTargetSet(CanonicalRepositoryTargetSet);
+
+impl NonEmptyCanonicalRepositoryTargetSet {
+    pub(crate) fn new(
+        targets: Vec<RepositoryTargetIdentity>,
+    ) -> Result<Self, RepositoryContractError> {
+        let targets = CanonicalRepositoryTargetSet::new(targets)?;
+        if targets.as_slice().is_empty() {
+            return Err(RepositoryContractError(
+                "repository target set must be non-empty",
+            ));
+        }
+        Ok(Self(targets))
+    }
+
+    fn as_canonical(&self) -> &CanonicalRepositoryTargetSet {
+        &self.0
+    }
+
+    fn as_slice(&self) -> &[RepositoryTargetIdentity] {
+        self.0.as_slice()
+    }
+
+    fn digest(&self) -> Result<Sha256Digest, RepositoryContractError> {
+        self.0.digest()
+    }
+}
+
+/// Directed repository reference from the target containing the reference to
+/// the target being referenced. A new edge blocks an approved deletion only
+/// when its `referenced_target` is one of the approved deletion targets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryReferenceEdge {
+    referencing_target: RepositoryTargetIdentity,
+    referenced_target: RepositoryTargetIdentity,
+}
+
+impl RepositoryReferenceEdge {
+    pub(crate) const fn new(
+        referencing_target: RepositoryTargetIdentity,
+        referenced_target: RepositoryTargetIdentity,
+    ) -> Self {
+        Self {
+            referencing_target,
+            referenced_target,
+        }
+    }
+}
+
+impl Ord for RepositoryReferenceEdge {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.referencing_target
+            .cmp(&other.referencing_target)
+            .then_with(|| self.referenced_target.cmp(&other.referenced_target))
+    }
+}
+
+impl PartialOrd for RepositoryReferenceEdge {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct CanonicalRepositoryReferenceEdgeSet(Vec<RepositoryReferenceEdge>);
+
+impl CanonicalRepositoryReferenceEdgeSet {
+    pub(crate) fn new(
+        edges: Vec<RepositoryReferenceEdge>,
+    ) -> Result<Self, RepositoryContractError> {
+        if edges.len() > MAX_METADATA_ITEMS || edges.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(RepositoryContractError(
+                "repository reference-edge set is not canonical and unique",
+            ));
+        }
+        Ok(Self(edges))
+    }
+
+    fn as_slice(&self) -> &[RepositoryReferenceEdge] {
+        &self.0
+    }
+
+    fn digest(&self) -> Result<Sha256Digest, RepositoryContractError> {
+        canonical_contract_digest(
+            &CanonicalRepositoryReferenceEdgeSetDigestRecord(self.as_slice()),
+            None,
+        )
+        .map_err(|_| RepositoryContractError("repository reference-edge-set digest failed"))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct CanonicalRepositoryReferenceEdgeSetDigestRecord<'a>(&'a [RepositoryReferenceEdge]);
+
+impl contract_digest_record_sealed::Sealed for CanonicalRepositoryReferenceEdgeSetDigestRecord<'_> {}
+impl ContractDigestRecord for CanonicalRepositoryReferenceEdgeSetDigestRecord<'_> {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedNccObservedTargetSets {
+    locked_targets: NonEmptyCanonicalRepositoryTargetSet,
+    changed_targets: NonEmptyCanonicalRepositoryTargetSet,
+    integration_content_targets: NonEmptyCanonicalRepositoryTargetSet,
+    approved_deletion_targets: CanonicalRepositoryTargetSet,
+}
+
+impl ScopedNccObservedTargetSets {
+    pub(crate) const fn new(
+        locked_targets: NonEmptyCanonicalRepositoryTargetSet,
+        changed_targets: NonEmptyCanonicalRepositoryTargetSet,
+        integration_content_targets: NonEmptyCanonicalRepositoryTargetSet,
+        approved_deletion_targets: CanonicalRepositoryTargetSet,
+    ) -> Self {
+        Self {
+            locked_targets,
+            changed_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedNccObservedReferenceSets {
+    before_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    after_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    added_reference_edges: CanonicalRepositoryReferenceEdgeSet,
+    before_support_graph: CanonicalRepositoryReferenceEdgeSet,
+    after_support_graph: CanonicalRepositoryReferenceEdgeSet,
+}
+
+impl ScopedNccObservedReferenceSets {
+    pub(crate) const fn new(
+        before_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+        after_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+        added_reference_edges: CanonicalRepositoryReferenceEdgeSet,
+        before_support_graph: CanonicalRepositoryReferenceEdgeSet,
+        after_support_graph: CanonicalRepositoryReferenceEdgeSet,
+    ) -> Self {
+        Self {
+            before_reference_closure,
+            after_reference_closure,
+            added_reference_edges,
+            before_support_graph,
+            after_support_graph,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedNccObservedStateSets {
+    before_validation_inputs: RepositoryTargetStates,
+    after_validation_inputs: RepositoryTargetStates,
+    before_root_states: RepositoryTargetStates,
+    after_root_states: RepositoryTargetStates,
+    before_locked_target_states: RepositoryTargetStates,
+    after_locked_target_states: RepositoryTargetStates,
+}
+
+impl ScopedNccObservedStateSets {
+    pub(crate) const fn new(
+        before_validation_inputs: RepositoryTargetStates,
+        after_validation_inputs: RepositoryTargetStates,
+        before_root_states: RepositoryTargetStates,
+        after_root_states: RepositoryTargetStates,
+        before_locked_target_states: RepositoryTargetStates,
+        after_locked_target_states: RepositoryTargetStates,
+    ) -> Self {
+        Self {
+            before_validation_inputs,
+            after_validation_inputs,
+            before_root_states,
+            after_root_states,
+            before_locked_target_states,
+            after_locked_target_states,
+        }
+    }
+}
+
+/// Full adapter observation for one NCC position. It contains no supplied
+/// safety booleans or precomputed safety digests; the core derives both from
+/// these canonical targets, edges, and complete before/after states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedNccRowFacts {
+    atomic_commit_safety_capability_id: CapabilityRowId,
+    target_sets: ScopedNccObservedTargetSets,
+    reference_sets: ScopedNccObservedReferenceSets,
+    states: ScopedNccObservedStateSets,
+}
+
+impl ScopedNccRowFacts {
+    pub(crate) const fn new(
+        atomic_commit_safety_capability_id: CapabilityRowId,
+        target_sets: ScopedNccObservedTargetSets,
+        reference_sets: ScopedNccObservedReferenceSets,
+        states: ScopedNccObservedStateSets,
+    ) -> Self {
+        Self {
+            atomic_commit_safety_capability_id,
+            target_sets,
+            reference_sets,
+            states,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ScopedNccHistoryScanInvocationMarker;
+
+#[derive(Debug)]
+struct ScopedNccHistoryScanInvocationCapability(Arc<ScopedNccHistoryScanInvocationMarker>);
+
+#[derive(Debug)]
+struct ScopedNccHistoryScanCompletionCapability(Arc<ScopedNccHistoryScanInvocationMarker>);
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScopedNccHistoryScanBatchWitness(Arc<ScopedNccHistoryScanInvocationMarker>);
+
+impl ScopedNccHistoryScanInvocationCapability {
+    fn mint() -> Self {
+        Self(Arc::new(ScopedNccHistoryScanInvocationMarker))
+    }
+
+    fn completion(&self) -> ScopedNccHistoryScanCompletionCapability {
+        ScopedNccHistoryScanCompletionCapability(Arc::clone(&self.0))
+    }
+
+    fn batch_witness(&self) -> ScopedNccHistoryScanBatchWitness {
+        ScopedNccHistoryScanBatchWitness(Arc::clone(&self.0))
+    }
+
+    fn owns_completion(&self, completion: &ScopedNccHistoryScanCompletionCapability) -> bool {
+        Arc::ptr_eq(&self.0, &completion.0)
+    }
+
+    fn owns_batch_witness(&self, witness: &ScopedNccHistoryScanBatchWitness) -> bool {
+        Arc::ptr_eq(&self.0, &witness.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScopedNccHistoryScanRowRequestRef<'a> {
+    position: usize,
+    cursor: &'a RepositoryHistoryCursor,
+    repository_version: &'a RepositoryVersion,
+    classification: RepositoryHistoryPartitionClassification,
+}
+
+impl ScopedNccHistoryScanRowRequestRef<'_> {
+    pub(crate) const fn position(&self) -> usize {
+        self.position
+    }
+
+    pub(crate) const fn cursor(&self) -> &RepositoryHistoryCursor {
+        self.cursor
+    }
+
+    pub(crate) const fn repository_version(&self) -> &RepositoryVersion {
+        self.repository_version
+    }
+
+    pub(crate) const fn classification(&self) -> RepositoryHistoryPartitionClassification {
+        self.classification
+    }
+}
+
+/// One invocation-bound full-history scan request. The adapter can observe
+/// rows only through this request and cannot mint an accepted row or batch
+/// from equal scalar data belonging to another scan invocation.
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryScanRequest<'a> {
+    partition: &'a ValidatedRepositoryHistoryPartition,
+    expected_capability_id: &'a CapabilityRowId,
+    invocation: &'a ScopedNccHistoryScanInvocationCapability,
+}
+
+impl<'a> ScopedNccHistoryScanRequest<'a> {
+    fn new(
+        partition: &'a ValidatedRepositoryHistoryPartition,
+        expected_capability_id: &'a CapabilityRowId,
+        invocation: &'a ScopedNccHistoryScanInvocationCapability,
+    ) -> Self {
+        Self {
+            partition,
+            expected_capability_id,
+            invocation,
+        }
+    }
+
+    pub(crate) fn start_cursor(&self) -> &RepositoryHistoryCursor {
+        self.partition.start_cursor()
+    }
+
+    pub(crate) fn through_inclusive(&self) -> &RepositoryHistoryCursor {
+        self.partition.through_inclusive()
+    }
+
+    pub(crate) fn partition_digest(&self) -> &Sha256Digest {
+        self.partition.partition_digest()
+    }
+
+    pub(crate) const fn expected_capability_id(&self) -> &CapabilityRowId {
+        self.expected_capability_id
+    }
+
+    pub(crate) fn row_count(&self) -> usize {
+        self.partition.entry_count()
+    }
+
+    pub(crate) fn row(&self, index: usize) -> Option<ScopedNccHistoryScanRowRequestRef<'_>> {
+        let order = self.partition.order_evidence.as_ref()?;
+        let cursor = order.ordered_cursors.get(index)?;
+        let entry = self.partition.wire.entries.0.get(index)?;
+        Some(ScopedNccHistoryScanRowRequestRef {
+            position: index + 1,
+            cursor,
+            repository_version: entry.repository_version(),
+            classification: entry.classification(),
+        })
+    }
+
+    pub(crate) fn batch_witness(&self) -> ScopedNccHistoryScanBatchWitness {
+        self.invocation.batch_witness()
+    }
+
+    pub(crate) fn complete(
+        self,
+        lease: Box<dyn ScopedNccHistoryScanLease>,
+    ) -> ScopedNccHistoryScanCompletion {
+        ScopedNccHistoryScanCompletion {
+            completion: self.invocation.completion(),
+            lease,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryRowObservationInput {
+    position: usize,
+    cursor: RepositoryHistoryCursor,
+    repository_version: RepositoryVersion,
+    facts: Option<ScopedNccRowFacts>,
+}
+
+impl ScopedNccHistoryRowObservationInput {
+    pub(crate) const fn new(
+        position: usize,
+        cursor: RepositoryHistoryCursor,
+        repository_version: RepositoryVersion,
+        facts: Option<ScopedNccRowFacts>,
+    ) -> Self {
+        Self {
+            position,
+            cursor,
+            repository_version,
+            facts,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryRowObservation {
+    batch_witness: ScopedNccHistoryScanBatchWitness,
+    position: usize,
+    cursor: RepositoryHistoryCursor,
+    repository_version: RepositoryVersion,
+    facts: Option<ScopedNccRowFacts>,
+}
+
+impl ScopedNccHistoryRowObservation {
+    pub(crate) fn from_capability_adapter(
+        request: &ScopedNccHistoryScanRequest<'_>,
+        input: ScopedNccHistoryRowObservationInput,
+    ) -> Result<Self, RepositoryContractError> {
+        if input.position == 0 || input.position > MAX_METADATA_ITEMS {
+            return Err(RepositoryContractError(
+                "scoped NCC row position is outside the bounded history range",
+            ));
+        }
+        Ok(Self {
+            batch_witness: request.batch_witness(),
+            position: input.position,
+            cursor: input.cursor,
+            repository_version: input.repository_version,
+            facts: input.facts,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryScanBatchInput {
+    from_exclusive: RepositoryHistoryCursor,
+    through_inclusive: RepositoryHistoryCursor,
+    partition_digest: Sha256Digest,
+    rows: Vec<ScopedNccHistoryRowObservation>,
+}
+
+impl ScopedNccHistoryScanBatchInput {
+    pub(crate) const fn new(
+        from_exclusive: RepositoryHistoryCursor,
+        through_inclusive: RepositoryHistoryCursor,
+        partition_digest: Sha256Digest,
+        rows: Vec<ScopedNccHistoryRowObservation>,
+    ) -> Self {
+        Self {
+            from_exclusive,
+            through_inclusive,
+            partition_digest,
+            rows,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryScanObservation {
+    batch_witness: ScopedNccHistoryScanBatchWitness,
+    from_exclusive: RepositoryHistoryCursor,
+    through_inclusive: RepositoryHistoryCursor,
+    partition_digest: Sha256Digest,
+    rows: Vec<ScopedNccHistoryRowObservation>,
+}
+
+impl ScopedNccHistoryScanObservation {
+    pub(crate) fn from_capability_adapter(
+        request: &ScopedNccHistoryScanRequest<'_>,
+        input: ScopedNccHistoryScanBatchInput,
+    ) -> Result<Self, RepositoryContractError> {
+        if input.rows.len() > MAX_METADATA_ITEMS {
+            return Err(RepositoryContractError(
+                "scoped NCC scan exceeds the bounded history range",
+            ));
+        }
+        Ok(Self {
+            batch_witness: request.batch_witness(),
+            from_exclusive: input.from_exclusive,
+            through_inclusive: input.through_inclusive,
+            partition_digest: input.partition_digest,
+            rows: input.rows,
+        })
+    }
+}
+
+pub(crate) trait ScopedNccHistoryScanLease {
+    fn batch_witness(&self) -> &ScopedNccHistoryScanBatchWitness;
+    fn binds(&self, request: &ScopedNccHistoryScanRequest<'_>) -> bool;
+    fn into_observation(self: Box<Self>) -> ScopedNccHistoryScanObservation;
+}
+
+pub(crate) struct ScopedNccHistoryScanCompletion {
+    completion: ScopedNccHistoryScanCompletionCapability,
+    lease: Box<dyn ScopedNccHistoryScanLease>,
+}
+
+impl fmt::Debug for ScopedNccHistoryScanCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScopedNccHistoryScanCompletion")
+            .field("completion", &self.completion)
+            .field("lease", &"<invocation-bound scoped NCC scan lease>")
+            .finish()
+    }
+}
+
+pub(crate) trait ScopedNccHistoryScanPort {
+    fn observe_scoped_ncc_history(
+        &mut self,
+        request: ScopedNccHistoryScanRequest<'_>,
+    ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError>;
+}
+
+/// Neutral, capability-backed full-history NCC scan set. This authority says
+/// only that every NCC row in one exact validated partition was observed under
+/// the requested atomic-safety capability; Slice 5b decides whether a later
+/// precommit or completion boundary may consume it.
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryScanAuthority {
+    partition: ValidatedRepositoryHistoryPartition,
+    expected_capability_id: CapabilityRowId,
+    rows: Vec<ScopedNccHistoryRowObservation>,
+    ncc_entry_count: usize,
+}
+
+impl ScopedNccHistoryScanAuthority {
+    pub(crate) fn resolve(
+        partition: ValidatedRepositoryHistoryPartition,
+        expected_capability_id: CapabilityRowId,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<Self, RepositoryContractError> {
+        let ncc_entry_count = partition
+            .classifications()
+            .filter(|classification| {
+                *classification
+                    == RepositoryHistoryPartitionClassification::NonConflictingConcurrent
+            })
+            .count();
+        let order = partition
+            .order_evidence
+            .as_ref()
+            .ok_or(RepositoryContractError(
+                "scoped NCC scan requires non-empty validated history order",
+            ))?;
+        if ncc_entry_count == 0
+            || partition.entry_count() != order.ordered_cursors.len()
+            || order.from_exclusive != *partition.start_cursor()
+            || order.through_inclusive != *partition.through_inclusive()
+        {
+            return Err(RepositoryContractError(
+                "scoped NCC scan requires exact non-empty NCC history coverage",
+            ));
+        }
+
+        let invocation = ScopedNccHistoryScanInvocationCapability::mint();
+        let request =
+            ScopedNccHistoryScanRequest::new(&partition, &expected_capability_id, &invocation);
+        let completion = port.observe_scoped_ncc_history(request)?;
+        let request =
+            ScopedNccHistoryScanRequest::new(&partition, &expected_capability_id, &invocation);
+        if !invocation.owns_completion(&completion.completion)
+            || !invocation.owns_batch_witness(completion.lease.batch_witness())
+            || !completion.lease.binds(&request)
+        {
+            return Err(RepositoryContractError(
+                "scoped NCC scan completion is foreign to the request",
+            ));
+        }
+        let observation = completion.lease.into_observation();
+        if !invocation.owns_batch_witness(&observation.batch_witness)
+            || observation.from_exclusive != *partition.start_cursor()
+            || observation.through_inclusive != *partition.through_inclusive()
+            || observation.partition_digest != *partition.partition_digest()
+            || observation.rows.len() != partition.entry_count()
+        {
+            return Err(RepositoryContractError(
+                "scoped NCC scan batch differs from the validated partition",
+            ));
+        }
+
+        for (index, ((entry, cursor), observed)) in partition
+            .wire
+            .entries
+            .0
+            .iter()
+            .zip(order.ordered_cursors.iter())
+            .zip(observation.rows.iter())
+            .enumerate()
+        {
+            if !invocation.owns_batch_witness(&observed.batch_witness)
+                || observed.position != index + 1
+                || &observed.cursor != cursor
+                || observed.cursor.through_version() != entry.repository_version()
+                || &observed.repository_version != entry.repository_version()
+            {
+                return Err(RepositoryContractError(
+                    "scoped NCC row differs from its exact ordered history position",
+                ));
+            }
+            match (entry, observed.facts.as_ref()) {
+                (RepositoryHistoryPartitionEntry::NonConflicting(entry), Some(facts)) => {
+                    validate_scoped_ncc_row(
+                        entry,
+                        facts,
+                        &expected_capability_id,
+                        &observed.repository_version,
+                    )?;
+                }
+                (RepositoryHistoryPartitionEntry::NonConflicting(_), None) => {
+                    return Err(RepositoryContractError(
+                        "scoped NCC history position lacks its detailed observation",
+                    ));
+                }
+                (
+                    RepositoryHistoryPartitionEntry::EvidenceBacked(_)
+                    | RepositoryHistoryPartitionEntry::TaskCommit(_),
+                    Some(_),
+                ) => {
+                    return Err(RepositoryContractError(
+                        "non-NCC history position carries NCC facts",
+                    ));
+                }
+                (
+                    RepositoryHistoryPartitionEntry::EvidenceBacked(_)
+                    | RepositoryHistoryPartitionEntry::TaskCommit(_),
+                    None,
+                ) => {}
+            }
+        }
+
+        Ok(Self {
+            partition,
+            expected_capability_id,
+            rows: observation.rows,
+            ncc_entry_count,
+        })
+    }
+
+    pub(crate) const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.partition
+    }
+
+    pub(crate) fn history_entry_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub(crate) const fn ncc_entry_count(&self) -> usize {
+        self.ncc_entry_count
+    }
+
+    pub(crate) const fn expected_capability_id(&self) -> &CapabilityRowId {
+        &self.expected_capability_id
+    }
+}
+
+fn validate_scoped_ncc_row(
+    entry: &NonConflictingHistoryPartitionEntry,
+    facts: &ScopedNccRowFacts,
+    expected_capability_id: &CapabilityRowId,
+    observed_repository_version: &RepositoryVersion,
+) -> Result<(), RepositoryContractError> {
+    let evidence = &entry.non_conflicting_concurrent_evidence;
+    let locked_target_set_digest = facts.target_sets.locked_targets.digest()?;
+    let changed_target_set_digest = facts.target_sets.changed_targets.digest()?;
+    let before_reference_closure_digest = facts.reference_sets.before_reference_closure.digest()?;
+    let after_reference_closure_digest = facts.reference_sets.after_reference_closure.digest()?;
+    let added_reference_edge_set_digest = facts.reference_sets.added_reference_edges.digest()?;
+    if evidence.repository_version != *observed_repository_version
+        || evidence.reason != NonConflictingConcurrentReason::HarmlessNonBlockingReferenceExpansion
+        || evidence.atomic_commit_safety_capability_id != *expected_capability_id
+        || facts.atomic_commit_safety_capability_id != *expected_capability_id
+        || evidence.atomic_commit_safety_capability_id != facts.atomic_commit_safety_capability_id
+        || evidence.locked_target_set_digest != locked_target_set_digest
+        || evidence.changed_object_set_digest != changed_target_set_digest
+        || evidence.before_reference_closure_digest != before_reference_closure_digest
+        || evidence.after_reference_closure_digest != after_reference_closure_digest
+        || evidence.added_reference_edge_set_digest != added_reference_edge_set_digest
+    {
+        return Err(RepositoryContractError(
+            "scoped NCC facts differ from the audited evidence record",
+        ));
+    }
+
+    let exact_non_empty_addition = reference_delta_is_exact_non_empty_addition(
+        &facts.reference_sets.before_reference_closure,
+        &facts.reference_sets.after_reference_closure,
+        &facts.reference_sets.added_reference_edges,
+    );
+    let changed_referrers_are_exact = changed_targets_are_exact_added_edge_referrers(
+        &facts.target_sets.changed_targets,
+        &facts.reference_sets.added_reference_edges,
+    );
+    let changed_targets_and_referrers_are_development_objects =
+        changed_targets_and_added_referrers_are_development_objects(
+            &facts.target_sets.changed_targets,
+            &facts.reference_sets.added_reference_edges,
+        );
+    let disjoint_from_integration = facts
+        .target_sets
+        .integration_content_targets
+        .as_canonical()
+        .is_disjoint(facts.target_sets.changed_targets.as_canonical());
+    let changed_disjoint_from_locked = facts
+        .target_sets
+        .changed_targets
+        .as_canonical()
+        .is_disjoint(facts.target_sets.locked_targets.as_canonical());
+    let support_graph_unchanged =
+        facts.reference_sets.before_support_graph == facts.reference_sets.after_support_graph;
+    let validation_inputs_unaffected =
+        facts.states.before_validation_inputs == facts.states.after_validation_inputs;
+    let root_unchanged = exact_root_state_set(&facts.states.before_root_states)
+        && facts.states.before_root_states == facts.states.after_root_states;
+    let locked_states_cover_exact_targets = target_states_cover_exact_targets(
+        &facts.states.before_locked_target_states,
+        &facts.target_sets.locked_targets,
+    ) && target_states_cover_exact_targets(
+        &facts.states.after_locked_target_states,
+        &facts.target_sets.locked_targets,
+    );
+    let locked_targets_unchanged = changed_disjoint_from_locked
+        && locked_states_cover_exact_targets
+        && facts.states.before_locked_target_states == facts.states.after_locked_target_states;
+    let blocks_approved_deletion = facts
+        .reference_sets
+        .added_reference_edges
+        .as_slice()
+        .iter()
+        .any(|edge| {
+            facts
+                .target_sets
+                .approved_deletion_targets
+                .contains(&edge.referenced_target)
+        });
+
+    if !(exact_non_empty_addition
+        && changed_referrers_are_exact
+        && changed_targets_and_referrers_are_development_objects
+        && evidence.closure_delta_only_adds_non_blocking_references == TrueLiteral
+        && disjoint_from_integration
+        && evidence.disjoint_from_integration_content == TrueLiteral
+        && support_graph_unchanged
+        && evidence.support_graph_unchanged == TrueLiteral
+        && validation_inputs_unaffected
+        && evidence.validation_inputs_unaffected == TrueLiteral
+        && root_unchanged
+        && evidence.root_unchanged == TrueLiteral
+        && locked_targets_unchanged
+        && evidence.locked_targets_unchanged == TrueLiteral
+        && !blocks_approved_deletion
+        && evidence.blocks_approved_deletion == FalseLiteral)
+    {
+        return Err(RepositoryContractError(
+            "scoped NCC observations do not derive every audited safety literal",
+        ));
+    }
+    Ok(())
+}
+
+fn reference_delta_is_exact_non_empty_addition(
+    before: &CanonicalRepositoryReferenceEdgeSet,
+    after: &CanonicalRepositoryReferenceEdgeSet,
+    added: &CanonicalRepositoryReferenceEdgeSet,
+) -> bool {
+    let mut before_index = 0;
+    let mut after_index = 0;
+    let mut added_index = 0;
+    while before_index < before.as_slice().len() && after_index < after.as_slice().len() {
+        match before.as_slice()[before_index].cmp(&after.as_slice()[after_index]) {
+            Ordering::Equal => {
+                before_index += 1;
+                after_index += 1;
+            }
+            Ordering::Less => return false,
+            Ordering::Greater => {
+                if added.as_slice().get(added_index) != after.as_slice().get(after_index) {
+                    return false;
+                }
+                added_index += 1;
+                after_index += 1;
+            }
+        }
+    }
+    if before_index != before.as_slice().len() {
+        return false;
+    }
+    while after_index < after.as_slice().len() {
+        if added.as_slice().get(added_index) != after.as_slice().get(after_index) {
+            return false;
+        }
+        added_index += 1;
+        after_index += 1;
+    }
+    added_index > 0 && added_index == added.as_slice().len()
+}
+
+fn changed_targets_are_exact_added_edge_referrers(
+    changed_targets: &NonEmptyCanonicalRepositoryTargetSet,
+    added_edges: &CanonicalRepositoryReferenceEdgeSet,
+) -> bool {
+    let mut changed = changed_targets.as_slice().iter();
+    let mut expected = changed.next();
+    let mut previous_referrer: Option<&RepositoryTargetIdentity> = None;
+    for edge in added_edges.as_slice() {
+        if previous_referrer == Some(&edge.referencing_target) {
+            continue;
+        }
+        if expected != Some(&edge.referencing_target) {
+            return false;
+        }
+        previous_referrer = Some(&edge.referencing_target);
+        expected = changed.next();
+    }
+    previous_referrer.is_some() && expected.is_none()
+}
+
+fn changed_targets_and_added_referrers_are_development_objects(
+    changed_targets: &NonEmptyCanonicalRepositoryTargetSet,
+    added_edges: &CanonicalRepositoryReferenceEdgeSet,
+) -> bool {
+    changed_targets
+        .as_slice()
+        .iter()
+        .all(|target| matches!(target, RepositoryTargetIdentity::DevelopmentObject(_)))
+        && added_edges.as_slice().iter().all(|edge| {
+            matches!(
+                &edge.referencing_target,
+                RepositoryTargetIdentity::DevelopmentObject(_)
+            )
+        })
+}
+
+fn locked_repository_target_state_identity(
+    state: &RepositoryTargetState,
+) -> Option<RepositoryTargetIdentity> {
+    match state {
+        RepositoryTargetState::RootPresent(_) => {
+            Some(RepositoryTargetIdentity::configuration_root())
+        }
+        RepositoryTargetState::ObjectPresent(value) => Some(
+            RepositoryTargetIdentity::development_object(value.object_id.clone()),
+        ),
+        RepositoryTargetState::ObjectAbsent(_) => None,
+    }
+}
+
+fn target_states_cover_exact_targets(
+    states: &RepositoryTargetStates,
+    targets: &NonEmptyCanonicalRepositoryTargetSet,
+) -> bool {
+    states.as_slice().len() == targets.as_slice().len()
+        && states
+            .as_slice()
+            .iter()
+            .zip(targets.as_slice())
+            .all(|(state, target)| {
+                locked_repository_target_state_identity(state).as_ref() == Some(target)
+            })
+}
+
+fn exact_root_state_set(states: &RepositoryTargetStates) -> bool {
+    matches!(states.as_slice(), [RepositoryTargetState::RootPresent(_)])
+}
+
 #[cfg(test)]
 pub(crate) fn repository_history_partition_fixture_test_only(
     from_exclusive: RepositoryHistoryCursor,
@@ -5027,6 +5913,13 @@ mod tests {
 
     impl<T: ?Sized> AmbiguousIfClone<()> for T {}
     impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfSerialize<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfSerialize<()> for T {}
+    impl<T: serde::Serialize> AmbiguousIfSerialize<u8> for T {}
 
     #[test]
     fn capability_derived_authority_types_have_no_deserialize_backdoor() {
@@ -8984,6 +9877,750 @@ mod tests {
         assert!(resolver
             .validate(serde_json::from_value(ref_substitution).unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_canonical_sets_reject_duplicate_reversed_and_empty_inputs() {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let object_a = scoped_ncc_target(OBJECT_A);
+        let object_b = scoped_ncc_target(OBJECT_B);
+
+        assert!(
+            super::CanonicalRepositoryTargetSet::new(vec![root.clone(), root.clone()]).is_err()
+        );
+        assert!(
+            super::CanonicalRepositoryTargetSet::new(vec![object_a.clone(), root.clone()]).is_err()
+        );
+        assert!(super::NonEmptyCanonicalRepositoryTargetSet::new(Vec::new()).is_err());
+
+        let edge_a = super::RepositoryReferenceEdge::new(root.clone(), object_a);
+        let edge_b = super::RepositoryReferenceEdge::new(root, object_b);
+        assert!(super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+            edge_a.clone(),
+            edge_a.clone(),
+        ])
+        .is_err());
+        assert!(super::CanonicalRepositoryReferenceEdgeSet::new(vec![edge_b, edge_a]).is_err());
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScopedNccScanMutation {
+        None,
+        MissingRow,
+        ExtraRow,
+        ReorderedRows,
+        DuplicatePosition,
+        FactsAtRoutinePosition,
+        ForeignCursor,
+        ForeignVersion,
+        ForeignPartition,
+        ForeignStartEndpoint,
+        ForeignEndpoint,
+        ForeignCapability,
+        ForeignCompletionCapability,
+        ForeignLeaseWitness,
+        LeaseBindsFalse,
+        ForeignBatchWitness,
+        CrossScanRowSplice,
+        RemovedReferenceEdge,
+        NoGenuineExpansion,
+        AddedEdgeSetMismatch,
+        IntegrationOverlap,
+        ChangedLockedOverlap,
+        ChangedReferrerMismatch,
+        RootChangedReferrer,
+        SupportGraphChanged,
+        ValidationInputsChanged,
+        RootStateChanged,
+        LockedStateChanged,
+        AbsentLockedState,
+        BlocksApprovedDeletion,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScopedNccEvidenceMutation {
+        None,
+        RepositoryVersion,
+        Capability,
+        LockedTargetDigest,
+        ChangedTargetDigest,
+        BeforeClosureDigest,
+        AfterClosureDigest,
+        AddedEdgeDigest,
+    }
+
+    fn scoped_ncc_target(object_id: &str) -> RepositoryTargetIdentity {
+        RepositoryTargetIdentity::development_object(MetadataObjectId::parse(object_id).unwrap())
+    }
+
+    fn scoped_ncc_states(value: Value) -> RepositoryTargetStates {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn scoped_ncc_safe_facts() -> super::ScopedNccRowFacts {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let locked = scoped_ncc_target(OBJECT_A);
+        let changed = scoped_ncc_target(OBJECT_B);
+        let before_edge = super::RepositoryReferenceEdge::new(root.clone(), locked.clone());
+        let added_edge = super::RepositoryReferenceEdge::new(changed.clone(), locked.clone());
+        let before_reference_closure =
+            super::CanonicalRepositoryReferenceEdgeSet::new(vec![before_edge.clone()]).unwrap();
+        let added_reference_edges =
+            super::CanonicalRepositoryReferenceEdgeSet::new(vec![added_edge]).unwrap();
+        let after_reference_closure = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+            before_edge,
+            super::RepositoryReferenceEdge::new(changed.clone(), locked.clone()),
+        ])
+        .unwrap();
+        let empty_edges = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let target_sets = super::ScopedNccObservedTargetSets::new(
+            super::NonEmptyCanonicalRepositoryTargetSet::new(vec![locked]).unwrap(),
+            super::NonEmptyCanonicalRepositoryTargetSet::new(vec![changed]).unwrap(),
+            super::NonEmptyCanonicalRepositoryTargetSet::new(vec![root]).unwrap(),
+            super::CanonicalRepositoryTargetSet::new(Vec::new()).unwrap(),
+        );
+        let reference_sets = super::ScopedNccObservedReferenceSets::new(
+            before_reference_closure,
+            after_reference_closure,
+            added_reference_edges,
+            empty_edges.clone(),
+            empty_edges,
+        );
+        let root_states = scoped_ncc_states(json!([{
+            "targetKind":"configurationRoot",
+            "state":"present",
+            "repositoryVersion":"root-v1",
+            "targetFingerprint":SHA_A
+        }]));
+        let locked_states = scoped_ncc_states(json!([{
+            "targetKind":"developmentObject",
+            "state":"present",
+            "objectId":OBJECT_A,
+            "repositoryVersion":"locked-v1",
+            "targetFingerprint":SHA_A
+        }]));
+        let validation_inputs = scoped_ncc_states(json!([
+            {
+                "targetKind":"configurationRoot",
+                "state":"present",
+                "repositoryVersion":"root-v1",
+                "targetFingerprint":SHA_A
+            },
+            {
+                "targetKind":"developmentObject",
+                "state":"present",
+                "objectId":OBJECT_A,
+                "repositoryVersion":"locked-v1",
+                "targetFingerprint":SHA_A
+            }
+        ]));
+        let states = super::ScopedNccObservedStateSets::new(
+            validation_inputs.clone(),
+            validation_inputs,
+            root_states.clone(),
+            root_states,
+            locked_states.clone(),
+            locked_states,
+        );
+        super::ScopedNccRowFacts::new(
+            CapabilityRowId::parse(UUID_A).unwrap(),
+            target_sets,
+            reference_sets,
+            states,
+        )
+    }
+
+    fn scoped_ncc_evidence(
+        facts: &super::ScopedNccRowFacts,
+        mutation: ScopedNccEvidenceMutation,
+    ) -> NonConflictingConcurrentEvidence {
+        let repository_version = match mutation {
+            ScopedNccEvidenceMutation::RepositoryVersion => "opaque-v-foreign",
+            _ => "opaque-v2",
+        };
+        let capability = match mutation {
+            ScopedNccEvidenceMutation::Capability => UUID_B,
+            _ => UUID_A,
+        };
+        let locked = facts.target_sets.locked_targets.digest().unwrap();
+        let changed = facts.target_sets.changed_targets.digest().unwrap();
+        let before = facts
+            .reference_sets
+            .before_reference_closure
+            .digest()
+            .unwrap();
+        let after = facts
+            .reference_sets
+            .after_reference_closure
+            .digest()
+            .unwrap();
+        let added = facts.reference_sets.added_reference_edges.digest().unwrap();
+        NonConflictingConcurrentEvidence::new(
+            repository_version,
+            capability,
+            if matches!(mutation, ScopedNccEvidenceMutation::LockedTargetDigest) {
+                SHA_B
+            } else {
+                locked.as_str()
+            },
+            if matches!(mutation, ScopedNccEvidenceMutation::ChangedTargetDigest) {
+                SHA_A
+            } else {
+                changed.as_str()
+            },
+            if matches!(mutation, ScopedNccEvidenceMutation::BeforeClosureDigest) {
+                SHA_B
+            } else {
+                before.as_str()
+            },
+            if matches!(mutation, ScopedNccEvidenceMutation::AfterClosureDigest) {
+                SHA_A
+            } else {
+                after.as_str()
+            },
+            if matches!(mutation, ScopedNccEvidenceMutation::AddedEdgeDigest) {
+                SHA_B
+            } else {
+                added.as_str()
+            },
+        )
+        .unwrap()
+    }
+
+    fn scoped_ncc_partition(
+        facts: &super::ScopedNccRowFacts,
+        mutation: ScopedNccEvidenceMutation,
+    ) -> super::ValidatedRepositoryHistoryPartition {
+        let from = RepositoryHistoryCursor::new(
+            RepositoryVersion::parse("opaque-v0").unwrap(),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        );
+        let mut partition = super::repository_history_partition_fixture_test_only(
+            from,
+            vec![
+                (
+                    RepositoryVersion::parse("opaque-v1").unwrap(),
+                    super::RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                ),
+                (
+                    RepositoryVersion::parse("opaque-v2").unwrap(),
+                    super::RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                ),
+            ],
+            "history-order-v1",
+            UUID_A,
+        )
+        .unwrap();
+        let evidence = scoped_ncc_evidence(facts, mutation);
+        let entry = match &mut partition.wire.entries.0[1] {
+            super::RepositoryHistoryPartitionEntry::NonConflicting(entry) => entry,
+            _ => panic!("fixture row two must be NCC"),
+        };
+        entry.repository_version = RepositoryVersion::parse("opaque-v2").unwrap();
+        entry.source_evidence_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::NonConflictingConcurrent,
+            evidence.evidence_digest().as_str(),
+        )
+        .unwrap();
+        entry.non_conflicting_concurrent_evidence = evidence;
+        entry.semantic_delta_digest = super::canonical_contract_digest(
+            &super::RepositorySemanticDeltaDigestRecord {
+                repository_version: entry.repository_version.clone(),
+                partition_classification:
+                    super::RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                root_delta_digest: RequiredNullable::null(),
+                content_delta_digest: RequiredNullable::null(),
+                classification_digest: RequiredNullable::null(),
+                external_support_disjointness_digest: RequiredNullable::null(),
+                corrective_instruction_digest: RequiredNullable::null(),
+                non_conflicting_concurrent_evidence_digest: RequiredNullable::value(
+                    entry
+                        .non_conflicting_concurrent_evidence
+                        .evidence_digest()
+                        .clone(),
+                ),
+            },
+            None,
+        )
+        .unwrap();
+        partition.wire.partition_digest = super::canonical_contract_digest(
+            &super::RepositoryHistoryPartitionDigestRecord {
+                from_exclusive: partition.wire.from_exclusive.clone(),
+                through_inclusive: partition.wire.through_inclusive.clone(),
+                entries: partition.wire.entries.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        partition
+    }
+
+    fn apply_scoped_ncc_safety_mutation(
+        facts: &mut super::ScopedNccRowFacts,
+        mutation: ScopedNccScanMutation,
+    ) {
+        match mutation {
+            ScopedNccScanMutation::RemovedReferenceEdge => {
+                facts.reference_sets.after_reference_closure =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            }
+            ScopedNccScanMutation::NoGenuineExpansion => {
+                facts.reference_sets.after_reference_closure =
+                    facts.reference_sets.before_reference_closure.clone();
+                facts.reference_sets.added_reference_edges =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            }
+            ScopedNccScanMutation::AddedEdgeSetMismatch => {
+                facts.reference_sets.added_reference_edges =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            }
+            ScopedNccScanMutation::IntegrationOverlap => {
+                facts.target_sets.integration_content_targets =
+                    facts.target_sets.changed_targets.clone();
+            }
+            ScopedNccScanMutation::ChangedLockedOverlap => {
+                facts.target_sets.changed_targets = facts.target_sets.locked_targets.clone();
+                let root = RepositoryTargetIdentity::configuration_root();
+                let locked = scoped_ncc_target(OBJECT_A);
+                let referenced = scoped_ncc_target(OBJECT_B);
+                facts.reference_sets.added_reference_edges =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(locked.clone(), referenced.clone()),
+                    ])
+                    .unwrap();
+                facts.reference_sets.after_reference_closure =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(root, locked.clone()),
+                        super::RepositoryReferenceEdge::new(locked, referenced),
+                    ])
+                    .unwrap();
+            }
+            ScopedNccScanMutation::ChangedReferrerMismatch => {
+                let root = RepositoryTargetIdentity::configuration_root();
+                let locked = scoped_ncc_target(OBJECT_A);
+                let changed = scoped_ncc_target(OBJECT_B);
+                facts.reference_sets.added_reference_edges =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(root.clone(), changed),
+                    ])
+                    .unwrap();
+                facts.reference_sets.after_reference_closure =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(root.clone(), locked),
+                        super::RepositoryReferenceEdge::new(root, scoped_ncc_target(OBJECT_B)),
+                    ])
+                    .unwrap();
+            }
+            ScopedNccScanMutation::RootChangedReferrer => {
+                let root = RepositoryTargetIdentity::configuration_root();
+                let locked = scoped_ncc_target(OBJECT_A);
+                let referenced = scoped_ncc_target(OBJECT_B);
+                facts.target_sets.changed_targets =
+                    super::NonEmptyCanonicalRepositoryTargetSet::new(vec![root.clone()]).unwrap();
+                facts.target_sets.integration_content_targets =
+                    super::NonEmptyCanonicalRepositoryTargetSet::new(vec![referenced.clone()])
+                        .unwrap();
+                facts.reference_sets.added_reference_edges =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(root.clone(), referenced.clone()),
+                    ])
+                    .unwrap();
+                facts.reference_sets.after_reference_closure =
+                    super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                        super::RepositoryReferenceEdge::new(root.clone(), locked),
+                        super::RepositoryReferenceEdge::new(root, referenced),
+                    ])
+                    .unwrap();
+            }
+            ScopedNccScanMutation::SupportGraphChanged => {
+                facts.reference_sets.after_support_graph =
+                    facts.reference_sets.added_reference_edges.clone();
+            }
+            ScopedNccScanMutation::ValidationInputsChanged => {
+                facts.states.after_validation_inputs = scoped_ncc_states(json!([]));
+            }
+            ScopedNccScanMutation::RootStateChanged => {
+                facts.states.after_root_states = scoped_ncc_states(json!([{
+                    "targetKind":"configurationRoot",
+                    "state":"present",
+                    "repositoryVersion":"root-v2",
+                    "targetFingerprint":SHA_B
+                }]));
+            }
+            ScopedNccScanMutation::LockedStateChanged => {
+                facts.states.after_locked_target_states = scoped_ncc_states(json!([{
+                    "targetKind":"developmentObject",
+                    "state":"present",
+                    "objectId":OBJECT_A,
+                    "repositoryVersion":"locked-v2",
+                    "targetFingerprint":SHA_B
+                }]));
+            }
+            ScopedNccScanMutation::AbsentLockedState => {
+                let absent = scoped_ncc_states(json!([{
+                    "targetKind":"developmentObject",
+                    "state":"absent",
+                    "objectId":OBJECT_A,
+                    "absenceEstablishedAtVersion":"locked-v1",
+                    "expectedAbsent":true
+                }]));
+                facts.states.before_locked_target_states = absent.clone();
+                facts.states.after_locked_target_states = absent;
+            }
+            ScopedNccScanMutation::BlocksApprovedDeletion => {
+                facts.target_sets.approved_deletion_targets =
+                    super::CanonicalRepositoryTargetSet::new(vec![scoped_ncc_target(OBJECT_A)])
+                        .unwrap();
+            }
+            _ => {}
+        }
+    }
+
+    struct FixtureScopedNccLease {
+        witness: super::ScopedNccHistoryScanBatchWitness,
+        observation: super::ScopedNccHistoryScanObservation,
+        binds: bool,
+    }
+
+    impl super::ScopedNccHistoryScanLease for FixtureScopedNccLease {
+        fn batch_witness(&self) -> &super::ScopedNccHistoryScanBatchWitness {
+            &self.witness
+        }
+
+        fn binds(&self, _request: &super::ScopedNccHistoryScanRequest<'_>) -> bool {
+            self.binds
+        }
+
+        fn into_observation(self: Box<Self>) -> super::ScopedNccHistoryScanObservation {
+            self.observation
+        }
+    }
+
+    struct FixtureScopedNccPort {
+        facts: super::ScopedNccRowFacts,
+        mutation: ScopedNccScanMutation,
+        calls: usize,
+    }
+
+    impl super::ScopedNccHistoryScanPort for FixtureScopedNccPort {
+        fn observe_scoped_ncc_history(
+            &mut self,
+            request: super::ScopedNccHistoryScanRequest<'_>,
+        ) -> Result<super::ScopedNccHistoryScanCompletion, super::RepositoryContractError> {
+            self.calls += 1;
+            let mut rows = Vec::with_capacity(request.row_count());
+            for index in 0..request.row_count() {
+                let row = request.row(index).unwrap();
+                let mut facts = (row.classification()
+                    == super::RepositoryHistoryPartitionClassification::NonConflictingConcurrent)
+                    .then(|| self.facts.clone());
+                if index == 0
+                    && matches!(self.mutation, ScopedNccScanMutation::FactsAtRoutinePosition)
+                {
+                    facts = Some(self.facts.clone());
+                }
+                if let Some(facts) = facts.as_mut() {
+                    if matches!(self.mutation, ScopedNccScanMutation::ForeignCapability) {
+                        facts.atomic_commit_safety_capability_id =
+                            CapabilityRowId::parse(UUID_B).unwrap();
+                    }
+                }
+                rows.push(
+                    super::ScopedNccHistoryRowObservation::from_capability_adapter(
+                        &request,
+                        super::ScopedNccHistoryRowObservationInput::new(
+                            row.position(),
+                            row.cursor().clone(),
+                            row.repository_version().clone(),
+                            facts,
+                        ),
+                    )?,
+                );
+            }
+
+            match self.mutation {
+                ScopedNccScanMutation::MissingRow => {
+                    rows.pop();
+                }
+                ScopedNccScanMutation::ExtraRow => {
+                    let row = request.row(request.row_count() - 1).unwrap();
+                    rows.push(
+                        super::ScopedNccHistoryRowObservation::from_capability_adapter(
+                            &request,
+                            super::ScopedNccHistoryRowObservationInput::new(
+                                request.row_count() + 1,
+                                row.cursor().clone(),
+                                row.repository_version().clone(),
+                                None,
+                            ),
+                        )?,
+                    );
+                }
+                ScopedNccScanMutation::ReorderedRows => rows.swap(0, 1),
+                ScopedNccScanMutation::DuplicatePosition => rows[1].position = rows[0].position,
+                ScopedNccScanMutation::ForeignCursor => {
+                    rows[1].cursor = serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap();
+                }
+                ScopedNccScanMutation::ForeignVersion => {
+                    rows[1].repository_version =
+                        RepositoryVersion::parse("opaque-v-foreign").unwrap();
+                }
+                ScopedNccScanMutation::CrossScanRowSplice => {
+                    let foreign_invocation =
+                        super::ScopedNccHistoryScanInvocationCapability::mint();
+                    let foreign_request = super::ScopedNccHistoryScanRequest::new(
+                        request.partition,
+                        request.expected_capability_id,
+                        &foreign_invocation,
+                    );
+                    let row = foreign_request.row(1).unwrap();
+                    rows[1] = super::ScopedNccHistoryRowObservation::from_capability_adapter(
+                        &foreign_request,
+                        super::ScopedNccHistoryRowObservationInput::new(
+                            row.position(),
+                            row.cursor().clone(),
+                            row.repository_version().clone(),
+                            Some(self.facts.clone()),
+                        ),
+                    )?;
+                }
+                _ => {}
+            }
+
+            let witness = request.batch_witness();
+            let mut batch = super::ScopedNccHistoryScanBatchInput::new(
+                request.start_cursor().clone(),
+                request.through_inclusive().clone(),
+                request.partition_digest().clone(),
+                rows,
+            );
+            if matches!(self.mutation, ScopedNccScanMutation::ForeignPartition) {
+                batch.partition_digest = Sha256Digest::parse(SHA_A).unwrap();
+            }
+            if matches!(self.mutation, ScopedNccScanMutation::ForeignStartEndpoint) {
+                batch.from_exclusive =
+                    serde_json::from_value(cursor("opaque-v-foreign", SHA_A)).unwrap();
+            }
+            if matches!(self.mutation, ScopedNccScanMutation::ForeignEndpoint) {
+                batch.through_inclusive =
+                    serde_json::from_value(cursor("opaque-v-foreign", SHA_A)).unwrap();
+            }
+            let observation =
+                super::ScopedNccHistoryScanObservation::from_capability_adapter(&request, batch)?;
+            let foreign_invocation = super::ScopedNccHistoryScanInvocationCapability::mint();
+            let lease_witness =
+                if matches!(self.mutation, ScopedNccScanMutation::ForeignLeaseWitness) {
+                    foreign_invocation.batch_witness()
+                } else {
+                    witness
+                };
+            let mut observation = observation;
+            if matches!(self.mutation, ScopedNccScanMutation::ForeignBatchWitness) {
+                observation.batch_witness = foreign_invocation.batch_witness();
+            }
+            let mut completion = request.complete(Box::new(FixtureScopedNccLease {
+                witness: lease_witness,
+                observation,
+                binds: !matches!(self.mutation, ScopedNccScanMutation::LeaseBindsFalse),
+            }));
+            if matches!(
+                self.mutation,
+                ScopedNccScanMutation::ForeignCompletionCapability
+            ) {
+                completion.completion = foreign_invocation.completion();
+            }
+            Ok(completion)
+        }
+    }
+
+    fn run_scoped_ncc_scan(
+        scan_mutation: ScopedNccScanMutation,
+        evidence_mutation: ScopedNccEvidenceMutation,
+    ) -> Result<super::ScopedNccHistoryScanAuthority, super::RepositoryContractError> {
+        let mut facts = scoped_ncc_safe_facts();
+        apply_scoped_ncc_safety_mutation(&mut facts, scan_mutation);
+        let partition = scoped_ncc_partition(&facts, evidence_mutation);
+        let mut port = FixtureScopedNccPort {
+            facts,
+            mutation: scan_mutation,
+            calls: 0,
+        };
+        super::ScopedNccHistoryScanAuthority::resolve(
+            partition,
+            CapabilityRowId::parse(UUID_A).unwrap(),
+            &mut port,
+        )
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_authority_is_non_clone_and_non_wire() {
+        let _ = <super::ScopedNccHistoryScanAuthority as AmbiguousIfClone<_>>::marker;
+        let _ = <super::ScopedNccHistoryScanAuthority as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <super::ScopedNccHistoryScanAuthority as AmbiguousIfSerialize<_>>::marker;
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_happy_scan_covers_every_ordered_history_position() {
+        let authority =
+            run_scoped_ncc_scan(ScopedNccScanMutation::None, ScopedNccEvidenceMutation::None)
+                .unwrap();
+        assert_eq!(authority.history_entry_count(), 2);
+        assert_eq!(authority.ncc_entry_count(), 1);
+        assert_eq!(authority.partition().entry_count(), 2);
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_rejects_inexact_rows_and_foreign_scope() {
+        for mutation in [
+            ScopedNccScanMutation::MissingRow,
+            ScopedNccScanMutation::ExtraRow,
+            ScopedNccScanMutation::ReorderedRows,
+            ScopedNccScanMutation::DuplicatePosition,
+            ScopedNccScanMutation::FactsAtRoutinePosition,
+            ScopedNccScanMutation::ForeignCursor,
+            ScopedNccScanMutation::ForeignVersion,
+            ScopedNccScanMutation::ForeignPartition,
+            ScopedNccScanMutation::ForeignStartEndpoint,
+            ScopedNccScanMutation::ForeignEndpoint,
+            ScopedNccScanMutation::ForeignCapability,
+        ] {
+            assert!(run_scoped_ncc_scan(mutation, ScopedNccEvidenceMutation::None).is_err());
+        }
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_rejects_equal_scalar_cross_scan_row_splice() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::CrossScanRowSplice,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_pointer_rejects_foreign_completion_capability() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::ForeignCompletionCapability,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_pointer_rejects_foreign_lease_witness() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::ForeignLeaseWitness,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_pointer_rejects_lease_binding_failure() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::LeaseBindsFalse,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_pointer_rejects_foreign_batch_witness() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::ForeignBatchWitness,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_derives_every_safety_literal_from_full_observations() {
+        for mutation in [
+            ScopedNccScanMutation::RemovedReferenceEdge,
+            ScopedNccScanMutation::NoGenuineExpansion,
+            ScopedNccScanMutation::AddedEdgeSetMismatch,
+            ScopedNccScanMutation::IntegrationOverlap,
+            ScopedNccScanMutation::SupportGraphChanged,
+            ScopedNccScanMutation::ValidationInputsChanged,
+            ScopedNccScanMutation::RootStateChanged,
+            ScopedNccScanMutation::LockedStateChanged,
+            ScopedNccScanMutation::AbsentLockedState,
+            ScopedNccScanMutation::BlocksApprovedDeletion,
+        ] {
+            assert!(run_scoped_ncc_scan(mutation, ScopedNccEvidenceMutation::None).is_err());
+        }
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_changed_and_locked_overlap_is_rejected_independently() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::ChangedLockedOverlap,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_changed_set_is_exact_added_edge_referrer_set() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::ChangedReferrerMismatch,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_rejects_configuration_root_as_changed_referrer() {
+        assert!(run_scoped_ncc_scan(
+            ScopedNccScanMutation::RootChangedReferrer,
+            ScopedNccEvidenceMutation::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_compares_every_derived_field_with_audited_evidence() {
+        for mutation in [
+            ScopedNccEvidenceMutation::RepositoryVersion,
+            ScopedNccEvidenceMutation::Capability,
+            ScopedNccEvidenceMutation::LockedTargetDigest,
+            ScopedNccEvidenceMutation::ChangedTargetDigest,
+            ScopedNccEvidenceMutation::BeforeClosureDigest,
+            ScopedNccEvidenceMutation::AfterClosureDigest,
+            ScopedNccEvidenceMutation::AddedEdgeDigest,
+        ] {
+            assert!(run_scoped_ncc_scan(ScopedNccScanMutation::None, mutation).is_err());
+        }
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_set_requires_at_least_one_ncc_position() {
+        let from = RepositoryHistoryCursor::new(
+            RepositoryVersion::parse("opaque-v0").unwrap(),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        );
+        let partition = super::repository_history_partition_fixture_test_only(
+            from,
+            vec![(
+                RepositoryVersion::parse("opaque-v1").unwrap(),
+                super::RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            )],
+            "history-order-v1",
+            UUID_A,
+        )
+        .unwrap();
+        let mut port = FixtureScopedNccPort {
+            facts: scoped_ncc_safe_facts(),
+            mutation: ScopedNccScanMutation::None,
+            calls: 0,
+        };
+        assert!(super::ScopedNccHistoryScanAuthority::resolve(
+            partition,
+            CapabilityRowId::parse(UUID_A).unwrap(),
+            &mut port,
+        )
+        .is_err());
+        assert_eq!(port.calls, 0);
     }
 
     #[test]
