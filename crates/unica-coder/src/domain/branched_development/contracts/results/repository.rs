@@ -28,7 +28,9 @@ use crate::domain::branched_development::contracts::repository::{
     ScopedNccPlannerCoreResolutionFailure, SelectiveRepositoryUpdatePlan,
     SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
     SupportRootSelectiveRepositoryUpdatePlanAuthority, TaskCommitHistoryAuditBlockedAuthority,
-    TaskCommitHistoryCandidateAuthority, UnvalidatedRepositoryHistoryPartition,
+    TaskCommitHistoryCandidateAuthority, TaskCommitHistoryCandidateBindingAuthority,
+    TaskCommitHistoryScopedCandidateAuthority,
+    TaskCommitHistoryScopedCandidateSplitBlockedAuthority, UnvalidatedRepositoryHistoryPartition,
     ValidatedRepositoryHistoryPartition, ValidatedRoutineUpdateProjection,
     ValidatedSupportPrerequisiteHistoryProjection, ValidatedSupportRecoveryHistoryEntryRef,
     ValidatedTaskCommitHistoryPartition,
@@ -2860,6 +2862,107 @@ fn derive_scoped_ncc_planner_scope(
         integration_content_targets,
         approved_deletion_targets,
         plan.reference_closure_digest().clone(),
+    ))
+}
+
+#[derive(Debug)]
+enum FinalTaskCommitScopedNccScopeDerivationFailure {
+    ImmediateBinding(RepositoryResultContractError),
+    InitialReferenceClosure(RepositoryResultContractError),
+    Planner(ScopedNccPlannerScopeDerivationFailure),
+}
+
+/// Final taskCommit scope derivation deliberately does not reuse the neutral
+/// phase helper's lock-plan closure digest. Its initial closure comes only
+/// from the retained immediate full-set authority after that authority has
+/// accepted the exact invocation-bound binding owned by the residual prelude.
+fn derive_final_task_commit_scoped_ncc_planner_scope(
+    request: &CommitAtomicCommitRequest<'_>,
+    prelude: &CommitPostCommandHistoryPreludeAuthority,
+) -> Result<ScopedNccPlannerScope, FinalTaskCommitScopedNccScopeDerivationFailure> {
+    let immediate_authority = request
+        .source
+        .immediate_history_safety
+        .terminal_reference_closure();
+    if !immediate_authority.owns_binding(request, &prelude.immediate_reference_closure_binding) {
+        return Err(
+            FinalTaskCommitScopedNccScopeDerivationFailure::ImmediateBinding(
+                RepositoryResultContractError(
+                    "final taskCommit scope received a foreign immediate full-set binding",
+                ),
+            ),
+        );
+    }
+    let initial_reference_closure_digest = immediate_authority
+        .terminal_reference_closure
+        .digest()
+        .map_err(|_| {
+            FinalTaskCommitScopedNccScopeDerivationFailure::InitialReferenceClosure(
+                RepositoryResultContractError(
+                    "final taskCommit initial reference-closure digest failed",
+                ),
+            )
+        })?;
+    if initial_reference_closure_digest != immediate_authority.terminal_reference_closure_digest {
+        return Err(
+            FinalTaskCommitScopedNccScopeDerivationFailure::InitialReferenceClosure(
+                RepositoryResultContractError(
+                    "final taskCommit initial full set differs from its retained digest",
+                ),
+            ),
+        );
+    }
+
+    let lineage = request.source.lineage_binding().lineage();
+    let plan = lineage.lock_plan();
+    let locked_targets = planned_lock_target_identities(plan);
+    validate_exact_ordered_lock_receipts(
+        &locked_targets,
+        lineage.lock_set_id(),
+        lineage.root_lock_receipt(),
+        lineage.journaled_lock_receipts(),
+    )
+    .map_err(|failure| {
+        FinalTaskCommitScopedNccScopeDerivationFailure::Planner(
+            ScopedNccPlannerScopeDerivationFailure::LockReceipts(failure),
+        )
+    })?;
+    let locked_targets =
+        NonEmptyCanonicalRepositoryTargetSet::new(locked_targets).map_err(|error| {
+            FinalTaskCommitScopedNccScopeDerivationFailure::Planner(
+                ScopedNccPlannerScopeDerivationFailure::LockedTargets(error),
+            )
+        })?;
+    let integration_content_targets = NonEmptyCanonicalRepositoryTargetSet::new(
+        plan.integration_entries()
+            .as_slice()
+            .iter()
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect(),
+    )
+    .map_err(|error| {
+        FinalTaskCommitScopedNccScopeDerivationFailure::Planner(
+            ScopedNccPlannerScopeDerivationFailure::IntegrationContentTargets(error),
+        )
+    })?;
+    let approved_deletion_targets = CanonicalRepositoryTargetSet::new(
+        plan.integration_entries()
+            .as_slice()
+            .iter()
+            .filter(|entry| entry.is_delete())
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect(),
+    )
+    .map_err(|error| {
+        FinalTaskCommitScopedNccScopeDerivationFailure::Planner(
+            ScopedNccPlannerScopeDerivationFailure::ApprovedDeletionTargets(error),
+        )
+    })?;
+    Ok(ScopedNccPlannerScope::new(
+        locked_targets,
+        integration_content_targets,
+        approved_deletion_targets,
+        initial_reference_closure_digest,
     ))
 }
 
@@ -6761,6 +6864,89 @@ pub(crate) struct CommitTaskCommitHistoryAuditedStage {
     residual_prelude: CommitPostCommandHistoryPreludeAuthority,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalTaskCommitScopedNccRequestFailureStage {
+    RequestBinding,
+    AnchorPreflight,
+    RequiresPositiveNcc,
+    ScopeDerivation,
+    CandidateSplit,
+}
+
+#[derive(Debug)]
+enum FinalTaskCommitScopedNccRequestFailure {
+    RequestBinding(RepositoryResultContractError),
+    AnchorPreflight(RepositoryContractError),
+    RequiresPositiveNcc,
+    ScopeDerivation(FinalTaskCommitScopedNccScopeDerivationFailure),
+    CandidateSplit,
+}
+
+impl FinalTaskCommitScopedNccRequestFailure {
+    const fn stage(&self) -> FinalTaskCommitScopedNccRequestFailureStage {
+        match self {
+            Self::RequestBinding(_) => FinalTaskCommitScopedNccRequestFailureStage::RequestBinding,
+            Self::AnchorPreflight(_) => {
+                FinalTaskCommitScopedNccRequestFailureStage::AnchorPreflight
+            }
+            Self::RequiresPositiveNcc => {
+                FinalTaskCommitScopedNccRequestFailureStage::RequiresPositiveNcc
+            }
+            Self::ScopeDerivation(_) => {
+                FinalTaskCommitScopedNccRequestFailureStage::ScopeDerivation
+            }
+            Self::CandidateSplit => FinalTaskCommitScopedNccRequestFailureStage::CandidateSplit,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FinalTaskCommitScopedNccRequestBlockedSource {
+    AuditedStage(Box<CommitTaskCommitHistoryAuditedStage>),
+    CandidateSplit {
+        residual_prelude: Box<CommitPostCommandHistoryPreludeAuthority>,
+        scope: Box<ScopedNccPlannerScope>,
+        blocked: Box<TaskCommitHistoryScopedCandidateSplitBlockedAuthority>,
+    },
+}
+
+/// Owns every input that failed before the final scoped scan port became
+/// reachable. There is no port, request extractor, or scalar reconstruction
+/// path on this authority.
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitScopedNccRequestBlockedAuthority {
+    source: FinalTaskCommitScopedNccRequestBlockedSource,
+    failure: FinalTaskCommitScopedNccRequestFailure,
+}
+
+impl FinalTaskCommitScopedNccRequestBlockedAuthority {
+    pub(crate) const fn stage(&self) -> FinalTaskCommitScopedNccRequestFailureStage {
+        self.failure.stage()
+    }
+}
+
+/// Fully owned, one-shot request for the final taskCommit-specific NCC scan.
+/// It borrows neither the atomic request nor adapter data and deliberately has
+/// no getters or general parts API.
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitScopedNccResolutionRequest {
+    scoped_candidate: TaskCommitHistoryScopedCandidateAuthority,
+    residual_prelude: CommitPostCommandHistoryPreludeAuthority,
+    scope: ScopedNccPlannerScope,
+}
+
+impl FinalTaskCommitScopedNccResolutionRequest {
+    pub(crate) fn into_repository_parts(
+        self,
+    ) -> (
+        TaskCommitHistoryScopedCandidateAuthority,
+        CommitPostCommandHistoryPreludeAuthority,
+        ScopedNccPlannerScope,
+    ) {
+        (self.scoped_candidate, self.residual_prelude, self.scope)
+    }
+}
+
 #[derive(Debug)]
 enum CommitTaskCommitHistoryAuditBlockedSource {
     MissingRawPartition(Box<CommitPostCommandHistoryPreludeAuthority>),
@@ -6806,6 +6992,106 @@ impl CommitTaskCommitHistoryAuditedStage {
     ) -> Result<FinalTaskCommitNoNccAuthority, Box<FinalTaskCommitNoNccBindingBlockedAuthority>>
     {
         self.candidate.into_no_ncc(self.residual_prelude)
+    }
+
+    pub(crate) fn into_scoped_ncc(
+        self,
+        request: &CommitAtomicCommitRequest<'_>,
+    ) -> Result<
+        FinalTaskCommitScopedNccResolutionRequest,
+        Box<FinalTaskCommitScopedNccRequestBlockedAuthority>,
+    > {
+        let request_owns_stage = request.invocation.owns_object_history_binding_witness(
+            &self.residual_prelude.core.object_history_binding_witness,
+        ) && request.invocation.owns_child_witness(
+            &self
+                .residual_prelude
+                .immediate_reference_closure_binding
+                .invocation_witness,
+        ) && request.invocation.owns_child_witness(
+            &self
+                .residual_prelude
+                .task_reference_closure
+                .invocation_witness,
+        ) && request.invocation.owns_object_history_binding_witness(
+            &self
+                .residual_prelude
+                .task_reference_closure
+                .object_history_binding_witness,
+        ) && request.invocation.owns_child_witness(
+            &self
+                .residual_prelude
+                .terminal_reference_closure
+                .invocation_witness,
+        ) && request
+            .source
+            .immediate_history_safety
+            .terminal_reference_closure()
+            .owns_binding(
+                request,
+                &self.residual_prelude.immediate_reference_closure_binding,
+            )
+            && self
+                .residual_prelude
+                .binds_final_task_commit(&self.candidate);
+        if !request_owns_stage {
+            return Err(Box::new(FinalTaskCommitScopedNccRequestBlockedAuthority {
+                source: FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(Box::new(self)),
+                failure: FinalTaskCommitScopedNccRequestFailure::RequestBinding(
+                    RepositoryResultContractError(
+                        "final scoped taskCommit request belongs to another atomic invocation",
+                    ),
+                ),
+            }));
+        }
+        if let Err(error) = self
+            .candidate
+            .validate_scoped_anchor_preflight(&self.residual_prelude)
+        {
+            return Err(Box::new(FinalTaskCommitScopedNccRequestBlockedAuthority {
+                source: FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(Box::new(self)),
+                failure: FinalTaskCommitScopedNccRequestFailure::AnchorPreflight(error),
+            }));
+        }
+        if self.candidate.ncc_count() == 0 {
+            return Err(Box::new(FinalTaskCommitScopedNccRequestBlockedAuthority {
+                source: FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(Box::new(self)),
+                failure: FinalTaskCommitScopedNccRequestFailure::RequiresPositiveNcc,
+            }));
+        }
+        let scope = match derive_final_task_commit_scoped_ncc_planner_scope(
+            request,
+            &self.residual_prelude,
+        ) {
+            Ok(scope) => scope,
+            Err(failure) => {
+                return Err(Box::new(FinalTaskCommitScopedNccRequestBlockedAuthority {
+                    source: FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(Box::new(
+                        self,
+                    )),
+                    failure: FinalTaskCommitScopedNccRequestFailure::ScopeDerivation(failure),
+                }));
+            }
+        };
+        let CommitTaskCommitHistoryAuditedStage {
+            candidate,
+            residual_prelude,
+        } = self;
+        match candidate.into_scoped_candidate() {
+            Ok(scoped_candidate) => Ok(FinalTaskCommitScopedNccResolutionRequest {
+                scoped_candidate,
+                residual_prelude,
+                scope,
+            }),
+            Err(blocked) => Err(Box::new(FinalTaskCommitScopedNccRequestBlockedAuthority {
+                source: FinalTaskCommitScopedNccRequestBlockedSource::CandidateSplit {
+                    residual_prelude: Box::new(residual_prelude),
+                    scope: Box::new(scope),
+                    blocked,
+                },
+                failure: FinalTaskCommitScopedNccRequestFailure::CandidateSplit,
+            })),
+        }
     }
 }
 
@@ -6921,8 +7207,19 @@ impl CommitPostCommandHistoryPreludeAuthority {
         &self,
         commit: &TaskCommitHistoryCandidateAuthority,
     ) -> bool {
+        self.final_task_commit_lineage_is_exact(commit.binds_commit(&self.core))
+    }
+
+    pub(crate) fn binds_final_task_commit_binding(
+        &self,
+        binding: &TaskCommitHistoryCandidateBindingAuthority,
+    ) -> bool {
+        self.final_task_commit_lineage_is_exact(binding.binds_commit(&self.core))
+    }
+
+    fn final_task_commit_lineage_is_exact(&self, commit_binds: bool) -> bool {
         let core_witness = &self.core.object_history_binding_witness.0;
-        commit.binds_commit(&self.core)
+        commit_binds
             && Arc::ptr_eq(
                 core_witness,
                 &self
@@ -7021,6 +7318,50 @@ impl CommitPostCommandHistoryPreludeAuthority {
             == self
                 .immediate_reference_closure_binding
                 .terminal_reference_closure
+    }
+
+    pub(crate) fn initial_reference_closure_matches(
+        &self,
+        closure: &CanonicalRepositoryReferenceEdgeSet,
+    ) -> bool {
+        &self
+            .immediate_reference_closure_binding
+            .terminal_reference_closure
+            == closure
+    }
+
+    pub(crate) fn initial_reference_closure_digest_matches(&self, digest: &Sha256Digest) -> bool {
+        self.immediate_reference_closure_binding
+            .terminal_reference_closure
+            .digest()
+            .is_ok_and(|actual| {
+                &actual == digest
+                    && actual
+                        == self
+                            .immediate_reference_closure_binding
+                            .terminal_reference_closure_digest
+            })
+    }
+
+    pub(crate) fn task_before_reference_closure_matches(
+        &self,
+        closure: &CanonicalRepositoryReferenceEdgeSet,
+    ) -> bool {
+        &self.task_reference_closure.before_reference_closure == closure
+    }
+
+    pub(crate) fn task_after_reference_closure_matches(
+        &self,
+        closure: &CanonicalRepositoryReferenceEdgeSet,
+    ) -> bool {
+        &self.task_reference_closure.after_reference_closure == closure
+    }
+
+    pub(crate) fn terminal_reference_closure_matches(
+        &self,
+        closure: &CanonicalRepositoryReferenceEdgeSet,
+    ) -> bool {
+        &self.terminal_reference_closure.terminal_reference_closure == closure
     }
 
     pub(crate) fn terminal_matches_task_after(&self) -> bool {
@@ -20946,6 +21287,7 @@ mod gate_b2_preview_tests {
     use crate::domain::branched_development::contracts::artifacts::ConfigurationIdentity;
     use crate::domain::branched_development::contracts::repository::{
         empty_commit_history_evidence_fixture_test_only,
+        final_task_commit_scoped_history_fixture_test_only,
         repository_history_partition_fixture_test_only,
         scoped_ncc_history_broken_intermediate_closure_fixture_test_only,
         scoped_ncc_history_fixture_test_only, CanonicalRepositoryReferenceEdgeSet, EvidenceKind,
@@ -21190,6 +21532,30 @@ mod gate_b2_preview_tests {
         };
     }
 
+    macro_rules! assert_identity_non_wire_no_default {
+        ($type:ty) => {
+            assert_identity_non_wire!($type);
+            assert_not_default!($type);
+        };
+    }
+
+    macro_rules! assert_not_into {
+        ($source:ty => $target:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfInto<Target, Marker> {
+                    fn assert_not_into() {}
+                }
+                struct ImplementsInto;
+                impl<Source: ?Sized, Target> AmbiguousIfInto<Target, ()> for Source {}
+                impl<Source: Into<Target>, Target> AmbiguousIfInto<Target, ImplementsInto>
+                    for Source
+                {
+                }
+                let _ = <$source as AmbiguousIfInto<$target, _>>::assert_not_into;
+            };
+        };
+    }
+
     fn assert_debug<T: std::fmt::Debug>() {}
     fn assert_copy<T: Copy>() {}
     fn assert_partial_eq<T: PartialEq>() {}
@@ -21202,6 +21568,12 @@ mod gate_b2_preview_tests {
         >();
         assert_debug::<
             crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateBindingAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryScopedCandidateAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryScopedCandidateSplitBlockedAuthority,
         >();
         assert_debug::<
             crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditBlockedAuthority,
@@ -21235,6 +21607,20 @@ mod gate_b2_preview_tests {
         >();
         assert_debug::<
             crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness,
+        >();
+        assert_debug::<FinalTaskCommitScopedNccResolutionRequest>();
+        assert_debug::<FinalTaskCommitScopedNccRequestBlockedAuthority>();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccBindingBlockedAuthority,
         >();
         assert_debug::<
             crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
@@ -21343,6 +21729,85 @@ mod gate_b2_preview_tests {
     );
     assert_identity_non_wire!(
         crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryScopedCandidateAuthority
+    );
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryScopedCandidateSplitBlockedAuthority
+    );
+    assert_identity_non_wire_no_default!(FinalTaskCommitScopedNccResolutionRequest);
+    assert_identity_non_wire_no_default!(FinalTaskCommitScopedNccRequestBlockedAuthority);
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority
+    );
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority
+    );
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure
+    );
+    assert_identity_non_wire_no_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccBindingBlockedAuthority
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<PrecommitPhase>
+            => FinalTaskCommitScopedNccResolutionRequest
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>
+            => FinalTaskCommitScopedNccResolutionRequest
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanCore => FinalTaskCommitScopedNccResolutionRequest
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<PrecommitPhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority
+    );
+    assert_not_into!(
+        ScopedNccHistoryScanBatchWitness
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        ScopedNccHistoryScanCompletion
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        PhaseBinding<PrecommitPhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        PhaseBinding<ImmediatePhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        CommitImmediateTerminalReferenceClosureBinding
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateBindingAuthority
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<PrecommitPhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        CommitAtomicInvocationChildWitness
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_into!(
+        CommitObjectHistoryBindingWitness
+            => crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
     );
     assert_not_default!(ValidatedTaskCommitHistoryPartition);
     assert_not_default!(
@@ -21465,6 +21930,36 @@ mod gate_b2_preview_tests {
             crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccBindingBlockedAuthority,
         >,
     > = CommitTaskCommitHistoryAuditedStage::into_no_ncc;
+    const _: for<'request, 'source> fn(
+        CommitTaskCommitHistoryAuditedStage,
+        &'request CommitAtomicCommitRequest<'source>,
+    ) -> Result<
+        FinalTaskCommitScopedNccResolutionRequest,
+        Box<FinalTaskCommitScopedNccRequestBlockedAuthority>,
+    > = CommitTaskCommitHistoryAuditedStage::into_scoped_ncc;
+    const _: fn(
+        FinalTaskCommitScopedNccResolutionRequest,
+        &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority,
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure,
+    > = crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve;
+    const _: fn(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority,
+    ) -> Result<
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority,
+        Box<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccBindingBlockedAuthority,
+        >,
+    > = crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::into_scoped_ncc_authority;
+    const _: fn(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority,
+    ) -> Result<
+        ValidatedTaskCommitHistoryPartition,
+        Box<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccBindingBlockedAuthority,
+        >,
+    > = crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority::into_validated_task_commit_history;
     const _: for<'a> fn(
         ScopedNccPlannerResolutionRequest<'a>,
         &mut dyn ScopedNccHistoryScanPort,
@@ -21977,40 +22472,163 @@ mod gate_b2_preview_tests {
         calls: usize,
     }
 
+    fn exact_test_phase_scoped_lease(
+        request: &ScopedNccHistoryScanRequest<'_>,
+        row_facts: &[Option<ScopedNccRowFacts>],
+    ) -> Result<Box<dyn ScopedNccHistoryScanLease>, RepositoryContractError> {
+        let mut rows = Vec::with_capacity(request.row_count());
+        for index in 0..request.row_count() {
+            let row = request.row(index).expect("scoped fixture row must exist");
+            rows.push(ScopedNccHistoryRowObservation::from_capability_adapter(
+                request,
+                ScopedNccHistoryRowObservationInput::new(
+                    row.position(),
+                    row.cursor().clone(),
+                    row.repository_version().clone(),
+                    row_facts[index].clone(),
+                ),
+            )?);
+        }
+        let witness = request.batch_witness();
+        let observation =
+            crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation::from_capability_adapter(
+                request,
+                ScopedNccHistoryScanBatchInput::new(
+                    request.start_cursor().clone(),
+                    request.through_inclusive().clone(),
+                    request.partition_digest().clone(),
+                    rows,
+                ),
+            )?;
+        Ok(Box::new(TestPhaseScopedNccLease {
+            witness,
+            observation,
+        }))
+    }
+
+    fn exact_test_phase_scoped_completion(
+        request: ScopedNccHistoryScanRequest<'_>,
+        row_facts: &[Option<ScopedNccRowFacts>],
+    ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError> {
+        let lease = exact_test_phase_scoped_lease(&request, row_facts)?;
+        Ok(request.complete(lease))
+    }
+
     impl ScopedNccHistoryScanPort for TestPhaseScopedNccPort {
         fn observe_scoped_ncc_history(
             &mut self,
             request: ScopedNccHistoryScanRequest<'_>,
         ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError> {
             self.calls += 1;
-            let mut rows = Vec::with_capacity(request.row_count());
-            for index in 0..request.row_count() {
-                let row = request.row(index).expect("scoped fixture row must exist");
-                rows.push(ScopedNccHistoryRowObservation::from_capability_adapter(
-                    &request,
-                    ScopedNccHistoryRowObservationInput::new(
-                        row.position(),
-                        row.cursor().clone(),
-                        row.repository_version().clone(),
-                        self.row_facts[index].clone(),
-                    ),
-                )?);
+            exact_test_phase_scoped_completion(request, &self.row_facts)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum FinalScopedReplayAction {
+        CaptureCompletion,
+        ReplayCompletion,
+        CaptureLease,
+        ReplayLease,
+        CaptureBatch,
+        ReplayBatch,
+    }
+
+    fn final_scoped_replay_capture_error(
+        request: &ScopedNccHistoryScanRequest<'_>,
+    ) -> RepositoryContractError {
+        let row = request
+            .row(0)
+            .expect("final scoped replay fixture must contain a first row");
+        ScopedNccHistoryRowObservation::from_capability_adapter(
+            request,
+            ScopedNccHistoryRowObservationInput::new(
+                0,
+                row.cursor().clone(),
+                row.repository_version().clone(),
+                None,
+            ),
+        )
+        .expect_err("position zero must produce a deterministic adapter error")
+    }
+
+    struct FinalScopedReplayPort {
+        action: FinalScopedReplayAction,
+        row_facts: Vec<Option<ScopedNccRowFacts>>,
+        counters: Rc<Slice3Counters>,
+        calls: usize,
+    }
+
+    impl ScopedNccHistoryScanPort for FinalScopedReplayPort {
+        fn observe_scoped_ncc_history(
+            &mut self,
+            request: ScopedNccHistoryScanRequest<'_>,
+        ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError> {
+            self.calls += 1;
+            match self.action {
+                FinalScopedReplayAction::CaptureCompletion => {
+                    let error = final_scoped_replay_capture_error(&request);
+                    let completion = exact_test_phase_scoped_completion(request, &self.row_facts)?;
+                    self.counters
+                        .final_scoped_replay_payload
+                        .replace(Some(FinalScopedReplayPayload::Completion(completion)));
+                    Err(error)
+                }
+                FinalScopedReplayAction::ReplayCompletion => {
+                    let Some(FinalScopedReplayPayload::Completion(completion)) = self
+                        .counters
+                        .final_scoped_replay_payload
+                        .borrow_mut()
+                        .take()
+                    else {
+                        panic!("captured final completion must be available for replay")
+                    };
+                    Ok(completion)
+                }
+                FinalScopedReplayAction::CaptureLease => {
+                    let error = final_scoped_replay_capture_error(&request);
+                    let lease = exact_test_phase_scoped_lease(&request, &self.row_facts)?;
+                    self.counters
+                        .final_scoped_replay_payload
+                        .replace(Some(FinalScopedReplayPayload::Lease(lease)));
+                    Err(error)
+                }
+                FinalScopedReplayAction::ReplayLease => {
+                    let Some(FinalScopedReplayPayload::Lease(lease)) = self
+                        .counters
+                        .final_scoped_replay_payload
+                        .borrow_mut()
+                        .take()
+                    else {
+                        panic!("captured final lease must be available for replay")
+                    };
+                    Ok(request.complete(lease))
+                }
+                FinalScopedReplayAction::CaptureBatch => {
+                    let error = final_scoped_replay_capture_error(&request);
+                    let lease = exact_test_phase_scoped_lease(&request, &self.row_facts)?;
+                    let observation = lease.into_observation();
+                    self.counters
+                        .final_scoped_replay_payload
+                        .replace(Some(FinalScopedReplayPayload::Observation(observation)));
+                    Err(error)
+                }
+                FinalScopedReplayAction::ReplayBatch => {
+                    let Some(FinalScopedReplayPayload::Observation(observation)) = self
+                        .counters
+                        .final_scoped_replay_payload
+                        .borrow_mut()
+                        .take()
+                    else {
+                        panic!("captured final batch must be available for replay")
+                    };
+                    let witness = request.batch_witness();
+                    Ok(request.complete(Box::new(TestPhaseScopedNccLease {
+                        witness,
+                        observation,
+                    })))
+                }
             }
-            let witness = request.batch_witness();
-            let observation =
-                crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation::from_capability_adapter(
-                    &request,
-                    ScopedNccHistoryScanBatchInput::new(
-                        request.start_cursor().clone(),
-                        request.through_inclusive().clone(),
-                        request.partition_digest().clone(),
-                        rows,
-                    ),
-                )?;
-            Ok(request.complete(Box::new(TestPhaseScopedNccLease {
-                witness,
-                observation,
-            })))
         }
     }
 
@@ -24966,6 +25584,14 @@ mod gate_b2_preview_tests {
         ));
     }
 
+    enum FinalScopedReplayPayload {
+        Completion(ScopedNccHistoryScanCompletion),
+        Lease(Box<dyn ScopedNccHistoryScanLease>),
+        Observation(
+            crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation,
+        ),
+    }
+
     #[derive(Default)]
     struct Slice3Counters {
         events: RefCell<Vec<&'static str>>,
@@ -24994,8 +25620,31 @@ mod gate_b2_preview_tests {
             RefCell<Option<CommitPostCommandHistoryPreludeStage>>,
         captured_foreign_task_closure_stage:
             RefCell<Option<CommitTaskReferenceClosureObservedStage>>,
+        captured_foreign_scoped_audited_stage: RefCell<Option<CommitTaskCommitHistoryAuditedStage>>,
         final_history_seals: Cell<usize>,
         final_history_audit_failures: Cell<usize>,
+        final_scoped_request_mints: Cell<usize>,
+        final_scoped_pre_port_rejections: Cell<usize>,
+        final_scoped_receiver_resolutions: Cell<usize>,
+        final_scoped_receiver_failures: Cell<usize>,
+        final_scoped_closure_chains: Cell<usize>,
+        final_scoped_seals: Cell<usize>,
+        final_scoped_planner_rejections: Cell<usize>,
+        final_scoped_seal_rejections: Cell<usize>,
+        captured_scoped_final_authority: RefCell<
+            Option<
+                crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccAuthority,
+            >,
+        >,
+        captured_scoped_final_planner: RefCell<
+            Option<
+                crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority,
+            >,
+        >,
+        captured_no_ncc_final_authority: RefCell<Option<FinalTaskCommitNoNccAuthority>>,
+        final_scoped_graph_splice_rejections: Cell<usize>,
+        final_scoped_replay_payload: RefCell<Option<FinalScopedReplayPayload>>,
+        final_scoped_replay_rejections: Cell<usize>,
         atomic_witnesses: Cell<usize>,
         atomic_binds: Cell<usize>,
         atomic_getters: Cell<usize>,
@@ -25061,6 +25710,56 @@ mod gate_b2_preview_tests {
         SpliceTaskClosureStage,
         ProductionHistorySeal,
         ProductionHistoryAuditFailure,
+        ProductionScopedHistoryRequest,
+        ProductionScopedHistoryResolution,
+        ProductionScopedHistoryScanFailure,
+        ProductionScopedClosureNThenTask,
+        ProductionScopedClosureTaskThenN,
+        ProductionScopedClosureNUnrelatedTaskUnrelatedN,
+        ProductionScopedClosureMultipleN,
+        ProductionScopedFinalSeal,
+        ScopedPlannerForeignScope,
+        ScopedPlannerInitialToNDiscontinuity,
+        ScopedPlannerNToNDiscontinuity,
+        ScopedPlannerPostTaskNToNDiscontinuity,
+        ScopedPlannerTaskToNDiscontinuity,
+        ScopedPlannerMovedNccAcrossTask,
+        ScopedPlannerTaskDiscontinuity,
+        ScopedPlannerTerminalDiscontinuity,
+        ScopedPlannerMovedTaskPosition,
+        ScopedSealForeignHistoryMarker,
+        ScopedSealForeignCandidateMarker,
+        ScopedSealWrongBranch,
+        ScopedSealForeignObjectWitness,
+        ScopedSealForeignScanWitness,
+        ScopedSealForeignCompletedChainWitness,
+        ScopedSealForeignFirstRowBatch,
+        ScopedSealForeignAllRowsBatch,
+        ScopedSealForeignTaskPosition,
+        ScopedSealForeignNccCount,
+        CaptureScopedFinalAuthorityForClosureSwap,
+        SpliceScopedFinalClosureChain,
+        CaptureScopedFinalAuthorityForPlannerSwap,
+        SpliceScopedFinalPlanner,
+        CaptureNoNccFinalClosureChain,
+        SpliceNoNccFinalClosureChain,
+        CaptureScopedFinalCompletion,
+        ReplayScopedFinalCompletion,
+        CaptureScopedFinalLease,
+        ReplayScopedFinalLease,
+        CaptureScopedFinalBatch,
+        ReplayScopedFinalBatch,
+        ProductionScopedZeroNccRequest,
+        ScopedCandidateSplitPrePortFailure,
+        ScopedScopeDerivationPrePortFailure,
+        CaptureScopedAuditedStage,
+        SpliceScopedAuditedStage,
+        ScopedForeignCoreWitness,
+        ScopedForeignTaskWitness,
+        ScopedForeignTerminalWitness,
+        ScopedWrongInitialCursor,
+        ScopedWrongTaskCursor,
+        ScopedWrongTerminalCursor,
         ZeroEffect,
         ZeroBadCertificate,
         ZeroForeignCapability,
@@ -25619,6 +26318,1000 @@ mod gate_b2_preview_tests {
                     CommitReferenceClosureObservationBlockedSource::TaskStage(_)
                 ));
                 request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ProductionScopedHistoryRequest
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                let port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("positive-NCC stage must mint one opaque final request");
+                assert_eq!(port.calls, 0);
+                drop(opaque);
+                self.counters
+                    .final_scoped_request_mints
+                    .set(self.counters.final_scoped_request_mints.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ProductionScopedHistoryResolution
+                    | Slice3AtomicMode::ProductionScopedHistoryScanFailure
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("positive-NCC stage must mint one opaque final request");
+                if matches!(
+                    self.atomic_mode,
+                    Slice3AtomicMode::ProductionScopedHistoryResolution
+                ) {
+                    let mut port = TestPhaseScopedNccPort {
+                        row_facts: fixture.row_facts,
+                        calls: 0,
+                    };
+                    let authority =
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                            opaque,
+                            &mut port,
+                        )
+                        .expect("the sole final scoped receiver must accept the exact scan");
+                    assert_eq!(port.calls, 1);
+                    drop(authority);
+                    self.counters
+                        .final_scoped_receiver_resolutions
+                        .set(self.counters.final_scoped_receiver_resolutions.get() + 1);
+                } else {
+                    let mut port = FailingPhaseScopedNccPort { calls: 0 };
+                    let failure =
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                            opaque,
+                            &mut port,
+                        )
+                        .expect_err("scan error must retain the complete final scoped source");
+                    assert_eq!(port.calls, 1);
+                    assert!(matches!(
+                        failure,
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure::ScanBlocked {
+                            candidate_binding: _,
+                            residual_prelude: _,
+                            scope: _,
+                            blocked: _,
+                        }
+                    ));
+                    self.counters
+                        .final_scoped_receiver_failures
+                        .set(self.counters.final_scoped_receiver_failures.get() + 1);
+                }
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ProductionScopedClosureNThenTask
+                    | Slice3AtomicMode::ProductionScopedClosureTaskThenN
+                    | Slice3AtomicMode::ProductionScopedClosureNUnrelatedTaskUnrelatedN
+                    | Slice3AtomicMode::ProductionScopedClosureMultipleN
+                    | Slice3AtomicMode::ProductionScopedFinalSeal
+            ) {
+                let classifications = match self.atomic_mode {
+                    Slice3AtomicMode::ProductionScopedClosureNThenTask => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                    Slice3AtomicMode::ProductionScopedClosureTaskThenN => vec![
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    Slice3AtomicMode::ProductionScopedClosureNUnrelatedTaskUnrelatedN => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    Slice3AtomicMode::ProductionScopedClosureMultipleN => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    Slice3AtomicMode::ProductionScopedFinalSeal => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    _ => unreachable!(),
+                };
+                let fixture = final_scoped_audited_fixture(&request, &classifications);
+                let binding_probes = matches!(
+                    self.atomic_mode,
+                    Slice3AtomicMode::ProductionScopedFinalSeal
+                )
+                .then(|| {
+                    let core = &fixture.audited.residual_prelude.core;
+                    let exact = CommitCommittedCoreObservation {
+                        object_history_binding_witness: core.object_history_binding_witness.clone(),
+                        commit_receipt_id: core.commit_receipt_id.clone(),
+                        repository_version: core.repository_version.clone(),
+                        committed_objects: core.committed_objects.clone(),
+                        committed_objects_digest: core.committed_objects_digest.clone(),
+                        atomic_commit_safety_capability_id: core
+                            .atomic_commit_safety_capability_id
+                            .clone(),
+                    };
+                    let foreign_equal_scalar = CommitCommittedCoreObservation {
+                        object_history_binding_witness:
+                            CommitAtomicCommitInvocationCapability::mint()
+                                .object_history_binding_witness(),
+                        commit_receipt_id: core.commit_receipt_id.clone(),
+                        repository_version: core.repository_version.clone(),
+                        committed_objects: core.committed_objects.clone(),
+                        committed_objects_digest: core.committed_objects_digest.clone(),
+                        atomic_commit_safety_capability_id: core
+                            .atomic_commit_safety_capability_id
+                            .clone(),
+                    };
+                    (exact, foreign_equal_scalar)
+                });
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("exact positive-NCC ordering must mint one opaque final request");
+                let mut port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let planner =
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                        opaque,
+                        &mut port,
+                    )
+                    .expect("the sole final resolver must scan and bind each exact ordering");
+                assert_eq!(port.calls, 1);
+                if matches!(
+                    self.atomic_mode,
+                    Slice3AtomicMode::ProductionScopedFinalSeal
+                ) {
+                    let scoped = planner
+                        .into_scoped_ncc_authority()
+                        .expect("completed planner must mint its private final-history witness");
+                    let validated = scoped
+                        .into_validated_task_commit_history()
+                        .expect("scoped authority must enter its private final seal");
+                    assert_eq!(
+                        validated.partition().classifications().collect::<Vec<_>>(),
+                        classifications
+                    );
+                    let (exact, foreign_equal_scalar) = binding_probes.unwrap();
+                    assert!(validated.binds(&exact));
+                    assert!(!validated.binds(&foreign_equal_scalar));
+                    self.counters
+                        .final_scoped_seals
+                        .set(self.counters.final_scoped_seals.get() + 1);
+                } else {
+                    drop(planner);
+                    self.counters
+                        .final_scoped_closure_chains
+                        .set(self.counters.final_scoped_closure_chains.get() + 1);
+                }
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedPlannerForeignScope
+                    | Slice3AtomicMode::ScopedPlannerInitialToNDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerNToNDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerPostTaskNToNDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerTaskToNDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerMovedNccAcrossTask
+                    | Slice3AtomicMode::ScopedPlannerTaskDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerTerminalDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerMovedTaskPosition
+            ) {
+                let classifications = match self.atomic_mode {
+                    Slice3AtomicMode::ScopedPlannerNToNDiscontinuity => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                    Slice3AtomicMode::ScopedPlannerPostTaskNToNDiscontinuity => vec![
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    Slice3AtomicMode::ScopedPlannerTaskToNDiscontinuity
+                    | Slice3AtomicMode::ScopedPlannerMovedNccAcrossTask => vec![
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    Slice3AtomicMode::ScopedPlannerTerminalDiscontinuity => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                    _ => vec![
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                };
+                let mut fixture = final_scoped_audited_fixture(&request, &classifications);
+                let mut opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("negative planner fixture must first mint the exact opaque request");
+                let expected_stage = match self.atomic_mode {
+                    Slice3AtomicMode::ScopedPlannerForeignScope => {
+                        opaque.scope.locked_targets =
+                            NonEmptyCanonicalRepositoryTargetSet::new(vec![
+                                RepositoryTargetIdentity::development_object(
+                                    MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000e1")
+                                        .unwrap(),
+                                ),
+                            ])
+                            .unwrap();
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::NccScope
+                    }
+                    Slice3AtomicMode::ScopedPlannerInitialToNDiscontinuity => {
+                        opaque
+                            .scoped_candidate
+                            .replace_ncc_before_reference_closure_test_only(
+                                0,
+                                &mut fixture.row_facts,
+                                nonempty_reference_closure(),
+                            );
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::ReferenceClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerNToNDiscontinuity => {
+                        opaque
+                            .scoped_candidate
+                            .replace_ncc_before_reference_closure_test_only(
+                                1,
+                                &mut fixture.row_facts,
+                                nonempty_reference_closure(),
+                            );
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::ReferenceClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerPostTaskNToNDiscontinuity => {
+                        opaque
+                            .scoped_candidate
+                            .replace_ncc_before_reference_closure_test_only(
+                                2,
+                                &mut fixture.row_facts,
+                                nonempty_reference_closure(),
+                            );
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::ReferenceClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerTaskToNDiscontinuity => {
+                        opaque
+                            .scoped_candidate
+                            .replace_ncc_before_reference_closure_test_only(
+                                1,
+                                &mut fixture.row_facts,
+                                nonempty_reference_closure(),
+                            );
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::ReferenceClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerMovedNccAcrossTask => {
+                        opaque.scoped_candidate.move_history_position_test_only(
+                            &mut fixture.row_facts,
+                            1,
+                            0,
+                        );
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::ReferenceClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerTaskDiscontinuity => {
+                        let initial = opaque
+                            .residual_prelude
+                            .immediate_reference_closure_binding
+                            .terminal_reference_closure
+                            .clone();
+                        assert_ne!(
+                            initial,
+                            opaque
+                                .residual_prelude
+                                .task_reference_closure
+                                .before_reference_closure
+                        );
+                        opaque
+                            .residual_prelude
+                            .task_reference_closure
+                            .before_reference_closure = initial;
+                        opaque
+                            .residual_prelude
+                            .task_reference_closure
+                            .before_reference_closure_digest = opaque
+                            .residual_prelude
+                            .task_reference_closure
+                            .before_reference_closure
+                            .digest()
+                            .unwrap();
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::TaskPivot
+                    }
+                    Slice3AtomicMode::ScopedPlannerTerminalDiscontinuity => {
+                        let task_after = opaque
+                            .residual_prelude
+                            .task_reference_closure
+                            .after_reference_closure
+                            .clone();
+                        assert_ne!(
+                            task_after,
+                            opaque
+                                .residual_prelude
+                                .terminal_reference_closure
+                                .terminal_reference_closure
+                        );
+                        opaque
+                            .residual_prelude
+                            .terminal_reference_closure
+                            .terminal_reference_closure = task_after;
+                        opaque
+                            .residual_prelude
+                            .terminal_reference_closure
+                            .terminal_reference_closure_digest = opaque
+                            .residual_prelude
+                            .terminal_reference_closure
+                            .terminal_reference_closure
+                            .digest()
+                            .unwrap();
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::TerminalClosure
+                    }
+                    Slice3AtomicMode::ScopedPlannerMovedTaskPosition => {
+                        opaque.scoped_candidate.replace_task_position_test_only(1);
+                        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::EntryOrder
+                    }
+                    _ => unreachable!(),
+                };
+                let mut port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let failure =
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                        opaque,
+                        &mut port,
+                    )
+                    .expect_err("discontinuous final planner must retain an owning failure");
+                assert_eq!(port.calls, 1);
+                let crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure::PlannerBindingBlocked(blocked) = failure else {
+                    panic!("raw scan must succeed before the final planner rejects continuity")
+                };
+                assert_eq!(blocked.failure().stage(), expected_stage);
+                assert!(blocked.owns_closure_chain_test_only());
+                self.counters
+                    .final_scoped_planner_rejections
+                    .set(self.counters.final_scoped_planner_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedSealForeignHistoryMarker
+                    | Slice3AtomicMode::ScopedSealForeignCandidateMarker
+                    | Slice3AtomicMode::ScopedSealWrongBranch
+                    | Slice3AtomicMode::ScopedSealForeignObjectWitness
+                    | Slice3AtomicMode::ScopedSealForeignScanWitness
+                    | Slice3AtomicMode::ScopedSealForeignCompletedChainWitness
+                    | Slice3AtomicMode::ScopedSealForeignFirstRowBatch
+                    | Slice3AtomicMode::ScopedSealForeignAllRowsBatch
+                    | Slice3AtomicMode::ScopedSealForeignTaskPosition
+                    | Slice3AtomicMode::ScopedSealForeignNccCount
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                );
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("seal attack fixture must mint the exact opaque request");
+                let mut port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let planner =
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                        opaque,
+                        &mut port,
+                    )
+                    .expect("seal attack must begin from an exact completed planner");
+                assert_eq!(port.calls, 1);
+                let mut scoped = planner
+                    .into_scoped_ncc_authority()
+                    .expect("seal attack must begin from an exact final-history witness");
+                match self.atomic_mode {
+                    Slice3AtomicMode::ScopedSealForeignHistoryMarker => {
+                        scoped.replace_history_marker_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignCandidateMarker => {
+                        scoped.replace_candidate_marker_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealWrongBranch => {
+                        scoped.replace_branch_with_no_ncc_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignObjectWitness => scoped
+                        .replace_object_history_witness_test_only(
+                            CommitAtomicCommitInvocationCapability::mint()
+                                .object_history_binding_witness(),
+                        ),
+                    Slice3AtomicMode::ScopedSealForeignScanWitness => {
+                        scoped.replace_scan_witness_marker_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignCompletedChainWitness => {
+                        scoped.replace_completed_chain_witness_marker_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignFirstRowBatch => {
+                        scoped.replace_first_row_batch_marker_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignAllRowsBatch => {
+                        scoped.replace_all_row_batch_markers_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignTaskPosition => {
+                        scoped.increment_task_position_test_only()
+                    }
+                    Slice3AtomicMode::ScopedSealForeignNccCount => {
+                        scoped.increment_ncc_count_test_only()
+                    }
+                    _ => unreachable!(),
+                }
+                let blocked = scoped
+                    .into_validated_task_commit_history()
+                    .expect_err("every scoped final witness substitution must block the seal");
+                assert_eq!(
+                    blocked.failure().stage(),
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::FinalSeal
+                );
+                assert!(blocked.owns_final_authority_test_only());
+                self.counters
+                    .final_scoped_seal_rejections
+                    .set(self.counters.final_scoped_seal_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::CaptureScopedFinalAuthorityForClosureSwap
+                    | Slice3AtomicMode::SpliceScopedFinalClosureChain
+                    | Slice3AtomicMode::CaptureScopedFinalAuthorityForPlannerSwap
+                    | Slice3AtomicMode::SpliceScopedFinalPlanner
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    ],
+                );
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("graph fixture must mint one exact opaque final request");
+                let mut port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let planner =
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                        opaque,
+                        &mut port,
+                    )
+                    .expect("graph fixture must produce an exact completed planner");
+                assert_eq!(port.calls, 1);
+                match self.atomic_mode {
+                    Slice3AtomicMode::CaptureScopedFinalAuthorityForClosureSwap => {
+                        self.counters
+                            .captured_scoped_final_planner
+                            .replace(Some(planner));
+                    }
+                    Slice3AtomicMode::SpliceScopedFinalClosureChain => {
+                        let mut planner_a = self
+                            .counters
+                            .captured_scoped_final_planner
+                            .borrow_mut()
+                            .take()
+                            .expect("planner A must be captured before graph substitution");
+                        let mut planner_b = planner;
+                        planner_a.swap_closure_chain_test_only(&mut planner_b);
+                        for replaced in [planner_a, planner_b] {
+                            let blocked = replaced.into_scoped_ncc_authority().expect_err(
+                                "a completed chain from another planner must not mint a witness",
+                            );
+                            assert_eq!(
+                                blocked.failure().stage(),
+                                crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::FinalSeal
+                            );
+                            assert!(blocked.owns_planner_test_only());
+                            self.counters
+                                .final_scoped_graph_splice_rejections
+                                .set(self.counters.final_scoped_graph_splice_rejections.get() + 1);
+                        }
+                    }
+                    Slice3AtomicMode::CaptureScopedFinalAuthorityForPlannerSwap => {
+                        self.counters.captured_scoped_final_authority.replace(Some(
+                            planner
+                                .into_scoped_ncc_authority()
+                                .expect("planner A must mint its exact final witness"),
+                        ));
+                    }
+                    Slice3AtomicMode::SpliceScopedFinalPlanner => {
+                        let mut authority_a = self
+                            .counters
+                            .captured_scoped_final_authority
+                            .borrow_mut()
+                            .take()
+                            .expect("authority A must be captured before graph substitution");
+                        let mut authority_b = planner
+                            .into_scoped_ncc_authority()
+                            .expect("planner B must mint its exact final witness");
+                        authority_a.swap_planner_test_only(&mut authority_b);
+                        for replaced in [authority_a, authority_b] {
+                            let blocked = replaced.into_validated_task_commit_history().expect_err(
+                                "a planner from another final witness must not seal history",
+                            );
+                            assert_eq!(
+                                blocked.failure().stage(),
+                                crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::FinalSeal
+                            );
+                            assert!(blocked.owns_final_authority_test_only());
+                            self.counters
+                                .final_scoped_graph_splice_rejections
+                                .set(self.counters.final_scoped_graph_splice_rejections.get() + 1);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::CaptureScopedFinalCompletion
+                    | Slice3AtomicMode::ReplayScopedFinalCompletion
+                    | Slice3AtomicMode::CaptureScopedFinalLease
+                    | Slice3AtomicMode::ReplayScopedFinalLease
+                    | Slice3AtomicMode::CaptureScopedFinalBatch
+                    | Slice3AtomicMode::ReplayScopedFinalBatch
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                let opaque = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect("replay fixture must mint one exact opaque final request");
+                let action = match self.atomic_mode {
+                    Slice3AtomicMode::CaptureScopedFinalCompletion => {
+                        FinalScopedReplayAction::CaptureCompletion
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalCompletion => {
+                        FinalScopedReplayAction::ReplayCompletion
+                    }
+                    Slice3AtomicMode::CaptureScopedFinalLease => {
+                        FinalScopedReplayAction::CaptureLease
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalLease => {
+                        FinalScopedReplayAction::ReplayLease
+                    }
+                    Slice3AtomicMode::CaptureScopedFinalBatch => {
+                        FinalScopedReplayAction::CaptureBatch
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalBatch => {
+                        FinalScopedReplayAction::ReplayBatch
+                    }
+                    _ => unreachable!(),
+                };
+                let mut port = FinalScopedReplayPort {
+                    action,
+                    row_facts: fixture.row_facts,
+                    counters: Rc::clone(&self.counters),
+                    calls: 0,
+                };
+                let failure =
+                    crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccPlannerAuthority::resolve(
+                        opaque,
+                        &mut port,
+                    )
+                    .expect_err("capture loss or A-to-B replay must retain an owning failure");
+                assert_eq!(port.calls, 1);
+                let crate::domain::branched_development::contracts::repository::FinalTaskCommitScopedNccResolutionFailure::ScanBlocked {
+                    candidate_binding: _,
+                    residual_prelude: _,
+                    scope: _,
+                    blocked,
+                } = failure
+                else {
+                    panic!("final replay must fail inside the sole fresh raw scan")
+                };
+                use crate::domain::branched_development::contracts::repository::{
+                    ScopedNccHistoryScanCompletionFailureStage,
+                    ScopedNccHistoryScanFailureEvidence,
+                    ScopedNccHistoryScanObservationFailureStage,
+                };
+                match self.atomic_mode {
+                    Slice3AtomicMode::CaptureScopedFinalCompletion
+                    | Slice3AtomicMode::CaptureScopedFinalLease
+                    | Slice3AtomicMode::CaptureScopedFinalBatch => {
+                        assert!(matches!(
+                            blocked.evidence_test_only(),
+                            ScopedNccHistoryScanFailureEvidence::Port { .. }
+                        ));
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalCompletion => {
+                        assert!(matches!(
+                            blocked.evidence_test_only(),
+                            ScopedNccHistoryScanFailureEvidence::Completion {
+                                stage:
+                                    ScopedNccHistoryScanCompletionFailureStage::ForeignCompletion,
+                                ..
+                            }
+                        ));
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalLease => {
+                        assert!(matches!(
+                            blocked.evidence_test_only(),
+                            ScopedNccHistoryScanFailureEvidence::Completion {
+                                stage:
+                                    ScopedNccHistoryScanCompletionFailureStage::ForeignLeaseWitness,
+                                ..
+                            }
+                        ));
+                    }
+                    Slice3AtomicMode::ReplayScopedFinalBatch => {
+                        assert!(matches!(
+                            blocked.evidence_test_only(),
+                            ScopedNccHistoryScanFailureEvidence::Observation {
+                                stage:
+                                    ScopedNccHistoryScanObservationFailureStage::ForeignBatchWitness,
+                                ..
+                            }
+                        ));
+                    }
+                    _ => unreachable!(),
+                }
+                if matches!(
+                    self.atomic_mode,
+                    Slice3AtomicMode::ReplayScopedFinalCompletion
+                        | Slice3AtomicMode::ReplayScopedFinalLease
+                        | Slice3AtomicMode::ReplayScopedFinalBatch
+                ) {
+                    self.counters
+                        .final_scoped_replay_rejections
+                        .set(self.counters.final_scoped_replay_rejections.get() + 1);
+                }
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ProductionScopedZeroNccRequest
+            ) {
+                let prelude = request
+                    .observe_post_command_history_prelude(
+                        task_only_raw_post_command_history_source(&request, false),
+                    )
+                    .expect("task-only source must reach the complete prelude");
+                let (registry, index, order, bytes) = task_only_history_resolver_parts(&request);
+                let resolver =
+                    RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+                let audited = prelude
+                    .audit_task_commit_history(&resolver)
+                    .expect("task-only prelude must audit before branch selection");
+                let port = TestPhaseScopedNccPort {
+                    row_facts: Vec::new(),
+                    calls: 0,
+                };
+                let blocked = audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("zero-NCC candidate must fail before the final scan port");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::RequiresPositiveNcc
+                );
+                assert!(matches!(
+                    &blocked.source,
+                    FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(_)
+                ));
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedCandidateSplitPrePortFailure
+            ) {
+                let mut fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                fixture
+                    .audited
+                    .candidate
+                    .consume_candidate_marker_test_only();
+                let port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let blocked = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("consumed candidate marker must fail in the owning split");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::CandidateSplit
+                );
+                assert!(matches!(
+                    &blocked.source,
+                    FinalTaskCommitScopedNccRequestBlockedSource::CandidateSplit { .. }
+                ));
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedScopeDerivationPrePortFailure
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                let port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let blocked = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("missing exact lock receipt must block final scope derivation");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::ScopeDerivation
+                );
+                assert!(matches!(
+                    &blocked.source,
+                    FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(_)
+                ));
+                assert!(matches!(
+                    &blocked.failure,
+                    FinalTaskCommitScopedNccRequestFailure::ScopeDerivation(
+                        FinalTaskCommitScopedNccScopeDerivationFailure::Planner(
+                            ScopedNccPlannerScopeDerivationFailure::LockReceipts(
+                                ExactOrderedLockReceiptFailure::MissingReceipt {
+                                    expected_count: 3,
+                                    observed_count: 2,
+                                }
+                            )
+                        )
+                    )
+                ));
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::CaptureScopedAuditedStage
+            ) {
+                let fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                self.counters
+                    .captured_foreign_scoped_audited_stage
+                    .replace(Some(fixture.audited));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::SpliceScopedAuditedStage) {
+                let audited = self
+                    .counters
+                    .captured_foreign_scoped_audited_stage
+                    .borrow_mut()
+                    .take()
+                    .expect("foreign scoped audited stage must be captured first");
+                let port = TestPhaseScopedNccPort {
+                    row_facts: Vec::new(),
+                    calls: 0,
+                };
+                let blocked = audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("request B must reject candidate/prelude A before the port");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::RequestBinding
+                );
+                assert!(matches!(
+                    &blocked.source,
+                    FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(_)
+                ));
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedForeignCoreWitness
+                    | Slice3AtomicMode::ScopedForeignTaskWitness
+                    | Slice3AtomicMode::ScopedForeignTerminalWitness
+            ) {
+                let mut fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                let foreign = CommitAtomicCommitInvocationCapability::mint();
+                match self.atomic_mode {
+                    Slice3AtomicMode::ScopedForeignCoreWitness => {
+                        fixture
+                            .audited
+                            .residual_prelude
+                            .core
+                            .object_history_binding_witness =
+                            foreign.object_history_binding_witness();
+                    }
+                    Slice3AtomicMode::ScopedForeignTaskWitness => {
+                        fixture
+                            .audited
+                            .residual_prelude
+                            .task_reference_closure
+                            .invocation_witness = foreign.child_witness();
+                    }
+                    Slice3AtomicMode::ScopedForeignTerminalWitness => {
+                        fixture
+                            .audited
+                            .residual_prelude
+                            .terminal_reference_closure
+                            .invocation_witness = foreign.child_witness();
+                    }
+                    _ => unreachable!(),
+                }
+                let port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let blocked = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("foreign final scoped witness must fail before the port");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::RequestBinding
+                );
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ScopedWrongInitialCursor
+                    | Slice3AtomicMode::ScopedWrongTaskCursor
+                    | Slice3AtomicMode::ScopedWrongTerminalCursor
+            ) {
+                let mut fixture = final_scoped_audited_fixture(
+                    &request,
+                    &[
+                        RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                        RepositoryHistoryPartitionClassification::TaskCommit,
+                    ],
+                );
+                match self.atomic_mode {
+                    Slice3AtomicMode::ScopedWrongInitialCursor => fixture
+                        .audited
+                        .candidate
+                        .replace_initial_history_prefix_test_only(digest('c')),
+                    Slice3AtomicMode::ScopedWrongTaskCursor => fixture
+                        .audited
+                        .candidate
+                        .replace_task_history_prefix_test_only(digest('d')),
+                    Slice3AtomicMode::ScopedWrongTerminalCursor => fixture
+                        .audited
+                        .candidate
+                        .replace_terminal_history_prefix_test_only(digest('e')),
+                    _ => unreachable!(),
+                }
+                let port = TestPhaseScopedNccPort {
+                    row_facts: fixture.row_facts,
+                    calls: 0,
+                };
+                let blocked = fixture
+                    .audited
+                    .into_scoped_ncc(&request)
+                    .expect_err("wrong exact final scoped cursor must fail before the port");
+                assert_eq!(
+                    blocked.stage(),
+                    FinalTaskCommitScopedNccRequestFailureStage::AnchorPreflight
+                );
+                assert!(matches!(
+                    &blocked.source,
+                    FinalTaskCommitScopedNccRequestBlockedSource::AuditedStage(_)
+                ));
+                assert_eq!(port.calls, 0);
+                self.counters
+                    .final_scoped_pre_port_rejections
+                    .set(self.counters.final_scoped_pre_port_rejections.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::CaptureNoNccFinalClosureChain
+                    | Slice3AtomicMode::SpliceNoNccFinalClosureChain
+            ) {
+                let prelude = request
+                    .observe_post_command_history_prelude(
+                        task_only_raw_post_command_history_source(&request, false),
+                    )
+                    .expect("no-NCC graph source must reach the complete prelude");
+                let (registry, index, order, bytes) = task_only_history_resolver_parts(&request);
+                let resolver =
+                    RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+                let audited = prelude
+                    .audit_task_commit_history(&resolver)
+                    .expect("no-NCC graph source must audit before final closure");
+                let authority = audited
+                    .into_no_ncc()
+                    .expect("no-NCC graph source must complete its exact closure chain");
+                if matches!(
+                    self.atomic_mode,
+                    Slice3AtomicMode::CaptureNoNccFinalClosureChain
+                ) {
+                    self.counters
+                        .captured_no_ncc_final_authority
+                        .replace(Some(authority));
+                } else {
+                    let mut authority_a = self
+                        .counters
+                        .captured_no_ncc_final_authority
+                        .borrow_mut()
+                        .take()
+                        .expect("no-NCC authority A must be captured before replacement");
+                    let mut authority_b = authority;
+                    authority_a.swap_closure_chain_test_only(&mut authority_b);
+                    for replaced in [authority_a, authority_b] {
+                        let blocked = replaced.into_validated_task_commit_history().expect_err(
+                            "a no-NCC completed chain from another witness must not seal",
+                        );
+                        assert_eq!(
+                            blocked.failure().stage(),
+                            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage::FinalSeal
+                        );
+                        assert!(blocked.owns_final_authority_test_only());
+                        self.counters
+                            .final_scoped_graph_splice_rejections
+                            .set(self.counters.final_scoped_graph_splice_rejections.get() + 1);
+                    }
+                }
+                request.observe_ambiguous()
             } else if matches!(self.atomic_mode, Slice3AtomicMode::ProductionHistorySeal) {
                 let prelude = request
                     .observe_post_command_history_prelude(
@@ -25894,6 +27587,75 @@ mod gate_b2_preview_tests {
         match approved.recheck_before_commit_intent(&mut port) {
             CommitImmediateRecheckOutcome::Ready(scope) => scope,
             _ => panic!("slice3 fixture must reach Ready"),
+        }
+    }
+
+    fn ready_scope_with_missing_receipt(
+        atomic_mode: Slice3AtomicMode,
+        counters: Rc<Slice3Counters>,
+    ) -> CommitScopedAtomicSafetyAuthority {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000026");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let initial_reference_closure_digest = baseline
+            .lineage()
+            .lock_plan()
+            .reference_closure_digest()
+            .clone();
+        let source =
+            validated_main_integration_commit_context_with_scoped_ncc_receipt_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                initial_reference_closure_digest,
+                ScopedNccReceiptFixtureMutation::Missing,
+            );
+        let initial_partition = history_partition(
+            source.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-missing-receipt-initial",
+        );
+        let guard = match PostMergeCommitGuardAuthority::from_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact(initial_partition.clone()),
+        ) {
+            PostMergeCommitGuardObservationOutcome::NoNcc(guard) => *guard,
+            _ => panic!("missing receipt remains latent until scoped planner derivation"),
+        };
+        let preview_request = commit_preview_request_value(
+            &guard,
+            "/original/project",
+            "PR-137",
+            PREVIEW_OPERATION_ID,
+        );
+        let preview = CommitPreviewAuthority::from_validated_post_merge_guard(
+            validated_commit_preview_request(preview_request.clone()),
+            guard,
+            validated_comment_policy(),
+        )
+        .unwrap();
+        let approved_digest = preview.commit_digest().clone();
+        let apply = serde_json::from_value(commit_apply_request_value(
+            preview_request,
+            APPLY_OPERATION_ID,
+            &approved_digest,
+        ))
+        .unwrap();
+        let approved = ApprovedCommitPreviewAuthority::from_validated_request(
+            preview.validate_apply(apply).unwrap(),
+        );
+        let current = history_partition(
+            initial_partition.start_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-missing-receipt-immediate",
+        );
+        let mut port = Slice3ImmediatePort {
+            partition: Some(current),
+            atomic_mode,
+            counters,
+        };
+        match approved.recheck_before_commit_intent(&mut port) {
+            CommitImmediateRecheckOutcome::Ready(scope) => scope,
+            _ => panic!("missing receipt must remain latent until final scoped derivation"),
         }
     }
 
@@ -26413,6 +28175,253 @@ mod gate_b2_preview_tests {
         )
     }
 
+    struct FinalScopedAuditedFixture {
+        audited: CommitTaskCommitHistoryAuditedStage,
+        row_facts: Vec<Option<ScopedNccRowFacts>>,
+    }
+
+    fn final_scoped_audited_fixture(
+        request: &CommitAtomicCommitRequest<'_>,
+        classifications: &[RepositoryHistoryPartitionClassification],
+    ) -> FinalScopedAuditedFixture {
+        let lineage = request.source.lineage_binding().lineage();
+        let plan = lineage.lock_plan();
+        let locked_targets = planned_lock_target_identities(plan);
+        let integration_content_targets = plan
+            .integration_entries()
+            .as_slice()
+            .iter()
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect();
+        let approved_deletion_targets = plan
+            .integration_entries()
+            .as_slice()
+            .iter()
+            .filter(|entry| entry.is_delete())
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect();
+        let fixture = final_task_commit_scoped_history_fixture_test_only(
+            request.before_repository_cursor().clone(),
+            classifications,
+            "repository.history-order.slice3-final-scoped",
+            request.atomic_commit_safety_capability_id().as_str(),
+            locked_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.initial_reference_closure,
+            request
+                .source
+                .immediate_history_safety
+                .terminal_reference_closure()
+                .terminal_reference_closure
+        );
+
+        let mut raw_value = serde_json::to_value(&fixture.partition).unwrap();
+        let entries = raw_value["entries"].as_array_mut().unwrap();
+        let versions = entries
+            .iter()
+            .map(|entry| {
+                RepositoryVersion::parse(entry["repositoryVersion"].as_str().unwrap()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let task_index = classifications
+            .iter()
+            .position(|classification| {
+                *classification == RepositoryHistoryPartitionClassification::TaskCommit
+            })
+            .unwrap();
+        let task_version = versions[task_index].clone();
+        let committed_objects = matching_committed_objects(request, &task_version);
+        let committed_objects_digest = request
+            .committed_objects_digest(&committed_objects)
+            .unwrap();
+        let registry = EvidenceSourceRegistry::task9().unwrap();
+        let mut candidates = BTreeMap::new();
+        let mut evidence_bytes = BTreeMap::new();
+
+        for (index, classification) in classifications.iter().enumerate() {
+            let repository_version = &versions[index];
+            match classification {
+                RepositoryHistoryPartitionClassification::TaskCommit => {
+                    entries[index]["semanticDeltaDigest"] =
+                        serde_json::to_value(&committed_objects_digest).unwrap();
+                }
+                RepositoryHistoryPartitionClassification::NonConflictingConcurrent => {
+                    let source_ref: RepositoryHistorySourceEvidenceRef =
+                        serde_json::from_value(entries[index]["sourceEvidenceRef"].clone())
+                            .unwrap();
+                    let evidence = entries[index]["nonConflictingConcurrentEvidence"].clone();
+                    candidates.insert(
+                        repository_version.as_str().to_owned(),
+                        EvidenceSourceIndexCandidate::from_capability_adapter(
+                            repository_version.as_str(),
+                            registry.registry_digest().as_str(),
+                            "b3300000-0000-4000-8000-000000000071",
+                            vec![
+                                EvidenceSourceIndexCandidateRow::available(
+                                    EvidenceKind::RoutineClassification,
+                                    vec![RepositoryHistorySourceEvidenceRef::new(
+                                        EvidenceKind::RoutineClassification,
+                                        digest('a').as_str(),
+                                    )
+                                    .unwrap()],
+                                ),
+                                EvidenceSourceIndexCandidateRow::absent(
+                                    EvidenceKind::SupportPrerequisiteObservation,
+                                ),
+                                EvidenceSourceIndexCandidateRow::available(
+                                    EvidenceKind::NonConflictingConcurrent,
+                                    vec![source_ref.clone()],
+                                ),
+                            ],
+                        )
+                        .unwrap(),
+                    );
+                    evidence_bytes.insert(
+                        (
+                            EvidenceKind::NonConflictingConcurrent,
+                            source_ref.evidence_digest().as_str().to_owned(),
+                        ),
+                        serde_json_canonicalizer::to_vec(&evidence).unwrap(),
+                    );
+                }
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine => {
+                    let routine = RoutineRepositoryVersionClassificationEvidence::new(
+                        repository_version.as_str(),
+                        "unrelated",
+                        None,
+                        digest('a').as_str(),
+                        digest('b').as_str(),
+                    )
+                    .unwrap();
+                    let routine_value = serde_json::to_value(&routine).unwrap();
+                    let evidence_digest = routine_value["classificationDigest"].as_str().unwrap();
+                    let source_ref = RepositoryHistorySourceEvidenceRef::new(
+                        EvidenceKind::RoutineClassification,
+                        evidence_digest,
+                    )
+                    .unwrap();
+                    let semantic_record = json!({
+                        "repositoryVersion": repository_version,
+                        "partitionClassification": "unrelatedRoutine",
+                        "rootDeltaDigest": digest('a'),
+                        "contentDeltaDigest": digest('b'),
+                        "classificationDigest": evidence_digest,
+                        "externalSupportDisjointnessDigest": null,
+                        "correctiveInstructionDigest": null,
+                        "nonConflictingConcurrentEvidenceDigest": null,
+                    });
+                    entries[index] = json!({
+                        "repositoryVersion": repository_version,
+                        "classification": "unrelatedRoutine",
+                        "semanticDeltaDigest": slice3_json_digest(&semantic_record),
+                        "sourceEvidenceRef": source_ref,
+                    });
+                    candidates.insert(
+                        repository_version.as_str().to_owned(),
+                        EvidenceSourceIndexCandidate::from_capability_adapter(
+                            repository_version.as_str(),
+                            registry.registry_digest().as_str(),
+                            "b3300000-0000-4000-8000-000000000072",
+                            vec![
+                                EvidenceSourceIndexCandidateRow::available(
+                                    EvidenceKind::RoutineClassification,
+                                    vec![source_ref.clone()],
+                                ),
+                                EvidenceSourceIndexCandidateRow::absent(
+                                    EvidenceKind::SupportPrerequisiteObservation,
+                                ),
+                                EvidenceSourceIndexCandidateRow::absent(
+                                    EvidenceKind::NonConflictingConcurrent,
+                                ),
+                            ],
+                        )
+                        .unwrap(),
+                    );
+                    evidence_bytes.insert(
+                        (
+                            EvidenceKind::RoutineClassification,
+                            source_ref.evidence_digest().as_str().to_owned(),
+                        ),
+                        serde_json_canonicalizer::to_vec(&routine).unwrap(),
+                    );
+                }
+                _ => panic!("final scoped fixture uses only task, NCC, and unrelated rows"),
+            }
+        }
+        let digest_record = json!({
+            "fromExclusive": raw_value["fromExclusive"].clone(),
+            "throughInclusive": raw_value["throughInclusive"].clone(),
+            "entries": raw_value["entries"].clone(),
+        });
+        raw_value["partitionDigest"] =
+            serde_json::to_value(slice3_json_digest(&digest_record)).unwrap();
+        let raw_partition: UnvalidatedRepositoryHistoryPartition =
+            serde_json::from_value(raw_value).unwrap();
+        let ordered_cursors = versions
+            .iter()
+            .enumerate()
+            .map(|(index, version)| slice3_entry_cursor(index, version.clone()))
+            .collect::<Vec<_>>();
+        let task_cursor = ordered_cursors[task_index].clone();
+        let order = Slice3HistoryOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "repository.history-order.slice3-final-scoped",
+                fixture.partition.start_cursor().clone(),
+                fixture.partition.through_inclusive().clone(),
+                ordered_cursors,
+            )
+            .unwrap(),
+        };
+        let retained_anchor = request.post_merge_repository_anchor();
+        let source = CommitRawPostCommandHistorySource::new(
+            CommitCommittedCoreObservationInput::from_atomic_adapter(
+                request.preallocated_commit_receipt_id().clone(),
+                task_version,
+                committed_objects,
+                committed_objects_digest,
+                request.atomic_commit_safety_capability_id().clone(),
+            ),
+            raw_partition,
+            CommitRawPostCommandAnchorObservationInputs::new(
+                CommitTaskVersionAnchorObservationInput::from_repository_adapter(
+                    task_cursor,
+                    retained_anchor.repository_identity().clone(),
+                    retained_anchor.configuration_identity().clone(),
+                    digest('8'),
+                ),
+                CommitTerminalRepositoryAnchorObservationInput::from_repository_adapter(
+                    fixture.partition.through_inclusive().clone(),
+                    retained_anchor.repository_identity().clone(),
+                    retained_anchor.configuration_identity().clone(),
+                    digest('9'),
+                ),
+            ),
+            CommitRawPostCommandReferenceClosureObservationInputs::new(
+                fixture.task_before_reference_closure,
+                fixture.task_after_reference_closure,
+                fixture.terminal_reference_closure,
+            ),
+            CommitRawLockReleaseObservation::Unknown,
+        );
+        let prelude = request
+            .observe_post_command_history_prelude(source)
+            .unwrap();
+        let index = Slice3HistoryIndex { candidates };
+        let bytes = Slice3HistoryBytes {
+            bytes: evidence_bytes,
+        };
+        let resolver = RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+        let audited = prelude.audit_task_commit_history(&resolver).unwrap();
+        FinalScopedAuditedFixture {
+            audited,
+            row_facts: fixture.row_facts,
+        }
+    }
+
     fn matching_released_lock_authority(
         request: &CommitAtomicCommitRequest<'_>,
     ) -> Result<CommitPostCommandLockAuthority, RepositoryResultContractError> {
@@ -26664,7 +28673,14 @@ mod gate_b2_preview_tests {
         atomic_mode: Slice3AtomicMode,
     ) -> (CommitEffectIntentOutcome, Rc<Slice3Counters>) {
         let counters = Rc::new(Slice3Counters::default());
-        let scope = ready_scope(atomic_mode, Rc::clone(&counters));
+        let scope = if matches!(
+            atomic_mode,
+            Slice3AtomicMode::ScopedScopeDerivationPrePortFailure
+        ) {
+            ready_scope_with_missing_receipt(atomic_mode, Rc::clone(&counters))
+        } else {
+            ready_scope(atomic_mode, Rc::clone(&counters))
+        };
         let outcome = scope.commit_exact_once(
             operation_scope,
             id("b3300000-0000-4000-8000-000000000041"),
@@ -26831,6 +28847,390 @@ mod gate_b2_preview_tests {
         assert_eq!(counters.command_calls.get(), 1);
         assert_eq!(counters.final_history_seals.get(), 0);
         assert_eq!(counters.final_history_audit_failures.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_request_is_owned_and_positive_ncc_only_before_port() {
+        let (positive, positive_counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionScopedHistoryRequest,
+        );
+        assert!(matches!(
+            positive,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(positive_counters.final_scoped_request_mints.get(), 1);
+        assert_eq!(positive_counters.final_scoped_pre_port_rejections.get(), 0);
+
+        let (zero_ncc, zero_counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionScopedZeroNccRequest,
+        );
+        assert!(matches!(
+            zero_ncc,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(zero_counters.final_scoped_request_mints.get(), 0);
+        assert_eq!(zero_counters.final_scoped_pre_port_rejections.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_scope_and_candidate_split_fail_before_port() {
+        for mode in [
+            Slice3AtomicMode::ScopedScopeDerivationPrePortFailure,
+            Slice3AtomicMode::ScopedCandidateSplitPrePortFailure,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_request_mints.get(), 0);
+            assert_eq!(counters.final_scoped_pre_port_rejections.get(), 1);
+            assert_eq!(counters.final_scoped_receiver_resolutions.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_source_shape_has_one_receiver_and_consuming_parts() {
+        let repository_source = include_str!("../repository.rs");
+        let repository_production = repository_source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("repository production prefix must exist");
+        assert_eq!(
+            repository_production
+                .matches("ScopedNccHistoryScanAuthority::resolve(")
+                .count(),
+            2,
+            "one neutral and one final raw scan call are the complete production surface"
+        );
+        assert_eq!(
+            repository_production
+                .matches("into_repository_parts()")
+                .count(),
+            2,
+            "the neutral and final owned requests each have one consuming production extraction"
+        );
+        assert_eq!(
+            repository_production
+                .matches("pub(crate) struct FinalTaskCommitClosureChainCursor")
+                .count(),
+            1
+        );
+        assert_eq!(
+            repository_production
+                .matches("request: FinalTaskCommitScopedNccResolutionRequest")
+                .count(),
+            1,
+            "the opaque final request has one production receiver parameter"
+        );
+        assert!(!repository_production.contains("FinalTaskCommitScopedNccClosureAuthority"));
+        assert!(!repository_production.contains("pub(crate) fn bind_closure_chain"));
+
+        let planner_impl = repository_production
+            .split("impl FinalTaskCommitScopedNccPlannerAuthority {")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("impl FinalTaskCommitScopedNccAuthority {")
+                    .next()
+            })
+            .expect("final planner implementation block must exist");
+        assert_eq!(
+            planner_impl
+                .matches("ScopedNccHistoryScanAuthority::resolve(")
+                .count(),
+            1
+        );
+        assert_eq!(planner_impl.matches("into_repository_parts()").count(), 1);
+        let neutral_impl = repository_production
+            .split("impl PlannerBoundScopedNccHistoryScanCore {")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("\nfn scoped_ncc_planner_binding_failure(")
+                    .next()
+            })
+            .expect("neutral planner implementation block must exist");
+        assert_eq!(
+            neutral_impl
+                .matches("ScopedNccHistoryScanAuthority::resolve(")
+                .count(),
+            1
+        );
+        assert!(!neutral_impl.contains("FinalTaskCommitScopedNcc"));
+
+        let result_source = include_str!("repository.rs");
+        let request_impl = result_source
+            .split("impl FinalTaskCommitScopedNccResolutionRequest {")
+            .nth(1)
+            .and_then(|tail| tail.split("\n}\n\n#[derive(Debug)]").next())
+            .expect("opaque final request implementation block must exist");
+        assert_eq!(request_impl.matches("fn ").count(), 1);
+        assert_eq!(request_impl.matches("into_repository_parts").count(), 1);
+        assert!(request_impl.contains("self,"));
+        for forbidden in [
+            "fn partition(",
+            "fn scoped_candidate(",
+            "fn residual_prelude(",
+            "fn scope(",
+            "fn clone(",
+        ] {
+            assert!(!request_impl.contains(forbidden), "{forbidden}");
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_receiver_calls_once_and_owns_scan_failure() {
+        let (resolved, resolved_counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionScopedHistoryResolution,
+        );
+        assert!(matches!(
+            resolved,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(resolved_counters.final_scoped_receiver_resolutions.get(), 1);
+        assert_eq!(resolved_counters.final_scoped_receiver_failures.get(), 0);
+
+        let (failed, failed_counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionScopedHistoryScanFailure,
+        );
+        assert!(matches!(
+            failed,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(failed_counters.final_scoped_receiver_resolutions.get(), 0);
+        assert_eq!(failed_counters.final_scoped_receiver_failures.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_shared_cursor_accepts_exact_task_and_ncc_orders() {
+        for mode in [
+            Slice3AtomicMode::ProductionScopedClosureNThenTask,
+            Slice3AtomicMode::ProductionScopedClosureTaskThenN,
+            Slice3AtomicMode::ProductionScopedClosureNUnrelatedTaskUnrelatedN,
+            Slice3AtomicMode::ProductionScopedClosureMultipleN,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_closure_chains.get(), 1);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_private_seal_enters_validated_partition() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionScopedFinalSeal,
+        );
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.final_scoped_seals.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_planner_rejects_scope_and_continuity_substitution() {
+        for mode in [
+            Slice3AtomicMode::ScopedPlannerForeignScope,
+            Slice3AtomicMode::ScopedPlannerInitialToNDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerNToNDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerPostTaskNToNDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerTaskToNDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerMovedNccAcrossTask,
+            Slice3AtomicMode::ScopedPlannerTaskDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerTerminalDiscontinuity,
+            Slice3AtomicMode::ScopedPlannerMovedTaskPosition,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_planner_rejections.get(), 1);
+            assert_eq!(counters.final_scoped_seals.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_seal_rejects_each_pointer_and_count_substitution() {
+        for mode in [
+            Slice3AtomicMode::ScopedSealForeignHistoryMarker,
+            Slice3AtomicMode::ScopedSealForeignCandidateMarker,
+            Slice3AtomicMode::ScopedSealWrongBranch,
+            Slice3AtomicMode::ScopedSealForeignObjectWitness,
+            Slice3AtomicMode::ScopedSealForeignScanWitness,
+            Slice3AtomicMode::ScopedSealForeignCompletedChainWitness,
+            Slice3AtomicMode::ScopedSealForeignFirstRowBatch,
+            Slice3AtomicMode::ScopedSealForeignAllRowsBatch,
+            Slice3AtomicMode::ScopedSealForeignTaskPosition,
+            Slice3AtomicMode::ScopedSealForeignNccCount,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_seal_rejections.get(), 1);
+            assert_eq!(counters.final_scoped_seals.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_receiver_rejects_completion_lease_and_batch_replay() {
+        for (capture_mode, replay_mode) in [
+            (
+                Slice3AtomicMode::CaptureScopedFinalCompletion,
+                Slice3AtomicMode::ReplayScopedFinalCompletion,
+            ),
+            (
+                Slice3AtomicMode::CaptureScopedFinalLease,
+                Slice3AtomicMode::ReplayScopedFinalLease,
+            ),
+            (
+                Slice3AtomicMode::CaptureScopedFinalBatch,
+                Slice3AtomicMode::ReplayScopedFinalBatch,
+            ),
+        ] {
+            let counters = Rc::new(Slice3Counters::default());
+            let captured = execute_ready_slice3_scope(
+                ready_scope(capture_mode, Rc::clone(&counters)),
+                Rc::clone(&counters),
+                id("b3300000-0000-4000-8000-000000000041"),
+            );
+            assert!(matches!(
+                captured,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert!(counters.final_scoped_replay_payload.borrow().is_some());
+
+            let rejected = execute_ready_slice3_scope(
+                ready_scope(replay_mode, Rc::clone(&counters)),
+                Rc::clone(&counters),
+                id("b3300000-0000-4000-8000-000000000041"),
+            );
+            assert!(matches!(
+                rejected,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert!(counters.final_scoped_replay_payload.borrow().is_none());
+            assert_eq!(counters.command_calls.get(), 2);
+            assert_eq!(counters.final_scoped_replay_rejections.get(), 1);
+            assert_eq!(counters.final_scoped_seals.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_graph_rejects_foreign_chain_and_planner() {
+        for (capture_mode, replace_mode) in [
+            (
+                Slice3AtomicMode::CaptureScopedFinalAuthorityForClosureSwap,
+                Slice3AtomicMode::SpliceScopedFinalClosureChain,
+            ),
+            (
+                Slice3AtomicMode::CaptureScopedFinalAuthorityForPlannerSwap,
+                Slice3AtomicMode::SpliceScopedFinalPlanner,
+            ),
+            (
+                Slice3AtomicMode::CaptureNoNccFinalClosureChain,
+                Slice3AtomicMode::SpliceNoNccFinalClosureChain,
+            ),
+        ] {
+            let counters = Rc::new(Slice3Counters::default());
+            let captured = execute_ready_slice3_scope(
+                ready_scope(capture_mode, Rc::clone(&counters)),
+                Rc::clone(&counters),
+                id("b3300000-0000-4000-8000-000000000041"),
+            );
+            assert!(matches!(
+                captured,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            let rejected = execute_ready_slice3_scope(
+                ready_scope(replace_mode, Rc::clone(&counters)),
+                Rc::clone(&counters),
+                id("b3300000-0000-4000-8000-000000000041"),
+            );
+            assert!(matches!(
+                rejected,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.command_calls.get(), 2);
+            assert_eq!(counters.final_scoped_graph_splice_rejections.get(), 2);
+            assert_eq!(counters.final_scoped_seals.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_request_rejects_equal_scalar_foreign_stage_before_port()
+    {
+        let counters = Rc::new(Slice3Counters::default());
+        let captured = execute_ready_slice3_scope(
+            ready_scope(
+                Slice3AtomicMode::CaptureScopedAuditedStage,
+                Rc::clone(&counters),
+            ),
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000041"),
+        );
+        assert!(matches!(
+            captured,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        let rejected = execute_ready_slice3_scope(
+            ready_scope(
+                Slice3AtomicMode::SpliceScopedAuditedStage,
+                Rc::clone(&counters),
+            ),
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000041"),
+        );
+        assert!(matches!(
+            rejected,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 2);
+        assert_eq!(counters.final_scoped_request_mints.get(), 0);
+        assert_eq!(counters.final_scoped_pre_port_rejections.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_request_rejects_each_foreign_witness_before_port() {
+        for mode in [
+            Slice3AtomicMode::ScopedForeignCoreWitness,
+            Slice3AtomicMode::ScopedForeignTaskWitness,
+            Slice3AtomicMode::ScopedForeignTerminalWitness,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_request_mints.get(), 0);
+            assert_eq!(counters.final_scoped_pre_port_rejections.get(), 1);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_scoped_request_rejects_each_wrong_exact_anchor_before_port() {
+        for mode in [
+            Slice3AtomicMode::ScopedWrongInitialCursor,
+            Slice3AtomicMode::ScopedWrongTaskCursor,
+            Slice3AtomicMode::ScopedWrongTerminalCursor,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.final_scoped_request_mints.get(), 0);
+            assert_eq!(counters.final_scoped_pre_port_rejections.get(), 1);
+        }
     }
 
     #[test]
