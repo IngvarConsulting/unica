@@ -67,6 +67,8 @@ pub struct BslIndexStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BslIndexRunMetrics {
     pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_reason: Option<String>,
     pub duration_ms: u64,
     pub started_at: u64,
     pub finished_at: u64,
@@ -108,6 +110,7 @@ pub struct IndexBackgroundJob {
     pub source_root: PathBuf,
     pub primary: IndexCommand,
     pub info: IndexCommand,
+    pub recovery_build: Option<IndexCommand>,
     pub status_path: PathBuf,
     #[cfg(test)]
     pub lock_path: PathBuf,
@@ -244,6 +247,7 @@ impl<'a> WorkspaceIndexService<'a> {
                         source_root,
                         commands.build,
                         commands.info,
+                        None,
                         "rlm index build started",
                     ),
                     IndexReadiness::Stale { .. } => self.start_background(
@@ -252,6 +256,7 @@ impl<'a> WorkspaceIndexService<'a> {
                         source_root,
                         commands.update,
                         commands.info,
+                        Some(commands.build),
                         "rlm index building",
                     ),
                     IndexReadiness::Building => IndexStartReport {
@@ -378,6 +383,7 @@ impl<'a> WorkspaceIndexService<'a> {
         source_root: PathBuf,
         primary: IndexCommand,
         info: IndexCommand,
+        recovery_build: Option<IndexCommand>,
         warning: &str,
     ) -> IndexStartReport {
         let lock = lock_path(context);
@@ -418,6 +424,7 @@ impl<'a> WorkspaceIndexService<'a> {
             source_root,
             primary,
             info,
+            recovery_build,
             status_path,
             #[cfg(test)]
             lock_path: lock.clone(),
@@ -651,6 +658,7 @@ impl BslIndexRunMetrics {
     fn from_output(action: &str, started_at: u64, finished_at: u64, output: &IndexOutput) -> Self {
         Self {
             action: action.to_string(),
+            recovery_reason: None,
             duration_ms: output.duration_ms,
             started_at,
             finished_at,
@@ -661,6 +669,22 @@ impl BslIndexRunMetrics {
             methods: parse_u64_info_value(&output.stdout, "Methods"),
             db_size: parse_info_value(&output.stdout, "DB size"),
         }
+    }
+
+    fn recovered_from(
+        mut self,
+        action: &str,
+        reason: &str,
+        started_at: u64,
+        finished_at: u64,
+        total_duration_ms: u64,
+    ) -> Self {
+        self.action = action.to_string();
+        self.recovery_reason = Some(reason.to_string());
+        self.started_at = started_at;
+        self.finished_at = finished_at;
+        self.duration_ms = total_duration_ms;
+        self
     }
 }
 
@@ -678,71 +702,175 @@ impl IndexRunner for SystemIndexRunner {
     }
 }
 
-fn run_background_job(mut job: IndexBackgroundJob) {
+fn run_background_job(job: IndexBackgroundJob) {
+    run_background_job_with(job, |command, lease| {
+        run_index_command_with_heartbeat(command, Some(lease))
+    });
+}
+
+fn run_background_job_with<F>(job: IndexBackgroundJob, mut run: F)
+where
+    F: FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>,
+{
+    let mut job = job;
     let started_at = now_secs();
-    let result = run_index_command_with_heartbeat(&job.primary, Some(&mut job.lock_lease));
-    let finished_at = now_secs();
-    match result {
-        Ok(output) if output.status_success && !output.cancelled && !output.timed_out => {
-            let metrics =
-                BslIndexRunMetrics::from_output(&job.action, started_at, finished_at, &output);
-            match run_index_command(&job.info) {
-                Ok(info) => match readiness_from_info(&info) {
-                    IndexReadiness::Ready { db_path } => {
-                        let _ = write_status_path(
-                            &job.status_path,
-                            BslIndexStatus::ready(&job.source_root, &db_path)
-                                .with_last_run(metrics),
-                        );
-                    }
-                    other => {
-                        let _ = write_status_path(
-                            &job.status_path,
-                            BslIndexStatus::failed(
-                                format!("rlm index {} finished but info is {other:?}", job.action)
-                                    .as_str(),
-                                Some(&job.source_root),
-                            )
-                            .with_last_run(metrics),
-                        );
-                    }
-                },
-                Err(error) => {
-                    let _ = write_status_path(
-                        &job.status_path,
-                        BslIndexStatus::failed(error.as_str(), Some(&job.source_root))
-                            .with_last_run(metrics),
-                    );
-                }
-            }
-        }
-        Ok(output) => {
-            let metrics =
-                BslIndexRunMetrics::from_output(&job.action, started_at, finished_at, &output);
-            let message = if output.cancelled {
-                cancelled_error(format!("rlm index {} stopped", job.action))
-            } else if output.timed_out {
-                format!("rlm index {} timed out", job.action)
-            } else {
-                format!(
-                    "rlm index {} failed: {} {}",
-                    job.action,
-                    output.status,
-                    output.stderr.trim()
-                )
-            };
-            let _ = write_status_path(
-                &job.status_path,
-                BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
-                    .with_last_run(metrics),
-            );
-        }
+    let primary = match run(&job.primary, &mut job.lock_lease) {
+        Ok(output) => output,
         Err(error) => {
             let _ = write_status_path(
                 &job.status_path,
                 BslIndexStatus::failed(error.as_str(), Some(&job.source_root)),
             );
+            return;
         }
+    };
+    let primary_finished_at = now_secs();
+    let primary_metrics =
+        BslIndexRunMetrics::from_output(&job.action, started_at, primary_finished_at, &primary);
+    if !primary.status_success || primary.cancelled || primary.timed_out {
+        let message = command_failure_message(&job.action, &primary);
+        let _ = write_status_path(
+            &job.status_path,
+            BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                .with_last_run(primary_metrics),
+        );
+        return;
+    }
+
+    let post_primary = match run(&job.info, &mut job.lock_lease) {
+        Ok(info) => readiness_from_info(&info),
+        Err(error) => {
+            let _ = write_status_path(
+                &job.status_path,
+                BslIndexStatus::failed(error.as_str(), Some(&job.source_root))
+                    .with_last_run(primary_metrics),
+            );
+            return;
+        }
+    };
+    match post_primary {
+        IndexReadiness::Ready { db_path } => {
+            let _ = write_status_path(
+                &job.status_path,
+                BslIndexStatus::ready(&job.source_root, &db_path).with_last_run(primary_metrics),
+            );
+        }
+        readiness if readiness.is_stale_content() && job.recovery_build.is_some() => {
+            let reason = "stale (content) after update";
+            let _ = write_status_path(
+                &job.status_path,
+                BslIndexStatus::building(
+                    "build recovery after stale (content)",
+                    Some(&job.source_root),
+                ),
+            );
+            let recovery = run(
+                job.recovery_build
+                    .as_ref()
+                    .expect("guarded recovery command"),
+                &mut job.lock_lease,
+            );
+            let recovery = match recovery {
+                Ok(output) => output,
+                Err(error) => {
+                    let message = format!(
+                        "rlm index update finished with stale (content) after update; recovery build failed: {error}"
+                    );
+                    let _ = write_status_path(
+                        &job.status_path,
+                        BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                            .with_last_run(primary_metrics),
+                    );
+                    return;
+                }
+            };
+            if !recovery.status_success || recovery.cancelled || recovery.timed_out {
+                let detail = command_failure_message("build", &recovery);
+                let message = format!(
+                    "rlm index update finished with stale (content) after update; recovery build failed: {detail}"
+                );
+                let _ = write_status_path(
+                    &job.status_path,
+                    BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                        .with_last_run(primary_metrics),
+                );
+                return;
+            }
+
+            let finished_at = now_secs();
+            let recovery_metrics = BslIndexRunMetrics::from_output(
+                "build",
+                primary_finished_at,
+                finished_at,
+                &recovery,
+            )
+            .recovered_from(
+                "update->build",
+                reason,
+                started_at,
+                finished_at,
+                primary.duration_ms.saturating_add(recovery.duration_ms),
+            );
+            let final_readiness = match run(&job.info, &mut job.lock_lease) {
+                Ok(info) => readiness_from_info(&info),
+                Err(error) => {
+                    let message = format!(
+                        "rlm index update finished but info is stale (content); recovery build info failed: {error}"
+                    );
+                    let _ = write_status_path(
+                        &job.status_path,
+                        BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                            .with_last_run(recovery_metrics),
+                    );
+                    return;
+                }
+            };
+            match final_readiness {
+                IndexReadiness::Ready { db_path } => {
+                    let _ = write_status_path(
+                        &job.status_path,
+                        BslIndexStatus::ready(&job.source_root, &db_path)
+                            .with_last_run(recovery_metrics),
+                    );
+                }
+                other => {
+                    let final_status = other
+                        .stale_status()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{other:?}"));
+                    let message = format!(
+                        "rlm index update finished but info is stale (content); recovery build finished but info is still {final_status}"
+                    );
+                    let _ = write_status_path(
+                        &job.status_path,
+                        BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                            .with_last_run(recovery_metrics),
+                    );
+                }
+            }
+        }
+        other => {
+            let message = format!("rlm index {} finished but info is {other:?}", job.action);
+            let _ = write_status_path(
+                &job.status_path,
+                BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
+                    .with_last_run(primary_metrics),
+            );
+        }
+    }
+}
+
+fn command_failure_message(action: &str, output: &IndexOutput) -> String {
+    if output.cancelled {
+        cancelled_error(format!("rlm index {action} stopped"))
+    } else if output.timed_out {
+        format!("rlm index {action} timed out")
+    } else {
+        format!(
+            "rlm index {action} failed: {} {}",
+            output.status,
+            output.stderr.trim()
+        )
     }
 }
 
@@ -1327,6 +1455,7 @@ source-set:
         assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
         let backgrounds = runner.backgrounds.borrow();
         assert_eq!(backgrounds[0].primary.args[0..2], ["index", "build"]);
+        assert!(backgrounds[0].recovery_build.is_none());
         assert_eq!(backgrounds[0].primary.env[0].0, "RLM_INDEX_DIR");
         assert_eq!(
             PathBuf::from(&backgrounds[0].primary.env[0].1),
@@ -1599,6 +1728,7 @@ source-set:
             BslIndexStatus::ready(&context.workspace_root.join("src"), &db_path).with_last_run(
                 BslIndexRunMetrics {
                     action: "build".to_string(),
+                    recovery_reason: None,
                     duration_ms: 1234,
                     started_at: 10,
                     finished_at: 11,
@@ -1666,10 +1796,116 @@ source-set:
         let report = service.start_for_workspace(&context, &Map::new(), false);
 
         assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
+        let backgrounds = runner.backgrounds.borrow();
+        assert_eq!(backgrounds[0].primary.args[0..2], ["index", "update"]);
         assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "update"]
+            backgrounds[0]
+                .recovery_build
+                .as_ref()
+                .expect("update should carry a recovery build")
+                .args[0..2],
+            ["index", "build"]
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn update_falls_back_to_one_build_after_stale_content() {
+        let context = test_context("stale-content-recovery");
+        let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "").unwrap();
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+            IndexOutput::success("Index built in 1.2s\n  Index: v14\n  Modules: 24\n"),
+            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
+        ]
+        .into_iter();
+        let mut commands = Vec::new();
+
+        run_background_job_with(job, |command, _lease| {
+            commands.push(command.args[0..2].to_vec());
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        assert_eq!(
+            commands,
+            vec![
+                vec!["index".to_string(), "update".to_string()],
+                vec!["index".to_string(), "info".to_string()],
+                vec!["index".to_string(), "build".to_string()],
+                vec!["index".to_string(), "info".to_string()],
+            ]
+        );
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "ready");
+        let metrics = status.last_run.unwrap();
+        assert_eq!(metrics.action, "update->build");
+        assert_eq!(
+            metrics.recovery_reason.as_deref(),
+            Some("stale (content) after update")
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn failed_recovery_preserves_stale_content_cause() {
+        let context = test_context("stale-content-recovery-failed");
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+            IndexOutput {
+                status_success: false,
+                status: "exit status: 1".to_string(),
+                stdout: String::new(),
+                stderr: "disk full".to_string(),
+                timed_out: false,
+                cancelled: false,
+                duration_ms: 4,
+            },
+        ]
+        .into_iter();
+
+        run_background_job_with(job, |_command, _lease| {
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "failed");
+        let message = status.message.unwrap();
+        assert!(message.contains("stale (content) after update"));
+        assert!(message.contains("disk full"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn recovery_does_not_recurse_when_final_info_is_stale() {
+        let context = test_context("stale-content-recovery-terminal");
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+            IndexOutput::success("Index built in 1.2s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+        ]
+        .into_iter();
+        let mut calls = 0;
+
+        run_background_job_with(job, |_command, _lease| {
+            calls += 1;
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        assert_eq!(calls, 4);
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "failed");
+        assert!(status.message.unwrap().contains("still stale (content)"));
         cleanup(&context);
     }
 
@@ -1710,6 +1946,7 @@ source-set:
                 ],
                 CancellationToken::new(),
             ),
+            recovery_build: None,
             status_path: status.clone(),
             lock_path: lock.clone(),
             lock_lease,
@@ -1866,6 +2103,7 @@ source-set:
                 &["Index not found: /tmp/bsl_index.db".to_string()],
                 CancellationToken::new(),
             ),
+            recovery_build: None,
             status_path: status.clone(),
             lock_path: lock.clone(),
             lock_lease,
@@ -2060,6 +2298,39 @@ source-set:
                 cancelled: false,
                 duration_ms: 0,
             }
+        }
+    }
+
+    fn inert_index_command(context: &WorkspaceContext, verb: &str) -> IndexCommand {
+        IndexCommand {
+            program: PathBuf::from("unused-by-scripted-runner"),
+            args: vec![
+                "index".to_string(),
+                verb.to_string(),
+                context.workspace_root.join("src").display().to_string(),
+            ],
+            cwd: context.workspace_root.clone(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn test_background_job(context: &WorkspaceContext, action: &str) -> IndexBackgroundJob {
+        let lock = lock_path(context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let lock_lease = acquire_index_lock(&lock, action, &context.workspace_root.join("src"))
+            .unwrap()
+            .expect("test background job should acquire lock");
+        IndexBackgroundJob {
+            action: action.to_string(),
+            source_root: context.workspace_root.join("src"),
+            primary: inert_index_command(context, action),
+            info: inert_index_command(context, "info"),
+            recovery_build: None,
+            status_path: status_path(context),
+            lock_path: lock,
+            lock_lease,
         }
     }
 
