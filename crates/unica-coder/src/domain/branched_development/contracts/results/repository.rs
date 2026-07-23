@@ -1823,6 +1823,9 @@ impl JsonSchema for RepositoryRelevantAnchors {
     }
 }
 
+/// Full approved integration snapshot. Presentation never selects or orders a
+/// target, but it remains approval-visible and therefore remains in this
+/// digest preimage; identity/action-only semantics use `CommitExactObject`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IntegrationSetDigestRecord {
@@ -1843,6 +1846,9 @@ struct IntegrationSetDigestRecord {
 impl contract_digest_record_sealed::Sealed for IntegrationSetDigestRecord {}
 impl ContractDigestRecord for IntegrationSetDigestRecord {}
 
+/// Full human-approved lock-plan snapshot. `planDigest` intentionally binds
+/// presentation together with every semantic and lineage field; it is not the
+/// target-identity equality used by lock selection or receipt matching.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LockPlanDigestRecord {
@@ -1917,78 +1923,6 @@ impl DeleteSelfLockCapabilityEvidence {
             exists_and_separately_lockable,
             capability_row_id,
         })
-    }
-}
-
-/// Identifiers observed by one current repository-planner invocation.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct RepositoryLockPlanObservedIds {
-    plan_id: UnicaId,
-    integration_set_id: UnicaId,
-}
-
-impl RepositoryLockPlanObservedIds {
-    pub(crate) fn new(plan_id: UnicaId, integration_set_id: UnicaId) -> Self {
-        Self {
-            plan_id,
-            integration_set_id,
-        }
-    }
-}
-
-/// Non-topology evidence returned by the same planner invocation as its
-/// identifiers, authoritative topology and lock rows.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct RepositoryLockPlanObservedEvidence {
-    relevant_anchors: RepositoryRelevantAnchors,
-    compatibility_mode: CompatibilityMode,
-    reference_closure_digest: Sha256Digest,
-    prevalidation_diagnostics_digest: Sha256Digest,
-    planner_capability_id: CapabilityRowId,
-}
-
-impl RepositoryLockPlanObservedEvidence {
-    pub(crate) fn from_planner_adapter(
-        relevant_anchors: RepositoryRelevantAnchors,
-        compatibility_mode: CompatibilityMode,
-        reference_closure_digest: Sha256Digest,
-        prevalidation_diagnostics_digest: Sha256Digest,
-        planner_capability_id: CapabilityRowId,
-    ) -> Self {
-        Self {
-            relevant_anchors,
-            compatibility_mode,
-            reference_closure_digest,
-            prevalidation_diagnostics_digest,
-            planner_capability_id,
-        }
-    }
-}
-
-/// Complete output of one current repository-planner invocation. It carries
-/// typed authoritative topology rather than caller-built integration entries
-/// or independent delete-self evidence.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct RepositoryLockPlanObservationInput {
-    ids: RepositoryLockPlanObservedIds,
-    topology: Vec<RepositoryIntegrationTopologyObservation>,
-    lock_entries: RepositoryUpdateLockTargets,
-    evidence: RepositoryLockPlanObservedEvidence,
-}
-
-impl RepositoryLockPlanObservationInput {
-    pub(crate) fn from_planner_adapter(
-        ids: RepositoryLockPlanObservedIds,
-        topology: Vec<RepositoryIntegrationTopologyObservation>,
-        lock_entries: RepositoryUpdateLockTargets,
-        evidence: RepositoryLockPlanObservedEvidence,
-    ) -> Self {
-        Self {
-            ids,
-            topology,
-            lock_entries,
-            evidence,
-        }
     }
 }
 
@@ -2077,6 +2011,38 @@ impl RepositoryLockPlanObservationRequest<'_> {
     pub(crate) fn applied_decision_ids(&self) -> &[UnicaId] {
         self.verified_scope.applied_decision_ids()
     }
+
+    /// Completes this exact current request. Adapter values cannot be assembled
+    /// into an independently reusable production authority: only consuming the
+    /// request can mint the invocation-bound lease.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn complete_from_planner_adapter(
+        self,
+        plan_id: UnicaId,
+        integration_set_id: UnicaId,
+        topology: Vec<RepositoryIntegrationTopologyObservation>,
+        lock_entries: RepositoryUpdateLockTargets,
+        relevant_anchors: RepositoryRelevantAnchors,
+        compatibility_mode: CompatibilityMode,
+        reference_closure_digest: Sha256Digest,
+        prevalidation_diagnostics_digest: Sha256Digest,
+        planner_capability_id: CapabilityRowId,
+    ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
+        let topology_batch = RepositoryIntegrationTopologyBatchAuthority::derive(topology)?;
+        topology_batch.validate_lock_entries(&lock_entries)?;
+        Ok(RepositoryLockPlanObservationLease {
+            completion: self.invocation.completion(),
+            plan_id,
+            integration_set_id,
+            topology_batch,
+            lock_entries,
+            relevant_anchors,
+            compatibility_mode,
+            reference_closure_digest,
+            prevalidation_diagnostics_digest,
+            planner_capability_id,
+        })
+    }
 }
 
 /// Request-bound completed planner batch. The topology has already been
@@ -2084,60 +2050,8 @@ impl RepositoryLockPlanObservationRequest<'_> {
 #[derive(Debug)]
 pub(crate) struct RepositoryLockPlanObservationLease {
     completion: RepositoryLockPlanObservationCompletionCapability,
-    ids: RepositoryLockPlanObservedIds,
-    topology_batch: RepositoryIntegrationTopologyBatchAuthority,
-    lock_entries: RepositoryUpdateLockTargets,
-    evidence: RepositoryLockPlanObservedEvidence,
-}
-
-impl RepositoryLockPlanObservationLease {
-    pub(crate) fn complete_from_planner_adapter(
-        request: &RepositoryLockPlanObservationRequest<'_>,
-        input: RepositoryLockPlanObservationInput,
-    ) -> Result<Self, RepositoryResultContractError> {
-        let RepositoryLockPlanObservationInput {
-            ids,
-            topology,
-            lock_entries,
-            evidence,
-        } = input;
-        let topology_batch = RepositoryIntegrationTopologyBatchAuthority::derive(topology)?;
-        topology_batch.validate_lock_entries(&lock_entries)?;
-        Ok(Self {
-            completion: request.invocation.completion(),
-            ids,
-            topology_batch,
-            lock_entries,
-            evidence,
-        })
-    }
-}
-
-pub(crate) trait RepositoryLockPlanObservationPort {
-    fn observe_lock_plan(
-        &mut self,
-        request: RepositoryLockPlanObservationRequest<'_>,
-    ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError>;
-}
-
-/// One atomic planner result. All plan identifiers, integration entries,
-/// closure evidence and lock rows come from the same capability invocation.
-/// It is deliberately non-Clone so consumers cannot split and recombine rows.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AtomicRepositoryLockPlanCapabilityAuthority {
     plan_id: UnicaId,
     integration_set_id: UnicaId,
-    merge_session_id: UnicaId,
-    resolved_session_digest: Sha256Digest,
-    support_gate_id: UnicaId,
-    support_gate_digest: Sha256Digest,
-    support_gate_history_evidence: SupportGateHistoryEvidence,
-    verification_id: UnicaId,
-    verification_digest: Sha256Digest,
-    settings_digest: Sha256Digest,
-    comparison_id: UnicaId,
-    ordinary_result_artifact_id: UnicaId,
-    result_digest: Sha256Digest,
     topology_batch: RepositoryIntegrationTopologyBatchAuthority,
     lock_entries: RepositoryUpdateLockTargets,
     relevant_anchors: RepositoryRelevantAnchors,
@@ -2147,61 +2061,117 @@ pub(crate) struct AtomicRepositoryLockPlanCapabilityAuthority {
     planner_capability_id: CapabilityRowId,
 }
 
-impl AtomicRepositoryLockPlanCapabilityAuthority {
-    pub(crate) fn from_observation_port(
-        verified_scope: &ValidatedMainSandboxVerificationAuthority,
-        port: &mut dyn RepositoryLockPlanObservationPort,
-    ) -> Result<Self, RepositoryResultContractError> {
-        let invocation = RepositoryLockPlanObservationInvocationCapability::mint();
-        let request = RepositoryLockPlanObservationRequest {
-            verified_scope,
-            invocation: &invocation,
-        };
-        let lease = port.observe_lock_plan(request)?;
-        if !invocation.owns_completion(&lease.completion) {
+pub(crate) trait RepositoryLockPlanObservationPort {
+    fn observe_lock_plan(
+        &mut self,
+        request: RepositoryLockPlanObservationRequest<'_>,
+    ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError>;
+}
+
+/// Non-clone owning scope for one verified sandbox and its exact planner
+/// invocation. Neither half is exposed independently between observation and
+/// completion, so a scalar-equivalent verification cannot be spliced into an
+/// already completed planner lease.
+#[derive(Debug)]
+struct RepositoryLockPlanObservationSession {
+    verified: ValidatedMainSandboxVerificationAuthority,
+    invocation: RepositoryLockPlanObservationInvocationCapability,
+}
+
+impl RepositoryLockPlanObservationSession {
+    fn begin(verified: ValidatedMainSandboxVerificationAuthority) -> Self {
+        Self {
+            verified,
+            invocation: RepositoryLockPlanObservationInvocationCapability::mint(),
+        }
+    }
+
+    fn request(&self) -> RepositoryLockPlanObservationRequest<'_> {
+        RepositoryLockPlanObservationRequest {
+            verified_scope: &self.verified,
+            invocation: &self.invocation,
+        }
+    }
+
+    fn complete(
+        self,
+        lease: RepositoryLockPlanObservationLease,
+    ) -> Result<LockPlanAuthority, RepositoryResultContractError> {
+        if !self.invocation.owns_completion(&lease.completion) {
             return Err(RepositoryResultContractError(
                 "repository lock-plan completion belongs to another planner invocation",
             ));
         }
         let RepositoryLockPlanObservationLease {
             completion: _,
-            ids,
+            plan_id,
+            integration_set_id,
             topology_batch,
             lock_entries,
-            evidence,
+            relevant_anchors,
+            compatibility_mode,
+            reference_closure_digest,
+            prevalidation_diagnostics_digest,
+            planner_capability_id,
         } = lease;
-        let RepositoryLockPlanObservedIds {
-            plan_id,
-            integration_set_id,
-        } = ids;
-        let RepositoryLockPlanObservedEvidence {
-            relevant_anchors,
-            compatibility_mode,
-            reference_closure_digest,
-            prevalidation_diagnostics_digest,
+        topology_batch.validate_lock_entries(&lock_entries)?;
+
+        let verified = self.verified;
+        let merge_session_id = verified.merge_session_id().clone();
+        let resolved_session_digest = verified.resolved_session_digest().clone();
+        let support_gate_id = verified.support_gate_id().clone();
+        let support_gate_digest = verified.support_gate_digest().clone();
+        let support_gate_history_evidence = verified.support_gate_history_evidence().clone();
+        let verification_id = verified.verification_id().clone();
+        let verification_digest = verified.verification_digest().clone();
+        let settings_digest = verified.settings_digest().clone();
+        let gate_session_lineage = LockPlanGateSessionLineage {
+            comparison_id: verified.comparison_id().clone(),
+            ordinary_result_artifact_id: verified.ordinary_result_artifact_id().clone(),
+            result_digest: verified.result_digest().clone(),
             planner_capability_id,
-        } = evidence;
-        Ok(Self {
-            plan_id,
-            integration_set_id,
-            merge_session_id: verified_scope.merge_session_id().clone(),
-            resolved_session_digest: verified_scope.resolved_session_digest().clone(),
-            support_gate_id: verified_scope.support_gate_id().clone(),
-            support_gate_digest: verified_scope.support_gate_digest().clone(),
-            support_gate_history_evidence: verified_scope.support_gate_history_evidence().clone(),
-            verification_id: verified_scope.verification_id().clone(),
-            verification_digest: verified_scope.verification_digest().clone(),
-            settings_digest: verified_scope.settings_digest().clone(),
-            comparison_id: verified_scope.comparison_id().clone(),
-            ordinary_result_artifact_id: verified_scope.ordinary_result_artifact_id().clone(),
-            result_digest: verified_scope.result_digest().clone(),
-            topology_batch,
-            lock_entries,
-            relevant_anchors,
-            compatibility_mode,
-            reference_closure_digest,
-            prevalidation_diagnostics_digest,
-            planner_capability_id,
+        };
+        let _consumed_planning = verified.into_planning();
+        let integration_set_digest = result_digest(
+            &IntegrationSetDigestRecord {
+                merge_session_id: merge_session_id.clone(),
+                resolved_session_digest: resolved_session_digest.clone(),
+                support_gate_id: support_gate_id.clone(),
+                support_gate_digest: support_gate_digest.clone(),
+                support_gate_history_evidence_digest: support_gate_history_evidence
+                    .evidence_digest()
+                    .clone(),
+                verification_id: verification_id.clone(),
+                verification_digest: verification_digest.clone(),
+                integration_entries: topology_batch.integration_entries().clone(),
+                compatibility_mode: compatibility_mode.clone(),
+                reference_closure_digest: reference_closure_digest.clone(),
+                settings_digest: settings_digest.clone(),
+                prevalidation_diagnostics_digest: prevalidation_diagnostics_digest.clone(),
+            },
+            "integration-set digest failed",
+        )?;
+        Ok(LockPlanAuthority {
+            gate_session_lineage,
+            record: LockPlanDigestRecord {
+                plan_id,
+                merge_session_id,
+                resolved_session_digest,
+                support_gate_id,
+                support_gate_digest,
+                support_gate_history_evidence,
+                verification_id,
+                verification_digest,
+                integration_set_id,
+                integration_entries: topology_batch.into_integration_entries(),
+                integration_set_digest,
+                lock_entries,
+                relevant_anchors,
+                compatibility_mode,
+                reference_closure_digest,
+                settings_digest,
+                prevalidation_diagnostics_digest,
+            },
         })
     }
 }
@@ -2232,86 +2202,16 @@ pub(crate) struct LockPlanAuthorityTestParts {
 }
 
 impl LockPlanAuthority {
+    /// The only production lock-plan mint. The verified authority stays owned
+    /// by this indivisible call from request creation through final authority
+    /// construction, so no scalar-equal authority can be paired afterwards.
     pub(crate) fn from_verified_main_sandbox(
         verified: ValidatedMainSandboxVerificationAuthority,
-        planner: AtomicRepositoryLockPlanCapabilityAuthority,
+        port: &mut dyn RepositoryLockPlanObservationPort,
     ) -> Result<Self, RepositoryResultContractError> {
-        if &planner.merge_session_id != verified.merge_session_id()
-            || &planner.resolved_session_digest != verified.resolved_session_digest()
-            || &planner.support_gate_id != verified.support_gate_id()
-            || &planner.support_gate_digest != verified.support_gate_digest()
-            || &planner.support_gate_history_evidence != verified.support_gate_history_evidence()
-            || &planner.verification_id != verified.verification_id()
-            || &planner.verification_digest != verified.verification_digest()
-            || &planner.settings_digest != verified.settings_digest()
-            || &planner.comparison_id != verified.comparison_id()
-            || &planner.ordinary_result_artifact_id != verified.ordinary_result_artifact_id()
-            || &planner.result_digest != verified.result_digest()
-        {
-            return Err(RepositoryResultContractError(
-                "atomic lock plan does not consume the exact sandbox verification scope",
-            ));
-        }
-        planner
-            .topology_batch
-            .validate_lock_entries(&planner.lock_entries)?;
-
-        let merge_session_id = verified.merge_session_id().clone();
-        let resolved_session_digest = verified.resolved_session_digest().clone();
-        let support_gate_id = verified.support_gate_id().clone();
-        let support_gate_digest = verified.support_gate_digest().clone();
-        let support_gate_history_evidence = verified.support_gate_history_evidence().clone();
-        let verification_id = verified.verification_id().clone();
-        let verification_digest = verified.verification_digest().clone();
-        let settings_digest = verified.settings_digest().clone();
-        let gate_session_lineage = LockPlanGateSessionLineage {
-            comparison_id: verified.comparison_id().clone(),
-            ordinary_result_artifact_id: verified.ordinary_result_artifact_id().clone(),
-            result_digest: verified.result_digest().clone(),
-            planner_capability_id: planner.planner_capability_id.clone(),
-        };
-        let _consumed_planning = verified.into_planning();
-        let integration_set_digest = result_digest(
-            &IntegrationSetDigestRecord {
-                merge_session_id: merge_session_id.clone(),
-                resolved_session_digest: resolved_session_digest.clone(),
-                support_gate_id: support_gate_id.clone(),
-                support_gate_digest: support_gate_digest.clone(),
-                support_gate_history_evidence_digest: support_gate_history_evidence
-                    .evidence_digest()
-                    .clone(),
-                verification_id: verification_id.clone(),
-                verification_digest: verification_digest.clone(),
-                integration_entries: planner.topology_batch.integration_entries().clone(),
-                compatibility_mode: planner.compatibility_mode.clone(),
-                reference_closure_digest: planner.reference_closure_digest.clone(),
-                settings_digest: settings_digest.clone(),
-                prevalidation_diagnostics_digest: planner.prevalidation_diagnostics_digest.clone(),
-            },
-            "integration-set digest failed",
-        )?;
-        Ok(Self {
-            gate_session_lineage,
-            record: LockPlanDigestRecord {
-                plan_id: planner.plan_id,
-                merge_session_id,
-                resolved_session_digest,
-                support_gate_id,
-                support_gate_digest,
-                support_gate_history_evidence,
-                verification_id,
-                verification_digest,
-                integration_set_id: planner.integration_set_id,
-                integration_entries: planner.topology_batch.into_integration_entries(),
-                integration_set_digest,
-                lock_entries: planner.lock_entries,
-                relevant_anchors: planner.relevant_anchors,
-                compatibility_mode: planner.compatibility_mode,
-                reference_closure_digest: planner.reference_closure_digest,
-                settings_digest,
-                prevalidation_diagnostics_digest: planner.prevalidation_diagnostics_digest,
-            },
-        })
+        let session = RepositoryLockPlanObservationSession::begin(verified);
+        let lease = port.observe_lock_plan(session.request())?;
+        session.complete(lease)
     }
 
     #[cfg(test)]
@@ -2642,6 +2542,9 @@ impl LockPlanData {
     }
 }
 
+/// Full acquired-set snapshot bound to the approved plan snapshot. Display is
+/// retained for approval/audit hashing, while physical lock identity is the
+/// separate display-free target projection used by acquisition checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LockSetDigestRecord {
@@ -10751,29 +10654,35 @@ mod merge_consumer_tests {
         .plan
     }
 
-    fn root_observation_input() -> RepositoryLockPlanObservationInput {
+    fn complete_root_observation(
+        request: RepositoryLockPlanObservationRequest<'_>,
+        integration_display: &str,
+        lock_display: &str,
+    ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
         let template = template_plan();
-        RepositoryLockPlanObservationInput::from_planner_adapter(
-            RepositoryLockPlanObservedIds::new(
-                id("91000000-0000-4000-8000-000000000001"),
-                id("91000000-0000-4000-8000-000000000002"),
-            ),
+        request.complete_from_planner_adapter(
+            id("91000000-0000-4000-8000-000000000001"),
+            id("91000000-0000-4000-8000-000000000002"),
             vec![RepositoryIntegrationTopologyObservation::root_modify(
-                RepositoryTargetDisplay::parse("Configuration root").unwrap(),
+                RepositoryTargetDisplay::parse(integration_display).unwrap(),
             )],
-            template.lock_entries,
-            RepositoryLockPlanObservedEvidence::from_planner_adapter(
-                template.relevant_anchors,
-                template.compatibility_mode,
-                template.reference_closure_digest,
-                template.prevalidation_diagnostics_digest,
-                CapabilityRowId::parse("repository.lock-plan.consumer").unwrap(),
-            ),
+            serde_json::from_value(serde_json::json!([{
+                "targetKind": "configurationRoot",
+                "objectDisplay": lock_display,
+                "reasons": ["supportGraphGuard", "updateTarget"]
+            }]))
+            .unwrap(),
+            template.relevant_anchors,
+            template.compatibility_mode,
+            template.reference_closure_digest,
+            template.prevalidation_diagnostics_digest,
+            CapabilityRowId::parse("repository.lock-plan.consumer").unwrap(),
         )
     }
 
     struct TestRepositoryLockPlanObservationPort {
-        input: Option<RepositoryLockPlanObservationInput>,
+        integration_display: String,
+        lock_display: String,
         observed_verification_id: Option<UnicaId>,
     }
 
@@ -10783,12 +10692,15 @@ mod merge_consumer_tests {
             request: RepositoryLockPlanObservationRequest<'_>,
         ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
             self.observed_verification_id = Some(request.verification_id().clone());
-            RepositoryLockPlanObservationLease::complete_from_planner_adapter(
-                &request,
-                self.input
-                    .take()
-                    .expect("test planner is called exactly once"),
-            )
+            complete_root_observation(request, &self.integration_display, &self.lock_display)
+        }
+    }
+
+    fn root_observation_port() -> TestRepositoryLockPlanObservationPort {
+        TestRepositoryLockPlanObservationPort {
+            integration_display: "Configuration root".to_owned(),
+            lock_display: "Configuration root".to_owned(),
+            observed_verification_id: None,
         }
     }
 
@@ -10796,17 +10708,10 @@ mod merge_consumer_tests {
     fn lock_plan_observation_port_binds_verified_scope_and_derives_root_entry() {
         let verified = validated_main_sandbox_verification_fixture_test_only();
         let expected_verification_id = verified.verification_id().clone();
-        let mut port = TestRepositoryLockPlanObservationPort {
-            input: Some(root_observation_input()),
-            observed_verification_id: None,
-        };
+        let mut port = root_observation_port();
 
-        let planner = AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(
-            &verified, &mut port,
-        )
-        .unwrap();
         let plan = LockPlanData::from_authority(
-            LockPlanAuthority::from_verified_main_sandbox(verified, planner).unwrap(),
+            LockPlanAuthority::from_verified_main_sandbox(verified, &mut port).unwrap(),
         )
         .unwrap();
 
@@ -10857,33 +10762,129 @@ mod merge_consumer_tests {
             verified_scope: &verified_a,
             invocation: &foreign_invocation,
         };
-        let foreign_lease = RepositoryLockPlanObservationLease::complete_from_planner_adapter(
-            &foreign_request,
-            root_observation_input(),
-        )
-        .unwrap();
+        let foreign_lease =
+            complete_root_observation(foreign_request, "Configuration root", "Configuration root")
+                .unwrap();
         let mut port = ForeignRepositoryLockPlanLeasePort {
             lease: Some(foreign_lease),
         };
 
-        assert!(
-            AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(
-                &verified_b,
-                &mut port,
-            )
-            .is_err()
-        );
+        assert!(LockPlanAuthority::from_verified_main_sandbox(verified_b, &mut port).is_err());
     }
 
-    fn planner_for(
-        verified: &ValidatedMainSandboxVerificationAuthority,
-    ) -> AtomicRepositoryLockPlanCapabilityAuthority {
+    struct CachedRepositoryLockPlanPayloadPort {
+        cached: Option<RepositoryLockPlanObservationLease>,
+        invocation_count: usize,
+    }
+
+    impl RepositoryLockPlanObservationPort for CachedRepositoryLockPlanPayloadPort {
+        fn observe_lock_plan(
+            &mut self,
+            request: RepositoryLockPlanObservationRequest<'_>,
+        ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
+            self.invocation_count += 1;
+            if self.invocation_count == 1 {
+                self.cached = Some(complete_root_observation(
+                    request,
+                    "Configuration root",
+                    "Configuration root",
+                )?);
+                return Err(RepositoryResultContractError(
+                    "test defers request-bound planner payload",
+                ));
+            }
+            let _current_request = request;
+            Ok(self
+                .cached
+                .take()
+                .expect("cached payload is rebound exactly once"))
+        }
+    }
+
+    #[test]
+    fn lock_plan_observation_rejects_cached_payload_rebound_to_equal_scalar_invocation() {
+        let verified_a = validated_main_sandbox_verification_fixture_test_only();
+        let verified_b = validated_main_sandbox_verification_fixture_test_only();
+        assert_eq!(verified_a.verification_id(), verified_b.verification_id());
+        let mut port = CachedRepositoryLockPlanPayloadPort {
+            cached: None,
+            invocation_count: 0,
+        };
+
+        assert!(LockPlanAuthority::from_verified_main_sandbox(verified_a, &mut port).is_err());
+        assert!(LockPlanAuthority::from_verified_main_sandbox(verified_b, &mut port).is_err());
+    }
+
+    #[test]
+    fn lock_plan_rejects_equal_scalar_final_verified_authority_splice() {
+        let verified_a = validated_main_sandbox_verification_fixture_test_only();
+        let verified_b = validated_main_sandbox_verification_fixture_test_only();
+        assert_eq!(verified_a.verification_id(), verified_b.verification_id());
+        assert_eq!(
+            verified_a.verification_digest(),
+            verified_b.verification_digest()
+        );
+        let session_a = RepositoryLockPlanObservationSession::begin(verified_a);
+        let lease_from_a = complete_root_observation(
+            session_a.request(),
+            "Configuration root",
+            "Configuration root",
+        )
+        .unwrap();
+        let session_b = RepositoryLockPlanObservationSession::begin(verified_b);
+
+        assert!(session_b.complete(lease_from_a).is_err());
+    }
+
+    fn display_variant_plan(integration_display: &str, lock_display: &str) -> LockPlanData {
+        let verified = validated_main_sandbox_verification_fixture_test_only();
         let mut port = TestRepositoryLockPlanObservationPort {
-            input: Some(root_observation_input()),
+            integration_display: integration_display.to_owned(),
+            lock_display: lock_display.to_owned(),
             observed_verification_id: None,
         };
-        AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(verified, &mut port)
-            .unwrap()
+        LockPlanData::from_authority(
+            LockPlanAuthority::from_verified_main_sandbox(verified, &mut port).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn display_only_changes_preserve_selection_but_change_full_snapshot_digests() {
+        let first = display_variant_plan("First integration display", "First lock display");
+        let second = display_variant_plan("Second integration display", "Second lock display");
+        let first_lock_set = ValidatedLockSetAuthority::from_plan(
+            first.clone(),
+            LockAcquisitionObservationAuthority::from_repository_adapter(
+                id("91000000-0000-4000-8000-000000000003"),
+                first.lock_entries.clone(),
+            ),
+        )
+        .unwrap();
+        let second_lock_set = ValidatedLockSetAuthority::from_plan(
+            second.clone(),
+            LockAcquisitionObservationAuthority::from_repository_adapter(
+                id("91000000-0000-4000-8000-000000000003"),
+                second.lock_entries.clone(),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(first.exact_objects(), second.exact_objects());
+        assert_eq!(
+            project_lock_targets(&first.lock_entries).unwrap(),
+            project_lock_targets(&second.lock_entries).unwrap()
+        );
+        assert_eq!(
+            first.integration_entries.as_slice()[0].required_lock_targets(),
+            second.integration_entries.as_slice()[0].required_lock_targets()
+        );
+        assert_ne!(first.integration_set_digest, second.integration_set_digest);
+        assert_ne!(
+            first_lock_set.lock_set_digest,
+            second_lock_set.lock_set_digest
+        );
+        assert_ne!(first.plan_digest, second.plan_digest);
     }
 
     fn validated_comment_policy() -> ValidatedCommitCommentPolicyAuthority {
@@ -10944,45 +10945,54 @@ mod merge_consumer_tests {
         )
     }
 
+    struct InvalidRootLockObservationPort;
+
+    impl RepositoryLockPlanObservationPort for InvalidRootLockObservationPort {
+        fn observe_lock_plan(
+            &mut self,
+            request: RepositoryLockPlanObservationRequest<'_>,
+        ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
+            let template = template_plan();
+            request.complete_from_planner_adapter(
+                id("91000000-0000-4000-8000-000000000001"),
+                id("91000000-0000-4000-8000-000000000002"),
+                vec![RepositoryIntegrationTopologyObservation::root_modify(
+                    RepositoryTargetDisplay::parse("Configuration root").unwrap(),
+                )],
+                serde_json::from_value(serde_json::json!([{
+                    "targetKind": "configurationRoot",
+                    "objectDisplay": "Configuration root",
+                    "reasons": ["updateTarget"]
+                }]))
+                .unwrap(),
+                template.relevant_anchors,
+                template.compatibility_mode,
+                template.reference_closure_digest,
+                template.prevalidation_diagnostics_digest,
+                CapabilityRowId::parse("repository.lock-plan.consumer").unwrap(),
+            )
+        }
+    }
+
     #[test]
-    fn lock_plan_consumes_exact_main_sandbox_and_atomic_planner_lineage() {
+    fn lock_plan_consumes_exact_main_sandbox_in_one_observation_call() {
         let verified = validated_main_sandbox_verification_fixture_test_only();
         let expected_session = verified.merge_session_id().clone();
         let expected_verification = verified.verification_digest().clone();
-        let planner = planner_for(&verified);
+        let mut port = root_observation_port();
         let plan = LockPlanData::from_authority(
-            LockPlanAuthority::from_verified_main_sandbox(verified, planner).unwrap(),
+            LockPlanAuthority::from_verified_main_sandbox(verified, &mut port).unwrap(),
         )
         .unwrap();
         assert_eq!(plan.merge_session_id, expected_session);
         assert_eq!(plan.verification_digest, expected_verification);
 
         let verified = validated_main_sandbox_verification_fixture_test_only();
-        let wrong_comparison = id("91000000-0000-4000-8000-000000000099");
-        let mut planner = planner_for(&verified);
-        planner.comparison_id = wrong_comparison;
-        assert!(LockPlanAuthority::from_verified_main_sandbox(verified, planner).is_err());
-
-        let verified = validated_main_sandbox_verification_fixture_test_only();
-        let mut planner = planner_for(&verified);
-        planner.result_digest = digest('f');
-        assert!(LockPlanAuthority::from_verified_main_sandbox(verified, planner).is_err());
-
-        let verified = validated_main_sandbox_verification_fixture_test_only();
-        let mut planner = planner_for(&verified);
-        planner.verification_id = id("91000000-0000-4000-8000-000000000098");
-        planner.verification_digest = digest('e');
-        assert!(LockPlanAuthority::from_verified_main_sandbox(verified, planner).is_err());
-
-        let verified = validated_main_sandbox_verification_fixture_test_only();
-        let mut planner = planner_for(&verified);
-        planner.lock_entries = serde_json::from_value(serde_json::json!([{
-            "targetKind": "configurationRoot",
-            "objectDisplay": "Configuration root",
-            "reasons": ["updateTarget"]
-        }]))
-        .unwrap();
-        assert!(LockPlanAuthority::from_verified_main_sandbox(verified, planner).is_err());
+        assert!(LockPlanAuthority::from_verified_main_sandbox(
+            verified,
+            &mut InvalidRootLockObservationPort,
+        )
+        .is_err());
     }
 
     #[test]
@@ -16837,7 +16847,6 @@ mod tests {
     assert_not_deserialize_owned!(RecoveryData);
     assert_not_deserialize_owned!(UnlockData);
     assert_not_clone!(LockPlanAuthority);
-    assert_not_clone!(AtomicRepositoryLockPlanCapabilityAuthority);
     assert_not_clone!(FrozenCommitCommentPolicyAuthority);
     assert_not_clone!(ValidatedCommitCommentPolicyAuthority);
     assert_not_clone!(CommitCommentPolicyRevalidationBlockedAuthority);
@@ -18391,31 +18400,25 @@ mod gate_b2_preview_tests {
 
     assert_not_clone!(RepositoryIntegrationTopologyObservation);
     assert_not_clone!(RepositoryIntegrationTopologyBatchAuthority);
-    assert_not_clone!(RepositoryLockPlanObservedIds);
-    assert_not_clone!(RepositoryLockPlanObservedEvidence);
-    assert_not_clone!(RepositoryLockPlanObservationInput);
     assert_not_clone!(RepositoryLockPlanObservationRequest<'static>);
     assert_not_clone!(RepositoryLockPlanObservationInvocationCapability);
     assert_not_clone!(RepositoryLockPlanObservationCompletionCapability);
     assert_not_clone!(RepositoryLockPlanObservationLease);
+    assert_not_clone!(RepositoryLockPlanObservationSession);
     assert_not_serialize!(RepositoryIntegrationTopologyObservation);
     assert_not_serialize!(RepositoryIntegrationTopologyBatchAuthority);
-    assert_not_serialize!(RepositoryLockPlanObservedIds);
-    assert_not_serialize!(RepositoryLockPlanObservedEvidence);
-    assert_not_serialize!(RepositoryLockPlanObservationInput);
     assert_not_serialize!(RepositoryLockPlanObservationRequest<'static>);
     assert_not_serialize!(RepositoryLockPlanObservationInvocationCapability);
     assert_not_serialize!(RepositoryLockPlanObservationCompletionCapability);
     assert_not_serialize!(RepositoryLockPlanObservationLease);
+    assert_not_serialize!(RepositoryLockPlanObservationSession);
     assert_not_deserialize_owned!(RepositoryIntegrationTopologyObservation);
     assert_not_deserialize_owned!(RepositoryIntegrationTopologyBatchAuthority);
-    assert_not_deserialize_owned!(RepositoryLockPlanObservedIds);
-    assert_not_deserialize_owned!(RepositoryLockPlanObservedEvidence);
-    assert_not_deserialize_owned!(RepositoryLockPlanObservationInput);
     assert_not_deserialize_owned!(RepositoryLockPlanObservationRequest<'static>);
     assert_not_deserialize_owned!(RepositoryLockPlanObservationInvocationCapability);
     assert_not_deserialize_owned!(RepositoryLockPlanObservationCompletionCapability);
     assert_not_deserialize_owned!(RepositoryLockPlanObservationLease);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationSession);
     assert_not_clone!(PostMergeCommitGuardRequest<'static>);
     assert_not_clone!(PostMergeCommitGuardInvocationCapability);
     assert_not_clone!(PostMergeCommitGuardCompletionCapability);
@@ -18470,6 +18473,11 @@ mod gate_b2_preview_tests {
 
     const _: fn(ValidatedCommitApplyApprovalAuthority) -> ApprovedCommitPreviewAuthority =
         ApprovedCommitPreviewAuthority::from_validated_request;
+    const _: fn(
+        ValidatedMainSandboxVerificationAuthority,
+        &mut dyn RepositoryLockPlanObservationPort,
+    ) -> Result<LockPlanAuthority, RepositoryResultContractError> =
+        LockPlanAuthority::from_verified_main_sandbox;
     const _: fn(
         CommitPreviewAuthority,
         RepositoryCommitRequest,
