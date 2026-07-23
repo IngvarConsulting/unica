@@ -198,8 +198,11 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(runtime_source["toolLockRef"], "v8-runner")
         self.assertIn(runtime_source["toolLockRef"], locked_tools)
-        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.5.1")
-        self.assertEqual(locked_tools["v8-runner"]["sourceCommit"], "ad72f64222ab0a7e6dfd391adb437a956c0a2428")
+        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "master")
+        self.assertEqual(
+            locked_tools["v8-runner"]["sourceCommit"],
+            "72d346c0a8fcf8373d9388257d11e6bef0ad70b2",
+        )
 
     def test_rlm_tools_are_locked_to_reviewed_1_26_0_pair(self) -> None:
         tool_lock = json.loads(
