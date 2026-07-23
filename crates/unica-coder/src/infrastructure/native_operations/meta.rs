@@ -1765,6 +1765,26 @@ mod edit_tests {
     }
 
     #[test]
+    fn validate_meta_observes_languages_from_sibling_localized_properties() {
+        let xml = sample_document_xml("<RegisterRecords/>").replace(
+            "<Comment/>",
+            "<Comment/><BriefInformation><v8:item><v8:lang>en</v8:lang><v8:content>Shipment processing</v8:content></v8:item></BriefInformation>",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let type_node = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element())
+            .unwrap();
+        let properties = meta_info_child(type_node, "Properties").unwrap();
+
+        assert_eq!(
+            meta_validate_observed_language_codes(properties),
+            vec!["en".to_string()]
+        );
+    }
+
+    #[test]
     fn edit_meta_rejects_unknown_modify_attribute_key() {
         let context = temp_context("modify-attribute-unknown-key");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -2545,6 +2565,24 @@ pub(crate) fn meta_validate_localized_values(
         .collect()
 }
 
+pub(crate) fn meta_validate_observed_language_codes(
+    props_node: roxmltree::Node<'_, '_>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut language_codes = Vec::new();
+    for language_code in props_node
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "lang")
+        .map(meta_info_inner_text)
+    {
+        let language_code = language_code.trim();
+        if !language_code.is_empty() && seen.insert(language_code.to_string()) {
+            language_codes.push(language_code.to_string());
+        }
+    }
+    language_codes
+}
+
 pub(crate) fn meta_validate_check_internal_info(
     report: &mut MetaValidationReporter,
     md_type: &str,
@@ -2685,16 +2723,7 @@ pub(crate) fn meta_validate_check_properties(
 
     let mut language_codes = configured_language_codes.to_vec();
     if language_codes.is_empty() {
-        let mut seen = HashSet::new();
-        for language in list_presentation_values
-            .iter()
-            .chain(&synonym_values)
-            .filter_map(|(language, _)| language.as_ref())
-        {
-            if seen.insert(language.clone()) {
-                language_codes.push(language.clone());
-            }
-        }
+        language_codes = meta_validate_observed_language_codes(props_node);
     }
 
     if language_codes.is_empty() {

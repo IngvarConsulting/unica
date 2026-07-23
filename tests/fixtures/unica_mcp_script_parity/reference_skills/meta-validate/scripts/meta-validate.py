@@ -572,7 +572,8 @@ else:
     language_codes = configuration_language_codes(config_dir)
     if not language_codes:
         seen_languages = set()
-        for language, _ in list_presentation_values + synonym_values:
+        for language_node in find_all(props_node, ".//v8:lang"):
+            language = inner_text(language_node).strip()
             if language and language not in seen_languages:
                 seen_languages.add(language)
                 language_codes.append(language)
