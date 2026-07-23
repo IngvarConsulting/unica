@@ -13,22 +13,22 @@ use crate::domain::branched_development::contracts::recovery::{
     RecoveryAction, RecoveryActionOutcome, RecoveryEffectClass, RecoveryObservation,
     RecoveryPlanStatus, RecoveryTarget, RecoveryUnknown, ValidatedCompletedPreArmTerminalEvidence,
 };
-#[cfg(test)]
-use crate::domain::branched_development::contracts::repository::RepositoryHistoryPartitionResolver;
 use crate::domain::branched_development::contracts::repository::{
     CanonicalRepositoryReferenceEdgeSet, CanonicalRepositoryTargetSet, DeferredRepositoryAdvance,
-    DeferredRepositoryAdvanceConsumptionReceipt, NonEmptyCanonicalRepositoryTargetSet,
+    DeferredRepositoryAdvanceConsumptionReceipt, FinalTaskCommitNoNccAuthority,
+    FinalTaskCommitNoNccBindingBlockedAuthority, NonEmptyCanonicalRepositoryTargetSet,
     ObjectTargetIdentity, PlannerBoundScopedNccHistoryScanCore, PostMergeHistoryGuardAuthority,
     PostMergeHistoryGuardEvidence, RepositoryActorIdentity, RepositoryAnchor,
     RepositoryContractError, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
-    RepositoryPlannedChanges, RepositoryTargetIdentity, RepositoryTargetState,
-    RepositoryTargetStateRef, RepositoryTargetStates, RepositoryUpdateLockReason,
-    RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets, RootTargetIdentity,
-    ScopedNccHistoryScanBlockedAuthority, ScopedNccHistoryScanPort,
+    RepositoryHistoryPartitionResolver, RepositoryPlannedChanges, RepositoryTargetIdentity,
+    RepositoryTargetState, RepositoryTargetStateRef, RepositoryTargetStates,
+    RepositoryUpdateLockReason, RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets,
+    RootTargetIdentity, ScopedNccHistoryScanBlockedAuthority, ScopedNccHistoryScanPort,
     ScopedNccPlannerBindingBlockedCore, ScopedNccPlannerBindingFailure,
     ScopedNccPlannerCoreResolutionFailure, SelectiveRepositoryUpdatePlan,
     SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
-    SupportRootSelectiveRepositoryUpdatePlanAuthority, UnvalidatedRepositoryHistoryPartition,
+    SupportRootSelectiveRepositoryUpdatePlanAuthority, TaskCommitHistoryAuditBlockedAuthority,
+    TaskCommitHistoryCandidateAuthority, UnvalidatedRepositoryHistoryPartition,
     ValidatedRepositoryHistoryPartition, ValidatedRoutineUpdateProjection,
     ValidatedSupportPrerequisiteHistoryProjection, ValidatedSupportRecoveryHistoryEntryRef,
     ValidatedTaskCommitHistoryPartition,
@@ -6719,6 +6719,414 @@ pub(crate) struct CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority
     terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
 }
 
+#[derive(Debug)]
+pub(crate) struct CommitTaskVersionReferenceClosureAuthority {
+    invocation_witness: CommitAtomicInvocationChildWitness,
+    object_history_binding_witness: CommitObjectHistoryBindingWitness,
+    repository_version: RepositoryVersion,
+    task_version_anchor: RepositoryAnchor,
+    before_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    before_reference_closure_digest: Sha256Digest,
+    after_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    after_reference_closure_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitTerminalReferenceClosureAuthority {
+    invocation_witness: CommitAtomicInvocationChildWitness,
+    terminal_repository_anchor: RepositoryAnchor,
+    terminal_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    terminal_reference_closure_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitPostCommandHistoryPreludeAuthority {
+    core: CommitCommittedCoreObservation,
+    immediate_reference_closure_binding: CommitImmediateTerminalReferenceClosureBinding,
+    task_reference_closure: CommitTaskVersionReferenceClosureAuthority,
+    terminal_reference_closure: CommitTerminalReferenceClosureAuthority,
+    raw_partition: Option<UnvalidatedRepositoryHistoryPartition>,
+    raw_release: CommitRawLockReleaseObservation,
+}
+
+/// Branch-neutral handoff after the raw post-command partition has been
+/// consumed by the taskCommit audit. It owns both the audited candidate and
+/// the same residual closure prelude; callers cannot split or reconstruct the
+/// pair before choosing the no-NCC or scoped-NCC final branch.
+#[derive(Debug)]
+pub(crate) struct CommitTaskCommitHistoryAuditedStage {
+    candidate: TaskCommitHistoryCandidateAuthority,
+    residual_prelude: CommitPostCommandHistoryPreludeAuthority,
+}
+
+#[derive(Debug)]
+enum CommitTaskCommitHistoryAuditBlockedSource {
+    MissingRawPartition(Box<CommitPostCommandHistoryPreludeAuthority>),
+    PartitionAudit {
+        residual_prelude: Box<CommitPostCommandHistoryPreludeAuthority>,
+        audit: Box<TaskCommitHistoryAuditBlockedAuthority>,
+    },
+}
+
+/// Owning failure of the branch-neutral audit handoff. An audit failure keeps
+/// the raw partition inside `audit` and every other post-command observation
+/// inside the residual prelude whose raw slot has already been consumed.
+#[derive(Debug)]
+pub(crate) struct CommitTaskCommitHistoryAuditBlockedAuthority {
+    source: CommitTaskCommitHistoryAuditBlockedSource,
+}
+
+impl CommitTaskCommitHistoryAuditBlockedAuthority {
+    fn missing_raw_partition(prelude: CommitPostCommandHistoryPreludeAuthority) -> Box<Self> {
+        Box::new(Self {
+            source: CommitTaskCommitHistoryAuditBlockedSource::MissingRawPartition(Box::new(
+                prelude,
+            )),
+        })
+    }
+
+    fn partition_audit(
+        residual_prelude: CommitPostCommandHistoryPreludeAuthority,
+        audit: Box<TaskCommitHistoryAuditBlockedAuthority>,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: CommitTaskCommitHistoryAuditBlockedSource::PartitionAudit {
+                residual_prelude: Box::new(residual_prelude),
+                audit,
+            },
+        })
+    }
+}
+
+impl CommitTaskCommitHistoryAuditedStage {
+    pub(crate) fn into_no_ncc(
+        self,
+    ) -> Result<FinalTaskCommitNoNccAuthority, Box<FinalTaskCommitNoNccBindingBlockedAuthority>>
+    {
+        self.candidate.into_no_ncc(self.residual_prelude)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitPostCommandHistoryPreludeStage {
+    core: CommitCommittedCoreObservation,
+    immediate_reference_closure_binding: CommitImmediateTerminalReferenceClosureBinding,
+    raw_partition: UnvalidatedRepositoryHistoryPartition,
+    raw_anchors: CommitRawPostCommandAnchorObservationInputs,
+    raw_reference_closures: CommitRawPostCommandReferenceClosureObservationInputs,
+    raw_release: CommitRawLockReleaseObservation,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitTaskReferenceClosureObservedStage {
+    core: CommitCommittedCoreObservation,
+    immediate_reference_closure_binding: CommitImmediateTerminalReferenceClosureBinding,
+    task_reference_closure: CommitTaskVersionReferenceClosureAuthority,
+    raw_partition: UnvalidatedRepositoryHistoryPartition,
+    raw_terminal_anchor: CommitTerminalRepositoryAnchorObservationInput,
+    raw_terminal_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    raw_release: CommitRawLockReleaseObservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitReferenceClosureObservationFailureStage {
+    Core,
+    ImmediateBinding,
+    ForeignAtomicInvocation,
+    TaskAnchor,
+    TaskReferenceClosure,
+    TerminalAnchor,
+    TerminalReferenceClosure,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitReferenceClosureObservationFailureEvidence {
+    stage: CommitReferenceClosureObservationFailureStage,
+    error: RepositoryResultContractError,
+}
+
+#[derive(Debug)]
+enum CommitReferenceClosureObservationBlockedSource {
+    Raw(Box<CommitRawPostCommandHistorySource>),
+    PreludeStage(Box<CommitPostCommandHistoryPreludeStage>),
+    TaskStage(Box<CommitTaskReferenceClosureObservedStage>),
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitReferenceClosureObservationBlockedAuthority {
+    source: CommitReferenceClosureObservationBlockedSource,
+    failure: CommitReferenceClosureObservationFailureEvidence,
+}
+
+impl CommitReferenceClosureObservationBlockedAuthority {
+    fn raw(
+        source: CommitRawPostCommandHistorySource,
+        stage: CommitReferenceClosureObservationFailureStage,
+        error: RepositoryResultContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: CommitReferenceClosureObservationBlockedSource::Raw(Box::new(source)),
+            failure: CommitReferenceClosureObservationFailureEvidence { stage, error },
+        })
+    }
+
+    fn prelude_stage(
+        source: CommitPostCommandHistoryPreludeStage,
+        stage: CommitReferenceClosureObservationFailureStage,
+        error: RepositoryResultContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: CommitReferenceClosureObservationBlockedSource::PreludeStage(Box::new(source)),
+            failure: CommitReferenceClosureObservationFailureEvidence { stage, error },
+        })
+    }
+
+    fn task_stage(
+        source: CommitTaskReferenceClosureObservedStage,
+        stage: CommitReferenceClosureObservationFailureStage,
+        error: RepositoryResultContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: CommitReferenceClosureObservationBlockedSource::TaskStage(Box::new(source)),
+            failure: CommitReferenceClosureObservationFailureEvidence { stage, error },
+        })
+    }
+}
+
+impl CommitPostCommandHistoryPreludeAuthority {
+    pub(crate) fn audit_task_commit_history(
+        mut self,
+        resolver: &RepositoryHistoryPartitionResolver<'_>,
+    ) -> Result<
+        CommitTaskCommitHistoryAuditedStage,
+        Box<CommitTaskCommitHistoryAuditBlockedAuthority>,
+    > {
+        let Some(raw_partition) = self.raw_partition.take() else {
+            return Err(CommitTaskCommitHistoryAuditBlockedAuthority::missing_raw_partition(self));
+        };
+        match resolver.audit_task_commit_partition(raw_partition, &self.core) {
+            Ok(candidate) => Ok(CommitTaskCommitHistoryAuditedStage {
+                candidate,
+                residual_prelude: self,
+            }),
+            Err(audit) => {
+                Err(CommitTaskCommitHistoryAuditBlockedAuthority::partition_audit(self, audit))
+            }
+        }
+    }
+
+    pub(crate) fn binds_final_task_commit(
+        &self,
+        commit: &TaskCommitHistoryCandidateAuthority,
+    ) -> bool {
+        let core_witness = &self.core.object_history_binding_witness.0;
+        commit.binds_commit(&self.core)
+            && Arc::ptr_eq(
+                core_witness,
+                &self
+                    .immediate_reference_closure_binding
+                    .invocation_witness
+                    .0,
+            )
+            && Arc::ptr_eq(
+                core_witness,
+                &self.task_reference_closure.invocation_witness.0,
+            )
+            && Arc::ptr_eq(
+                core_witness,
+                &self.task_reference_closure.object_history_binding_witness.0,
+            )
+            && Arc::ptr_eq(
+                core_witness,
+                &self.terminal_reference_closure.invocation_witness.0,
+            )
+            && self.task_reference_closure.repository_version == self.core.repository_version
+            && self
+                .immediate_reference_closure_binding
+                .atomic_commit_safety_capability_id
+                == self.core.atomic_commit_safety_capability_id
+            && self
+                .task_reference_closure
+                .atomic_commit_safety_capability_id
+                == self.core.atomic_commit_safety_capability_id
+            && self
+                .terminal_reference_closure
+                .atomic_commit_safety_capability_id
+                == self.core.atomic_commit_safety_capability_id
+            && self
+                .immediate_reference_closure_binding
+                .terminal_reference_closure
+                .digest()
+                .is_ok_and(|digest| {
+                    digest
+                        == self
+                            .immediate_reference_closure_binding
+                            .terminal_reference_closure_digest
+                })
+            && self
+                .task_reference_closure
+                .before_reference_closure
+                .digest()
+                .is_ok_and(|digest| {
+                    digest == self.task_reference_closure.before_reference_closure_digest
+                })
+            && self
+                .task_reference_closure
+                .after_reference_closure
+                .digest()
+                .is_ok_and(|digest| {
+                    digest == self.task_reference_closure.after_reference_closure_digest
+                })
+            && self
+                .terminal_reference_closure
+                .terminal_reference_closure
+                .digest()
+                .is_ok_and(|digest| {
+                    digest
+                        == self
+                            .terminal_reference_closure
+                            .terminal_reference_closure_digest
+                })
+            && self.raw_partition.is_none()
+    }
+
+    pub(crate) fn initial_cursor_matches(&self, cursor: &RepositoryHistoryCursor) -> bool {
+        self.immediate_reference_closure_binding.terminal_cursor == *cursor
+            && self
+                .immediate_reference_closure_binding
+                .terminal_repository_anchor
+                .history_cursor()
+                == cursor
+    }
+
+    pub(crate) fn task_cursor_matches(&self, cursor: &RepositoryHistoryCursor) -> bool {
+        self.task_reference_closure
+            .task_version_anchor
+            .history_cursor()
+            == cursor
+            && cursor.through_version() == &self.core.repository_version
+    }
+
+    pub(crate) fn terminal_cursor_matches(&self, cursor: &RepositoryHistoryCursor) -> bool {
+        self.terminal_reference_closure
+            .terminal_repository_anchor
+            .history_cursor()
+            == cursor
+    }
+
+    pub(crate) fn task_before_matches_initial(&self) -> bool {
+        self.task_reference_closure.before_reference_closure
+            == self
+                .immediate_reference_closure_binding
+                .terminal_reference_closure
+    }
+
+    pub(crate) fn terminal_matches_task_after(&self) -> bool {
+        self.terminal_reference_closure.terminal_reference_closure
+            == self.task_reference_closure.after_reference_closure
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_initial_reference_closure_digest_test_only(&mut self) {
+        self.immediate_reference_closure_binding
+            .terminal_reference_closure_digest = Sha256Digest::parse(&"f".repeat(64)).unwrap();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_task_reference_closure_witness_with_foreign_test_only(&mut self) {
+        self.task_reference_closure.invocation_witness =
+            CommitAtomicCommitInvocationCapability::mint().child_witness();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_post_command_history_prelude_fixture_test_only(
+    commit: &ValidatedCommitObjectAuthority,
+    initial_cursor: RepositoryHistoryCursor,
+    task_cursor: RepositoryHistoryCursor,
+    terminal_cursor: RepositoryHistoryCursor,
+    initial_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    task_before_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    task_after_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    terminal_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+) -> CommitPostCommandHistoryPreludeAuthority {
+    use crate::domain::branched_development::contracts::scalars::{EmptyOrName, Name};
+
+    let repository_identity = Sha256Digest::parse(&"6".repeat(64)).unwrap();
+    let configuration_identity = ConfigurationIdentity::new(
+        MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000ad").unwrap(),
+        Name::parse("Final taskCommit history fixture").unwrap(),
+        EmptyOrName::parse("").unwrap(),
+        EmptyOrName::parse("").unwrap(),
+    );
+    let anchor = |cursor, fingerprint_character: char| {
+        RepositoryAnchor::from_guarded_observation(
+            repository_identity.clone(),
+            cursor,
+            configuration_identity.clone(),
+            Sha256Digest::parse(&fingerprint_character.to_string().repeat(64)).unwrap(),
+        )
+        .unwrap()
+    };
+    let initial_anchor = anchor(initial_cursor.clone(), '7');
+    let task_version_anchor = anchor(task_cursor, '8');
+    let terminal_repository_anchor = anchor(terminal_cursor, '9');
+    let initial_reference_closure_digest = initial_reference_closure.digest().unwrap();
+    let task_before_reference_closure_digest = task_before_reference_closure.digest().unwrap();
+    let task_after_reference_closure_digest = task_after_reference_closure.digest().unwrap();
+    let terminal_reference_closure_digest = terminal_reference_closure.digest().unwrap();
+    let source_binding_marker =
+        Arc::new(CommitImmediateTerminalReferenceClosureBindingMarker { _private: () });
+    let observation_marker = Arc::new(PhaseTerminalObservationMarker { _private: () });
+    let invocation_marker = Arc::clone(&commit.object_history_binding_witness.0);
+    let core = CommitCommittedCoreObservation {
+        object_history_binding_witness: commit.object_history_binding_witness.clone(),
+        commit_receipt_id: UnicaId::parse("b3300000-0000-4000-8000-0000000000ae").unwrap(),
+        repository_version: commit.repository_version.clone(),
+        committed_objects: commit.committed_objects.clone(),
+        committed_objects_digest: commit.committed_objects_digest.clone(),
+        atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id.clone(),
+    };
+    CommitPostCommandHistoryPreludeAuthority {
+        core,
+        immediate_reference_closure_binding: CommitImmediateTerminalReferenceClosureBinding {
+            source_binding_marker,
+            observation_marker,
+            invocation_witness: CommitAtomicInvocationChildWitness(Arc::clone(&invocation_marker)),
+            terminal_reference_closure: initial_reference_closure,
+            terminal_reference_closure_digest: initial_reference_closure_digest,
+            terminal_repository_anchor: initial_anchor,
+            repository_identity: repository_identity.clone(),
+            configuration_identity: configuration_identity.clone(),
+            terminal_cursor: initial_cursor,
+            atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id.clone(),
+        },
+        task_reference_closure: CommitTaskVersionReferenceClosureAuthority {
+            invocation_witness: CommitAtomicInvocationChildWitness(Arc::clone(&invocation_marker)),
+            object_history_binding_witness: commit.object_history_binding_witness.clone(),
+            repository_version: commit.repository_version.clone(),
+            task_version_anchor,
+            before_reference_closure: task_before_reference_closure,
+            before_reference_closure_digest: task_before_reference_closure_digest,
+            after_reference_closure: task_after_reference_closure,
+            after_reference_closure_digest: task_after_reference_closure_digest,
+            atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id.clone(),
+        },
+        terminal_reference_closure: CommitTerminalReferenceClosureAuthority {
+            invocation_witness: CommitAtomicInvocationChildWitness(invocation_marker),
+            terminal_repository_anchor,
+            terminal_reference_closure,
+            terminal_reference_closure_digest,
+            atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id.clone(),
+        },
+        raw_partition: None,
+        raw_release: CommitRawLockReleaseObservation::Unknown,
+    }
+}
+
 impl CommitImmediateRecheckObservedEvidence {
     fn from_lease(lease: &dyn CommitImmediateRecheckLease) -> Self {
         let recomputed_reference_closure = lease.recomputed_reference_closure().clone();
@@ -8600,8 +9008,6 @@ pub(crate) struct CommitCommittedCoreObservation {
     atomic_commit_safety_capability_id: CapabilityRowId,
 }
 
-impl CommitCommittedCoreObservation {}
-
 impl CommitObjectHistoryBinding for CommitCommittedCoreObservation {
     fn object_history_binding_witness(&self) -> &CommitObjectHistoryBindingWitness {
         &self.object_history_binding_witness
@@ -8625,21 +9031,6 @@ pub(crate) struct CommitCommittedHistoryObservation {
     post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
     task_version_anchor: RepositoryAnchor,
     terminal_repository_anchor: RepositoryAnchor,
-}
-
-impl CommitCommittedHistoryObservation {
-    #[cfg(test)]
-    pub(crate) const fn new(
-        post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
-        task_version_anchor: RepositoryAnchor,
-        terminal_repository_anchor: RepositoryAnchor,
-    ) -> Self {
-        Self {
-            post_commit_history_partition,
-            task_version_anchor,
-            terminal_repository_anchor,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -8982,10 +9373,31 @@ impl CommitAtomicCommitRequest<'_> {
     /// Mints the only production object binding accepted by the specialized
     /// taskCommit history resolver. Raw adapter scalars are checked against
     /// the current invocation before they can authorize history validation.
-    pub(crate) fn observe_committed_core(
+    fn validate_committed_core_observation(
+        &self,
+        observation: &CommitCommittedCoreObservationInput,
+    ) -> Result<(), RepositoryResultContractError> {
+        let expected_digest = self.committed_objects_digest(&observation.committed_objects)?;
+        if &observation.commit_receipt_id != self.preallocated_commit_receipt_id()
+            || observation.committed_objects.exact_objects() != *self.exact_objects()
+            || !observation
+                .committed_objects
+                .all_versions_match(&observation.repository_version)
+            || observation.committed_objects_digest != expected_digest
+            || &observation.atomic_commit_safety_capability_id
+                != self.atomic_commit_safety_capability_id()
+        {
+            return Err(RepositoryResultContractError(
+                "atomic committed-object observation differs from its invocation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn mint_committed_core_observation(
         &self,
         observation: CommitCommittedCoreObservationInput,
-    ) -> Result<CommitCommittedCoreObservation, RepositoryResultContractError> {
+    ) -> CommitCommittedCoreObservation {
         let CommitCommittedCoreObservationInput {
             commit_receipt_id,
             repository_version,
@@ -8993,25 +9405,365 @@ impl CommitAtomicCommitRequest<'_> {
             committed_objects_digest,
             atomic_commit_safety_capability_id,
         } = observation;
-        let expected_digest = self.committed_objects_digest(&committed_objects)?;
-        if &commit_receipt_id != self.preallocated_commit_receipt_id()
-            || committed_objects.exact_objects() != *self.exact_objects()
-            || !committed_objects.all_versions_match(&repository_version)
-            || committed_objects_digest != expected_digest
-            || &atomic_commit_safety_capability_id != self.atomic_commit_safety_capability_id()
-        {
-            return Err(RepositoryResultContractError(
-                "atomic committed-object observation differs from its invocation",
-            ));
-        }
-        Ok(CommitCommittedCoreObservation {
+        CommitCommittedCoreObservation {
             object_history_binding_witness: self.invocation.object_history_binding_witness(),
             commit_receipt_id,
             repository_version,
             committed_objects,
             committed_objects_digest,
             atomic_commit_safety_capability_id,
+        }
+    }
+
+    pub(crate) fn observe_committed_core(
+        &self,
+        observation: CommitCommittedCoreObservationInput,
+    ) -> Result<CommitCommittedCoreObservation, RepositoryResultContractError> {
+        self.validate_committed_core_observation(&observation)?;
+        Ok(self.mint_committed_core_observation(observation))
+    }
+
+    fn bind_post_command_history_prelude_stage(
+        &self,
+        source: CommitRawPostCommandHistorySource,
+    ) -> Result<
+        CommitPostCommandHistoryPreludeStage,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        if let Err(error) = self.validate_committed_core_observation(&source.raw_core) {
+            return Err(CommitReferenceClosureObservationBlockedAuthority::raw(
+                source,
+                CommitReferenceClosureObservationFailureStage::Core,
+                error,
+            ));
+        }
+        let immediate_reference_closure_binding =
+            match self.bind_immediate_terminal_reference_closure() {
+                Ok(binding) => binding,
+                Err(error) => {
+                    return Err(CommitReferenceClosureObservationBlockedAuthority::raw(
+                        source,
+                        CommitReferenceClosureObservationFailureStage::ImmediateBinding,
+                        error,
+                    ));
+                }
+            };
+        let CommitRawPostCommandHistorySource {
+            raw_core,
+            raw_partition,
+            raw_anchors,
+            raw_reference_closures,
+            raw_release,
+        } = source;
+        Ok(CommitPostCommandHistoryPreludeStage {
+            core: self.mint_committed_core_observation(raw_core),
+            immediate_reference_closure_binding,
+            raw_partition,
+            raw_anchors,
+            raw_reference_closures,
+            raw_release,
         })
+    }
+
+    #[cfg(test)]
+    fn bind_post_command_history_prelude_stage_test_only(
+        &self,
+        source: CommitRawPostCommandHistorySource,
+    ) -> Result<
+        CommitPostCommandHistoryPreludeStage,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        self.bind_post_command_history_prelude_stage(source)
+    }
+
+    fn observe_task_version_reference_closure(
+        &self,
+        stage: CommitPostCommandHistoryPreludeStage,
+    ) -> Result<
+        CommitTaskReferenceClosureObservedStage,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        let owns_atomic_invocation = self
+            .invocation
+            .owns_object_history_binding_witness(&stage.core.object_history_binding_witness)
+            && self
+                .invocation
+                .owns_child_witness(&stage.immediate_reference_closure_binding.invocation_witness)
+            && self
+                .source
+                .immediate_history_safety
+                .terminal_reference_closure()
+                .owns_binding(self, &stage.immediate_reference_closure_binding);
+        if !owns_atomic_invocation {
+            return Err(
+                CommitReferenceClosureObservationBlockedAuthority::prelude_stage(
+                    stage,
+                    CommitReferenceClosureObservationFailureStage::ForeignAtomicInvocation,
+                    RepositoryResultContractError(
+                        "task reference-closure stage belongs to another atomic invocation",
+                    ),
+                ),
+            );
+        }
+
+        let task_version_anchor = {
+            let raw = &stage.raw_anchors.task_version;
+            RepositoryAnchor::from_guarded_observation(
+                raw.repository_identity.clone(),
+                raw.history_cursor.clone(),
+                raw.configuration_identity.clone(),
+                raw.configuration_fingerprint.clone(),
+            )
+        };
+        let task_version_anchor = match task_version_anchor {
+            Ok(anchor) => anchor,
+            Err(_) => {
+                return Err(
+                    CommitReferenceClosureObservationBlockedAuthority::prelude_stage(
+                        stage,
+                        CommitReferenceClosureObservationFailureStage::TaskAnchor,
+                        RepositoryResultContractError(
+                            "task-version repository anchor digest failed",
+                        ),
+                    ),
+                );
+            }
+        };
+        if task_version_anchor.repository_identity()
+            != self.post_merge_repository_anchor().repository_identity()
+            || task_version_anchor.configuration_identity()
+                != self.post_merge_repository_anchor().configuration_identity()
+            || task_version_anchor.history_cursor().through_version()
+                != stage.core.repository_version()
+        {
+            return Err(
+                CommitReferenceClosureObservationBlockedAuthority::prelude_stage(
+                    stage,
+                    CommitReferenceClosureObservationFailureStage::TaskAnchor,
+                    RepositoryResultContractError(
+                        "task-version repository anchor differs from the atomic invocation",
+                    ),
+                ),
+            );
+        }
+
+        let before_reference_closure_digest =
+            match stage.raw_reference_closures.task_before.digest() {
+                Ok(digest) => digest,
+                Err(_) => {
+                    return Err(
+                        CommitReferenceClosureObservationBlockedAuthority::prelude_stage(
+                            stage,
+                            CommitReferenceClosureObservationFailureStage::TaskReferenceClosure,
+                            RepositoryResultContractError(
+                                "task before-reference-closure digest failed",
+                            ),
+                        ),
+                    );
+                }
+            };
+        let after_reference_closure_digest = match stage.raw_reference_closures.task_after.digest()
+        {
+            Ok(digest) => digest,
+            Err(_) => {
+                return Err(
+                    CommitReferenceClosureObservationBlockedAuthority::prelude_stage(
+                        stage,
+                        CommitReferenceClosureObservationFailureStage::TaskReferenceClosure,
+                        RepositoryResultContractError("task after-reference-closure digest failed"),
+                    ),
+                );
+            }
+        };
+
+        let CommitPostCommandHistoryPreludeStage {
+            core,
+            immediate_reference_closure_binding,
+            raw_partition,
+            raw_anchors:
+                CommitRawPostCommandAnchorObservationInputs {
+                    task_version: _,
+                    terminal: raw_terminal_anchor,
+                },
+            raw_reference_closures:
+                CommitRawPostCommandReferenceClosureObservationInputs {
+                    task_before,
+                    task_after,
+                    terminal: raw_terminal_reference_closure,
+                },
+            raw_release,
+        } = stage;
+        let task_reference_closure = CommitTaskVersionReferenceClosureAuthority {
+            invocation_witness: self.invocation.child_witness(),
+            object_history_binding_witness: core.object_history_binding_witness.clone(),
+            repository_version: core.repository_version.clone(),
+            task_version_anchor,
+            before_reference_closure: task_before,
+            before_reference_closure_digest,
+            after_reference_closure: task_after,
+            after_reference_closure_digest,
+            atomic_commit_safety_capability_id: self.atomic_commit_safety_capability_id().clone(),
+        };
+        Ok(CommitTaskReferenceClosureObservedStage {
+            core,
+            immediate_reference_closure_binding,
+            task_reference_closure,
+            raw_partition,
+            raw_terminal_anchor,
+            raw_terminal_reference_closure,
+            raw_release,
+        })
+    }
+
+    #[cfg(test)]
+    fn observe_task_version_reference_closure_test_only(
+        &self,
+        stage: CommitPostCommandHistoryPreludeStage,
+    ) -> Result<
+        CommitTaskReferenceClosureObservedStage,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        self.observe_task_version_reference_closure(stage)
+    }
+
+    fn observe_terminal_reference_closure(
+        &self,
+        stage: CommitTaskReferenceClosureObservedStage,
+    ) -> Result<
+        CommitPostCommandHistoryPreludeAuthority,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        let owns_atomic_invocation = self
+            .invocation
+            .owns_object_history_binding_witness(&stage.core.object_history_binding_witness)
+            && self
+                .invocation
+                .owns_child_witness(&stage.immediate_reference_closure_binding.invocation_witness)
+            && self
+                .source
+                .immediate_history_safety
+                .terminal_reference_closure()
+                .owns_binding(self, &stage.immediate_reference_closure_binding)
+            && self
+                .invocation
+                .owns_child_witness(&stage.task_reference_closure.invocation_witness)
+            && self.invocation.owns_object_history_binding_witness(
+                &stage.task_reference_closure.object_history_binding_witness,
+            )
+            && stage.task_reference_closure.repository_version == stage.core.repository_version
+            && stage
+                .task_reference_closure
+                .atomic_commit_safety_capability_id
+                == *self.atomic_commit_safety_capability_id();
+        if !owns_atomic_invocation {
+            return Err(
+                CommitReferenceClosureObservationBlockedAuthority::task_stage(
+                    stage,
+                    CommitReferenceClosureObservationFailureStage::ForeignAtomicInvocation,
+                    RepositoryResultContractError(
+                        "terminal reference-closure stage belongs to another atomic invocation",
+                    ),
+                ),
+            );
+        }
+
+        let terminal_repository_anchor = {
+            let raw = &stage.raw_terminal_anchor;
+            RepositoryAnchor::from_guarded_observation(
+                raw.repository_identity.clone(),
+                raw.history_cursor.clone(),
+                raw.configuration_identity.clone(),
+                raw.configuration_fingerprint.clone(),
+            )
+        };
+        let terminal_repository_anchor = match terminal_repository_anchor {
+            Ok(anchor) => anchor,
+            Err(_) => {
+                return Err(
+                    CommitReferenceClosureObservationBlockedAuthority::task_stage(
+                        stage,
+                        CommitReferenceClosureObservationFailureStage::TerminalAnchor,
+                        RepositoryResultContractError("terminal repository anchor digest failed"),
+                    ),
+                );
+            }
+        };
+        if terminal_repository_anchor.repository_identity()
+            != self.post_merge_repository_anchor().repository_identity()
+            || terminal_repository_anchor.configuration_identity()
+                != self.post_merge_repository_anchor().configuration_identity()
+        {
+            return Err(
+                CommitReferenceClosureObservationBlockedAuthority::task_stage(
+                    stage,
+                    CommitReferenceClosureObservationFailureStage::TerminalAnchor,
+                    RepositoryResultContractError(
+                        "terminal repository anchor differs from the atomic invocation",
+                    ),
+                ),
+            );
+        }
+        let terminal_reference_closure_digest = match stage.raw_terminal_reference_closure.digest()
+        {
+            Ok(digest) => digest,
+            Err(_) => {
+                return Err(
+                    CommitReferenceClosureObservationBlockedAuthority::task_stage(
+                        stage,
+                        CommitReferenceClosureObservationFailureStage::TerminalReferenceClosure,
+                        RepositoryResultContractError("terminal reference-closure digest failed"),
+                    ),
+                );
+            }
+        };
+
+        let CommitTaskReferenceClosureObservedStage {
+            core,
+            immediate_reference_closure_binding,
+            task_reference_closure,
+            raw_partition,
+            raw_terminal_anchor: _,
+            raw_terminal_reference_closure,
+            raw_release,
+        } = stage;
+        let terminal_reference_closure = CommitTerminalReferenceClosureAuthority {
+            invocation_witness: self.invocation.child_witness(),
+            terminal_repository_anchor,
+            terminal_reference_closure: raw_terminal_reference_closure,
+            terminal_reference_closure_digest,
+            atomic_commit_safety_capability_id: self.atomic_commit_safety_capability_id().clone(),
+        };
+        Ok(CommitPostCommandHistoryPreludeAuthority {
+            core,
+            immediate_reference_closure_binding,
+            task_reference_closure,
+            terminal_reference_closure,
+            raw_partition: Some(raw_partition),
+            raw_release,
+        })
+    }
+
+    #[cfg(test)]
+    fn observe_terminal_reference_closure_test_only(
+        &self,
+        stage: CommitTaskReferenceClosureObservedStage,
+    ) -> Result<
+        CommitPostCommandHistoryPreludeAuthority,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        self.observe_terminal_reference_closure(stage)
+    }
+
+    fn observe_post_command_history_prelude(
+        &self,
+        source: CommitRawPostCommandHistorySource,
+    ) -> Result<
+        CommitPostCommandHistoryPreludeAuthority,
+        Box<CommitReferenceClosureObservationBlockedAuthority>,
+    > {
+        let stage = self.bind_post_command_history_prelude_stage(source)?;
+        let stage = self.observe_task_version_reference_closure(stage)?;
+        self.observe_terminal_reference_closure(stage)
     }
 
     #[cfg(test)]
@@ -9040,58 +9792,6 @@ impl CommitAtomicCommitRequest<'_> {
             committed_objects_digest,
             atomic_commit_safety_capability_id,
         }
-    }
-
-    /// Production bridge from the owning raw post-command partition to the
-    /// sole taskCommit-specific resolver. A generic validated partition can
-    /// never enter the committed-success path.
-    #[cfg(test)]
-    pub(crate) fn resolve_task_commit_history(
-        &self,
-        core: &CommitCommittedCoreObservation,
-        raw_partition: UnvalidatedRepositoryHistoryPartition,
-        resolver: &RepositoryHistoryPartitionResolver<'_>,
-        task_version_anchor: RepositoryAnchor,
-        terminal_repository_anchor: RepositoryAnchor,
-    ) -> Result<CommitCommittedHistoryObservation, RepositoryResultContractError> {
-        if !self
-            .invocation
-            .owns_object_history_binding_witness(core.object_history_binding_witness())
-        {
-            return Err(RepositoryResultContractError(
-                "taskCommit object binding belongs to another atomic invocation",
-            ));
-        }
-        let partition = resolver
-            .validate_task_commit_partition(raw_partition, core)
-            .map_err(|_| {
-                RepositoryResultContractError("taskCommit history partition validation failed")
-            })?;
-        if partition.partition().start_cursor() != self.before_repository_cursor()
-            || terminal_repository_anchor.history_cursor()
-                != partition.partition().through_inclusive()
-            || task_version_anchor.history_cursor().through_version() != core.repository_version()
-            || !partition
-                .partition()
-                .contains_cursor(task_version_anchor.history_cursor())
-            || task_version_anchor.repository_identity()
-                != self.post_merge_repository_anchor().repository_identity()
-            || terminal_repository_anchor.repository_identity()
-                != self.post_merge_repository_anchor().repository_identity()
-            || task_version_anchor.configuration_identity()
-                != self.post_merge_repository_anchor().configuration_identity()
-            || terminal_repository_anchor.configuration_identity()
-                != self.post_merge_repository_anchor().configuration_identity()
-        {
-            return Err(RepositoryResultContractError(
-                "taskCommit history anchors differ from the atomic invocation",
-            ));
-        }
-        Ok(CommitCommittedHistoryObservation {
-            post_commit_history_partition: partition,
-            task_version_anchor,
-            terminal_repository_anchor,
-        })
     }
 
     pub(crate) fn observe_repository_anchor(
@@ -13106,84 +13806,6 @@ mod merge_consumer_tests {
     }
 }
 
-/// Atomic completion observation after the repository command and the complete
-/// post-command history scan. The nested partition must already have been
-/// produced by the taskCommit-specific resolver using the same commit-object
-/// authority later consumed by `CommitData::from_authority`.
-#[derive(Debug)]
-pub(crate) struct CommitCompletionObservationAuthority {
-    commit_receipt_id: UnicaId,
-    before_repository_cursor: RepositoryHistoryCursor,
-    after_repository_cursor: RepositoryHistoryCursor,
-    post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
-    released_objects: CanonicalRepositoryTargets,
-    released_guard_locks: CanonicalRepositoryTargets,
-    repository_anchor: RepositoryAnchor,
-}
-
-impl CommitCompletionObservationAuthority {
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(test)]
-    pub(crate) fn from_atomic_adapter(
-        commit_receipt_id: UnicaId,
-        before_repository_cursor: RepositoryHistoryCursor,
-        after_repository_cursor: RepositoryHistoryCursor,
-        post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
-        released_objects: CanonicalRepositoryTargets,
-        released_guard_locks: CanonicalRepositoryTargets,
-        repository_anchor: RepositoryAnchor,
-    ) -> Result<Self, RepositoryResultContractError> {
-        if post_commit_history_partition.partition().start_cursor() != &before_repository_cursor
-            || post_commit_history_partition
-                .partition()
-                .through_inclusive()
-                != &after_repository_cursor
-        {
-            return Err(RepositoryResultContractError(
-                "post-commit history partition endpoints disagree with the completion cursors",
-            ));
-        }
-        if repository_anchor.history_cursor() != &after_repository_cursor {
-            return Err(RepositoryResultContractError(
-                "post-commit repository anchor does not end at the observed cursor",
-            ));
-        }
-        if post_commit_history_partition
-            .partition()
-            .classifications()
-            .filter(|classification| {
-                *classification
-                    == crate::domain::branched_development::contracts::repository::RepositoryHistoryPartitionClassification::TaskCommit
-            })
-            .count()
-            != 1
-        {
-            return Err(RepositoryResultContractError(
-                "completed commit history must contain exactly one taskCommit entry",
-            ));
-        }
-        if released_objects.as_slice().iter().any(|target| {
-            released_guard_locks
-                .as_slice()
-                .binary_search(target)
-                .is_ok()
-        }) {
-            return Err(RepositoryResultContractError(
-                "released task objects and guard-only locks must be disjoint",
-            ));
-        }
-        Ok(Self {
-            commit_receipt_id,
-            before_repository_cursor,
-            after_repository_cursor,
-            post_commit_history_partition,
-            released_objects,
-            released_guard_locks,
-            repository_anchor,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CommitData {
@@ -13515,61 +14137,6 @@ impl CommitData {
             unlock_verified: TrueLiteral,
             repository_anchor: history.terminal_repository_anchor,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_authority(
-        authority: ValidatedCommitObjectAuthority,
-        completion: CommitCompletionObservationAuthority,
-    ) -> Result<Self, RepositoryResultContractError> {
-        let preview = &authority.approved_preview.0.record;
-        if preview.history_guard_evidence.classified_through_cursor()
-            != &completion.before_repository_cursor
-        {
-            return Err(RepositoryResultContractError(
-                "commit completion did not start at the approved history-guard cursor",
-            ));
-        }
-        if preview
-            .history_guard_evidence
-            .atomic_commit_safety_capability_id()
-            != &authority.atomic_commit_safety_capability_id
-        {
-            return Err(RepositoryResultContractError(
-                "commit completion capability differs from the approved history guard",
-            ));
-        }
-        if !completion.post_commit_history_partition.binds(&authority) {
-            return Err(RepositoryResultContractError(
-                "taskCommit history partition belongs to another commit-object authority",
-            ));
-        }
-        validate_commit_release_projection(
-            &authority.approved_preview.0.plan,
-            &preview.guard_locks,
-            &completion.released_objects,
-            &completion.released_guard_locks,
-        )?;
-        let post_merge_history_guard_evidence_digest =
-            preview.history_guard_evidence.evidence_digest().clone();
-        let post_commit_history_partition =
-            completion.post_commit_history_partition.into_partition();
-        Ok(Self {
-            commit_receipt_id: completion.commit_receipt_id,
-            repository_version: authority.repository_version,
-            before_repository_cursor: completion.before_repository_cursor,
-            after_repository_cursor: completion.after_repository_cursor,
-            post_merge_history_guard_evidence_digest,
-            post_commit_history_partition,
-            atomic_commit_safety_capability_id: authority.atomic_commit_safety_capability_id,
-            committed_objects: authority.committed_objects,
-            committed_objects_digest: authority.committed_objects_digest,
-            content_verified: TrueLiteral,
-            released_objects: completion.released_objects,
-            released_guard_locks: completion.released_guard_locks,
-            unlock_verified: TrueLiteral,
-            repository_anchor: completion.repository_anchor,
-        })
     }
 }
 
@@ -20265,21 +20832,6 @@ mod tests {
     }
 
     #[test]
-    fn repository_result_task_commit_partition_rejects_another_commit_authority() {
-        let first = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("101").unwrap(),
-            CapabilityRowId::parse("repository.atomic-commit.first").unwrap(),
-        );
-        let second = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("102").unwrap(),
-            CapabilityRowId::parse("repository.atomic-commit.second").unwrap(),
-        );
-        let second_partition = crate::domain::branched_development::contracts::repository::validated_task_commit_partition_fixture_test_only(&second);
-        assert!(second_partition.binds(&second));
-        assert!(!second_partition.binds(&first));
-    }
-
-    #[test]
     fn repository_result_cancellation_apply_context_rejects_task_status_and_cwd_splices() {
         use crate::domain::branched_development::contracts::requests::repository::RepositoryUpdateRequest;
 
@@ -20396,17 +20948,17 @@ mod gate_b2_preview_tests {
         empty_commit_history_evidence_fixture_test_only,
         repository_history_partition_fixture_test_only,
         scoped_ncc_history_broken_intermediate_closure_fixture_test_only,
-        scoped_ncc_history_fixture_test_only, task_commit_history_partition_fixture_test_only,
-        CanonicalRepositoryReferenceEdgeSet, EvidenceKind, EvidenceSourceIndex,
-        EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
-        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
+        scoped_ncc_history_fixture_test_only, CanonicalRepositoryReferenceEdgeSet, EvidenceKind,
+        EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow,
+        EvidenceSourceRegistry, RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
         RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
-        RepositoryHistorySourceEvidenceRef, RepositoryReferenceEdge,
-        RoutineRepositoryVersionClassificationEvidence, ScopedNccHistoryFixtureTestOnly,
-        ScopedNccHistoryRowObservation, ScopedNccHistoryRowObservationInput,
-        ScopedNccHistoryScanBatchInput, ScopedNccHistoryScanBatchWitness,
-        ScopedNccHistoryScanCompletion, ScopedNccHistoryScanLease, ScopedNccHistoryScanPort,
-        ScopedNccHistoryScanRequest, ScopedNccRowFacts,
+        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
+        RepositoryReferenceEdge, RoutineRepositoryVersionClassificationEvidence,
+        ScopedNccHistoryFixtureTestOnly, ScopedNccHistoryRowObservation,
+        ScopedNccHistoryRowObservationInput, ScopedNccHistoryScanBatchInput,
+        ScopedNccHistoryScanBatchWitness, ScopedNccHistoryScanCompletion,
+        ScopedNccHistoryScanLease, ScopedNccHistoryScanPort, ScopedNccHistoryScanRequest,
+        ScopedNccRowFacts,
     };
     use crate::domain::branched_development::contracts::requests::repository::{
         RepositoryCommitRequest, RepositoryCommitRequestValidationFailure,
@@ -20533,6 +21085,20 @@ mod gate_b2_preview_tests {
         };
     }
 
+    macro_rules! assert_not_default {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfDefault<Marker> {
+                    fn assert_not_default() {}
+                }
+                struct ImplementsDefault;
+                impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+                impl<T: Default> AmbiguousIfDefault<ImplementsDefault> for T {}
+                let _ = <$type as AmbiguousIfDefault<_>>::assert_not_default;
+            };
+        };
+    }
+
     assert_not_clone!(RepositoryIntegrationTopologyObservation);
     assert_not_clone!(RepositoryIntegrationTopologyBatchAuthority);
     assert_not_clone!(RepositoryLockPlanObservationRequest<'static>);
@@ -20644,6 +21210,32 @@ mod gate_b2_preview_tests {
         assert_debug::<CommitImmediateTerminalReferenceClosureAuthority>();
         assert_debug::<CommitImmediateTerminalReferenceClosureBinding>();
         assert_debug::<CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority>();
+        assert_debug::<CommitTaskVersionReferenceClosureAuthority>();
+        assert_debug::<CommitTerminalReferenceClosureAuthority>();
+        assert_debug::<CommitPostCommandHistoryPreludeAuthority>();
+        assert_debug::<CommitTaskCommitHistoryAuditedStage>();
+        assert_debug::<CommitTaskCommitHistoryAuditBlockedAuthority>();
+        assert_debug::<CommitPostCommandHistoryPreludeStage>();
+        assert_debug::<CommitTaskReferenceClosureObservedStage>();
+        assert_debug::<CommitReferenceClosureObservationBlockedAuthority>();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainCursor,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainBlockedAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccBindingBlockedAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness,
+        >();
         assert_debug::<
             crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
         >();
@@ -20656,6 +21248,22 @@ mod gate_b2_preview_tests {
         assert_eq::<
             crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
         >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage,
+        >();
+        assert_copy::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage,
+        >();
+        assert_partial_eq::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage,
+        >();
+        assert_eq::<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage,
+        >();
+        assert_debug::<CommitReferenceClosureObservationFailureStage>();
+        assert_copy::<CommitReferenceClosureObservationFailureStage>();
+        assert_partial_eq::<CommitReferenceClosureObservationFailureStage>();
+        assert_eq::<CommitReferenceClosureObservationFailureStage>();
     };
 
     assert_linear_non_wire!(ScopedNccPlannerScope);
@@ -20710,6 +21318,79 @@ mod gate_b2_preview_tests {
     assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureAuthority);
     assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureBinding);
     assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority);
+    assert_identity_non_wire!(CommitTaskVersionReferenceClosureAuthority);
+    assert_identity_non_wire!(CommitTerminalReferenceClosureAuthority);
+    assert_identity_non_wire!(CommitPostCommandHistoryPreludeAuthority);
+    assert_identity_non_wire!(CommitTaskCommitHistoryAuditedStage);
+    assert_identity_non_wire!(CommitTaskCommitHistoryAuditBlockedAuthority);
+    assert_identity_non_wire!(CommitPostCommandHistoryPreludeStage);
+    assert_identity_non_wire!(CommitTaskReferenceClosureObservedStage);
+    assert_identity_non_wire!(CommitReferenceClosureObservationBlockedAuthority);
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainCursor
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainBlockedAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccBindingBlockedAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_default!(ValidatedTaskCommitHistoryPartition);
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateBindingAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditBlockedAuthority
+    );
+    assert_not_default!(CommitRawPostCommandHistorySource);
+    assert_not_default!(CommitImmediateTerminalReferenceClosureAuthority);
+    assert_not_default!(CommitImmediateTerminalReferenceClosureBinding);
+    assert_not_default!(CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority);
+    assert_not_default!(CommitTaskVersionReferenceClosureAuthority);
+    assert_not_default!(CommitTerminalReferenceClosureAuthority);
+    assert_not_default!(CommitPostCommandHistoryPreludeAuthority);
+    assert_not_default!(CommitTaskCommitHistoryAuditedStage);
+    assert_not_default!(CommitTaskCommitHistoryAuditBlockedAuthority);
+    assert_not_default!(CommitPostCommandHistoryPreludeStage);
+    assert_not_default!(CommitTaskReferenceClosureObservedStage);
+    assert_not_default!(CommitReferenceClosureObservationBlockedAuthority);
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainCursor
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainBlockedAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccBindingBlockedAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccAuthority
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitHistoryBindingWitness
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
+    );
+    assert_not_default!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage
+    );
+    assert_not_default!(CommitReferenceClosureObservationFailureStage);
     assert_not_serialize!(
         crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
     );
@@ -20719,6 +21400,18 @@ mod gate_b2_preview_tests {
     assert_not_json_schema!(
         crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
     );
+    assert_not_serialize!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage
+    );
+    assert_not_deserialize_owned!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage
+    );
+    assert_not_json_schema!(
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitClosureChainFailureStage
+    );
+    assert_not_serialize!(CommitReferenceClosureObservationFailureStage);
+    assert_not_deserialize_owned!(CommitReferenceClosureObservationFailureStage);
+    assert_not_json_schema!(CommitReferenceClosureObservationFailureStage);
     assert_not_partial_eq!(CommitCommittedCoreObservation);
     assert_not_eq!(CommitCommittedCoreObservation);
     assert_not_partial_eq!(CommitCommittedHistoryObservation);
@@ -20757,6 +21450,21 @@ mod gate_b2_preview_tests {
         &mut dyn ScopedNccHistoryScanPort,
     ) -> CommitImmediateRecheckOutcome =
         CommitImmediateScopedNccPendingAuthority::resolve_scoped_ncc;
+    const _: for<'resolver, 'sources> fn(
+        CommitPostCommandHistoryPreludeAuthority,
+        &'resolver RepositoryHistoryPartitionResolver<'sources>,
+    ) -> Result<
+        CommitTaskCommitHistoryAuditedStage,
+        Box<CommitTaskCommitHistoryAuditBlockedAuthority>,
+    > = CommitPostCommandHistoryPreludeAuthority::audit_task_commit_history;
+    const _: fn(
+        CommitTaskCommitHistoryAuditedStage,
+    ) -> Result<
+        crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccAuthority,
+        Box<
+            crate::domain::branched_development::contracts::repository::FinalTaskCommitNoNccBindingBlockedAuthority,
+        >,
+    > = CommitTaskCommitHistoryAuditedStage::into_no_ncc;
     const _: for<'a> fn(
         ScopedNccPlannerResolutionRequest<'a>,
         &mut dyn ScopedNccHistoryScanPort,
@@ -24282,6 +24990,12 @@ mod gate_b2_preview_tests {
         observed_command_release_guards: RefCell<Vec<CanonicalRepositoryTargets>>,
         captured_foreign_lock_authority: RefCell<Option<CommitPostCommandLockAuthority>>,
         captured_foreign_zero_observation: RefCell<Option<CommitProvenZeroEffectObservationInput>>,
+        captured_foreign_history_prelude_stage:
+            RefCell<Option<CommitPostCommandHistoryPreludeStage>>,
+        captured_foreign_task_closure_stage:
+            RefCell<Option<CommitTaskReferenceClosureObservedStage>>,
+        final_history_seals: Cell<usize>,
+        final_history_audit_failures: Cell<usize>,
         atomic_witnesses: Cell<usize>,
         atomic_binds: Cell<usize>,
         atomic_getters: Cell<usize>,
@@ -24341,6 +25055,12 @@ mod gate_b2_preview_tests {
         ReleaseForeignInvocation,
         CaptureLockAuthority,
         SpliceLockAuthority,
+        CaptureHistoryPreludeStage,
+        SpliceHistoryPreludeStage,
+        CaptureTaskClosureStage,
+        SpliceTaskClosureStage,
+        ProductionHistorySeal,
+        ProductionHistoryAuditFailure,
         ZeroEffect,
         ZeroBadCertificate,
         ZeroForeignCapability,
@@ -24828,6 +25548,158 @@ mod gate_b2_preview_tests {
                     .owns_binding(&request, &binding));
                 assert!(request.bind_immediate_terminal_reference_closure().is_err());
                 request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::CaptureHistoryPreludeStage
+            ) {
+                let stage = request
+                    .bind_post_command_history_prelude_stage_test_only(
+                        exact_raw_post_command_history_source(&request),
+                    )
+                    .expect("exact raw source must reach the branch-neutral prelude stage");
+                self.counters
+                    .captured_foreign_history_prelude_stage
+                    .replace(Some(stage));
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::SpliceHistoryPreludeStage
+            ) {
+                let blocked = request
+                    .observe_task_version_reference_closure_test_only(
+                        self.counters
+                            .captured_foreign_history_prelude_stage
+                            .borrow_mut()
+                            .take()
+                            .expect("foreign prelude stage must be captured first"),
+                    )
+                    .expect_err("request B must reject prelude stage A before task observation");
+                let CommitReferenceClosureObservationBlockedAuthority { source, failure } =
+                    *blocked;
+                assert_eq!(
+                    failure.stage,
+                    CommitReferenceClosureObservationFailureStage::ForeignAtomicInvocation
+                );
+                assert!(matches!(
+                    source,
+                    CommitReferenceClosureObservationBlockedSource::PreludeStage(_)
+                ));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::CaptureTaskClosureStage) {
+                let prelude = request
+                    .bind_post_command_history_prelude_stage_test_only(
+                        exact_raw_post_command_history_source(&request),
+                    )
+                    .expect("exact raw source must reach the branch-neutral prelude stage");
+                let stage = request
+                    .observe_task_version_reference_closure_test_only(prelude)
+                    .expect("request A must observe its own task closure");
+                self.counters
+                    .captured_foreign_task_closure_stage
+                    .replace(Some(stage));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::SpliceTaskClosureStage) {
+                let blocked = request
+                    .observe_terminal_reference_closure_test_only(
+                        self.counters
+                            .captured_foreign_task_closure_stage
+                            .borrow_mut()
+                            .take()
+                            .expect("foreign task closure stage must be captured first"),
+                    )
+                    .expect_err("request B must reject task stage A before terminal observation");
+                let CommitReferenceClosureObservationBlockedAuthority { source, failure } =
+                    *blocked;
+                assert_eq!(
+                    failure.stage,
+                    CommitReferenceClosureObservationFailureStage::ForeignAtomicInvocation
+                );
+                assert!(matches!(
+                    source,
+                    CommitReferenceClosureObservationBlockedSource::TaskStage(_)
+                ));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::ProductionHistorySeal) {
+                let prelude = request
+                    .observe_post_command_history_prelude(
+                        task_only_raw_post_command_history_source(&request, false),
+                    )
+                    .expect("production-shaped raw source must reach the complete prelude");
+                let (registry, index, order, bytes) = task_only_history_resolver_parts(&request);
+                let resolver =
+                    RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+                let audited = prelude
+                    .audit_task_commit_history(&resolver)
+                    .expect("complete prelude must consume its raw partition into the audit");
+                assert!(audited.residual_prelude.raw_partition.is_none());
+                let sealed = audited
+                    .into_no_ncc()
+                    .expect("audited task-only history must close without NCC")
+                    .into_validated_task_commit_history()
+                    .expect("complete no-NCC lineage must enter the private final seal");
+                assert_eq!(
+                    sealed.partition().classifications().collect::<Vec<_>>(),
+                    vec![RepositoryHistoryPartitionClassification::TaskCommit]
+                );
+                self.counters
+                    .final_history_seals
+                    .set(self.counters.final_history_seals.get() + 1);
+                request.observe_ambiguous()
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ProductionHistoryAuditFailure
+            ) {
+                let prelude = request
+                    .observe_post_command_history_prelude(
+                        task_only_raw_post_command_history_source(&request, true),
+                    )
+                    .expect("digest substitution must survive until the owning audit");
+                let (registry, index, order, bytes) = task_only_history_resolver_parts(&request);
+                let resolver =
+                    RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+                let blocked = prelude
+                    .audit_task_commit_history(&resolver)
+                    .expect_err("corrupt partition digest must fail the branch-neutral audit");
+                let CommitTaskCommitHistoryAuditBlockedAuthority { source } = *blocked;
+                let CommitTaskCommitHistoryAuditBlockedSource::PartitionAudit {
+                    residual_prelude,
+                    audit,
+                } = source
+                else {
+                    panic!("raw production prelude must fail inside the partition audit")
+                };
+                assert!(residual_prelude.raw_partition.is_none());
+                assert_eq!(
+                    audit.failure().stage(),
+                    crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage::PartitionDigestOrShape
+                );
+                assert!(audit.binds_commit(&residual_prelude.core));
+                let foreign_equal_scalar = request.observe_committed_core_unchecked_test_only(
+                    CommitCommittedCoreObservationInput::from_atomic_adapter(
+                        residual_prelude.core.commit_receipt_id.clone(),
+                        residual_prelude.core.repository_version.clone(),
+                        residual_prelude.core.committed_objects.clone(),
+                        residual_prelude.core.committed_objects_digest.clone(),
+                        residual_prelude
+                            .core
+                            .atomic_commit_safety_capability_id
+                            .clone(),
+                    ),
+                    true,
+                );
+                assert_eq!(
+                    foreign_equal_scalar.repository_version,
+                    residual_prelude.core.repository_version
+                );
+                assert_eq!(
+                    foreign_equal_scalar.committed_objects_digest,
+                    residual_prelude.core.committed_objects_digest
+                );
+                assert!(!audit.binds_commit(&foreign_equal_scalar));
+                self.counters
+                    .final_history_audit_failures
+                    .set(self.counters.final_history_audit_failures.get() + 1);
+                request.observe_ambiguous()
             } else if matches!(self.atomic_mode, Slice3AtomicMode::CaptureLockAuthority) {
                 self.counters
                     .captured_foreign_lock_authority
@@ -25285,13 +26157,92 @@ mod gate_b2_preview_tests {
             bytes: evidence_bytes,
         };
         let resolver = RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
-        request.resolve_task_commit_history(
-            core,
-            raw_partition,
-            &resolver,
+        let candidate = resolver
+            .audit_task_commit_partition(raw_partition, core)
+            .map_err(|_| RepositoryResultContractError("Slice3 taskCommit history audit failed"))?;
+        let sealed_core = if matches!(mode, Slice3AtomicMode::EqualScalarForeignPartition) {
+            request.observe_committed_core_unchecked_test_only(
+                CommitCommittedCoreObservationInput::from_atomic_adapter(
+                    core.commit_receipt_id.clone(),
+                    core.repository_version.clone(),
+                    core.committed_objects.clone(),
+                    core.committed_objects_digest.clone(),
+                    core.atomic_commit_safety_capability_id.clone(),
+                ),
+                true,
+            )
+        } else {
+            CommitCommittedCoreObservation {
+                object_history_binding_witness: core.object_history_binding_witness.clone(),
+                commit_receipt_id: core.commit_receipt_id.clone(),
+                repository_version: core.repository_version.clone(),
+                committed_objects: core.committed_objects.clone(),
+                committed_objects_digest: core.committed_objects_digest.clone(),
+                atomic_commit_safety_capability_id: core.atomic_commit_safety_capability_id.clone(),
+            }
+        };
+        let retained_anchor = request.post_merge_repository_anchor();
+        let initial_reference_closure =
+            CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let initial_reference_closure_digest = initial_reference_closure.digest().unwrap();
+        let invocation_marker = Arc::clone(&sealed_core.object_history_binding_witness.0);
+        let prelude = CommitPostCommandHistoryPreludeAuthority {
+            immediate_reference_closure_binding: CommitImmediateTerminalReferenceClosureBinding {
+                source_binding_marker: Arc::new(
+                    CommitImmediateTerminalReferenceClosureBindingMarker { _private: () },
+                ),
+                observation_marker: Arc::new(PhaseTerminalObservationMarker { _private: () }),
+                invocation_witness: CommitAtomicInvocationChildWitness(Arc::clone(
+                    &invocation_marker,
+                )),
+                terminal_reference_closure: initial_reference_closure.clone(),
+                terminal_reference_closure_digest: initial_reference_closure_digest.clone(),
+                terminal_repository_anchor: retained_anchor.clone(),
+                repository_identity: retained_anchor.repository_identity().clone(),
+                configuration_identity: retained_anchor.configuration_identity().clone(),
+                terminal_cursor: request.before_repository_cursor().clone(),
+                atomic_commit_safety_capability_id: sealed_core
+                    .atomic_commit_safety_capability_id
+                    .clone(),
+            },
+            task_reference_closure: CommitTaskVersionReferenceClosureAuthority {
+                invocation_witness: CommitAtomicInvocationChildWitness(Arc::clone(
+                    &invocation_marker,
+                )),
+                object_history_binding_witness: sealed_core.object_history_binding_witness.clone(),
+                repository_version: sealed_core.repository_version.clone(),
+                task_version_anchor: task_version_anchor.clone(),
+                before_reference_closure: initial_reference_closure.clone(),
+                before_reference_closure_digest: initial_reference_closure_digest.clone(),
+                after_reference_closure: initial_reference_closure.clone(),
+                after_reference_closure_digest: initial_reference_closure_digest.clone(),
+                atomic_commit_safety_capability_id: sealed_core
+                    .atomic_commit_safety_capability_id
+                    .clone(),
+            },
+            terminal_reference_closure: CommitTerminalReferenceClosureAuthority {
+                invocation_witness: CommitAtomicInvocationChildWitness(invocation_marker),
+                terminal_repository_anchor: terminal_repository_anchor.clone(),
+                terminal_reference_closure: initial_reference_closure,
+                terminal_reference_closure_digest: initial_reference_closure_digest,
+                atomic_commit_safety_capability_id: sealed_core
+                    .atomic_commit_safety_capability_id
+                    .clone(),
+            },
+            core: sealed_core,
+            raw_partition: None,
+            raw_release: CommitRawLockReleaseObservation::Unknown,
+        };
+        let post_commit_history_partition = candidate
+            .into_no_ncc(prelude)
+            .map_err(|_| RepositoryResultContractError("Slice3 no-NCC history bind failed"))?
+            .into_validated_task_commit_history()
+            .map_err(|_| RepositoryResultContractError("Slice3 final history seal failed"))?;
+        Ok(CommitCommittedHistoryObservation {
+            post_commit_history_partition,
             task_version_anchor,
             terminal_repository_anchor,
-        )
+        })
     }
 
     fn matching_committed_objects(
@@ -25333,6 +26284,133 @@ mod gate_b2_preview_tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn raw_post_command_history_source(
+        request: &CommitAtomicCommitRequest<'_>,
+        classifications: &[RepositoryHistoryPartitionClassification],
+        corrupt_partition_digest: bool,
+    ) -> CommitRawPostCommandHistorySource {
+        let task_version = RepositoryVersion::parse("201").unwrap();
+        let committed_objects = matching_committed_objects(request, &task_version);
+        let committed_objects_digest = request
+            .committed_objects_digest(&committed_objects)
+            .unwrap();
+        let partition =
+            postcommit_partition(request.before_repository_cursor().clone(), classifications);
+        let mut raw_partition_value = serde_json::to_value(&partition).unwrap();
+        for entry in raw_partition_value["entries"].as_array_mut().unwrap() {
+            if entry["classification"] == json!("taskCommit") {
+                entry["semanticDeltaDigest"] =
+                    serde_json::to_value(&committed_objects_digest).unwrap();
+            }
+        }
+        let partition_digest_record = json!({
+            "fromExclusive": raw_partition_value["fromExclusive"].clone(),
+            "throughInclusive": raw_partition_value["throughInclusive"].clone(),
+            "entries": raw_partition_value["entries"].clone(),
+        });
+        raw_partition_value["partitionDigest"] =
+            serde_json::to_value(slice3_json_digest(&partition_digest_record)).unwrap();
+        if corrupt_partition_digest {
+            raw_partition_value["partitionDigest"] = serde_json::to_value(digest('f')).unwrap();
+        }
+        let raw_partition = serde_json::from_value(raw_partition_value).unwrap();
+        let retained_anchor = request.post_merge_repository_anchor();
+        let task_cursor = slice3_entry_cursor(0, task_version.clone());
+        let terminal_cursor = partition.through_inclusive().clone();
+        let empty_closure = CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+
+        CommitRawPostCommandHistorySource::new(
+            CommitCommittedCoreObservationInput::from_atomic_adapter(
+                request.preallocated_commit_receipt_id().clone(),
+                task_version,
+                committed_objects,
+                committed_objects_digest,
+                request.atomic_commit_safety_capability_id().clone(),
+            ),
+            raw_partition,
+            CommitRawPostCommandAnchorObservationInputs::new(
+                CommitTaskVersionAnchorObservationInput::from_repository_adapter(
+                    task_cursor,
+                    retained_anchor.repository_identity().clone(),
+                    retained_anchor.configuration_identity().clone(),
+                    digest('8'),
+                ),
+                CommitTerminalRepositoryAnchorObservationInput::from_repository_adapter(
+                    terminal_cursor,
+                    retained_anchor.repository_identity().clone(),
+                    retained_anchor.configuration_identity().clone(),
+                    digest('9'),
+                ),
+            ),
+            CommitRawPostCommandReferenceClosureObservationInputs::new(
+                empty_closure.clone(),
+                empty_closure.clone(),
+                empty_closure,
+            ),
+            CommitRawLockReleaseObservation::Released(
+                CommitReleasedLocksObservationInput::from_repository_adapter(
+                    request.lock_set_id().clone(),
+                    request.journaled_lock_receipts().to_vec(),
+                    CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                    request.atomic_commit_safety_capability_id().clone(),
+                ),
+            ),
+        )
+    }
+
+    fn exact_raw_post_command_history_source(
+        request: &CommitAtomicCommitRequest<'_>,
+    ) -> CommitRawPostCommandHistorySource {
+        raw_post_command_history_source(
+            request,
+            &[
+                RepositoryHistoryPartitionClassification::TaskCommit,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            ],
+            false,
+        )
+    }
+
+    fn task_only_raw_post_command_history_source(
+        request: &CommitAtomicCommitRequest<'_>,
+        corrupt_partition_digest: bool,
+    ) -> CommitRawPostCommandHistorySource {
+        raw_post_command_history_source(
+            request,
+            &[RepositoryHistoryPartitionClassification::TaskCommit],
+            corrupt_partition_digest,
+        )
+    }
+
+    fn task_only_history_resolver_parts(
+        request: &CommitAtomicCommitRequest<'_>,
+    ) -> (
+        EvidenceSourceRegistry,
+        Slice3HistoryIndex,
+        Slice3HistoryOrder,
+        Slice3HistoryBytes,
+    ) {
+        let from_exclusive = request.before_repository_cursor().clone();
+        let task_cursor = slice3_entry_cursor(0, RepositoryVersion::parse("201").unwrap());
+        let order = Slice3HistoryOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "repository.history-order.slice3-production-prelude",
+                from_exclusive,
+                task_cursor.clone(),
+                vec![task_cursor],
+            )
+            .unwrap(),
+        };
+        (
+            EvidenceSourceRegistry::task9().unwrap(),
+            Slice3HistoryIndex {
+                candidates: BTreeMap::new(),
+            },
+            order,
+            Slice3HistoryBytes::default(),
+        )
     }
 
     fn matching_released_lock_authority(
@@ -25456,36 +26534,6 @@ mod gate_b2_preview_tests {
             task_version_anchor,
             terminal_anchor,
         )?;
-        let history = if matches!(mode, Slice3AtomicMode::EqualScalarForeignPartition) {
-            let CommitCommittedHistoryObservation {
-                post_commit_history_partition,
-                task_version_anchor,
-                terminal_repository_anchor,
-            } = history;
-            let foreign_equal_scalar_core = request.observe_committed_core_unchecked_test_only(
-                CommitCommittedCoreObservationInput::from_atomic_adapter(
-                    core.commit_receipt_id.clone(),
-                    core.repository_version.clone(),
-                    core.committed_objects.clone(),
-                    core.committed_objects_digest.clone(),
-                    core.atomic_commit_safety_capability_id.clone(),
-                ),
-                true,
-            );
-            let forged_partition = task_commit_history_partition_fixture_test_only(
-                post_commit_history_partition.into_partition(),
-                &foreign_equal_scalar_core,
-                core.committed_objects_digest.clone(),
-            )
-            .map_err(|_| RepositoryResultContractError("taskCommit fixture failed"))?;
-            CommitCommittedHistoryObservation::new(
-                forged_partition,
-                task_version_anchor,
-                terminal_repository_anchor,
-            )
-        } else {
-            history
-        };
         Ok(request.observe_committed(
             CommitCommittedObservationInput::from_validated_atomic_observation(
                 core, history, release,
@@ -25706,6 +26754,83 @@ mod gate_b2_preview_tests {
         };
         let target = ready_scope(splice_mode, Rc::clone(&counters));
         execute_ready_slice3_scope(target, counters, id("b3300000-0000-4000-8000-000000000041"))
+    }
+
+    fn run_genuine_foreign_reference_closure_stage_splice(
+        capture_mode: Slice3AtomicMode,
+        splice_mode: Slice3AtomicMode,
+    ) -> (CommitEffectIntentOutcome, Rc<Slice3Counters>) {
+        let counters = Rc::new(Slice3Counters::default());
+        let captured = execute_ready_slice3_scope(
+            ready_scope(capture_mode, Rc::clone(&counters)),
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000041"),
+        );
+        assert!(matches!(
+            captured,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        let outcome = execute_ready_slice3_scope(
+            ready_scope(splice_mode, Rc::clone(&counters)),
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000041"),
+        );
+        (outcome, counters)
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_task_and_terminal_observations_reject_equal_scalar_foreign_stages(
+    ) {
+        for (capture_mode, splice_mode) in [
+            (
+                Slice3AtomicMode::CaptureHistoryPreludeStage,
+                Slice3AtomicMode::SpliceHistoryPreludeStage,
+            ),
+            (
+                Slice3AtomicMode::CaptureTaskClosureStage,
+                Slice3AtomicMode::SpliceTaskClosureStage,
+            ),
+        ] {
+            let (outcome, counters) =
+                run_genuine_foreign_reference_closure_stage_splice(capture_mode, splice_mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.command_calls.get(), 2);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_production_prelude_consumes_raw_into_no_ncc_seal() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionHistorySeal,
+        );
+
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+        assert_eq!(counters.final_history_seals.get(), 1);
+        assert_eq!(counters.final_history_audit_failures.get(), 0);
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_audit_failure_owns_raw_and_rejects_equal_scalar_core() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ProductionHistoryAuditFailure,
+        );
+
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+        assert_eq!(counters.final_history_seals.get(), 0);
+        assert_eq!(counters.final_history_audit_failures.get(), 1);
     }
 
     #[test]
@@ -26177,6 +27302,59 @@ mod gate_b2_preview_tests {
         assert_eq!(
             partition["entries"][0]["semanticDeltaDigest"],
             json!(EXPECTED_TASK_SEMANTIC_DIGEST)
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_zero_effect_certificate_preimage_and_schema_are_byte_stable() {
+        const EXPECTED_CERTIFICATE_JCS: &str = r#"{"certificateCapabilityId":"repository.atomic-commit.gate-b3","certificateId":"b3300000-0000-4000-8000-000000000042","digestKind":"unica.repository.commit.zero-effect-certificate.v1","effectIntentDigest":"df8651583eb88f9e8ee6f05dcff4a43555289a5d042da7eb2fd069a81f83bbde","lockStateDigest":"246201a9c2795c415c793b59aa567fedbaf8c0d6745ff99e2dada1b24a260b6d","postCommandHistoryPartitionDigest":"09ff9b084386c993fbfcdd3c05553a247ae49ab86f4a9d167b1cdde55636f681","preCommandTargetSnapshotDigest":"e79ea280ce058ac947aa1164ca1fda34649fd68c5e480e74087d6959bde7432c","terminalRepositoryAnchorDigest":"5c5f4347184f1dfa57fa6ebe1b9ffea1b17b8ac1b5a4ec44ef4069d8c6f4abc9","terminalTargetSnapshotDigest":"653a3039dedfb88b3eeb0392a5ce11c11cc690980fb2cf111c4551b6589ca950"}"#;
+        const EXPECTED_CERTIFICATE_DIGEST: &str =
+            "3ed332930fb72c2ae2e4a071facfb7e5310f9ccc636f03560f4c7328b631237c";
+        const EXPECTED_COMMIT_DATA_SCHEMA_DIGEST: &str =
+            "3ca4ef40de783dc3df06e6b60f15f236a6af179fbde05ff9576f5aa3fdcdf916";
+
+        let (outcome, _) = run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::ZeroEffect);
+        let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::ProvenZeroEffect(zero)) =
+            outcome
+        else {
+            panic!("accepted zero-effect fixture must retain its certificate")
+        };
+        let certificate = &zero.observation.certificate;
+        let record = CommitZeroEffectCertificateDigestRecord {
+            digest_kind: "unica.repository.commit.zero-effect-certificate.v1",
+            effect_intent_digest: &certificate.effect_intent_digest,
+            pre_command_target_snapshot_digest: &certificate.pre_command_target_snapshot_digest,
+            terminal_target_snapshot_digest: &certificate.terminal_target_snapshot_digest,
+            post_command_history_partition_digest: &certificate
+                .post_command_history_partition_digest,
+            terminal_repository_anchor_digest: &certificate.terminal_repository_anchor_digest,
+            lock_state_digest: &certificate.lock_state_digest,
+            certificate_id: &certificate.certificate_id,
+            certificate_capability_id: &certificate.certificate_capability_id,
+        };
+        let certificate_jcs =
+            String::from_utf8(serde_json_canonicalizer::to_vec(&record).unwrap()).unwrap();
+        let certificate_digest =
+            result_digest(&record, "zero-effect characterization digest failed").unwrap();
+        assert_eq!(certificate_digest, certificate.certificate_digest);
+
+        let commit_data_schema = serde_json::to_value(schemars::schema_for!(CommitData)).unwrap();
+        let commit_data_schema_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json_canonicalizer::to_vec(&commit_data_schema).unwrap())
+        );
+
+        assert_eq!(
+            (
+                certificate_jcs.as_str(),
+                certificate_digest.as_str(),
+                commit_data_schema_digest.as_str(),
+            ),
+            (
+                EXPECTED_CERTIFICATE_JCS,
+                EXPECTED_CERTIFICATE_DIGEST,
+                EXPECTED_COMMIT_DATA_SCHEMA_DIGEST,
+            )
         );
     }
 

@@ -3,10 +3,9 @@ use super::instructions::{
     decode_historical_support_conflict_instruction, SupportConflictInstruction,
     SupportCorrectiveInstruction,
 };
-#[cfg(test)]
-use super::results::repository::ValidatedCommitObjectAuthority;
 use super::results::repository::{
-    CommitObjectHistoryBinding, ScopedNccPlannerResolutionRequest, ScopedNccPlannerScope,
+    CommitObjectHistoryBinding, CommitPostCommandHistoryPreludeAuthority,
+    ScopedNccPlannerResolutionRequest, ScopedNccPlannerScope,
 };
 use super::scalars::{
     NormalizedUtcInstant, RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername,
@@ -2724,32 +2723,48 @@ impl<'a> ValidatedRepositoryHistoryEntryRef<'a> {
 /// non-wire so a generic partition cannot be substituted at completion.
 #[derive(Debug)]
 pub(crate) struct ValidatedTaskCommitHistoryPartition {
-    partition: ValidatedRepositoryHistoryPartition,
-    object_history_binding_witness: super::results::repository::CommitObjectHistoryBindingWitness,
-    repository_version: RepositoryVersion,
-    committed_objects_digest: Sha256Digest,
-    atomic_commit_safety_capability_id: CapabilityRowId,
+    final_seal: TaskCommitFinalSealAuthority,
 }
 
 impl ValidatedTaskCommitHistoryPartition {
-    pub(crate) const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
-        &self.partition
+    pub(crate) fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        match &self.final_seal {
+            TaskCommitFinalSealAuthority::NoNcc(authority) => {
+                &authority.closure_chain.cursor.candidate.partition
+            }
+        }
     }
 
     pub(crate) fn binds<Binding>(&self, commit: &Binding) -> bool
     where
         Binding: CommitObjectHistoryBinding + ?Sized,
     {
-        self.object_history_binding_witness
-            .same_invocation(commit.object_history_binding_witness())
-            && &self.repository_version == commit.repository_version()
-            && &self.committed_objects_digest == commit.committed_objects_digest()
-            && &self.atomic_commit_safety_capability_id
-                == commit.atomic_commit_safety_capability_id()
+        match &self.final_seal {
+            TaskCommitFinalSealAuthority::NoNcc(authority) => authority.binds_commit(commit),
+        }
     }
 
     pub(crate) fn into_partition(self) -> ValidatedRepositoryHistoryPartition {
-        self.partition
+        match self.final_seal {
+            TaskCommitFinalSealAuthority::NoNcc(authority) => {
+                let FinalTaskCommitNoNccAuthority {
+                    closure_chain:
+                        FinalTaskCommitClosureChainAuthority {
+                            cursor:
+                                FinalTaskCommitClosureChainCursor {
+                                    candidate,
+                                    candidate_binding: _,
+                                    prelude: _,
+                                    next_position: _,
+                                    task_pivoted: _,
+                                },
+                        },
+                    issued_history_binding_marker: _,
+                    history_binding_witness: _,
+                } = authority;
+                candidate.partition
+            }
+        }
     }
 }
 
@@ -2771,14 +2786,12 @@ pub(crate) struct TaskCommitHistoryCandidateAuthority {
     task_position: usize,
     ncc_count: usize,
     unissued_candidate_marker: Option<Arc<TaskCommitHistoryCandidateMarker>>,
-    #[cfg(test)]
     issued_candidate_marker: Option<Arc<TaskCommitHistoryCandidateMarker>>,
 }
 
 /// Linear remnant of the one candidate marker. It cannot authorize final
 /// history by itself; later branch-specific sealing must consume it together
 /// with the candidate-owned partition and exact closure proof.
-#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct TaskCommitHistoryCandidateBindingAuthority {
     candidate_marker: Arc<TaskCommitHistoryCandidateMarker>,
@@ -2808,7 +2821,6 @@ impl TaskCommitHistoryCandidateAuthority {
                 == commit.atomic_commit_safety_capability_id()
     }
 
-    #[cfg(test)]
     fn issue_binding(
         &mut self,
     ) -> Result<TaskCommitHistoryCandidateBindingAuthority, RepositoryContractError> {
@@ -2831,7 +2843,6 @@ impl TaskCommitHistoryCandidateAuthority {
         Ok(binding)
     }
 
-    #[cfg(test)]
     fn owns_binding(&self, binding: &TaskCommitHistoryCandidateBindingAuthority) -> bool {
         self.issued_candidate_marker
             .as_ref()
@@ -2848,7 +2859,6 @@ impl TaskCommitHistoryCandidateAuthority {
     }
 }
 
-#[cfg(test)]
 impl TaskCommitHistoryCandidateBindingAuthority {
     fn binds_commit(&self, commit: &(impl CommitObjectHistoryBinding + ?Sized)) -> bool {
         self.object_history_binding_witness
@@ -2900,6 +2910,465 @@ pub(crate) struct TaskCommitHistoryAuditBlockedAuthority {
     failure: TaskCommitHistoryAuditFailureEvidence,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalTaskCommitClosureChainFailureStage {
+    CandidateBinding,
+    InitialCursor,
+    EntryOrder,
+    TaskAnchor,
+    TaskPivot,
+    TerminalAnchor,
+    TerminalClosure,
+    FinalSeal,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FinalTaskCommitClosureChainFailureEvidence {
+    stage: FinalTaskCommitClosureChainFailureStage,
+    error: RepositoryContractError,
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitClosureChainCursor {
+    candidate: TaskCommitHistoryCandidateAuthority,
+    candidate_binding: TaskCommitHistoryCandidateBindingAuthority,
+    prelude: CommitPostCommandHistoryPreludeAuthority,
+    next_position: usize,
+    task_pivoted: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitClosureChainAuthority {
+    cursor: FinalTaskCommitClosureChainCursor,
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitClosureChainBlockedAuthority {
+    cursor: FinalTaskCommitClosureChainCursor,
+    failure: FinalTaskCommitClosureChainFailureEvidence,
+}
+
+#[derive(Debug)]
+enum FinalTaskCommitNoNccBlockedSource {
+    Candidate {
+        candidate: Box<TaskCommitHistoryCandidateAuthority>,
+        prelude: Box<CommitPostCommandHistoryPreludeAuthority>,
+    },
+    ClosureChain(Box<FinalTaskCommitClosureChainBlockedAuthority>),
+    FinalAuthority(Box<FinalTaskCommitNoNccAuthority>),
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitNoNccBindingBlockedAuthority {
+    source: FinalTaskCommitNoNccBlockedSource,
+    failure: FinalTaskCommitClosureChainFailureEvidence,
+}
+
+#[derive(Debug)]
+struct FinalTaskCommitHistoryBindingMarker {
+    _private: (),
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitHistoryBindingWitness {
+    marker: Arc<FinalTaskCommitHistoryBindingMarker>,
+    candidate_marker: Arc<TaskCommitHistoryCandidateMarker>,
+    object_history_binding_witness: super::results::repository::CommitObjectHistoryBindingWitness,
+    task_position: usize,
+    ncc_count: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct FinalTaskCommitNoNccAuthority {
+    closure_chain: FinalTaskCommitClosureChainAuthority,
+    issued_history_binding_marker: Arc<FinalTaskCommitHistoryBindingMarker>,
+    history_binding_witness: FinalTaskCommitHistoryBindingWitness,
+}
+
+#[derive(Debug)]
+enum TaskCommitFinalSealAuthority {
+    NoNcc(FinalTaskCommitNoNccAuthority),
+}
+
+impl FinalTaskCommitClosureChainBlockedAuthority {
+    fn new(
+        cursor: FinalTaskCommitClosureChainCursor,
+        stage: FinalTaskCommitClosureChainFailureStage,
+        error: RepositoryContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            cursor,
+            failure: FinalTaskCommitClosureChainFailureEvidence { stage, error },
+        })
+    }
+
+    pub(crate) const fn failure(&self) -> &FinalTaskCommitClosureChainFailureEvidence {
+        &self.failure
+    }
+}
+
+impl FinalTaskCommitClosureChainFailureEvidence {
+    pub(crate) const fn stage(&self) -> FinalTaskCommitClosureChainFailureStage {
+        self.stage
+    }
+
+    pub(crate) const fn error(&self) -> &RepositoryContractError {
+        &self.error
+    }
+}
+
+impl FinalTaskCommitNoNccBindingBlockedAuthority {
+    fn candidate(
+        candidate: TaskCommitHistoryCandidateAuthority,
+        prelude: CommitPostCommandHistoryPreludeAuthority,
+        stage: FinalTaskCommitClosureChainFailureStage,
+        error: RepositoryContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: FinalTaskCommitNoNccBlockedSource::Candidate {
+                candidate: Box::new(candidate),
+                prelude: Box::new(prelude),
+            },
+            failure: FinalTaskCommitClosureChainFailureEvidence { stage, error },
+        })
+    }
+
+    fn closure_chain(blocked: Box<FinalTaskCommitClosureChainBlockedAuthority>) -> Box<Self> {
+        let failure = blocked.failure.clone();
+        Box::new(Self {
+            source: FinalTaskCommitNoNccBlockedSource::ClosureChain(blocked),
+            failure,
+        })
+    }
+
+    fn final_authority(
+        authority: FinalTaskCommitNoNccAuthority,
+        error: RepositoryContractError,
+    ) -> Box<Self> {
+        Box::new(Self {
+            source: FinalTaskCommitNoNccBlockedSource::FinalAuthority(Box::new(authority)),
+            failure: FinalTaskCommitClosureChainFailureEvidence {
+                stage: FinalTaskCommitClosureChainFailureStage::FinalSeal,
+                error,
+            },
+        })
+    }
+
+    pub(crate) const fn failure(&self) -> &FinalTaskCommitClosureChainFailureEvidence {
+        &self.failure
+    }
+}
+
+impl FinalTaskCommitClosureChainCursor {
+    fn new_no_ncc(
+        mut candidate: TaskCommitHistoryCandidateAuthority,
+        prelude: CommitPostCommandHistoryPreludeAuthority,
+    ) -> Result<Self, Box<FinalTaskCommitNoNccBindingBlockedAuthority>> {
+        if candidate.ncc_count != 0 {
+            return Err(FinalTaskCommitNoNccBindingBlockedAuthority::candidate(
+                candidate,
+                prelude,
+                FinalTaskCommitClosureChainFailureStage::CandidateBinding,
+                RepositoryContractError(
+                    "no-NCC final taskCommit branch received concurrent history",
+                ),
+            ));
+        }
+        if !prelude.binds_final_task_commit(&candidate) {
+            return Err(FinalTaskCommitNoNccBindingBlockedAuthority::candidate(
+                candidate,
+                prelude,
+                FinalTaskCommitClosureChainFailureStage::CandidateBinding,
+                RepositoryContractError(
+                    "final taskCommit closure observations differ from the audited candidate",
+                ),
+            ));
+        }
+        let candidate_binding = match candidate.issue_binding() {
+            Ok(binding) => binding,
+            Err(error) => {
+                return Err(FinalTaskCommitNoNccBindingBlockedAuthority::candidate(
+                    candidate,
+                    prelude,
+                    FinalTaskCommitClosureChainFailureStage::CandidateBinding,
+                    error,
+                ));
+            }
+        };
+        // `issue_binding` is the private constructor for both sides of this
+        // relation: it moves the sole marker out of `unissued_candidate_marker`,
+        // stores one Arc in the candidate and returns the other in the binding.
+        // There is therefore no post-issue fallible branch that could discard
+        // the newly issued binding. The private final seal rechecks `ptr_eq`
+        // while it still owns both values.
+        let cursor = Self {
+            candidate,
+            candidate_binding,
+            prelude,
+            next_position: 0,
+            task_pivoted: false,
+        };
+        if !cursor
+            .prelude
+            .initial_cursor_matches(cursor.candidate.partition.start_cursor())
+        {
+            return Err(FinalTaskCommitNoNccBindingBlockedAuthority::closure_chain(
+                FinalTaskCommitClosureChainBlockedAuthority::new(
+                    cursor,
+                    FinalTaskCommitClosureChainFailureStage::InitialCursor,
+                    RepositoryContractError(
+                        "initial closure authority does not start the audited partition",
+                    ),
+                ),
+            ));
+        }
+        Ok(cursor)
+    }
+
+    fn advance_unrelated(
+        mut self,
+        exact_position: usize,
+    ) -> Result<Self, Box<FinalTaskCommitClosureChainBlockedAuthority>> {
+        let is_exact_unrelated = exact_position == self.next_position
+            && self
+                .candidate
+                .partition
+                .entries()
+                .nth(exact_position)
+                .is_some_and(|entry| {
+                    entry.classification()
+                        == RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                });
+        if !is_exact_unrelated {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::EntryOrder,
+                RepositoryContractError(
+                    "unrelated taskCommit history transition is not at the exact next position",
+                ),
+            ));
+        }
+        self.next_position += 1;
+        Ok(self)
+    }
+
+    fn pivot_task(
+        mut self,
+        exact_position: usize,
+    ) -> Result<Self, Box<FinalTaskCommitClosureChainBlockedAuthority>> {
+        let task_entry = self.candidate.partition.entries().nth(exact_position);
+        let exact_task_entry = exact_position == self.next_position
+            && exact_position + 1 == self.candidate.task_position
+            && !self.task_pivoted
+            && task_entry.is_some_and(|entry| {
+                entry.classification() == RepositoryHistoryPartitionClassification::TaskCommit
+                    && entry.repository_version() == &self.candidate_binding.repository_version
+            });
+        if !exact_task_entry {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::EntryOrder,
+                RepositoryContractError("taskCommit pivot is not at its exact audited position"),
+            ));
+        }
+        let task_cursor = self
+            .candidate
+            .partition
+            .order_evidence
+            .as_ref()
+            .and_then(|order| order.ordered_cursors.get(exact_position));
+        if !task_cursor.is_some_and(|cursor| self.prelude.task_cursor_matches(cursor)) {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::TaskAnchor,
+                RepositoryContractError("task-version anchor is not the exact audited task cursor"),
+            ));
+        }
+        if !self.prelude.task_before_matches_initial() {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::TaskPivot,
+                RepositoryContractError(
+                    "task before-reference closure differs from the initial full set",
+                ),
+            ));
+        }
+        self.next_position += 1;
+        self.task_pivoted = true;
+        Ok(self)
+    }
+
+    fn finish(
+        self,
+    ) -> Result<
+        FinalTaskCommitClosureChainAuthority,
+        Box<FinalTaskCommitClosureChainBlockedAuthority>,
+    > {
+        if self.next_position != self.candidate.partition.entry_count() || !self.task_pivoted {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::EntryOrder,
+                RepositoryContractError(
+                    "final taskCommit closure chain did not consume its exact partition",
+                ),
+            ));
+        }
+        if !self
+            .prelude
+            .terminal_cursor_matches(self.candidate.partition.through_inclusive())
+        {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::TerminalAnchor,
+                RepositoryContractError(
+                    "terminal closure authority does not end the audited partition",
+                ),
+            ));
+        }
+        if !self.prelude.terminal_matches_task_after() {
+            return Err(FinalTaskCommitClosureChainBlockedAuthority::new(
+                self,
+                FinalTaskCommitClosureChainFailureStage::TerminalClosure,
+                RepositoryContractError(
+                    "terminal full reference closure differs from the task after-set",
+                ),
+            ));
+        }
+        Ok(FinalTaskCommitClosureChainAuthority { cursor: self })
+    }
+}
+
+impl TaskCommitHistoryCandidateAuthority {
+    pub(super) fn into_no_ncc(
+        self,
+        prelude: CommitPostCommandHistoryPreludeAuthority,
+    ) -> Result<FinalTaskCommitNoNccAuthority, Box<FinalTaskCommitNoNccBindingBlockedAuthority>>
+    {
+        let mut cursor = FinalTaskCommitClosureChainCursor::new_no_ncc(self, prelude)?;
+        while cursor.next_position < cursor.candidate.partition.entry_count() {
+            let position = cursor.next_position;
+            let classification = cursor
+                .candidate
+                .partition
+                .entries()
+                .nth(position)
+                .map(|entry| entry.classification());
+            cursor = match classification {
+                Some(RepositoryHistoryPartitionClassification::UnrelatedRoutine) => cursor
+                    .advance_unrelated(position)
+                    .map_err(FinalTaskCommitNoNccBindingBlockedAuthority::closure_chain)?,
+                Some(RepositoryHistoryPartitionClassification::TaskCommit) => cursor
+                    .pivot_task(position)
+                    .map_err(FinalTaskCommitNoNccBindingBlockedAuthority::closure_chain)?,
+                _ => {
+                    return Err(FinalTaskCommitNoNccBindingBlockedAuthority::closure_chain(
+                        FinalTaskCommitClosureChainBlockedAuthority::new(
+                            cursor,
+                            FinalTaskCommitClosureChainFailureStage::EntryOrder,
+                            RepositoryContractError(
+                                "no-NCC final taskCommit branch contains a forbidden row",
+                            ),
+                        ),
+                    ));
+                }
+            };
+        }
+        let closure_chain = cursor
+            .finish()
+            .map_err(FinalTaskCommitNoNccBindingBlockedAuthority::closure_chain)?;
+        let issued_history_binding_marker =
+            Arc::new(FinalTaskCommitHistoryBindingMarker { _private: () });
+        let history_binding_witness = FinalTaskCommitHistoryBindingWitness {
+            marker: Arc::clone(&issued_history_binding_marker),
+            candidate_marker: Arc::clone(&closure_chain.cursor.candidate_binding.candidate_marker),
+            object_history_binding_witness: closure_chain
+                .cursor
+                .candidate_binding
+                .object_history_binding_witness
+                .clone(),
+            task_position: closure_chain.cursor.candidate.task_position,
+            ncc_count: closure_chain.cursor.candidate.ncc_count,
+        };
+        Ok(FinalTaskCommitNoNccAuthority {
+            closure_chain,
+            issued_history_binding_marker,
+            history_binding_witness,
+        })
+    }
+}
+
+impl FinalTaskCommitNoNccAuthority {
+    fn retained_lineage_is_exact(&self) -> bool {
+        let cursor = &self.closure_chain.cursor;
+        let candidate = &cursor.candidate;
+        let binding = &cursor.candidate_binding;
+        let witness = &self.history_binding_witness;
+        let exact_task_cursor = candidate
+            .partition
+            .order_evidence
+            .as_ref()
+            .and_then(|order| {
+                candidate
+                    .task_position
+                    .checked_sub(1)
+                    .and_then(|index| order.ordered_cursors.get(index))
+            });
+        Arc::ptr_eq(&self.issued_history_binding_marker, &witness.marker)
+            && Arc::ptr_eq(&witness.candidate_marker, &binding.candidate_marker)
+            && candidate.owns_binding(binding)
+            && witness
+                .object_history_binding_witness
+                .same_invocation(&binding.object_history_binding_witness)
+            && witness.task_position == candidate.task_position
+            && witness.ncc_count == candidate.ncc_count
+            && witness.ncc_count == 0
+            && cursor.next_position == candidate.partition.entry_count()
+            && cursor.task_pivoted
+            && cursor.prelude.binds_final_task_commit(candidate)
+            && cursor
+                .prelude
+                .initial_cursor_matches(candidate.partition.start_cursor())
+            && exact_task_cursor
+                .is_some_and(|task_cursor| cursor.prelude.task_cursor_matches(task_cursor))
+            && cursor.prelude.task_before_matches_initial()
+            && cursor
+                .prelude
+                .terminal_cursor_matches(candidate.partition.through_inclusive())
+            && cursor.prelude.terminal_matches_task_after()
+    }
+
+    fn binds_commit<Binding>(&self, commit: &Binding) -> bool
+    where
+        Binding: CommitObjectHistoryBinding + ?Sized,
+    {
+        self.retained_lineage_is_exact()
+            && self.closure_chain.cursor.candidate.binds_commit(commit)
+            && self
+                .history_binding_witness
+                .object_history_binding_witness
+                .same_invocation(commit.object_history_binding_witness())
+    }
+
+    pub(crate) fn into_validated_task_commit_history(
+        self,
+    ) -> Result<ValidatedTaskCommitHistoryPartition, Box<FinalTaskCommitNoNccBindingBlockedAuthority>>
+    {
+        if !self.retained_lineage_is_exact() {
+            return Err(
+                FinalTaskCommitNoNccBindingBlockedAuthority::final_authority(
+                    self,
+                    RepositoryContractError(
+                        "final taskCommit history witness differs from its completed no-NCC chain",
+                    ),
+                ),
+            );
+        }
+        Ok(ValidatedTaskCommitHistoryPartition {
+            final_seal: TaskCommitFinalSealAuthority::NoNcc(self),
+        })
+    }
+}
+
 impl TaskCommitHistoryAuditBlockedAuthority {
     fn new(
         raw_partition: UnvalidatedRepositoryHistoryPartition,
@@ -2919,6 +3388,15 @@ impl TaskCommitHistoryAuditBlockedAuthority {
 
     pub(crate) const fn failure(&self) -> &TaskCommitHistoryAuditFailureEvidence {
         &self.failure
+    }
+
+    pub(super) fn binds_commit(&self, commit: &(impl CommitObjectHistoryBinding + ?Sized)) -> bool {
+        self.object_history_binding_witness
+            .same_invocation(commit.object_history_binding_witness())
+            && &self.repository_version == commit.repository_version()
+            && &self.committed_objects_digest == commit.committed_objects_digest()
+            && &self.atomic_commit_safety_capability_id
+                == commit.atomic_commit_safety_capability_id()
     }
 }
 
@@ -5102,38 +5580,6 @@ pub(crate) fn repository_history_partition_without_order_evidence_fixture_test_o
     partition
 }
 
-/// Adversarial result-layer fixture. Production taskCommit authorities are
-/// minted only by `RepositoryHistoryPartitionResolver`; this helper can forge
-/// malformed shapes so the completion boundary remains defense in depth.
-#[cfg(test)]
-pub(crate) fn task_commit_history_partition_fixture_test_only(
-    mut partition: ValidatedRepositoryHistoryPartition,
-    binding: &(impl CommitObjectHistoryBinding + ?Sized),
-    task_semantic_delta_digest: Sha256Digest,
-) -> Result<ValidatedTaskCommitHistoryPartition, RepositoryContractError> {
-    for entry in &mut partition.wire.entries.0 {
-        if let RepositoryHistoryPartitionEntry::TaskCommit(task_commit) = entry {
-            task_commit.semantic_delta_digest = task_semantic_delta_digest.clone();
-        }
-    }
-    partition.wire.partition_digest = canonical_contract_digest(
-        &RepositoryHistoryPartitionDigestRecord {
-            from_exclusive: partition.wire.from_exclusive.clone(),
-            through_inclusive: partition.wire.through_inclusive.clone(),
-            entries: partition.wire.entries.clone(),
-        },
-        None,
-    )
-    .map_err(|_| RepositoryContractError("task-commit fixture digest failed"))?;
-    Ok(ValidatedTaskCommitHistoryPartition {
-        partition,
-        object_history_binding_witness: binding.object_history_binding_witness().clone(),
-        repository_version: binding.repository_version().clone(),
-        committed_objects_digest: binding.committed_objects_digest().clone(),
-        atomic_commit_safety_capability_id: binding.atomic_commit_safety_capability_id().clone(),
-    })
-}
-
 pub(crate) struct RepositoryHistoryPartitionResolver<'a> {
     registry: &'a EvidenceSourceRegistry,
     source_index: &'a dyn EvidenceSourceIndex,
@@ -5439,133 +5885,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
             unissued_candidate_marker: Some(Arc::new(TaskCommitHistoryCandidateMarker {
                 _private: (),
             })),
-            #[cfg(test)]
             issued_candidate_marker: None,
-        })
-    }
-
-    /// Test-only compatibility forge for the accepted Slice 5b2 assertions.
-    /// Production no longer has a constructor for final taskCommit history.
-    #[cfg(test)]
-    pub(crate) fn validate_task_commit_partition(
-        &self,
-        wire: UnvalidatedRepositoryHistoryPartition,
-        commit: &(impl CommitObjectHistoryBinding + ?Sized),
-    ) -> Result<ValidatedTaskCommitHistoryPartition, RepositoryContractError> {
-        self.registry.verify_committed_artifacts()?;
-        let expected_partition_digest = canonical_contract_digest(
-            &RepositoryHistoryPartitionDigestRecord {
-                from_exclusive: wire.from_exclusive.clone(),
-                through_inclusive: wire.through_inclusive.clone(),
-                entries: wire.entries.clone(),
-            },
-            None,
-        )
-        .map_err(|_| RepositoryContractError("task-commit partition digest failed"))?;
-        if expected_partition_digest != wire.partition_digest {
-            return Err(RepositoryContractError(
-                "task-commit partition digest mismatch",
-            ));
-        }
-        if wire.entries.0.is_empty() || wire.from_exclusive == wire.through_inclusive {
-            return Err(RepositoryContractError(
-                "task-commit partition requires a non-empty repository range",
-            ));
-        }
-
-        let mut task_entries = wire.entries.0.iter().filter_map(|entry| match entry {
-            RepositoryHistoryPartitionEntry::TaskCommit(value) => Some(value),
-            RepositoryHistoryPartitionEntry::EvidenceBacked(_)
-            | RepositoryHistoryPartitionEntry::NonConflicting(_) => None,
-        });
-        let Some(task_entry) = task_entries.next() else {
-            return Err(RepositoryContractError(
-                "task-commit partition lacks its task version",
-            ));
-        };
-        if task_entries.next().is_some()
-            || &task_entry.repository_version != commit.repository_version()
-            || &task_entry.semantic_delta_digest != commit.committed_objects_digest()
-        {
-            return Err(RepositoryContractError(
-                "task-commit partition task version or semantic digest mismatch",
-            ));
-        }
-        for entry in &wire.entries.0 {
-            match entry {
-                RepositoryHistoryPartitionEntry::TaskCommit(_) => {}
-                RepositoryHistoryPartitionEntry::EvidenceBacked(value)
-                    if value.classification
-                        == EvidenceBackedPartitionClassification::UnrelatedRoutine => {}
-                RepositoryHistoryPartitionEntry::NonConflicting(_) => {
-                    return Err(RepositoryContractError(
-                        "Slice 3 task-commit partition rejects concurrent history",
-                    ));
-                }
-                RepositoryHistoryPartitionEntry::EvidenceBacked(_) => {
-                    return Err(RepositoryContractError(
-                        "task-commit partition contains relevant or unproven concurrent history",
-                    ));
-                }
-            }
-        }
-
-        let order_evidence = self
-            .order_resolver
-            .order_evidence(&wire.from_exclusive, &wire.through_inclusive)?;
-        let entry_versions: Vec<_> = wire
-            .entries
-            .0
-            .iter()
-            .map(|entry| entry.repository_version().clone())
-            .collect();
-        let unique_versions: HashSet<_> = entry_versions.iter().collect();
-        if order_evidence.from_exclusive != wire.from_exclusive
-            || order_evidence.through_inclusive != wire.through_inclusive
-            || order_evidence.ordered_versions != entry_versions
-            || order_evidence.ordered_cursors.len() != entry_versions.len()
-            || order_evidence
-                .ordered_cursors
-                .iter()
-                .map(|cursor| &cursor.through_version)
-                .ne(entry_versions.iter())
-            || order_evidence.ordered_cursors.last() != Some(&wire.through_inclusive)
-            || unique_versions.len() != entry_versions.len()
-            || entry_versions.last() != Some(&wire.through_inclusive.through_version)
-        {
-            return Err(RepositoryContractError(
-                "history-order evidence does not prove exact task-commit partition coverage",
-            ));
-        }
-
-        let mut source_index_proofs = Vec::with_capacity(wire.entries.0.len());
-        for entry in &wire.entries.0 {
-            if matches!(entry, RepositoryHistoryPartitionEntry::TaskCommit(_)) {
-                source_index_proofs.push(None);
-                continue;
-            }
-            let candidate = self
-                .source_index
-                .candidate_for(entry.repository_version(), self.registry)?;
-            let mut proof = EvidenceSourceIndexProof::from_candidate(
-                candidate,
-                entry.repository_version(),
-                self.registry,
-            )?;
-            proof.validated_support_mapping = self.validate_entry(entry, &proof)?;
-            source_index_proofs.push(Some(proof));
-        }
-
-        Ok(ValidatedTaskCommitHistoryPartition {
-            partition: ValidatedRepositoryHistoryPartition {
-                wire,
-                source_index_proofs,
-                order_evidence: Some(order_evidence),
-            },
-            object_history_binding_witness: commit.object_history_binding_witness().clone(),
-            repository_version: commit.repository_version().clone(),
-            committed_objects_digest: commit.committed_objects_digest().clone(),
-            atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id().clone(),
         })
     }
 
@@ -7027,28 +7347,20 @@ fn parse_digest(value: &str) -> Result<Sha256Digest, RepositoryContractError> {
 }
 
 #[cfg(test)]
-pub(crate) fn validated_task_commit_partition_fixture_test_only(
-    commit: &ValidatedCommitObjectAuthority,
-) -> ValidatedTaskCommitHistoryPartition {
-    tests::validated_task_commit_partition_for_results(commit)
-}
-
-#[cfg(test)]
 mod tests {
     use super::{
-        scoped_ncc_history_fixture_test_only, AcquiredRepositoryUpdateLockTargets,
-        CanonicalEmptyDeltaDigest, EvidenceKind, EvidenceSourceIndex, EvidenceSourceIndexCandidate,
-        EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
-        FrozenSupportConflictInstructionSourceAuthority,
+        AcquiredRepositoryUpdateLockTargets, CanonicalEmptyDeltaDigest, EvidenceKind,
+        EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow,
+        EvidenceSourceRegistry, FrozenSupportConflictInstructionSourceAuthority,
         FrozenSupportCorrectiveInstructionSourceAuthority, NonConflictingConcurrentEvidence,
         ReleasedRepositoryUpdateLockTargets, RepositoryActorIdentity, RepositoryAnchor,
         RepositoryAnchorDigestRecord, RepositoryAnchorObservationAuthority,
         RepositoryHistoryCursor, RepositoryHistoryEvidenceBytesResolver,
         RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
-        RepositoryHistoryPartitionClassification, RepositoryHistoryPartitionResolver,
-        RepositoryHistorySourceEvidenceRef, RepositoryOwnerIdentity, RepositoryPlannedChanges,
-        RepositoryTargetIdentity, RepositoryTargetKind, RepositoryTargetStates,
-        RepositoryUpdateLockReason, RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
+        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
+        RepositoryOwnerIdentity, RepositoryPlannedChanges, RepositoryTargetIdentity,
+        RepositoryTargetKind, RepositoryTargetStates, RepositoryUpdateLockReason,
+        RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
         RoutineRepositoryVersionChangeObservation, RoutineRepositoryVersionClassificationEvidence,
         RoutineUpdateHistoryFoldCapabilityToken, RoutineUpdateProjectionResolver,
         SupportCorrectiveEvidenceResolver, UnvalidatedRepositoryHistoryPartition,
@@ -7126,6 +7438,55 @@ mod tests {
 
     impl<T: ?Sized> AmbiguousIfSerialize<()> for T {}
     impl<T: serde::Serialize> AmbiguousIfSerialize<u8> for T {}
+
+    trait AmbiguousIfJsonSchema<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfJsonSchema<()> for T {}
+    impl<T: ?Sized + schemars::JsonSchema> AmbiguousIfJsonSchema<u8> for T {}
+
+    trait AmbiguousIfDefault<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfDefault<()> for T {}
+    impl<T: Default> AmbiguousIfDefault<u8> for T {}
+
+    trait AmbiguousIfCopy<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
+
+    trait AmbiguousIfPartialEq<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfPartialEq<()> for T {}
+    impl<T: ?Sized + PartialEq> AmbiguousIfPartialEq<u8> for T {}
+
+    trait AmbiguousIfEq<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfEq<()> for T {}
+    impl<T: ?Sized + Eq> AmbiguousIfEq<u8> for T {}
+
+    fn assert_task_commit_final_seal_debug<T: std::fmt::Debug>() {}
+
+    const _: fn() = || {
+        assert_task_commit_final_seal_debug::<super::TaskCommitFinalSealAuthority>();
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfDeserializeOwned<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfClone<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfSerialize<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfJsonSchema<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfDefault<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfCopy<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfPartialEq<_>>::marker;
+        let _ = <super::TaskCommitFinalSealAuthority as AmbiguousIfEq<_>>::marker;
+    };
 
     #[test]
     fn capability_derived_authority_types_have_no_deserialize_backdoor() {
@@ -7463,6 +7824,66 @@ mod tests {
             .is_err()
         );
         assert_closed::<NonConflictingConcurrentEvidence>();
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_accepted_ncc_schema_and_preimage_are_byte_stable() {
+        const EXPECTED_NCC_PREIMAGE_JCS: &str = r#"{"addedReferenceEdgeSetDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","afterReferenceClosureDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","atomicCommitSafetyCapabilityId":"123e4567-e89b-12d3-a456-426614174000","beforeReferenceClosureDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","blocksApprovedDeletion":false,"changedObjectSetDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","closureDeltaOnlyAddsNonBlockingReferences":true,"disjointFromIntegrationContent":true,"lockedTargetSetDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","lockedTargetsUnchanged":true,"reason":"harmlessNonBlockingReferenceExpansion","repositoryVersion":"opaque-v11","rootUnchanged":true,"supportGraphUnchanged":true,"validationInputsUnaffected":true}"#;
+        const EXPECTED_NCC_SCHEMA_DIGEST: &str =
+            "739f8a64f59110610a3325a4593560b3e2617af8701a6975bac9b9891584c1f7";
+        const EXPECTED_NCC_PREIMAGE_SCHEMA_DIGEST: &str =
+            "cdc45e02e82509a0ab93b9e936d287ee48a1ab389f4bd995c1fbce66b2389ed7";
+        const EXPECTED_PARTITION_SCHEMA_DIGEST: &str =
+            "3334f29a443d50a085ee997b5501a2065fd5026489645aecf50e9ce57bf434ad";
+        const EXPECTED_PARTITION_PREIMAGE_SCHEMA_DIGEST: &str =
+            "8e76adb440e3547fed9ece17358308349b0ef6f9b43450fd836b6f0dfcc8928d";
+
+        let evidence = NonConflictingConcurrentEvidence::new(
+            "opaque-v11",
+            UUID_A,
+            SHA_A,
+            SHA_B,
+            SHA_A,
+            SHA_B,
+            SHA_A,
+        )
+        .unwrap();
+        let ncc_preimage_jcs =
+            String::from_utf8(serde_json_canonicalizer::to_vec(&evidence.digest_record()).unwrap())
+                .unwrap();
+        let ncc_schema_digest = test_digest(
+            &serde_json::to_value(schema_for!(NonConflictingConcurrentEvidence)).unwrap(),
+        );
+        let ncc_preimage_schema_digest = test_digest(
+            &serde_json::to_value(schema_for!(
+                super::NonConflictingConcurrentEvidenceDigestRecord
+            ))
+            .unwrap(),
+        );
+        let partition_schema_digest = test_digest(
+            &serde_json::to_value(schema_for!(UnvalidatedRepositoryHistoryPartition)).unwrap(),
+        );
+        let partition_preimage_schema_digest = test_digest(
+            &serde_json::to_value(schema_for!(super::RepositoryHistoryPartitionDigestRecord))
+                .unwrap(),
+        );
+
+        assert_eq!(
+            (
+                ncc_preimage_jcs.as_str(),
+                ncc_schema_digest.as_str(),
+                ncc_preimage_schema_digest.as_str(),
+                partition_schema_digest.as_str(),
+                partition_preimage_schema_digest.as_str(),
+            ),
+            (
+                EXPECTED_NCC_PREIMAGE_JCS,
+                EXPECTED_NCC_SCHEMA_DIGEST,
+                EXPECTED_NCC_PREIMAGE_SCHEMA_DIGEST,
+                EXPECTED_PARTITION_SCHEMA_DIGEST,
+                EXPECTED_PARTITION_PREIMAGE_SCHEMA_DIGEST,
+            )
+        );
     }
 
     fn root_state() -> Value {
@@ -8580,41 +9001,6 @@ mod tests {
             vec![serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap()],
         )
         .unwrap()
-    }
-
-    pub(super) fn validated_task_commit_partition_for_results(
-        commit: &crate::domain::branched_development::contracts::results::repository::ValidatedCommitObjectAuthority,
-    ) -> super::ValidatedTaskCommitHistoryPartition {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
-        let from: RepositoryHistoryCursor =
-            serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap();
-        let through = RepositoryHistoryCursor::new(
-            commit.repository_version().clone(),
-            Sha256Digest::parse(SHA_B).unwrap(),
-        );
-        let order = FakeOrder {
-            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
-                "history-order-v1",
-                from.clone(),
-                through.clone(),
-                vec![through.clone()],
-            )
-            .unwrap(),
-        };
-        let mut partition = json!({
-            "fromExclusive": from,
-            "throughInclusive": through,
-            "entries": [{
-                "repositoryVersion": commit.repository_version(),
-                "classification": "taskCommit",
-                "semanticDeltaDigest": commit.committed_objects_digest(),
-            }],
-        });
-        recalculate_partition_digest(&mut partition);
-        let bytes = FakeEvidenceBytes::default();
-        RepositoryHistoryPartitionResolver::new(&registry, &UnexpectedIndex, &order, &bytes)
-            .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), commit)
-            .unwrap()
     }
 
     fn support_actor() -> Value {
@@ -10740,103 +11126,6 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    fn commit_owned_partition_accepts_only_the_exact_singleton_task_version_and_digest() {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
-        let capability = CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap();
-        let authority = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("opaque-v1").unwrap(),
-            capability,
-        );
-        let mut task_commit = json!({
-            "fromExclusive":cursor("opaque-v0", SHA_A),
-            "throughInclusive":cursor("opaque-v1", SHA_B),
-            "entries":[{
-                "repositoryVersion":"opaque-v1",
-                "classification":"taskCommit",
-                "semanticDeltaDigest":authority.committed_objects_digest()
-            }]
-        });
-        recalculate_partition_digest(&mut task_commit);
-        let evidence_bytes = FakeEvidenceBytes::default();
-        let order = FakeOrder {
-            evidence: routine_order(),
-        };
-        let resolver = RepositoryHistoryPartitionResolver::new(
-            &registry,
-            &UnexpectedIndex,
-            &order,
-            &evidence_bytes,
-        );
-
-        let validated = resolver
-            .validate_task_commit_partition(
-                serde_json::from_value(task_commit.clone()).unwrap(),
-                &authority,
-            )
-            .unwrap();
-        assert!(validated.binds(&authority));
-        let foreign_authority = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("opaque-v1").unwrap(),
-            CapabilityRowId::parse("repository.other-atomic-safety.v1").unwrap(),
-        );
-        assert!(!validated.binds(&foreign_authority));
-
-        task_commit["entries"][0]["semanticDeltaDigest"] = json!(SHA_A);
-        recalculate_partition_digest(&mut task_commit);
-        assert!(resolver
-            .validate_task_commit_partition(
-                serde_json::from_value(task_commit).unwrap(),
-                &authority,
-            )
-            .is_err());
-    }
-
-    #[test]
-    fn slice_5b2_final_task_commit_partition_still_rejects_ncc_before_index_or_order_lookup() {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
-        let capability = CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap();
-        let authority = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("opaque-v2").unwrap(),
-            capability,
-        );
-        let root = RepositoryTargetIdentity::configuration_root();
-        let fixture = scoped_ncc_history_fixture_test_only(
-            serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
-            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
-            "repository.history-order.slice-5b2-final-boundary",
-            "repository.atomic-commit-safety.v1",
-            vec![root.clone()],
-            vec![root],
-            Vec::new(),
-        )
-        .unwrap();
-        let mut partition = serde_json::to_value(fixture.partition).unwrap();
-        partition["throughInclusive"] = cursor("opaque-v2", SHA_A);
-        partition["entries"].as_array_mut().unwrap().push(json!({
-            "repositoryVersion": "opaque-v2",
-            "classification": "taskCommit",
-            "semanticDeltaDigest": authority.committed_objects_digest()
-        }));
-        recalculate_partition_digest(&mut partition);
-        let dummy_bytes = FakeEvidenceBytes::default();
-        let resolver = RepositoryHistoryPartitionResolver::new(
-            &registry,
-            &UnexpectedIndex,
-            &UnexpectedOrder,
-            &dummy_bytes,
-        );
-
-        let error = resolver
-            .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), &authority)
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "Slice 3 task-commit partition rejects concurrent history"
-        );
-    }
-
     struct TaskCommitAuditFixture {
         registry: EvidenceSourceRegistry,
         partition: Value,
@@ -11282,74 +11571,467 @@ mod tests {
     }
 
     #[test]
-    fn commit_owned_partition_resolves_every_non_task_entry_through_the_source_index() {
-        let registry = EvidenceSourceRegistry::task8().unwrap();
-        let (routine, source_ref, evidence) = routine_partition_fixture();
-        let authority = validated_commit_object_authority_fixture_test_only(
-            RepositoryVersion::parse("opaque-v2").unwrap(),
-            CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap(),
-        );
-        let mut partition = json!({
-            "fromExclusive":cursor("opaque-v0", SHA_A),
-            "throughInclusive":cursor("opaque-v2", SHA_A),
-            "entries":[
-                routine["entries"][0].clone(),
-                {
-                    "repositoryVersion":"opaque-v2",
-                    "classification":"taskCommit",
-                    "semanticDeltaDigest":authority.committed_objects_digest()
-                }
-            ]
-        });
-        recalculate_partition_digest(&mut partition);
-        let order = FakeOrder {
-            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
-                "history-order-v1",
-                serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
-                serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap(),
-                vec![
-                    serde_json::from_value(cursor("opaque-v1", SHA_B)).unwrap(),
-                    serde_json::from_value(cursor("opaque-v2", SHA_A)).unwrap(),
-                ],
-            )
-            .unwrap(),
-        };
-        let index = FakeIndex {
-            candidates: BTreeMap::from([(
-                "opaque-v1".into(),
-                routine_candidate(&registry, source_ref.clone()),
-            )]),
-        };
-        let evidence_bytes = FakeEvidenceBytes {
-            bytes: BTreeMap::from([(
-                (
-                    EvidenceKind::RoutineClassification,
-                    source_ref.evidence_digest().as_str().to_owned(),
+    fn gate_b3_commit_final_history_no_ncc_closure_chain_accepts_all_task_and_unrelated_orders() {
+        fn accepts_only_sealed_no_ncc_authority(_: super::FinalTaskCommitNoNccAuthority) {}
+
+        for rows in [
+            vec![FinalAuditRow::Task],
+            vec![FinalAuditRow::Unrelated, FinalAuditRow::Task],
+            vec![FinalAuditRow::Task, FinalAuditRow::Unrelated],
+            vec![
+                FinalAuditRow::Unrelated,
+                FinalAuditRow::Task,
+                FinalAuditRow::Unrelated,
+            ],
+        ] {
+            let (authority, candidate) = audited_candidate_matrix_fixture(&rows);
+            assert_eq!(candidate.ncc_count(), 0);
+            let expected_partition = serde_json::to_value(&candidate.partition).unwrap();
+            let task_cursor = candidate
+                .partition
+                .order_evidence
+                .as_ref()
+                .unwrap()
+                .ordered_cursors[candidate.task_position() - 1]
+                .clone();
+            let initial = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            let task_after = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                super::RepositoryReferenceEdge::new(
+                    super::RepositoryTargetIdentity::configuration_root(),
+                    super::RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000ac").unwrap(),
+                    ),
                 ),
-                serde_json_canonicalizer::to_vec(&evidence).unwrap(),
-            )]),
-        };
-        let resolver =
-            RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &evidence_bytes);
-
-        assert!(resolver
-            .validate_task_commit_partition(
-                serde_json::from_value(partition.clone()).unwrap(),
+            ])
+            .unwrap();
+            let prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
                 &authority,
-            )
-            .is_ok());
+                candidate.partition.start_cursor().clone(),
+                task_cursor,
+                candidate.partition.through_inclusive().clone(),
+                initial.clone(),
+                initial,
+                task_after.clone(),
+                task_after,
+            );
 
-        let missing_index = FakeIndex {
-            candidates: BTreeMap::new(),
+            let final_authority = candidate
+                .into_no_ncc(prelude)
+                .expect("exact no-NCC closure chain must seal");
+            accepts_only_sealed_no_ncc_authority(final_authority);
+
+            let (authority, candidate) = audited_candidate_matrix_fixture(&rows);
+            let task_cursor = candidate
+                .partition
+                .order_evidence
+                .as_ref()
+                .unwrap()
+                .ordered_cursors[candidate.task_position() - 1]
+                .clone();
+            let initial = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            let task_after = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                super::RepositoryReferenceEdge::new(
+                    super::RepositoryTargetIdentity::configuration_root(),
+                    super::RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000ac").unwrap(),
+                    ),
+                ),
+            ])
+            .unwrap();
+            let prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
+                &authority,
+                candidate.partition.start_cursor().clone(),
+                task_cursor,
+                candidate.partition.through_inclusive().clone(),
+                initial.clone(),
+                initial,
+                task_after.clone(),
+                task_after,
+            );
+            let validated = candidate
+                .into_no_ncc(prelude)
+                .unwrap()
+                .into_validated_task_commit_history()
+                .expect("checked nominal witness must inhabit the private final seal");
+            assert_eq!(
+                serde_json::to_value(validated.partition()).unwrap(),
+                expected_partition
+            );
+            assert_eq!(
+                serde_json::to_value(validated.into_partition()).unwrap(),
+                expected_partition
+            );
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_private_seal_rejects_every_nominal_witness_substitution() {
+        #[derive(Clone, Copy)]
+        enum SealAttack {
+            HistoryMarker,
+            CandidateMarker,
+            ObjectWitness,
+            TaskPosition,
+            NccCount,
+            IncompleteClosureChain,
+        }
+
+        fn final_authority_fixture() -> super::FinalTaskCommitNoNccAuthority {
+            let (authority, candidate) = audited_candidate_matrix_fixture(&[FinalAuditRow::Task]);
+            let task_cursor = candidate
+                .partition
+                .order_evidence
+                .as_ref()
+                .unwrap()
+                .ordered_cursors[candidate.task_position() - 1]
+                .clone();
+            let empty = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            let task_after = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                super::RepositoryReferenceEdge::new(
+                    super::RepositoryTargetIdentity::configuration_root(),
+                    super::RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000b4").unwrap(),
+                    ),
+                ),
+            ])
+            .unwrap();
+            let prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
+                &authority,
+                candidate.partition.start_cursor().clone(),
+                task_cursor,
+                candidate.partition.through_inclusive().clone(),
+                empty.clone(),
+                empty,
+                task_after.clone(),
+                task_after,
+            );
+            candidate.into_no_ncc(prelude).unwrap()
+        }
+
+        for attack in [
+            SealAttack::HistoryMarker,
+            SealAttack::CandidateMarker,
+            SealAttack::ObjectWitness,
+            SealAttack::TaskPosition,
+            SealAttack::NccCount,
+            SealAttack::IncompleteClosureChain,
+        ] {
+            let mut authority = final_authority_fixture();
+            match attack {
+                SealAttack::HistoryMarker => {
+                    authority.history_binding_witness.marker =
+                        Arc::new(super::FinalTaskCommitHistoryBindingMarker { _private: () });
+                }
+                SealAttack::CandidateMarker => {
+                    authority.history_binding_witness.candidate_marker =
+                        Arc::new(super::TaskCommitHistoryCandidateMarker { _private: () });
+                }
+                SealAttack::ObjectWitness => {
+                    let foreign = final_authority_fixture();
+                    authority
+                        .history_binding_witness
+                        .object_history_binding_witness = foreign
+                        .history_binding_witness
+                        .object_history_binding_witness
+                        .clone();
+                }
+                SealAttack::TaskPosition => {
+                    authority.history_binding_witness.task_position += 1;
+                }
+                SealAttack::NccCount => {
+                    authority.history_binding_witness.ncc_count = 1;
+                }
+                SealAttack::IncompleteClosureChain => {
+                    authority.closure_chain.cursor.task_pivoted = false;
+                }
+            }
+
+            let blocked = authority
+                .into_validated_task_commit_history()
+                .expect_err("private seal must reject nominal witness substitution");
+
+            assert_eq!(
+                blocked.failure().stage(),
+                super::FinalTaskCommitClosureChainFailureStage::FinalSeal
+            );
+            assert!(matches!(
+                blocked.source,
+                super::FinalTaskCommitNoNccBlockedSource::FinalAuthority(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_private_seal_retains_the_complete_causal_graph() {
+        let (authority, candidate) = audited_candidate_matrix_fixture(&[FinalAuditRow::Task]);
+        let task_cursor = candidate
+            .partition
+            .order_evidence
+            .as_ref()
+            .unwrap()
+            .ordered_cursors[candidate.task_position() - 1]
+            .clone();
+        let empty = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let task_after = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+            super::RepositoryReferenceEdge::new(
+                super::RepositoryTargetIdentity::configuration_root(),
+                super::RepositoryTargetIdentity::development_object(
+                    MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000b5").unwrap(),
+                ),
+            ),
+        ])
+        .unwrap();
+        let prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
+            &authority,
+            candidate.partition.start_cursor().clone(),
+            task_cursor,
+            candidate.partition.through_inclusive().clone(),
+            empty.clone(),
+            empty,
+            task_after.clone(),
+            task_after,
+        );
+        let mut validated = candidate
+            .into_no_ncc(prelude)
+            .unwrap()
+            .into_validated_task_commit_history()
+            .unwrap();
+        assert!(validated.binds(&authority));
+
+        let foreign_equal_scalar = validated_commit_object_authority_fixture_test_only(
+            authority.repository_version().clone(),
+            authority.atomic_commit_safety_capability_id().clone(),
+        );
+        assert_eq!(
+            foreign_equal_scalar.committed_objects_digest(),
+            authority.committed_objects_digest()
+        );
+        assert!(!validated.binds(&foreign_equal_scalar));
+
+        let super::ValidatedTaskCommitHistoryPartition { final_seal } = &mut validated;
+        let super::TaskCommitFinalSealAuthority::NoNcc(retained) = final_seal;
+        let cursor = &retained.closure_chain.cursor;
+        assert!(Arc::ptr_eq(
+            &retained.issued_history_binding_marker,
+            &retained.history_binding_witness.marker
+        ));
+        assert!(Arc::ptr_eq(
+            &retained.history_binding_witness.candidate_marker,
+            &cursor.candidate_binding.candidate_marker
+        ));
+        assert!(cursor.candidate.owns_binding(&cursor.candidate_binding));
+        assert!(cursor.prelude.binds_final_task_commit(&cursor.candidate));
+        retained.history_binding_witness.marker =
+            Arc::new(super::FinalTaskCommitHistoryBindingMarker { _private: () });
+        assert!(!validated.binds(&authority));
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_no_ncc_rejects_every_closure_and_anchor_substitution() {
+        use super::FinalTaskCommitClosureChainFailureStage::{
+            CandidateBinding, EntryOrder, InitialCursor, TaskAnchor, TaskPivot, TerminalAnchor,
+            TerminalClosure,
         };
-        assert!(RepositoryHistoryPartitionResolver::new(
-            &registry,
-            &missing_index,
-            &order,
-            &evidence_bytes,
-        )
-        .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), &authority)
-        .is_err());
+
+        #[derive(Clone, Copy)]
+        enum Attack {
+            TaskTransparent,
+            InitialDigest,
+            TaskBefore,
+            TaskAfter,
+            ForeignTaskAuthority,
+            WrongInitialCursor,
+            WrongTaskPosition,
+            OtherValidTaskCursor,
+            SameVersionDifferentTaskPrefix,
+            WrongTerminalCursor,
+        }
+
+        fn closure(object_id: &str) -> super::CanonicalRepositoryReferenceEdgeSet {
+            super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+                super::RepositoryReferenceEdge::new(
+                    super::RepositoryTargetIdentity::configuration_root(),
+                    super::RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse(object_id).unwrap(),
+                    ),
+                ),
+            ])
+            .unwrap()
+        }
+
+        for (attack, expected_stage) in [
+            (Attack::TaskTransparent, TaskPivot),
+            (Attack::InitialDigest, CandidateBinding),
+            (Attack::TaskBefore, TaskPivot),
+            (Attack::TaskAfter, TerminalClosure),
+            (Attack::ForeignTaskAuthority, CandidateBinding),
+            (Attack::WrongInitialCursor, InitialCursor),
+            (Attack::WrongTaskPosition, EntryOrder),
+            (Attack::OtherValidTaskCursor, TaskAnchor),
+            (Attack::SameVersionDifferentTaskPrefix, TaskAnchor),
+            (Attack::WrongTerminalCursor, TerminalAnchor),
+        ] {
+            let rows = match attack {
+                Attack::WrongInitialCursor | Attack::OtherValidTaskCursor => {
+                    vec![FinalAuditRow::Unrelated, FinalAuditRow::Task]
+                }
+                Attack::WrongTerminalCursor => {
+                    vec![FinalAuditRow::Task, FinalAuditRow::Unrelated]
+                }
+                _ => vec![FinalAuditRow::Task],
+            };
+            let (authority, mut candidate) = audited_candidate_matrix_fixture(&rows);
+            let retained_partition = serde_json::to_value(&candidate.partition).unwrap();
+            let audited_task_position = candidate.task_position();
+            let order = candidate.partition.order_evidence.as_ref().unwrap();
+            let exact_task_cursor = order.ordered_cursors[audited_task_position - 1].clone();
+            let task_cursor = if matches!(attack, Attack::OtherValidTaskCursor) {
+                order.ordered_cursors[0].clone()
+            } else if matches!(attack, Attack::SameVersionDifferentTaskPrefix) {
+                RepositoryHistoryCursor::new(
+                    exact_task_cursor.through_version().clone(),
+                    Sha256Digest::parse(&"e".repeat(64)).unwrap(),
+                )
+            } else {
+                exact_task_cursor.clone()
+            };
+            let terminal_cursor = if matches!(attack, Attack::WrongTerminalCursor) {
+                exact_task_cursor
+            } else {
+                candidate.partition.through_inclusive().clone()
+            };
+            let initial = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+            let initial_cursor = if matches!(attack, Attack::WrongInitialCursor) {
+                order.ordered_cursors[0].clone()
+            } else {
+                candidate.partition.start_cursor().clone()
+            };
+            let closure_a = closure("b3300000-0000-4000-8000-0000000000b1");
+            let closure_b = closure("b3300000-0000-4000-8000-0000000000b2");
+            let (task_before, task_after, terminal) = match attack {
+                Attack::TaskTransparent => (closure_a.clone(), closure_a.clone(), initial.clone()),
+                Attack::TaskBefore => (closure_b.clone(), closure_a.clone(), closure_a.clone()),
+                Attack::TaskAfter => (initial.clone(), closure_a.clone(), closure_b),
+                _ => (initial.clone(), closure_a.clone(), closure_a),
+            };
+            let mut prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
+                &authority,
+                initial_cursor,
+                task_cursor,
+                terminal_cursor,
+                initial,
+                task_before,
+                task_after,
+                terminal,
+            );
+            if matches!(attack, Attack::InitialDigest) {
+                prelude.corrupt_initial_reference_closure_digest_test_only();
+            }
+            if matches!(attack, Attack::ForeignTaskAuthority) {
+                prelude.replace_task_reference_closure_witness_with_foreign_test_only();
+            }
+            if matches!(attack, Attack::WrongTaskPosition) {
+                candidate.task_position += 1;
+            }
+            let retained_task_position = candidate.task_position();
+
+            let blocked = candidate
+                .into_no_ncc(prelude)
+                .expect_err("substituted final history must retain an owning blocked authority");
+
+            assert_eq!(blocked.failure().stage(), expected_stage);
+            assert!(!blocked.failure().error().to_string().is_empty());
+            match (&blocked.source, expected_stage) {
+                (
+                    super::FinalTaskCommitNoNccBlockedSource::Candidate {
+                        candidate,
+                        prelude: _,
+                    },
+                    CandidateBinding,
+                ) => {
+                    assert_eq!(
+                        serde_json::to_value(&candidate.partition).unwrap(),
+                        retained_partition
+                    );
+                    assert_eq!(candidate.task_position(), retained_task_position);
+                    assert!(candidate.unissued_candidate_marker.is_some());
+                    assert!(candidate.issued_candidate_marker.is_none());
+                }
+                (
+                    super::FinalTaskCommitNoNccBlockedSource::ClosureChain(chain),
+                    InitialCursor | EntryOrder | TaskAnchor | TaskPivot | TerminalAnchor
+                    | TerminalClosure,
+                ) => {
+                    assert_eq!(
+                        serde_json::to_value(&chain.cursor.candidate.partition).unwrap(),
+                        retained_partition
+                    );
+                    assert_eq!(
+                        chain.cursor.candidate.task_position(),
+                        retained_task_position
+                    );
+                    assert!(chain
+                        .cursor
+                        .candidate
+                        .owns_binding(&chain.cursor.candidate_binding));
+                    assert!(chain.cursor.candidate.unissued_candidate_marker.is_none());
+                    assert!(chain.cursor.candidate.issued_candidate_marker.is_some());
+                }
+                _ => panic!("failure must retain the exact stage-owned source"),
+            }
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_no_ncc_signature_has_no_port_and_rejects_ncc() {
+        let no_ncc_entry: fn(
+            super::TaskCommitHistoryCandidateAuthority,
+            crate::domain::branched_development::contracts::results::repository::CommitPostCommandHistoryPreludeAuthority,
+        ) -> Result<
+            super::FinalTaskCommitNoNccAuthority,
+            Box<super::FinalTaskCommitNoNccBindingBlockedAuthority>,
+        > = super::TaskCommitHistoryCandidateAuthority::into_no_ncc;
+        let (authority, candidate) =
+            audited_candidate_matrix_fixture(&[FinalAuditRow::NonConflicting, FinalAuditRow::Task]);
+        let task_cursor = candidate
+            .partition
+            .order_evidence
+            .as_ref()
+            .unwrap()
+            .ordered_cursors[candidate.task_position() - 1]
+            .clone();
+        let empty = super::CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let task_after = super::CanonicalRepositoryReferenceEdgeSet::new(vec![
+            super::RepositoryReferenceEdge::new(
+                super::RepositoryTargetIdentity::configuration_root(),
+                super::RepositoryTargetIdentity::development_object(
+                    MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000b3").unwrap(),
+                ),
+            ),
+        ])
+        .unwrap();
+        let prelude = crate::domain::branched_development::contracts::results::repository::commit_post_command_history_prelude_fixture_test_only(
+            &authority,
+            candidate.partition.start_cursor().clone(),
+            task_cursor,
+            candidate.partition.through_inclusive().clone(),
+            empty.clone(),
+            empty,
+            task_after.clone(),
+            task_after,
+        );
+
+        let blocked = no_ncc_entry(candidate, prelude)
+            .expect_err("NCC history cannot enter the no-NCC final branch");
+
+        assert_eq!(
+            blocked.failure().stage(),
+            super::FinalTaskCommitClosureChainFailureStage::CandidateBinding
+        );
+        assert!(matches!(
+            blocked.source,
+            super::FinalTaskCommitNoNccBlockedSource::Candidate { .. }
+        ));
     }
 
     fn non_conflicting_partition_fixture() -> (
