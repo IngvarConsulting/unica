@@ -16,6 +16,8 @@ use crate::domain::branched_development::contracts::repository::{
     RepositoryAnchor, RepositoryHistoryCursor, RepositoryTargetIdentity,
     RepositoryUpdateLockTargets, SupportGateHistoryEvidence,
 };
+#[cfg(test)]
+use crate::domain::branched_development::contracts::scalars::NormalizedUtcInstant;
 use crate::domain::branched_development::contracts::scalars::{
     Name, PropertyPath, RepositoryTargetDisplay,
 };
@@ -8393,7 +8395,23 @@ pub(crate) fn validated_consumed_original_merge_context_fixture_test_only(
     merge_receipt_id: UnicaId,
     result_fingerprint: Sha256Digest,
 ) -> ValidatedConsumedOriginalMergeLineageAuthority {
-    use super::repository::original_merge_production_lock_projection_fixture_test_only;
+    validated_consumed_original_merge_context_with_lock_identity_fixture_internal(
+        merge_receipt_id,
+        result_fingerprint,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn validated_consumed_original_merge_context_with_lock_identity_fixture_internal(
+    merge_receipt_id: UnicaId,
+    result_fingerprint: Sha256Digest,
+    lock_identity: Option<(UnicaId, NormalizedUtcInstant)>,
+) -> ValidatedConsumedOriginalMergeLineageAuthority {
+    use super::repository::{
+        original_merge_production_lock_projection_fixture_test_only,
+        original_merge_production_lock_projection_with_identity_fixture_test_only,
+    };
 
     struct PreIntentLease;
     impl OriginalMergePreIntentLease for PreIntentLease {
@@ -8490,12 +8508,24 @@ pub(crate) fn validated_consumed_original_merge_context_fixture_test_only(
     let session = MergeSessionData::MainIntegration(main.clone());
     let decisions =
         ResolvedApplyDecisionProjectionAuthority::for_no_conflict_session(&session).unwrap();
-    let projection = original_merge_production_lock_projection_fixture_test_only(
-        main.session_id.clone(),
-        main.resolved_session_digest.clone(),
-        preflight,
-        main.settings_digest.clone(),
-    );
+    let projection = match lock_identity {
+        Some((lock_set_id, observed_at)) => {
+            original_merge_production_lock_projection_with_identity_fixture_test_only(
+                main.session_id.clone(),
+                main.resolved_session_digest.clone(),
+                preflight,
+                main.settings_digest.clone(),
+                lock_set_id,
+                observed_at,
+            )
+        }
+        None => original_merge_production_lock_projection_fixture_test_only(
+            main.session_id.clone(),
+            main.resolved_session_digest.clone(),
+            preflight,
+            main.settings_digest.clone(),
+        ),
+    };
     let rollback = verified_original_rollback_checkpoint_fixture_test_only(
         projection,
         consumer_fixture_id("8a000000-0000-4000-8000-000000000020"),
@@ -8522,6 +8552,33 @@ pub(crate) fn validated_consumed_original_merge_context_fixture_test_only(
 pub(crate) fn validated_main_integration_commit_context_fixture_test_only(
     merge_receipt_id: UnicaId,
     result_fingerprint: Sha256Digest,
+) -> ResolvedCommitLineageConsumedSupportGateAuthority {
+    validated_main_integration_commit_context_with_lock_identity_fixture_internal(
+        merge_receipt_id,
+        result_fingerprint,
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn validated_main_integration_commit_context_with_lock_identity_fixture_test_only(
+    merge_receipt_id: UnicaId,
+    result_fingerprint: Sha256Digest,
+    lock_set_id: UnicaId,
+    observed_at: NormalizedUtcInstant,
+) -> ResolvedCommitLineageConsumedSupportGateAuthority {
+    validated_main_integration_commit_context_with_lock_identity_fixture_internal(
+        merge_receipt_id,
+        result_fingerprint,
+        Some((lock_set_id, observed_at)),
+    )
+}
+
+#[cfg(test)]
+fn validated_main_integration_commit_context_with_lock_identity_fixture_internal(
+    merge_receipt_id: UnicaId,
+    result_fingerprint: Sha256Digest,
+    lock_identity: Option<(UnicaId, NormalizedUtcInstant)>,
 ) -> ResolvedCommitLineageConsumedSupportGateAuthority {
     struct FreshConsumedLease;
     impl ConsumedSupportGateStateLease for FreshConsumedLease {
@@ -8552,9 +8609,10 @@ pub(crate) fn validated_main_integration_commit_context_fixture_test_only(
         }
     }
 
-    let lineage = validated_consumed_original_merge_context_fixture_test_only(
+    let lineage = validated_consumed_original_merge_context_with_lock_identity_fixture_internal(
         merge_receipt_id,
         result_fingerprint,
+        lock_identity,
     );
     let check_plan =
         ConfiguredValidationCheckPlanAuthority::from_configuration_adapter(vec![]).unwrap();

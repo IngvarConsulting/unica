@@ -49,6 +49,15 @@ pub(crate) enum OperationScope {
     },
 }
 
+impl OperationScope {
+    pub(crate) const fn task_id_if_task(&self) -> Option<&TaskId> {
+        match self {
+            Self::Task { task_id, .. } => Some(task_id),
+            Self::StartAttempt { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisteredOperationRecord {

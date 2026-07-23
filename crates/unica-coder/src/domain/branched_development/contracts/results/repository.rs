@@ -1,5 +1,6 @@
 use crate::domain::branched_development::canonical_json::{
-    canonical_contract_digest, contract_digest_record_sealed, ContractDigestRecord,
+    canonical_contract_digest, canonical_contract_encoding, contract_digest_record_sealed,
+    operation_input_digest, ContractDigestRecord,
 };
 use crate::domain::branched_development::contracts::artifacts::{
     CompatibilityMode, ConfigurationIdentity, OriginalInfobaseKind, RepositoryTransport,
@@ -16,13 +17,15 @@ use crate::domain::branched_development::contracts::repository::{
     DeferredRepositoryAdvance, DeferredRepositoryAdvanceConsumptionReceipt, ObjectTargetIdentity,
     PostMergeHistoryGuardAuthority, PostMergeHistoryGuardEvidence, RepositoryActorIdentity,
     RepositoryAnchor, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
-    RepositoryPlannedChanges, RepositoryTargetIdentity, RepositoryTargetStateRef,
+    RepositoryHistoryPartitionResolver, RepositoryPlannedChanges, RepositoryTargetIdentity,
+    RepositoryTargetState, RepositoryTargetStateRef, RepositoryTargetStates,
     RepositoryUpdateLockReason, RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets,
     RootTargetIdentity, SelectiveRepositoryUpdatePlan, SelectiveRepositoryUpdateProof,
     SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
-    SupportRootSelectiveRepositoryUpdatePlanAuthority, ValidatedRepositoryHistoryPartition,
-    ValidatedRoutineUpdateProjection, ValidatedSupportPrerequisiteHistoryProjection,
-    ValidatedSupportRecoveryHistoryEntryRef, ValidatedTaskCommitHistoryPartition,
+    SupportRootSelectiveRepositoryUpdatePlanAuthority, UnvalidatedRepositoryHistoryPartition,
+    ValidatedRepositoryHistoryPartition, ValidatedRoutineUpdateProjection,
+    ValidatedSupportPrerequisiteHistoryProjection, ValidatedSupportRecoveryHistoryEntryRef,
+    ValidatedTaskCommitHistoryPartition,
 };
 use crate::domain::branched_development::contracts::requests::repository::{
     RepositoryCommitRequest, SupportCancellationReason, ValidatedCancellationApplyRequest,
@@ -37,13 +40,18 @@ use crate::domain::branched_development::contracts::results::merge::{
     ResolvedCommitLineageConsumedSupportGateAuthority, ValidatedMainSandboxVerificationAuthority,
 };
 use crate::domain::branched_development::contracts::scalars::{
-    Comment, NormalizedUtcInstant, OriginalProjectCwd, RepositoryIdentityComponent,
-    RepositoryTargetDisplay, RepositoryUsername, RepositoryVersion, RequiredNullable, TaskSummary,
+    Comment, NormalizedUtcInstant, OriginalProjectCwd, PositiveGeneration,
+    RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername, RepositoryVersion,
+    RequiredNullable, TaskSummary,
 };
 use crate::domain::branched_development::contracts::schema::one_of_schema;
+use crate::domain::branched_development::contracts::selectors::{
+    RepositoryCommitSelectorVariant, TaskOperationSelector,
+};
 use crate::domain::branched_development::contracts::status::{
     ActiveOperationStatus, CleanupReceipt,
 };
+use crate::domain::branched_development::contracts::storage::OperationScope;
 use crate::domain::branched_development::contracts::support::{
     ActiveSupportActionResumeHandle, CurrentReadySupportGateAuthority,
     ManualActorLockInventoryProof, ManualSupportTargetMode, ManualWorkingInfobaseIdentity,
@@ -58,8 +66,8 @@ use crate::domain::branched_development::contracts::support_terminalization::{
     ManualWorkingInfobaseClosurePlan, ManualWorkingInfobaseClosureProof, SupportRecoveryGuardProof,
 };
 use crate::domain::branched_development::{
-    CapabilityRowId, MetadataObjectId, OperationId, ProjectId, Sha256Digest, TaskId, TaskPhase,
-    UnicaId,
+    BranchedLifecycleToolName, CapabilityRowId, DurableExecutionPolicy, MetadataObjectId,
+    OperationId, ProjectId, Sha256Digest, TaskId, TaskPhase, UnicaId,
 };
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
@@ -563,6 +571,17 @@ pub(crate) enum CommitExactObject {
     ObjectDelete(ObjectDeleteExactObject),
 }
 
+/// Borrowed command projection for a repository adapter.  It exposes the
+/// approved target/action tuple without opening constructors or requiring a
+/// JSON round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitExactObjectRef<'a> {
+    RootModify,
+    ObjectAdd { object_id: &'a MetadataObjectId },
+    ObjectModify { object_id: &'a MetadataObjectId },
+    ObjectDelete { object_id: &'a MetadataObjectId },
+}
+
 impl CommitExactObject {
     fn target_identity(&self) -> RepositoryTargetIdentity {
         match self {
@@ -578,6 +597,21 @@ impl CommitExactObject {
             Self::ObjectDelete(value) => {
                 RepositoryTargetIdentity::DevelopmentObject(value.target.clone())
             }
+        }
+    }
+
+    pub(crate) const fn as_ref(&self) -> CommitExactObjectRef<'_> {
+        match self {
+            Self::RootModify(_) => CommitExactObjectRef::RootModify,
+            Self::ObjectAdd(value) => CommitExactObjectRef::ObjectAdd {
+                object_id: value.target.object_id(),
+            },
+            Self::ObjectModify(value) => CommitExactObjectRef::ObjectModify {
+                object_id: value.target.object_id(),
+            },
+            Self::ObjectDelete(value) => CommitExactObjectRef::ObjectDelete {
+                object_id: value.target.object_id(),
+            },
         }
     }
 }
@@ -619,6 +653,10 @@ impl CommitExactObjects {
     pub(crate) fn as_slice(&self) -> &[CommitExactObject] {
         &self.0
     }
+
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = CommitExactObjectRef<'_>> {
+        self.0.iter().map(CommitExactObject::as_ref)
+    }
 }
 
 impl JsonSchema for CommitExactObjects {
@@ -633,6 +671,107 @@ impl JsonSchema for CommitExactObjects {
             "maxItems": MAX_RESULT_ITEMS,
             "uniqueItems": true,
             "items": generator.subschema_for::<CommitExactObject>(),
+        })
+    }
+}
+
+fn target_states_cover_exact_commit_objects(
+    exact_objects: &CommitExactObjects,
+    target_states: &RepositoryTargetStates,
+) -> bool {
+    exact_objects.as_slice().len() == target_states.as_slice().len()
+        && exact_objects
+            .iter()
+            .zip(
+                target_states
+                    .as_slice()
+                    .iter()
+                    .map(RepositoryTargetState::as_ref),
+            )
+            .all(|(exact, state)| match (exact, state) {
+                (
+                    CommitExactObjectRef::RootModify,
+                    RepositoryTargetStateRef::RootPresent { .. },
+                ) => true,
+                (
+                    CommitExactObjectRef::ObjectAdd {
+                        object_id: expected,
+                    },
+                    RepositoryTargetStateRef::ObjectAbsent { object_id, .. },
+                )
+                | (
+                    CommitExactObjectRef::ObjectModify {
+                        object_id: expected,
+                    },
+                    RepositoryTargetStateRef::ObjectPresent { object_id, .. },
+                )
+                | (
+                    CommitExactObjectRef::ObjectDelete {
+                        object_id: expected,
+                    },
+                    RepositoryTargetStateRef::ObjectPresent { object_id, .. },
+                ) => expected == object_id,
+                _ => false,
+            })
+}
+
+fn exact_zero_effect_target_transition(
+    exact_objects: &CommitExactObjects,
+    before: &RepositoryTargetStates,
+    terminal: &RepositoryTargetStates,
+) -> bool {
+    target_states_cover_exact_commit_objects(exact_objects, before)
+        && target_states_cover_exact_commit_objects(exact_objects, terminal)
+        // RepositoryTargetState versions are the versions that established
+        // the state, not observation cursors.  Exact equality intentionally
+        // rejects ABA/change-then-revert as a zero-effect certificate.
+        && before == terminal
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitTargetStateSnapshotRecord {
+    digest_kind: &'static str,
+    repository_anchor: RepositoryAnchor,
+    target_states: RepositoryTargetStates,
+    observation_capability_id: CapabilityRowId,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitTargetStateSnapshotRecord {}
+impl ContractDigestRecord for CommitTargetStateSnapshotRecord {}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CommitPreCommandTargetSnapshotAuthority {
+    record: CommitTargetStateSnapshotRecord,
+    snapshot_digest: Sha256Digest,
+}
+
+impl CommitPreCommandTargetSnapshotAuthority {
+    fn from_immediate_observation(
+        exact_objects: &CommitExactObjects,
+        repository_anchor: RepositoryAnchor,
+        target_states: RepositoryTargetStates,
+        observation_capability_id: CapabilityRowId,
+        atomic_commit_safety_capability_id: CapabilityRowId,
+    ) -> Result<Self, RepositoryResultContractError> {
+        if !target_states_cover_exact_commit_objects(exact_objects, &target_states) {
+            return Err(RepositoryResultContractError(
+                "pre-command target snapshot does not cover the exact approved actions",
+            ));
+        }
+        let record = CommitTargetStateSnapshotRecord {
+            digest_kind: "unica.repository.commit.target-state-snapshot.v1",
+            repository_anchor,
+            target_states,
+            observation_capability_id,
+            atomic_commit_safety_capability_id,
+        };
+        let snapshot_digest =
+            result_digest(&record, "pre-command target-state snapshot digest failed")?;
+        Ok(Self {
+            record,
+            snapshot_digest,
         })
     }
 }
@@ -4624,12 +4763,37 @@ impl ApprovedCommitPreviewAuthority {
                 };
             let before_repository_cursor = observed.history_partition.through_inclusive().clone();
             let post_merge_repository_anchor = observed.observed_repository_anchor.clone();
+            let pre_command_target_snapshot =
+                match CommitPreCommandTargetSnapshotAuthority::from_immediate_observation(
+                    &self.0.record.exact_objects,
+                    observed.observed_repository_anchor.clone(),
+                    observed.pre_command_target_states.clone(),
+                    observed
+                        .pre_command_target_snapshot_observation_capability_id
+                        .clone(),
+                    observed.atomic_commit_safety_capability_id.clone(),
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => {
+                        return CommitImmediateRecheckOutcome::RecoveryRequired(
+                            CommitImmediateRecoveryRequiredAuthority {
+                                approved: self,
+                                failure:
+                                    CommitImmediateRecheckFailureEvidence::PostMergeStateChanged {
+                                        completion,
+                                        evidence: Box::new(observed),
+                                    },
+                            },
+                        );
+                    }
+                };
             return CommitImmediateRecheckOutcome::Ready(CommitScopedAtomicSafetyAuthority {
                 approved: self,
                 completion,
                 immediate_history_guard_evidence: refreshed_history,
                 post_merge_repository_anchor,
                 before_repository_cursor,
+                pre_command_target_snapshot: Box::new(pre_command_target_snapshot),
             });
         }
 
@@ -4961,6 +5125,12 @@ pub(crate) trait CommitImmediateRecheckLease {
     fn original_fingerprint_capability_id(&self) -> &CapabilityRowId;
     fn root_reread_capability_id(&self) -> &CapabilityRowId;
     fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId;
+    fn pre_command_target_states(&self) -> &RepositoryTargetStates;
+    fn pre_command_target_snapshot_observation_capability_id(&self) -> &CapabilityRowId;
+    fn commit_exact_once(
+        self: Box<Self>,
+        request: CommitAtomicCommitRequest<'_>,
+    ) -> Result<CommitAtomicCommitCompletion, RepositoryResultContractError>;
 }
 
 pub(crate) trait CommitImmediateRecheckPort {
@@ -4981,6 +5151,8 @@ pub(crate) struct CommitImmediateRecheckObservedEvidence {
     original_fingerprint_capability_id: CapabilityRowId,
     root_reread_capability_id: CapabilityRowId,
     atomic_commit_safety_capability_id: CapabilityRowId,
+    pre_command_target_states: RepositoryTargetStates,
+    pre_command_target_snapshot_observation_capability_id: CapabilityRowId,
 }
 
 impl CommitImmediateRecheckObservedEvidence {
@@ -4999,6 +5171,10 @@ impl CommitImmediateRecheckObservedEvidence {
             original_fingerprint_capability_id: lease.original_fingerprint_capability_id().clone(),
             root_reread_capability_id: lease.root_reread_capability_id().clone(),
             atomic_commit_safety_capability_id: lease.atomic_commit_safety_capability_id().clone(),
+            pre_command_target_states: lease.pre_command_target_states().clone(),
+            pre_command_target_snapshot_observation_capability_id: lease
+                .pre_command_target_snapshot_observation_capability_id()
+                .clone(),
         }
     }
 }
@@ -5072,6 +5248,7 @@ pub(crate) struct CommitScopedAtomicSafetyAuthority {
     immediate_history_guard_evidence: PostMergeHistoryGuardEvidence,
     post_merge_repository_anchor: RepositoryAnchor,
     before_repository_cursor: RepositoryHistoryCursor,
+    pre_command_target_snapshot: Box<CommitPreCommandTargetSnapshotAuthority>,
 }
 
 impl CommitScopedAtomicSafetyAuthority {
@@ -5081,6 +5258,2554 @@ impl CommitScopedAtomicSafetyAuthority {
 
     pub(crate) fn post_merge_repository_anchor(&self) -> &RepositoryAnchor {
         &self.post_merge_repository_anchor
+    }
+
+    fn pre_command_target_snapshot(&self) -> &CommitPreCommandTargetSnapshotAuthority {
+        &self.pre_command_target_snapshot
+    }
+
+    fn lineage_binding(&self) -> &CommitSafetyLineageBinding {
+        &self
+            .approved
+            .0
+            ._validated_lineage
+            .as_ref()
+            .expect("atomic commit requires the production preview lineage")
+            .post_merge_guard
+            .source
+    }
+
+    fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
+        self.lineage_binding().witness()
+    }
+
+    fn owns_commit_safety_lineage_witness(&self, witness: &CommitSafetyLineageWitness) -> bool {
+        self.lineage_binding().owns_witness(witness)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegisteredCommitStorageEvidence {
+    record_revision: PositiveGeneration,
+    record_digest: Sha256Digest,
+    lease_generation: PositiveGeneration,
+    lease_digest: Sha256Digest,
+}
+
+impl RegisteredCommitStorageEvidence {
+    pub(crate) const fn new(
+        record_revision: PositiveGeneration,
+        record_digest: Sha256Digest,
+        lease_generation: PositiveGeneration,
+        lease_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            record_revision,
+            record_digest,
+            lease_generation,
+            lease_digest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredCommitOperationIdentity {
+    operation_id: OperationId,
+    scope: OperationScope,
+    operation: TaskOperationSelector,
+    policy: DurableExecutionPolicy,
+    canonical_input_digest: Sha256Digest,
+}
+
+/// Opaque current-record observation returned only through the invocation-bound
+/// registered-operation lease. Its digests retain Task 16 storage semantics;
+/// this slice neither reconstructs nor aliases those preimages.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegisteredCommitOperationObservation {
+    identity: RegisteredCommitOperationIdentity,
+    evidence: RegisteredCommitStorageEvidence,
+}
+
+impl RegisteredCommitOperationObservation {
+    pub(crate) fn from_current_record(
+        operation_id: OperationId,
+        scope: OperationScope,
+        operation: TaskOperationSelector,
+        policy: DurableExecutionPolicy,
+        canonical_input_digest: Sha256Digest,
+        evidence: RegisteredCommitStorageEvidence,
+    ) -> Self {
+        Self {
+            identity: RegisteredCommitOperationIdentity {
+                operation_id,
+                scope,
+                operation,
+                policy,
+                canonical_input_digest,
+            },
+            evidence,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CommitRegisteredOperationInvocationMarker;
+
+#[derive(Debug)]
+struct CommitRegisteredOperationInvocationCapability(
+    Arc<CommitRegisteredOperationInvocationMarker>,
+);
+
+#[derive(Debug)]
+struct CommitRegisteredOperationCompletionCapability(
+    Arc<CommitRegisteredOperationInvocationMarker>,
+);
+
+impl CommitRegisteredOperationInvocationCapability {
+    fn mint() -> Self {
+        Self(Arc::new(CommitRegisteredOperationInvocationMarker))
+    }
+
+    fn completion(&self) -> CommitRegisteredOperationCompletionCapability {
+        CommitRegisteredOperationCompletionCapability(Arc::clone(&self.0))
+    }
+
+    fn owns_completion(&self, completion: &CommitRegisteredOperationCompletionCapability) -> bool {
+        Arc::ptr_eq(&self.0, &completion.0)
+    }
+}
+
+/// Invocation-bound storage read. The real current-operation record and lease
+/// remain owned by Task 16; this request asks its adapter to prove an exact
+/// registered apply without redefining either digest preimage here.
+#[derive(Debug)]
+pub(crate) struct CommitRegisteredOperationRequest<'a> {
+    scope: &'a CommitScopedAtomicSafetyAuthority,
+    operation_scope: &'a OperationScope,
+    canonical_input_digest: &'a Sha256Digest,
+    invocation: &'a CommitRegisteredOperationInvocationCapability,
+}
+
+impl CommitRegisteredOperationRequest<'_> {
+    pub(crate) fn apply_operation_id(&self) -> &OperationId {
+        self.scope.approved.validated_apply_request().operation_id()
+    }
+
+    pub(crate) fn operation_scope(&self) -> &OperationScope {
+        self.operation_scope
+    }
+
+    pub(crate) const fn operation(&self) -> TaskOperationSelector {
+        TaskOperationSelector::RepositoryCommit(
+            crate::domain::branched_development::contracts::selectors::RepositoryCommitSelector::new(
+                RepositoryCommitSelectorVariant::Apply,
+            ),
+        )
+    }
+
+    pub(crate) const fn policy(&self) -> DurableExecutionPolicy {
+        DurableExecutionPolicy::PreviewedJournaledEffect
+    }
+
+    pub(crate) fn canonical_input_digest(&self) -> &Sha256Digest {
+        self.canonical_input_digest
+    }
+
+    pub(crate) fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
+        self.scope.commit_safety_lineage_witness()
+    }
+
+    pub(crate) fn complete(
+        self,
+        lease: Box<dyn CommitRegisteredOperationLease>,
+    ) -> CommitRegisteredOperationCompletion {
+        CommitRegisteredOperationCompletion {
+            completion: self.invocation.completion(),
+            lease,
+        }
+    }
+}
+
+pub(crate) trait CommitRegisteredOperationLease {
+    fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness;
+    fn binds(&self, request: &CommitRegisteredOperationRequest<'_>) -> bool;
+    fn into_current_operation(self: Box<Self>) -> RegisteredCommitOperationObservation;
+}
+
+pub(crate) struct CommitRegisteredOperationCompletion {
+    completion: CommitRegisteredOperationCompletionCapability,
+    lease: Box<dyn CommitRegisteredOperationLease>,
+}
+
+impl fmt::Debug for CommitRegisteredOperationCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommitRegisteredOperationCompletion")
+            .field("completion", &self.completion)
+            .field("lease", &"<sealed registered-operation lease>")
+            .finish()
+    }
+}
+
+pub(crate) trait CommitRegisteredOperationPort {
+    fn load_registered_commit_operation(
+        &mut self,
+        request: CommitRegisteredOperationRequest<'_>,
+    ) -> Result<CommitRegisteredOperationCompletion, RepositoryResultContractError>;
+}
+
+/// Exact registered-operation authority produced only after the current
+/// invocation, stable lineage witness and full binding have all succeeded.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegisteredCommitOperationAuthority {
+    operation_id: OperationId,
+    task_scope: RegisteredCommitTaskScopeAuthority,
+    operation: TaskOperationSelector,
+    policy: DurableExecutionPolicy,
+    canonical_input_digest: Sha256Digest,
+    evidence: RegisteredCommitStorageEvidence,
+}
+
+/// Opaque owner of the task container read from the invocation-bound current
+/// durable-operation record. The caller-supplied scope is only a storage
+/// locator hint and never becomes commit authority. Project/task identity is
+/// closed here against retained preview lineage; the instance-to-terminal
+/// envelope binding remains part of the Task 16 durable-terminal contract.
+#[derive(Debug, PartialEq, Eq)]
+struct RegisteredCommitTaskScopeAuthority(OperationScope);
+
+impl RegisteredCommitTaskScopeAuthority {
+    fn from_current_record(
+        scope: OperationScope,
+        expected_project_id: &ProjectId,
+        expected_task_id: &TaskId,
+    ) -> Option<Self> {
+        match &scope {
+            OperationScope::Task {
+                project_id,
+                task_id,
+                ..
+            } if project_id == expected_project_id && task_id == expected_task_id => {
+                Some(Self(scope))
+            }
+            OperationScope::StartAttempt { .. } | OperationScope::Task { .. } => None,
+        }
+    }
+
+    fn scope(&self) -> &OperationScope {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitEffectIntentDurableRecord {
+    digest_kind: &'static str,
+    operation_id: OperationId,
+    operation_scope: OperationScope,
+    operation: TaskOperationSelector,
+    policy: DurableExecutionPolicy,
+    canonical_input_digest: Sha256Digest,
+    registered_record_revision: PositiveGeneration,
+    registered_record_digest: Sha256Digest,
+    registered_lease_generation: PositiveGeneration,
+    registered_lease_digest: Sha256Digest,
+    preallocated_commit_receipt_id: UnicaId,
+    approved_commit_digest: Sha256Digest,
+    immediate_history_guard_evidence_digest: Sha256Digest,
+    before_repository_cursor: RepositoryHistoryCursor,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+    pre_command_target_snapshot: CommitTargetStateSnapshotRecord,
+    pre_command_target_snapshot_digest: Sha256Digest,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitEffectIntentDurableRecord {}
+impl ContractDigestRecord for CommitEffectIntentDurableRecord {}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CommitEffectIntentRecord {
+    durable_record: CommitEffectIntentDurableRecord,
+    canonical_record_bytes: Vec<u8>,
+    intent_record_digest: Sha256Digest,
+}
+
+impl CommitEffectIntentRecord {
+    fn new(
+        scope: &CommitScopedAtomicSafetyAuthority,
+        registered: &RegisteredCommitOperationAuthority,
+        preallocated_commit_receipt_id: UnicaId,
+    ) -> Result<Self, RepositoryResultContractError> {
+        let evidence = &registered.evidence;
+        let approved_commit_digest = scope.approved.0.commit_digest().clone();
+        let immediate_history_guard_evidence_digest = scope
+            .immediate_history_guard_evidence
+            .evidence_digest()
+            .clone();
+        let atomic_commit_safety_capability_id = scope
+            .immediate_history_guard_evidence
+            .atomic_commit_safety_capability_id()
+            .clone();
+        let pre_command_target_snapshot = scope.pre_command_target_snapshot();
+        let durable_record = CommitEffectIntentDurableRecord {
+            digest_kind: "unica.repository.commit.effect-intent.v1",
+            operation_id: registered.operation_id.clone(),
+            operation_scope: registered.task_scope.scope().clone(),
+            operation: registered.operation.clone(),
+            policy: registered.policy,
+            canonical_input_digest: registered.canonical_input_digest.clone(),
+            registered_record_revision: evidence.record_revision,
+            registered_record_digest: evidence.record_digest.clone(),
+            registered_lease_generation: evidence.lease_generation,
+            registered_lease_digest: evidence.lease_digest.clone(),
+            preallocated_commit_receipt_id,
+            approved_commit_digest,
+            immediate_history_guard_evidence_digest,
+            before_repository_cursor: scope.before_repository_cursor.clone(),
+            atomic_commit_safety_capability_id,
+            pre_command_target_snapshot: pre_command_target_snapshot.record.clone(),
+            pre_command_target_snapshot_digest: pre_command_target_snapshot.snapshot_digest.clone(),
+        };
+        let canonical_record_bytes = canonical_contract_encoding(&durable_record)
+            .map_err(|_| RepositoryResultContractError("commit intent encoding failed"))?;
+        let intent_record_digest =
+            canonical_contract_digest(&durable_record, Some(&canonical_record_bytes))
+                .map_err(|_| RepositoryResultContractError("commit intent digest failed"))?;
+        Ok(Self {
+            durable_record,
+            canonical_record_bytes,
+            intent_record_digest,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct CommitEffectIntentInvocationMarker;
+
+#[derive(Debug)]
+struct CommitEffectIntentInvocationCapability(Arc<CommitEffectIntentInvocationMarker>);
+
+#[derive(Debug)]
+struct CommitEffectIntentCompletionCapability(Arc<CommitEffectIntentInvocationMarker>);
+
+impl CommitEffectIntentInvocationCapability {
+    fn mint() -> Self {
+        Self(Arc::new(CommitEffectIntentInvocationMarker))
+    }
+
+    fn completion(&self) -> CommitEffectIntentCompletionCapability {
+        CommitEffectIntentCompletionCapability(Arc::clone(&self.0))
+    }
+
+    fn owns_completion(&self, completion: &CommitEffectIntentCompletionCapability) -> bool {
+        Arc::ptr_eq(&self.0, &completion.0)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitEffectIntentFsyncEvidence {
+    intent_record_digest: Sha256Digest,
+    fsync_receipt_id: UnicaId,
+    fsync_capability_id: CapabilityRowId,
+    effect_intent_digest: Sha256Digest,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitEffectIntentFsyncDigestRecord<'a> {
+    digest_kind: &'static str,
+    intent_record_digest: &'a Sha256Digest,
+    fsync_receipt_id: &'a UnicaId,
+    fsync_capability_id: &'a CapabilityRowId,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitEffectIntentFsyncDigestRecord<'_> {}
+impl ContractDigestRecord for CommitEffectIntentFsyncDigestRecord<'_> {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitEffectIntentNotWrittenCertificate {
+    intent_record_digest: Sha256Digest,
+    certificate_id: UnicaId,
+    certificate_capability_id: CapabilityRowId,
+    certificate_digest: Sha256Digest,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitEffectIntentNotWrittenDigestRecord<'a> {
+    digest_kind: &'static str,
+    intent_record_digest: &'a Sha256Digest,
+    certificate_id: &'a UnicaId,
+    certificate_capability_id: &'a CapabilityRowId,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitEffectIntentNotWrittenDigestRecord<'_> {}
+impl ContractDigestRecord for CommitEffectIntentNotWrittenDigestRecord<'_> {}
+
+/// Invocation-bound view passed to the intent journal. It is the only mint for
+/// fsync and proven-not-written evidence bound to this exact Ready authority.
+#[derive(Debug)]
+pub(crate) struct CommitEffectIntentRequest<'a> {
+    scope: &'a CommitScopedAtomicSafetyAuthority,
+    registered: &'a RegisteredCommitOperationAuthority,
+    record: &'a CommitEffectIntentRecord,
+    invocation: &'a CommitEffectIntentInvocationCapability,
+}
+
+impl CommitEffectIntentRequest<'_> {
+    pub(crate) fn apply_operation_id(&self) -> &OperationId {
+        &self.record.durable_record.operation_id
+    }
+
+    pub(crate) fn operation_scope(&self) -> &OperationScope {
+        &self.record.durable_record.operation_scope
+    }
+
+    pub(crate) const fn registered_record_revision(&self) -> PositiveGeneration {
+        self.record.durable_record.registered_record_revision
+    }
+
+    pub(crate) const fn registered_lease_generation(&self) -> PositiveGeneration {
+        self.record.durable_record.registered_lease_generation
+    }
+
+    pub(crate) fn intent_record_digest(&self) -> &Sha256Digest {
+        &self.record.intent_record_digest
+    }
+
+    pub(crate) fn registered_record_digest(&self) -> &Sha256Digest {
+        &self.record.durable_record.registered_record_digest
+    }
+
+    pub(crate) fn registered_lease_digest(&self) -> &Sha256Digest {
+        &self.record.durable_record.registered_lease_digest
+    }
+
+    pub(crate) fn canonical_input_digest(&self) -> &Sha256Digest {
+        &self.record.durable_record.canonical_input_digest
+    }
+
+    pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
+        &self.record.durable_record.approved_commit_digest
+    }
+
+    pub(crate) fn preallocated_commit_receipt_id(&self) -> &UnicaId {
+        &self.record.durable_record.preallocated_commit_receipt_id
+    }
+
+    pub(crate) fn before_repository_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.record.durable_record.before_repository_cursor
+    }
+
+    pub(crate) fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        &self
+            .record
+            .durable_record
+            .atomic_commit_safety_capability_id
+    }
+
+    pub(crate) fn durable_record(&self) -> &CommitEffectIntentDurableRecord {
+        &self.record.durable_record
+    }
+
+    pub(crate) fn canonical_record_bytes(&self) -> &[u8] {
+        &self.record.canonical_record_bytes
+    }
+
+    pub(crate) fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
+        self.scope.commit_safety_lineage_witness()
+    }
+
+    pub(crate) fn observe_fsync(
+        &self,
+        fsync_receipt_id: UnicaId,
+        fsync_capability_id: CapabilityRowId,
+    ) -> Result<CommitEffectIntentFsyncEvidence, RepositoryResultContractError> {
+        let effect_intent_digest = result_digest(
+            &CommitEffectIntentFsyncDigestRecord {
+                digest_kind: "unica.repository.commit.effect-intent-fsync.v1",
+                intent_record_digest: &self.record.intent_record_digest,
+                fsync_receipt_id: &fsync_receipt_id,
+                fsync_capability_id: &fsync_capability_id,
+            },
+            "commit effect-intent fsync digest failed",
+        )?;
+        Ok(CommitEffectIntentFsyncEvidence {
+            intent_record_digest: self.record.intent_record_digest.clone(),
+            fsync_receipt_id,
+            fsync_capability_id,
+            effect_intent_digest,
+        })
+    }
+
+    pub(crate) fn observe_proven_not_written(
+        &self,
+        certificate_id: UnicaId,
+        certificate_capability_id: CapabilityRowId,
+    ) -> Result<CommitEffectIntentNotWrittenCertificate, RepositoryResultContractError> {
+        let certificate_digest = result_digest(
+            &CommitEffectIntentNotWrittenDigestRecord {
+                digest_kind: "unica.repository.commit.effect-intent-not-written.v1",
+                intent_record_digest: &self.record.intent_record_digest,
+                certificate_id: &certificate_id,
+                certificate_capability_id: &certificate_capability_id,
+            },
+            "commit effect-intent not-written digest failed",
+        )?;
+        Ok(CommitEffectIntentNotWrittenCertificate {
+            intent_record_digest: self.record.intent_record_digest.clone(),
+            certificate_id,
+            certificate_capability_id,
+            certificate_digest,
+        })
+    }
+
+    pub(crate) fn complete_written(
+        self,
+        lease: Box<dyn CommitEffectIntentWrittenLease>,
+    ) -> CommitEffectIntentCompletion {
+        CommitEffectIntentCompletion {
+            completion: self.invocation.completion(),
+            disposition: CommitEffectIntentCompletionDisposition::Written(lease),
+        }
+    }
+
+    pub(crate) fn complete_proven_not_written(
+        self,
+        lease: Box<dyn CommitEffectIntentProvenNotWrittenLease>,
+    ) -> CommitEffectIntentCompletion {
+        CommitEffectIntentCompletion {
+            completion: self.invocation.completion(),
+            disposition: CommitEffectIntentCompletionDisposition::ProvenNotWritten(lease),
+        }
+    }
+}
+
+pub(crate) trait CommitEffectIntentWrittenLease {
+    fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness;
+    fn binds(&self, request: &CommitEffectIntentRequest<'_>) -> bool;
+    fn into_fsync_evidence(self: Box<Self>) -> CommitEffectIntentFsyncEvidence;
+}
+
+pub(crate) trait CommitEffectIntentProvenNotWrittenLease {
+    fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness;
+    fn binds(&self, request: &CommitEffectIntentRequest<'_>) -> bool;
+    fn into_certificate(self: Box<Self>) -> CommitEffectIntentNotWrittenCertificate;
+}
+
+enum CommitEffectIntentCompletionDisposition {
+    Written(Box<dyn CommitEffectIntentWrittenLease>),
+    ProvenNotWritten(Box<dyn CommitEffectIntentProvenNotWrittenLease>),
+}
+
+pub(crate) struct CommitEffectIntentCompletion {
+    completion: CommitEffectIntentCompletionCapability,
+    disposition: CommitEffectIntentCompletionDisposition,
+}
+
+impl fmt::Debug for CommitEffectIntentCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommitEffectIntentCompletion")
+            .field("completion", &self.completion)
+            .field("disposition", &"<sealed intent completion>")
+            .finish()
+    }
+}
+
+pub(crate) trait CommitEffectIntentPort {
+    fn write_and_fsync_commit_intent(
+        &mut self,
+        request: CommitEffectIntentRequest<'_>,
+    ) -> Result<CommitEffectIntentCompletion, RepositoryResultContractError>;
+}
+
+#[derive(Debug)]
+struct CommitWrittenEffectIntentAuthority {
+    registered: RegisteredCommitOperationAuthority,
+    record: CommitEffectIntentRecord,
+    fsync: CommitEffectIntentFsyncEvidence,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitPreIntentBlockedAuthority {
+    scope: Box<CommitScopedAtomicSafetyAuthority>,
+    registered: Option<Box<RegisteredCommitOperationAuthority>>,
+    record: Option<Box<CommitEffectIntentRecord>>,
+    certificate: Option<Box<CommitEffectIntentNotWrittenCertificate>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitPreIntentFreshRecheckAuthority {
+    recheck: CommitImmediateRecheckOutcome,
+    _registered: Option<Box<RegisteredCommitOperationAuthority>>,
+    _record: Option<Box<CommitEffectIntentRecord>>,
+    _certificate: Option<Box<CommitEffectIntentNotWrittenCertificate>>,
+}
+
+impl CommitPreIntentBlockedAuthority {
+    fn new(
+        scope: CommitScopedAtomicSafetyAuthority,
+        registered: Option<RegisteredCommitOperationAuthority>,
+        record: Option<CommitEffectIntentRecord>,
+        certificate: Option<CommitEffectIntentNotWrittenCertificate>,
+    ) -> Self {
+        Self {
+            scope: Box::new(scope),
+            registered: registered.map(Box::new),
+            record: record.map(Box::new),
+            certificate: certificate.map(Box::new),
+        }
+    }
+
+    pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
+        self.scope.approved.0.commit_digest()
+    }
+
+    /// Consumes the stale Ready scope and obtains a new immediate observation.
+    /// The old lease cannot be reused; attempted registration/intent evidence
+    /// remains owned beside the fresh recheck outcome.
+    pub(crate) fn recheck_with_fresh_observation(
+        self,
+        port: &mut dyn CommitImmediateRecheckPort,
+    ) -> CommitPreIntentFreshRecheckAuthority {
+        let Self {
+            scope,
+            registered,
+            record,
+            certificate,
+        } = self;
+        let CommitScopedAtomicSafetyAuthority { approved, .. } = *scope;
+        CommitPreIntentFreshRecheckAuthority {
+            recheck: approved.recheck_before_commit_intent(port),
+            _registered: registered,
+            _record: record,
+            _certificate: certificate,
+        }
+    }
+}
+
+impl CommitPreIntentFreshRecheckAuthority {
+    pub(crate) fn into_recheck(self) -> CommitImmediateRecheckOutcome {
+        self.recheck
+    }
+}
+
+#[derive(Debug)]
+enum CommitRejectedIntentEvidence {
+    Fsync(CommitEffectIntentFsyncEvidence),
+    ProvenNotWritten(CommitEffectIntentNotWrittenCertificate),
+}
+
+#[derive(Debug)]
+enum CommitAmbiguousSource {
+    IntentPort {
+        scope: Box<CommitScopedAtomicSafetyAuthority>,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        error: RepositoryResultContractError,
+    },
+    IntentCompletion {
+        scope: Box<CommitScopedAtomicSafetyAuthority>,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        completion: CommitEffectIntentCompletion,
+    },
+    IntentEvidence {
+        scope: Box<CommitScopedAtomicSafetyAuthority>,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        evidence: CommitRejectedIntentEvidence,
+    },
+    AtomicPort {
+        source: Box<CommitAtomicCommitSource>,
+        error: RepositoryResultContractError,
+    },
+    AtomicCompletion {
+        source: Box<CommitAtomicCommitSource>,
+        completion: CommitAtomicCommitCompletion,
+    },
+    AtomicObservation {
+        source: Box<CommitAtomicCommitSource>,
+        observation: Box<CommitAtomicCommitObservation>,
+    },
+}
+
+impl CommitAmbiguousSource {
+    fn intent_port(
+        scope: CommitScopedAtomicSafetyAuthority,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        error: RepositoryResultContractError,
+    ) -> Box<Self> {
+        Box::new(Self::IntentPort {
+            scope: Box::new(scope),
+            registered,
+            record,
+            invocation,
+            error,
+        })
+    }
+
+    fn intent_completion(
+        scope: CommitScopedAtomicSafetyAuthority,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        completion: CommitEffectIntentCompletion,
+    ) -> Box<Self> {
+        Box::new(Self::IntentCompletion {
+            scope: Box::new(scope),
+            registered,
+            record,
+            invocation,
+            completion,
+        })
+    }
+
+    fn intent_evidence(
+        scope: CommitScopedAtomicSafetyAuthority,
+        registered: RegisteredCommitOperationAuthority,
+        record: CommitEffectIntentRecord,
+        invocation: CommitEffectIntentInvocationCapability,
+        evidence: CommitRejectedIntentEvidence,
+    ) -> Box<Self> {
+        Box::new(Self::IntentEvidence {
+            scope: Box::new(scope),
+            registered,
+            record,
+            invocation,
+            evidence,
+        })
+    }
+
+    fn atomic_port(
+        source: CommitAtomicCommitSource,
+        error: RepositoryResultContractError,
+    ) -> Box<Self> {
+        Box::new(Self::AtomicPort {
+            source: Box::new(source),
+            error,
+        })
+    }
+
+    fn atomic_completion(
+        source: CommitAtomicCommitSource,
+        completion: CommitAtomicCommitCompletion,
+    ) -> Box<Self> {
+        Box::new(Self::AtomicCompletion {
+            source: Box::new(source),
+            completion,
+        })
+    }
+
+    fn atomic_observation(
+        source: CommitAtomicCommitSource,
+        observation: CommitAtomicCommitObservation,
+    ) -> Box<Self> {
+        Box::new(Self::AtomicObservation {
+            source: Box::new(source),
+            observation: Box::new(observation),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitAmbiguousAuthority {
+    source: Box<CommitAmbiguousSource>,
+}
+
+/// Opaque consuming hand-off for Task 16's observe-only repositoryCommit
+/// recovery builder. It owns the complete pre/post-intent source enum rather
+/// than reconstructing authority from published digests.
+#[derive(Debug)]
+pub(crate) struct CommitAmbiguousRecoverySourceAuthority(Box<CommitAmbiguousSource>);
+
+impl CommitAmbiguousAuthority {
+    pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
+        match self.source.as_ref() {
+            CommitAmbiguousSource::IntentPort { scope, .. }
+            | CommitAmbiguousSource::IntentCompletion { scope, .. }
+            | CommitAmbiguousSource::IntentEvidence { scope, .. } => {
+                scope.approved.0.commit_digest()
+            }
+            CommitAmbiguousSource::AtomicPort { source, .. }
+            | CommitAmbiguousSource::AtomicCompletion { source, .. }
+            | CommitAmbiguousSource::AtomicObservation { source, .. } => {
+                source.approved.0.commit_digest()
+            }
+        }
+    }
+
+    pub(crate) fn into_recovery_source(self) -> CommitAmbiguousRecoverySourceAuthority {
+        CommitAmbiguousRecoverySourceAuthority(self.source)
+    }
+}
+
+impl CommitAmbiguousRecoverySourceAuthority {
+    pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
+        match self.0.as_ref() {
+            CommitAmbiguousSource::IntentPort { scope, .. }
+            | CommitAmbiguousSource::IntentCompletion { scope, .. }
+            | CommitAmbiguousSource::IntentEvidence { scope, .. } => {
+                scope.approved.0.commit_digest()
+            }
+            CommitAmbiguousSource::AtomicPort { source, .. }
+            | CommitAmbiguousSource::AtomicCompletion { source, .. }
+            | CommitAmbiguousSource::AtomicObservation { source, .. } => {
+                source.approved.0.commit_digest()
+            }
+        }
+    }
+
+    pub(crate) fn effect_intent_record_digest(&self) -> &Sha256Digest {
+        match self.0.as_ref() {
+            CommitAmbiguousSource::IntentPort { record, .. }
+            | CommitAmbiguousSource::IntentCompletion { record, .. }
+            | CommitAmbiguousSource::IntentEvidence { record, .. } => &record.intent_record_digest,
+            CommitAmbiguousSource::AtomicPort { source, .. }
+            | CommitAmbiguousSource::AtomicCompletion { source, .. }
+            | CommitAmbiguousSource::AtomicObservation { source, .. } => {
+                &source.written_intent.record.intent_record_digest
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum CommitEffectIntentOutcome {
+    PreIntentBlocked(CommitPreIntentBlockedAuthority),
+    PostIntent(CommitExactOnceOutcome),
+}
+
+#[derive(Debug)]
+struct CommitAtomicCommitSource {
+    approved: ApprovedCommitPreviewAuthority,
+    immediate_history_guard_evidence: PostMergeHistoryGuardEvidence,
+    post_merge_repository_anchor: RepositoryAnchor,
+    before_repository_cursor: RepositoryHistoryCursor,
+    pre_command_target_snapshot: Box<CommitPreCommandTargetSnapshotAuthority>,
+    written_intent: CommitWrittenEffectIntentAuthority,
+}
+
+impl CommitAtomicCommitSource {
+    fn lineage_binding(&self) -> &CommitSafetyLineageBinding {
+        &self
+            .approved
+            .0
+            ._validated_lineage
+            .as_ref()
+            .expect("atomic commit requires the production preview lineage")
+            .post_merge_guard
+            .source
+    }
+
+    fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
+        self.lineage_binding().witness()
+    }
+
+    fn owns_commit_safety_lineage_witness(&self, witness: &CommitSafetyLineageWitness) -> bool {
+        self.lineage_binding().owns_witness(witness)
+    }
+}
+
+fn retained_commit_lock_lineage_record(
+    source: &CommitAtomicCommitSource,
+) -> CommitRetainedLockLineageRecord {
+    CommitRetainedLockLineageRecord {
+        digest_kind: "unica.repository.commit.retained-lock-lineage.v1",
+        lock_set_id: source.lineage_binding().lineage().lock_set_id().clone(),
+        lock_set_digest: source.lineage_binding().lineage().lock_set_digest().clone(),
+        journaled_lock_receipts: source
+            .lineage_binding()
+            .lineage()
+            .journaled_lock_receipts()
+            .to_vec(),
+    }
+}
+
+#[derive(Debug)]
+struct CommitAtomicCommitInvocationMarker;
+
+#[derive(Debug)]
+struct CommitAtomicCommitInvocationCapability(Arc<CommitAtomicCommitInvocationMarker>);
+
+#[derive(Debug)]
+struct CommitAtomicCommitCompletionCapability(Arc<CommitAtomicCommitInvocationMarker>);
+
+impl CommitAtomicCommitInvocationCapability {
+    fn mint() -> Self {
+        Self(Arc::new(CommitAtomicCommitInvocationMarker))
+    }
+
+    fn completion(&self) -> CommitAtomicCommitCompletionCapability {
+        CommitAtomicCommitCompletionCapability(Arc::clone(&self.0))
+    }
+
+    fn owns_completion(&self, completion: &CommitAtomicCommitCompletionCapability) -> bool {
+        Arc::ptr_eq(&self.0, &completion.0)
+    }
+
+    fn object_history_binding_witness(&self) -> CommitObjectHistoryBindingWitness {
+        CommitObjectHistoryBindingWitness(Arc::clone(&self.0))
+    }
+
+    fn owns_object_history_binding_witness(
+        &self,
+        witness: &CommitObjectHistoryBindingWitness,
+    ) -> bool {
+        Arc::ptr_eq(&self.0, &witness.0)
+    }
+
+    fn child_witness(&self) -> CommitAtomicInvocationChildWitness {
+        CommitAtomicInvocationChildWitness(Arc::clone(&self.0))
+    }
+
+    fn owns_child_witness(&self, witness: &CommitAtomicInvocationChildWitness) -> bool {
+        Arc::ptr_eq(&self.0, &witness.0)
+    }
+}
+
+/// Opaque child witness of one exact atomic invocation. Equality is pointer
+/// identity, never equality of replayable version/digest/capability scalars.
+#[derive(Debug, Clone)]
+pub(crate) struct CommitObjectHistoryBindingWitness(Arc<CommitAtomicCommitInvocationMarker>);
+
+impl CommitObjectHistoryBindingWitness {
+    pub(crate) fn same_invocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl PartialEq for CommitObjectHistoryBindingWitness {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_invocation(other)
+    }
+}
+
+impl Eq for CommitObjectHistoryBindingWitness {}
+
+/// Opaque child identity for a terminal zero-effect observation minted by one
+/// exact atomic invocation.  Equal replayable snapshot scalars cannot replace
+/// this pointer-bound proof.
+#[derive(Debug, Clone)]
+struct CommitAtomicInvocationChildWitness(Arc<CommitAtomicCommitInvocationMarker>);
+
+impl PartialEq for CommitAtomicInvocationChildWitness {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CommitAtomicInvocationChildWitness {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitRetainedLockLineageRecord {
+    digest_kind: &'static str,
+    lock_set_id: UnicaId,
+    lock_set_digest: Sha256Digest,
+    journaled_lock_receipts: Vec<JournaledRepositoryLock>,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitRetainedLockLineageRecord {}
+impl ContractDigestRecord for CommitRetainedLockLineageRecord {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+enum CommitPostCommandLockStatusRecord {
+    Held {
+        current_full_lock_inventory: CanonicalRepositoryTargets,
+    },
+    VerifiedReleased {
+        current_full_lock_inventory: CanonicalRepositoryTargets,
+        release_capability_id: CapabilityRowId,
+        /// Exact acquisition-order receipt projection identifying the locks
+        /// whose release was observed. This is not a release-step sequence;
+        /// commit has one atomic release invariant and canonical target lists.
+        released_acquisition_receipts: Vec<JournaledRepositoryLock>,
+        released_objects: CanonicalRepositoryTargets,
+        released_guard_locks: CanonicalRepositoryTargets,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitPostCommandLockEvidenceRecord {
+    digest_kind: &'static str,
+    effect_intent_digest: Sha256Digest,
+    preallocated_commit_receipt_id: UnicaId,
+    retained_lock_lineage: CommitRetainedLockLineageRecord,
+    retained_lock_lineage_digest: Sha256Digest,
+    status: CommitPostCommandLockStatusRecord,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitPostCommandLockEvidenceRecord {}
+impl ContractDigestRecord for CommitPostCommandLockEvidenceRecord {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitPostCommandLockAuthority {
+    invocation_witness: CommitAtomicInvocationChildWitness,
+    record: CommitPostCommandLockEvidenceRecord,
+    evidence_digest: Sha256Digest,
+}
+
+impl CommitPostCommandLockAuthority {
+    fn released_projection(
+        &self,
+    ) -> Option<(&CanonicalRepositoryTargets, &CanonicalRepositoryTargets)> {
+        match &self.record.status {
+            CommitPostCommandLockStatusRecord::VerifiedReleased {
+                released_objects,
+                released_guard_locks,
+                ..
+            } => Some((released_objects, released_guard_locks)),
+            CommitPostCommandLockStatusRecord::Held { .. } => None,
+        }
+    }
+
+    fn into_released_projection(
+        self,
+    ) -> Option<(CanonicalRepositoryTargets, CanonicalRepositoryTargets)> {
+        match self.record.status {
+            CommitPostCommandLockStatusRecord::VerifiedReleased {
+                released_objects,
+                released_guard_locks,
+                ..
+            } => Some((released_objects, released_guard_locks)),
+            CommitPostCommandLockStatusRecord::Held { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitHeldLocksObservationInput {
+    lock_set_id: UnicaId,
+    journaled_lock_receipts: Vec<JournaledRepositoryLock>,
+    current_full_lock_inventory: CanonicalRepositoryTargets,
+}
+
+impl CommitHeldLocksObservationInput {
+    pub(crate) const fn from_repository_adapter(
+        lock_set_id: UnicaId,
+        journaled_lock_receipts: Vec<JournaledRepositoryLock>,
+        current_full_lock_inventory: CanonicalRepositoryTargets,
+    ) -> Self {
+        Self {
+            lock_set_id,
+            journaled_lock_receipts,
+            current_full_lock_inventory,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitReleasedLocksObservationInput {
+    lock_set_id: UnicaId,
+    released_acquisition_receipts: Vec<JournaledRepositoryLock>,
+    current_full_lock_inventory: CanonicalRepositoryTargets,
+    release_capability_id: CapabilityRowId,
+}
+
+impl CommitReleasedLocksObservationInput {
+    pub(crate) const fn from_repository_adapter(
+        lock_set_id: UnicaId,
+        released_acquisition_receipts: Vec<JournaledRepositoryLock>,
+        current_full_lock_inventory: CanonicalRepositoryTargets,
+        release_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self {
+            lock_set_id,
+            released_acquisition_receipts,
+            current_full_lock_inventory,
+            release_capability_id,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitLockReleaseObservation {
+    Verified(Box<CommitPostCommandLockAuthority>),
+    Unknown,
+}
+
+/// Minimal sealed-by-construction binding consumed by the taskCommit-specific
+/// history resolver. Production implementations can only be minted from the
+/// validated pre-commit lineage or from this invocation's validated atomic
+/// object observation.
+mod commit_object_history_binding_sealed {
+    pub trait Sealed {}
+}
+
+pub(crate) trait CommitObjectHistoryBinding:
+    commit_object_history_binding_sealed::Sealed
+{
+    fn object_history_binding_witness(&self) -> &CommitObjectHistoryBindingWitness;
+    fn repository_version(&self) -> &RepositoryVersion;
+    fn committed_objects_digest(&self) -> &Sha256Digest;
+    fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId;
+}
+
+impl commit_object_history_binding_sealed::Sealed for CommitCommittedCoreObservation {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitCommittedCoreObservationInput {
+    commit_receipt_id: UnicaId,
+    repository_version: RepositoryVersion,
+    committed_objects: CommittedRepositoryObjects,
+    committed_objects_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+impl CommitCommittedCoreObservationInput {
+    pub(crate) const fn from_atomic_adapter(
+        commit_receipt_id: UnicaId,
+        repository_version: RepositoryVersion,
+        committed_objects: CommittedRepositoryObjects,
+        committed_objects_digest: Sha256Digest,
+        atomic_commit_safety_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self {
+            commit_receipt_id,
+            repository_version,
+            committed_objects,
+            committed_objects_digest,
+            atomic_commit_safety_capability_id,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitCommittedCoreObservation {
+    object_history_binding_witness: CommitObjectHistoryBindingWitness,
+    commit_receipt_id: UnicaId,
+    repository_version: RepositoryVersion,
+    committed_objects: CommittedRepositoryObjects,
+    committed_objects_digest: Sha256Digest,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+impl CommitCommittedCoreObservation {}
+
+impl CommitObjectHistoryBinding for CommitCommittedCoreObservation {
+    fn object_history_binding_witness(&self) -> &CommitObjectHistoryBindingWitness {
+        &self.object_history_binding_witness
+    }
+
+    fn repository_version(&self) -> &RepositoryVersion {
+        &self.repository_version
+    }
+
+    fn committed_objects_digest(&self) -> &Sha256Digest {
+        &self.committed_objects_digest
+    }
+
+    fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        &self.atomic_commit_safety_capability_id
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitCommittedHistoryObservation {
+    post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
+    task_version_anchor: RepositoryAnchor,
+    terminal_repository_anchor: RepositoryAnchor,
+}
+
+impl CommitCommittedHistoryObservation {
+    #[cfg(test)]
+    pub(crate) const fn new(
+        post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
+        task_version_anchor: RepositoryAnchor,
+        terminal_repository_anchor: RepositoryAnchor,
+    ) -> Self {
+        Self {
+            post_commit_history_partition,
+            task_version_anchor,
+            terminal_repository_anchor,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitCommittedObservationInput {
+    core: CommitCommittedCoreObservation,
+    history: CommitCommittedHistoryObservation,
+    release: CommitLockReleaseObservation,
+}
+
+impl CommitCommittedObservationInput {
+    pub(crate) const fn from_validated_atomic_observation(
+        core: CommitCommittedCoreObservation,
+        history: CommitCommittedHistoryObservation,
+        release: CommitLockReleaseObservation,
+    ) -> Self {
+        Self {
+            core,
+            history,
+            release,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitTerminalTargetSnapshotAuthority {
+    invocation_witness: CommitAtomicInvocationChildWitness,
+    record: CommitTargetStateSnapshotRecord,
+    snapshot_digest: Sha256Digest,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitZeroEffectLockState {
+    Held(CommitPostCommandLockAuthority),
+    VerifiedReleased(CommitPostCommandLockAuthority),
+    Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+enum CommitZeroEffectLockStateDigestRecord<'a> {
+    Held {
+        lock_evidence_digest: &'a Sha256Digest,
+    },
+    VerifiedReleased {
+        lock_evidence_digest: &'a Sha256Digest,
+    },
+    Unknown,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitZeroEffectLockStateDigestRecord<'_> {}
+impl ContractDigestRecord for CommitZeroEffectLockStateDigestRecord<'_> {}
+
+fn zero_effect_lock_state_digest(
+    state: &CommitZeroEffectLockState,
+) -> Result<Sha256Digest, RepositoryResultContractError> {
+    let record = match state {
+        CommitZeroEffectLockState::Held(authority) => CommitZeroEffectLockStateDigestRecord::Held {
+            lock_evidence_digest: &authority.evidence_digest,
+        },
+        CommitZeroEffectLockState::VerifiedReleased(authority) => {
+            CommitZeroEffectLockStateDigestRecord::VerifiedReleased {
+                lock_evidence_digest: &authority.evidence_digest,
+            }
+        }
+        CommitZeroEffectLockState::Unknown => CommitZeroEffectLockStateDigestRecord::Unknown,
+    };
+    result_digest(&record, "commit zero-effect lock-state digest failed")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitZeroEffectCertificate {
+    effect_intent_digest: Sha256Digest,
+    pre_command_target_snapshot_digest: Sha256Digest,
+    terminal_target_snapshot_digest: Sha256Digest,
+    post_command_history_partition_digest: Sha256Digest,
+    terminal_repository_anchor_digest: Sha256Digest,
+    lock_state_digest: Sha256Digest,
+    certificate_id: UnicaId,
+    certificate_capability_id: CapabilityRowId,
+    certificate_digest: Sha256Digest,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitZeroEffectCertificateDigestRecord<'a> {
+    digest_kind: &'static str,
+    effect_intent_digest: &'a Sha256Digest,
+    pre_command_target_snapshot_digest: &'a Sha256Digest,
+    terminal_target_snapshot_digest: &'a Sha256Digest,
+    post_command_history_partition_digest: &'a Sha256Digest,
+    terminal_repository_anchor_digest: &'a Sha256Digest,
+    lock_state_digest: &'a Sha256Digest,
+    certificate_id: &'a UnicaId,
+    certificate_capability_id: &'a CapabilityRowId,
+}
+
+impl contract_digest_record_sealed::Sealed for CommitZeroEffectCertificateDigestRecord<'_> {}
+impl ContractDigestRecord for CommitZeroEffectCertificateDigestRecord<'_> {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitProvenZeroEffectObservationInput {
+    certificate: CommitZeroEffectCertificate,
+    post_command_history_partition: ValidatedRepositoryHistoryPartition,
+    terminal_target_snapshot: CommitTerminalTargetSnapshotAuthority,
+    lock_state: CommitZeroEffectLockState,
+}
+
+impl CommitProvenZeroEffectObservationInput {
+    pub(crate) const fn from_validated_atomic_observation(
+        certificate: CommitZeroEffectCertificate,
+        post_command_history_partition: ValidatedRepositoryHistoryPartition,
+        terminal_target_snapshot: CommitTerminalTargetSnapshotAuthority,
+        lock_state: CommitZeroEffectLockState,
+    ) -> Self {
+        Self {
+            certificate,
+            post_command_history_partition,
+            terminal_target_snapshot,
+            lock_state,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitAtomicCommitObservation {
+    Committed(Box<CommitCommittedObservationInput>),
+    ProvenZeroEffect(Box<CommitProvenZeroEffectObservationInput>),
+    Ambiguous,
+}
+
+/// Exact request consumed by the same immediate-recheck lease that supplied
+/// Ready. There is deliberately no separate physical commit port.
+#[derive(Debug)]
+pub(crate) struct CommitAtomicCommitRequest<'a> {
+    source: &'a CommitAtomicCommitSource,
+    invocation: &'a CommitAtomicCommitInvocationCapability,
+}
+
+impl CommitAtomicCommitRequest<'_> {
+    pub(crate) fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
+        self.source.commit_safety_lineage_witness()
+    }
+
+    pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
+        self.source.approved.0.commit_digest()
+    }
+
+    pub(crate) fn apply_operation_id(&self) -> &OperationId {
+        &self
+            .source
+            .written_intent
+            .record
+            .durable_record
+            .operation_id
+    }
+
+    pub(crate) fn operation_scope(&self) -> &OperationScope {
+        &self
+            .source
+            .written_intent
+            .record
+            .durable_record
+            .operation_scope
+    }
+
+    pub(crate) fn effect_intent_digest(&self) -> &Sha256Digest {
+        &self.source.written_intent.fsync.effect_intent_digest
+    }
+
+    pub(crate) fn preallocated_commit_receipt_id(&self) -> &UnicaId {
+        &self
+            .source
+            .written_intent
+            .record
+            .durable_record
+            .preallocated_commit_receipt_id
+    }
+
+    pub(crate) fn before_repository_cursor(&self) -> &RepositoryHistoryCursor {
+        &self.source.before_repository_cursor
+    }
+
+    pub(crate) fn post_merge_repository_anchor(&self) -> &RepositoryAnchor {
+        &self.source.post_merge_repository_anchor
+    }
+
+    pub(crate) fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        &self
+            .source
+            .written_intent
+            .record
+            .durable_record
+            .atomic_commit_safety_capability_id
+    }
+
+    pub(crate) fn exact_objects(&self) -> &CommitExactObjects {
+        &self.source.approved.0.record.exact_objects
+    }
+
+    /// Frozen rendered comment that was included in the approved preview and
+    /// its digest.  The adapter cannot supply or re-render a comment here.
+    pub(crate) fn rendered_comment(&self) -> &Comment {
+        &self.source.approved.0.record.comment
+    }
+
+    pub(crate) fn exact_object_refs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = CommitExactObjectRef<'_>> {
+        self.exact_objects().iter()
+    }
+
+    pub(crate) fn pre_command_target_snapshot_digest(&self) -> &Sha256Digest {
+        &self.source.pre_command_target_snapshot.snapshot_digest
+    }
+
+    pub(crate) fn lock_set_id(&self) -> &UnicaId {
+        self.source.lineage_binding().lineage().lock_set_id()
+    }
+
+    pub(crate) fn lock_set_digest(&self) -> &Sha256Digest {
+        self.source.lineage_binding().lineage().lock_set_digest()
+    }
+
+    pub(crate) fn journaled_lock_receipts(&self) -> &[JournaledRepositoryLock] {
+        self.source
+            .lineage_binding()
+            .lineage()
+            .journaled_lock_receipts()
+    }
+
+    fn retained_lock_lineage_record(&self) -> CommitRetainedLockLineageRecord {
+        retained_commit_lock_lineage_record(self.source)
+    }
+
+    fn mint_post_command_lock_authority(
+        &self,
+        status: CommitPostCommandLockStatusRecord,
+    ) -> Result<CommitPostCommandLockAuthority, RepositoryResultContractError> {
+        let retained_lock_lineage = self.retained_lock_lineage_record();
+        let retained_lock_lineage_digest = result_digest(
+            &retained_lock_lineage,
+            "commit retained-lock lineage digest failed",
+        )?;
+        let record = CommitPostCommandLockEvidenceRecord {
+            digest_kind: "unica.repository.commit.post-command-lock-evidence.v1",
+            effect_intent_digest: self.effect_intent_digest().clone(),
+            preallocated_commit_receipt_id: self.preallocated_commit_receipt_id().clone(),
+            retained_lock_lineage,
+            retained_lock_lineage_digest,
+            status,
+        };
+        let evidence_digest =
+            result_digest(&record, "commit post-command lock evidence digest failed")?;
+        Ok(CommitPostCommandLockAuthority {
+            invocation_witness: self.invocation.child_witness(),
+            record,
+            evidence_digest,
+        })
+    }
+
+    pub(crate) fn observe_locks_held(
+        &self,
+        observation: CommitHeldLocksObservationInput,
+    ) -> Result<CommitPostCommandLockAuthority, RepositoryResultContractError> {
+        let expected_inventory = self.full_lock_inventory()?;
+        if observation.lock_set_id != *self.lock_set_id()
+            || observation.journaled_lock_receipts != self.journaled_lock_receipts()
+            || observation.current_full_lock_inventory != expected_inventory
+        {
+            return Err(RepositoryResultContractError(
+                "held-lock observation differs from retained acquisition lineage",
+            ));
+        }
+        self.mint_post_command_lock_authority(CommitPostCommandLockStatusRecord::Held {
+            current_full_lock_inventory: observation.current_full_lock_inventory,
+        })
+    }
+
+    pub(crate) fn observe_locks_released(
+        &self,
+        observation: CommitReleasedLocksObservationInput,
+    ) -> Result<CommitPostCommandLockAuthority, RepositoryResultContractError> {
+        let (released_objects, released_guard_locks) = self.exact_release_projection()?;
+        if observation.lock_set_id != *self.lock_set_id()
+            || observation.released_acquisition_receipts != self.journaled_lock_receipts()
+            || !observation
+                .current_full_lock_inventory
+                .as_slice()
+                .is_empty()
+            || observation.release_capability_id != *self.atomic_commit_safety_capability_id()
+        {
+            return Err(RepositoryResultContractError(
+                "release observation differs from retained acquisition lineage",
+            ));
+        }
+        self.mint_post_command_lock_authority(CommitPostCommandLockStatusRecord::VerifiedReleased {
+            current_full_lock_inventory: observation.current_full_lock_inventory,
+            release_capability_id: observation.release_capability_id,
+            released_acquisition_receipts: observation.released_acquisition_receipts,
+            released_objects,
+            released_guard_locks,
+        })
+    }
+
+    pub(crate) fn committed_objects_digest(
+        &self,
+        objects: &CommittedRepositoryObjects,
+    ) -> Result<Sha256Digest, RepositoryResultContractError> {
+        result_digest(
+            &CommittedObjectsDigestRecord {
+                integration_set_digest: self
+                    .source
+                    .approved
+                    .0
+                    .record
+                    .integration_set_digest
+                    .clone(),
+                committed_objects: objects.clone(),
+            },
+            "atomic committed-object digest failed",
+        )
+    }
+
+    /// Mints the only production object binding accepted by the specialized
+    /// taskCommit history resolver. Raw adapter scalars are checked against
+    /// the current invocation before they can authorize history validation.
+    pub(crate) fn observe_committed_core(
+        &self,
+        observation: CommitCommittedCoreObservationInput,
+    ) -> Result<CommitCommittedCoreObservation, RepositoryResultContractError> {
+        let CommitCommittedCoreObservationInput {
+            commit_receipt_id,
+            repository_version,
+            committed_objects,
+            committed_objects_digest,
+            atomic_commit_safety_capability_id,
+        } = observation;
+        let expected_digest = self.committed_objects_digest(&committed_objects)?;
+        if &commit_receipt_id != self.preallocated_commit_receipt_id()
+            || committed_objects.exact_objects() != *self.exact_objects()
+            || !committed_objects.all_versions_match(&repository_version)
+            || committed_objects_digest != expected_digest
+            || &atomic_commit_safety_capability_id != self.atomic_commit_safety_capability_id()
+        {
+            return Err(RepositoryResultContractError(
+                "atomic committed-object observation differs from its invocation",
+            ));
+        }
+        Ok(CommitCommittedCoreObservation {
+            object_history_binding_witness: self.invocation.object_history_binding_witness(),
+            commit_receipt_id,
+            repository_version,
+            committed_objects,
+            committed_objects_digest,
+            atomic_commit_safety_capability_id,
+        })
+    }
+
+    #[cfg(test)]
+    fn observe_committed_core_unchecked_test_only(
+        &self,
+        observation: CommitCommittedCoreObservationInput,
+        foreign_equal_scalar_invocation: bool,
+    ) -> CommitCommittedCoreObservation {
+        let CommitCommittedCoreObservationInput {
+            commit_receipt_id,
+            repository_version,
+            committed_objects,
+            committed_objects_digest,
+            atomic_commit_safety_capability_id,
+        } = observation;
+        let object_history_binding_witness = if foreign_equal_scalar_invocation {
+            CommitAtomicCommitInvocationCapability::mint().object_history_binding_witness()
+        } else {
+            self.invocation.object_history_binding_witness()
+        };
+        CommitCommittedCoreObservation {
+            object_history_binding_witness,
+            commit_receipt_id,
+            repository_version,
+            committed_objects,
+            committed_objects_digest,
+            atomic_commit_safety_capability_id,
+        }
+    }
+
+    /// Production bridge from the owning raw post-command partition to the
+    /// sole taskCommit-specific resolver. A generic validated partition can
+    /// never enter the committed-success path.
+    pub(crate) fn resolve_task_commit_history(
+        &self,
+        core: &CommitCommittedCoreObservation,
+        raw_partition: UnvalidatedRepositoryHistoryPartition,
+        resolver: &RepositoryHistoryPartitionResolver<'_>,
+        task_version_anchor: RepositoryAnchor,
+        terminal_repository_anchor: RepositoryAnchor,
+    ) -> Result<CommitCommittedHistoryObservation, RepositoryResultContractError> {
+        if !self
+            .invocation
+            .owns_object_history_binding_witness(core.object_history_binding_witness())
+        {
+            return Err(RepositoryResultContractError(
+                "taskCommit object binding belongs to another atomic invocation",
+            ));
+        }
+        let partition = resolver
+            .validate_task_commit_partition(raw_partition, core)
+            .map_err(|_| {
+                RepositoryResultContractError("taskCommit history partition validation failed")
+            })?;
+        if partition.partition().start_cursor() != self.before_repository_cursor()
+            || terminal_repository_anchor.history_cursor()
+                != partition.partition().through_inclusive()
+            || task_version_anchor.history_cursor().through_version() != core.repository_version()
+            || !partition
+                .partition()
+                .contains_cursor(task_version_anchor.history_cursor())
+            || task_version_anchor.repository_identity()
+                != self.post_merge_repository_anchor().repository_identity()
+            || terminal_repository_anchor.repository_identity()
+                != self.post_merge_repository_anchor().repository_identity()
+            || task_version_anchor.configuration_identity()
+                != self.post_merge_repository_anchor().configuration_identity()
+            || terminal_repository_anchor.configuration_identity()
+                != self.post_merge_repository_anchor().configuration_identity()
+        {
+            return Err(RepositoryResultContractError(
+                "taskCommit history anchors differ from the atomic invocation",
+            ));
+        }
+        Ok(CommitCommittedHistoryObservation {
+            post_commit_history_partition: partition,
+            task_version_anchor,
+            terminal_repository_anchor,
+        })
+    }
+
+    pub(crate) fn observe_repository_anchor(
+        &self,
+        history_cursor: RepositoryHistoryCursor,
+        repository_identity: Sha256Digest,
+        configuration_identity: ConfigurationIdentity,
+        configuration_fingerprint: Sha256Digest,
+    ) -> Result<RepositoryAnchor, RepositoryResultContractError> {
+        RepositoryAnchor::from_guarded_observation(
+            repository_identity,
+            history_cursor,
+            configuration_identity,
+            configuration_fingerprint,
+        )
+        .map_err(|_| RepositoryResultContractError("atomic repository anchor digest failed"))
+    }
+
+    pub(crate) fn exact_release_projection(
+        &self,
+    ) -> Result<
+        (CanonicalRepositoryTargets, CanonicalRepositoryTargets),
+        RepositoryResultContractError,
+    > {
+        let all = project_lock_targets(&self.source.approved.0.plan.lock_entries)?;
+        let guards = self.source.approved.0.record.guard_locks.clone();
+        let objects = CanonicalRepositoryTargets::new(
+            all.as_slice()
+                .iter()
+                .filter(|target| guards.as_slice().binary_search(target).is_err())
+                .cloned()
+                .collect(),
+        )?;
+        Ok((objects, guards))
+    }
+
+    pub(crate) fn full_lock_inventory(
+        &self,
+    ) -> Result<CanonicalRepositoryTargets, RepositoryResultContractError> {
+        project_lock_targets(&self.source.approved.0.plan.lock_entries)
+    }
+
+    pub(crate) fn observe_terminal_target_snapshot(
+        &self,
+        repository_anchor: RepositoryAnchor,
+        target_states: RepositoryTargetStates,
+        observation_capability_id: CapabilityRowId,
+        atomic_commit_safety_capability_id: CapabilityRowId,
+    ) -> Result<CommitTerminalTargetSnapshotAuthority, RepositoryResultContractError> {
+        if atomic_commit_safety_capability_id != *self.atomic_commit_safety_capability_id()
+            || repository_anchor.repository_identity()
+                != self.post_merge_repository_anchor().repository_identity()
+            || repository_anchor.configuration_identity()
+                != self.post_merge_repository_anchor().configuration_identity()
+            || !target_states_cover_exact_commit_objects(self.exact_objects(), &target_states)
+        {
+            return Err(RepositoryResultContractError(
+                "terminal target snapshot differs from the atomic invocation",
+            ));
+        }
+        let record = CommitTargetStateSnapshotRecord {
+            digest_kind: "unica.repository.commit.target-state-snapshot.v1",
+            repository_anchor,
+            target_states,
+            observation_capability_id,
+            atomic_commit_safety_capability_id,
+        };
+        let snapshot_digest =
+            result_digest(&record, "terminal target-state snapshot digest failed")?;
+        Ok(CommitTerminalTargetSnapshotAuthority {
+            invocation_witness: self.invocation.child_witness(),
+            record,
+            snapshot_digest,
+        })
+    }
+
+    #[cfg(test)]
+    fn replace_zero_snapshot_witness_with_foreign_invocation_test_only(
+        &self,
+        snapshot: &mut CommitTerminalTargetSnapshotAuthority,
+    ) {
+        snapshot.invocation_witness =
+            CommitAtomicCommitInvocationCapability::mint().child_witness();
+    }
+
+    #[cfg(test)]
+    fn replace_lock_witness_with_foreign_invocation_test_only(
+        &self,
+        authority: &mut CommitPostCommandLockAuthority,
+    ) {
+        authority.invocation_witness =
+            CommitAtomicCommitInvocationCapability::mint().child_witness();
+    }
+
+    pub(crate) fn observe_zero_effect_certificate(
+        &self,
+        terminal_target_snapshot: &CommitTerminalTargetSnapshotAuthority,
+        post_command_history_partition: &ValidatedRepositoryHistoryPartition,
+        lock_state: &CommitZeroEffectLockState,
+        certificate_id: UnicaId,
+        certificate_capability_id: CapabilityRowId,
+    ) -> Result<CommitZeroEffectCertificate, RepositoryResultContractError> {
+        // Pointer ownership is checked before any replayable snapshot scalar.
+        if !self
+            .invocation
+            .owns_child_witness(&terminal_target_snapshot.invocation_witness)
+        {
+            return Err(RepositoryResultContractError(
+                "terminal target snapshot belongs to another atomic invocation",
+            ));
+        }
+        let terminal_anchor = &terminal_target_snapshot.record.repository_anchor;
+        if certificate_capability_id != *self.atomic_commit_safety_capability_id()
+            || post_command_history_partition.start_cursor() != self.before_repository_cursor()
+            || terminal_anchor.history_cursor()
+                != post_command_history_partition.through_inclusive()
+            || !post_command_history_partition.all_entries_are_one_of(&[
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            ])
+            || !exact_zero_effect_target_transition(
+                self.exact_objects(),
+                &self.source.pre_command_target_snapshot.record.target_states,
+                &terminal_target_snapshot.record.target_states,
+            )
+            || !valid_zero_effect_lock_state(self.source, self.invocation, lock_state)
+        {
+            return Err(RepositoryResultContractError(
+                "zero-effect evidence is incomplete or differs from the atomic invocation",
+            ));
+        }
+        let lock_state_digest = zero_effect_lock_state_digest(lock_state)?;
+        let certificate_digest = result_digest(
+            &CommitZeroEffectCertificateDigestRecord {
+                digest_kind: "unica.repository.commit.zero-effect-certificate.v1",
+                effect_intent_digest: self.effect_intent_digest(),
+                pre_command_target_snapshot_digest: self.pre_command_target_snapshot_digest(),
+                terminal_target_snapshot_digest: &terminal_target_snapshot.snapshot_digest,
+                post_command_history_partition_digest: post_command_history_partition
+                    .partition_digest(),
+                terminal_repository_anchor_digest: terminal_anchor.anchor_digest(),
+                lock_state_digest: &lock_state_digest,
+                certificate_id: &certificate_id,
+                certificate_capability_id: &certificate_capability_id,
+            },
+            "commit zero-effect certificate digest failed",
+        )?;
+        Ok(CommitZeroEffectCertificate {
+            effect_intent_digest: self.effect_intent_digest().clone(),
+            pre_command_target_snapshot_digest: self.pre_command_target_snapshot_digest().clone(),
+            terminal_target_snapshot_digest: terminal_target_snapshot.snapshot_digest.clone(),
+            post_command_history_partition_digest: post_command_history_partition
+                .partition_digest()
+                .clone(),
+            terminal_repository_anchor_digest: terminal_anchor.anchor_digest().clone(),
+            lock_state_digest,
+            certificate_id,
+            certificate_capability_id,
+            certificate_digest,
+        })
+    }
+
+    pub(crate) fn observe_committed(
+        &self,
+        observation: CommitCommittedObservationInput,
+    ) -> CommitAtomicCommitObservation {
+        CommitAtomicCommitObservation::Committed(Box::new(observation))
+    }
+
+    pub(crate) fn observe_proven_zero_effect(
+        &self,
+        observation: CommitProvenZeroEffectObservationInput,
+    ) -> CommitAtomicCommitObservation {
+        CommitAtomicCommitObservation::ProvenZeroEffect(Box::new(observation))
+    }
+
+    pub(crate) const fn observe_ambiguous(&self) -> CommitAtomicCommitObservation {
+        CommitAtomicCommitObservation::Ambiguous
+    }
+
+    pub(crate) fn complete(
+        self,
+        payload: Box<dyn CommitAtomicCommitPayload>,
+    ) -> CommitAtomicCommitCompletion {
+        CommitAtomicCommitCompletion {
+            completion: self.invocation.completion(),
+            payload,
+        }
+    }
+}
+
+pub(crate) trait CommitAtomicCommitPayload {
+    fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness;
+    fn binds(&self, request: &CommitAtomicCommitRequest<'_>) -> bool;
+    fn into_observation(self: Box<Self>) -> CommitAtomicCommitObservation;
+}
+
+pub(crate) struct CommitAtomicCommitCompletion {
+    completion: CommitAtomicCommitCompletionCapability,
+    payload: Box<dyn CommitAtomicCommitPayload>,
+}
+
+impl fmt::Debug for CommitAtomicCommitCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommitAtomicCommitCompletion")
+            .field("completion", &self.completion)
+            .field("payload", &"<sealed atomic commit payload>")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitCommittedAuthority {
+    source: Box<CommitAtomicCommitSource>,
+    atomic_invocation: CommitAtomicCommitInvocationCapability,
+    observation: Box<CommitCommittedObservationInput>,
+}
+
+impl CommitCommittedAuthority {
+    pub(crate) fn task_version_anchor(&self) -> &RepositoryAnchor {
+        &self.observation.history.task_version_anchor
+    }
+
+    pub(crate) fn terminal_repository_anchor(&self) -> &RepositoryAnchor {
+        &self.observation.history.terminal_repository_anchor
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitProvenZeroEffectAuthority {
+    source: Box<CommitAtomicCommitSource>,
+    atomic_invocation: CommitAtomicCommitInvocationCapability,
+    observation: Box<CommitProvenZeroEffectObservationInput>,
+}
+
+/// A zero-effect observation with locks still held is explicitly nonterminal:
+/// the whole source is preserved for Task 16 cleanup/recovery.  A verified
+/// release has a separate owning hand-off and is never reconstructed from a
+/// certificate digest.
+#[derive(Debug)]
+pub(crate) enum CommitProvenZeroEffectDisposition {
+    CleanupRequired(CommitZeroEffectCleanupRequiredAuthority),
+    VerifiedReleased(CommitZeroEffectReleasedAuthority),
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitZeroEffectCleanupRequiredAuthority {
+    source: Box<CommitAtomicCommitSource>,
+    atomic_invocation: CommitAtomicCommitInvocationCapability,
+    observation: Box<CommitProvenZeroEffectObservationInput>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitZeroEffectReleasedAuthority {
+    source: Box<CommitAtomicCommitSource>,
+    atomic_invocation: CommitAtomicCommitInvocationCapability,
+    observation: Box<CommitProvenZeroEffectObservationInput>,
+}
+
+impl CommitProvenZeroEffectAuthority {
+    pub(crate) fn into_disposition(self) -> CommitProvenZeroEffectDisposition {
+        let Self {
+            source,
+            atomic_invocation,
+            observation,
+        } = self;
+        if matches!(&observation.lock_state, CommitZeroEffectLockState::Held(_)) {
+            CommitProvenZeroEffectDisposition::CleanupRequired(
+                CommitZeroEffectCleanupRequiredAuthority {
+                    source,
+                    atomic_invocation,
+                    observation,
+                },
+            )
+        } else {
+            debug_assert!(matches!(
+                &observation.lock_state,
+                CommitZeroEffectLockState::VerifiedReleased(_)
+            ));
+            CommitProvenZeroEffectDisposition::VerifiedReleased(CommitZeroEffectReleasedAuthority {
+                source,
+                atomic_invocation,
+                observation,
+            })
+        }
+    }
+}
+
+impl CommitZeroEffectCleanupRequiredAuthority {
+    pub(crate) fn effect_intent_digest(&self) -> &Sha256Digest {
+        &self.source.written_intent.fsync.effect_intent_digest
+    }
+
+    pub(crate) fn certificate_digest(&self) -> &Sha256Digest {
+        &self.observation.certificate.certificate_digest
+    }
+
+    pub(crate) fn owns_current_lock_evidence(&self) -> bool {
+        match &self.observation.lock_state {
+            CommitZeroEffectLockState::Held(authority) => self
+                .atomic_invocation
+                .owns_child_witness(&authority.invocation_witness),
+            CommitZeroEffectLockState::VerifiedReleased(_) | CommitZeroEffectLockState::Unknown => {
+                false
+            }
+        }
+    }
+}
+
+impl CommitZeroEffectReleasedAuthority {
+    pub(crate) fn effect_intent_digest(&self) -> &Sha256Digest {
+        &self.source.written_intent.fsync.effect_intent_digest
+    }
+
+    pub(crate) fn certificate_digest(&self) -> &Sha256Digest {
+        &self.observation.certificate.certificate_digest
+    }
+
+    pub(crate) fn owns_current_lock_evidence(&self) -> bool {
+        match &self.observation.lock_state {
+            CommitZeroEffectLockState::VerifiedReleased(authority) => self
+                .atomic_invocation
+                .owns_child_witness(&authority.invocation_witness),
+            CommitZeroEffectLockState::Held(_) | CommitZeroEffectLockState::Unknown => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum CommitExactOnceOutcome {
+    Committed(CommitCommittedAuthority),
+    ProvenZeroEffect(CommitProvenZeroEffectAuthority),
+    Ambiguous(CommitAmbiguousAuthority),
+}
+
+fn valid_effect_intent_fsync(
+    record: &CommitEffectIntentRecord,
+    evidence: &CommitEffectIntentFsyncEvidence,
+) -> bool {
+    if evidence.intent_record_digest != record.intent_record_digest {
+        return false;
+    }
+    result_digest(
+        &CommitEffectIntentFsyncDigestRecord {
+            digest_kind: "unica.repository.commit.effect-intent-fsync.v1",
+            intent_record_digest: &evidence.intent_record_digest,
+            fsync_receipt_id: &evidence.fsync_receipt_id,
+            fsync_capability_id: &evidence.fsync_capability_id,
+        },
+        "commit effect-intent fsync digest failed",
+    )
+    .is_ok_and(|digest| digest == evidence.effect_intent_digest)
+}
+
+fn valid_effect_intent_not_written(
+    record: &CommitEffectIntentRecord,
+    certificate: &CommitEffectIntentNotWrittenCertificate,
+) -> bool {
+    if certificate.intent_record_digest != record.intent_record_digest {
+        return false;
+    }
+    result_digest(
+        &CommitEffectIntentNotWrittenDigestRecord {
+            digest_kind: "unica.repository.commit.effect-intent-not-written.v1",
+            intent_record_digest: &certificate.intent_record_digest,
+            certificate_id: &certificate.certificate_id,
+            certificate_capability_id: &certificate.certificate_capability_id,
+        },
+        "commit effect-intent not-written digest failed",
+    )
+    .is_ok_and(|digest| digest == certificate.certificate_digest)
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedPostCommandLockState {
+    Held,
+    VerifiedReleased,
+}
+
+fn valid_post_command_lock_authority(
+    source: &CommitAtomicCommitSource,
+    invocation: &CommitAtomicCommitInvocationCapability,
+    authority: &CommitPostCommandLockAuthority,
+    expected_status: ExpectedPostCommandLockState,
+) -> bool {
+    // Reject a replayed equal-scalar release/held observation before reading
+    // its retained lock-set or receipt projections.
+    if !invocation.owns_child_witness(&authority.invocation_witness) {
+        return false;
+    }
+    let expected_lineage = retained_commit_lock_lineage_record(source);
+    let expected_lineage_digest = match result_digest(
+        &expected_lineage,
+        "commit retained-lock lineage digest failed",
+    ) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    if authority.record.effect_intent_digest != source.written_intent.fsync.effect_intent_digest
+        || authority.record.preallocated_commit_receipt_id
+            != source
+                .written_intent
+                .record
+                .durable_record
+                .preallocated_commit_receipt_id
+        || authority.record.retained_lock_lineage != expected_lineage
+        || authority.record.retained_lock_lineage_digest != expected_lineage_digest
+        || !result_digest(
+            &authority.record,
+            "commit post-command lock evidence digest failed",
+        )
+        .is_ok_and(|digest| digest == authority.evidence_digest)
+    {
+        return false;
+    }
+    match (&authority.record.status, expected_status) {
+        (
+            CommitPostCommandLockStatusRecord::Held {
+                current_full_lock_inventory,
+            },
+            ExpectedPostCommandLockState::Held,
+        ) => project_lock_targets(&source.approved.0.plan.lock_entries)
+            .as_ref()
+            .is_ok_and(|expected| expected == current_full_lock_inventory),
+        (
+            CommitPostCommandLockStatusRecord::VerifiedReleased {
+                current_full_lock_inventory,
+                release_capability_id,
+                released_acquisition_receipts,
+                released_objects,
+                released_guard_locks,
+                ..
+            },
+            ExpectedPostCommandLockState::VerifiedReleased,
+        ) => {
+            current_full_lock_inventory.as_slice().is_empty()
+                && release_capability_id
+                    == &source
+                        .written_intent
+                        .record
+                        .durable_record
+                        .atomic_commit_safety_capability_id
+                && released_acquisition_receipts == &expected_lineage.journaled_lock_receipts
+                && validate_commit_release_projection(
+                    &source.approved.0.plan,
+                    &source.approved.0.record.guard_locks,
+                    released_objects,
+                    released_guard_locks,
+                )
+                .is_ok()
+        }
+        _ => false,
+    }
+}
+
+fn valid_committed_observation(
+    source: &CommitAtomicCommitSource,
+    invocation: &CommitAtomicCommitInvocationCapability,
+    observation: &CommitCommittedObservationInput,
+) -> bool {
+    let core = &observation.core;
+    let history = &observation.history;
+    let sealed_partition = &history.post_commit_history_partition;
+    if !invocation.owns_object_history_binding_witness(core.object_history_binding_witness())
+        || !sealed_partition.binds(core)
+    {
+        return false;
+    }
+    let partition = sealed_partition.partition();
+    let task_entries = partition
+        .entries()
+        .filter(|entry| {
+            entry.classification() == RepositoryHistoryPartitionClassification::TaskCommit
+        })
+        .collect::<Vec<_>>();
+    let digest_matches = result_digest(
+        &CommittedObjectsDigestRecord {
+            integration_set_digest: source.approved.0.record.integration_set_digest.clone(),
+            committed_objects: core.committed_objects.clone(),
+        },
+        "committed-object digest failed",
+    )
+    .is_ok_and(|digest| digest == core.committed_objects_digest);
+    let release_matches = match &observation.release {
+        CommitLockReleaseObservation::Verified(authority) => valid_post_command_lock_authority(
+            source,
+            invocation,
+            authority,
+            ExpectedPostCommandLockState::VerifiedReleased,
+        ),
+        CommitLockReleaseObservation::Unknown => false,
+    };
+    let pre_anchor = &source.post_merge_repository_anchor;
+    let task_anchor = &history.task_version_anchor;
+    let terminal_anchor = &history.terminal_repository_anchor;
+    core.commit_receipt_id
+        == source
+            .written_intent
+            .record
+            .durable_record
+            .preallocated_commit_receipt_id
+        && core.committed_objects.exact_objects() == source.approved.0.record.exact_objects
+        && core
+            .committed_objects
+            .all_versions_match(&core.repository_version)
+        && digest_matches
+        && core.atomic_commit_safety_capability_id
+            == source
+                .written_intent
+                .record
+                .durable_record
+                .atomic_commit_safety_capability_id
+        && partition.start_cursor() == &source.before_repository_cursor
+        && terminal_anchor.history_cursor() == partition.through_inclusive()
+        && task_entries.len() == 1
+        && task_entries[0].repository_version() == &core.repository_version
+        && task_entries[0].semantic_delta_digest() == &core.committed_objects_digest
+        && task_anchor.history_cursor().through_version() == &core.repository_version
+        && partition.contains_cursor(task_anchor.history_cursor())
+        && partition.all_entries_are_one_of(&[
+            RepositoryHistoryPartitionClassification::TaskCommit,
+            RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+        ])
+        && pre_anchor.repository_identity() == task_anchor.repository_identity()
+        && pre_anchor.repository_identity() == terminal_anchor.repository_identity()
+        && pre_anchor.configuration_identity() == task_anchor.configuration_identity()
+        && pre_anchor.configuration_identity() == terminal_anchor.configuration_identity()
+        && release_matches
+}
+
+fn valid_zero_effect_lock_state(
+    source: &CommitAtomicCommitSource,
+    invocation: &CommitAtomicCommitInvocationCapability,
+    lock_state: &CommitZeroEffectLockState,
+) -> bool {
+    match lock_state {
+        CommitZeroEffectLockState::Held(authority) => valid_post_command_lock_authority(
+            source,
+            invocation,
+            authority,
+            ExpectedPostCommandLockState::Held,
+        ),
+        CommitZeroEffectLockState::VerifiedReleased(authority) => {
+            valid_post_command_lock_authority(
+                source,
+                invocation,
+                authority,
+                ExpectedPostCommandLockState::VerifiedReleased,
+            )
+        }
+        CommitZeroEffectLockState::Unknown => false,
+    }
+}
+
+fn valid_zero_effect_observation(
+    source: &CommitAtomicCommitSource,
+    invocation: &CommitAtomicCommitInvocationCapability,
+    observation: &CommitProvenZeroEffectObservationInput,
+) -> bool {
+    let terminal_snapshot = &observation.terminal_target_snapshot;
+    // Pointer ownership precedes all getters and digest/scalar comparisons.
+    if !invocation.owns_child_witness(&terminal_snapshot.invocation_witness) {
+        return false;
+    }
+    let baseline_snapshot = &source.pre_command_target_snapshot;
+    let durable = &source.written_intent.record.durable_record;
+    let certificate = &observation.certificate;
+    let partition = &observation.post_command_history_partition;
+    let terminal_anchor = &terminal_snapshot.record.repository_anchor;
+    let pre_anchor = &source.post_merge_repository_anchor;
+    let baseline_digest_matches = result_digest(
+        &baseline_snapshot.record,
+        "pre-command target-state snapshot digest failed",
+    )
+    .is_ok_and(|digest| digest == baseline_snapshot.snapshot_digest);
+    let terminal_digest_matches = result_digest(
+        &terminal_snapshot.record,
+        "terminal target-state snapshot digest failed",
+    )
+    .is_ok_and(|digest| digest == terminal_snapshot.snapshot_digest);
+    let lock_state_digest = match zero_effect_lock_state_digest(&observation.lock_state) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let certificate_matches = certificate.effect_intent_digest
+        == source.written_intent.fsync.effect_intent_digest
+        && certificate.pre_command_target_snapshot_digest == baseline_snapshot.snapshot_digest
+        && certificate.terminal_target_snapshot_digest == terminal_snapshot.snapshot_digest
+        && certificate.post_command_history_partition_digest == *partition.partition_digest()
+        && certificate.terminal_repository_anchor_digest == *terminal_anchor.anchor_digest()
+        && certificate.lock_state_digest == lock_state_digest
+        && certificate.certificate_capability_id == durable.atomic_commit_safety_capability_id
+        && result_digest(
+            &CommitZeroEffectCertificateDigestRecord {
+                digest_kind: "unica.repository.commit.zero-effect-certificate.v1",
+                effect_intent_digest: &certificate.effect_intent_digest,
+                pre_command_target_snapshot_digest: &certificate.pre_command_target_snapshot_digest,
+                terminal_target_snapshot_digest: &certificate.terminal_target_snapshot_digest,
+                post_command_history_partition_digest: &certificate
+                    .post_command_history_partition_digest,
+                terminal_repository_anchor_digest: &certificate.terminal_repository_anchor_digest,
+                lock_state_digest: &certificate.lock_state_digest,
+                certificate_id: &certificate.certificate_id,
+                certificate_capability_id: &certificate.certificate_capability_id,
+            },
+            "commit zero-effect certificate digest failed",
+        )
+        .is_ok_and(|digest| digest == certificate.certificate_digest);
+    baseline_digest_matches
+        && terminal_digest_matches
+        && durable.pre_command_target_snapshot == baseline_snapshot.record
+        && durable.pre_command_target_snapshot_digest == baseline_snapshot.snapshot_digest
+        && baseline_snapshot.record.repository_anchor == *pre_anchor
+        && baseline_snapshot.record.atomic_commit_safety_capability_id
+            == durable.atomic_commit_safety_capability_id
+        && terminal_snapshot.record.atomic_commit_safety_capability_id
+            == durable.atomic_commit_safety_capability_id
+        && exact_zero_effect_target_transition(
+            &source.approved.0.record.exact_objects,
+            &baseline_snapshot.record.target_states,
+            &terminal_snapshot.record.target_states,
+        )
+        && certificate_matches
+        && valid_zero_effect_lock_state(source, invocation, &observation.lock_state)
+        && partition.start_cursor() == &source.before_repository_cursor
+        && terminal_anchor.history_cursor() == partition.through_inclusive()
+        && partition
+            .all_entries_are_one_of(&[RepositoryHistoryPartitionClassification::UnrelatedRoutine])
+        && pre_anchor.repository_identity() == terminal_anchor.repository_identity()
+        && pre_anchor.configuration_identity() == terminal_anchor.configuration_identity()
+}
+
+impl CommitScopedAtomicSafetyAuthority {
+    pub(crate) fn commit_exact_once(
+        self,
+        operation_scope: OperationScope,
+        preallocated_commit_receipt_id: UnicaId,
+        registered_port: &mut dyn CommitRegisteredOperationPort,
+        intent_port: &mut dyn CommitEffectIntentPort,
+    ) -> CommitEffectIntentOutcome {
+        let apply_task_id = self.approved.validated_apply_request().task_id();
+        let expected_project_id = &self.approved.0.validated_comment_policy().record.project_id;
+        if !matches!(
+            &operation_scope,
+            OperationScope::Task {
+                project_id,
+                task_id,
+                ..
+            } if project_id == expected_project_id && task_id == apply_task_id
+        ) {
+            return CommitEffectIntentOutcome::PreIntentBlocked(
+                CommitPreIntentBlockedAuthority::new(self, None, None, None),
+            );
+        }
+        let request_value =
+            match serde_json::to_value(self.approved.validated_apply_request().request()) {
+                Ok(value) => value,
+                Err(_) => {
+                    return CommitEffectIntentOutcome::PreIntentBlocked(
+                        CommitPreIntentBlockedAuthority::new(self, None, None, None),
+                    );
+                }
+            };
+        let canonical_input_digest = match operation_input_digest(
+            BranchedLifecycleToolName::RepositoryCommit,
+            DurableExecutionPolicy::PreviewedJournaledEffect,
+            &request_value,
+        ) {
+            Ok(digest) => digest,
+            Err(_) => {
+                return CommitEffectIntentOutcome::PreIntentBlocked(
+                    CommitPreIntentBlockedAuthority::new(self, None, None, None),
+                );
+            }
+        };
+        let invocation = CommitRegisteredOperationInvocationCapability::mint();
+        let request = CommitRegisteredOperationRequest {
+            scope: &self,
+            operation_scope: &operation_scope,
+            canonical_input_digest: &canonical_input_digest,
+            invocation: &invocation,
+        };
+        let completion = match registered_port.load_registered_commit_operation(request) {
+            Ok(completion) => completion,
+            Err(_) => {
+                return CommitEffectIntentOutcome::PreIntentBlocked(
+                    CommitPreIntentBlockedAuthority::new(self, None, None, None),
+                );
+            }
+        };
+        let request = CommitRegisteredOperationRequest {
+            scope: &self,
+            operation_scope: &operation_scope,
+            canonical_input_digest: &canonical_input_digest,
+            invocation: &invocation,
+        };
+        if !invocation.owns_completion(&completion.completion)
+            || !self.owns_commit_safety_lineage_witness(
+                completion.lease.commit_safety_lineage_witness(),
+            )
+            || !completion.lease.binds(&request)
+        {
+            return CommitEffectIntentOutcome::PreIntentBlocked(
+                CommitPreIntentBlockedAuthority::new(self, None, None, None),
+            );
+        }
+        let observation = completion.lease.into_current_operation();
+        let expected_operation = request.operation();
+        let expected_policy = request.policy();
+        let identity = &observation.identity;
+        if identity.operation_id != *self.approved.validated_apply_request().operation_id()
+            || identity.scope != operation_scope
+            || identity.operation != expected_operation
+            || identity.policy != expected_policy
+            || identity.canonical_input_digest != canonical_input_digest
+        {
+            return CommitEffectIntentOutcome::PreIntentBlocked(
+                CommitPreIntentBlockedAuthority::new(self, None, None, None),
+            );
+        }
+        let RegisteredCommitOperationIdentity {
+            operation_id,
+            scope: authoritative_scope,
+            operation,
+            policy,
+            canonical_input_digest,
+        } = observation.identity;
+        let Some(task_scope) = RegisteredCommitTaskScopeAuthority::from_current_record(
+            authoritative_scope,
+            expected_project_id,
+            apply_task_id,
+        ) else {
+            return CommitEffectIntentOutcome::PreIntentBlocked(
+                CommitPreIntentBlockedAuthority::new(self, None, None, None),
+            );
+        };
+        let registered = RegisteredCommitOperationAuthority {
+            operation_id,
+            task_scope,
+            operation,
+            policy,
+            canonical_input_digest,
+            evidence: observation.evidence,
+        };
+        self.write_intent_and_commit(registered, preallocated_commit_receipt_id, intent_port)
+    }
+
+    fn write_intent_and_commit(
+        self,
+        registered: RegisteredCommitOperationAuthority,
+        preallocated_commit_receipt_id: UnicaId,
+        intent_port: &mut dyn CommitEffectIntentPort,
+    ) -> CommitEffectIntentOutcome {
+        let record =
+            match CommitEffectIntentRecord::new(&self, &registered, preallocated_commit_receipt_id)
+            {
+                Ok(record) => record,
+                Err(_) => {
+                    return CommitEffectIntentOutcome::PreIntentBlocked(
+                        CommitPreIntentBlockedAuthority::new(self, Some(registered), None, None),
+                    );
+                }
+            };
+        let invocation = CommitEffectIntentInvocationCapability::mint();
+        let request = CommitEffectIntentRequest {
+            scope: &self,
+            registered: &registered,
+            record: &record,
+            invocation: &invocation,
+        };
+        let completion = match intent_port.write_and_fsync_commit_intent(request) {
+            Ok(completion) => completion,
+            Err(error) => {
+                return CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(
+                    CommitAmbiguousAuthority {
+                        source: CommitAmbiguousSource::intent_port(
+                            self, registered, record, invocation, error,
+                        ),
+                    },
+                ));
+            }
+        };
+        let request = CommitEffectIntentRequest {
+            scope: &self,
+            registered: &registered,
+            record: &record,
+            invocation: &invocation,
+        };
+        if !invocation.owns_completion(&completion.completion) {
+            return CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(
+                CommitAmbiguousAuthority {
+                    source: CommitAmbiguousSource::intent_completion(
+                        self, registered, record, invocation, completion,
+                    ),
+                },
+            ));
+        }
+        let lineage_matches = match &completion.disposition {
+            CommitEffectIntentCompletionDisposition::Written(lease) => {
+                self.owns_commit_safety_lineage_witness(lease.commit_safety_lineage_witness())
+            }
+            CommitEffectIntentCompletionDisposition::ProvenNotWritten(lease) => {
+                self.owns_commit_safety_lineage_witness(lease.commit_safety_lineage_witness())
+            }
+        };
+        let binding_matches = lineage_matches
+            && match &completion.disposition {
+                CommitEffectIntentCompletionDisposition::Written(lease) => lease.binds(&request),
+                CommitEffectIntentCompletionDisposition::ProvenNotWritten(lease) => {
+                    lease.binds(&request)
+                }
+            };
+        if !binding_matches {
+            return CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(
+                CommitAmbiguousAuthority {
+                    source: CommitAmbiguousSource::intent_completion(
+                        self, registered, record, invocation, completion,
+                    ),
+                },
+            ));
+        }
+        match completion.disposition {
+            CommitEffectIntentCompletionDisposition::ProvenNotWritten(lease) => {
+                let certificate = lease.into_certificate();
+                if valid_effect_intent_not_written(&record, &certificate) {
+                    CommitEffectIntentOutcome::PreIntentBlocked(
+                        CommitPreIntentBlockedAuthority::new(
+                            self,
+                            Some(registered),
+                            Some(record),
+                            Some(certificate),
+                        ),
+                    )
+                } else {
+                    CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(
+                        CommitAmbiguousAuthority {
+                            source: CommitAmbiguousSource::intent_evidence(
+                                self,
+                                registered,
+                                record,
+                                invocation,
+                                CommitRejectedIntentEvidence::ProvenNotWritten(certificate),
+                            ),
+                        },
+                    ))
+                }
+            }
+            CommitEffectIntentCompletionDisposition::Written(lease) => {
+                let fsync = lease.into_fsync_evidence();
+                if !valid_effect_intent_fsync(&record, &fsync) {
+                    return CommitEffectIntentOutcome::PostIntent(
+                        CommitExactOnceOutcome::Ambiguous(CommitAmbiguousAuthority {
+                            source: CommitAmbiguousSource::intent_evidence(
+                                self,
+                                registered,
+                                record,
+                                invocation,
+                                CommitRejectedIntentEvidence::Fsync(fsync),
+                            ),
+                        }),
+                    );
+                }
+                let written_intent = CommitWrittenEffectIntentAuthority {
+                    registered,
+                    record,
+                    fsync,
+                };
+                CommitEffectIntentOutcome::PostIntent(self.invoke_atomic_commit(written_intent))
+            }
+        }
+    }
+
+    fn invoke_atomic_commit(
+        self,
+        written_intent: CommitWrittenEffectIntentAuthority,
+    ) -> CommitExactOnceOutcome {
+        let Self {
+            approved,
+            completion,
+            immediate_history_guard_evidence,
+            post_merge_repository_anchor,
+            before_repository_cursor,
+            pre_command_target_snapshot,
+        } = self;
+        let source = CommitAtomicCommitSource {
+            approved,
+            immediate_history_guard_evidence,
+            post_merge_repository_anchor,
+            before_repository_cursor,
+            pre_command_target_snapshot,
+            written_intent,
+        };
+        let invocation = CommitAtomicCommitInvocationCapability::mint();
+        let request = CommitAtomicCommitRequest {
+            source: &source,
+            invocation: &invocation,
+        };
+        let completion = match completion.lease.commit_exact_once(request) {
+            Ok(completion) => completion,
+            Err(error) => {
+                return CommitExactOnceOutcome::Ambiguous(CommitAmbiguousAuthority {
+                    source: CommitAmbiguousSource::atomic_port(source, error),
+                });
+            }
+        };
+        let request = CommitAtomicCommitRequest {
+            source: &source,
+            invocation: &invocation,
+        };
+        if !invocation.owns_completion(&completion.completion)
+            || !source.owns_commit_safety_lineage_witness(
+                completion.payload.commit_safety_lineage_witness(),
+            )
+            || !completion.payload.binds(&request)
+        {
+            return CommitExactOnceOutcome::Ambiguous(CommitAmbiguousAuthority {
+                source: CommitAmbiguousSource::atomic_completion(source, completion),
+            });
+        }
+        let observation = completion.payload.into_observation();
+        match observation {
+            CommitAtomicCommitObservation::Committed(observation)
+                if valid_committed_observation(&source, &invocation, &observation) =>
+            {
+                CommitExactOnceOutcome::Committed(CommitCommittedAuthority {
+                    source: Box::new(source),
+                    atomic_invocation: invocation,
+                    observation,
+                })
+            }
+            CommitAtomicCommitObservation::ProvenZeroEffect(observation)
+                if valid_zero_effect_observation(&source, &invocation, &observation) =>
+            {
+                CommitExactOnceOutcome::ProvenZeroEffect(CommitProvenZeroEffectAuthority {
+                    source: Box::new(source),
+                    atomic_invocation: invocation,
+                    observation,
+                })
+            }
+            observation => CommitExactOnceOutcome::Ambiguous(CommitAmbiguousAuthority {
+                source: CommitAmbiguousSource::atomic_observation(source, observation),
+            }),
+        }
     }
 }
 
@@ -5246,6 +7971,7 @@ pub(crate) struct CommitObjectPostStateObservationAuthority {
 }
 
 impl CommitObjectPostStateObservationAuthority {
+    #[cfg(test)]
     pub(crate) fn from_atomic_adapter(
         repository_version: RepositoryVersion,
         committed_objects: CommittedRepositoryObjects,
@@ -5264,6 +7990,8 @@ impl CommitObjectPostStateObservationAuthority {
 /// verified post-state, full integration-set digest and atomic capability.
 #[derive(Debug)]
 pub(crate) struct ValidatedCommitObjectAuthority {
+    #[cfg(test)]
+    object_history_binding_witness: CommitObjectHistoryBindingWitness,
     approved_preview: ApprovedCommitPreviewAuthority,
     _commit_recheck_completion: Option<CommitImmediateRecheckCompletion>,
     _immediate_history_guard_evidence: Option<PostMergeHistoryGuardEvidence>,
@@ -5276,6 +8004,7 @@ pub(crate) struct ValidatedCommitObjectAuthority {
 }
 
 impl ValidatedCommitObjectAuthority {
+    #[cfg(test)]
     pub(crate) fn from_commit_scope(
         scope: CommitScopedAtomicSafetyAuthority,
         observation: CommitObjectPostStateObservationAuthority,
@@ -5286,6 +8015,7 @@ impl ValidatedCommitObjectAuthority {
             immediate_history_guard_evidence,
             post_merge_repository_anchor,
             before_repository_cursor,
+            ..
         } = scope;
         Self::from_retained_lineage(
             approved,
@@ -5307,6 +8037,7 @@ impl ValidatedCommitObjectAuthority {
         Self::from_retained_lineage(approved_preview, observation, None)
     }
 
+    #[cfg(test)]
     fn from_retained_lineage(
         approved_preview: ApprovedCommitPreviewAuthority,
         observation: CommitObjectPostStateObservationAuthority,
@@ -5364,6 +8095,9 @@ impl ValidatedCommitObjectAuthority {
             )
         });
         Ok(Self {
+            #[cfg(test)]
+            object_history_binding_witness: CommitAtomicCommitInvocationCapability::mint()
+                .object_history_binding_witness(),
             approved_preview,
             _commit_recheck_completion: commit_recheck_completion,
             _immediate_history_guard_evidence: immediate_history_guard_evidence,
@@ -5398,6 +8132,28 @@ impl ValidatedCommitObjectAuthority {
 
     pub(crate) fn exact_objects_digest(&self) -> &Sha256Digest {
         &self.approved_preview.0.record.exact_objects_digest
+    }
+}
+
+#[cfg(test)]
+impl commit_object_history_binding_sealed::Sealed for ValidatedCommitObjectAuthority {}
+
+#[cfg(test)]
+impl CommitObjectHistoryBinding for ValidatedCommitObjectAuthority {
+    fn object_history_binding_witness(&self) -> &CommitObjectHistoryBindingWitness {
+        &self.object_history_binding_witness
+    }
+
+    fn repository_version(&self) -> &RepositoryVersion {
+        self.repository_version()
+    }
+
+    fn committed_objects_digest(&self) -> &Sha256Digest {
+        self.committed_objects_digest()
+    }
+
+    fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        self.atomic_commit_safety_capability_id()
     }
 }
 
@@ -5817,6 +8573,45 @@ pub(crate) fn original_merge_production_lock_projection_with_revision_fixture_te
             .unwrap(),
         },
     }
+}
+
+/// Produces a second internally consistent production-shaped acquisition
+/// lineage for cross-invocation splice tests. The override is cfg-only; all
+/// production constructors remain closed.
+#[cfg(test)]
+pub(crate) fn original_merge_production_lock_projection_with_identity_fixture_test_only(
+    merge_session_id: UnicaId,
+    resolved_session_digest: Sha256Digest,
+    ready: crate::domain::branched_development::contracts::support::ReadySupportPreflightAuthority,
+    settings_digest: Sha256Digest,
+    lock_set_id: UnicaId,
+    observed_at: NormalizedUtcInstant,
+) -> ValidatedOriginalMergeLockProjection {
+    let mut projection = original_merge_production_lock_projection_with_revision_fixture_test_only(
+        merge_session_id,
+        resolved_session_digest,
+        ready,
+        settings_digest,
+        Sha256Digest::parse(&"b".repeat(64)).unwrap(),
+    );
+    projection.lock_set_id = lock_set_id.clone();
+    let ValidatedLockGateProof::Production {
+        root_lock_receipt,
+        journaled_lock_receipts,
+        ..
+    } = &mut projection.gate_proof
+    else {
+        unreachable!("production-shaped lock projection must retain production gate proof")
+    };
+    for receipt in journaled_lock_receipts.iter_mut() {
+        receipt.lock_set_id = lock_set_id.clone();
+        receipt.observed_at = observed_at.clone();
+    }
+    *root_lock_receipt = journaled_lock_receipts
+        .first()
+        .expect("production lock fixture always contains the root receipt")
+        .clone();
+    projection
 }
 
 #[cfg(test)]
@@ -7585,6 +10380,7 @@ pub(crate) struct CommitCompletionObservationAuthority {
 
 impl CommitCompletionObservationAuthority {
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn from_atomic_adapter(
         commit_receipt_id: UnicaId,
         before_repository_cursor: RepositoryHistoryCursor,
@@ -7924,6 +10720,61 @@ fn validate_commit_release_projection(
 }
 
 impl CommitData {
+    /// The only production committed-success projection. Both object state and
+    /// taskCommit history arrive through one already validated, invocation-
+    /// bound authority; independent completion/object authorities cannot be
+    /// spliced at this boundary.
+    pub(crate) fn from_committed_outcome(authority: CommitCommittedAuthority) -> Self {
+        let CommitCommittedAuthority {
+            source,
+            atomic_invocation: _,
+            observation,
+        } = authority;
+        let CommitCommittedObservationInput {
+            core,
+            history,
+            release,
+        } = *observation;
+        let (released_objects, released_guard_locks) = match release {
+            CommitLockReleaseObservation::Verified(authority) => (*authority)
+                .into_released_projection()
+                .expect("validated committed release must be a released lock authority"),
+            CommitLockReleaseObservation::Unknown => unreachable!(
+                "CommitCommittedAuthority is minted only after exact release validation"
+            ),
+        };
+        let CommitAtomicCommitSource {
+            immediate_history_guard_evidence,
+            before_repository_cursor,
+            ..
+        } = *source;
+        let after_repository_cursor = history
+            .post_commit_history_partition
+            .partition()
+            .through_inclusive()
+            .clone();
+        let post_merge_history_guard_evidence_digest =
+            immediate_history_guard_evidence.evidence_digest().clone();
+        let post_commit_history_partition = history.post_commit_history_partition.into_partition();
+        Self {
+            commit_receipt_id: core.commit_receipt_id,
+            repository_version: core.repository_version,
+            before_repository_cursor,
+            after_repository_cursor,
+            post_merge_history_guard_evidence_digest,
+            post_commit_history_partition,
+            atomic_commit_safety_capability_id: core.atomic_commit_safety_capability_id,
+            committed_objects: core.committed_objects,
+            committed_objects_digest: core.committed_objects_digest,
+            content_verified: TrueLiteral,
+            released_objects,
+            released_guard_locks,
+            unlock_verified: TrueLiteral,
+            repository_anchor: history.terminal_repository_anchor,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_authority(
         authority: ValidatedCommitObjectAuthority,
         completion: CommitCompletionObservationAuthority,
@@ -14149,6 +17000,11 @@ mod gate_b2_preview_tests {
     use crate::domain::branched_development::contracts::repository::{
         empty_commit_history_evidence_fixture_test_only,
         repository_history_partition_fixture_test_only,
+        task_commit_history_partition_fixture_test_only, EvidenceKind, EvidenceSourceIndex,
+        EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
+        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
+        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
+        RepositoryHistorySourceEvidenceRef, RoutineRepositoryVersionClassificationEvidence,
     };
     use crate::domain::branched_development::contracts::requests::repository::{
         RepositoryCommitRequest, RepositoryCommitRequestValidationFailure,
@@ -14156,10 +17012,15 @@ mod gate_b2_preview_tests {
     };
     use crate::domain::branched_development::contracts::results::merge::{
         validated_main_integration_commit_context_fixture_test_only,
+        validated_main_integration_commit_context_with_lock_identity_fixture_test_only,
         ResolvedCommitLineageConsumedSupportGateAuthority,
     };
+    use crate::domain::branched_development::contracts::scalars::PositiveGeneration;
+    use crate::domain::branched_development::contracts::storage::OperationScope;
     use serde_json::{json, Value};
-    use std::cell::Cell;
+    use sha2::{Digest, Sha256};
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
     use std::rc::Rc;
 
     macro_rules! assert_not_clone {
@@ -14710,12 +17571,101 @@ mod gate_b2_preview_tests {
         (approved, partition, preview_request)
     }
 
+    fn approved_preview_with_lock_identity(
+        lock_set_id: UnicaId,
+        observed_at: NormalizedUtcInstant,
+    ) -> (
+        ApprovedCommitPreviewAuthority,
+        ValidatedRepositoryHistoryPartition,
+    ) {
+        let source = validated_main_integration_commit_context_with_lock_identity_fixture_test_only(
+            id("b3100000-0000-4000-8000-000000000025"),
+            digest('9'),
+            lock_set_id,
+            observed_at,
+        );
+        let partition = history_partition(
+            source.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-foreign-lock-initial",
+        );
+        let guard = PostMergeCommitGuardAuthority::from_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact(partition.clone()),
+        )
+        .unwrap();
+        let preview_request = commit_preview_request_value(
+            &guard,
+            "/original/project",
+            "PR-137",
+            PREVIEW_OPERATION_ID,
+        );
+        let preview = CommitPreviewAuthority::from_validated_post_merge_guard(
+            validated_commit_preview_request(preview_request.clone()),
+            guard,
+            validated_comment_policy(),
+        )
+        .unwrap();
+        let approved_digest = preview.commit_digest().clone();
+        let apply = serde_json::from_value(commit_apply_request_value(
+            preview_request,
+            APPLY_OPERATION_ID,
+            &approved_digest,
+        ))
+        .unwrap();
+        (
+            ApprovedCommitPreviewAuthority::from_validated_request(
+                preview.validate_apply(apply).unwrap(),
+            ),
+            partition,
+        )
+    }
+
     #[derive(Default)]
     struct ImmediateLeaseCounters {
         witnesses: Cell<usize>,
         binds: Cell<usize>,
         getters: Cell<usize>,
         drops: Cell<usize>,
+    }
+
+    fn target_states_for_exact_objects(
+        exact_objects: &CommitExactObjects,
+        establishing_version: &RepositoryVersion,
+    ) -> RepositoryTargetStates {
+        let values = exact_objects
+            .iter()
+            .map(|exact| match exact {
+                CommitExactObjectRef::RootModify => json!({
+                    "targetKind": "configurationRoot",
+                    "state": "present",
+                    "repositoryVersion": establishing_version,
+                    "targetFingerprint": digest('6'),
+                }),
+                CommitExactObjectRef::ObjectAdd { object_id } => json!({
+                    "targetKind": "developmentObject",
+                    "state": "absent",
+                    "objectId": object_id,
+                    "absenceEstablishedAtVersion": establishing_version,
+                    "expectedAbsent": true,
+                }),
+                CommitExactObjectRef::ObjectModify { object_id } => json!({
+                    "targetKind": "developmentObject",
+                    "state": "present",
+                    "objectId": object_id,
+                    "repositoryVersion": establishing_version,
+                    "targetFingerprint": digest('7'),
+                }),
+                CommitExactObjectRef::ObjectDelete { object_id } => json!({
+                    "targetKind": "developmentObject",
+                    "state": "present",
+                    "objectId": object_id,
+                    "repositoryVersion": establishing_version,
+                    "targetFingerprint": digest('8'),
+                }),
+            })
+            .collect::<Vec<_>>();
+        serde_json::from_value(Value::Array(values)).unwrap()
     }
 
     struct TestImmediateRecheckLease {
@@ -14731,6 +17681,8 @@ mod gate_b2_preview_tests {
         original_fingerprint_capability_id: CapabilityRowId,
         root_reread_capability_id: CapabilityRowId,
         atomic_commit_safety_capability_id: CapabilityRowId,
+        pre_command_target_states: RepositoryTargetStates,
+        pre_command_target_snapshot_observation_capability_id: CapabilityRowId,
         counters: Rc<ImmediateLeaseCounters>,
     }
 
@@ -14821,6 +17773,25 @@ mod gate_b2_preview_tests {
             self.getter();
             &self.atomic_commit_safety_capability_id
         }
+
+        fn pre_command_target_states(&self) -> &RepositoryTargetStates {
+            self.getter();
+            &self.pre_command_target_states
+        }
+
+        fn pre_command_target_snapshot_observation_capability_id(&self) -> &CapabilityRowId {
+            self.getter();
+            &self.pre_command_target_snapshot_observation_capability_id
+        }
+
+        fn commit_exact_once(
+            self: Box<Self>,
+            _request: CommitAtomicCommitRequest<'_>,
+        ) -> Result<CommitAtomicCommitCompletion, RepositoryResultContractError> {
+            Err(RepositoryResultContractError(
+                "test immediate lease has no atomic commit script",
+            ))
+        }
     }
 
     #[derive(Default)]
@@ -14836,6 +17807,8 @@ mod gate_b2_preview_tests {
         fingerprint_capability: Option<CapabilityRowId>,
         root_capability: Option<CapabilityRowId>,
         atomic_capability: Option<CapabilityRowId>,
+        pre_command_target_states: Option<RepositoryTargetStates>,
+        pre_command_target_snapshot_capability: Option<CapabilityRowId>,
         binding_plan_digest: Option<Sha256Digest>,
     }
 
@@ -14865,6 +17838,16 @@ mod gate_b2_preview_tests {
                 .clone()
                 .unwrap_or_else(|| retained_anchor.configuration_fingerprint().clone()),
         )?;
+        let pre_command_target_states =
+            overrides
+                .pre_command_target_states
+                .clone()
+                .unwrap_or_else(|| {
+                    target_states_for_exact_objects(
+                        request.exact_objects(),
+                        partition.through_inclusive().through_version(),
+                    )
+                });
         Ok(TestImmediateRecheckLease {
             lineage_witness: request.commit_safety_lineage_witness(),
             binds: overrides.binds.unwrap_or(true),
@@ -14899,6 +17882,13 @@ mod gate_b2_preview_tests {
                 .atomic_capability
                 .clone()
                 .unwrap_or_else(|| request.atomic_commit_safety_capability_id().clone()),
+            pre_command_target_states,
+            pre_command_target_snapshot_observation_capability_id: overrides
+                .pre_command_target_snapshot_capability
+                .clone()
+                .unwrap_or_else(|| {
+                    CapabilityRowId::parse("repository.commit-target-snapshot.immediate").unwrap()
+                }),
             counters,
         })
     }
@@ -16415,6 +19405,2142 @@ mod gate_b2_preview_tests {
                     .observation_capability_id(),
                 &expected_observation_capability
             );
+        }
+    }
+
+    assert_not_clone!(RegisteredCommitOperationAuthority);
+    assert_not_clone!(CommitEffectIntentRequest<'static>);
+    assert_not_clone!(CommitEffectIntentCompletion);
+    assert_not_clone!(CommitAtomicCommitRequest<'static>);
+    assert_not_clone!(CommitAtomicCommitCompletion);
+    assert_not_clone!(CommitPostCommandLockAuthority);
+    assert_not_clone!(CommitEffectIntentOutcome);
+    assert_not_clone!(CommitExactOnceOutcome);
+    assert_not_clone!(CommitCommittedAuthority);
+    assert_not_clone!(CommitProvenZeroEffectAuthority);
+    assert_not_clone!(CommitZeroEffectCleanupRequiredAuthority);
+    assert_not_clone!(CommitZeroEffectReleasedAuthority);
+    assert_not_clone!(CommitAmbiguousAuthority);
+    assert_not_serialize!(RegisteredCommitOperationAuthority);
+    assert_not_serialize!(CommitEffectIntentRequest<'static>);
+    assert_not_serialize!(CommitEffectIntentCompletion);
+    assert_not_serialize!(CommitAtomicCommitRequest<'static>);
+    assert_not_serialize!(CommitAtomicCommitCompletion);
+    assert_not_serialize!(CommitPostCommandLockAuthority);
+    assert_not_serialize!(CommitEffectIntentOutcome);
+    assert_not_serialize!(CommitExactOnceOutcome);
+    assert_not_serialize!(CommitCommittedAuthority);
+    assert_not_serialize!(CommitProvenZeroEffectAuthority);
+    assert_not_serialize!(CommitZeroEffectCleanupRequiredAuthority);
+    assert_not_serialize!(CommitZeroEffectReleasedAuthority);
+    assert_not_serialize!(CommitAmbiguousAuthority);
+    assert_not_deserialize_owned!(RegisteredCommitOperationAuthority);
+    assert_not_deserialize_owned!(CommitEffectIntentRequest<'static>);
+    assert_not_deserialize_owned!(CommitEffectIntentCompletion);
+    assert_not_deserialize_owned!(CommitAtomicCommitRequest<'static>);
+    assert_not_deserialize_owned!(CommitAtomicCommitCompletion);
+    assert_not_deserialize_owned!(CommitPostCommandLockAuthority);
+    assert_not_deserialize_owned!(CommitEffectIntentOutcome);
+    assert_not_deserialize_owned!(CommitExactOnceOutcome);
+    assert_not_deserialize_owned!(CommitCommittedAuthority);
+    assert_not_deserialize_owned!(CommitProvenZeroEffectAuthority);
+    assert_not_deserialize_owned!(CommitZeroEffectCleanupRequiredAuthority);
+    assert_not_deserialize_owned!(CommitZeroEffectReleasedAuthority);
+    assert_not_deserialize_owned!(CommitAmbiguousAuthority);
+
+    #[derive(Default)]
+    struct Slice3Counters {
+        events: RefCell<Vec<&'static str>>,
+        registered_calls: Cell<usize>,
+        registered_witnesses: Cell<usize>,
+        registered_binds: Cell<usize>,
+        registered_getters: Cell<usize>,
+        observed_intent_record_digests: RefCell<Vec<Sha256Digest>>,
+        observed_intent_record_bytes: RefCell<Vec<Vec<u8>>>,
+        observed_intent_typed_records: RefCell<Vec<Value>>,
+        intent_calls: Cell<usize>,
+        intent_witnesses: Cell<usize>,
+        intent_binds: Cell<usize>,
+        intent_getters: Cell<usize>,
+        command_calls: Cell<usize>,
+        physical_effects: Cell<usize>,
+        observed_command_comments: RefCell<Vec<Comment>>,
+        observed_command_targets: RefCell<Vec<Vec<String>>>,
+        observed_command_receipt_ids: RefCell<Vec<UnicaId>>,
+        observed_command_before_cursors: RefCell<Vec<RepositoryHistoryCursor>>,
+        observed_command_release_objects: RefCell<Vec<CanonicalRepositoryTargets>>,
+        observed_command_release_guards: RefCell<Vec<CanonicalRepositoryTargets>>,
+        captured_foreign_lock_authority: RefCell<Option<CommitPostCommandLockAuthority>>,
+        captured_foreign_zero_observation: RefCell<Option<CommitProvenZeroEffectObservationInput>>,
+        atomic_witnesses: Cell<usize>,
+        atomic_binds: Cell<usize>,
+        atomic_getters: Cell<usize>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Slice3RegistrationMode {
+        Exact,
+        DifferentLeaseDigest,
+        BindingOperation,
+        BindingInput,
+        BindingRecordDigest,
+        BindingLeaseDigest,
+        AuthoritativeStartAttempt,
+        AuthoritativeForeignTask,
+        AuthoritativeForeignContainer,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Slice3IntentMode {
+        Written,
+        ProvenNotWritten,
+        Error,
+        ResponseLoss,
+        StaleCompletion,
+        BindingScope,
+        BindingGeneration,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Slice3AtomicMode {
+        Committed,
+        PortError,
+        ResponseLoss,
+        CompletionMismatch,
+        WitnessMismatch,
+        BindingPreview,
+        BindingOperation,
+        BindingIntent,
+        BindingScope,
+        EndpointSubstitution,
+        ObjectSubstitution,
+        VersionSubstitution,
+        DigestSubstitution,
+        CapabilitySubstitution,
+        IdentitySubstitution,
+        ReceiptSubstitution,
+        SemanticDigestSubstitution,
+        EqualScalarForeignPartition,
+        MissingTaskCommit,
+        DuplicateTaskCommit,
+        GappedHistory,
+        UnlockUnknown,
+        ReleaseForeignLockSet,
+        ReleaseForeignReceipt,
+        ReleaseForeignInvocation,
+        CaptureLockAuthority,
+        SpliceLockAuthority,
+        ZeroEffect,
+        ZeroBadCertificate,
+        ZeroForeignCapability,
+        ZeroForeignInvocation,
+        ZeroTerminalAnchorSubstitution,
+        ZeroIncompleteObjects,
+        ZeroStaleObjectVersion,
+        ZeroIncompleteInventory,
+        ZeroTaskCommitPresent,
+        ZeroReleased,
+        ZeroReleaseUnknown,
+        ZeroForeignLockSet,
+        ZeroForeignReceipt,
+        ZeroLockForeignInvocation,
+        CaptureZeroObservation,
+        SpliceZeroObservation,
+    }
+
+    #[derive(Clone)]
+    struct RegisteredBindingSnapshot {
+        operation_id: OperationId,
+        scope: OperationScope,
+        canonical_input_digest: Sha256Digest,
+        record_digest: Sha256Digest,
+        lease_digest: Sha256Digest,
+    }
+
+    impl RegisteredBindingSnapshot {
+        fn exact(request: &CommitRegisteredOperationRequest<'_>) -> Self {
+            Self {
+                operation_id: request.apply_operation_id().clone(),
+                scope: request.operation_scope().clone(),
+                canonical_input_digest: request.canonical_input_digest().clone(),
+                record_digest: digest('a'),
+                lease_digest: digest('b'),
+            }
+        }
+
+        fn binds(&self, request: &CommitRegisteredOperationRequest<'_>) -> bool {
+            self.operation_id == *request.apply_operation_id()
+                && self.scope == *request.operation_scope()
+                && self.canonical_input_digest == *request.canonical_input_digest()
+                && self.record_digest == digest('a')
+                && matches!(self.lease_digest.as_str(), value if value == digest('b').as_str() || value == digest('c').as_str())
+        }
+    }
+
+    struct Slice3RegisteredOperationLease {
+        lineage_witness: CommitSafetyLineageWitness,
+        binding: RegisteredBindingSnapshot,
+        observation: RegisteredCommitOperationObservation,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitRegisteredOperationLease for Slice3RegisteredOperationLease {
+        fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness {
+            self.counters
+                .registered_witnesses
+                .set(self.counters.registered_witnesses.get() + 1);
+            &self.lineage_witness
+        }
+
+        fn binds(&self, request: &CommitRegisteredOperationRequest<'_>) -> bool {
+            self.counters
+                .registered_binds
+                .set(self.counters.registered_binds.get() + 1);
+            self.binding.binds(request)
+        }
+
+        fn into_current_operation(self: Box<Self>) -> RegisteredCommitOperationObservation {
+            self.counters
+                .registered_getters
+                .set(self.counters.registered_getters.get() + 1);
+            self.observation
+        }
+    }
+
+    struct Slice3RegisteredOperationPort {
+        mode: Slice3RegistrationMode,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitRegisteredOperationPort for Slice3RegisteredOperationPort {
+        fn load_registered_commit_operation(
+            &mut self,
+            request: CommitRegisteredOperationRequest<'_>,
+        ) -> Result<CommitRegisteredOperationCompletion, RepositoryResultContractError> {
+            self.counters
+                .registered_calls
+                .set(self.counters.registered_calls.get() + 1);
+            let mut binding = RegisteredBindingSnapshot::exact(&request);
+            match self.mode {
+                Slice3RegistrationMode::BindingOperation => {
+                    binding.operation_id = OperationId::parse(OTHER_LINEAGE_ID).unwrap();
+                }
+                Slice3RegistrationMode::BindingInput => {
+                    binding.canonical_input_digest = digest('f');
+                }
+                Slice3RegistrationMode::BindingRecordDigest => {
+                    binding.record_digest = digest('f');
+                }
+                Slice3RegistrationMode::BindingLeaseDigest => {
+                    binding.lease_digest = digest('f');
+                }
+                Slice3RegistrationMode::Exact
+                | Slice3RegistrationMode::DifferentLeaseDigest
+                | Slice3RegistrationMode::AuthoritativeStartAttempt
+                | Slice3RegistrationMode::AuthoritativeForeignTask
+                | Slice3RegistrationMode::AuthoritativeForeignContainer => {}
+            }
+            let lease_digest = if matches!(self.mode, Slice3RegistrationMode::DifferentLeaseDigest)
+            {
+                digest('c')
+            } else {
+                digest('b')
+            };
+            if matches!(self.mode, Slice3RegistrationMode::DifferentLeaseDigest) {
+                binding.lease_digest = lease_digest.clone();
+            }
+            let lineage_witness = request.commit_safety_lineage_witness();
+            let authoritative_scope = match self.mode {
+                Slice3RegistrationMode::AuthoritativeStartAttempt => OperationScope::StartAttempt {
+                    workspace_identity_digest: digest('d'),
+                    task_id: TaskId::parse("PR-137").unwrap(),
+                },
+                Slice3RegistrationMode::AuthoritativeForeignTask => OperationScope::Task {
+                    project_id: ProjectId::parse("b3300000-0000-4000-8000-000000000001").unwrap(),
+                    task_id: TaskId::parse("PR-999").unwrap(),
+                    instance_id: id("b3300000-0000-4000-8000-000000000002"),
+                },
+                Slice3RegistrationMode::AuthoritativeForeignContainer => OperationScope::Task {
+                    project_id: ProjectId::parse("b3300000-0000-4000-8000-000000000099").unwrap(),
+                    task_id: TaskId::parse("PR-137").unwrap(),
+                    instance_id: id("b3300000-0000-4000-8000-000000000098"),
+                },
+                _ => request.operation_scope().clone(),
+            };
+            let observation = RegisteredCommitOperationObservation::from_current_record(
+                request.apply_operation_id().clone(),
+                authoritative_scope,
+                request.operation(),
+                request.policy(),
+                request.canonical_input_digest().clone(),
+                RegisteredCommitStorageEvidence::new(
+                    PositiveGeneration::new(7).unwrap(),
+                    digest('a'),
+                    PositiveGeneration::new(11).unwrap(),
+                    lease_digest,
+                ),
+            );
+            Ok(request.complete(Box::new(Slice3RegisteredOperationLease {
+                lineage_witness,
+                binding,
+                observation,
+                counters: Rc::clone(&self.counters),
+            })))
+        }
+    }
+
+    #[derive(Clone)]
+    struct IntentBindingSnapshot {
+        operation_id: OperationId,
+        scope: OperationScope,
+        record_revision: PositiveGeneration,
+        lease_generation: PositiveGeneration,
+        intent_record_digest: Sha256Digest,
+    }
+
+    impl IntentBindingSnapshot {
+        fn exact(request: &CommitEffectIntentRequest<'_>) -> Self {
+            Self {
+                operation_id: request.apply_operation_id().clone(),
+                scope: request.operation_scope().clone(),
+                record_revision: request.registered_record_revision(),
+                lease_generation: request.registered_lease_generation(),
+                intent_record_digest: request.intent_record_digest().clone(),
+            }
+        }
+
+        fn binds(&self, request: &CommitEffectIntentRequest<'_>) -> bool {
+            self.operation_id == *request.apply_operation_id()
+                && self.scope == *request.operation_scope()
+                && self.record_revision == request.registered_record_revision()
+                && self.lease_generation == request.registered_lease_generation()
+                && self.intent_record_digest == *request.intent_record_digest()
+        }
+    }
+
+    struct Slice3WrittenIntentLease {
+        lineage_witness: CommitSafetyLineageWitness,
+        binding: IntentBindingSnapshot,
+        evidence: CommitEffectIntentFsyncEvidence,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitEffectIntentWrittenLease for Slice3WrittenIntentLease {
+        fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness {
+            self.counters
+                .intent_witnesses
+                .set(self.counters.intent_witnesses.get() + 1);
+            &self.lineage_witness
+        }
+
+        fn binds(&self, request: &CommitEffectIntentRequest<'_>) -> bool {
+            self.counters
+                .intent_binds
+                .set(self.counters.intent_binds.get() + 1);
+            self.binding.binds(request)
+        }
+
+        fn into_fsync_evidence(self: Box<Self>) -> CommitEffectIntentFsyncEvidence {
+            self.counters
+                .intent_getters
+                .set(self.counters.intent_getters.get() + 1);
+            self.counters.events.borrow_mut().push("intent-fsynced");
+            self.evidence
+        }
+    }
+
+    struct Slice3NotWrittenIntentLease {
+        lineage_witness: CommitSafetyLineageWitness,
+        binding: IntentBindingSnapshot,
+        certificate: CommitEffectIntentNotWrittenCertificate,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitEffectIntentProvenNotWrittenLease for Slice3NotWrittenIntentLease {
+        fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness {
+            self.counters
+                .intent_witnesses
+                .set(self.counters.intent_witnesses.get() + 1);
+            &self.lineage_witness
+        }
+
+        fn binds(&self, request: &CommitEffectIntentRequest<'_>) -> bool {
+            self.counters
+                .intent_binds
+                .set(self.counters.intent_binds.get() + 1);
+            self.binding.binds(request)
+        }
+
+        fn into_certificate(self: Box<Self>) -> CommitEffectIntentNotWrittenCertificate {
+            self.counters
+                .intent_getters
+                .set(self.counters.intent_getters.get() + 1);
+            self.certificate
+        }
+    }
+
+    struct Slice3IntentPort {
+        mode: Slice3IntentMode,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitEffectIntentPort for Slice3IntentPort {
+        fn write_and_fsync_commit_intent(
+            &mut self,
+            request: CommitEffectIntentRequest<'_>,
+        ) -> Result<CommitEffectIntentCompletion, RepositoryResultContractError> {
+            self.counters
+                .intent_calls
+                .set(self.counters.intent_calls.get() + 1);
+            self.counters
+                .observed_intent_record_digests
+                .borrow_mut()
+                .push(request.intent_record_digest().clone());
+            self.counters
+                .observed_intent_record_bytes
+                .borrow_mut()
+                .push(request.canonical_record_bytes().to_vec());
+            self.counters
+                .observed_intent_typed_records
+                .borrow_mut()
+                .push(serde_json::to_value(request.durable_record()).unwrap());
+            self.counters.events.borrow_mut().push("intent-call");
+            if matches!(self.mode, Slice3IntentMode::Error) {
+                return Err(RepositoryResultContractError("intent adapter error"));
+            }
+            if matches!(self.mode, Slice3IntentMode::ResponseLoss) {
+                self.counters.events.borrow_mut().push("intent-fsynced");
+                return Err(RepositoryResultContractError(
+                    "intent response lost after fsync",
+                ));
+            }
+
+            let lineage_witness = request.commit_safety_lineage_witness();
+            let mut binding = IntentBindingSnapshot::exact(&request);
+            match self.mode {
+                Slice3IntentMode::BindingScope => {
+                    binding.scope = task_scope("b3300000-0000-4000-8000-000000000099");
+                }
+                Slice3IntentMode::BindingGeneration => {
+                    binding.lease_generation = PositiveGeneration::new(99).unwrap();
+                }
+                Slice3IntentMode::Written
+                | Slice3IntentMode::ProvenNotWritten
+                | Slice3IntentMode::StaleCompletion
+                | Slice3IntentMode::Error
+                | Slice3IntentMode::ResponseLoss => {}
+            }
+
+            let mut completion = if matches!(self.mode, Slice3IntentMode::ProvenNotWritten) {
+                let certificate = request
+                    .observe_proven_not_written(
+                        id("b3300000-0000-4000-8000-000000000031"),
+                        CapabilityRowId::parse("repository.commit-intent.not-written").unwrap(),
+                    )
+                    .unwrap();
+                request.complete_proven_not_written(Box::new(Slice3NotWrittenIntentLease {
+                    lineage_witness,
+                    binding,
+                    certificate,
+                    counters: Rc::clone(&self.counters),
+                }))
+            } else {
+                let evidence = request
+                    .observe_fsync(
+                        id("b3300000-0000-4000-8000-000000000032"),
+                        CapabilityRowId::parse("repository.commit-intent.fsync").unwrap(),
+                    )
+                    .unwrap();
+                request.complete_written(Box::new(Slice3WrittenIntentLease {
+                    lineage_witness,
+                    binding,
+                    evidence,
+                    counters: Rc::clone(&self.counters),
+                }))
+            };
+            if matches!(self.mode, Slice3IntentMode::StaleCompletion) {
+                completion.completion = CommitEffectIntentInvocationCapability::mint().completion();
+            }
+            Ok(completion)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AtomicBindingSnapshot {
+        approved_commit_digest: Sha256Digest,
+        operation_id: OperationId,
+        scope: OperationScope,
+        intent_digest: Sha256Digest,
+    }
+
+    impl AtomicBindingSnapshot {
+        fn exact(request: &CommitAtomicCommitRequest<'_>) -> Self {
+            Self {
+                approved_commit_digest: request.approved_commit_digest().clone(),
+                operation_id: request.apply_operation_id().clone(),
+                scope: request.operation_scope().clone(),
+                intent_digest: request.effect_intent_digest().clone(),
+            }
+        }
+
+        fn binds(&self, request: &CommitAtomicCommitRequest<'_>) -> bool {
+            self.approved_commit_digest == *request.approved_commit_digest()
+                && self.operation_id == *request.apply_operation_id()
+                && self.scope == *request.operation_scope()
+                && self.intent_digest == *request.effect_intent_digest()
+        }
+    }
+
+    struct Slice3AtomicPayload {
+        lineage_witness: CommitSafetyLineageWitness,
+        binding: AtomicBindingSnapshot,
+        observation: CommitAtomicCommitObservation,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitAtomicCommitPayload for Slice3AtomicPayload {
+        fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness {
+            self.counters
+                .atomic_witnesses
+                .set(self.counters.atomic_witnesses.get() + 1);
+            &self.lineage_witness
+        }
+
+        fn binds(&self, request: &CommitAtomicCommitRequest<'_>) -> bool {
+            self.counters
+                .atomic_binds
+                .set(self.counters.atomic_binds.get() + 1);
+            self.binding.binds(request)
+        }
+
+        fn into_observation(self: Box<Self>) -> CommitAtomicCommitObservation {
+            self.counters
+                .atomic_getters
+                .set(self.counters.atomic_getters.get() + 1);
+            self.observation
+        }
+    }
+
+    struct Slice3ImmediateLease {
+        base: TestImmediateRecheckLease,
+        atomic_mode: Slice3AtomicMode,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl Slice3ImmediateLease {
+        fn run_atomic(
+            self: Box<Self>,
+            request: CommitAtomicCommitRequest<'_>,
+        ) -> Result<CommitAtomicCommitCompletion, RepositoryResultContractError> {
+            self.counters
+                .command_calls
+                .set(self.counters.command_calls.get() + 1);
+            self.counters.events.borrow_mut().push("command-call");
+            self.counters
+                .observed_command_comments
+                .borrow_mut()
+                .push(request.rendered_comment().clone());
+            self.counters.observed_command_targets.borrow_mut().push(
+                request
+                    .exact_object_refs()
+                    .map(|target| match target {
+                        CommitExactObjectRef::RootModify => "root:modify".to_owned(),
+                        CommitExactObjectRef::ObjectAdd { object_id } => {
+                            format!("{}:add", object_id.as_str())
+                        }
+                        CommitExactObjectRef::ObjectModify { object_id } => {
+                            format!("{}:modify", object_id.as_str())
+                        }
+                        CommitExactObjectRef::ObjectDelete { object_id } => {
+                            format!("{}:delete", object_id.as_str())
+                        }
+                    })
+                    .collect(),
+            );
+            self.counters
+                .observed_command_receipt_ids
+                .borrow_mut()
+                .push(request.preallocated_commit_receipt_id().clone());
+            self.counters
+                .observed_command_before_cursors
+                .borrow_mut()
+                .push(request.before_repository_cursor().clone());
+            let (release_objects, release_guards) = request.exact_release_projection()?;
+            self.counters
+                .observed_command_release_objects
+                .borrow_mut()
+                .push(release_objects);
+            self.counters
+                .observed_command_release_guards
+                .borrow_mut()
+                .push(release_guards);
+            if matches!(self.atomic_mode, Slice3AtomicMode::PortError) {
+                return Err(RepositoryResultContractError("atomic commit error"));
+            }
+            if matches!(self.atomic_mode, Slice3AtomicMode::ResponseLoss) {
+                self.counters
+                    .physical_effects
+                    .set(self.counters.physical_effects.get() + 1);
+                return Err(RepositoryResultContractError(
+                    "atomic response lost after physical effect",
+                ));
+            }
+
+            let mut binding = AtomicBindingSnapshot::exact(&request);
+            match self.atomic_mode {
+                Slice3AtomicMode::BindingPreview => {
+                    binding.approved_commit_digest = digest('f');
+                }
+                Slice3AtomicMode::BindingOperation => {
+                    binding.operation_id = OperationId::parse(OTHER_LINEAGE_ID).unwrap();
+                }
+                Slice3AtomicMode::BindingIntent => binding.intent_digest = digest('f'),
+                Slice3AtomicMode::BindingScope => {
+                    binding.scope = task_scope("b3300000-0000-4000-8000-000000000098");
+                }
+                _ => {}
+            }
+            let lineage_witness = if matches!(self.atomic_mode, Slice3AtomicMode::WitnessMismatch) {
+                CommitSafetyLineageWitness(Arc::new(CommitSafetyLineageMarker))
+            } else {
+                request.commit_safety_lineage_witness()
+            };
+            let observation = if matches!(self.atomic_mode, Slice3AtomicMode::CaptureLockAuthority)
+            {
+                self.counters
+                    .captured_foreign_lock_authority
+                    .replace(Some(matching_released_lock_authority(&request)?));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::SpliceLockAuthority) {
+                let mut observation = committed_observation(&request, self.atomic_mode)?;
+                let CommitAtomicCommitObservation::Committed(committed) = &mut observation else {
+                    unreachable!("committed splice fixture must produce committed observation")
+                };
+                committed.release = CommitLockReleaseObservation::Verified(Box::new(
+                    self.counters
+                        .captured_foreign_lock_authority
+                        .borrow_mut()
+                        .take()
+                        .expect("foreign committed lock authority must be captured first"),
+                ));
+                observation
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::CaptureZeroObservation) {
+                let observation = zero_effect_observation(
+                    &request,
+                    Slice3AtomicMode::ZeroReleased,
+                    self.base.pre_command_target_states.clone(),
+                )?;
+                let CommitAtomicCommitObservation::ProvenZeroEffect(zero) = observation else {
+                    unreachable!("zero capture fixture must produce zero observation")
+                };
+                self.counters
+                    .captured_foreign_zero_observation
+                    .replace(Some(*zero));
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::SpliceZeroObservation) {
+                request.observe_proven_zero_effect(
+                    self.counters
+                        .captured_foreign_zero_observation
+                        .borrow_mut()
+                        .take()
+                        .expect("foreign zero observation must be captured first"),
+                )
+            } else if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ZeroEffect
+                    | Slice3AtomicMode::ZeroBadCertificate
+                    | Slice3AtomicMode::ZeroForeignCapability
+                    | Slice3AtomicMode::ZeroForeignInvocation
+                    | Slice3AtomicMode::ZeroTerminalAnchorSubstitution
+                    | Slice3AtomicMode::ZeroIncompleteObjects
+                    | Slice3AtomicMode::ZeroStaleObjectVersion
+                    | Slice3AtomicMode::ZeroIncompleteInventory
+                    | Slice3AtomicMode::ZeroTaskCommitPresent
+                    | Slice3AtomicMode::ZeroReleased
+                    | Slice3AtomicMode::ZeroReleaseUnknown
+                    | Slice3AtomicMode::ZeroForeignLockSet
+                    | Slice3AtomicMode::ZeroForeignReceipt
+                    | Slice3AtomicMode::ZeroLockForeignInvocation
+            ) {
+                zero_effect_observation(
+                    &request,
+                    self.atomic_mode,
+                    self.base.pre_command_target_states.clone(),
+                )?
+            } else {
+                committed_observation(&request, self.atomic_mode)?
+            };
+            let payload = Box::new(Slice3AtomicPayload {
+                lineage_witness,
+                binding,
+                observation,
+                counters: Rc::clone(&self.counters),
+            });
+            let mut completion = request.complete(payload);
+            if matches!(self.atomic_mode, Slice3AtomicMode::CompletionMismatch) {
+                completion.completion = CommitAtomicCommitInvocationCapability::mint().completion();
+            }
+            Ok(completion)
+        }
+    }
+
+    impl CommitImmediateRecheckLease for Slice3ImmediateLease {
+        fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness {
+            self.base.commit_safety_lineage_witness()
+        }
+
+        fn binds(&self, request: &CommitImmediateRecheckRequest<'_>) -> bool {
+            self.base.binds(request)
+        }
+
+        fn history_partition(&self) -> &ValidatedRepositoryHistoryPartition {
+            self.base.history_partition()
+        }
+
+        fn recomputed_reference_closure_digest(&self) -> &Sha256Digest {
+            self.base.recomputed_reference_closure_digest()
+        }
+
+        fn observed_original_fingerprint(&self) -> &Sha256Digest {
+            self.base.observed_original_fingerprint()
+        }
+
+        fn observed_repository_anchor(&self) -> &RepositoryAnchor {
+            self.base.observed_repository_anchor()
+        }
+
+        fn consumed_state_revision(&self) -> &Sha256Digest {
+            self.base.consumed_state_revision()
+        }
+
+        fn consumed_state_observation_capability_id(&self) -> &CapabilityRowId {
+            self.base.consumed_state_observation_capability_id()
+        }
+
+        fn original_fingerprint_capability_id(&self) -> &CapabilityRowId {
+            self.base.original_fingerprint_capability_id()
+        }
+
+        fn root_reread_capability_id(&self) -> &CapabilityRowId {
+            self.base.root_reread_capability_id()
+        }
+
+        fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+            self.base.atomic_commit_safety_capability_id()
+        }
+
+        fn pre_command_target_states(&self) -> &RepositoryTargetStates {
+            self.base.pre_command_target_states()
+        }
+
+        fn pre_command_target_snapshot_observation_capability_id(&self) -> &CapabilityRowId {
+            self.base
+                .pre_command_target_snapshot_observation_capability_id()
+        }
+
+        fn commit_exact_once(
+            self: Box<Self>,
+            request: CommitAtomicCommitRequest<'_>,
+        ) -> Result<CommitAtomicCommitCompletion, RepositoryResultContractError> {
+            self.run_atomic(request)
+        }
+    }
+
+    struct Slice3ImmediatePort {
+        partition: Option<ValidatedRepositoryHistoryPartition>,
+        atomic_mode: Slice3AtomicMode,
+        counters: Rc<Slice3Counters>,
+    }
+
+    impl CommitImmediateRecheckPort for Slice3ImmediatePort {
+        fn recheck_before_commit_intent(
+            &mut self,
+            request: CommitImmediateRecheckRequest<'_>,
+        ) -> Result<CommitImmediateRecheckCompletion, RepositoryResultContractError> {
+            let base = immediate_recheck_lease(
+                &request,
+                self.partition.take().unwrap(),
+                &ImmediateObservationOverrides::default(),
+                Rc::new(ImmediateLeaseCounters::default()),
+            )?;
+            Ok(request.complete(Box::new(Slice3ImmediateLease {
+                base,
+                atomic_mode: self.atomic_mode,
+                counters: Rc::clone(&self.counters),
+            })))
+        }
+    }
+
+    fn task_scope(instance_id: &str) -> OperationScope {
+        OperationScope::Task {
+            project_id: ProjectId::parse("b2100000-0000-4000-8000-000000000001").unwrap(),
+            task_id: TaskId::parse("PR-137").unwrap(),
+            instance_id: id(instance_id),
+        }
+    }
+
+    fn ready_scope(
+        atomic_mode: Slice3AtomicMode,
+        counters: Rc<Slice3Counters>,
+    ) -> CommitScopedAtomicSafetyAuthority {
+        let (approved, initial_partition, _) = approved_preview_with_history(
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-initial",
+        );
+        let current = history_partition(
+            initial_partition.start_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-immediate",
+        );
+        let mut port = Slice3ImmediatePort {
+            partition: Some(current),
+            atomic_mode,
+            counters,
+        };
+        match approved.recheck_before_commit_intent(&mut port) {
+            CommitImmediateRecheckOutcome::Ready(scope) => scope,
+            _ => panic!("slice3 fixture must reach Ready"),
+        }
+    }
+
+    fn ready_scope_with_lock_identity(
+        atomic_mode: Slice3AtomicMode,
+        counters: Rc<Slice3Counters>,
+        lock_set_id: UnicaId,
+        observed_at: NormalizedUtcInstant,
+    ) -> CommitScopedAtomicSafetyAuthority {
+        let (approved, initial_partition) =
+            approved_preview_with_lock_identity(lock_set_id, observed_at);
+        let current = history_partition(
+            initial_partition.start_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.slice3-foreign-lock-immediate",
+        );
+        let mut port = Slice3ImmediatePort {
+            partition: Some(current),
+            atomic_mode,
+            counters,
+        };
+        match approved.recheck_before_commit_intent(&mut port) {
+            CommitImmediateRecheckOutcome::Ready(scope) => scope,
+            _ => panic!("foreign lock fixture must reach Ready"),
+        }
+    }
+
+    fn postcommit_partition(
+        start: RepositoryHistoryCursor,
+        classifications: &[RepositoryHistoryPartitionClassification],
+    ) -> ValidatedRepositoryHistoryPartition {
+        repository_history_partition_fixture_test_only(
+            start,
+            classifications
+                .iter()
+                .enumerate()
+                .map(|(index, classification)| {
+                    (
+                        RepositoryVersion::parse(&(201 + index).to_string()).unwrap(),
+                        *classification,
+                    )
+                })
+                .collect(),
+            "repository.history-order.slice3-postcommit",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+        )
+        .unwrap()
+    }
+
+    #[derive(Clone)]
+    struct Slice3HistoryIndex {
+        candidates: BTreeMap<String, EvidenceSourceIndexCandidate>,
+    }
+
+    impl EvidenceSourceIndex for Slice3HistoryIndex {
+        fn candidate_for(
+            &self,
+            repository_version: &RepositoryVersion,
+            _registry: &EvidenceSourceRegistry,
+        ) -> Result<EvidenceSourceIndexCandidate, RepositoryContractError> {
+            Ok(self
+                .candidates
+                .get(repository_version.as_str())
+                .cloned()
+                .expect("Slice3 resolver must request a known source-index row"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct Slice3HistoryOrder {
+        evidence: RepositoryHistoryOrderEvidence,
+    }
+
+    impl RepositoryHistoryOrderResolver for Slice3HistoryOrder {
+        fn order_evidence(
+            &self,
+            _from_exclusive: &RepositoryHistoryCursor,
+            _through_inclusive: &RepositoryHistoryCursor,
+        ) -> Result<RepositoryHistoryOrderEvidence, RepositoryContractError> {
+            Ok(self.evidence.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct Slice3HistoryBytes {
+        bytes: BTreeMap<(EvidenceKind, String), Vec<u8>>,
+    }
+
+    impl RepositoryHistoryEvidenceBytesResolver for Slice3HistoryBytes {
+        fn load_canonical_evidence_bytes(
+            &self,
+            reference: &RepositoryHistorySourceEvidenceRef,
+        ) -> Result<Vec<u8>, RepositoryContractError> {
+            Ok(self
+                .bytes
+                .get(&(
+                    reference.evidence_kind(),
+                    reference.evidence_digest().as_str().to_owned(),
+                ))
+                .cloned()
+                .expect("Slice3 resolver must request known evidence bytes"))
+        }
+    }
+
+    fn slice3_json_digest(value: &Value) -> Sha256Digest {
+        Sha256Digest::parse(&format!(
+            "{:x}",
+            Sha256::digest(serde_json_canonicalizer::to_vec(value).unwrap())
+        ))
+        .unwrap()
+    }
+
+    fn slice3_entry_cursor(
+        index: usize,
+        repository_version: RepositoryVersion,
+    ) -> RepositoryHistoryCursor {
+        let cursor_character = char::from_digit(((index + 1) % 15 + 1) as u32, 16).unwrap();
+        RepositoryHistoryCursor::new(repository_version, digest(cursor_character))
+    }
+
+    fn resolve_slice3_task_commit_history(
+        request: &CommitAtomicCommitRequest<'_>,
+        core: &CommitCommittedCoreObservation,
+        mode: Slice3AtomicMode,
+        task_version_anchor: RepositoryAnchor,
+        terminal_repository_anchor: RepositoryAnchor,
+    ) -> Result<CommitCommittedHistoryObservation, RepositoryResultContractError> {
+        let classifications = match mode {
+            Slice3AtomicMode::MissingTaskCommit => {
+                vec![RepositoryHistoryPartitionClassification::UnrelatedRoutine]
+            }
+            Slice3AtomicMode::DuplicateTaskCommit => vec![
+                RepositoryHistoryPartitionClassification::TaskCommit,
+                RepositoryHistoryPartitionClassification::TaskCommit,
+            ],
+            _ => vec![
+                RepositoryHistoryPartitionClassification::TaskCommit,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            ],
+        };
+        let from_exclusive = if matches!(mode, Slice3AtomicMode::GappedHistory) {
+            RepositoryHistoryCursor::new(RepositoryVersion::parse("199").unwrap(), digest('f'))
+        } else {
+            request.before_repository_cursor().clone()
+        };
+        let registry = EvidenceSourceRegistry::task9()
+            .map_err(|_| RepositoryResultContractError("Slice3 registry failed"))?;
+        let mut entries = Vec::with_capacity(classifications.len());
+        let mut ordered_cursors = Vec::with_capacity(classifications.len());
+        let mut candidates = BTreeMap::new();
+        let mut evidence_bytes = BTreeMap::new();
+        for (index, classification) in classifications.into_iter().enumerate() {
+            let repository_version = RepositoryVersion::parse(&(201 + index).to_string()).unwrap();
+            ordered_cursors.push(slice3_entry_cursor(index, repository_version.clone()));
+            match classification {
+                RepositoryHistoryPartitionClassification::TaskCommit => entries.push(json!({
+                    "repositoryVersion": repository_version,
+                    "classification": "taskCommit",
+                    "semanticDeltaDigest": if matches!(mode, Slice3AtomicMode::SemanticDigestSubstitution) {
+                        digest('f')
+                    } else {
+                        core.committed_objects_digest.clone()
+                    },
+                })),
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine => {
+                    let routine = RoutineRepositoryVersionClassificationEvidence::new(
+                        repository_version.as_str(),
+                        "unrelated",
+                        None,
+                        digest('a').as_str(),
+                        digest('b').as_str(),
+                    )
+                    .map_err(|_| RepositoryResultContractError("Slice3 routine evidence failed"))?;
+                    let routine_value = serde_json::to_value(&routine)
+                        .map_err(|_| RepositoryResultContractError("Slice3 routine encode failed"))?;
+                    let evidence_digest = routine_value["classificationDigest"]
+                        .as_str()
+                        .ok_or(RepositoryResultContractError("Slice3 routine digest missing"))?;
+                    let source_ref = RepositoryHistorySourceEvidenceRef::new(
+                        EvidenceKind::RoutineClassification,
+                        evidence_digest,
+                    )
+                    .map_err(|_| RepositoryResultContractError("Slice3 source ref failed"))?;
+                    let semantic_record = json!({
+                        "repositoryVersion": repository_version,
+                        "partitionClassification": "unrelatedRoutine",
+                        "rootDeltaDigest": digest('a'),
+                        "contentDeltaDigest": digest('b'),
+                        "classificationDigest": evidence_digest,
+                        "externalSupportDisjointnessDigest": null,
+                        "correctiveInstructionDigest": null,
+                        "nonConflictingConcurrentEvidenceDigest": null,
+                    });
+                    entries.push(json!({
+                        "repositoryVersion": repository_version,
+                        "classification": "unrelatedRoutine",
+                        "semanticDeltaDigest": slice3_json_digest(&semantic_record),
+                        "sourceEvidenceRef": source_ref,
+                    }));
+                    candidates.insert(
+                        repository_version.as_str().to_owned(),
+                        EvidenceSourceIndexCandidate::from_capability_adapter(
+                            repository_version.as_str(),
+                            registry.registry_digest().as_str(),
+                            "b3300000-0000-4000-8000-000000000061",
+                            vec![
+                                EvidenceSourceIndexCandidateRow::available(
+                                    EvidenceKind::RoutineClassification,
+                                    vec![source_ref.clone()],
+                                ),
+                                EvidenceSourceIndexCandidateRow::absent(
+                                    EvidenceKind::SupportPrerequisiteObservation,
+                                ),
+                                EvidenceSourceIndexCandidateRow::absent(
+                                    EvidenceKind::NonConflictingConcurrent,
+                                ),
+                            ],
+                        )
+                        .map_err(|_| RepositoryResultContractError("Slice3 index row failed"))?,
+                    );
+                    evidence_bytes.insert(
+                        (
+                            EvidenceKind::RoutineClassification,
+                            evidence_digest.to_owned(),
+                        ),
+                        serde_json_canonicalizer::to_vec(&routine)
+                            .map_err(|_| RepositoryResultContractError("Slice3 evidence bytes failed"))?,
+                    );
+                }
+                _ => unreachable!("Slice3 committed fixture uses only task and routine entries"),
+            }
+        }
+        let through_inclusive = ordered_cursors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| from_exclusive.clone());
+        let digest_record = json!({
+            "fromExclusive": from_exclusive,
+            "throughInclusive": through_inclusive,
+            "entries": entries,
+        });
+        let mut raw_value = digest_record.as_object().unwrap().clone();
+        raw_value.insert(
+            "partitionDigest".into(),
+            serde_json::to_value(slice3_json_digest(&digest_record)).unwrap(),
+        );
+        let raw_partition: UnvalidatedRepositoryHistoryPartition =
+            serde_json::from_value(Value::Object(raw_value))
+                .map_err(|_| RepositoryResultContractError("Slice3 raw partition failed"))?;
+        let order = Slice3HistoryOrder {
+            evidence: RepositoryHistoryOrderEvidence::from_capability_adapter(
+                "repository.history-order.slice3-real-resolver",
+                from_exclusive,
+                through_inclusive,
+                ordered_cursors,
+            )
+            .map_err(|_| RepositoryResultContractError("Slice3 order evidence failed"))?,
+        };
+        let index = Slice3HistoryIndex { candidates };
+        let bytes = Slice3HistoryBytes {
+            bytes: evidence_bytes,
+        };
+        let resolver = RepositoryHistoryPartitionResolver::new(&registry, &index, &order, &bytes);
+        request.resolve_task_commit_history(
+            core,
+            raw_partition,
+            &resolver,
+            task_version_anchor,
+            terminal_repository_anchor,
+        )
+    }
+
+    fn matching_committed_objects(
+        request: &CommitAtomicCommitRequest<'_>,
+        version: &RepositoryVersion,
+    ) -> CommittedRepositoryObjects {
+        CommittedRepositoryObjects::new(
+            request
+                .exact_objects()
+                .as_slice()
+                .iter()
+                .map(|object| match object {
+                    CommitExactObject::RootModify(_) => {
+                        CommittedRepositoryObject::root_modify(version.clone(), digest('8'))
+                    }
+                    CommitExactObject::ObjectAdd(value) => {
+                        CommittedRepositoryObject::object_present(
+                            value.target.object_id().clone(),
+                            PresentObjectAction::Add,
+                            version.clone(),
+                            digest('8'),
+                        )
+                    }
+                    CommitExactObject::ObjectModify(value) => {
+                        CommittedRepositoryObject::object_present(
+                            value.target.object_id().clone(),
+                            PresentObjectAction::Modify,
+                            version.clone(),
+                            digest('8'),
+                        )
+                    }
+                    CommitExactObject::ObjectDelete(value) => {
+                        CommittedRepositoryObject::object_absent(
+                            value.target.object_id().clone(),
+                            version.clone(),
+                        )
+                    }
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn matching_released_lock_authority(
+        request: &CommitAtomicCommitRequest<'_>,
+    ) -> Result<CommitPostCommandLockAuthority, RepositoryResultContractError> {
+        request.observe_locks_released(
+            CommitReleasedLocksObservationInput::from_repository_adapter(
+                request.lock_set_id().clone(),
+                request.journaled_lock_receipts().to_vec(),
+                CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                request.atomic_commit_safety_capability_id().clone(),
+            ),
+        )
+    }
+
+    fn committed_observation(
+        request: &CommitAtomicCommitRequest<'_>,
+        mode: Slice3AtomicMode,
+    ) -> Result<CommitAtomicCommitObservation, RepositoryResultContractError> {
+        let task_version = RepositoryVersion::parse("201").unwrap();
+        let repository_version = if matches!(mode, Slice3AtomicMode::VersionSubstitution) {
+            RepositoryVersion::parse("999").unwrap()
+        } else {
+            task_version.clone()
+        };
+        let committed_objects = if matches!(mode, Slice3AtomicMode::ObjectSubstitution) {
+            CommittedRepositoryObjects::new(vec![CommittedRepositoryObject::object_present(
+                MetadataObjectId::parse("b3300000-0000-4000-8000-000000000088").unwrap(),
+                PresentObjectAction::Modify,
+                task_version.clone(),
+                digest('8'),
+            )])
+            .unwrap()
+        } else {
+            matching_committed_objects(request, &task_version)
+        };
+        let committed_objects_digest = if matches!(mode, Slice3AtomicMode::DigestSubstitution) {
+            digest('f')
+        } else {
+            request.committed_objects_digest(&committed_objects)?
+        };
+        let retained_anchor = request.post_merge_repository_anchor();
+        let task_cursor = RepositoryHistoryCursor::new(task_version.clone(), digest('2'));
+        let task_repository_identity = if matches!(mode, Slice3AtomicMode::IdentitySubstitution) {
+            digest('f')
+        } else {
+            retained_anchor.repository_identity().clone()
+        };
+        let task_version_anchor = request.observe_repository_anchor(
+            task_cursor,
+            task_repository_identity,
+            retained_anchor.configuration_identity().clone(),
+            digest('8'),
+        )?;
+        let terminal_entry_index = if matches!(mode, Slice3AtomicMode::MissingTaskCommit) {
+            0
+        } else {
+            1
+        };
+        let terminal_version =
+            RepositoryVersion::parse(&(201 + terminal_entry_index).to_string()).unwrap();
+        let terminal_cursor = if matches!(mode, Slice3AtomicMode::EndpointSubstitution) {
+            RepositoryHistoryCursor::new(RepositoryVersion::parse("999").unwrap(), digest('e'))
+        } else {
+            slice3_entry_cursor(terminal_entry_index, terminal_version)
+        };
+        let terminal_anchor = request.observe_repository_anchor(
+            terminal_cursor,
+            retained_anchor.repository_identity().clone(),
+            retained_anchor.configuration_identity().clone(),
+            digest('9'),
+        )?;
+        let release = if matches!(mode, Slice3AtomicMode::UnlockUnknown) {
+            CommitLockReleaseObservation::Unknown
+        } else {
+            let lock_set_id = if matches!(mode, Slice3AtomicMode::ReleaseForeignLockSet) {
+                id("b3300000-0000-4000-8000-000000000099")
+            } else {
+                request.lock_set_id().clone()
+            };
+            let mut released_receipts = request.journaled_lock_receipts().to_vec();
+            if matches!(mode, Slice3AtomicMode::ReleaseForeignReceipt) {
+                released_receipts[0].observed_at =
+                    NormalizedUtcInstant::parse("2026-07-23T23:59:59Z").unwrap();
+            }
+            let mut authority = request.observe_locks_released(
+                CommitReleasedLocksObservationInput::from_repository_adapter(
+                    lock_set_id,
+                    released_receipts,
+                    CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                    request.atomic_commit_safety_capability_id().clone(),
+                ),
+            )?;
+            if matches!(mode, Slice3AtomicMode::ReleaseForeignInvocation) {
+                request.replace_lock_witness_with_foreign_invocation_test_only(&mut authority);
+            }
+            CommitLockReleaseObservation::Verified(Box::new(authority))
+        };
+        let atomic_capability = if matches!(mode, Slice3AtomicMode::CapabilitySubstitution) {
+            CapabilityRowId::parse("repository.atomic-commit.foreign").unwrap()
+        } else {
+            request.atomic_commit_safety_capability_id().clone()
+        };
+        let core = request.observe_committed_core(
+            CommitCommittedCoreObservationInput::from_atomic_adapter(
+                if matches!(mode, Slice3AtomicMode::ReceiptSubstitution) {
+                    id("b3300000-0000-4000-8000-000000000099")
+                } else {
+                    request.preallocated_commit_receipt_id().clone()
+                },
+                repository_version,
+                committed_objects,
+                committed_objects_digest,
+                atomic_capability,
+            ),
+        )?;
+        let history = resolve_slice3_task_commit_history(
+            request,
+            &core,
+            mode,
+            task_version_anchor,
+            terminal_anchor,
+        )?;
+        let history = if matches!(mode, Slice3AtomicMode::EqualScalarForeignPartition) {
+            let CommitCommittedHistoryObservation {
+                post_commit_history_partition,
+                task_version_anchor,
+                terminal_repository_anchor,
+            } = history;
+            let foreign_equal_scalar_core = request.observe_committed_core_unchecked_test_only(
+                CommitCommittedCoreObservationInput::from_atomic_adapter(
+                    core.commit_receipt_id.clone(),
+                    core.repository_version.clone(),
+                    core.committed_objects.clone(),
+                    core.committed_objects_digest.clone(),
+                    core.atomic_commit_safety_capability_id.clone(),
+                ),
+                true,
+            );
+            let forged_partition = task_commit_history_partition_fixture_test_only(
+                post_commit_history_partition.into_partition(),
+                &foreign_equal_scalar_core,
+                core.committed_objects_digest.clone(),
+            )
+            .map_err(|_| RepositoryResultContractError("taskCommit fixture failed"))?;
+            CommitCommittedHistoryObservation::new(
+                forged_partition,
+                task_version_anchor,
+                terminal_repository_anchor,
+            )
+        } else {
+            history
+        };
+        Ok(request.observe_committed(
+            CommitCommittedObservationInput::from_validated_atomic_observation(
+                core, history, release,
+            ),
+        ))
+    }
+
+    fn zero_effect_observation(
+        request: &CommitAtomicCommitRequest<'_>,
+        mode: Slice3AtomicMode,
+        mut terminal_target_states: RepositoryTargetStates,
+    ) -> Result<CommitAtomicCommitObservation, RepositoryResultContractError> {
+        let classes = if matches!(mode, Slice3AtomicMode::ZeroTaskCommitPresent) {
+            vec![RepositoryHistoryPartitionClassification::TaskCommit]
+        } else {
+            vec![RepositoryHistoryPartitionClassification::UnrelatedRoutine]
+        };
+        let partition = postcommit_partition(request.before_repository_cursor().clone(), &classes);
+        let retained_anchor = request.post_merge_repository_anchor();
+        let terminal_cursor = if matches!(mode, Slice3AtomicMode::ZeroTerminalAnchorSubstitution) {
+            RepositoryHistoryCursor::new(RepositoryVersion::parse("999").unwrap(), digest('f'))
+        } else {
+            partition.through_inclusive().clone()
+        };
+        let terminal_anchor = request.observe_repository_anchor(
+            terminal_cursor,
+            retained_anchor.repository_identity().clone(),
+            retained_anchor.configuration_identity().clone(),
+            retained_anchor.configuration_fingerprint().clone(),
+        )?;
+        if matches!(mode, Slice3AtomicMode::ZeroIncompleteObjects) {
+            terminal_target_states = serde_json::from_value(json!([])).unwrap();
+        } else if matches!(mode, Slice3AtomicMode::ZeroStaleObjectVersion) {
+            let mut value = serde_json::to_value(&terminal_target_states).unwrap();
+            let first = value.as_array_mut().unwrap().first_mut().unwrap();
+            if first.get("repositoryVersion").is_some() {
+                first["repositoryVersion"] = json!("999");
+            } else {
+                first["absenceEstablishedAtVersion"] = json!("999");
+            }
+            terminal_target_states = serde_json::from_value(value).unwrap();
+        }
+        let mut terminal_target_snapshot = request.observe_terminal_target_snapshot(
+            terminal_anchor,
+            terminal_target_states,
+            CapabilityRowId::parse("repository.commit-target-snapshot.terminal").unwrap(),
+            if matches!(mode, Slice3AtomicMode::ZeroForeignCapability) {
+                CapabilityRowId::parse("repository.atomic-commit.foreign").unwrap()
+            } else {
+                request.atomic_commit_safety_capability_id().clone()
+            },
+        )?;
+        let lock_state = match mode {
+            Slice3AtomicMode::ZeroReleased
+            | Slice3AtomicMode::ZeroForeignLockSet
+            | Slice3AtomicMode::ZeroForeignReceipt
+            | Slice3AtomicMode::ZeroLockForeignInvocation => {
+                let lock_set_id = if matches!(mode, Slice3AtomicMode::ZeroForeignLockSet) {
+                    id("b3300000-0000-4000-8000-000000000099")
+                } else {
+                    request.lock_set_id().clone()
+                };
+                let mut released_receipts = request.journaled_lock_receipts().to_vec();
+                if matches!(mode, Slice3AtomicMode::ZeroForeignReceipt) {
+                    released_receipts[0].observed_at =
+                        NormalizedUtcInstant::parse("2026-07-23T23:59:58Z").unwrap();
+                }
+                let mut authority = request.observe_locks_released(
+                    CommitReleasedLocksObservationInput::from_repository_adapter(
+                        lock_set_id,
+                        released_receipts,
+                        CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                        request.atomic_commit_safety_capability_id().clone(),
+                    ),
+                )?;
+                if matches!(mode, Slice3AtomicMode::ZeroLockForeignInvocation) {
+                    request.replace_lock_witness_with_foreign_invocation_test_only(&mut authority);
+                }
+                CommitZeroEffectLockState::VerifiedReleased(authority)
+            }
+            Slice3AtomicMode::ZeroReleaseUnknown => CommitZeroEffectLockState::Unknown,
+            Slice3AtomicMode::ZeroIncompleteInventory => {
+                CommitZeroEffectLockState::Held(request.observe_locks_held(
+                    CommitHeldLocksObservationInput::from_repository_adapter(
+                        request.lock_set_id().clone(),
+                        request.journaled_lock_receipts().to_vec(),
+                        CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                    ),
+                )?)
+            }
+            _ => CommitZeroEffectLockState::Held(request.observe_locks_held(
+                CommitHeldLocksObservationInput::from_repository_adapter(
+                    request.lock_set_id().clone(),
+                    request.journaled_lock_receipts().to_vec(),
+                    request.full_lock_inventory()?,
+                ),
+            )?),
+        };
+        let mut certificate = request.observe_zero_effect_certificate(
+            &terminal_target_snapshot,
+            &partition,
+            &lock_state,
+            id("b3300000-0000-4000-8000-000000000042"),
+            request.atomic_commit_safety_capability_id().clone(),
+        )?;
+        if matches!(mode, Slice3AtomicMode::ZeroBadCertificate) {
+            certificate.certificate_digest = digest('f');
+        }
+        if matches!(mode, Slice3AtomicMode::ZeroForeignInvocation) {
+            request.replace_zero_snapshot_witness_with_foreign_invocation_test_only(
+                &mut terminal_target_snapshot,
+            );
+        }
+        Ok(request.observe_proven_zero_effect(
+            CommitProvenZeroEffectObservationInput::from_validated_atomic_observation(
+                certificate,
+                partition,
+                terminal_target_snapshot,
+                lock_state,
+            ),
+        ))
+    }
+
+    fn run_slice3_with_registration(
+        registration_mode: Slice3RegistrationMode,
+        operation_scope: OperationScope,
+        intent_mode: Slice3IntentMode,
+        atomic_mode: Slice3AtomicMode,
+    ) -> (CommitEffectIntentOutcome, Rc<Slice3Counters>) {
+        let counters = Rc::new(Slice3Counters::default());
+        let scope = ready_scope(atomic_mode, Rc::clone(&counters));
+        let outcome = scope.commit_exact_once(
+            operation_scope,
+            id("b3300000-0000-4000-8000-000000000041"),
+            &mut Slice3RegisteredOperationPort {
+                mode: registration_mode,
+                counters: Rc::clone(&counters),
+            },
+            &mut Slice3IntentPort {
+                mode: intent_mode,
+                counters: Rc::clone(&counters),
+            },
+        );
+        (outcome, counters)
+    }
+
+    fn run_slice3(
+        intent_mode: Slice3IntentMode,
+        atomic_mode: Slice3AtomicMode,
+    ) -> (CommitEffectIntentOutcome, Rc<Slice3Counters>) {
+        run_slice3_with_registration(
+            Slice3RegistrationMode::Exact,
+            task_scope("b3300000-0000-4000-8000-000000000002"),
+            intent_mode,
+            atomic_mode,
+        )
+    }
+
+    fn execute_ready_slice3_scope(
+        scope: CommitScopedAtomicSafetyAuthority,
+        counters: Rc<Slice3Counters>,
+        commit_receipt_id: UnicaId,
+    ) -> CommitEffectIntentOutcome {
+        scope.commit_exact_once(
+            task_scope("b3300000-0000-4000-8000-000000000002"),
+            commit_receipt_id,
+            &mut Slice3RegisteredOperationPort {
+                mode: Slice3RegistrationMode::Exact,
+                counters: Rc::clone(&counters),
+            },
+            &mut Slice3IntentPort {
+                mode: Slice3IntentMode::Written,
+                counters,
+            },
+        )
+    }
+
+    fn run_genuine_foreign_lock_splice(zero_effect: bool) -> CommitEffectIntentOutcome {
+        let counters = Rc::new(Slice3Counters::default());
+        let capture_mode = if zero_effect {
+            Slice3AtomicMode::CaptureZeroObservation
+        } else {
+            Slice3AtomicMode::CaptureLockAuthority
+        };
+        let foreign = ready_scope_with_lock_identity(
+            capture_mode,
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000090"),
+            NormalizedUtcInstant::parse("2026-07-23T02:00:00Z").unwrap(),
+        );
+        let captured = execute_ready_slice3_scope(
+            foreign,
+            Rc::clone(&counters),
+            id("b3300000-0000-4000-8000-000000000045"),
+        );
+        assert!(matches!(
+            captured,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        let splice_mode = if zero_effect {
+            Slice3AtomicMode::SpliceZeroObservation
+        } else {
+            Slice3AtomicMode::SpliceLockAuthority
+        };
+        let target = ready_scope(splice_mode, Rc::clone(&counters));
+        execute_ready_slice3_scope(target, counters, id("b3300000-0000-4000-8000-000000000041"))
+    }
+
+    #[test]
+    fn gate_b3_commit_effect_intent_fsync_precedes_command_and_binds_registered_apply() {
+        let (outcome, counters) =
+            run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::Committed);
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(_))
+        ));
+        assert_eq!(counters.intent_calls.get(), 1);
+        assert_eq!(counters.intent_witnesses.get(), 1);
+        assert_eq!(counters.intent_binds.get(), 1);
+        assert_eq!(counters.intent_getters.get(), 1);
+        assert_eq!(counters.command_calls.get(), 1);
+        let bytes = &counters.observed_intent_record_bytes.borrow()[0];
+        let persisted: Value = crate::domain::i_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            persisted,
+            counters.observed_intent_typed_records.borrow()[0]
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            counters.observed_intent_record_digests.borrow()[0].as_str()
+        );
+        assert_eq!(
+            persisted["digestKind"],
+            json!("unica.repository.commit.effect-intent.v1")
+        );
+        assert_eq!(
+            persisted["preallocatedCommitReceiptId"],
+            json!("b3300000-0000-4000-8000-000000000041")
+        );
+        assert_eq!(persisted["operationScope"]["scopeKind"], json!("task"));
+        assert_eq!(
+            persisted["preCommandTargetSnapshot"]["targetStates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            persisted["preCommandTargetSnapshot"]["repositoryAnchor"]["historyCursor"],
+            persisted["beforeRepositoryCursor"]
+        );
+        assert_eq!(
+            slice3_json_digest(&persisted["preCommandTargetSnapshot"]),
+            serde_json::from_value(persisted["preCommandTargetSnapshotDigest"].clone()).unwrap()
+        );
+        assert_eq!(
+            counters.observed_command_comments.borrow().as_slice(),
+            &[Comment::parse("PR-137: Consumed gate B2").unwrap()]
+        );
+        assert_eq!(
+            counters.observed_command_targets.borrow()[0].as_slice(),
+            ["root:modify"]
+        );
+        assert_eq!(
+            counters.observed_command_receipt_ids.borrow()[0],
+            id("b3300000-0000-4000-8000-000000000041")
+        );
+        assert_eq!(
+            counters.observed_command_before_cursors.borrow()[0],
+            serde_json::from_value(persisted["beforeRepositoryCursor"].clone()).unwrap()
+        );
+        assert_eq!(counters.observed_command_release_objects.borrow().len(), 1);
+        assert_eq!(counters.observed_command_release_guards.borrow().len(), 1);
+
+        let object_add = MetadataObjectId::parse("b3300000-0000-4000-8000-000000000071").unwrap();
+        let object_modify =
+            MetadataObjectId::parse("b3300000-0000-4000-8000-000000000072").unwrap();
+        let object_delete =
+            MetadataObjectId::parse("b3300000-0000-4000-8000-000000000073").unwrap();
+        let all_action_objects = CommitExactObjects::new(vec![
+            CommitExactObject::RootModify(RootModifyExactObject {
+                target: RootTargetIdentity::new(),
+                action: ModifyAction::Value,
+            }),
+            CommitExactObject::ObjectAdd(ObjectAddExactObject {
+                target: ObjectTargetIdentity::new(object_add.clone()),
+                action: AddAction::Value,
+            }),
+            CommitExactObject::ObjectModify(ObjectModifyExactObject {
+                target: ObjectTargetIdentity::new(object_modify.clone()),
+                action: ModifyAction::Value,
+            }),
+            CommitExactObject::ObjectDelete(ObjectDeleteExactObject {
+                target: ObjectTargetIdentity::new(object_delete.clone()),
+                action: DeleteAction::Value,
+            }),
+        ])
+        .unwrap();
+        assert_eq!(
+            all_action_objects
+                .iter()
+                .map(|target| match target {
+                    CommitExactObjectRef::RootModify => "root:modify".to_owned(),
+                    CommitExactObjectRef::ObjectAdd { object_id } => {
+                        format!("{}:add", object_id.as_str())
+                    }
+                    CommitExactObjectRef::ObjectModify { object_id } => {
+                        format!("{}:modify", object_id.as_str())
+                    }
+                    CommitExactObjectRef::ObjectDelete { object_id } => {
+                        format!("{}:delete", object_id.as_str())
+                    }
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                "root:modify".to_owned(),
+                format!("{}:add", object_add.as_str()),
+                format!("{}:modify", object_modify.as_str()),
+                format!("{}:delete", object_delete.as_str()),
+            ]
+        );
+        assert_eq!(
+            counters.events.borrow().as_slice(),
+            ["intent-call", "intent-fsynced", "command-call"]
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_effect_intent_proven_not_written_retains_ready_and_calls_no_command() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::ProvenNotWritten,
+            Slice3AtomicMode::Committed,
+        );
+        let CommitEffectIntentOutcome::PreIntentBlocked(blocked) = outcome else {
+            panic!("bound proven-not-written must be pre-intent blocked")
+        };
+        let approved_commit_digest = blocked.approved_commit_digest().clone();
+        assert_ne!(&approved_commit_digest, &digest('f'));
+        assert_eq!(counters.intent_getters.get(), 1);
+        assert_eq!(counters.command_calls.get(), 0);
+        let fresh_partition = blocked
+            .scope
+            .immediate_history_guard_evidence
+            .partition()
+            .clone();
+        let fresh_counters = Rc::new(Slice3Counters::default());
+        let refreshed = blocked.recheck_with_fresh_observation(&mut Slice3ImmediatePort {
+            partition: Some(fresh_partition),
+            atomic_mode: Slice3AtomicMode::Committed,
+            counters: fresh_counters,
+        });
+        assert!(refreshed._registered.is_some());
+        assert!(refreshed._record.is_some());
+        assert!(refreshed._certificate.is_some());
+        let CommitImmediateRecheckOutcome::Ready(refreshed_scope) = refreshed.into_recheck() else {
+            panic!("pre-intent rejection must drive a fresh immediate recheck")
+        };
+        assert_eq!(
+            refreshed_scope.approved.0.commit_digest(),
+            &approved_commit_digest
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_effect_intent_error_or_response_loss_is_ambiguous_and_calls_no_command() {
+        for mode in [Slice3IntentMode::Error, Slice3IntentMode::ResponseLoss] {
+            let (outcome, counters) = run_slice3(mode, Slice3AtomicMode::Committed);
+            let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(ambiguous)) =
+                outcome
+            else {
+                panic!("intent error or response loss must be ambiguous")
+            };
+            let approved_commit_digest = ambiguous.approved_commit_digest().clone();
+            let recovery_source = ambiguous.into_recovery_source();
+            assert_eq!(
+                recovery_source.approved_commit_digest(),
+                &approved_commit_digest
+            );
+            assert_ne!(recovery_source.effect_intent_record_digest(), &digest('f'));
+            assert_eq!(counters.intent_calls.get(), 1);
+            assert_eq!(counters.command_calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_effect_intent_rejects_scope_generation_operation_input_and_digest_substitution(
+    ) {
+        for mode in [
+            Slice3IntentMode::BindingScope,
+            Slice3IntentMode::BindingGeneration,
+        ] {
+            let (outcome, counters) = run_slice3(mode, Slice3AtomicMode::Committed);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.command_calls.get(), 0);
+        }
+
+        for mode in [
+            Slice3RegistrationMode::BindingOperation,
+            Slice3RegistrationMode::BindingInput,
+            Slice3RegistrationMode::BindingRecordDigest,
+            Slice3RegistrationMode::BindingLeaseDigest,
+        ] {
+            let (outcome, counters) = run_slice3_with_registration(
+                mode,
+                task_scope("b3300000-0000-4000-8000-000000000002"),
+                Slice3IntentMode::Written,
+                Slice3AtomicMode::Committed,
+            );
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PreIntentBlocked(_)
+            ));
+            assert_eq!(counters.registered_calls.get(), 1);
+            assert_eq!(counters.registered_getters.get(), 0);
+            assert_eq!(counters.intent_calls.get(), 0);
+        }
+
+        let start_scope = OperationScope::StartAttempt {
+            workspace_identity_digest: digest('a'),
+            task_id: TaskId::parse("PR-137").unwrap(),
+        };
+        let foreign_task_scope = OperationScope::Task {
+            project_id: ProjectId::parse("b2100000-0000-4000-8000-000000000001").unwrap(),
+            task_id: TaskId::parse("PR-999").unwrap(),
+            instance_id: id("b3300000-0000-4000-8000-000000000002"),
+        };
+        let foreign_project_scope = OperationScope::Task {
+            project_id: ProjectId::parse("b3300000-0000-4000-8000-000000000099").unwrap(),
+            task_id: TaskId::parse("PR-137").unwrap(),
+            instance_id: id("b3300000-0000-4000-8000-000000000098"),
+        };
+        for operation_scope in [start_scope, foreign_task_scope, foreign_project_scope] {
+            let (outcome, counters) = run_slice3_with_registration(
+                Slice3RegistrationMode::Exact,
+                operation_scope,
+                Slice3IntentMode::Written,
+                Slice3AtomicMode::Committed,
+            );
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PreIntentBlocked(_)
+            ));
+            assert_eq!(counters.registered_calls.get(), 0);
+            assert_eq!(counters.registered_getters.get(), 0);
+            assert_eq!(counters.intent_calls.get(), 0);
+        }
+
+        for mode in [
+            Slice3RegistrationMode::AuthoritativeStartAttempt,
+            Slice3RegistrationMode::AuthoritativeForeignTask,
+            Slice3RegistrationMode::AuthoritativeForeignContainer,
+        ] {
+            let (outcome, counters) = run_slice3_with_registration(
+                mode,
+                task_scope("b3300000-0000-4000-8000-000000000002"),
+                Slice3IntentMode::Written,
+                Slice3AtomicMode::Committed,
+            );
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PreIntentBlocked(_)
+            ));
+            assert_eq!(counters.registered_calls.get(), 1);
+            assert_eq!(counters.registered_getters.get(), 1);
+            assert_eq!(counters.intent_calls.get(), 0);
+        }
+
+        let (first, first_counters) = run_slice3_with_registration(
+            Slice3RegistrationMode::Exact,
+            task_scope("b3300000-0000-4000-8000-000000000002"),
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::Committed,
+        );
+        let (second, second_counters) = run_slice3_with_registration(
+            Slice3RegistrationMode::DifferentLeaseDigest,
+            task_scope("b3300000-0000-4000-8000-000000000002"),
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::Committed,
+        );
+        assert!(matches!(
+            first,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(_))
+        ));
+        assert!(matches!(
+            second,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(_))
+        ));
+        assert_ne!(
+            first_counters.observed_intent_record_digests.borrow()[0],
+            second_counters.observed_intent_record_digests.borrow()[0]
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_effect_intent_rejects_equal_scalar_stale_completion_before_getters() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::StaleCompletion,
+            Slice3AtomicMode::Committed,
+        );
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.intent_witnesses.get(), 0);
+        assert_eq!(counters.intent_binds.get(), 0);
+        assert_eq!(counters.intent_getters.get(), 0);
+        assert_eq!(counters.command_calls.get(), 0);
+    }
+
+    #[test]
+    fn gate_b3_commit_exact_once_uses_same_immediate_lease_once() {
+        let (outcome, counters) =
+            run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::Committed);
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+        assert_eq!(counters.atomic_getters.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_exact_once_rejects_cross_preview_operation_intent_scope_and_invocation() {
+        for mode in [
+            Slice3AtomicMode::WitnessMismatch,
+            Slice3AtomicMode::BindingPreview,
+            Slice3AtomicMode::BindingOperation,
+            Slice3AtomicMode::BindingIntent,
+            Slice3AtomicMode::BindingScope,
+            Slice3AtomicMode::CompletionMismatch,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.atomic_getters.get(), 0);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_exact_once_generic_error_is_ambiguous_not_zero() {
+        let (outcome, counters) =
+            run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::PortError);
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_exact_once_response_loss_never_retries() {
+        let (outcome, counters) =
+            run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::ResponseLoss);
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+        assert_eq!(counters.physical_effects.get(), 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_committed_separates_task_version_anchor_from_terminal_anchor() {
+        let (outcome, _) = run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::Committed);
+        let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(committed)) =
+            outcome
+        else {
+            panic!("exact commit must be committed")
+        };
+        assert_eq!(
+            committed
+                .task_version_anchor()
+                .history_cursor()
+                .through_version()
+                .as_str(),
+            "201"
+        );
+        assert_eq!(
+            committed
+                .terminal_repository_anchor()
+                .history_cursor()
+                .through_version()
+                .as_str(),
+            "202"
+        );
+        assert_ne!(
+            committed.task_version_anchor().history_cursor(),
+            committed.terminal_repository_anchor().history_cursor()
+        );
+        let expected_before = committed.source.before_repository_cursor.clone();
+        let expected_after = committed
+            .terminal_repository_anchor()
+            .history_cursor()
+            .clone();
+        let expected_semantic_digest = committed.observation.core.committed_objects_digest.clone();
+        let expected_anchor = committed.terminal_repository_anchor().clone();
+        let (expected_released_objects, expected_released_guard_locks) =
+            match &committed.observation.release {
+                CommitLockReleaseObservation::Verified(authority) => {
+                    let (released_objects, released_guard_locks) = authority
+                        .released_projection()
+                        .expect("committed fixture must retain released authority");
+                    (released_objects.clone(), released_guard_locks.clone())
+                }
+                CommitLockReleaseObservation::Unknown => {
+                    panic!("committed fixture must retain exact release proof")
+                }
+            };
+        let data = CommitData::from_committed_outcome(committed);
+        assert_eq!(
+            data.commit_receipt_id,
+            id("b3300000-0000-4000-8000-000000000041")
+        );
+        assert_eq!(data.repository_version.as_str(), "201");
+        assert_eq!(data.before_repository_cursor, expected_before);
+        assert_eq!(data.after_repository_cursor, expected_after);
+        assert_eq!(data.released_objects, expected_released_objects);
+        assert_eq!(data.released_guard_locks, expected_released_guard_locks);
+        assert_eq!(data.repository_anchor, expected_anchor);
+        let value = serde_json::to_value(&data).unwrap();
+        assert_eq!(
+            value["postCommitHistoryPartition"]["entries"][0]["classification"],
+            json!("taskCommit")
+        );
+        assert_eq!(
+            value["postCommitHistoryPartition"]["entries"][0]["semanticDeltaDigest"],
+            json!(expected_semantic_digest)
+        );
+        assert_eq!(
+            value["beforeRepositoryCursor"],
+            serde_json::to_value(&data.before_repository_cursor).unwrap()
+        );
+        assert_eq!(
+            value["afterRepositoryCursor"],
+            serde_json::to_value(&data.after_repository_cursor).unwrap()
+        );
+        assert_eq!(
+            value["repositoryAnchor"],
+            serde_json::to_value(&data.repository_anchor).unwrap()
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_committed_rejects_endpoint_object_version_digest_capability_and_identity_substitution(
+    ) {
+        for mode in [
+            Slice3AtomicMode::EndpointSubstitution,
+            Slice3AtomicMode::ObjectSubstitution,
+            Slice3AtomicMode::VersionSubstitution,
+            Slice3AtomicMode::DigestSubstitution,
+            Slice3AtomicMode::CapabilitySubstitution,
+            Slice3AtomicMode::IdentitySubstitution,
+            Slice3AtomicMode::ReceiptSubstitution,
+            Slice3AtomicMode::SemanticDigestSubstitution,
+            Slice3AtomicMode::EqualScalarForeignPartition,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+            assert_eq!(counters.command_calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_committed_rejects_missing_duplicate_or_gapped_task_history() {
+        for mode in [
+            Slice3AtomicMode::MissingTaskCommit,
+            Slice3AtomicMode::DuplicateTaskCommit,
+            Slice3AtomicMode::GappedHistory,
+        ] {
+            let (outcome, _) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_committed_release_or_unlock_unknown_is_ambiguous() {
+        for mode in [
+            Slice3AtomicMode::UnlockUnknown,
+            Slice3AtomicMode::ReleaseForeignLockSet,
+            Slice3AtomicMode::ReleaseForeignReceipt,
+            Slice3AtomicMode::ReleaseForeignInvocation,
+        ] {
+            let (outcome, _) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+        }
+        assert!(matches!(
+            run_genuine_foreign_lock_splice(false),
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn gate_b3_commit_zero_effect_requires_complete_bound_certificate_and_full_lock_inventory() {
+        let (outcome, _) = run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::ZeroEffect);
+        let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::ProvenZeroEffect(zero)) =
+            outcome
+        else {
+            panic!("exact unchanged target snapshot must produce zero evidence")
+        };
+        let CommitProvenZeroEffectDisposition::CleanupRequired(cleanup) = zero.into_disposition()
+        else {
+            panic!("zero evidence with held locks must remain nonterminal cleanup authority")
+        };
+        assert_ne!(cleanup.effect_intent_digest(), &digest('f'));
+        assert_ne!(cleanup.certificate_digest(), &digest('f'));
+        assert!(cleanup.owns_current_lock_evidence());
+        assert_ne!(
+            cleanup.source.before_repository_cursor,
+            *cleanup
+                .observation
+                .terminal_target_snapshot
+                .record
+                .repository_anchor
+                .history_cursor()
+        );
+        let (released, _) = run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::ZeroReleased);
+        let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::ProvenZeroEffect(
+            released,
+        )) = released
+        else {
+            panic!("released zero evidence must remain an owning authority")
+        };
+        let CommitProvenZeroEffectDisposition::VerifiedReleased(released) =
+            released.into_disposition()
+        else {
+            panic!("verified release must not be classified as held cleanup")
+        };
+        assert_ne!(released.effect_intent_digest(), &digest('f'));
+        assert_ne!(released.certificate_digest(), &digest('f'));
+        assert!(released.owns_current_lock_evidence());
+        for mode in [
+            Slice3AtomicMode::ZeroBadCertificate,
+            Slice3AtomicMode::ZeroForeignCapability,
+            Slice3AtomicMode::ZeroForeignInvocation,
+            Slice3AtomicMode::ZeroTerminalAnchorSubstitution,
+            Slice3AtomicMode::ZeroIncompleteObjects,
+            Slice3AtomicMode::ZeroStaleObjectVersion,
+            Slice3AtomicMode::ZeroIncompleteInventory,
+            Slice3AtomicMode::ZeroTaskCommitPresent,
+            Slice3AtomicMode::ZeroReleaseUnknown,
+            Slice3AtomicMode::ZeroForeignLockSet,
+            Slice3AtomicMode::ZeroForeignReceipt,
+            Slice3AtomicMode::ZeroLockForeignInvocation,
+        ] {
+            let (outcome, _) = run_slice3(Slice3IntentMode::Written, mode);
+            assert!(matches!(
+                outcome,
+                CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+            ));
+        }
+        assert!(matches!(
+            run_genuine_foreign_lock_splice(true),
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+
+        let root = CommitExactObject::RootModify(RootModifyExactObject {
+            target: RootTargetIdentity::new(),
+            action: ModifyAction::Value,
+        });
+        let add_id = MetadataObjectId::parse("b3300000-0000-4000-8000-000000000071").unwrap();
+        let modify_id = MetadataObjectId::parse("b3300000-0000-4000-8000-000000000072").unwrap();
+        let delete_id = MetadataObjectId::parse("b3300000-0000-4000-8000-000000000073").unwrap();
+        let exact = CommitExactObjects::new(vec![
+            root,
+            CommitExactObject::ObjectAdd(ObjectAddExactObject {
+                target: ObjectTargetIdentity::new(add_id.clone()),
+                action: AddAction::Value,
+            }),
+            CommitExactObject::ObjectModify(ObjectModifyExactObject {
+                target: ObjectTargetIdentity::new(modify_id.clone()),
+                action: ModifyAction::Value,
+            }),
+            CommitExactObject::ObjectDelete(ObjectDeleteExactObject {
+                target: ObjectTargetIdentity::new(delete_id.clone()),
+                action: DeleteAction::Value,
+            }),
+        ])
+        .unwrap();
+        let baseline =
+            target_states_for_exact_objects(&exact, &RepositoryVersion::parse("177").unwrap());
+        assert!(exact_zero_effect_target_transition(
+            &exact, &baseline, &baseline
+        ));
+
+        let mut mutations = Vec::new();
+        let baseline_value = serde_json::to_value(&baseline).unwrap();
+
+        let mut root_fingerprint = baseline_value.clone();
+        root_fingerprint[0]["targetFingerprint"] = json!(digest('f'));
+        mutations.push(root_fingerprint);
+
+        let mut add_became_present = baseline_value.clone();
+        add_became_present[1] = json!({
+            "targetKind": "developmentObject",
+            "state": "present",
+            "objectId": add_id,
+            "repositoryVersion": "177",
+            "targetFingerprint": digest('a'),
+        });
+        mutations.push(add_became_present);
+
+        let mut modify_fingerprint = baseline_value.clone();
+        modify_fingerprint[2]["targetFingerprint"] = json!(digest('f'));
+        mutations.push(modify_fingerprint);
+
+        let mut delete_became_absent = baseline_value.clone();
+        delete_became_absent[3] = json!({
+            "targetKind": "developmentObject",
+            "state": "absent",
+            "objectId": delete_id,
+            "absenceEstablishedAtVersion": "177",
+            "expectedAbsent": true,
+        });
+        mutations.push(delete_became_absent);
+
+        let mut version_changed = baseline_value.clone();
+        version_changed[2]["repositoryVersion"] = json!("178");
+        mutations.push(version_changed);
+
+        let mut missing = baseline_value.clone();
+        missing.as_array_mut().unwrap().pop();
+        mutations.push(missing);
+
+        let mut extra = baseline_value.clone();
+        extra.as_array_mut().unwrap().push(json!({
+            "targetKind": "developmentObject",
+            "state": "present",
+            "objectId": "b3300000-0000-4000-8000-000000000074",
+            "repositoryVersion": "177",
+            "targetFingerprint": digest('a'),
+        }));
+        mutations.push(extra);
+
+        for mutation in mutations {
+            let terminal: RepositoryTargetStates = serde_json::from_value(mutation).unwrap();
+            assert!(!exact_zero_effect_target_transition(
+                &exact, &baseline, &terminal
+            ));
+        }
+
+        let mut reordered = baseline_value;
+        reordered.as_array_mut().unwrap().swap(1, 2);
+        assert!(serde_json::from_value::<RepositoryTargetStates>(reordered).is_err());
+    }
+
+    #[test]
+    fn gate_b3_commit_atomic_wrong_completion_or_binding_calls_no_getters_and_retains_scope() {
+        for mode in [
+            Slice3AtomicMode::CompletionMismatch,
+            Slice3AtomicMode::BindingOperation,
+        ] {
+            let (outcome, counters) = run_slice3(Slice3IntentMode::Written, mode);
+            let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(ambiguous)) =
+                outcome
+            else {
+                panic!("wrong completion or binding must be ambiguous")
+            };
+            assert_ne!(ambiguous.approved_commit_digest(), &digest('f'));
+            assert_eq!(counters.atomic_getters.get(), 0);
+            if matches!(mode, Slice3AtomicMode::CompletionMismatch) {
+                assert_eq!(counters.atomic_witnesses.get(), 0);
+                assert_eq!(counters.atomic_binds.get(), 0);
+            }
         }
     }
 }

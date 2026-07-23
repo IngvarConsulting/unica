@@ -123,10 +123,9 @@ fn canonical_json_bytes_for<T: Serialize>(value: &T) -> Result<Vec<u8>, Canonica
 /// I-JSON parser preserves and rejects duplicate object members before the JCS
 /// serializer can order members. Only the subsequently canonicalized bytes are
 /// hashed.
-pub(super) fn canonical_contract_digest<T: ContractDigestRecord>(
+pub(super) fn canonical_contract_encoding<T: ContractDigestRecord>(
     value: &T,
-    retained_canonical_encoding: Option<&[u8]>,
-) -> Result<Sha256Digest, CanonicalJsonError> {
+) -> Result<Vec<u8>, CanonicalJsonError> {
     // Running JCS on the original typed serializer first is significant:
     // serde_json's ordinary serializer maps non-finite floats to `null`, while
     // the RFC 8785 serializer rejects them.
@@ -139,10 +138,16 @@ pub(super) fn canonical_contract_digest<T: ContractDigestRecord>(
     if typed_canonical_bytes != strict_canonical_bytes {
         return Err(CanonicalJsonError::TypedRoundTripMismatch);
     }
+    Ok(typed_canonical_bytes)
+}
+
+pub(super) fn canonical_contract_digest<T: ContractDigestRecord>(
+    value: &T,
+    retained_canonical_encoding: Option<&[u8]>,
+) -> Result<Sha256Digest, CanonicalJsonError> {
+    let typed_canonical_bytes = canonical_contract_encoding(value)?;
     if let Some(retained) = retained_canonical_encoding {
-        let retained_value = crate::domain::i_json::from_slice(retained)
-            .map_err(CanonicalJsonError::Canonicalization)?;
-        if retained_value != strict_value || retained != typed_canonical_bytes {
+        if retained != typed_canonical_bytes {
             return Err(CanonicalJsonError::RetainedEncodingMismatch);
         }
     }

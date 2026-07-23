@@ -3,6 +3,8 @@ use super::instructions::{
     decode_historical_support_conflict_instruction, SupportConflictInstruction,
     SupportCorrectiveInstruction,
 };
+use super::results::repository::CommitObjectHistoryBinding;
+#[cfg(test)]
 use super::results::repository::ValidatedCommitObjectAuthority;
 use super::scalars::{
     NormalizedUtcInstant, RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername,
@@ -2701,6 +2703,7 @@ impl<'a> ValidatedRepositoryHistoryEntryRef<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ValidatedTaskCommitHistoryPartition {
     partition: ValidatedRepositoryHistoryPartition,
+    object_history_binding_witness: super::results::repository::CommitObjectHistoryBindingWitness,
     repository_version: RepositoryVersion,
     committed_objects_digest: Sha256Digest,
     atomic_commit_safety_capability_id: CapabilityRowId,
@@ -2711,8 +2714,13 @@ impl ValidatedTaskCommitHistoryPartition {
         &self.partition
     }
 
-    pub(crate) fn binds(&self, commit: &ValidatedCommitObjectAuthority) -> bool {
-        &self.repository_version == commit.repository_version()
+    pub(crate) fn binds<Binding>(&self, commit: &Binding) -> bool
+    where
+        Binding: CommitObjectHistoryBinding + ?Sized,
+    {
+        self.object_history_binding_witness
+            .same_invocation(commit.object_history_binding_witness())
+            && &self.repository_version == commit.repository_version()
             && &self.committed_objects_digest == commit.committed_objects_digest()
             && &self.atomic_commit_safety_capability_id
                 == commit.atomic_commit_safety_capability_id()
@@ -3171,6 +3179,38 @@ pub(crate) fn repository_history_partition_fixture_test_only(
     })
 }
 
+/// Adversarial result-layer fixture. Production taskCommit authorities are
+/// minted only by `RepositoryHistoryPartitionResolver`; this helper can forge
+/// malformed shapes so the completion boundary remains defense in depth.
+#[cfg(test)]
+pub(crate) fn task_commit_history_partition_fixture_test_only(
+    mut partition: ValidatedRepositoryHistoryPartition,
+    binding: &(impl CommitObjectHistoryBinding + ?Sized),
+    task_semantic_delta_digest: Sha256Digest,
+) -> Result<ValidatedTaskCommitHistoryPartition, RepositoryContractError> {
+    for entry in &mut partition.wire.entries.0 {
+        if let RepositoryHistoryPartitionEntry::TaskCommit(task_commit) = entry {
+            task_commit.semantic_delta_digest = task_semantic_delta_digest.clone();
+        }
+    }
+    partition.wire.partition_digest = canonical_contract_digest(
+        &RepositoryHistoryPartitionDigestRecord {
+            from_exclusive: partition.wire.from_exclusive.clone(),
+            through_inclusive: partition.wire.through_inclusive.clone(),
+            entries: partition.wire.entries.clone(),
+        },
+        None,
+    )
+    .map_err(|_| RepositoryContractError("task-commit fixture digest failed"))?;
+    Ok(ValidatedTaskCommitHistoryPartition {
+        partition,
+        object_history_binding_witness: binding.object_history_binding_witness().clone(),
+        repository_version: binding.repository_version().clone(),
+        committed_objects_digest: binding.committed_objects_digest().clone(),
+        atomic_commit_safety_capability_id: binding.atomic_commit_safety_capability_id().clone(),
+    })
+}
+
 pub(crate) struct RepositoryHistoryPartitionResolver<'a> {
     registry: &'a EvidenceSourceRegistry,
     source_index: &'a dyn EvidenceSourceIndex,
@@ -3304,7 +3344,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
     pub(crate) fn validate_task_commit_partition(
         &self,
         wire: UnvalidatedRepositoryHistoryPartition,
-        commit: &ValidatedCommitObjectAuthority,
+        commit: &(impl CommitObjectHistoryBinding + ?Sized),
     ) -> Result<ValidatedTaskCommitHistoryPartition, RepositoryContractError> {
         self.registry.verify_committed_artifacts()?;
         let expected_partition_digest = canonical_contract_digest(
@@ -3351,13 +3391,12 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                 RepositoryHistoryPartitionEntry::EvidenceBacked(value)
                     if value.classification
                         == EvidenceBackedPartitionClassification::UnrelatedRoutine => {}
-                RepositoryHistoryPartitionEntry::NonConflicting(value)
-                    if &value
-                        .non_conflicting_concurrent_evidence
-                        .atomic_commit_safety_capability_id
-                        == commit.atomic_commit_safety_capability_id() => {}
-                RepositoryHistoryPartitionEntry::EvidenceBacked(_)
-                | RepositoryHistoryPartitionEntry::NonConflicting(_) => {
+                RepositoryHistoryPartitionEntry::NonConflicting(_) => {
+                    return Err(RepositoryContractError(
+                        "Slice 3 task-commit partition rejects concurrent history",
+                    ));
+                }
+                RepositoryHistoryPartitionEntry::EvidenceBacked(_) => {
                     return Err(RepositoryContractError(
                         "task-commit partition contains relevant or unproven concurrent history",
                     ));
@@ -3417,6 +3456,7 @@ impl<'a> RepositoryHistoryPartitionResolver<'a> {
                 source_index_proofs,
                 order_evidence: Some(order_evidence),
             },
+            object_history_binding_witness: commit.object_history_binding_witness().clone(),
             repository_version: commit.repository_version().clone(),
             committed_objects_digest: commit.committed_objects_digest().clone(),
             atomic_commit_safety_capability_id: commit.atomic_commit_safety_capability_id().clone(),
