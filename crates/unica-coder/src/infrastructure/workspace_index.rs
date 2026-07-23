@@ -29,10 +29,23 @@ const LOCK_FILE_NAME: &str = "bsl_index.lock";
 pub enum IndexReadiness {
     Ready { db_path: PathBuf },
     Missing,
-    Stale,
+    Stale { status: String },
     Building,
     Failed(String),
     Unavailable(String),
+}
+
+impl IndexReadiness {
+    pub fn stale_status(&self) -> Option<&str> {
+        match self {
+            Self::Stale { status } => Some(status),
+            _ => None,
+        }
+    }
+
+    fn is_stale_content(&self) -> bool {
+        self.stale_status() == Some("stale (content)")
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -218,31 +231,41 @@ impl<'a> WorkspaceIndexService<'a> {
                 );
                 IndexStartReport::default()
             }
-            IndexReadiness::Missing => self.start_background(
-                context,
-                "build",
-                source_root,
-                commands.build,
-                commands.info,
-                "rlm index build started",
-            ),
-            IndexReadiness::Stale => self.start_background(
-                context,
-                "update",
-                source_root,
-                commands.update,
-                commands.info,
-                "rlm index building",
-            ),
-            IndexReadiness::Building => IndexStartReport {
-                warnings: vec!["rlm index building".to_string()],
-            },
-            IndexReadiness::Failed(message) | IndexReadiness::Unavailable(message) => {
-                let _ = write_status(
-                    context,
-                    BslIndexStatus::unavailable(message.as_str(), Some(&source_root)),
-                );
-                IndexStartReport::default()
+            other => {
+                if let Some(message) = failed_status_for_source(context, &source_root) {
+                    return IndexStartReport {
+                        warnings: vec![format!("rlm index unavailable: {message}")],
+                    };
+                }
+                match other {
+                    IndexReadiness::Missing => self.start_background(
+                        context,
+                        "build",
+                        source_root,
+                        commands.build,
+                        commands.info,
+                        "rlm index build started",
+                    ),
+                    IndexReadiness::Stale { .. } => self.start_background(
+                        context,
+                        "update",
+                        source_root,
+                        commands.update,
+                        commands.info,
+                        "rlm index building",
+                    ),
+                    IndexReadiness::Building => IndexStartReport {
+                        warnings: vec!["rlm index building".to_string()],
+                    },
+                    IndexReadiness::Failed(message) | IndexReadiness::Unavailable(message) => {
+                        let _ = write_status(
+                            context,
+                            BslIndexStatus::unavailable(message.as_str(), Some(&source_root)),
+                        );
+                        IndexStartReport::default()
+                    }
+                    IndexReadiness::Ready { .. } => unreachable!("handled above"),
+                }
             }
         }
     }
@@ -295,7 +318,9 @@ impl<'a> WorkspaceIndexService<'a> {
                 );
                 IndexReadiness::Ready { db_path }
             }
-            other => other,
+            other => failed_status_for_source(context, &source_root)
+                .map(IndexReadiness::Failed)
+                .unwrap_or(other),
         }
     }
 
@@ -793,7 +818,9 @@ fn readiness_from_info(output: &IndexOutput) -> IndexReadiness {
                 IndexReadiness::Unavailable("RLM index info did not report DB path".to_string())
             }
         },
-        Some(value) if value.starts_with("stale") => IndexReadiness::Stale,
+        Some(value) if value.starts_with("stale") => IndexReadiness::Stale {
+            status: value.to_string(),
+        },
         Some(value) => IndexReadiness::Unavailable(format!("RLM index status is {value}")),
         None => IndexReadiness::Unavailable("RLM index info did not report status".to_string()),
     }
@@ -924,7 +951,7 @@ fn recover_stale_lock(
             context,
             BslIndexStatus::failed(
                 format!("stale RLM index build marker recovered: {reason}").as_str(),
-                Some(source_root),
+                None,
             ),
         );
     }
@@ -1106,6 +1133,15 @@ fn ready_status_preserving_last_run(
     status
 }
 
+fn failed_status_for_source(context: &WorkspaceContext, source_root: &Path) -> Option<String> {
+    let status = read_bsl_index_status(context)?;
+    if status.status != "failed" || !stored_path_matches(status.source_root.as_deref(), source_root)
+    {
+        return None;
+    }
+    status.message
+}
+
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
     let Some(stored) = stored else {
         return false;
@@ -1206,6 +1242,37 @@ mod tests {
             readiness,
             IndexReadiness::Unavailable(error) if error.starts_with("cancelled:")
         ));
+    }
+
+    #[test]
+    fn info_parser_preserves_exact_stale_status() {
+        for status in [
+            "stale (content)",
+            "stale (age)",
+            "stale (structure changed)",
+        ] {
+            let readiness = readiness_from_info(&IndexOutput::success(format!(
+                "Index: /tmp/bsl_index.db\n  Status:   {status}\n"
+            )));
+            assert_eq!(
+                readiness,
+                IndexReadiness::Stale {
+                    status: status.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn only_stale_content_is_recovery_eligible() {
+        assert!(IndexReadiness::Stale {
+            status: "stale (content)".to_string()
+        }
+        .is_stale_content());
+        assert!(!IndexReadiness::Stale {
+            status: "stale (age)".to_string()
+        }
+        .is_stale_content());
     }
 
     #[test]
@@ -1420,6 +1487,103 @@ source-set:
         assert!(report.warnings.is_empty());
         assert!(runner.backgrounds.borrow().is_empty());
         assert!(bsl_index_is_ready(&context));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn failed_marker_blocks_automatic_restart_for_same_source() {
+        let context = test_context("failed-marker");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        write_status(
+            &context,
+            BslIndexStatus::failed(
+                "update left stale (content); recovery build failed",
+                Some(&context.workspace_root.join("src")),
+            ),
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
+            )]),
+            ..Default::default()
+        };
+        let service = WorkspaceIndexService::with_runner(&runner);
+
+        let report = service.start_for_workspace(&context, &Map::new(), false);
+
+        assert!(runner.backgrounds.borrow().is_empty());
+        assert_eq!(
+            report.warnings,
+            vec![
+                "rlm index unavailable: update left stale (content); recovery build failed"
+                    .to_string()
+            ]
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn ready_index_returns_matching_failed_marker_message() {
+        let context = test_context("failed-readiness");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        write_status(
+            &context,
+            BslIndexStatus::failed(
+                "update left stale (content); recovery build failed",
+                Some(&context.workspace_root.join("src")),
+            ),
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
+            )]),
+            ..Default::default()
+        };
+
+        let readiness =
+            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
+
+        assert_eq!(
+            readiness,
+            IndexReadiness::Failed(
+                "update left stale (content); recovery build failed".to_string()
+            )
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn fresh_info_replaces_matching_failed_marker() {
+        let context = test_context("failed-then-fresh");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "").unwrap();
+        write_status(
+            &context,
+            BslIndexStatus::failed(
+                "old recovery failure",
+                Some(&context.workspace_root.join("src")),
+            ),
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(format!(
+                "Index: {}\n  Status:   fresh\n",
+                db_path.display()
+            ))]),
+            ..Default::default()
+        };
+
+        WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "ready");
         cleanup(&context);
     }
 

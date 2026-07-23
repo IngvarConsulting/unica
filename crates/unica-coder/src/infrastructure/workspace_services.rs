@@ -1662,7 +1662,7 @@ impl ServiceResponse {
                 warnings,
                 ..Self::default()
             },
-            IndexReadiness::Stale => Self {
+            IndexReadiness::Stale { .. } => Self {
                 ok: true,
                 index_status: Some("stale".to_string()),
                 warnings,
@@ -1705,7 +1705,9 @@ impl ServiceResponse {
                     )
                 }),
             Some("missing") => IndexReadiness::Missing,
-            Some("stale") => IndexReadiness::Stale,
+            Some("stale") => IndexReadiness::Stale {
+                status: "stale".to_string(),
+            },
             Some("building") => IndexReadiness::Building,
             Some("failed") => IndexReadiness::Failed(self.error.clone().unwrap_or_default()),
             Some("unavailable") => {

@@ -2674,7 +2674,7 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
     match readiness {
         IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
         IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
-        IndexReadiness::Stale | IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Stale { .. } | IndexReadiness::Building => "rlm index building".to_string(),
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
         {
