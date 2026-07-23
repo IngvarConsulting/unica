@@ -73,7 +73,7 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -357,6 +357,7 @@ pub(crate) enum RepositoryIntegrationEntry {
 }
 
 impl RepositoryIntegrationEntry {
+    #[cfg(test)]
     pub(crate) fn root_modify(
         target: RootTargetIdentity,
         object_display: RepositoryTargetDisplay,
@@ -372,6 +373,7 @@ impl RepositoryIntegrationEntry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn object_add(
         target: ObjectTargetIdentity,
         object_display: RepositoryTargetDisplay,
@@ -387,6 +389,7 @@ impl RepositoryIntegrationEntry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn object_modify(
         target: ObjectTargetIdentity,
         object_display: RepositoryTargetDisplay,
@@ -402,6 +405,7 @@ impl RepositoryIntegrationEntry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn object_delete(
         target: ObjectTargetIdentity,
         object_display: RepositoryTargetDisplay,
@@ -532,6 +536,478 @@ impl JsonSchema for RepositoryIntegrationEntries {
             "items": generator.subschema_for::<RepositoryIntegrationEntry>(),
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeleteSelfLockabilityObservation {
+    Absent,
+    ExistingNotSeparatelyLockable,
+    ExistingSeparatelyLockable,
+}
+
+/// Complete semantic topology observed by one repository lock-planner
+/// invocation. These values are not wire data: the core projects the public
+/// integration entry, its exact required-lock closure, and its reason list.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RepositoryIntegrationTopologyObservation {
+    RootModify {
+        object_display: RepositoryTargetDisplay,
+    },
+    TopLevelAdd {
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+    },
+    SubordinateAdd {
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        parent: ObjectTargetIdentity,
+    },
+    ObjectModify {
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+    },
+    OwnedChildModify {
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+    },
+    ObjectDelete {
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        parent: RepositoryTargetIdentity,
+        existing_subordinate_development_objects: Vec<RepositoryTargetIdentity>,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+        self_lockability: DeleteSelfLockabilityObservation,
+    },
+}
+
+impl RepositoryIntegrationTopologyObservation {
+    pub(crate) fn root_modify(object_display: RepositoryTargetDisplay) -> Self {
+        Self::RootModify { object_display }
+    }
+
+    pub(crate) fn top_level_add(
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+    ) -> Self {
+        Self::TopLevelAdd {
+            target,
+            object_display,
+        }
+    }
+
+    pub(crate) fn subordinate_add(
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        parent: ObjectTargetIdentity,
+    ) -> Self {
+        Self::SubordinateAdd {
+            target,
+            object_display,
+            parent,
+        }
+    }
+
+    pub(crate) fn object_modify(
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+    ) -> Self {
+        Self::ObjectModify {
+            target,
+            object_display,
+            changed_referrers,
+        }
+    }
+
+    pub(crate) fn owned_child_modify(
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+    ) -> Self {
+        Self::OwnedChildModify {
+            target,
+            object_display,
+            changed_referrers,
+        }
+    }
+
+    pub(crate) fn object_delete(
+        target: ObjectTargetIdentity,
+        object_display: RepositoryTargetDisplay,
+        parent: RepositoryTargetIdentity,
+        existing_subordinate_development_objects: Vec<RepositoryTargetIdentity>,
+        changed_referrers: Vec<RepositoryTargetIdentity>,
+        self_lockability: DeleteSelfLockabilityObservation,
+    ) -> Self {
+        Self::ObjectDelete {
+            target,
+            object_display,
+            parent,
+            existing_subordinate_development_objects,
+            changed_referrers,
+            self_lockability,
+        }
+    }
+
+    fn target_identity(&self) -> RepositoryTargetIdentity {
+        match self {
+            Self::RootModify { .. } => RepositoryTargetIdentity::configuration_root(),
+            Self::TopLevelAdd { target, .. }
+            | Self::SubordinateAdd { target, .. }
+            | Self::ObjectModify { target, .. }
+            | Self::OwnedChildModify { target, .. }
+            | Self::ObjectDelete { target, .. } => {
+                RepositoryTargetIdentity::DevelopmentObject(target.clone())
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RepositoryIntegrationTopologyBatchAuthority {
+    integration_entries: RepositoryIntegrationEntries,
+    expected_lock_reasons: BTreeMap<RepositoryTargetIdentity, Vec<RepositoryUpdateLockReason>>,
+}
+
+impl RepositoryIntegrationTopologyBatchAuthority {
+    fn derive(
+        observations: Vec<RepositoryIntegrationTopologyObservation>,
+    ) -> Result<Self, RepositoryResultContractError> {
+        if observations.is_empty() || observations.len() > MAX_RESULT_ITEMS {
+            return Err(RepositoryResultContractError(
+                "integration topology observations must be non-empty and bounded",
+            ));
+        }
+        if observations
+            .windows(2)
+            .any(|pair| pair[0].target_identity() >= pair[1].target_identity())
+        {
+            return Err(RepositoryResultContractError(
+                "integration topology observations must be canonical and unique by target",
+            ));
+        }
+
+        let mut expected_lock_reasons =
+            BTreeMap::<RepositoryTargetIdentity, BTreeSet<RepositoryUpdateLockReason>>::new();
+        expected_lock_reasons
+            .entry(RepositoryTargetIdentity::configuration_root())
+            .or_default()
+            .insert(RepositoryUpdateLockReason::SupportGraphGuard);
+        let mut entries = Vec::with_capacity(observations.len());
+
+        for observation in observations {
+            let owns_non_development_child = matches!(
+                &observation,
+                RepositoryIntegrationTopologyObservation::OwnedChildModify { .. }
+            );
+            let mut required_targets = BTreeSet::new();
+            let mut integration_reasons = BTreeSet::new();
+            integration_reasons.insert(RepositoryIntegrationReason::CanonicalDelta);
+
+            let entry = match observation {
+                RepositoryIntegrationTopologyObservation::RootModify { object_display } => {
+                    let root = RepositoryTargetIdentity::configuration_root();
+                    required_targets.insert(root.clone());
+                    expected_lock_reasons
+                        .entry(root)
+                        .or_default()
+                        .insert(RepositoryUpdateLockReason::UpdateTarget);
+                    RepositoryIntegrationEntry::RootModify(RootModifyIntegrationEntry {
+                        target: RootTargetIdentity::new(),
+                        object_display,
+                        action: ModifyAction::Value,
+                        reasons: RepositoryIntegrationReasons::new(
+                            integration_reasons.into_iter().collect(),
+                        )?,
+                        required_lock_targets: CanonicalRepositoryTargets::new(
+                            required_targets.into_iter().collect(),
+                        )?,
+                    })
+                }
+                RepositoryIntegrationTopologyObservation::TopLevelAdd {
+                    target,
+                    object_display,
+                } => {
+                    let root = RepositoryTargetIdentity::configuration_root();
+                    required_targets.insert(root.clone());
+                    integration_reasons.insert(RepositoryIntegrationReason::OwnershipClosure);
+                    integration_reasons.insert(RepositoryIntegrationReason::AddDeleteSemantics);
+                    expected_lock_reasons
+                        .entry(root)
+                        .or_default()
+                        .insert(RepositoryUpdateLockReason::ParentClosure);
+                    RepositoryIntegrationEntry::ObjectAdd(ObjectAddIntegrationEntry {
+                        target,
+                        object_display,
+                        action: AddAction::Value,
+                        reasons: RepositoryIntegrationReasons::new(
+                            integration_reasons.into_iter().collect(),
+                        )?,
+                        required_lock_targets: CanonicalRepositoryTargets::new(
+                            required_targets.into_iter().collect(),
+                        )?,
+                    })
+                }
+                RepositoryIntegrationTopologyObservation::SubordinateAdd {
+                    target,
+                    object_display,
+                    parent,
+                } => {
+                    if target == parent {
+                        return Err(RepositoryResultContractError(
+                            "subordinate addition cannot own itself",
+                        ));
+                    }
+                    let parent = RepositoryTargetIdentity::DevelopmentObject(parent);
+                    required_targets.insert(parent.clone());
+                    integration_reasons.insert(RepositoryIntegrationReason::OwnershipClosure);
+                    integration_reasons.insert(RepositoryIntegrationReason::AddDeleteSemantics);
+                    expected_lock_reasons
+                        .entry(parent)
+                        .or_default()
+                        .insert(RepositoryUpdateLockReason::ParentClosure);
+                    RepositoryIntegrationEntry::ObjectAdd(ObjectAddIntegrationEntry {
+                        target,
+                        object_display,
+                        action: AddAction::Value,
+                        reasons: RepositoryIntegrationReasons::new(
+                            integration_reasons.into_iter().collect(),
+                        )?,
+                        required_lock_targets: CanonicalRepositoryTargets::new(
+                            required_targets.into_iter().collect(),
+                        )?,
+                    })
+                }
+                RepositoryIntegrationTopologyObservation::ObjectModify {
+                    target,
+                    object_display,
+                    changed_referrers,
+                }
+                | RepositoryIntegrationTopologyObservation::OwnedChildModify {
+                    target,
+                    object_display,
+                    changed_referrers,
+                } => {
+                    let target_identity =
+                        RepositoryTargetIdentity::DevelopmentObject(target.clone());
+                    required_targets.insert(target_identity.clone());
+                    expected_lock_reasons
+                        .entry(target_identity)
+                        .or_default()
+                        .insert(RepositoryUpdateLockReason::UpdateTarget);
+                    if owns_non_development_child {
+                        integration_reasons.insert(RepositoryIntegrationReason::OwnershipClosure);
+                    }
+                    add_changed_referrers(
+                        &mut required_targets,
+                        &mut expected_lock_reasons,
+                        &mut integration_reasons,
+                        changed_referrers,
+                    )?;
+                    RepositoryIntegrationEntry::ObjectModify(ObjectModifyIntegrationEntry {
+                        target,
+                        object_display,
+                        action: ModifyAction::Value,
+                        reasons: RepositoryIntegrationReasons::new(
+                            integration_reasons.into_iter().collect(),
+                        )?,
+                        required_lock_targets: CanonicalRepositoryTargets::new(
+                            required_targets.into_iter().collect(),
+                        )?,
+                    })
+                }
+                RepositoryIntegrationTopologyObservation::ObjectDelete {
+                    target,
+                    object_display,
+                    parent,
+                    existing_subordinate_development_objects,
+                    changed_referrers,
+                    self_lockability,
+                } => {
+                    let target_identity =
+                        RepositoryTargetIdentity::DevelopmentObject(target.clone());
+                    if parent == target_identity {
+                        return Err(RepositoryResultContractError(
+                            "deleted object cannot be its own parent",
+                        ));
+                    }
+                    required_targets.insert(parent.clone());
+                    expected_lock_reasons
+                        .entry(parent.clone())
+                        .or_default()
+                        .insert(RepositoryUpdateLockReason::ParentClosure);
+                    integration_reasons.insert(RepositoryIntegrationReason::OwnershipClosure);
+                    integration_reasons.insert(RepositoryIntegrationReason::AddDeleteSemantics);
+
+                    let subordinates =
+                        CanonicalRepositoryTargets::new(existing_subordinate_development_objects)?;
+                    for subordinate in subordinates.as_slice() {
+                        if subordinate == &target_identity
+                            || subordinate == &parent
+                            || !matches!(
+                                subordinate,
+                                RepositoryTargetIdentity::DevelopmentObject(_)
+                            )
+                        {
+                            return Err(RepositoryResultContractError(
+                                "delete subordinate closure contains a non-subordinate target",
+                            ));
+                        }
+                        required_targets.insert(subordinate.clone());
+                        expected_lock_reasons
+                            .entry(subordinate.clone())
+                            .or_default()
+                            .insert(RepositoryUpdateLockReason::StructuralClosure);
+                    }
+                    if changed_referrers
+                        .iter()
+                        .any(|referrer| referrer == &target_identity)
+                    {
+                        return Err(RepositoryResultContractError(
+                            "deleted object cannot be its own changed referrer",
+                        ));
+                    }
+                    add_changed_referrers(
+                        &mut required_targets,
+                        &mut expected_lock_reasons,
+                        &mut integration_reasons,
+                        changed_referrers,
+                    )?;
+                    if matches!(
+                        self_lockability,
+                        DeleteSelfLockabilityObservation::ExistingSeparatelyLockable
+                    ) {
+                        required_targets.insert(target_identity.clone());
+                        expected_lock_reasons
+                            .entry(target_identity)
+                            .or_default()
+                            .insert(RepositoryUpdateLockReason::UpdateTarget);
+                    }
+                    RepositoryIntegrationEntry::ObjectDelete(ObjectDeleteIntegrationEntry {
+                        target,
+                        object_display,
+                        action: DeleteAction::Value,
+                        reasons: RepositoryIntegrationReasons::new(
+                            integration_reasons.into_iter().collect(),
+                        )?,
+                        required_lock_targets: CanonicalRepositoryTargets::new(
+                            required_targets.into_iter().collect(),
+                        )?,
+                    })
+                }
+            };
+            entries.push(entry);
+        }
+
+        let integration_entries = RepositoryIntegrationEntries::new(entries)?;
+        for entry in integration_entries.as_slice() {
+            let target = entry.target_identity();
+            match entry {
+                RepositoryIntegrationEntry::ObjectAdd(_) => {
+                    if expected_lock_reasons.contains_key(&target) {
+                        return Err(RepositoryResultContractError(
+                            "new integration target cannot appear in the physical lock closure",
+                        ));
+                    }
+                }
+                RepositoryIntegrationEntry::ObjectDelete(_) => {
+                    let self_lock_is_required = entry
+                        .required_lock_targets()
+                        .as_slice()
+                        .binary_search(&target)
+                        .is_ok();
+                    if expected_lock_reasons.contains_key(&target) != self_lock_is_required {
+                        return Err(RepositoryResultContractError(
+                            "delete target lock presence disagrees with its self-lockability observation",
+                        ));
+                    }
+                }
+                RepositoryIntegrationEntry::RootModify(_)
+                | RepositoryIntegrationEntry::ObjectModify(_) => {}
+            }
+        }
+        Ok(Self {
+            integration_entries,
+            expected_lock_reasons: expected_lock_reasons
+                .into_iter()
+                .map(|(target, reasons)| (target, reasons.into_iter().collect()))
+                .collect(),
+        })
+    }
+
+    fn validate_lock_entries(
+        &self,
+        lock_entries: &RepositoryUpdateLockTargets,
+    ) -> Result<(), RepositoryResultContractError> {
+        if self.expected_lock_reasons.len() != lock_entries.as_slice().len() {
+            return Err(RepositoryResultContractError(
+                "observed lock targets differ from the exact topology closure",
+            ));
+        }
+        for ((expected_target, expected_reasons), observed) in self
+            .expected_lock_reasons
+            .iter()
+            .zip(lock_entries.as_slice())
+        {
+            let (observed_target, observed_reasons) = match observed.as_ref() {
+                RepositoryUpdateLockTargetRef::ConfigurationRoot { reasons, .. } => {
+                    (RepositoryTargetIdentity::configuration_root(), reasons)
+                }
+                RepositoryUpdateLockTargetRef::DevelopmentObject {
+                    object_id, reasons, ..
+                } => (
+                    RepositoryTargetIdentity::development_object(object_id.clone()),
+                    reasons,
+                ),
+            };
+            if expected_target != &observed_target
+                || expected_reasons.as_slice() != observed_reasons
+            {
+                return Err(RepositoryResultContractError(
+                    "observed lock target or reasons differ from the exact topology closure",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn integration_entries(&self) -> &RepositoryIntegrationEntries {
+        &self.integration_entries
+    }
+
+    fn into_integration_entries(self) -> RepositoryIntegrationEntries {
+        self.integration_entries
+    }
+}
+
+fn add_changed_referrers(
+    required_targets: &mut BTreeSet<RepositoryTargetIdentity>,
+    expected_lock_reasons: &mut BTreeMap<
+        RepositoryTargetIdentity,
+        BTreeSet<RepositoryUpdateLockReason>,
+    >,
+    integration_reasons: &mut BTreeSet<RepositoryIntegrationReason>,
+    changed_referrers: Vec<RepositoryTargetIdentity>,
+) -> Result<(), RepositoryResultContractError> {
+    let changed_referrers = CanonicalRepositoryTargets::new(changed_referrers)?;
+    if !changed_referrers.as_slice().is_empty() {
+        integration_reasons.insert(RepositoryIntegrationReason::ReferenceClosure);
+    }
+    for referrer in changed_referrers.as_slice() {
+        if !matches!(referrer, RepositoryTargetIdentity::DevelopmentObject(_)) {
+            return Err(RepositoryResultContractError(
+                "changed referrer must be a development object",
+            ));
+        }
+        required_targets.insert(referrer.clone());
+        expected_lock_reasons
+            .entry(referrer.clone())
+            .or_default()
+            .insert(RepositoryUpdateLockReason::ReferenceClosure);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -1413,8 +1889,10 @@ struct LockPlanGateSessionLineage {
     comparison_id: UnicaId,
     ordinary_result_artifact_id: UnicaId,
     result_digest: Sha256Digest,
+    planner_capability_id: CapabilityRowId,
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DeleteSelfLockCapabilityEvidence {
     target: RepositoryTargetIdentity,
@@ -1422,6 +1900,7 @@ pub(crate) struct DeleteSelfLockCapabilityEvidence {
     capability_row_id: CapabilityRowId,
 }
 
+#[cfg(test)]
 impl DeleteSelfLockCapabilityEvidence {
     pub(crate) fn from_capability_adapter(
         target: RepositoryTargetIdentity,
@@ -1439,6 +1918,206 @@ impl DeleteSelfLockCapabilityEvidence {
             capability_row_id,
         })
     }
+}
+
+/// Identifiers observed by one current repository-planner invocation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryLockPlanObservedIds {
+    plan_id: UnicaId,
+    integration_set_id: UnicaId,
+}
+
+impl RepositoryLockPlanObservedIds {
+    pub(crate) fn new(plan_id: UnicaId, integration_set_id: UnicaId) -> Self {
+        Self {
+            plan_id,
+            integration_set_id,
+        }
+    }
+}
+
+/// Non-topology evidence returned by the same planner invocation as its
+/// identifiers, authoritative topology and lock rows.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryLockPlanObservedEvidence {
+    relevant_anchors: RepositoryRelevantAnchors,
+    compatibility_mode: CompatibilityMode,
+    reference_closure_digest: Sha256Digest,
+    prevalidation_diagnostics_digest: Sha256Digest,
+    planner_capability_id: CapabilityRowId,
+}
+
+impl RepositoryLockPlanObservedEvidence {
+    pub(crate) fn from_planner_adapter(
+        relevant_anchors: RepositoryRelevantAnchors,
+        compatibility_mode: CompatibilityMode,
+        reference_closure_digest: Sha256Digest,
+        prevalidation_diagnostics_digest: Sha256Digest,
+        planner_capability_id: CapabilityRowId,
+    ) -> Self {
+        Self {
+            relevant_anchors,
+            compatibility_mode,
+            reference_closure_digest,
+            prevalidation_diagnostics_digest,
+            planner_capability_id,
+        }
+    }
+}
+
+/// Complete output of one current repository-planner invocation. It carries
+/// typed authoritative topology rather than caller-built integration entries
+/// or independent delete-self evidence.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryLockPlanObservationInput {
+    ids: RepositoryLockPlanObservedIds,
+    topology: Vec<RepositoryIntegrationTopologyObservation>,
+    lock_entries: RepositoryUpdateLockTargets,
+    evidence: RepositoryLockPlanObservedEvidence,
+}
+
+impl RepositoryLockPlanObservationInput {
+    pub(crate) fn from_planner_adapter(
+        ids: RepositoryLockPlanObservedIds,
+        topology: Vec<RepositoryIntegrationTopologyObservation>,
+        lock_entries: RepositoryUpdateLockTargets,
+        evidence: RepositoryLockPlanObservedEvidence,
+    ) -> Self {
+        Self {
+            ids,
+            topology,
+            lock_entries,
+            evidence,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RepositoryLockPlanObservationInvocationMarker;
+
+#[derive(Debug)]
+struct RepositoryLockPlanObservationInvocationCapability(
+    Arc<RepositoryLockPlanObservationInvocationMarker>,
+);
+
+#[derive(Debug)]
+struct RepositoryLockPlanObservationCompletionCapability(
+    Arc<RepositoryLockPlanObservationInvocationMarker>,
+);
+
+impl RepositoryLockPlanObservationInvocationCapability {
+    fn mint() -> Self {
+        Self(Arc::new(RepositoryLockPlanObservationInvocationMarker))
+    }
+
+    fn completion(&self) -> RepositoryLockPlanObservationCompletionCapability {
+        RepositoryLockPlanObservationCompletionCapability(Arc::clone(&self.0))
+    }
+
+    fn owns_completion(
+        &self,
+        completion: &RepositoryLockPlanObservationCompletionCapability,
+    ) -> bool {
+        Arc::ptr_eq(&self.0, &completion.0)
+    }
+}
+
+/// Exact verified main-sandbox scope made visible to one planner invocation.
+#[derive(Debug)]
+pub(crate) struct RepositoryLockPlanObservationRequest<'a> {
+    verified_scope: &'a ValidatedMainSandboxVerificationAuthority,
+    invocation: &'a RepositoryLockPlanObservationInvocationCapability,
+}
+
+impl RepositoryLockPlanObservationRequest<'_> {
+    pub(crate) fn verification_id(&self) -> &UnicaId {
+        self.verified_scope.verification_id()
+    }
+
+    pub(crate) fn verification_digest(&self) -> &Sha256Digest {
+        self.verified_scope.verification_digest()
+    }
+
+    pub(crate) fn merge_session_id(&self) -> &UnicaId {
+        self.verified_scope.merge_session_id()
+    }
+
+    pub(crate) fn resolved_session_digest(&self) -> &Sha256Digest {
+        self.verified_scope.resolved_session_digest()
+    }
+
+    pub(crate) fn comparison_id(&self) -> &UnicaId {
+        self.verified_scope.comparison_id()
+    }
+
+    pub(crate) fn support_gate_id(&self) -> &UnicaId {
+        self.verified_scope.support_gate_id()
+    }
+
+    pub(crate) fn support_gate_digest(&self) -> &Sha256Digest {
+        self.verified_scope.support_gate_digest()
+    }
+
+    pub(crate) fn support_gate_history_evidence(&self) -> &SupportGateHistoryEvidence {
+        self.verified_scope.support_gate_history_evidence()
+    }
+
+    pub(crate) fn settings_digest(&self) -> &Sha256Digest {
+        self.verified_scope.settings_digest()
+    }
+
+    pub(crate) fn ordinary_result_artifact_id(&self) -> &UnicaId {
+        self.verified_scope.ordinary_result_artifact_id()
+    }
+
+    pub(crate) fn result_digest(&self) -> &Sha256Digest {
+        self.verified_scope.result_digest()
+    }
+
+    pub(crate) fn applied_decision_ids(&self) -> &[UnicaId] {
+        self.verified_scope.applied_decision_ids()
+    }
+}
+
+/// Request-bound completed planner batch. The topology has already been
+/// projected by the core and checked against the observed physical lock rows.
+#[derive(Debug)]
+pub(crate) struct RepositoryLockPlanObservationLease {
+    completion: RepositoryLockPlanObservationCompletionCapability,
+    ids: RepositoryLockPlanObservedIds,
+    topology_batch: RepositoryIntegrationTopologyBatchAuthority,
+    lock_entries: RepositoryUpdateLockTargets,
+    evidence: RepositoryLockPlanObservedEvidence,
+}
+
+impl RepositoryLockPlanObservationLease {
+    pub(crate) fn complete_from_planner_adapter(
+        request: &RepositoryLockPlanObservationRequest<'_>,
+        input: RepositoryLockPlanObservationInput,
+    ) -> Result<Self, RepositoryResultContractError> {
+        let RepositoryLockPlanObservationInput {
+            ids,
+            topology,
+            lock_entries,
+            evidence,
+        } = input;
+        let topology_batch = RepositoryIntegrationTopologyBatchAuthority::derive(topology)?;
+        topology_batch.validate_lock_entries(&lock_entries)?;
+        Ok(Self {
+            completion: request.invocation.completion(),
+            ids,
+            topology_batch,
+            lock_entries,
+            evidence,
+        })
+    }
+}
+
+pub(crate) trait RepositoryLockPlanObservationPort {
+    fn observe_lock_plan(
+        &mut self,
+        request: RepositoryLockPlanObservationRequest<'_>,
+    ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError>;
 }
 
 /// One atomic planner result. All plan identifiers, integration entries,
@@ -1459,8 +2138,7 @@ pub(crate) struct AtomicRepositoryLockPlanCapabilityAuthority {
     comparison_id: UnicaId,
     ordinary_result_artifact_id: UnicaId,
     result_digest: Sha256Digest,
-    integration_entries: RepositoryIntegrationEntries,
-    delete_self_lock_evidence: Vec<DeleteSelfLockCapabilityEvidence>,
+    topology_batch: RepositoryIntegrationTopologyBatchAuthority,
     lock_entries: RepositoryUpdateLockTargets,
     relevant_anchors: RepositoryRelevantAnchors,
     compatibility_mode: CompatibilityMode,
@@ -1470,21 +2148,40 @@ pub(crate) struct AtomicRepositoryLockPlanCapabilityAuthority {
 }
 
 impl AtomicRepositoryLockPlanCapabilityAuthority {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_planner_adapter(
+    pub(crate) fn from_observation_port(
         verified_scope: &ValidatedMainSandboxVerificationAuthority,
-        plan_id: UnicaId,
-        integration_set_id: UnicaId,
-        integration_entries: RepositoryIntegrationEntries,
-        delete_self_lock_evidence: Vec<DeleteSelfLockCapabilityEvidence>,
-        lock_entries: RepositoryUpdateLockTargets,
-        relevant_anchors: RepositoryRelevantAnchors,
-        compatibility_mode: CompatibilityMode,
-        reference_closure_digest: Sha256Digest,
-        prevalidation_diagnostics_digest: Sha256Digest,
-        planner_capability_id: CapabilityRowId,
-    ) -> Self {
-        Self {
+        port: &mut dyn RepositoryLockPlanObservationPort,
+    ) -> Result<Self, RepositoryResultContractError> {
+        let invocation = RepositoryLockPlanObservationInvocationCapability::mint();
+        let request = RepositoryLockPlanObservationRequest {
+            verified_scope,
+            invocation: &invocation,
+        };
+        let lease = port.observe_lock_plan(request)?;
+        if !invocation.owns_completion(&lease.completion) {
+            return Err(RepositoryResultContractError(
+                "repository lock-plan completion belongs to another planner invocation",
+            ));
+        }
+        let RepositoryLockPlanObservationLease {
+            completion: _,
+            ids,
+            topology_batch,
+            lock_entries,
+            evidence,
+        } = lease;
+        let RepositoryLockPlanObservedIds {
+            plan_id,
+            integration_set_id,
+        } = ids;
+        let RepositoryLockPlanObservedEvidence {
+            relevant_anchors,
+            compatibility_mode,
+            reference_closure_digest,
+            prevalidation_diagnostics_digest,
+            planner_capability_id,
+        } = evidence;
+        Ok(Self {
             plan_id,
             integration_set_id,
             merge_session_id: verified_scope.merge_session_id().clone(),
@@ -1498,15 +2195,14 @@ impl AtomicRepositoryLockPlanCapabilityAuthority {
             comparison_id: verified_scope.comparison_id().clone(),
             ordinary_result_artifact_id: verified_scope.ordinary_result_artifact_id().clone(),
             result_digest: verified_scope.result_digest().clone(),
-            integration_entries,
-            delete_self_lock_evidence,
+            topology_batch,
             lock_entries,
             relevant_anchors,
             compatibility_mode,
             reference_closure_digest,
             prevalidation_diagnostics_digest,
             planner_capability_id,
-        }
+        })
     }
 }
 
@@ -1532,6 +2228,7 @@ pub(crate) struct LockPlanAuthorityTestParts {
     pub(crate) gate_comparison_id: UnicaId,
     pub(crate) gate_ordinary_result_artifact_id: UnicaId,
     pub(crate) gate_result_digest: Sha256Digest,
+    pub(crate) planner_capability_id: CapabilityRowId,
 }
 
 impl LockPlanAuthority {
@@ -1555,11 +2252,9 @@ impl LockPlanAuthority {
                 "atomic lock plan does not consume the exact sandbox verification scope",
             ));
         }
-        validate_integration_lock_closure(
-            &planner.integration_entries,
-            &planner.lock_entries,
-            &planner.delete_self_lock_evidence,
-        )?;
+        planner
+            .topology_batch
+            .validate_lock_entries(&planner.lock_entries)?;
 
         let merge_session_id = verified.merge_session_id().clone();
         let resolved_session_digest = verified.resolved_session_digest().clone();
@@ -1573,9 +2268,9 @@ impl LockPlanAuthority {
             comparison_id: verified.comparison_id().clone(),
             ordinary_result_artifact_id: verified.ordinary_result_artifact_id().clone(),
             result_digest: verified.result_digest().clone(),
+            planner_capability_id: planner.planner_capability_id.clone(),
         };
         let _consumed_planning = verified.into_planning();
-        let _planner_capability_id = planner.planner_capability_id;
         let integration_set_digest = result_digest(
             &IntegrationSetDigestRecord {
                 merge_session_id: merge_session_id.clone(),
@@ -1587,7 +2282,7 @@ impl LockPlanAuthority {
                     .clone(),
                 verification_id: verification_id.clone(),
                 verification_digest: verification_digest.clone(),
-                integration_entries: planner.integration_entries.clone(),
+                integration_entries: planner.topology_batch.integration_entries().clone(),
                 compatibility_mode: planner.compatibility_mode.clone(),
                 reference_closure_digest: planner.reference_closure_digest.clone(),
                 settings_digest: settings_digest.clone(),
@@ -1607,7 +2302,7 @@ impl LockPlanAuthority {
                 verification_id,
                 verification_digest,
                 integration_set_id: planner.integration_set_id,
-                integration_entries: planner.integration_entries,
+                integration_entries: planner.topology_batch.into_integration_entries(),
                 integration_set_digest,
                 lock_entries: planner.lock_entries,
                 relevant_anchors: planner.relevant_anchors,
@@ -1653,6 +2348,7 @@ impl LockPlanAuthority {
                 comparison_id: parts.gate_comparison_id,
                 ordinary_result_artifact_id: parts.gate_ordinary_result_artifact_id,
                 result_digest: parts.gate_result_digest,
+                planner_capability_id: parts.planner_capability_id,
             },
             record: LockPlanDigestRecord {
                 plan_id: parts.plan_id,
@@ -1677,6 +2373,7 @@ impl LockPlanAuthority {
     }
 }
 
+#[cfg(test)]
 fn validate_integration_lock_closure(
     entries: &RepositoryIntegrationEntries,
     lock_entries: &RepositoryUpdateLockTargets,
@@ -8247,6 +8944,7 @@ pub(crate) fn validated_commit_object_authority_fixture_test_only(
             gate_comparison_id: id("88888888-8888-4888-8888-888888888888"),
             gate_ordinary_result_artifact_id: id("99999999-9999-4999-8999-999999999999"),
             gate_result_digest: digest('0'),
+            planner_capability_id: CapabilityRowId::parse("repository.lock-plan.fixture").unwrap(),
         })
         .unwrap(),
     )
@@ -8452,10 +9150,12 @@ pub(crate) fn original_merge_production_lock_projection_with_revision_fixture_te
         settings_digest,
     );
     let mut plan = projection.plan;
+    let planner_capability_id = plan.gate_session_lineage.planner_capability_id.clone();
     plan.gate_session_lineage = LockPlanGateSessionLineage {
         comparison_id,
         ordinary_result_artifact_id,
         result_digest: gate_result_digest,
+        planner_capability_id,
     };
     let previous_root = plan
         .relevant_anchors
@@ -8879,6 +9579,8 @@ mod gate_b1_tests {
                 gate_comparison_id: current.comparison_id().clone(),
                 gate_ordinary_result_artifact_id: current.ordinary_result_artifact_id().clone(),
                 gate_result_digest: current.sandbox_result_digest().clone(),
+                planner_capability_id: CapabilityRowId::parse("repository.lock-plan.fixture")
+                    .unwrap(),
             })
             .unwrap(),
         )
@@ -10049,23 +10751,139 @@ mod merge_consumer_tests {
         .plan
     }
 
+    fn root_observation_input() -> RepositoryLockPlanObservationInput {
+        let template = template_plan();
+        RepositoryLockPlanObservationInput::from_planner_adapter(
+            RepositoryLockPlanObservedIds::new(
+                id("91000000-0000-4000-8000-000000000001"),
+                id("91000000-0000-4000-8000-000000000002"),
+            ),
+            vec![RepositoryIntegrationTopologyObservation::root_modify(
+                RepositoryTargetDisplay::parse("Configuration root").unwrap(),
+            )],
+            template.lock_entries,
+            RepositoryLockPlanObservedEvidence::from_planner_adapter(
+                template.relevant_anchors,
+                template.compatibility_mode,
+                template.reference_closure_digest,
+                template.prevalidation_diagnostics_digest,
+                CapabilityRowId::parse("repository.lock-plan.consumer").unwrap(),
+            ),
+        )
+    }
+
+    struct TestRepositoryLockPlanObservationPort {
+        input: Option<RepositoryLockPlanObservationInput>,
+        observed_verification_id: Option<UnicaId>,
+    }
+
+    impl RepositoryLockPlanObservationPort for TestRepositoryLockPlanObservationPort {
+        fn observe_lock_plan(
+            &mut self,
+            request: RepositoryLockPlanObservationRequest<'_>,
+        ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
+            self.observed_verification_id = Some(request.verification_id().clone());
+            RepositoryLockPlanObservationLease::complete_from_planner_adapter(
+                &request,
+                self.input
+                    .take()
+                    .expect("test planner is called exactly once"),
+            )
+        }
+    }
+
+    #[test]
+    fn lock_plan_observation_port_binds_verified_scope_and_derives_root_entry() {
+        let verified = validated_main_sandbox_verification_fixture_test_only();
+        let expected_verification_id = verified.verification_id().clone();
+        let mut port = TestRepositoryLockPlanObservationPort {
+            input: Some(root_observation_input()),
+            observed_verification_id: None,
+        };
+
+        let planner = AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(
+            &verified, &mut port,
+        )
+        .unwrap();
+        let plan = LockPlanData::from_authority(
+            LockPlanAuthority::from_verified_main_sandbox(verified, planner).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            port.observed_verification_id,
+            Some(expected_verification_id)
+        );
+        assert_eq!(
+            serde_json::to_value(plan.integration_entries()).unwrap(),
+            serde_json::json!([{
+                "target": {"targetKind": "configurationRoot"},
+                "objectDisplay": "Configuration root",
+                "action": "modify",
+                "reasons": ["canonicalDelta"],
+                "requiredLockTargets": [{"targetKind": "configurationRoot"}]
+            }])
+        );
+    }
+
+    struct ForeignRepositoryLockPlanLeasePort {
+        lease: Option<RepositoryLockPlanObservationLease>,
+    }
+
+    impl RepositoryLockPlanObservationPort for ForeignRepositoryLockPlanLeasePort {
+        fn observe_lock_plan(
+            &mut self,
+            _request: RepositoryLockPlanObservationRequest<'_>,
+        ) -> Result<RepositoryLockPlanObservationLease, RepositoryResultContractError> {
+            Ok(self
+                .lease
+                .take()
+                .expect("foreign planner lease is returned exactly once"))
+        }
+    }
+
+    #[test]
+    fn lock_plan_observation_rejects_equal_scalar_cross_invocation_lease() {
+        let verified_a = validated_main_sandbox_verification_fixture_test_only();
+        let verified_b = validated_main_sandbox_verification_fixture_test_only();
+        assert_eq!(verified_a.verification_id(), verified_b.verification_id());
+        assert_eq!(
+            verified_a.verification_digest(),
+            verified_b.verification_digest()
+        );
+
+        let foreign_invocation = RepositoryLockPlanObservationInvocationCapability::mint();
+        let foreign_request = RepositoryLockPlanObservationRequest {
+            verified_scope: &verified_a,
+            invocation: &foreign_invocation,
+        };
+        let foreign_lease = RepositoryLockPlanObservationLease::complete_from_planner_adapter(
+            &foreign_request,
+            root_observation_input(),
+        )
+        .unwrap();
+        let mut port = ForeignRepositoryLockPlanLeasePort {
+            lease: Some(foreign_lease),
+        };
+
+        assert!(
+            AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(
+                &verified_b,
+                &mut port,
+            )
+            .is_err()
+        );
+    }
+
     fn planner_for(
         verified: &ValidatedMainSandboxVerificationAuthority,
     ) -> AtomicRepositoryLockPlanCapabilityAuthority {
-        let template = template_plan();
-        AtomicRepositoryLockPlanCapabilityAuthority::from_planner_adapter(
-            verified,
-            id("91000000-0000-4000-8000-000000000001"),
-            id("91000000-0000-4000-8000-000000000002"),
-            template.integration_entries,
-            vec![],
-            template.lock_entries,
-            template.relevant_anchors,
-            template.compatibility_mode,
-            template.reference_closure_digest,
-            template.prevalidation_diagnostics_digest,
-            CapabilityRowId::parse("repository.lock-plan.consumer").unwrap(),
-        )
+        let mut port = TestRepositoryLockPlanObservationPort {
+            input: Some(root_observation_input()),
+            observed_verification_id: None,
+        };
+        AtomicRepositoryLockPlanCapabilityAuthority::from_observation_port(verified, &mut port)
+            .unwrap()
     }
 
     fn validated_comment_policy() -> ValidatedCommitCommentPolicyAuthority {
@@ -16829,6 +17647,509 @@ mod tests {
     }
 
     #[test]
+    fn repository_lock_plan_rejects_symmetric_extra_closure_target() {
+        let topology = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("Modified object"),
+                vec![],
+            ),
+        ])
+        .unwrap();
+        let locks = serde_json::from_value(json!([
+            {
+                "targetKind": "configurationRoot",
+                "objectDisplay": "Root",
+                "reasons": ["supportGraphGuard"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_A,
+                "objectDisplay": "Modified object",
+                "reasons": ["updateTarget"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_B,
+                "objectDisplay": "Unrelated object",
+                "reasons": ["referenceClosure"]
+            }
+        ]))
+        .unwrap();
+
+        assert!(topology.validate_lock_entries(&locks).is_err());
+    }
+
+    #[test]
+    fn repository_lock_plan_rejects_configuration_root_as_changed_referrer() {
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("Modified object"),
+                vec![RepositoryTargetIdentity::configuration_root()],
+            ),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn repository_lock_plan_derives_all_topology_leaves_and_ignores_display() {
+        const OBJECT_C: &str = "00000000-0000-0000-0000-000000000003";
+        const OBJECT_D: &str = "00000000-0000-0000-0000-000000000004";
+        const OBJECT_E: &str = "00000000-0000-0000-0000-000000000005";
+        const OBJECT_F: &str = "00000000-0000-0000-0000-000000000006";
+        const OBJECT_G: &str = "00000000-0000-0000-0000-000000000007";
+        const OBJECT_H: &str = "00000000-0000-0000-0000-000000000008";
+
+        let root = RepositoryTargetIdentity::configuration_root();
+        let target_a = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        let target_b = RepositoryTargetIdentity::development_object(object(OBJECT_B));
+        let target_c = RepositoryTargetIdentity::development_object(object(OBJECT_C));
+        let target_d = RepositoryTargetIdentity::development_object(object(OBJECT_D));
+        let target_e = RepositoryTargetIdentity::development_object(object(OBJECT_E));
+        let target_f = RepositoryTargetIdentity::development_object(object(OBJECT_F));
+        let target_g = RepositoryTargetIdentity::development_object(object(OBJECT_G));
+        let target_h = RepositoryTargetIdentity::development_object(object(OBJECT_H));
+        let topology = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::root_modify(display("Root")),
+            RepositoryIntegrationTopologyObservation::top_level_add(
+                object_leaf(OBJECT_A),
+                display("Top-level add"),
+            ),
+            RepositoryIntegrationTopologyObservation::subordinate_add(
+                object_leaf(OBJECT_B),
+                display("Subordinate add"),
+                object_leaf(OBJECT_D),
+            ),
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_C),
+                display("Modify"),
+                vec![target_d.clone()],
+            ),
+            RepositoryIntegrationTopologyObservation::owned_child_modify(
+                object_leaf(OBJECT_E),
+                display("Owned child modify"),
+                vec![],
+            ),
+            RepositoryIntegrationTopologyObservation::object_delete(
+                object_leaf(OBJECT_F),
+                display("Delete"),
+                target_d.clone(),
+                vec![target_g.clone()],
+                vec![target_h.clone()],
+                DeleteSelfLockabilityObservation::ExistingSeparatelyLockable,
+            ),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(topology.integration_entries()).unwrap(),
+            json!([
+                {
+                    "target": {"targetKind": "configurationRoot"},
+                    "objectDisplay": "Root",
+                    "action": "modify",
+                    "reasons": ["canonicalDelta"],
+                    "requiredLockTargets": [{"targetKind": "configurationRoot"}]
+                },
+                {
+                    "target": {"targetKind": "developmentObject", "objectId": OBJECT_A},
+                    "objectDisplay": "Top-level add",
+                    "action": "add",
+                    "reasons": ["canonicalDelta", "ownershipClosure", "addDeleteSemantics"],
+                    "requiredLockTargets": [{"targetKind": "configurationRoot"}]
+                },
+                {
+                    "target": {"targetKind": "developmentObject", "objectId": OBJECT_B},
+                    "objectDisplay": "Subordinate add",
+                    "action": "add",
+                    "reasons": ["canonicalDelta", "ownershipClosure", "addDeleteSemantics"],
+                    "requiredLockTargets": [
+                        {"targetKind": "developmentObject", "objectId": OBJECT_D}
+                    ]
+                },
+                {
+                    "target": {"targetKind": "developmentObject", "objectId": OBJECT_C},
+                    "objectDisplay": "Modify",
+                    "action": "modify",
+                    "reasons": ["canonicalDelta", "referenceClosure"],
+                    "requiredLockTargets": [
+                        {"targetKind": "developmentObject", "objectId": OBJECT_C},
+                        {"targetKind": "developmentObject", "objectId": OBJECT_D}
+                    ]
+                },
+                {
+                    "target": {"targetKind": "developmentObject", "objectId": OBJECT_E},
+                    "objectDisplay": "Owned child modify",
+                    "action": "modify",
+                    "reasons": ["canonicalDelta", "ownershipClosure"],
+                    "requiredLockTargets": [
+                        {"targetKind": "developmentObject", "objectId": OBJECT_E}
+                    ]
+                },
+                {
+                    "target": {"targetKind": "developmentObject", "objectId": OBJECT_F},
+                    "objectDisplay": "Delete",
+                    "action": "delete",
+                    "reasons": [
+                        "canonicalDelta",
+                        "ownershipClosure",
+                        "referenceClosure",
+                        "addDeleteSemantics"
+                    ],
+                    "requiredLockTargets": [
+                        {"targetKind": "developmentObject", "objectId": OBJECT_D},
+                        {"targetKind": "developmentObject", "objectId": OBJECT_F},
+                        {"targetKind": "developmentObject", "objectId": OBJECT_G},
+                        {"targetKind": "developmentObject", "objectId": OBJECT_H}
+                    ]
+                }
+            ])
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&root).unwrap(),
+            &vec![
+                RepositoryUpdateLockReason::SupportGraphGuard,
+                RepositoryUpdateLockReason::UpdateTarget,
+                RepositoryUpdateLockReason::ParentClosure,
+            ]
+        );
+        assert!(!topology.expected_lock_reasons.contains_key(&target_a));
+        assert!(!topology.expected_lock_reasons.contains_key(&target_b));
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_c).unwrap(),
+            &vec![RepositoryUpdateLockReason::UpdateTarget]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_d).unwrap(),
+            &vec![
+                RepositoryUpdateLockReason::ParentClosure,
+                RepositoryUpdateLockReason::ReferenceClosure,
+            ]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_e).unwrap(),
+            &vec![RepositoryUpdateLockReason::UpdateTarget]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_f).unwrap(),
+            &vec![RepositoryUpdateLockReason::UpdateTarget]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_g).unwrap(),
+            &vec![RepositoryUpdateLockReason::StructuralClosure]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&target_h).unwrap(),
+            &vec![RepositoryUpdateLockReason::ReferenceClosure]
+        );
+
+        let locks = serde_json::from_value(json!([
+            {
+                "targetKind": "configurationRoot",
+                "objectDisplay": "Different root presentation",
+                "reasons": ["supportGraphGuard", "updateTarget", "parentClosure"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_C,
+                "objectDisplay": "Different C presentation",
+                "reasons": ["updateTarget"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_D,
+                "objectDisplay": "Different D presentation",
+                "reasons": ["parentClosure", "referenceClosure"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_E,
+                "objectDisplay": "Different E presentation",
+                "reasons": ["updateTarget"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_F,
+                "objectDisplay": "Different F presentation",
+                "reasons": ["updateTarget"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_G,
+                "objectDisplay": "Different G presentation",
+                "reasons": ["structuralClosure"]
+            },
+            {
+                "targetKind": "developmentObject",
+                "objectId": OBJECT_H,
+                "objectDisplay": "Different H presentation",
+                "reasons": ["referenceClosure"]
+            }
+        ]))
+        .unwrap();
+        topology.validate_lock_entries(&locks).unwrap();
+    }
+
+    #[test]
+    fn repository_lock_plan_delete_retains_entry_for_all_self_lockability_branches() {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let deleted = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        for self_lockability in [
+            DeleteSelfLockabilityObservation::Absent,
+            DeleteSelfLockabilityObservation::ExistingNotSeparatelyLockable,
+        ] {
+            let topology = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+                RepositoryIntegrationTopologyObservation::object_delete(
+                    object_leaf(OBJECT_A),
+                    display("Delete"),
+                    root.clone(),
+                    vec![],
+                    vec![],
+                    self_lockability,
+                ),
+            ])
+            .unwrap();
+            assert!(matches!(
+                topology.integration_entries.as_slice(),
+                [RepositoryIntegrationEntry::ObjectDelete(_)]
+            ));
+            assert_eq!(
+                topology.integration_entries.as_slice()[0]
+                    .required_lock_targets()
+                    .as_slice(),
+                std::slice::from_ref(&root)
+            );
+            assert!(!topology.expected_lock_reasons.contains_key(&deleted));
+        }
+
+        let topology = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_delete(
+                object_leaf(OBJECT_A),
+                display("Delete"),
+                root.clone(),
+                vec![],
+                vec![],
+                DeleteSelfLockabilityObservation::ExistingSeparatelyLockable,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            topology.integration_entries.as_slice()[0]
+                .required_lock_targets()
+                .as_slice(),
+            &[root, deleted.clone()]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&deleted).unwrap(),
+            &vec![RepositoryUpdateLockReason::UpdateTarget]
+        );
+    }
+
+    #[test]
+    fn repository_lock_plan_keeps_global_root_guard_out_of_unrelated_entry_closure() {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let modified = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        let topology = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("Modify"),
+                vec![],
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            topology.integration_entries.as_slice()[0]
+                .required_lock_targets()
+                .as_slice(),
+            std::slice::from_ref(&modified)
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&root).unwrap(),
+            &vec![RepositoryUpdateLockReason::SupportGraphGuard]
+        );
+        assert_eq!(
+            topology.expected_lock_reasons.get(&modified).unwrap(),
+            &vec![RepositoryUpdateLockReason::UpdateTarget]
+        );
+    }
+
+    #[test]
+    fn repository_lock_plan_never_locks_a_new_add_target() {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let target_a = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        let target_b = RepositoryTargetIdentity::development_object(object(OBJECT_B));
+        let top_level = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::top_level_add(
+                object_leaf(OBJECT_A),
+                display("Top-level add"),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            top_level.integration_entries.as_slice()[0]
+                .required_lock_targets()
+                .as_slice(),
+            &[root]
+        );
+        assert!(!top_level.expected_lock_reasons.contains_key(&target_a));
+
+        let subordinate = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::subordinate_add(
+                object_leaf(OBJECT_B),
+                display("Subordinate add"),
+                object_leaf(OBJECT_A),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            subordinate.integration_entries.as_slice()[0]
+                .required_lock_targets()
+                .as_slice(),
+            std::slice::from_ref(&target_a)
+        );
+        assert!(!subordinate.expected_lock_reasons.contains_key(&target_b));
+
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::top_level_add(
+                object_leaf(OBJECT_A),
+                display("New target"),
+            ),
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_B),
+                display("Existing referrer"),
+                vec![target_a],
+            ),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn repository_lock_plan_unions_overlapping_roles_and_rejects_noncanonical_inputs() {
+        let target_a = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        let target_b = RepositoryTargetIdentity::development_object(object(OBJECT_B));
+        let modify = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("Self referring modify"),
+                vec![target_a.clone()],
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            modify.expected_lock_reasons.get(&target_a).unwrap(),
+            &vec![
+                RepositoryUpdateLockReason::UpdateTarget,
+                RepositoryUpdateLockReason::ReferenceClosure,
+            ]
+        );
+        assert_eq!(
+            modify.integration_entries.as_slice()[0]
+                .required_lock_targets()
+                .as_slice(),
+            std::slice::from_ref(&target_a)
+        );
+
+        const OBJECT_C: &str = "00000000-0000-0000-0000-000000000003";
+        let target_c = RepositoryTargetIdentity::development_object(object(OBJECT_C));
+        let delete = RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_delete(
+                object_leaf(OBJECT_B),
+                display("Delete"),
+                target_a.clone(),
+                vec![target_c.clone()],
+                vec![target_a.clone(), target_c.clone()],
+                DeleteSelfLockabilityObservation::ExistingSeparatelyLockable,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            delete.expected_lock_reasons.get(&target_a).unwrap(),
+            &vec![
+                RepositoryUpdateLockReason::ParentClosure,
+                RepositoryUpdateLockReason::ReferenceClosure,
+            ]
+        );
+        assert_eq!(
+            delete.expected_lock_reasons.get(&target_c).unwrap(),
+            &vec![
+                RepositoryUpdateLockReason::ReferenceClosure,
+                RepositoryUpdateLockReason::StructuralClosure,
+            ]
+        );
+
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_B),
+                display("B"),
+                vec![],
+            ),
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("A"),
+                vec![],
+            ),
+        ])
+        .is_err());
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("A first"),
+                vec![],
+            ),
+            RepositoryIntegrationTopologyObservation::object_modify(
+                object_leaf(OBJECT_A),
+                display("A duplicate"),
+                vec![],
+            ),
+        ])
+        .is_err());
+        for changed_referrers in [
+            vec![target_b.clone(), target_a.clone()],
+            vec![target_a.clone(), target_a.clone()],
+        ] {
+            assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+                RepositoryIntegrationTopologyObservation::object_modify(
+                    object_leaf(OBJECT_C),
+                    display("Noncanonical referrers"),
+                    changed_referrers,
+                ),
+            ])
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn repository_lock_plan_rejects_contradictory_delete_topology() {
+        let root = RepositoryTargetIdentity::configuration_root();
+        let target_a = RepositoryTargetIdentity::development_object(object(OBJECT_A));
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_delete(
+                object_leaf(OBJECT_B),
+                display("Parent also claimed as subordinate"),
+                target_a.clone(),
+                vec![target_a],
+                vec![],
+                DeleteSelfLockabilityObservation::ExistingSeparatelyLockable,
+            ),
+        ])
+        .is_err());
+        assert!(RepositoryIntegrationTopologyBatchAuthority::derive(vec![
+            RepositoryIntegrationTopologyObservation::object_delete(
+                object_leaf(OBJECT_A),
+                display("Deleted target also claimed as changed referrer"),
+                root,
+                vec![],
+                vec![RepositoryTargetIdentity::development_object(object(
+                    OBJECT_A
+                ))],
+                DeleteSelfLockabilityObservation::Absent,
+            ),
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn repository_result_validated_commit_object_fixture_binds_version_digest_and_atomic_capability(
     ) {
         let version = RepositoryVersion::parse("101").unwrap();
@@ -17068,6 +18389,33 @@ mod gate_b2_preview_tests {
         };
     }
 
+    assert_not_clone!(RepositoryIntegrationTopologyObservation);
+    assert_not_clone!(RepositoryIntegrationTopologyBatchAuthority);
+    assert_not_clone!(RepositoryLockPlanObservedIds);
+    assert_not_clone!(RepositoryLockPlanObservedEvidence);
+    assert_not_clone!(RepositoryLockPlanObservationInput);
+    assert_not_clone!(RepositoryLockPlanObservationRequest<'static>);
+    assert_not_clone!(RepositoryLockPlanObservationInvocationCapability);
+    assert_not_clone!(RepositoryLockPlanObservationCompletionCapability);
+    assert_not_clone!(RepositoryLockPlanObservationLease);
+    assert_not_serialize!(RepositoryIntegrationTopologyObservation);
+    assert_not_serialize!(RepositoryIntegrationTopologyBatchAuthority);
+    assert_not_serialize!(RepositoryLockPlanObservedIds);
+    assert_not_serialize!(RepositoryLockPlanObservedEvidence);
+    assert_not_serialize!(RepositoryLockPlanObservationInput);
+    assert_not_serialize!(RepositoryLockPlanObservationRequest<'static>);
+    assert_not_serialize!(RepositoryLockPlanObservationInvocationCapability);
+    assert_not_serialize!(RepositoryLockPlanObservationCompletionCapability);
+    assert_not_serialize!(RepositoryLockPlanObservationLease);
+    assert_not_deserialize_owned!(RepositoryIntegrationTopologyObservation);
+    assert_not_deserialize_owned!(RepositoryIntegrationTopologyBatchAuthority);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservedIds);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservedEvidence);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationInput);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationRequest<'static>);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationInvocationCapability);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationCompletionCapability);
+    assert_not_deserialize_owned!(RepositoryLockPlanObservationLease);
     assert_not_clone!(PostMergeCommitGuardRequest<'static>);
     assert_not_clone!(PostMergeCommitGuardInvocationCapability);
     assert_not_clone!(PostMergeCommitGuardCompletionCapability);
