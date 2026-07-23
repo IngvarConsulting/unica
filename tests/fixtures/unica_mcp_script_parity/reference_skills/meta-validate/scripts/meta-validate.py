@@ -97,13 +97,14 @@ resolved_path = os.path.abspath(object_path)
 
 config_dir = None
 probe = os.path.dirname(resolved_path)
-for _ in range(4):
-    if not probe:
-        break
+while probe:
     if os.path.exists(os.path.join(probe, "Configuration.xml")):
         config_dir = probe
         break
-    probe = os.path.dirname(probe)
+    parent = os.path.dirname(probe)
+    if parent == probe:
+        break
+    probe = parent
 
 # ── output infrastructure ────────────────────────────────────
 
@@ -353,7 +354,8 @@ def configuration_language_codes(directory):
     codes = []
     seen = set()
     for language_name in language_names:
-        if not language_name.strip():
+        language_name = language_name.strip()
+        if not language_name:
             continue
         try:
             language_tree = etree.parse(
@@ -579,14 +581,10 @@ else:
                 language_codes.append(language)
 
     if not language_codes:
-        selected_values = (
-            ("ListPresentation", list_presentation_values)
-            if list_presentation_values
-            else ("Synonym", synonym_values)
-        )
-        source, values = selected_values
-        for _, text in values:
-            warn_long_command_text(source, text)
+        for _, text in list_presentation_values:
+            warn_long_command_text("ListPresentation", text)
+        for _, text in synonym_values:
+            warn_long_command_text("Synonym", text)
     else:
         for language_code in language_codes:
             list_values = [

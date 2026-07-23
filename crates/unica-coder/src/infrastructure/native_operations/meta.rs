@@ -1785,6 +1785,48 @@ mod edit_tests {
     }
 
     #[test]
+    fn validate_meta_ignores_non_v8_language_elements() {
+        let xml = sample_document_xml("<RegisterRecords/>")
+            .replace(
+                "xmlns:xsi=",
+                "xmlns:foo=\"urn:unrelated\" xmlns:xsi=",
+            )
+            .replace(
+                "<Synonym/>",
+                "<Synonym><v8:item><foo:lang>en</foo:lang><v8:content>Shipment</v8:content></v8:item></Synonym>",
+            );
+        let document = Document::parse(&xml).unwrap();
+        let type_node = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element())
+            .unwrap();
+        let properties = meta_info_child(type_node, "Properties").unwrap();
+        let synonym = meta_info_child(properties, "Synonym");
+
+        assert_eq!(
+            meta_validate_localized_values(synonym),
+            vec![(None, "Shipment".to_string())]
+        );
+        assert!(meta_validate_observed_language_codes(properties).is_empty());
+    }
+
+    #[test]
+    fn validate_meta_checks_all_language_neutral_presentations() {
+        let stdout = validate_stdout_with_presentations(
+            "validate-language-neutral-values",
+            &[(
+                "",
+                "A very long neutral synonym intended for the command interface",
+            )],
+            &[("", "Shipments")],
+            &[],
+        );
+        assert!(stdout.contains("Synonym"), "{stdout}");
+        assert!(stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
     fn edit_meta_rejects_unknown_modify_attribute_key() {
         let context = temp_context("modify-attribute-unknown-key");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -2485,10 +2527,7 @@ pub(crate) fn meta_validate_finish(
 
 pub(crate) fn meta_validate_config_dir(resolved_path: &Path) -> Option<PathBuf> {
     let mut probe = resolved_path.parent();
-    for _ in 0..4 {
-        let Some(dir) = probe else {
-            break;
-        };
+    while let Some(dir) = probe {
         if dir.join("Configuration.xml").exists() {
             return Some(dir.to_path_buf());
         }
@@ -2523,6 +2562,7 @@ pub(crate) fn meta_validate_language_codes(config_dir: Option<&Path>) -> Vec<Str
         .map(meta_info_inner_text)
         .filter(|name| !name.trim().is_empty())
     {
+        let language_name = language_name.trim();
         let language_path = config_dir
             .join("Languages")
             .join(format!("{language_name}.xml"));
@@ -2550,16 +2590,32 @@ pub(crate) fn meta_validate_language_codes(config_dir: Option<&Path>) -> Vec<Str
 pub(crate) fn meta_validate_localized_values(
     node: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<(Option<String>, String)> {
+    const V8_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
+
     let Some(node) = node else {
         return Vec::new();
     };
-    meta_info_children(node, "item")
+    node.children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().name() == "item"
+                && child.tag_name().namespace() == Some(V8_CORE_NS)
+        })
         .into_iter()
         .filter_map(|item| {
-            let language = meta_info_child_text(item, "lang")
+            let child_text = |name| {
+                item.children()
+                    .find(|child| {
+                        child.is_element()
+                            && child.tag_name().name() == name
+                            && child.tag_name().namespace() == Some(V8_CORE_NS)
+                    })
+                    .map(meta_info_inner_text)
+            };
+            let language = child_text("lang")
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty());
-            let text = meta_info_child_text(item, "content").unwrap_or_default();
+            let text = child_text("content").unwrap_or_default();
             (!text.trim().is_empty()).then_some((language, text))
         })
         .collect()
@@ -2572,7 +2628,11 @@ pub(crate) fn meta_validate_observed_language_codes(
     let mut language_codes = Vec::new();
     for language_code in props_node
         .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "lang")
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "lang"
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+        })
         .map(meta_info_inner_text)
     {
         let language_code = language_code.trim();
@@ -2727,14 +2787,11 @@ pub(crate) fn meta_validate_check_properties(
     }
 
     if language_codes.is_empty() {
-        if list_presentation_values.is_empty() {
-            for (_, text) in &synonym_values {
-                meta_validate_warn_long_command_text(report, "Synonym", text, None);
-            }
-        } else {
-            for (_, text) in &list_presentation_values {
-                meta_validate_warn_long_command_text(report, "ListPresentation", text, None);
-            }
+        for (_, text) in &list_presentation_values {
+            meta_validate_warn_long_command_text(report, "ListPresentation", text, None);
+        }
+        for (_, text) in &synonym_values {
+            meta_validate_warn_long_command_text(report, "Synonym", text, None);
         }
     } else {
         for language_code in &language_codes {
