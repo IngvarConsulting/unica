@@ -12490,6 +12490,7 @@ mod tests {
     #[test]
     fn form_compile_emits_tooltip_and_button_appearance() {
         let definition = json!({
+            "attributes": [{"name": "Status", "type": "String"}],
             "elements": [
                 {
                     "input": "Comment",
@@ -12591,6 +12592,7 @@ mod tests {
                 "\t\t\t\t</v8:item>\n",
                 "\t\t\t</ToolTip>\n",
                 "\t\t\t<ToolTipRepresentation>Balloon</ToolTipRepresentation>\n",
+                "\t\t\t<TitleLocation>Right</TitleLocation>\n",
                 "\t\t\t<CheckBoxType>Auto</CheckBoxType>"
             )),
             "{xml}"
@@ -12658,6 +12660,10 @@ mod tests {
     #[test]
     fn form_compile_emits_documented_input_column_properties() {
         let definition = json!({
+            "attributes": [
+                {"name": "ПутьКФайлу", "type": "String"},
+                {"name": "Объект", "type": "CatalogObject.CorpusCatalog", "main": true}
+            ],
             "elements": [
                 {
                     "input": "ПутьКФайлу",

@@ -1228,7 +1228,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     payload = json.loads(block)
                 except json.JSONDecodeError:
                     continue
-                arguments = payload.get("params", {}).get("arguments", {})
+                if not isinstance(payload, dict):
+                    continue
+                params = payload.get("params", {})
+                if not isinstance(params, dict):
+                    continue
+                arguments = params.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    continue
                 source_set = arguments.get("sourceSet")
                 if (
                     arguments.get("operation") == "dump"

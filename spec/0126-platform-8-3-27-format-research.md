@@ -2,9 +2,8 @@
 
 ## Status
 
-This memo records the evidence and agreed compatibility boundary gathered before
-the implementation is merged. It is deliberately not a completion claim: the
-real-platform gate and the implementation review remain required.
+This memo records the evidence, the implemented compatibility boundary, and the
+completed acceptance checks for the fixed 8.3.27 / 2.20 profile.
 
 ## Fixed profile decision
 
@@ -71,21 +70,24 @@ routes. Any non-native route capable of publishing platform XML must have a
 separate verified staged-publication boundary and end-to-end proof, or fail
 before it writes source XML.
 
-## Required completion evidence
+## Completed acceptance evidence
 
-The implementation is ready to claim this baseline only after all of the
-following are fresh and reproducible:
+The following reproducible checks completed against the implementation in this
+change set:
 
-- two new independent corpus generations have the expected normalized contract
-  and unchanged topology;
-- static XSD/XDTO verifier results are recorded for both corpora;
-- the full 63-checkpoint `ibcmd` 8.3.27.2074 gate passes with zero rejected,
-  normalized, or source-error checkpoints;
-- the gate proves the corpus and the pinned platform install tree remained
-  unchanged;
-- all public XML-writing routes are either included in the appropriate proof or
-  blocked before publication;
-- the final implementation and documentation reviews have no unresolved
+- two independently generated corpus manifests matched the expected
+  case-contract digest and retained 1039 regular files plus 90 empty
+  directories each;
+- both static XSD/XDTO verifier runs reported 11 strict passes, 638 explicit
+  inconclusive results, and zero failures;
+- the full 63-checkpoint `ibcmd` 8.3.27.2074 gate passed: 63 passed, zero
+  rejected, zero normalized, zero source errors, and 432 platform commands;
+- the gate verified unchanged corpus bytes and topology, and unchanged pinned
+  platform-install bytes and topology (4337 files and 96 directories);
+- every public XML-writing route is covered by the native profile guard and
+  corpus inventory, or uses the separately verified synchronous staged full
+  dump boundary; and
+- the implementation and documentation review completed without unresolved
   findings.
 
 This baseline is the prerequisite writer/profile phase of issue #126. The

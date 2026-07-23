@@ -1905,6 +1905,7 @@ mod tests {
         let root = test_workspace_root("runtime-full-dump-profile-guard");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("verified synchronous dump adapter invoked"),
+            data: None,
         }));
 
         for (tool, include_operation) in
@@ -1950,6 +1951,7 @@ mod tests {
         let root = test_workspace_root("runtime-non-dump-xml-route-guard");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
+            data: None,
         }));
 
         for tool in ["unica.runtime.execute", "unica.runtime.job.start"] {
@@ -1996,6 +1998,7 @@ mod tests {
         let root = test_workspace_root("runtime-non-dump-xml-route-preview");
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("runtime preview invoked"),
+            data: None,
         }));
         for operation in ["convert", "launch"] {
             let mut args = Map::new();
@@ -6091,6 +6094,7 @@ mod tests {
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("same aliases"),
+            data: None,
         }))
         .call_tool("unica.cf.info", same.as_object().unwrap())
         .expect("equal path aliases must collapse to one canonical value");
@@ -6102,6 +6106,7 @@ mod tests {
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("empty alias ignored"),
+            data: None,
         }))
         .call_tool("unica.cf.info", empty_and_value.as_object().unwrap())
         .expect("one non-empty path alias must win over empty aliases");
@@ -6113,6 +6118,7 @@ mod tests {
         });
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("must not run"),
+            data: None,
         }))
         .call_tool("unica.cf.info", conflict.as_object().unwrap())
         .unwrap_err();
@@ -6128,6 +6134,7 @@ mod tests {
         });
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("form compile must not run"),
+            data: None,
         }))
         .call_tool(
             "unica.form.compile",
