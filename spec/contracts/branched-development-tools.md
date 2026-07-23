@@ -172,10 +172,15 @@ The companion contract for general mutations is producer-neutral:
   closure, its repository content/ownership, and the support root/layers on
   which that closure depends. A global history-cursor advance with the same
   recomputed digest is an unrelated advance only when the complete intervening
-  partition is `unrelatedRoutine`. Any relevant/support/pre-arm-external/
-  invalid/corrective
-  entry invalidates the old baseline even when later history restores the same
-  net digest; change-then-revert is not erased.
+  partition is `unrelatedRoutine`. A `nonConflictingConcurrent` entry is never
+  relabeled as a baseline-preserving unrelated advance and classification alone
+  cannot reuse the old baseline. It may enter a post-merge commit phase only
+  through a fresh full-partition scan bound by a non-wire phase authority to the
+  exact atomic-safety capability, planner target scope, and reference-closure
+  chain; an immediate strict extension requires a fresh preview. Any relevant/
+  support/pre-arm-external/invalid/corrective entry invalidates the old baseline
+  even when later history restores the same net digest; change-then-revert is
+  not erased.
 - `RoutineRepositoryVersionClassificationEvidence`: closed `{
   repositoryVersion: RepositoryVersion, relevance: unrelated | relevant,
   repositoryActor: RepositoryActorIdentity | null, rootDeltaDigest: Sha256,
@@ -533,18 +538,27 @@ The companion contract for general mutations is producer-neutral:
   RepositoryHistoryCursor, classifiedThroughCursor: RepositoryHistoryCursor,
   partition: RepositoryHistoryPartition, recomputedReferenceClosureDigest,
   relevantTailAbsent: true, atomicCommitSafetyCapabilityId:
-  CapabilityRowId, evidenceDigest }`. It proves every intervening version is
-  unrelated to the integration/reference/support closure. Commit apply supplies
-  this pre-effect evidence to a capability-proven atomic repository safety
-  boundary. The real-fixture capability proves that locks plus the platform's
-  no-force atomic commit validation reject, without partial task commit, every
-  concurrent change to a locked target/root or new reference that would block
-  an approved deletion. Other concurrently committable closure expansion is
-  retained as capability-proven `nonConflictingConcurrent`; it is not falsely
-  required to fail. A pre-intent referrer, or a concurrent referrer that changes
-  a locked target/root or blocks an approved deletion, starts no task-content
-  commit and enters restore/unlock recovery; every other post-boundary entry is
-  classified explicitly rather than being called conflicting by default.
+  CapabilityRowId, evidenceDigest }`. This cloneable wire value is an audit
+  projection, not the control authority that authorizes a commit. With zero
+  `nonConflictingConcurrent` entries its complete partition consists only of
+  `unrelatedRoutine`. A scoped partition may instead contain only
+  `unrelatedRoutine` and capability-proven `nonConflictingConcurrent`, but each
+  latter entry is authorized only while the exact non-wire phase-bound control
+  authority owns the fresh full scan, exact planner target-set binding,
+  reference-closure chain, and invocation-bound capability. The scalar
+  `atomicCommitSafetyCapabilityId` and this evidence record cannot mint that
+  authority. Commit apply supplies the audit evidence together with the owning
+  control authority to a capability-proven atomic repository safety boundary.
+  The real-fixture capability proves that locks plus the platform's no-force
+  atomic commit validation reject, without partial task commit, every concurrent
+  change to a locked target/root or new reference that would block an approved
+  deletion. Other concurrently committable closure expansion is retained as
+  capability-proven `nonConflictingConcurrent`; it is not falsely required to
+  fail or relabeled unrelated. A pre-intent referrer, or a concurrent referrer
+  that changes a locked target/root or blocks an approved deletion, starts no
+  task-content commit and enters restore/unlock recovery; every other
+  post-boundary entry is classified explicitly rather than being called
+  conflicting by default.
   It is valid only when `partition.fromExclusive == mergeReceiptCursor` and
   `partition.throughInclusive == classifiedThroughCursor`.
   `PostMergeHistoryGuardEvidenceDigestRecord` is the closed
@@ -2840,7 +2854,7 @@ Evidence-bearing domain stops are exhaustive:
 | `merge.apply(target="original")` pre-effect guard | `relevantBaselineChanged` | `RelevantMergeApplyStopData { sessionId, expectedRelevantBaselineDigest, observedRelevantBaselineDigest, expectedHistoryCursor, observedHistoryCursor, historyPartition: RepositoryHistoryPartition, relevantHistoryEntries: RepositoryHistoryPartitionEntry[], lockSetId, expectedLockSetDigest, requiredNextTool: repository.unlock }`; endpoints match, relevant entries are non-empty even for net-zero digest, no task merge starts, and status is `staleRelevantBaseline` until exact unlock |
 | `merge.apply(target="original")` pre-effect guard | `supportPreflightStale` | `SupportMergeApplyStaleData { sessionId, supportGateId, expectedSupportGateDigest, observedSupportGateDigest, supportMismatchKinds: SupportGateMismatchKind[], expectedSupportInputs: SupportGateInputDigests, observedSupportInputs: SupportGateInputDigests, relevantBaselineDigest, expectedHistoryCursor, observedHistoryCursor, historyEvidence: SupportGateHistoryEvidence, originalCleanRefreshProof?: OriginalCleanRefreshProof, lockSetId, expectedLockSetDigest, requiredNextTool: repository.unlock }`; history-evidence cursors equal expected/observed, the partition is all-unrelated, and the clean-refresh proof follows the fingerprint-mismatch presence rule. No task merge starts; status is `staleSupportPreflight` until exact unlock. An unowned/unclassified original delta uses recovery instead |
 | `merge.apply(target="original")` pre-effect guard | `additionalLocksRequired` | `AdditionalLocksMergeApplyStopData { sessionId, supportGateId, lockSetId, expectedLockSetDigest, additionalLockEntries[], requiredNextTool: repository.unlock }`; additional entries are non-empty, history/support-stale fields are absent, no task merge starts, and status is `lockPlanExpansionRequired` until exact unlock |
-| `repository.commit` preview or immediate pre-effect guard | `postMergeLineageChanged` | `PostMergeLineageStopData { mergeReceiptId, verificationId, supportGateId, expectedConsumedSupportGateDigest, observedSupportGateState, expectedAuthorizedPostMergeFingerprint, observedOriginalFingerprint, expectedHistoryCursor, observedHistoryCursor, expectedReferenceClosureDigest, observedReferenceClosureDigest, historyTailPartition: RepositoryHistoryPartition, conflictingEntries: RepositoryHistoryPartitionEntry[], integrationSetId, lockSetId, recovery: RecoveryPlanStatus }`; conflicting entries are non-empty and identify the relevant/referrer/support cause; no commit starts, status is `recoveryRequired`, and the exact restore-plus-full-unlock plan is mandatory |
+| `repository.commit` preview or immediate pre-effect guard | `postMergeLineageChanged` | `PostMergeLineageStopData { mergeReceiptId, verificationId, supportGateId, expectedConsumedSupportGateDigest, observedSupportGateState, expectedAuthorizedPostMergeFingerprint, observedOriginalFingerprint, expectedHistoryCursor, observedHistoryCursor, expectedReferenceClosureDigest, observedReferenceClosureDigest, historyTailPartition: RepositoryHistoryPartition, conflictingEntries: RepositoryHistoryPartitionEntry[], integrationSetId, lockSetId, recovery: RecoveryPlanStatus }`; both the remeasured original fingerprint and terminal repository-anchor configuration fingerprint must still equal `expectedAuthorizedPostMergeFingerprint`. A closure-only cursor advance is non-conflicting only after exact phase-bound scoped-NCC proof. At immediate recheck, a strict prefix extension made solely of validated `unrelatedRoutine`/`nonConflictingConcurrent` entries requires a fresh preview; a consumed-gate, outer-capability, fingerprint, receipt/planner-scope, closure-chain, relevant/support, unsafe, or non-prefix mismatch enters this row. `conflictingEntries` is the exact non-empty ordered projection iff validation identified one or more specific offending partition rows, including relevant/support rows, unsafe or out-of-scope NCC facts, broken NCC chain positions, or attributable non-prefix divergence. It is empty iff the cause is wholly global and no partition entry can truthfully be named, including consumed-gate or outer-capability mismatch, receipt/planner-scope derivation failure, anchor/fingerprint mismatch, or terminal closure/endpoint failure. No commit starts, status is `recoveryRequired`, and the exact restore-plus-full-unlock plan is mandatory |
 | `repository.commit` | `repositoryCommitFailed` | `RepositoryMutationObservationData { operationId, observedRepositoryAnchor?, observedObjects[], observedLocks[], recovery: RecoveryPlanStatus }`; status is `commitBlocked` |
 | `repository.commit` | `repositoryCommitAmbiguous`, `repositoryUnlockUnverified` | `RepositoryMutationObservationData { operationId, observedRepositoryAnchor?, observedObjects[], observedLocks[], recovery: RecoveryPlanStatus }`; status is `committedUnverified` |
 | `repository.unlock` | `repositoryUnlockUnverified` | `RepositoryMutationObservationData { operationId, observedRepositoryAnchor?, observedObjects[], observedLocks[], recovery: RecoveryPlanStatus }`; status is `recoveryRequired` |
@@ -6466,33 +6480,46 @@ guard's `mergeReceiptCursor` equals both the original merge receipt's
 `repositoryHistoryCursor` and the consumed gate evidence's
 `classifiedThroughCursor`.
 
-Both preview and apply immediately before commit intent remeasure the original
-fingerprint, scan every repository version since the merge receipt, recompute
-the task/reference/support closure, and require the
-`consumedByOriginalMerge` gate to bind the supplied history evidence, merge
-receipt, verification, integration/lock sets, and authorized post-merge
-fingerprint. A proven unrelated tail is retained in
-`PostMergeHistoryGuardEvidence`; a relevant/referrer tail returns
-`postMergeLineageChanged`. Apply does not supply an expected repository cursor
-to Designer: that public command has no such CAS. Instead it supplies the exact
-objects under the already-held locks, without `-force`, to the
-capability-proven atomic commit-safety boundary. The real fixture must prove
-that a concurrent conflicting revision/referrer causes zero task objects to be
-committed and that partial task versions are impossible; unrelated commits may
-interleave. Drift observed before intent returns the evidence-bearing
-`postMergeLineageChanged` stop and enters the exact original-restore plus
-full-unlock plan. After the command, Unica scans the complete interval, locates
-the task's exact immutable version/object set, and records unrelated
-interleavings. A surprising relevant/conflicting interleaving or ambiguous own
-version after an effect may have occurred is `committedUnverified` plus a
-capability-breach observation plan, never a pre-effect stop, rollback, or blind
-retry.
-Because `commitDigest` covers the history evidence, an unrelated cursor advance
-between preview and apply rejects the old approval and requires a fresh preview
-without entering recovery; a relevant/referrer advance uses
-`postMergeLineageChanged`. The immediate apply recheck then fixes
-`beforeRepositoryCursor`; only races after that boundary are delegated to the
-atomic-safety capability and post-commit partition.
+Both preview and apply immediately before commit intent independently remeasure
+the original fingerprint and the terminal repository-anchor configuration
+fingerprint and require each to equal the authorized post-merge fingerprint.
+They scan every repository version since the merge receipt, recompute the
+task/reference/support closure, and require the `consumedByOriginalMerge` gate
+to bind the supplied history evidence, merge receipt, verification,
+integration/lock sets, and authorized fingerprint. A complete all-
+`unrelatedRoutine` tail follows the no-NCC path. If any
+`nonConflictingConcurrent` entry is present, the phase instead requires a fresh
+full-partition scan and a non-wire authority that binds the exact planner target
+sets, invocation capability, ordered closure chain, and terminal closure;
+`PostMergeHistoryGuardEvidence` by itself remains only an audit projection.
+Precommit may therefore publish a preview with a new terminal reference closure
+while both fingerprints remain unchanged. A relevant/referrer tail, unsafe or
+unscoped NCC, broken closure chain, non-prefix history, or either fingerprint
+mismatch returns `postMergeLineageChanged` before any commit intent.
+
+Apply does not supply an expected repository cursor to Designer: that public
+command has no such CAS. Instead it supplies the exact objects under the
+already-held locks, without `-force`, to the capability-proven atomic commit-
+safety boundary. The real fixture must prove that a concurrent conflicting
+revision/referrer causes zero task objects to be committed and that partial
+task versions are impossible; unrelated commits may interleave. After the
+command, Unica scans the complete interval, locates the task's exact immutable
+version/object set, and records unrelated interleavings. A surprising relevant/
+conflicting interleaving or ambiguous own version after an effect may have
+occurred is `committedUnverified` plus a capability-breach observation plan,
+never a pre-effect stop, rollback, or blind retry.
+
+Because `commitDigest` covers the history evidence, the immediate apply recheck
+uses a distinct fresh full scan whenever the current partition contains NCC.
+An exact approved partition is `Ready` only when its freshly proven terminal
+closure also equals the preview closure. Any strict safe prefix extension made
+solely of validated `unrelatedRoutine`/NCC entries requires a fresh preview
+without entering recovery, including a no-NCC preview followed by NCC and an
+NCC preview followed only by an unrelated row. Relevant/unsafe/non-prefix/
+scope/closure-chain/fingerprint failure uses `postMergeLineageChanged`. The
+accepted immediate recheck then fixes `beforeRepositoryCursor`; only races after
+that boundary are delegated to the atomic-safety capability and post-commit
+partition.
 For a completed apply, `beforeRepositoryCursor ==
 historyGuardEvidence.classifiedThroughCursor`, and the approved history-evidence
 digest/capability ID are reproduced exactly. `postCommitHistoryPartition` has
@@ -6774,7 +6801,7 @@ because it did not exist as an independently lockable repository object.
 | `mainPreparationMismatch` | Main sandbox has a conflict, unexpected scope, support-isolation violation, or extra repair; publish immutable difference evidence, enter `validationFailed`, and create no main session/lock plan |
 | `additionalLocksRequired` | Before original mutation, enter `lockPlanExpansionRequired` with the exact retained lock set; verified full unlock returns `synchronized` and invalidates main preparation/plan evidence |
 | `mainMergeValidationFailed` | Post-original-merge validation failed; enter `recoveryRequired` with an exact rollback-plus-unlock plan, and reach `validationFailed` only after `repository.recover` proves restoration and release |
-| `postMergeLineageChanged` | Before commit preview/effect, the consumed gate/merge receipt or authorized post-merge fingerprint no longer matches; start no commit, enter `recoveryRequired`, and restore/unlock through the exact plan |
+| `postMergeLineageChanged` | Before commit preview/effect, the consumed gate/merge lineage, invocation-bound outer capabilities, authorized original/anchor fingerprint, history endpoints, or complete post-merge partition fails its phase-bound validation. This includes planner/receipt-scope derivation, unsafe or out-of-scope NCC facts, a broken closure chain or terminal closure, and non-prefix history; a strict safe validated unrelated/NCC extension instead requires a fresh preview. Start no commit, enter `recoveryRequired`, and restore/unlock through the exact plan |
 | `repositoryCommitFailed` | Enter `commitBlocked`; when capability evidence proves zero task commit, publish the exact original-restore/full-unlock branch, otherwise first use the observation branch. No retry/unlock shortcut |
 | `repositoryCommitAmbiguous` | Enter `committedUnverified` with the exact observe-only plan; a conclusive observation publishes a separately approved committed-release or not-committed restore/full-release branch. No retry/cleanup |
 | `repositoryUnlockUnverified` | From commit enter `committedUnverified`; from standalone unlock enter `recoveryRequired`. Both publish an exact observation/compensation plan and allow no archive/cleanup until reconciled |

@@ -1212,14 +1212,18 @@ guard before returning a stale-gate result.
 Successful original merge is the one expected original-fingerprint change: it
 atomically consumes, rather than invalidates, the `ready` gate and binds that
 historical gate to the merge receipt and authorized post-merge fingerprint.
-Post-merge verification and commit use only that lineage. Any other pre-effect
-or post-effect fingerprint change stales the gate or requires recovery. Every
-non-anchor stale result names the exact changed gate inputs and returns full
-expected/observed digests plus the endpoint-bound history evidence; a relevant
-history tail uses the distinct fresh-Dn path. Commit preview and its immediate
-pre-effect guard remeasure the consumed gate/receipt/post-fingerprint lineage
-and post-merge partition; drift starts no commit and enters the exact
-restore-plus-unlock recovery.
+Post-merge verification and commit use only that lineage. The remeasured
+original fingerprint and terminal repository-anchor configuration fingerprint
+must each remain equal to the authorized post-merge fingerprint; equality only
+with each other is insufficient. NCC may advance the cursor and reference
+closure but does not load a concurrent repository version into the original.
+Any other pre-effect or post-effect fingerprint change stales the gate or
+requires recovery. Every non-anchor stale result names the exact changed gate
+inputs and returns full expected/observed digests plus the endpoint-bound
+history evidence; a relevant history tail uses the distinct fresh-Dn path.
+Commit preview and its immediate pre-effect guard remeasure the consumed gate/
+receipt/post-fingerprint lineage and post-merge partition before any commit
+intent.
 
 ### Merge decisions and authoritative replay
 
@@ -1363,8 +1367,13 @@ separate audited repository version and contains no task business change.
 Preview and the immediate pre-effect guard scan every version after the original
 merge receipt, recompute the integration/reference/support closure, and bind
 `PostMergeHistoryGuardEvidence`. Its partition starts exactly after the merge
-receipt cursor, ends at its classified-through cursor, and may contain only
-versions proven unrelated to that closure.
+receipt cursor and ends at its classified-through cursor. An all-
+`unrelatedRoutine` partition uses the baseline-preserving no-NCC path. A
+partition containing `nonConflictingConcurrent` is not called unrelated and is
+accepted only while a non-wire phase-bound authority owns a fresh full scan,
+the exact planner target-set binding, invocation capability, and complete
+reference-closure chain. The cloneable wire evidence and its scalar capability
+ID are audit projections and cannot mint that authority.
 
 Commit is enabled only when a real capability fixture proves the platform's
 atomic safety boundary: with the exact root/target locks held, the no-force
@@ -1372,14 +1381,17 @@ commit either rejects a concurrent change to a locked target/root or a new
 reference that blocks an approved deletion before any task-content commit, or
 commits the exact set once. Other capability-proven harmless closure expansion
 may commit concurrently and is retained as `nonConflictingConcurrent`; it is
-not mislabeled as unrelated. This is a proven lock/commit-validation property,
+not mislabeled as unrelated. Scoped precommit may end at its freshly proven new
+terminal closure while both fingerprints stay authorized. Immediate exact NCC
+requires a second fresh scan; any strict safe unrelated/NCC extension requires
+a fresh preview, while relevant, unsafe, non-prefix, scope, chain, or fingerprint
+failure requires recovery. This is a proven lock/commit-validation property,
 not a claimed global history-CAS or version-pinned `-v` switch. A pre-intent
 referrer or a concurrent referrer that changes a locked target/root or blocks an
-approved deletion starts no task-content commit and enters the exact
-original-restore/full-unlock recovery. Success requires repository content
-equality and proof that every acquired task/support-guard lock is released.
-Partial or ambiguous results are not retried and cannot be archived as
-successful.
+approved deletion starts no task-content commit and enters the exact original-
+restore/full-unlock recovery. Success requires repository content equality and
+proof that every acquired task/support-guard lock is released. Partial or
+ambiguous results are not retried and cannot be archived as successful.
 
 ### Capability gating
 

@@ -2,6 +2,9 @@
 use super::repository::{
     original_merge_lock_projection_fixture_test_only,
     original_merge_production_lock_projection_fixture_test_only,
+    original_merge_production_lock_projection_with_reference_closure_fixture_test_only,
+    original_merge_production_lock_projection_with_scoped_ncc_receipt_fixture_test_only,
+    ScopedNccReceiptFixtureMutation,
 };
 use super::repository::{
     JournaledRepositoryLock, LockPlanData, RepositoryIntegrationEntries, RepositoryRelevantAnchors,
@@ -7171,6 +7174,13 @@ impl ValidatedMainIntegrationCommitLineageAuthority {
             .expect("commit lineage always retains production B1 receipts")
     }
 
+    pub(crate) fn root_lock_receipt(&self) -> &JournaledRepositoryLock {
+        self.receipt()
+            .lock_projection()
+            .root_lock_receipt()
+            .expect("commit lineage always retains the production B1 root receipt")
+    }
+
     pub(crate) fn lock_plan(&self) -> &LockPlanData {
         self.receipt().lock_projection().plan()
     }
@@ -8399,6 +8409,8 @@ pub(crate) fn validated_consumed_original_merge_context_fixture_test_only(
         merge_receipt_id,
         result_fingerprint,
         None,
+        None,
+        None,
     )
 }
 
@@ -8407,6 +8419,8 @@ fn validated_consumed_original_merge_context_with_lock_identity_fixture_internal
     merge_receipt_id: UnicaId,
     result_fingerprint: Sha256Digest,
     lock_identity: Option<(UnicaId, NormalizedUtcInstant)>,
+    reference_closure_digest: Option<Sha256Digest>,
+    scoped_ncc_receipt_mutation: Option<ScopedNccReceiptFixtureMutation>,
 ) -> ValidatedConsumedOriginalMergeLineageAuthority {
     use super::repository::{
         original_merge_production_lock_projection_fixture_test_only,
@@ -8508,8 +8522,12 @@ fn validated_consumed_original_merge_context_with_lock_identity_fixture_internal
     let session = MergeSessionData::MainIntegration(main.clone());
     let decisions =
         ResolvedApplyDecisionProjectionAuthority::for_no_conflict_session(&session).unwrap();
-    let projection = match lock_identity {
-        Some((lock_set_id, observed_at)) => {
+    let projection = match (
+        lock_identity,
+        reference_closure_digest,
+        scoped_ncc_receipt_mutation,
+    ) {
+        (Some((lock_set_id, observed_at)), None, None) => {
             original_merge_production_lock_projection_with_identity_fixture_test_only(
                 main.session_id.clone(),
                 main.resolved_session_digest.clone(),
@@ -8519,12 +8537,34 @@ fn validated_consumed_original_merge_context_with_lock_identity_fixture_internal
                 observed_at,
             )
         }
-        None => original_merge_production_lock_projection_fixture_test_only(
+        (None, Some(reference_closure_digest), None) => {
+            original_merge_production_lock_projection_with_reference_closure_fixture_test_only(
+                main.session_id.clone(),
+                main.resolved_session_digest.clone(),
+                preflight,
+                main.settings_digest.clone(),
+                reference_closure_digest,
+            )
+        }
+        (None, Some(reference_closure_digest), Some(_mutation)) => {
+            original_merge_production_lock_projection_with_scoped_ncc_receipt_fixture_test_only(
+                main.session_id.clone(),
+                main.resolved_session_digest.clone(),
+                preflight,
+                main.settings_digest.clone(),
+                reference_closure_digest,
+                ScopedNccReceiptFixtureMutation::None,
+            )
+        }
+        (None, None, None) => original_merge_production_lock_projection_fixture_test_only(
             main.session_id.clone(),
             main.resolved_session_digest.clone(),
             preflight,
             main.settings_digest.clone(),
         ),
+        _ => {
+            unreachable!("test fixture does not combine lock-identity and closure overrides")
+        }
     };
     let rollback = verified_original_rollback_checkpoint_fixture_test_only(
         projection,
@@ -8557,6 +8597,23 @@ pub(crate) fn validated_main_integration_commit_context_fixture_test_only(
         merge_receipt_id,
         result_fingerprint,
         None,
+        None,
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+    merge_receipt_id: UnicaId,
+    result_fingerprint: Sha256Digest,
+    reference_closure_digest: Sha256Digest,
+) -> ResolvedCommitLineageConsumedSupportGateAuthority {
+    validated_main_integration_commit_context_with_lock_identity_fixture_internal(
+        merge_receipt_id,
+        result_fingerprint,
+        None,
+        Some(reference_closure_digest),
+        None,
     )
 }
 
@@ -8571,6 +8628,24 @@ pub(crate) fn validated_main_integration_commit_context_with_lock_identity_fixtu
         merge_receipt_id,
         result_fingerprint,
         Some((lock_set_id, observed_at)),
+        None,
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn validated_main_integration_commit_context_with_scoped_ncc_receipt_fixture_test_only(
+    merge_receipt_id: UnicaId,
+    result_fingerprint: Sha256Digest,
+    reference_closure_digest: Sha256Digest,
+    mutation: ScopedNccReceiptFixtureMutation,
+) -> ResolvedCommitLineageConsumedSupportGateAuthority {
+    validated_main_integration_commit_context_with_lock_identity_fixture_internal(
+        merge_receipt_id,
+        result_fingerprint,
+        None,
+        Some(reference_closure_digest),
+        Some(mutation),
     )
 }
 
@@ -8579,6 +8654,8 @@ fn validated_main_integration_commit_context_with_lock_identity_fixture_internal
     merge_receipt_id: UnicaId,
     result_fingerprint: Sha256Digest,
     lock_identity: Option<(UnicaId, NormalizedUtcInstant)>,
+    reference_closure_digest: Option<Sha256Digest>,
+    scoped_ncc_receipt_mutation: Option<ScopedNccReceiptFixtureMutation>,
 ) -> ResolvedCommitLineageConsumedSupportGateAuthority {
     struct FreshConsumedLease;
     impl ConsumedSupportGateStateLease for FreshConsumedLease {
@@ -8613,6 +8690,8 @@ fn validated_main_integration_commit_context_with_lock_identity_fixture_internal
         merge_receipt_id,
         result_fingerprint,
         lock_identity,
+        reference_closure_digest,
+        scoped_ncc_receipt_mutation,
     );
     let check_plan =
         ConfiguredValidationCheckPlanAuthority::from_configuration_adapter(vec![]).unwrap();
@@ -8631,8 +8710,25 @@ fn validated_main_integration_commit_context_with_lock_identity_fixture_internal
     let verified =
         MergeVerificationData::main_integration_valid_from_authorities(observation).unwrap();
     let commit = verified.into_commit_lineage();
-    ResolvedCommitLineageConsumedSupportGateAuthority::resolve(commit, &mut FreshConsumedResolver)
-        .unwrap()
+    let mut resolved = ResolvedCommitLineageConsumedSupportGateAuthority::resolve(
+        commit,
+        &mut FreshConsumedResolver,
+    )
+    .unwrap();
+    if let Some(mutation) = scoped_ncc_receipt_mutation {
+        let OriginalMergeReceiptLineage::Production(consumed) =
+            &mut resolved.lineage.lineage.receipt.lineage
+        else {
+            unreachable!("scoped NCC receipt fixture must retain production lineage")
+        };
+        consumed
+            .preintent
+            .attempt
+            .rollback
+            .source
+            .apply_scoped_ncc_receipt_mutation_fixture_test_only(mutation);
+    }
+    resolved
 }
 
 #[cfg(test)]

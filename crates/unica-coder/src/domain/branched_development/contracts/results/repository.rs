@@ -14,14 +14,18 @@ use crate::domain::branched_development::contracts::recovery::{
     RecoveryPlanStatus, RecoveryTarget, RecoveryUnknown, ValidatedCompletedPreArmTerminalEvidence,
 };
 use crate::domain::branched_development::contracts::repository::{
-    DeferredRepositoryAdvance, DeferredRepositoryAdvanceConsumptionReceipt, ObjectTargetIdentity,
-    PostMergeHistoryGuardAuthority, PostMergeHistoryGuardEvidence, RepositoryActorIdentity,
-    RepositoryAnchor, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
+    CanonicalRepositoryTargetSet, DeferredRepositoryAdvance,
+    DeferredRepositoryAdvanceConsumptionReceipt, NonEmptyCanonicalRepositoryTargetSet,
+    ObjectTargetIdentity, PlannerBoundScopedNccHistoryScanCore, PostMergeHistoryGuardAuthority,
+    PostMergeHistoryGuardEvidence, RepositoryActorIdentity, RepositoryAnchor,
+    RepositoryContractError, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
     RepositoryHistoryPartitionResolver, RepositoryPlannedChanges, RepositoryTargetIdentity,
     RepositoryTargetState, RepositoryTargetStateRef, RepositoryTargetStates,
     RepositoryUpdateLockReason, RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets,
-    RootTargetIdentity, SelectiveRepositoryUpdatePlan, SelectiveRepositoryUpdateProof,
-    SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
+    RootTargetIdentity, ScopedNccHistoryScanBlockedAuthority, ScopedNccHistoryScanPort,
+    ScopedNccPlannerBindingBlockedCore, ScopedNccPlannerBindingFailure,
+    ScopedNccPlannerCoreResolutionFailure, SelectiveRepositoryUpdatePlan,
+    SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
     SupportRootSelectiveRepositoryUpdatePlanAuthority, UnvalidatedRepositoryHistoryPartition,
     ValidatedRepositoryHistoryPartition, ValidatedRoutineUpdateProjection,
     ValidatedSupportPrerequisiteHistoryProjection, ValidatedSupportRecoveryHistoryEntryRef,
@@ -436,6 +440,10 @@ impl RepositoryIntegrationEntry {
                 RepositoryTargetIdentity::DevelopmentObject(value.target.clone())
             }
         }
+    }
+
+    fn is_delete(&self) -> bool {
+        matches!(self, Self::ObjectDelete(_))
     }
 
     pub(crate) fn required_lock_targets(&self) -> &CanonicalRepositoryTargets {
@@ -2655,6 +2663,203 @@ fn stable_identity_deduped_receipts(
     retained
 }
 
+/// Exact planner-owned scope derived in this result layer only after the
+/// ordered lock-receipt lineage has passed its complete bijection check.
+/// Repository contracts may inspect it but cannot construct one in production.
+#[derive(Debug)]
+pub(crate) struct ScopedNccPlannerScope {
+    locked_targets: NonEmptyCanonicalRepositoryTargetSet,
+    integration_content_targets: NonEmptyCanonicalRepositoryTargetSet,
+    approved_deletion_targets: CanonicalRepositoryTargetSet,
+    planned_initial_reference_closure_digest: Sha256Digest,
+}
+
+impl ScopedNccPlannerScope {
+    const fn new(
+        locked_targets: NonEmptyCanonicalRepositoryTargetSet,
+        integration_content_targets: NonEmptyCanonicalRepositoryTargetSet,
+        approved_deletion_targets: CanonicalRepositoryTargetSet,
+        planned_initial_reference_closure_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            locked_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+            planned_initial_reference_closure_digest,
+        }
+    }
+
+    pub(crate) const fn locked_targets(&self) -> &NonEmptyCanonicalRepositoryTargetSet {
+        &self.locked_targets
+    }
+
+    pub(crate) const fn integration_content_targets(
+        &self,
+    ) -> &NonEmptyCanonicalRepositoryTargetSet {
+        &self.integration_content_targets
+    }
+
+    pub(crate) const fn approved_deletion_targets(&self) -> &CanonicalRepositoryTargetSet {
+        &self.approved_deletion_targets
+    }
+
+    pub(crate) const fn planned_initial_reference_closure_digest(&self) -> &Sha256Digest {
+        &self.planned_initial_reference_closure_digest
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_test_only(
+        locked_targets: NonEmptyCanonicalRepositoryTargetSet,
+        integration_content_targets: NonEmptyCanonicalRepositoryTargetSet,
+        approved_deletion_targets: CanonicalRepositoryTargetSet,
+        planned_initial_reference_closure_digest: Sha256Digest,
+    ) -> Self {
+        Self::new(
+            locked_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+            planned_initial_reference_closure_digest,
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExactOrderedLockReceiptFailure {
+    MissingReceipt {
+        expected_count: usize,
+        observed_count: usize,
+    },
+    ExtraReceipt {
+        position: usize,
+    },
+    DuplicateTarget {
+        first_position: usize,
+        duplicate_position: usize,
+    },
+    ReorderedReceipt {
+        position: usize,
+        expected_position: usize,
+    },
+    WrongTarget {
+        position: usize,
+    },
+    WrongLockSet {
+        position: usize,
+    },
+    RootReceiptMismatch,
+}
+
+fn validate_exact_ordered_lock_receipts(
+    expected_targets: &[RepositoryTargetIdentity],
+    expected_lock_set_id: &UnicaId,
+    retained_root_receipt: &JournaledRepositoryLock,
+    journaled_receipts: &[JournaledRepositoryLock],
+) -> Result<(), ExactOrderedLockReceiptFailure> {
+    for (index, receipt) in journaled_receipts.iter().enumerate() {
+        if receipt.lock_set_id() != expected_lock_set_id {
+            return Err(ExactOrderedLockReceiptFailure::WrongLockSet {
+                position: index + 1,
+            });
+        }
+        if let Some(first_index) = journaled_receipts[..index]
+            .iter()
+            .position(|known| known.target() == receipt.target())
+        {
+            return Err(ExactOrderedLockReceiptFailure::DuplicateTarget {
+                first_position: first_index + 1,
+                duplicate_position: index + 1,
+            });
+        }
+    }
+    if !journaled_receipts
+        .first()
+        .is_some_and(|receipt| same_journaled_lock_identity(receipt, retained_root_receipt))
+    {
+        return Err(ExactOrderedLockReceiptFailure::RootReceiptMismatch);
+    }
+    if journaled_receipts.len() < expected_targets.len() {
+        return Err(ExactOrderedLockReceiptFailure::MissingReceipt {
+            expected_count: expected_targets.len(),
+            observed_count: journaled_receipts.len(),
+        });
+    }
+    if journaled_receipts.len() > expected_targets.len() {
+        return Err(ExactOrderedLockReceiptFailure::ExtraReceipt {
+            position: expected_targets.len() + 1,
+        });
+    }
+    for (index, (receipt, expected_target)) in journaled_receipts
+        .iter()
+        .zip(expected_targets.iter())
+        .enumerate()
+    {
+        if receipt.target() == expected_target {
+            continue;
+        }
+        if let Some(expected_index) = expected_targets
+            .iter()
+            .position(|target| target == receipt.target())
+        {
+            return Err(ExactOrderedLockReceiptFailure::ReorderedReceipt {
+                position: index + 1,
+                expected_position: expected_index + 1,
+            });
+        }
+        return Err(ExactOrderedLockReceiptFailure::WrongTarget {
+            position: index + 1,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) enum ScopedNccPlannerScopeDerivationFailure {
+    LockReceipts(ExactOrderedLockReceiptFailure),
+    LockedTargets(RepositoryContractError),
+    IntegrationContentTargets(RepositoryContractError),
+    ApprovedDeletionTargets(RepositoryContractError),
+}
+
+fn derive_scoped_ncc_planner_scope(
+    source: &CommitSafetyLineageBinding,
+) -> Result<ScopedNccPlannerScope, ScopedNccPlannerScopeDerivationFailure> {
+    let lineage = source.lineage();
+    let plan = lineage.lock_plan();
+    let locked_targets = planned_lock_target_identities(plan);
+    validate_exact_ordered_lock_receipts(
+        &locked_targets,
+        lineage.lock_set_id(),
+        lineage.root_lock_receipt(),
+        lineage.journaled_lock_receipts(),
+    )
+    .map_err(ScopedNccPlannerScopeDerivationFailure::LockReceipts)?;
+    let locked_targets = NonEmptyCanonicalRepositoryTargetSet::new(locked_targets)
+        .map_err(ScopedNccPlannerScopeDerivationFailure::LockedTargets)?;
+    let integration_content_targets = NonEmptyCanonicalRepositoryTargetSet::new(
+        plan.integration_entries()
+            .as_slice()
+            .iter()
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect(),
+    )
+    .map_err(ScopedNccPlannerScopeDerivationFailure::IntegrationContentTargets)?;
+    let approved_deletion_targets = CanonicalRepositoryTargetSet::new(
+        plan.integration_entries()
+            .as_slice()
+            .iter()
+            .filter(|entry| entry.is_delete())
+            .map(RepositoryIntegrationEntry::target_identity)
+            .collect(),
+    )
+    .map_err(ScopedNccPlannerScopeDerivationFailure::ApprovedDeletionTargets)?;
+    Ok(ScopedNccPlannerScope::new(
+        locked_targets,
+        integration_content_targets,
+        approved_deletion_targets,
+        plan.reference_closure_digest().clone(),
+    ))
+}
+
 /// Consuming pre-effect proof. Construction compares the complete plan-bound
 /// gate/session lineage with a freshly resolved authoritative current gate and
 /// therefore must complete before the root-lock adapter is called.
@@ -3735,20 +3940,13 @@ fn remaining_success_matches_exact_plan(
     let expected = planned_lock_target_identities(&root_guarded.plan);
     observation.lock_set_id == root_guarded.root_lock_receipt.lock_set_id
         && observation.attempted_targets == expected
-        && observation.journaled_receipts.len() == expected.len()
-        && observation
-            .journaled_receipts
-            .iter()
-            .zip(expected.iter())
-            .all(|(receipt, target)| {
-                receipt_binds_target_and_lock_set(receipt, target, &observation.lock_set_id)
-            })
-        && observation
-            .journaled_receipts
-            .first()
-            .is_some_and(|receipt| {
-                same_journaled_lock_identity(receipt, &root_guarded.root_lock_receipt)
-            })
+        && validate_exact_ordered_lock_receipts(
+            &expected,
+            &observation.lock_set_id,
+            &root_guarded.root_lock_receipt,
+            &observation.journaled_receipts,
+        )
+        .is_ok()
 }
 
 fn remaining_conflict_is_exact_and_compensated(
@@ -4103,10 +4301,6 @@ pub(crate) enum PostMergeCommitGuardFailureEvidence {
         completion: PostMergeCommitGuardCompletion,
         evidence: Box<PostMergeCommitGuardObservedFailureEvidence>,
     },
-    UnscopedNonConflictingConcurrent {
-        completion: PostMergeCommitGuardCompletion,
-        evidence: Box<PostMergeCommitGuardObservedFailureEvidence>,
-    },
 }
 
 /// Recovery-only result for every post-merge guard failure. Neither the
@@ -4140,14 +4334,469 @@ impl PostMergeCommitGuardBlockedAuthority {
     }
 }
 
-/// Atomic post-merge observation retained until commit preview construction.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct PostMergeCommitGuardAuthority {
+mod scoped_ncc_phase_sealed {
+    pub trait Sealed {}
+}
+
+pub(crate) trait ScopedNccPhase: scoped_ncc_phase_sealed::Sealed + fmt::Debug {}
+
+#[derive(Debug)]
+pub(crate) struct PrecommitPhase {
+    _private: (),
+}
+
+#[derive(Debug)]
+pub(crate) struct ImmediatePhase {
+    _private: (),
+}
+
+impl scoped_ncc_phase_sealed::Sealed for PrecommitPhase {}
+impl scoped_ncc_phase_sealed::Sealed for ImmediatePhase {}
+impl ScopedNccPhase for PrecommitPhase {}
+impl ScopedNccPhase for ImmediatePhase {}
+
+#[derive(Debug)]
+struct PhaseTerminalObservationMarker {
+    _private: (),
+}
+
+/// One-shot witness tied by pointer identity to its exact terminal
+/// observation. Its constructor stays in this result layer so the neutral
+/// repository binder cannot authorize a phase from scalar inputs.
+#[derive(Debug)]
+pub(crate) struct PhaseBinding<P: ScopedNccPhase> {
+    marker: Arc<PhaseTerminalObservationMarker>,
+    _phase: std::marker::PhantomData<fn(P) -> P>,
+}
+
+/// Exact terminal partition and repository anchor retained by one already
+/// pointer-checked outer phase observation.
+#[derive(Debug)]
+pub(crate) struct PhaseTerminalObservation<P: ScopedNccPhase> {
+    partition: ValidatedRepositoryHistoryPartition,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+    terminal_repository_anchor: RepositoryAnchor,
+    terminal_reference_closure_digest: Sha256Digest,
+    unissued_binding_marker: Option<Arc<PhaseTerminalObservationMarker>>,
+    issued_binding_marker: Option<Arc<PhaseTerminalObservationMarker>>,
+    _phase: std::marker::PhantomData<fn(P) -> P>,
+}
+
+impl<P: ScopedNccPhase> PhaseTerminalObservation<P> {
+    fn into_phase_binding(mut self) -> (Self, PhaseBinding<P>) {
+        let marker = self
+            .unissued_binding_marker
+            .take()
+            .expect("a phase terminal observation can mint one binding only");
+        let binding = PhaseBinding {
+            marker: Arc::clone(&marker),
+            _phase: std::marker::PhantomData,
+        };
+        self.issued_binding_marker = Some(marker);
+        (self, binding)
+    }
+
+    fn matches_phase_binding(&self, binding: &PhaseBinding<P>) -> bool {
+        self.issued_binding_marker
+            .as_ref()
+            .is_some_and(|marker| Arc::ptr_eq(marker, &binding.marker))
+            && self.unissued_binding_marker.is_none()
+    }
+
+    const fn partition(&self) -> &ValidatedRepositoryHistoryPartition {
+        &self.partition
+    }
+
+    const fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
+        &self.atomic_commit_safety_capability_id
+    }
+
+    const fn terminal_repository_anchor(&self) -> &RepositoryAnchor {
+        &self.terminal_repository_anchor
+    }
+
+    const fn terminal_reference_closure_digest(&self) -> &Sha256Digest {
+        &self.terminal_reference_closure_digest
+    }
+}
+
+/// Result-owned, erased view required by the neutral repository core. Its
+/// constructor is private to this module and accepts only an already minted
+/// phase terminal observation, so production code cannot invoke the scan/core
+/// path from scalar partition, capability, anchor, or closure inputs.
+#[derive(Debug)]
+pub(crate) struct ScopedNccPlannerResolutionRequest<'a> {
+    partition: &'a ValidatedRepositoryHistoryPartition,
+    atomic_commit_safety_capability_id: &'a CapabilityRowId,
+    terminal_repository_anchor: &'a RepositoryAnchor,
+    terminal_reference_closure_digest: &'a Sha256Digest,
+    scope: ScopedNccPlannerScope,
+}
+
+impl<'a> ScopedNccPlannerResolutionRequest<'a> {
+    fn from_phase_terminal<P: ScopedNccPhase>(
+        terminal: &'a PhaseTerminalObservation<P>,
+        scope: ScopedNccPlannerScope,
+    ) -> Self {
+        Self {
+            partition: terminal.partition(),
+            atomic_commit_safety_capability_id: terminal.atomic_commit_safety_capability_id(),
+            terminal_repository_anchor: terminal.terminal_repository_anchor(),
+            terminal_reference_closure_digest: terminal.terminal_reference_closure_digest(),
+            scope,
+        }
+    }
+
+    pub(crate) fn into_repository_parts(
+        self,
+    ) -> (
+        &'a ValidatedRepositoryHistoryPartition,
+        &'a CapabilityRowId,
+        ScopedNccPlannerScope,
+        &'a RepositoryAnchor,
+        &'a Sha256Digest,
+    ) {
+        (
+            self.partition,
+            self.atomic_commit_safety_capability_id,
+            self.scope,
+            self.terminal_repository_anchor,
+            self.terminal_reference_closure_digest,
+        )
+    }
+}
+
+#[derive(Debug)]
+enum ScopedNccPlannerBindingBlockedSource {
+    Core(Box<ScopedNccPlannerBindingBlockedCore>),
+    Phase {
+        core: Box<PlannerBoundScopedNccHistoryScanCore>,
+        failure: ScopedNccPlannerBindingFailure,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedNccPlannerBindingBlockedAuthority<P: ScopedNccPhase> {
+    source: ScopedNccPlannerBindingBlockedSource,
+    terminal_observation: PhaseTerminalObservation<P>,
+    phase_binding: PhaseBinding<P>,
+}
+
+impl<P: ScopedNccPhase> ScopedNccPlannerBindingBlockedAuthority<P> {
+    pub(crate) fn failure(&self) -> &ScopedNccPlannerBindingFailure {
+        match &self.source {
+            ScopedNccPlannerBindingBlockedSource::Core(blocked) => blocked.failure(),
+            ScopedNccPlannerBindingBlockedSource::Phase { failure, .. } => failure,
+        }
+    }
+}
+
+/// Authorizing result-layer wrapper. The core proves only neutral planner
+/// facts; this wrapper additionally owns the invocation-derived phase terminal
+/// and its one-shot binding.
+#[derive(Debug)]
+pub(crate) struct PlannerBoundScopedNccHistoryScanAuthority<P: ScopedNccPhase> {
+    core: PlannerBoundScopedNccHistoryScanCore,
+    terminal_observation: PhaseTerminalObservation<P>,
+    phase_binding: PhaseBinding<P>,
+}
+
+impl<P: ScopedNccPhase> PlannerBoundScopedNccHistoryScanAuthority<P> {
+    fn bind(
+        core: PlannerBoundScopedNccHistoryScanCore,
+        terminal_observation: PhaseTerminalObservation<P>,
+        phase_binding: PhaseBinding<P>,
+    ) -> Result<Self, Box<ScopedNccPlannerBindingBlockedAuthority<P>>> {
+        if !terminal_observation.matches_phase_binding(&phase_binding) {
+            return Err(Box::new(ScopedNccPlannerBindingBlockedAuthority {
+                source: ScopedNccPlannerBindingBlockedSource::Phase {
+                    core: Box::new(core),
+                    failure: ScopedNccPlannerBindingFailure::PhaseBindingMismatch,
+                },
+                terminal_observation,
+                phase_binding,
+            }));
+        }
+        if let Some(failure) = core.terminal_binding_failure(
+            terminal_observation.partition(),
+            terminal_observation.atomic_commit_safety_capability_id(),
+            terminal_observation.terminal_repository_anchor(),
+            terminal_observation.terminal_reference_closure_digest(),
+        ) {
+            return Err(Box::new(ScopedNccPlannerBindingBlockedAuthority {
+                source: ScopedNccPlannerBindingBlockedSource::Phase {
+                    core: Box::new(core),
+                    failure,
+                },
+                terminal_observation,
+                phase_binding,
+            }));
+        }
+        Ok(Self {
+            core,
+            terminal_observation,
+            phase_binding,
+        })
+    }
+
+    pub(crate) fn history_entry_count(&self) -> usize {
+        self.core.history_entry_count()
+    }
+
+    pub(crate) const fn ncc_entry_count(&self) -> usize {
+        self.core.ncc_entry_count()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PhaseScopedNccScanBlockedAuthority<P: ScopedNccPhase> {
+    scope: ScopedNccPlannerScope,
+    terminal_observation: PhaseTerminalObservation<P>,
+    blocked: Box<ScopedNccHistoryScanBlockedAuthority>,
+}
+
+#[derive(Debug)]
+pub(crate) enum PhaseScopedNccResolutionFailure<P: ScopedNccPhase> {
+    ScanBlocked(Box<PhaseScopedNccScanBlockedAuthority<P>>),
+    PlannerBindingBlocked(Box<ScopedNccPlannerBindingBlockedAuthority<P>>),
+}
+
+impl<P: ScopedNccPhase> PhaseTerminalObservation<P> {
+    fn resolve_scoped_ncc(
+        self,
+        scope: ScopedNccPlannerScope,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<PlannerBoundScopedNccHistoryScanAuthority<P>, PhaseScopedNccResolutionFailure<P>>
+    {
+        let request = ScopedNccPlannerResolutionRequest::from_phase_terminal(&self, scope);
+        let core = match PlannerBoundScopedNccHistoryScanCore::resolve(request, port) {
+            Ok(core) => core,
+            Err(ScopedNccPlannerCoreResolutionFailure::ScanBlocked { scope, blocked }) => {
+                return Err(PhaseScopedNccResolutionFailure::ScanBlocked(Box::new(
+                    PhaseScopedNccScanBlockedAuthority {
+                        scope,
+                        terminal_observation: self,
+                        blocked,
+                    },
+                )));
+            }
+            Err(ScopedNccPlannerCoreResolutionFailure::PlannerBindingBlocked(blocked)) => {
+                debug_assert!(!matches!(
+                    blocked.failure(),
+                    ScopedNccPlannerBindingFailure::PhaseBindingMismatch
+                ));
+                let (terminal_observation, phase_binding) = self.into_phase_binding();
+                return Err(PhaseScopedNccResolutionFailure::PlannerBindingBlocked(
+                    Box::new(ScopedNccPlannerBindingBlockedAuthority {
+                        source: ScopedNccPlannerBindingBlockedSource::Core(blocked),
+                        terminal_observation,
+                        phase_binding,
+                    }),
+                ));
+            }
+        };
+        let (terminal_observation, phase_binding) = self.into_phase_binding();
+        PlannerBoundScopedNccHistoryScanAuthority::bind(core, terminal_observation, phase_binding)
+            .map_err(PhaseScopedNccResolutionFailure::PlannerBindingBlocked)
+    }
+}
+
+#[derive(Debug)]
+struct PostMergeNoNccHistoryAuthority {
     source: CommitSafetyLineageBinding,
+    _completion: PostMergeCommitGuardCompletion,
+    _terminal_observation: PhaseTerminalObservation<PrecommitPhase>,
+}
+
+#[derive(Debug)]
+struct PostMergeScopedNccHistoryAuthority {
+    source: CommitSafetyLineageBinding,
+    _completion: PostMergeCommitGuardCompletion,
+    _planner_bound_history: PlannerBoundScopedNccHistoryScanAuthority<PrecommitPhase>,
+}
+
+#[derive(Debug)]
+enum PostMergeCommitHistorySafetyAuthority {
+    NoNcc(Box<PostMergeNoNccHistoryAuthority>),
+    Scoped(Box<PostMergeScopedNccHistoryAuthority>),
+}
+
+impl PostMergeCommitHistorySafetyAuthority {
+    fn source(&self) -> &CommitSafetyLineageBinding {
+        match self {
+            Self::NoNcc(authority) => &authority.source,
+            Self::Scoped(authority) => &authority.source,
+        }
+    }
+}
+
+/// Atomic post-merge observation retained until commit preview construction.
+#[derive(Debug)]
+pub(crate) struct PostMergeCommitGuardAuthority {
+    history_safety: PostMergeCommitHistorySafetyAuthority,
     history_guard_evidence: PostMergeHistoryGuardEvidence,
     observed_original_fingerprint: Sha256Digest,
     post_merge_repository_anchor: RepositoryAnchor,
     original_fingerprint_capability_id: CapabilityRowId,
+}
+
+#[derive(Debug)]
+pub(crate) enum PostMergeCommitGuardObservationOutcome {
+    NoNcc(Box<PostMergeCommitGuardAuthority>),
+    ScopedRequired(Box<PostMergeScopedNccPendingAuthority>),
+    Recovery(Box<PostMergeCommitGuardBlockedAuthority>),
+}
+
+#[cfg(test)]
+impl PostMergeCommitGuardObservationOutcome {
+    fn unwrap(self) -> PostMergeCommitGuardAuthority {
+        match self {
+            Self::NoNcc(authority) => *authority,
+            Self::ScopedRequired(_) => {
+                panic!("test expected a no-NCC post-merge guard outcome")
+            }
+            Self::Recovery(blocked) => {
+                panic!("test expected a successful post-merge guard: {blocked:?}")
+            }
+        }
+    }
+
+    fn unwrap_err(self) -> Box<PostMergeCommitGuardBlockedAuthority> {
+        match self {
+            Self::Recovery(blocked) => blocked,
+            Self::NoNcc(_) => panic!("test expected a blocked post-merge guard"),
+            Self::ScopedRequired(_) => {
+                panic!("test expected outer recovery, not a scoped NCC pending authority")
+            }
+        }
+    }
+
+    fn is_err(&self) -> bool {
+        matches!(self, Self::Recovery(_))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PostMergeScopedNccPendingAuthority {
+    source: CommitSafetyLineageBinding,
+    completion: PostMergeCommitGuardCompletion,
+    observed_evidence: Box<PostMergeCommitGuardObservedFailureEvidence>,
+    terminal_observation: PhaseTerminalObservation<PrecommitPhase>,
+}
+
+#[derive(Debug)]
+pub(crate) enum PostMergeScopedNccFailureEvidence {
+    PlannerScopeDerivation {
+        terminal_observation: PhaseTerminalObservation<PrecommitPhase>,
+        failure: ScopedNccPlannerScopeDerivationFailure,
+    },
+    ScopedNccScanBlocked {
+        scope: ScopedNccPlannerScope,
+        terminal_observation: PhaseTerminalObservation<PrecommitPhase>,
+        blocked: Box<ScopedNccHistoryScanBlockedAuthority>,
+    },
+    ScopedNccPlannerBindingBlocked {
+        blocked: Box<ScopedNccPlannerBindingBlockedAuthority<PrecommitPhase>>,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) struct PostMergeScopedNccBlockedAuthority {
+    source: CommitSafetyLineageBinding,
+    completion: PostMergeCommitGuardCompletion,
+    observed_evidence: Box<PostMergeCommitGuardObservedFailureEvidence>,
+    failure: PostMergeScopedNccFailureEvidence,
+}
+
+impl PostMergeScopedNccBlockedAuthority {
+    pub(crate) const fn failure(&self) -> &PostMergeScopedNccFailureEvidence {
+        &self.failure
+    }
+
+    pub(crate) fn into_recovery_parts(
+        self: Box<Self>,
+    ) -> (
+        ResolvedCommitLineageConsumedSupportGateAuthority,
+        PostMergeCommitGuardCompletion,
+        Box<PostMergeCommitGuardObservedFailureEvidence>,
+        PostMergeScopedNccFailureEvidence,
+    ) {
+        let Self {
+            source,
+            completion,
+            observed_evidence,
+            failure,
+        } = *self;
+        (source.into_source(), completion, observed_evidence, failure)
+    }
+}
+
+impl PostMergeScopedNccPendingAuthority {
+    pub(crate) fn resolve_scoped_ncc(
+        self,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<PostMergeCommitGuardAuthority, Box<PostMergeScopedNccBlockedAuthority>> {
+        let Self {
+            source,
+            completion,
+            observed_evidence,
+            terminal_observation,
+        } = self;
+        let scope = match derive_scoped_ncc_planner_scope(&source) {
+            Ok(scope) => scope,
+            Err(failure) => {
+                return Err(Box::new(PostMergeScopedNccBlockedAuthority {
+                    source,
+                    completion,
+                    observed_evidence,
+                    failure: PostMergeScopedNccFailureEvidence::PlannerScopeDerivation {
+                        terminal_observation,
+                        failure,
+                    },
+                }));
+            }
+        };
+        let planner_bound_history = match terminal_observation.resolve_scoped_ncc(scope, port) {
+            Ok(authority) => authority,
+            Err(PhaseScopedNccResolutionFailure::ScanBlocked(blocked_phase)) => {
+                let PhaseScopedNccScanBlockedAuthority {
+                    scope,
+                    terminal_observation,
+                    blocked,
+                } = *blocked_phase;
+                return Err(Box::new(PostMergeScopedNccBlockedAuthority {
+                    source,
+                    completion,
+                    observed_evidence,
+                    failure: PostMergeScopedNccFailureEvidence::ScopedNccScanBlocked {
+                        scope,
+                        terminal_observation,
+                        blocked,
+                    },
+                }));
+            }
+            Err(PhaseScopedNccResolutionFailure::PlannerBindingBlocked(blocked)) => {
+                return Err(Box::new(PostMergeScopedNccBlockedAuthority {
+                    source,
+                    completion,
+                    observed_evidence,
+                    failure: PostMergeScopedNccFailureEvidence::ScopedNccPlannerBindingBlocked {
+                        blocked,
+                    },
+                }));
+            }
+        };
+        Ok(PostMergeCommitGuardAuthority::from_observation(
+            PostMergeCommitHistorySafetyAuthority::Scoped(Box::new(
+                PostMergeScopedNccHistoryAuthority {
+                    source,
+                    _completion: completion,
+                    _planner_bound_history: planner_bound_history,
+                },
+            )),
+            *observed_evidence,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -4174,10 +4823,40 @@ impl PostMergeCommitGuardFixtureAuthority {
 }
 
 impl PostMergeCommitGuardAuthority {
+    fn from_observation(
+        history_safety: PostMergeCommitHistorySafetyAuthority,
+        observed_evidence: PostMergeCommitGuardObservedFailureEvidence,
+    ) -> Self {
+        let PostMergeCommitGuardObservedFailureEvidence {
+            history_guard_evidence,
+            observed_original_fingerprint,
+            observed_repository_anchor,
+            original_fingerprint_capability_id,
+        } = observed_evidence;
+        Self {
+            history_safety,
+            history_guard_evidence,
+            observed_original_fingerprint,
+            post_merge_repository_anchor: observed_repository_anchor,
+            original_fingerprint_capability_id,
+        }
+    }
+
+    fn source(&self) -> &CommitSafetyLineageBinding {
+        self.history_safety.source()
+    }
+
     pub(crate) fn from_authoritative_consumed_lineage(
         source: ResolvedCommitLineageConsumedSupportGateAuthority,
         port: &mut dyn PostMergeCommitGuardPort,
-    ) -> Result<Self, Box<PostMergeCommitGuardBlockedAuthority>> {
+    ) -> PostMergeCommitGuardObservationOutcome {
+        Self::observe_authoritative_consumed_lineage(source, port)
+    }
+
+    pub(crate) fn observe_authoritative_consumed_lineage(
+        source: ResolvedCommitLineageConsumedSupportGateAuthority,
+        port: &mut dyn PostMergeCommitGuardPort,
+    ) -> PostMergeCommitGuardObservationOutcome {
         let source = CommitSafetyLineageBinding::new(source);
         let invocation = PostMergeCommitGuardInvocationCapability::mint();
         let request = PostMergeCommitGuardRequest {
@@ -4187,36 +4866,58 @@ impl PostMergeCommitGuardAuthority {
         let completion = match port.observe_post_merge_commit_guard(request) {
             Ok(completion) => completion,
             Err(error) => {
-                return Err(PostMergeCommitGuardBlockedAuthority::new(
-                    source,
-                    PostMergeCommitGuardFailureEvidence::PortError(error),
-                ));
+                return PostMergeCommitGuardObservationOutcome::Recovery(
+                    PostMergeCommitGuardBlockedAuthority::new(
+                        source,
+                        PostMergeCommitGuardFailureEvidence::PortError(error),
+                    ),
+                );
             }
         };
-        if !invocation.owns_completion(&completion.completion) {
-            return Err(PostMergeCommitGuardBlockedAuthority::new(
-                source,
-                PostMergeCommitGuardFailureEvidence::CompletionAttemptMismatch { completion },
-            ));
-        }
-        if !source.owns_witness(completion.lease.commit_safety_lineage_witness()) {
-            return Err(PostMergeCommitGuardBlockedAuthority::new(
-                source,
-                PostMergeCommitGuardFailureEvidence::CapabilityBindingMismatch { completion },
-            ));
+        let checked_completion = match invocation.bind_completion(completion) {
+            Ok(checked) => checked,
+            Err(completion) => {
+                return PostMergeCommitGuardObservationOutcome::Recovery(
+                    PostMergeCommitGuardBlockedAuthority::new(
+                        source,
+                        PostMergeCommitGuardFailureEvidence::CompletionAttemptMismatch {
+                            completion,
+                        },
+                    ),
+                );
+            }
+        };
+        if !source.owns_witness(
+            checked_completion
+                .completion()
+                .lease
+                .commit_safety_lineage_witness(),
+        ) {
+            return PostMergeCommitGuardObservationOutcome::Recovery(
+                PostMergeCommitGuardBlockedAuthority::new(
+                    source,
+                    PostMergeCommitGuardFailureEvidence::CapabilityBindingMismatch {
+                        completion: checked_completion.into_completion(),
+                    },
+                ),
+            );
         }
         let request = PostMergeCommitGuardRequest {
             source: &source,
-            invocation: &invocation,
+            invocation: checked_completion.invocation(),
         };
-        if !completion.lease.binds(&request) {
-            return Err(PostMergeCommitGuardBlockedAuthority::new(
-                source,
-                PostMergeCommitGuardFailureEvidence::CapabilityBindingMismatch { completion },
-            ));
+        if !checked_completion.completion().lease.binds(&request) {
+            return PostMergeCommitGuardObservationOutcome::Recovery(
+                PostMergeCommitGuardBlockedAuthority::new(
+                    source,
+                    PostMergeCommitGuardFailureEvidence::CapabilityBindingMismatch {
+                        completion: checked_completion.into_completion(),
+                    },
+                ),
+            );
         }
-        let observed_evidence =
-            PostMergeCommitGuardObservedFailureEvidence::from_lease(&*completion.lease);
+        let checked_observation = checked_completion.into_observation();
+        let observed_evidence = checked_observation.observed();
         let expected_root = source
             .lineage()
             .lock_plan()
@@ -4230,10 +4931,6 @@ impl PostMergeCommitGuardAuthority {
             .history_guard_evidence
             .merge_receipt_cursor()
             != source.lineage().merge_receipt_cursor()
-            || observed_evidence
-                .history_guard_evidence
-                .recomputed_reference_closure_digest()
-                != source.lineage().lock_plan().reference_closure_digest()
             || observed_evidence.observed_original_fingerprint
                 != *source.lineage().result_fingerprint()
             || observed_evidence
@@ -4255,44 +4952,65 @@ impl PostMergeCommitGuardAuthority {
                 .configuration_fingerprint()
                 != source.lineage().result_fingerprint()
         {
-            return Err(PostMergeCommitGuardBlockedAuthority::new(
-                source,
-                PostMergeCommitGuardFailureEvidence::PostMergeDrift {
-                    completion,
-                    evidence: Box::new(observed_evidence),
-                },
-            ));
+            let (completion, observed_evidence) = checked_observation.into_failure_parts();
+            return PostMergeCommitGuardObservationOutcome::Recovery(
+                PostMergeCommitGuardBlockedAuthority::new(
+                    source,
+                    PostMergeCommitGuardFailureEvidence::PostMergeDrift {
+                        completion,
+                        evidence: Box::new(observed_evidence),
+                    },
+                ),
+            );
         }
-        if observed_evidence
+        let contains_ncc = observed_evidence
             .history_guard_evidence
             .partition()
             .classifications()
             .any(|classification| {
                 classification == RepositoryHistoryPartitionClassification::NonConflictingConcurrent
-            })
+            });
+        if !contains_ncc
+            && observed_evidence
+                .history_guard_evidence
+                .recomputed_reference_closure_digest()
+                != source.lineage().lock_plan().reference_closure_digest()
         {
-            return Err(PostMergeCommitGuardBlockedAuthority::new(
-                source,
-                PostMergeCommitGuardFailureEvidence::UnscopedNonConflictingConcurrent {
+            let (completion, observed_evidence) = checked_observation.into_failure_parts();
+            return PostMergeCommitGuardObservationOutcome::Recovery(
+                PostMergeCommitGuardBlockedAuthority::new(
+                    source,
+                    PostMergeCommitGuardFailureEvidence::PostMergeDrift {
+                        completion,
+                        evidence: Box::new(observed_evidence),
+                    },
+                ),
+            );
+        }
+        let (completion, observed_evidence, terminal_observation) =
+            PhaseTerminalObservation::<PrecommitPhase>::from_checked_post_merge(
+                checked_observation,
+            );
+        if contains_ncc {
+            return PostMergeCommitGuardObservationOutcome::ScopedRequired(Box::new(
+                PostMergeScopedNccPendingAuthority {
+                    source,
                     completion,
-                    evidence: Box::new(observed_evidence),
+                    observed_evidence: Box::new(observed_evidence),
+                    terminal_observation,
                 },
             ));
         }
-        let PostMergeCommitGuardObservedFailureEvidence {
-            history_guard_evidence,
-            observed_original_fingerprint,
-            observed_repository_anchor,
-            original_fingerprint_capability_id,
-        } = observed_evidence;
-        drop(completion);
-        Ok(Self {
-            source,
-            history_guard_evidence,
-            observed_original_fingerprint,
-            post_merge_repository_anchor: observed_repository_anchor,
-            original_fingerprint_capability_id,
-        })
+        PostMergeCommitGuardObservationOutcome::NoNcc(Box::new(Self::from_observation(
+            PostMergeCommitHistorySafetyAuthority::NoNcc(Box::new(
+                PostMergeNoNccHistoryAuthority {
+                    source,
+                    _completion: completion,
+                    _terminal_observation: terminal_observation,
+                },
+            )),
+            observed_evidence,
+        )))
     }
 }
 
@@ -4312,6 +5030,19 @@ struct PostMergeCommitGuardInvocationCapability(Arc<PostMergeCommitGuardInvocati
 #[derive(Debug)]
 struct PostMergeCommitGuardCompletionCapability(Arc<PostMergeCommitGuardInvocationMarker>);
 
+#[derive(Debug)]
+struct PointerCheckedPostMergeCommitGuardCompletion {
+    invocation: PostMergeCommitGuardInvocationCapability,
+    completion: PostMergeCommitGuardCompletion,
+}
+
+#[derive(Debug)]
+struct PointerCheckedPostMergeCommitGuardObservation {
+    _invocation: PostMergeCommitGuardInvocationCapability,
+    completion: PostMergeCommitGuardCompletion,
+    observed: PostMergeCommitGuardObservedFailureEvidence,
+}
+
 impl PostMergeCommitGuardInvocationCapability {
     fn mint() -> Self {
         Self(Arc::new(PostMergeCommitGuardInvocationMarker))
@@ -4321,8 +5052,86 @@ impl PostMergeCommitGuardInvocationCapability {
         PostMergeCommitGuardCompletionCapability(Arc::clone(&self.0))
     }
 
-    fn owns_completion(&self, completion: &PostMergeCommitGuardCompletionCapability) -> bool {
-        Arc::ptr_eq(&self.0, &completion.0)
+    fn bind_completion(
+        self,
+        completion: PostMergeCommitGuardCompletion,
+    ) -> Result<PointerCheckedPostMergeCommitGuardCompletion, PostMergeCommitGuardCompletion> {
+        if !Arc::ptr_eq(&self.0, &completion.completion.0) {
+            return Err(completion);
+        }
+        Ok(PointerCheckedPostMergeCommitGuardCompletion {
+            invocation: self,
+            completion,
+        })
+    }
+}
+
+impl PointerCheckedPostMergeCommitGuardCompletion {
+    fn invocation(&self) -> &PostMergeCommitGuardInvocationCapability {
+        &self.invocation
+    }
+
+    fn completion(&self) -> &PostMergeCommitGuardCompletion {
+        &self.completion
+    }
+
+    fn into_completion(self) -> PostMergeCommitGuardCompletion {
+        self.completion
+    }
+
+    fn into_observation(self) -> PointerCheckedPostMergeCommitGuardObservation {
+        let observed =
+            PostMergeCommitGuardObservedFailureEvidence::from_lease(&*self.completion.lease);
+        PointerCheckedPostMergeCommitGuardObservation {
+            _invocation: self.invocation,
+            completion: self.completion,
+            observed,
+        }
+    }
+}
+
+impl PointerCheckedPostMergeCommitGuardObservation {
+    fn observed(&self) -> &PostMergeCommitGuardObservedFailureEvidence {
+        &self.observed
+    }
+
+    fn into_failure_parts(
+        self,
+    ) -> (
+        PostMergeCommitGuardCompletion,
+        PostMergeCommitGuardObservedFailureEvidence,
+    ) {
+        (self.completion, self.observed)
+    }
+}
+
+impl PhaseTerminalObservation<PrecommitPhase> {
+    fn from_checked_post_merge(
+        checked: PointerCheckedPostMergeCommitGuardObservation,
+    ) -> (
+        PostMergeCommitGuardCompletion,
+        PostMergeCommitGuardObservedFailureEvidence,
+        Self,
+    ) {
+        let observed = &checked.observed;
+        let terminal = Self {
+            partition: observed.history_guard_evidence.partition().clone(),
+            atomic_commit_safety_capability_id: observed
+                .history_guard_evidence
+                .atomic_commit_safety_capability_id()
+                .clone(),
+            terminal_repository_anchor: observed.observed_repository_anchor.clone(),
+            terminal_reference_closure_digest: observed
+                .history_guard_evidence
+                .recomputed_reference_closure_digest()
+                .clone(),
+            unissued_binding_marker: Some(Arc::new(PhaseTerminalObservationMarker {
+                _private: (),
+            })),
+            issued_binding_marker: None,
+            _phase: std::marker::PhantomData,
+        };
+        (checked.completion, checked.observed, terminal)
     }
 }
 
@@ -4518,7 +5327,7 @@ fn derive_commit_guard_locks(
 
 /// Typed preview producer retaining the exact lock plan whose identity/action
 /// projection is approved. It is intentionally non-Clone and non-Deserialize.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitPreviewAuthority {
     plan: LockPlanData,
     record: CommitPreviewDigestRecord,
@@ -4526,7 +5335,7 @@ pub(crate) struct CommitPreviewAuthority {
     _validated_lineage: Option<CommitPreviewValidatedLineage>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct CommitPreviewValidatedLineage {
     preview_request: ValidatedRepositoryCommitPreviewRequest,
     verification_id: UnicaId,
@@ -4548,7 +5357,7 @@ pub(crate) enum CommitPreviewFailureEvidence {
 /// Recovery-only result for preview derivation failures. The exact post-merge
 /// guard and validated comment policy remain linear and owned instead of being
 /// erased behind a scalar digest/projection error.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitPreviewBlockedAuthority {
     request: ValidatedRepositoryCommitPreviewRequest,
     guard: PostMergeCommitGuardAuthority,
@@ -4739,7 +5548,7 @@ impl CommitPreviewAuthority {
             &CommitPreviewDigestRecord,
         ) -> Result<Sha256Digest, RepositoryResultContractError>,
     {
-        let lineage = guard.source.lineage();
+        let lineage = guard.source().lineage();
         if request.task_id() != &comment_policy.record.task_id
             || request.integration_set_id() != lineage.integration_set_id()
             || request.expected_integration_set_digest() != lineage.integration_set_digest()
@@ -5027,7 +5836,12 @@ impl CommitPreviewAuthority {
     pub(crate) fn consumed_gate_observation_revision(&self) -> &Sha256Digest {
         self._validated_lineage
             .as_ref()
-            .map(|lineage| lineage.post_merge_guard.source.consumed_gate_observation())
+            .map(|lineage| {
+                lineage
+                    .post_merge_guard
+                    .source()
+                    .consumed_gate_observation()
+            })
             .expect("production preview owns its consumed-gate observation")
             .consumed_state_revision()
     }
@@ -5035,7 +5849,7 @@ impl CommitPreviewAuthority {
     pub(crate) fn validated_consumed_gate_digest(&self) -> &Sha256Digest {
         self._validated_lineage
             .as_ref()
-            .map(|lineage| lineage.post_merge_guard.source.lineage())
+            .map(|lineage| lineage.post_merge_guard.source().lineage())
             .expect("production preview owns its consumed-gate lineage")
             .consumed_gate()
             .support_gate_digest()
@@ -5079,7 +5893,7 @@ impl CommitPreviewData {
 /// One-shot production proof that an apply request was checked against and now
 /// owns one exact preview authority. No independent preview/request pair can be
 /// supplied to the approval mint after this boundary.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct ValidatedCommitApplyApprovalAuthority {
     preview: CommitPreviewAuthority,
     apply_request: ValidatedRepositoryCommitApplyRequest,
@@ -5095,7 +5909,7 @@ pub(crate) enum CommitApplyApprovalFailureEvidence {
 
 /// Owning retry result for apply validation. It returns both the exact preview
 /// and the consumed wire request on every failure.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitApplyApprovalBlockedAuthority {
     preview: CommitPreviewAuthority,
     request: RepositoryCommitRequest,
@@ -5138,7 +5952,7 @@ impl CommitApplyApprovalBlockedAuthority {
 /// Preview plus a digest approval already validated against the immutable
 /// preview record. The production request coordinator must mint this token;
 /// tests use the cfg-only helper.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct ApprovedCommitPreviewAuthority(
     CommitPreviewAuthority,
     Option<ValidatedRepositoryCommitApplyRequest>,
@@ -5195,50 +6009,59 @@ impl ApprovedCommitPreviewAuthority {
             }
         };
 
-        if !invocation.owns_completion(&completion.completion) {
-            return CommitImmediateRecheckOutcome::RecoveryRequired(
-                CommitImmediateRecoveryRequiredAuthority {
-                    approved: self,
-                    failure: CommitImmediateRecheckFailureEvidence::CompletionAttemptMismatch {
-                        completion,
+        let checked_completion = match invocation.bind_completion(completion) {
+            Ok(checked) => checked,
+            Err(completion) => {
+                return CommitImmediateRecheckOutcome::RecoveryRequired(
+                    CommitImmediateRecoveryRequiredAuthority {
+                        approved: self,
+                        failure: CommitImmediateRecheckFailureEvidence::CompletionAttemptMismatch {
+                            completion,
+                        },
                     },
-                },
-            );
-        }
+                );
+            }
+        };
         if !self
             .0
             ._validated_lineage
             .as_ref()
             .expect("immediate commit recheck requires the production approval lineage")
             .post_merge_guard
-            .source
-            .owns_witness(completion.lease.commit_safety_lineage_witness())
+            .source()
+            .owns_witness(
+                checked_completion
+                    .completion()
+                    .lease
+                    .commit_safety_lineage_witness(),
+            )
         {
             return CommitImmediateRecheckOutcome::RecoveryRequired(
                 CommitImmediateRecoveryRequiredAuthority {
                     approved: self,
                     failure: CommitImmediateRecheckFailureEvidence::CapabilityBindingMismatch {
-                        completion,
+                        completion: checked_completion.into_completion(),
                     },
                 },
             );
         }
         let request = CommitImmediateRecheckRequest {
             approved: &self,
-            invocation: &invocation,
+            invocation: checked_completion.invocation(),
         };
-        if !completion.lease.binds(&request) {
+        if !checked_completion.completion().lease.binds(&request) {
             return CommitImmediateRecheckOutcome::RecoveryRequired(
                 CommitImmediateRecoveryRequiredAuthority {
                     approved: self,
                     failure: CommitImmediateRecheckFailureEvidence::CapabilityBindingMismatch {
-                        completion,
+                        completion: checked_completion.into_completion(),
                     },
                 },
             );
         }
 
-        let observed = CommitImmediateRecheckObservedEvidence::from_lease(&*completion.lease);
+        let checked_observation = checked_completion.into_observation();
+        let observed = checked_observation.observed();
         let lineage = self
             .0
             ._validated_lineage
@@ -5250,21 +6073,22 @@ impl ApprovedCommitPreviewAuthority {
 
         if observed.consumed_state_revision
             != *guard
-                .source
+                .source()
                 .consumed_gate_observation()
                 .consumed_state_revision()
             || observed.consumed_state_observation_capability_id
                 != *guard
-                    .source
+                    .source()
                     .consumed_gate_observation()
                     .observation_capability_id()
             || observed.original_fingerprint_capability_id
                 != guard.original_fingerprint_capability_id
             || observed.root_reread_capability_id
-                != *guard.source.lineage().root_reread_capability_id()
+                != *guard.source().lineage().root_reread_capability_id()
             || observed.atomic_commit_safety_capability_id
                 != *prior_history.atomic_commit_safety_capability_id()
         {
+            let (completion, observed) = checked_observation.into_failure_parts();
             return CommitImmediateRecheckOutcome::RecoveryRequired(
                 CommitImmediateRecoveryRequiredAuthority {
                     approved: self,
@@ -5277,14 +6101,7 @@ impl ApprovedCommitPreviewAuthority {
             );
         }
 
-        if observed.recomputed_reference_closure_digest
-            != *guard
-                .source
-                .lineage()
-                .lock_plan()
-                .reference_closure_digest()
-            || observed.observed_original_fingerprint
-                != self.0.record.authorized_post_merge_fingerprint
+        if observed.observed_original_fingerprint != self.0.record.authorized_post_merge_fingerprint
             || observed.observed_repository_anchor.repository_identity()
                 != retained_anchor.repository_identity()
             || observed.observed_repository_anchor.configuration_identity()
@@ -5292,10 +6109,11 @@ impl ApprovedCommitPreviewAuthority {
             || observed
                 .observed_repository_anchor
                 .configuration_fingerprint()
-                != retained_anchor.configuration_fingerprint()
+                != &self.0.record.authorized_post_merge_fingerprint
             || observed.observed_repository_anchor.history_cursor()
                 != observed.history_partition.through_inclusive()
         {
+            let (completion, observed) = checked_observation.into_failure_parts();
             return CommitImmediateRecheckOutcome::RecoveryRequired(
                 CommitImmediateRecoveryRequiredAuthority {
                     approved: self,
@@ -5307,38 +6125,54 @@ impl ApprovedCommitPreviewAuthority {
             );
         }
 
-        if observed
+        let contains_ncc = observed
             .history_partition
             .classifications()
             .any(|classification| {
                 classification == RepositoryHistoryPartitionClassification::NonConflictingConcurrent
-            })
+            });
+        if !contains_ncc
+            && observed.recomputed_reference_closure_digest
+                != *prior_history.recomputed_reference_closure_digest()
         {
+            let (completion, observed) = checked_observation.into_failure_parts();
             return CommitImmediateRecheckOutcome::RecoveryRequired(
                 CommitImmediateRecoveryRequiredAuthority {
                     approved: self,
-                    failure:
-                        CommitImmediateRecheckFailureEvidence::UnscopedNonConflictingConcurrent {
-                            completion,
-                            evidence: Box::new(observed),
-                        },
+                    failure: CommitImmediateRecheckFailureEvidence::PostMergeStateChanged {
+                        completion,
+                        evidence: Box::new(observed),
+                    },
                 },
             );
         }
+
+        let (completion, observed, terminal_observation) =
+            PhaseTerminalObservation::<ImmediatePhase>::from_checked_immediate(checked_observation);
+        if contains_ncc {
+            return CommitImmediateRecheckOutcome::ScopedRequired(
+                CommitImmediateScopedNccPendingAuthority {
+                    approved: self,
+                    completion,
+                    observed_evidence: Box::new(observed),
+                    terminal_observation,
+                },
+            );
+        }
+        let immediate_history_safety =
+            CommitImmediateHistorySafetyAuthority::NoNcc(Box::new(terminal_observation));
 
         if observed
             .history_partition
             .is_semantically_exact(prior_history.partition())
         {
             if &observed.observed_repository_anchor != retained_anchor {
-                return CommitImmediateRecheckOutcome::RecoveryRequired(
-                    CommitImmediateRecoveryRequiredAuthority {
-                        approved: self,
-                        failure: CommitImmediateRecheckFailureEvidence::PostMergeStateChanged {
-                            completion,
-                            evidence: Box::new(observed),
-                        },
-                    },
+                return immediate_bound_history_recovery(
+                    self,
+                    completion,
+                    observed,
+                    immediate_history_safety,
+                    CommitImmediateHistorySafetyFailure::ExactRepositoryAnchorMismatch,
                 );
             }
             let refreshed_history =
@@ -5349,15 +6183,12 @@ impl ApprovedCommitPreviewAuthority {
                         evidence
                     }
                     Ok(_) | Err(_) => {
-                        return CommitImmediateRecheckOutcome::RecoveryRequired(
-                            CommitImmediateRecoveryRequiredAuthority {
-                                approved: self,
-                                failure:
-                                    CommitImmediateRecheckFailureEvidence::HistoryLineageChanged {
-                                        completion,
-                                        evidence: Box::new(observed),
-                                    },
-                            },
+                        return immediate_bound_history_recovery(
+                            self,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
                         );
                     }
                 };
@@ -5375,21 +6206,19 @@ impl ApprovedCommitPreviewAuthority {
                 ) {
                     Ok(snapshot) => snapshot,
                     Err(_) => {
-                        return CommitImmediateRecheckOutcome::RecoveryRequired(
-                            CommitImmediateRecoveryRequiredAuthority {
-                                approved: self,
-                                failure:
-                                    CommitImmediateRecheckFailureEvidence::PostMergeStateChanged {
-                                        completion,
-                                        evidence: Box::new(observed),
-                                    },
-                            },
+                        return immediate_bound_history_recovery(
+                            self,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::PreCommandTargetSnapshotMismatch,
                         );
                     }
                 };
             return CommitImmediateRecheckOutcome::Ready(CommitScopedAtomicSafetyAuthority {
                 approved: self,
                 completion,
+                immediate_history_safety,
                 immediate_history_guard_evidence: refreshed_history,
                 post_merge_repository_anchor,
                 before_repository_cursor,
@@ -5406,29 +6235,24 @@ impl ApprovedCommitPreviewAuthority {
                 .history_partition
                 .is_strict_unrelated_extension_of(prior_history.partition())
             {
-                return CommitImmediateRecheckOutcome::RecoveryRequired(
-                    CommitImmediateRecoveryRequiredAuthority {
-                        approved: self,
-                        failure: CommitImmediateRecheckFailureEvidence::UnsafeHistoryAdvance {
-                            completion,
-                            evidence: Box::new(observed),
-                        },
-                    },
+                return immediate_bound_history_recovery(
+                    self,
+                    completion,
+                    observed,
+                    immediate_history_safety,
+                    CommitImmediateHistorySafetyFailure::UnsafeHistoryAdvance,
                 );
             }
             let fresh_history_guard_evidence =
                 match rebuild_immediate_history_evidence(prior_history, &observed) {
                     Ok(evidence) => evidence,
                     Err(_) => {
-                        return CommitImmediateRecheckOutcome::RecoveryRequired(
-                            CommitImmediateRecoveryRequiredAuthority {
-                                approved: self,
-                                failure:
-                                    CommitImmediateRecheckFailureEvidence::HistoryLineageChanged {
-                                        completion,
-                                        evidence: Box::new(observed),
-                                    },
-                            },
+                        return immediate_bound_history_recovery(
+                            self,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
                         );
                     }
                 };
@@ -5437,19 +6261,20 @@ impl ApprovedCommitPreviewAuthority {
                 CommitFreshPreviewRequiredAuthority {
                     approved: self,
                     completion,
+                    immediate_history_safety,
                     fresh_history_guard_evidence,
                     fresh_repository_anchor,
                 },
             );
         }
 
-        CommitImmediateRecheckOutcome::RecoveryRequired(CommitImmediateRecoveryRequiredAuthority {
-            approved: self,
-            failure: CommitImmediateRecheckFailureEvidence::HistoryLineageChanged {
-                completion,
-                evidence: Box::new(observed),
-            },
-        })
+        immediate_bound_history_recovery(
+            self,
+            completion,
+            observed,
+            immediate_history_safety,
+            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
+        )
     }
 }
 
@@ -5462,6 +6287,19 @@ struct CommitImmediateRecheckInvocationCapability(Arc<CommitImmediateRecheckInvo
 #[derive(Debug)]
 struct CommitImmediateRecheckCompletionCapability(Arc<CommitImmediateRecheckInvocationMarker>);
 
+#[derive(Debug)]
+struct PointerCheckedCommitImmediateRecheckCompletion {
+    invocation: CommitImmediateRecheckInvocationCapability,
+    completion: CommitImmediateRecheckCompletion,
+}
+
+#[derive(Debug)]
+struct PointerCheckedCommitImmediateRecheckObservation {
+    _invocation: CommitImmediateRecheckInvocationCapability,
+    completion: CommitImmediateRecheckCompletion,
+    observed: CommitImmediateRecheckObservedEvidence,
+}
+
 impl CommitImmediateRecheckInvocationCapability {
     fn mint() -> Self {
         Self(Arc::new(CommitImmediateRecheckInvocationMarker))
@@ -5471,8 +6309,56 @@ impl CommitImmediateRecheckInvocationCapability {
         CommitImmediateRecheckCompletionCapability(Arc::clone(&self.0))
     }
 
-    fn owns_completion(&self, completion: &CommitImmediateRecheckCompletionCapability) -> bool {
-        Arc::ptr_eq(&self.0, &completion.0)
+    fn bind_completion(
+        self,
+        completion: CommitImmediateRecheckCompletion,
+    ) -> Result<PointerCheckedCommitImmediateRecheckCompletion, CommitImmediateRecheckCompletion>
+    {
+        if !Arc::ptr_eq(&self.0, &completion.completion.0) {
+            return Err(completion);
+        }
+        Ok(PointerCheckedCommitImmediateRecheckCompletion {
+            invocation: self,
+            completion,
+        })
+    }
+}
+
+impl PointerCheckedCommitImmediateRecheckCompletion {
+    fn invocation(&self) -> &CommitImmediateRecheckInvocationCapability {
+        &self.invocation
+    }
+
+    fn completion(&self) -> &CommitImmediateRecheckCompletion {
+        &self.completion
+    }
+
+    fn into_completion(self) -> CommitImmediateRecheckCompletion {
+        self.completion
+    }
+
+    fn into_observation(self) -> PointerCheckedCommitImmediateRecheckObservation {
+        let observed = CommitImmediateRecheckObservedEvidence::from_lease(&*self.completion.lease);
+        PointerCheckedCommitImmediateRecheckObservation {
+            _invocation: self.invocation,
+            completion: self.completion,
+            observed,
+        }
+    }
+}
+
+impl PointerCheckedCommitImmediateRecheckObservation {
+    fn observed(&self) -> &CommitImmediateRecheckObservedEvidence {
+        &self.observed
+    }
+
+    fn into_failure_parts(
+        self,
+    ) -> (
+        CommitImmediateRecheckCompletion,
+        CommitImmediateRecheckObservedEvidence,
+    ) {
+        (self.completion, self.observed)
     }
 }
 
@@ -5497,7 +6383,7 @@ impl CommitImmediateRecheckRequest<'_> {
     }
 
     pub(crate) fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
-        self.guard().source.witness()
+        self.guard().source().witness()
     }
 
     pub(crate) fn cwd(&self) -> &OriginalProjectCwd {
@@ -5521,64 +6407,64 @@ impl CommitImmediateRecheckRequest<'_> {
     }
 
     pub(crate) fn session_id(&self) -> &UnicaId {
-        self.guard().source.lineage().session_id()
+        self.guard().source().lineage().session_id()
     }
 
     pub(crate) fn resolved_session_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().resolved_session_digest()
+        self.guard().source().lineage().resolved_session_digest()
     }
 
     pub(crate) fn verification_id(&self) -> &UnicaId {
-        self.guard().source.lineage().verification_id()
+        self.guard().source().lineage().verification_id()
     }
 
     pub(crate) fn verification_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().verification_digest()
+        self.guard().source().lineage().verification_digest()
     }
 
     pub(crate) fn merge_receipt_id(&self) -> &UnicaId {
-        self.guard().source.lineage().merge_receipt_id()
+        self.guard().source().lineage().merge_receipt_id()
     }
 
     pub(crate) fn merge_receipt_cursor(&self) -> &RepositoryHistoryCursor {
-        self.guard().source.lineage().merge_receipt_cursor()
+        self.guard().source().lineage().merge_receipt_cursor()
     }
 
     pub(crate) fn plan_id(&self) -> &UnicaId {
-        self.guard().source.lineage().plan_id()
+        self.guard().source().lineage().plan_id()
     }
 
     pub(crate) fn plan_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().plan_digest()
+        self.guard().source().lineage().plan_digest()
     }
 
     pub(crate) fn integration_set_id(&self) -> &UnicaId {
-        self.guard().source.lineage().integration_set_id()
+        self.guard().source().lineage().integration_set_id()
     }
 
     pub(crate) fn integration_set_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().integration_set_digest()
+        self.guard().source().lineage().integration_set_digest()
     }
 
     pub(crate) fn lock_set_id(&self) -> &UnicaId {
-        self.guard().source.lineage().lock_set_id()
+        self.guard().source().lineage().lock_set_id()
     }
 
     pub(crate) fn lock_set_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().lock_set_digest()
+        self.guard().source().lineage().lock_set_digest()
     }
 
     pub(crate) fn support_gate_id(&self) -> &UnicaId {
-        self.guard().source.lineage().support_gate_id()
+        self.guard().source().lineage().support_gate_id()
     }
 
     pub(crate) fn support_gate_digest(&self) -> &Sha256Digest {
-        self.guard().source.lineage().support_gate_digest()
+        self.guard().source().lineage().support_gate_digest()
     }
 
     pub(crate) fn support_gate_history_evidence(&self) -> &SupportGateHistoryEvidence {
         self.guard()
-            .source
+            .source()
             .lineage()
             .support_gate_history_evidence()
     }
@@ -5590,7 +6476,7 @@ impl CommitImmediateRecheckRequest<'_> {
     }
 
     pub(crate) fn lock_plan(&self) -> &LockPlanData {
-        self.guard().source.lineage().lock_plan()
+        self.guard().source().lineage().lock_plan()
     }
 
     pub(crate) fn integration_entries(&self) -> &RepositoryIntegrationEntries {
@@ -5602,11 +6488,11 @@ impl CommitImmediateRecheckRequest<'_> {
     }
 
     pub(crate) fn journaled_lock_receipts(&self) -> &[JournaledRepositoryLock] {
-        self.guard().source.lineage().journaled_lock_receipts()
+        self.guard().source().lineage().journaled_lock_receipts()
     }
 
     pub(crate) fn rollback_checkpoint_id(&self) -> &UnicaId {
-        self.guard().source.lineage().rollback_checkpoint_id()
+        self.guard().source().lineage().rollback_checkpoint_id()
     }
 
     pub(crate) fn exact_objects(&self) -> &CommitExactObjects {
@@ -5627,14 +6513,14 @@ impl CommitImmediateRecheckRequest<'_> {
 
     pub(crate) fn consumed_state_revision(&self) -> &Sha256Digest {
         self.guard()
-            .source
+            .source()
             .consumed_gate_observation()
             .consumed_state_revision()
     }
 
     pub(crate) fn consumed_state_observation_capability_id(&self) -> &CapabilityRowId {
         self.guard()
-            .source
+            .source()
             .consumed_gate_observation()
             .observation_capability_id()
     }
@@ -5645,7 +6531,7 @@ impl CommitImmediateRecheckRequest<'_> {
 
     pub(crate) fn expected_reference_closure_digest(&self) -> &Sha256Digest {
         self.guard()
-            .source
+            .source()
             .lineage()
             .lock_plan()
             .reference_closure_digest()
@@ -5660,7 +6546,7 @@ impl CommitImmediateRecheckRequest<'_> {
     }
 
     pub(crate) fn root_reread_capability_id(&self) -> &CapabilityRowId {
-        self.guard().source.lineage().root_reread_capability_id()
+        self.guard().source().lineage().root_reread_capability_id()
     }
 
     pub(crate) fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId {
@@ -5779,6 +6665,30 @@ impl CommitImmediateRecheckObservedEvidence {
     }
 }
 
+impl PhaseTerminalObservation<ImmediatePhase> {
+    fn from_checked_immediate(
+        checked: PointerCheckedCommitImmediateRecheckObservation,
+    ) -> (
+        CommitImmediateRecheckCompletion,
+        CommitImmediateRecheckObservedEvidence,
+        Self,
+    ) {
+        let observed = &checked.observed;
+        let terminal = Self {
+            partition: observed.history_partition.clone(),
+            atomic_commit_safety_capability_id: observed.atomic_commit_safety_capability_id.clone(),
+            terminal_repository_anchor: observed.observed_repository_anchor.clone(),
+            terminal_reference_closure_digest: observed.recomputed_reference_closure_digest.clone(),
+            unissued_binding_marker: Some(Arc::new(PhaseTerminalObservationMarker {
+                _private: (),
+            })),
+            issued_binding_marker: None,
+            _phase: std::marker::PhantomData,
+        };
+        (checked.completion, checked.observed, terminal)
+    }
+}
+
 fn rebuild_immediate_history_evidence(
     prior: &PostMergeHistoryGuardEvidence,
     observed: &CommitImmediateRecheckObservedEvidence,
@@ -5792,6 +6702,59 @@ fn rebuild_immediate_history_evidence(
     .map_err(|_| RepositoryResultContractError("immediate history authority validation failed"))?;
     PostMergeHistoryGuardEvidence::new(observed.history_partition.clone(), &authority)
         .map_err(|_| RepositoryResultContractError("immediate history evidence validation failed"))
+}
+
+#[derive(Debug)]
+enum CommitImmediateHistorySafetyAuthority {
+    NoNcc(Box<PhaseTerminalObservation<ImmediatePhase>>),
+    Scoped(Box<PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>>),
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitImmediateScopedNccPendingAuthority {
+    approved: ApprovedCommitPreviewAuthority,
+    completion: CommitImmediateRecheckCompletion,
+    observed_evidence: Box<CommitImmediateRecheckObservedEvidence>,
+    terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitImmediateHistorySafetyFailure {
+    ExactTerminalClosureMismatch,
+    ExactRepositoryAnchorMismatch,
+    PreCommandTargetSnapshotMismatch,
+    HistoryLineageChanged,
+    UnsafeHistoryAdvance,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitImmediateBoundHistoryFailureEvidence {
+    completion: CommitImmediateRecheckCompletion,
+    evidence: Box<CommitImmediateRecheckObservedEvidence>,
+    history_safety: CommitImmediateHistorySafetyAuthority,
+    failure: CommitImmediateHistorySafetyFailure,
+}
+
+impl CommitImmediateBoundHistoryFailureEvidence {
+    pub(crate) const fn failure(&self) -> &CommitImmediateHistorySafetyFailure {
+        &self.failure
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum CommitImmediateScopedNccFailureEvidence {
+    PlannerScopeDerivation {
+        terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+        failure: ScopedNccPlannerScopeDerivationFailure,
+    },
+    ScopedNccScanBlocked {
+        scope: ScopedNccPlannerScope,
+        terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+        blocked: Box<ScopedNccHistoryScanBlockedAuthority>,
+    },
+    ScopedNccPlannerBindingBlocked {
+        blocked: Box<ScopedNccPlannerBindingBlockedAuthority<ImmediatePhase>>,
+    },
 }
 
 #[derive(Debug)]
@@ -5819,9 +6782,11 @@ pub(crate) enum CommitImmediateRecheckFailureEvidence {
         completion: CommitImmediateRecheckCompletion,
         evidence: Box<CommitImmediateRecheckObservedEvidence>,
     },
-    UnscopedNonConflictingConcurrent {
+    BoundHistory(Box<CommitImmediateBoundHistoryFailureEvidence>),
+    ScopedNcc {
         completion: CommitImmediateRecheckCompletion,
         evidence: Box<CommitImmediateRecheckObservedEvidence>,
+        failure: Box<CommitImmediateScopedNccFailureEvidence>,
     },
 }
 
@@ -5839,12 +6804,271 @@ impl CommitImmediateRecoveryRequiredAuthority {
     pub(crate) fn approved_commit_digest(&self) -> &Sha256Digest {
         self.approved.0.commit_digest()
     }
+
+    pub(crate) fn into_recovery_parts(
+        self,
+    ) -> (
+        ApprovedCommitPreviewAuthority,
+        CommitImmediateRecheckFailureEvidence,
+    ) {
+        (self.approved, self.failure)
+    }
+}
+
+fn immediate_scoped_ncc_recovery(
+    approved: ApprovedCommitPreviewAuthority,
+    completion: CommitImmediateRecheckCompletion,
+    observed: CommitImmediateRecheckObservedEvidence,
+    failure: CommitImmediateScopedNccFailureEvidence,
+) -> CommitImmediateRecheckOutcome {
+    CommitImmediateRecheckOutcome::RecoveryRequired(CommitImmediateRecoveryRequiredAuthority {
+        approved,
+        failure: CommitImmediateRecheckFailureEvidence::ScopedNcc {
+            completion,
+            evidence: Box::new(observed),
+            failure: Box::new(failure),
+        },
+    })
+}
+
+fn immediate_bound_history_recovery(
+    approved: ApprovedCommitPreviewAuthority,
+    completion: CommitImmediateRecheckCompletion,
+    observed: CommitImmediateRecheckObservedEvidence,
+    history_safety: CommitImmediateHistorySafetyAuthority,
+    failure: CommitImmediateHistorySafetyFailure,
+) -> CommitImmediateRecheckOutcome {
+    CommitImmediateRecheckOutcome::RecoveryRequired(CommitImmediateRecoveryRequiredAuthority {
+        approved,
+        failure: CommitImmediateRecheckFailureEvidence::BoundHistory(Box::new(
+            CommitImmediateBoundHistoryFailureEvidence {
+                completion,
+                evidence: Box::new(observed),
+                history_safety,
+                failure,
+            },
+        )),
+    })
+}
+
+impl CommitImmediateScopedNccPendingAuthority {
+    pub(crate) fn resolve_scoped_ncc(
+        self,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> CommitImmediateRecheckOutcome {
+        let Self {
+            approved,
+            completion,
+            observed_evidence,
+            terminal_observation,
+        } = self;
+        let observed = *observed_evidence;
+        let scope = {
+            let source = approved
+                .0
+                ._validated_lineage
+                .as_ref()
+                .expect("immediate scoped NCC requires the production approval lineage")
+                .post_merge_guard
+                .source();
+            match derive_scoped_ncc_planner_scope(source) {
+                Ok(scope) => scope,
+                Err(failure) => {
+                    return immediate_scoped_ncc_recovery(
+                        approved,
+                        completion,
+                        observed,
+                        CommitImmediateScopedNccFailureEvidence::PlannerScopeDerivation {
+                            terminal_observation,
+                            failure,
+                        },
+                    );
+                }
+            }
+        };
+        let planner_bound_history = match terminal_observation.resolve_scoped_ncc(scope, port) {
+            Ok(authority) => authority,
+            Err(PhaseScopedNccResolutionFailure::ScanBlocked(blocked_phase)) => {
+                let PhaseScopedNccScanBlockedAuthority {
+                    scope,
+                    terminal_observation,
+                    blocked,
+                } = *blocked_phase;
+                return immediate_scoped_ncc_recovery(
+                    approved,
+                    completion,
+                    observed,
+                    CommitImmediateScopedNccFailureEvidence::ScopedNccScanBlocked {
+                        scope,
+                        terminal_observation,
+                        blocked,
+                    },
+                );
+            }
+            Err(PhaseScopedNccResolutionFailure::PlannerBindingBlocked(blocked)) => {
+                return immediate_scoped_ncc_recovery(
+                    approved,
+                    completion,
+                    observed,
+                    CommitImmediateScopedNccFailureEvidence::ScopedNccPlannerBindingBlocked {
+                        blocked,
+                    },
+                );
+            }
+        };
+        let immediate_history_safety =
+            CommitImmediateHistorySafetyAuthority::Scoped(Box::new(planner_bound_history));
+        let prior_history = &approved.0.record.history_guard_evidence;
+        let retained_anchor = &approved
+            .0
+            ._validated_lineage
+            .as_ref()
+            .expect("immediate scoped NCC requires the production approval lineage")
+            .post_merge_guard
+            .post_merge_repository_anchor;
+
+        if observed
+            .history_partition
+            .is_semantically_exact(prior_history.partition())
+        {
+            if observed.recomputed_reference_closure_digest
+                != *prior_history.recomputed_reference_closure_digest()
+            {
+                return immediate_bound_history_recovery(
+                    approved,
+                    completion,
+                    observed,
+                    immediate_history_safety,
+                    CommitImmediateHistorySafetyFailure::ExactTerminalClosureMismatch,
+                );
+            }
+            if &observed.observed_repository_anchor != retained_anchor {
+                return immediate_bound_history_recovery(
+                    approved,
+                    completion,
+                    observed,
+                    immediate_history_safety,
+                    CommitImmediateHistorySafetyFailure::ExactRepositoryAnchorMismatch,
+                );
+            }
+            let refreshed_history =
+                match rebuild_immediate_history_evidence(prior_history, &observed) {
+                    Ok(evidence)
+                        if evidence.evidence_digest() == prior_history.evidence_digest() =>
+                    {
+                        evidence
+                    }
+                    Ok(_) | Err(_) => {
+                        return immediate_bound_history_recovery(
+                            approved,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
+                        );
+                    }
+                };
+            let before_repository_cursor = observed.history_partition.through_inclusive().clone();
+            let post_merge_repository_anchor = observed.observed_repository_anchor.clone();
+            let pre_command_target_snapshot =
+                match CommitPreCommandTargetSnapshotAuthority::from_immediate_observation(
+                    &approved.0.record.exact_objects,
+                    observed.observed_repository_anchor.clone(),
+                    observed.pre_command_target_states.clone(),
+                    observed
+                        .pre_command_target_snapshot_observation_capability_id
+                        .clone(),
+                    observed.atomic_commit_safety_capability_id.clone(),
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => {
+                        return immediate_bound_history_recovery(
+                            approved,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::PreCommandTargetSnapshotMismatch,
+                        );
+                    }
+                };
+            return CommitImmediateRecheckOutcome::Ready(CommitScopedAtomicSafetyAuthority {
+                approved,
+                completion,
+                immediate_history_safety,
+                immediate_history_guard_evidence: refreshed_history,
+                post_merge_repository_anchor,
+                before_repository_cursor,
+                pre_command_target_snapshot: Box::new(pre_command_target_snapshot),
+            });
+        }
+
+        let prior_entry_count = prior_history.partition().entry_count();
+        let is_strict_prefix_extension = observed.history_partition.entry_count()
+            > prior_entry_count
+            && observed
+                .history_partition
+                .has_exact_entry_prefix(prior_history.partition());
+        if is_strict_prefix_extension {
+            let suffix_is_safe = observed
+                .history_partition
+                .classifications()
+                .skip(prior_entry_count)
+                .all(|classification| {
+                    matches!(
+                        classification,
+                        RepositoryHistoryPartitionClassification::UnrelatedRoutine
+                            | RepositoryHistoryPartitionClassification::NonConflictingConcurrent
+                    )
+                });
+            if !suffix_is_safe {
+                return immediate_bound_history_recovery(
+                    approved,
+                    completion,
+                    observed,
+                    immediate_history_safety,
+                    CommitImmediateHistorySafetyFailure::UnsafeHistoryAdvance,
+                );
+            }
+            let fresh_history_guard_evidence =
+                match rebuild_immediate_history_evidence(prior_history, &observed) {
+                    Ok(evidence) => evidence,
+                    Err(_) => {
+                        return immediate_bound_history_recovery(
+                            approved,
+                            completion,
+                            observed,
+                            immediate_history_safety,
+                            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
+                        );
+                    }
+                };
+            let fresh_repository_anchor = observed.observed_repository_anchor.clone();
+            return CommitImmediateRecheckOutcome::FreshPreviewRequired(
+                CommitFreshPreviewRequiredAuthority {
+                    approved,
+                    completion,
+                    immediate_history_safety,
+                    fresh_history_guard_evidence,
+                    fresh_repository_anchor,
+                },
+            );
+        }
+
+        immediate_bound_history_recovery(
+            approved,
+            completion,
+            observed,
+            immediate_history_safety,
+            CommitImmediateHistorySafetyFailure::HistoryLineageChanged,
+        )
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct CommitScopedAtomicSafetyAuthority {
     approved: ApprovedCommitPreviewAuthority,
     completion: CommitImmediateRecheckCompletion,
+    immediate_history_safety: CommitImmediateHistorySafetyAuthority,
     immediate_history_guard_evidence: PostMergeHistoryGuardEvidence,
     post_merge_repository_anchor: RepositoryAnchor,
     before_repository_cursor: RepositoryHistoryCursor,
@@ -5865,14 +7089,13 @@ impl CommitScopedAtomicSafetyAuthority {
     }
 
     fn lineage_binding(&self) -> &CommitSafetyLineageBinding {
-        &self
-            .approved
+        self.approved
             .0
             ._validated_lineage
             .as_ref()
             .expect("atomic commit requires the production preview lineage")
             .post_merge_guard
-            .source
+            .source()
     }
 
     fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
@@ -6684,6 +7907,7 @@ pub(crate) enum CommitEffectIntentOutcome {
 #[derive(Debug)]
 struct CommitAtomicCommitSource {
     approved: ApprovedCommitPreviewAuthority,
+    immediate_history_safety: CommitImmediateHistorySafetyAuthority,
     immediate_history_guard_evidence: PostMergeHistoryGuardEvidence,
     post_merge_repository_anchor: RepositoryAnchor,
     before_repository_cursor: RepositoryHistoryCursor,
@@ -6693,14 +7917,13 @@ struct CommitAtomicCommitSource {
 
 impl CommitAtomicCommitSource {
     fn lineage_binding(&self) -> &CommitSafetyLineageBinding {
-        &self
-            .approved
+        self.approved
             .0
             ._validated_lineage
             .as_ref()
             .expect("atomic commit requires the production preview lineage")
             .post_merge_guard
-            .source
+            .source()
     }
 
     fn commit_safety_lineage_witness(&self) -> CommitSafetyLineageWitness {
@@ -8342,6 +9565,7 @@ impl CommitScopedAtomicSafetyAuthority {
         let Self {
             approved,
             completion,
+            immediate_history_safety,
             immediate_history_guard_evidence,
             post_merge_repository_anchor,
             before_repository_cursor,
@@ -8349,6 +9573,7 @@ impl CommitScopedAtomicSafetyAuthority {
         } = self;
         let source = CommitAtomicCommitSource {
             approved,
+            immediate_history_safety,
             immediate_history_guard_evidence,
             post_merge_repository_anchor,
             before_repository_cursor,
@@ -8413,6 +9638,7 @@ impl CommitScopedAtomicSafetyAuthority {
 pub(crate) struct CommitFreshPreviewRequiredAuthority {
     approved: ApprovedCommitPreviewAuthority,
     completion: CommitImmediateRecheckCompletion,
+    immediate_history_safety: CommitImmediateHistorySafetyAuthority,
     fresh_history_guard_evidence: PostMergeHistoryGuardEvidence,
     fresh_repository_anchor: RepositoryAnchor,
 }
@@ -8556,6 +9782,7 @@ impl ValidatedFreshCommitPreviewRequestAuthority {
 #[derive(Debug)]
 pub(crate) enum CommitImmediateRecheckOutcome {
     Ready(CommitScopedAtomicSafetyAuthority),
+    ScopedRequired(CommitImmediateScopedNccPendingAuthority),
     FreshPreviewRequired(CommitFreshPreviewRequiredAuthority),
     RecoveryRequired(CommitImmediateRecoveryRequiredAuthority),
 }
@@ -8996,6 +10223,281 @@ pub(crate) fn original_merge_production_lock_projection_with_revision_fixture_te
     settings_digest: Sha256Digest,
     current_state_revision: Sha256Digest,
 ) -> ValidatedOriginalMergeLockProjection {
+    original_merge_production_lock_projection_internal_fixture_test_only(
+        merge_session_id,
+        resolved_session_digest,
+        ready,
+        settings_digest,
+        current_state_revision,
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn original_merge_production_lock_projection_with_reference_closure_fixture_test_only(
+    merge_session_id: UnicaId,
+    resolved_session_digest: Sha256Digest,
+    ready: crate::domain::branched_development::contracts::support::ReadySupportPreflightAuthority,
+    settings_digest: Sha256Digest,
+    reference_closure_digest: Sha256Digest,
+) -> ValidatedOriginalMergeLockProjection {
+    original_merge_production_lock_projection_internal_fixture_test_only(
+        merge_session_id,
+        resolved_session_digest,
+        ready,
+        settings_digest,
+        Sha256Digest::parse(&"b".repeat(64)).unwrap(),
+        Some(reference_closure_digest),
+    )
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScopedNccReceiptFixtureMutation {
+    None,
+    Missing,
+    Extra,
+    Duplicate,
+    Reordered,
+    WrongTarget,
+    WrongLockSet,
+    RootReceiptMismatch,
+}
+
+/// Production-shaped three-lock fixture used to prove that scoped-NCC planner
+/// derivation rejects every journal/plan bijection failure before a history
+/// scan. Only the cfg-only receipt projection is mutated.
+#[cfg(test)]
+pub(crate) fn original_merge_production_lock_projection_with_scoped_ncc_receipt_fixture_test_only(
+    merge_session_id: UnicaId,
+    resolved_session_digest: Sha256Digest,
+    ready: crate::domain::branched_development::contracts::support::ReadySupportPreflightAuthority,
+    settings_digest: Sha256Digest,
+    reference_closure_digest: Sha256Digest,
+    mutation: ScopedNccReceiptFixtureMutation,
+) -> ValidatedOriginalMergeLockProjection {
+    let mut projection =
+        original_merge_production_lock_projection_with_reference_closure_fixture_test_only(
+            merge_session_id,
+            resolved_session_digest,
+            ready,
+            settings_digest,
+            reference_closure_digest,
+        );
+    let root = RepositoryTargetIdentity::configuration_root();
+    let object_a_id = MetadataObjectId::parse("00000000-0000-0000-0000-000000000001").unwrap();
+    let object_b_id = MetadataObjectId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    let object_c_id = MetadataObjectId::parse("00000000-0000-0000-0000-000000000003").unwrap();
+    let object_a = RepositoryTargetIdentity::development_object(object_a_id.clone());
+    let object_b = RepositoryTargetIdentity::development_object(object_b_id.clone());
+    let object_c = RepositoryTargetIdentity::development_object(object_c_id);
+    let reasons =
+        RepositoryIntegrationReasons::new(vec![RepositoryIntegrationReason::CanonicalDelta])
+            .unwrap();
+    projection.plan.integration_entries = RepositoryIntegrationEntries::new(vec![
+        RepositoryIntegrationEntry::root_modify(
+            RootTargetIdentity::new(),
+            RepositoryTargetDisplay::parse("Configuration root").unwrap(),
+            reasons.clone(),
+            CanonicalRepositoryTargets::new(vec![root.clone()]).unwrap(),
+        ),
+        RepositoryIntegrationEntry::object_modify(
+            ObjectTargetIdentity::new(object_a_id),
+            RepositoryTargetDisplay::parse("Object A").unwrap(),
+            reasons.clone(),
+            CanonicalRepositoryTargets::new(vec![object_a.clone()]).unwrap(),
+        ),
+        RepositoryIntegrationEntry::object_modify(
+            ObjectTargetIdentity::new(object_b_id),
+            RepositoryTargetDisplay::parse("Object B").unwrap(),
+            reasons,
+            CanonicalRepositoryTargets::new(vec![object_b.clone()]).unwrap(),
+        ),
+    ])
+    .unwrap();
+    projection.plan.lock_entries = serde_json::from_value(serde_json::json!([
+        {
+            "targetKind": "configurationRoot",
+            "objectDisplay": "Configuration root",
+            "reasons": ["supportGraphGuard", "updateTarget"]
+        },
+        {
+            "targetKind": "developmentObject",
+            "objectId": "00000000-0000-0000-0000-000000000001",
+            "objectDisplay": "Object A",
+            "reasons": ["updateTarget"]
+        },
+        {
+            "targetKind": "developmentObject",
+            "objectId": "00000000-0000-0000-0000-000000000002",
+            "objectDisplay": "Object B",
+            "reasons": ["updateTarget"]
+        }
+    ]))
+    .unwrap();
+    projection.plan.integration_set_digest = result_digest(
+        &IntegrationSetDigestRecord {
+            merge_session_id: projection.plan.merge_session_id.clone(),
+            resolved_session_digest: projection.plan.resolved_session_digest.clone(),
+            support_gate_id: projection.plan.support_gate_id.clone(),
+            support_gate_digest: projection.plan.support_gate_digest.clone(),
+            support_gate_history_evidence_digest: projection
+                .plan
+                .support_gate_history_evidence
+                .evidence_digest()
+                .clone(),
+            verification_id: projection.plan.verification_id.clone(),
+            verification_digest: projection.plan.verification_digest.clone(),
+            integration_entries: projection.plan.integration_entries.clone(),
+            compatibility_mode: projection.plan.compatibility_mode.clone(),
+            reference_closure_digest: projection.plan.reference_closure_digest.clone(),
+            settings_digest: projection.plan.settings_digest.clone(),
+            prevalidation_diagnostics_digest: projection
+                .plan
+                .prevalidation_diagnostics_digest
+                .clone(),
+        },
+        "scoped NCC fixture integration-set digest failed",
+    )
+    .unwrap();
+    projection.plan.plan_digest = result_digest(
+        &LockPlanDigestRecord {
+            plan_id: projection.plan.plan_id.clone(),
+            merge_session_id: projection.plan.merge_session_id.clone(),
+            resolved_session_digest: projection.plan.resolved_session_digest.clone(),
+            support_gate_id: projection.plan.support_gate_id.clone(),
+            support_gate_digest: projection.plan.support_gate_digest.clone(),
+            support_gate_history_evidence: projection.plan.support_gate_history_evidence.clone(),
+            verification_id: projection.plan.verification_id.clone(),
+            verification_digest: projection.plan.verification_digest.clone(),
+            integration_set_id: projection.plan.integration_set_id.clone(),
+            integration_entries: projection.plan.integration_entries.clone(),
+            integration_set_digest: projection.plan.integration_set_digest.clone(),
+            lock_entries: projection.plan.lock_entries.clone(),
+            relevant_anchors: projection.plan.relevant_anchors.clone(),
+            compatibility_mode: projection.plan.compatibility_mode.clone(),
+            reference_closure_digest: projection.plan.reference_closure_digest.clone(),
+            settings_digest: projection.plan.settings_digest.clone(),
+            prevalidation_diagnostics_digest: projection
+                .plan
+                .prevalidation_diagnostics_digest
+                .clone(),
+        },
+        "scoped NCC fixture lock-plan digest failed",
+    )
+    .unwrap();
+    projection.lock_set_digest = result_digest(
+        &LockSetDigestRecord {
+            plan_digest: projection.plan.plan_digest.clone(),
+            integration_set_id: projection.plan.integration_set_id.clone(),
+            integration_set_digest: projection.plan.integration_set_digest.clone(),
+            acquired: projection.plan.lock_entries.clone(),
+        },
+        "scoped NCC fixture lock-set digest failed",
+    )
+    .unwrap();
+    let ValidatedLockGateProof::Production {
+        root_lock_receipt,
+        journaled_lock_receipts,
+        ..
+    } = &mut projection.gate_proof
+    else {
+        unreachable!("scoped NCC fixture must use the production gate proof")
+    };
+    let observed_at = NormalizedUtcInstant::parse("2026-07-23T01:00:00Z").unwrap();
+    let valid_receipts = vec![
+        JournaledRepositoryLock::new(
+            root,
+            RepositoryTargetDisplay::parse("Configuration root").unwrap(),
+            projection.lock_set_id.clone(),
+            observed_at.clone(),
+        ),
+        JournaledRepositoryLock::new(
+            object_a.clone(),
+            RepositoryTargetDisplay::parse("Object A").unwrap(),
+            projection.lock_set_id.clone(),
+            NormalizedUtcInstant::parse("2026-07-23T01:00:01Z").unwrap(),
+        ),
+        JournaledRepositoryLock::new(
+            object_b.clone(),
+            RepositoryTargetDisplay::parse("Object B").unwrap(),
+            projection.lock_set_id.clone(),
+            NormalizedUtcInstant::parse("2026-07-23T01:00:02Z").unwrap(),
+        ),
+    ];
+    *root_lock_receipt = valid_receipts[0].clone();
+    *journaled_lock_receipts = valid_receipts;
+    let _ = object_c;
+    projection.apply_scoped_ncc_receipt_mutation_fixture_test_only(mutation);
+    projection
+}
+
+#[cfg(test)]
+impl ValidatedOriginalMergeLockProjection {
+    pub(crate) fn apply_scoped_ncc_receipt_mutation_fixture_test_only(
+        &mut self,
+        mutation: ScopedNccReceiptFixtureMutation,
+    ) {
+        let lock_set_id = self.lock_set_id.clone();
+        let ValidatedLockGateProof::Production {
+            journaled_lock_receipts,
+            ..
+        } = &mut self.gate_proof
+        else {
+            unreachable!("scoped NCC receipt mutation requires production proof")
+        };
+        match mutation {
+            ScopedNccReceiptFixtureMutation::None => {}
+            ScopedNccReceiptFixtureMutation::Missing => {
+                journaled_lock_receipts.pop();
+            }
+            ScopedNccReceiptFixtureMutation::Extra => {
+                journaled_lock_receipts.push(JournaledRepositoryLock::new(
+                    RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse("00000000-0000-0000-0000-000000000003").unwrap(),
+                    ),
+                    RepositoryTargetDisplay::parse("Object C").unwrap(),
+                    lock_set_id,
+                    NormalizedUtcInstant::parse("2026-07-23T01:00:03Z").unwrap(),
+                ));
+            }
+            ScopedNccReceiptFixtureMutation::Duplicate => {
+                journaled_lock_receipts.insert(2, journaled_lock_receipts[1].clone());
+            }
+            ScopedNccReceiptFixtureMutation::Reordered => {
+                journaled_lock_receipts.swap(1, 2);
+            }
+            ScopedNccReceiptFixtureMutation::WrongTarget => {
+                journaled_lock_receipts[2] = JournaledRepositoryLock::new(
+                    RepositoryTargetIdentity::development_object(
+                        MetadataObjectId::parse("00000000-0000-0000-0000-000000000003").unwrap(),
+                    ),
+                    RepositoryTargetDisplay::parse("Object C").unwrap(),
+                    lock_set_id,
+                    NormalizedUtcInstant::parse("2026-07-23T01:00:02Z").unwrap(),
+                );
+            }
+            ScopedNccReceiptFixtureMutation::WrongLockSet => {
+                journaled_lock_receipts[1].lock_set_id =
+                    UnicaId::parse("77777777-7777-4777-8777-777777777778").unwrap();
+            }
+            ScopedNccReceiptFixtureMutation::RootReceiptMismatch => {
+                journaled_lock_receipts[0].observed_at =
+                    NormalizedUtcInstant::parse("2026-07-23T01:00:09Z").unwrap();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn original_merge_production_lock_projection_internal_fixture_test_only(
+    merge_session_id: UnicaId,
+    resolved_session_digest: Sha256Digest,
+    ready: crate::domain::branched_development::contracts::support::ReadySupportPreflightAuthority,
+    settings_digest: Sha256Digest,
+    current_state_revision: Sha256Digest,
+    reference_closure_digest: Option<Sha256Digest>,
+) -> ValidatedOriginalMergeLockProjection {
     use crate::domain::branched_development::contracts::support::{
         CurrentReadySupportGateResolutionRequest, CurrentReadySupportGateStateLease,
         CurrentReadySupportGateStateResolver, SupportContractError,
@@ -9053,6 +10555,9 @@ pub(crate) fn original_merge_production_lock_projection_with_revision_fixture_te
         settings_digest,
     );
     let mut plan = projection.plan;
+    if let Some(reference_closure_digest) = reference_closure_digest {
+        plan.reference_closure_digest = reference_closure_digest;
+    }
     let planner_capability_id = plan.gate_session_lineage.planner_capability_id.clone();
     plan.gate_session_lineage = LockPlanGateSessionLineage {
         comparison_id,
@@ -16253,6 +17758,156 @@ mod tests {
         CanonicalRepositoryTargets::new(values).unwrap()
     }
 
+    fn journaled_receipt(
+        target: RepositoryTargetIdentity,
+        label: &str,
+        lock_set_id: &str,
+        observed_at: &str,
+    ) -> JournaledRepositoryLock {
+        JournaledRepositoryLock::new(
+            target,
+            display(label),
+            id(lock_set_id),
+            NormalizedUtcInstant::parse(observed_at).unwrap(),
+        )
+    }
+
+    #[test]
+    fn gate_b3_phase_bound_scoped_ncc_exact_receipt_validator_is_stage_exact() {
+        const LOCK_SET: &str = "c3100000-0000-4000-8000-000000000001";
+        const OTHER_LOCK_SET: &str = "c3100000-0000-4000-8000-000000000002";
+        let root = RepositoryTargetIdentity::configuration_root();
+        let object_a = RepositoryTargetIdentity::DevelopmentObject(object_leaf(OBJECT_A));
+        let object_b = RepositoryTargetIdentity::DevelopmentObject(object_leaf(OBJECT_B));
+        let object_c = RepositoryTargetIdentity::DevelopmentObject(object_leaf(
+            "00000000-0000-0000-0000-000000000003",
+        ));
+        let expected = vec![root.clone(), object_a.clone(), object_b.clone()];
+        let root_receipt =
+            journaled_receipt(root, "Configuration", LOCK_SET, "2026-07-23T01:00:00Z");
+        let receipt_a = journaled_receipt(object_a, "Object A", LOCK_SET, "2026-07-23T01:00:01Z");
+        let receipt_b = journaled_receipt(object_b, "Object B", LOCK_SET, "2026-07-23T01:00:02Z");
+
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[root_receipt.clone(), receipt_a.clone(), receipt_b.clone()],
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[root_receipt.clone(), receipt_a.clone()],
+            ),
+            Err(ExactOrderedLockReceiptFailure::MissingReceipt {
+                expected_count: 3,
+                observed_count: 2,
+            })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[
+                    root_receipt.clone(),
+                    receipt_a.clone(),
+                    receipt_b.clone(),
+                    journaled_receipt(
+                        object_c.clone(),
+                        "Object C",
+                        LOCK_SET,
+                        "2026-07-23T01:00:03Z",
+                    ),
+                ],
+            ),
+            Err(ExactOrderedLockReceiptFailure::ExtraReceipt { position: 4 })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[
+                    root_receipt.clone(),
+                    receipt_a.clone(),
+                    receipt_a.clone(),
+                    receipt_b.clone(),
+                ],
+            ),
+            Err(ExactOrderedLockReceiptFailure::DuplicateTarget {
+                first_position: 2,
+                duplicate_position: 3,
+            })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[root_receipt.clone(), receipt_b.clone(), receipt_a.clone()],
+            ),
+            Err(ExactOrderedLockReceiptFailure::ReorderedReceipt {
+                position: 2,
+                expected_position: 3,
+            })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[
+                    root_receipt.clone(),
+                    receipt_a.clone(),
+                    journaled_receipt(object_c, "Object C", LOCK_SET, "2026-07-23T01:00:02Z",),
+                ],
+            ),
+            Err(ExactOrderedLockReceiptFailure::WrongTarget { position: 3 })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[
+                    root_receipt.clone(),
+                    journaled_receipt(
+                        expected[1].clone(),
+                        "Object A",
+                        OTHER_LOCK_SET,
+                        "2026-07-23T01:00:01Z",
+                    ),
+                    receipt_b.clone(),
+                ],
+            ),
+            Err(ExactOrderedLockReceiptFailure::WrongLockSet { position: 2 })
+        );
+        assert_eq!(
+            validate_exact_ordered_lock_receipts(
+                &expected,
+                &id(LOCK_SET),
+                &root_receipt,
+                &[
+                    journaled_receipt(
+                        expected[0].clone(),
+                        "Configuration",
+                        LOCK_SET,
+                        "2026-07-23T01:00:09Z",
+                    ),
+                    receipt_a,
+                    receipt_b,
+                ],
+            ),
+            Err(ExactOrderedLockReceiptFailure::RootReceiptMismatch)
+        );
+    }
+
     fn schema<T: JsonSchema>() -> Value {
         serde_json::to_value(schema_for!(T)).unwrap()
     }
@@ -18330,11 +19985,17 @@ mod gate_b2_preview_tests {
     use crate::domain::branched_development::contracts::repository::{
         empty_commit_history_evidence_fixture_test_only,
         repository_history_partition_fixture_test_only,
-        task_commit_history_partition_fixture_test_only, EvidenceKind, EvidenceSourceIndex,
-        EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
-        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
-        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
-        RepositoryHistorySourceEvidenceRef, RoutineRepositoryVersionClassificationEvidence,
+        scoped_ncc_history_broken_intermediate_closure_fixture_test_only,
+        scoped_ncc_history_fixture_test_only, task_commit_history_partition_fixture_test_only,
+        EvidenceKind, EvidenceSourceIndex, EvidenceSourceIndexCandidate,
+        EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry, RepositoryContractError,
+        RepositoryHistoryEvidenceBytesResolver, RepositoryHistoryOrderEvidence,
+        RepositoryHistoryOrderResolver, RepositoryHistorySourceEvidenceRef,
+        RoutineRepositoryVersionClassificationEvidence, ScopedNccHistoryFixtureTestOnly,
+        ScopedNccHistoryRowObservation, ScopedNccHistoryRowObservationInput,
+        ScopedNccHistoryScanBatchInput, ScopedNccHistoryScanBatchWitness,
+        ScopedNccHistoryScanCompletion, ScopedNccHistoryScanLease, ScopedNccHistoryScanPort,
+        ScopedNccHistoryScanRequest, ScopedNccRowFacts,
     };
     use crate::domain::branched_development::contracts::requests::repository::{
         RepositoryCommitRequest, RepositoryCommitRequestValidationFailure,
@@ -18343,6 +20004,8 @@ mod gate_b2_preview_tests {
     use crate::domain::branched_development::contracts::results::merge::{
         validated_main_integration_commit_context_fixture_test_only,
         validated_main_integration_commit_context_with_lock_identity_fixture_test_only,
+        validated_main_integration_commit_context_with_reference_closure_fixture_test_only,
+        validated_main_integration_commit_context_with_scoped_ncc_receipt_fixture_test_only,
         ResolvedCommitLineageConsumedSupportGateAuthority,
     };
     use crate::domain::branched_development::contracts::scalars::PositiveGeneration;
@@ -18394,6 +20057,23 @@ mod gate_b2_preview_tests {
                 {
                 }
                 let _ = <$type as AmbiguousIfDeserialize<_>>::assert_not_deserialize;
+            };
+        };
+    }
+
+    macro_rules! assert_not_json_schema {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfJsonSchema<Marker> {
+                    fn assert_not_json_schema() {}
+                }
+                struct ImplementsJsonSchema;
+                impl<T: ?Sized> AmbiguousIfJsonSchema<()> for T {}
+                impl<T: ?Sized + schemars::JsonSchema> AmbiguousIfJsonSchema<ImplementsJsonSchema>
+                    for T
+                {
+                }
+                let _ = <$type as AmbiguousIfJsonSchema<_>>::assert_not_json_schema;
             };
         };
     }
@@ -18471,6 +20151,54 @@ mod gate_b2_preview_tests {
     assert_not_deserialize_owned!(CommitFreshPreviewRequiredAuthority);
     assert_not_deserialize_owned!(CommitImmediateRecoveryRequiredAuthority);
 
+    macro_rules! assert_linear_non_wire {
+        ($type:ty) => {
+            assert_not_clone!($type);
+            assert_not_serialize!($type);
+            assert_not_deserialize_owned!($type);
+            assert_not_json_schema!($type);
+        };
+    }
+
+    assert_linear_non_wire!(ScopedNccPlannerScope);
+    assert_linear_non_wire!(ExactOrderedLockReceiptFailure);
+    assert_linear_non_wire!(ScopedNccPlannerScopeDerivationFailure);
+    assert_linear_non_wire!(ScopedNccPlannerBindingFailure);
+    assert_linear_non_wire!(ScopedNccPlannerBindingBlockedCore);
+    assert_linear_non_wire!(PlannerBoundScopedNccHistoryScanCore);
+    assert_linear_non_wire!(ScopedNccPlannerCoreResolutionFailure);
+    assert_linear_non_wire!(PhaseTerminalObservation<PrecommitPhase>);
+    assert_linear_non_wire!(PhaseTerminalObservation<ImmediatePhase>);
+    assert_linear_non_wire!(PhaseBinding<PrecommitPhase>);
+    assert_linear_non_wire!(PhaseBinding<ImmediatePhase>);
+    assert_linear_non_wire!(ScopedNccPlannerResolutionRequest<'static>);
+    assert_linear_non_wire!(ScopedNccPlannerBindingBlockedAuthority<PrecommitPhase>);
+    assert_linear_non_wire!(ScopedNccPlannerBindingBlockedAuthority<ImmediatePhase>);
+    assert_linear_non_wire!(PlannerBoundScopedNccHistoryScanAuthority<PrecommitPhase>);
+    assert_linear_non_wire!(PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>);
+    assert_linear_non_wire!(PhaseScopedNccScanBlockedAuthority<PrecommitPhase>);
+    assert_linear_non_wire!(PhaseScopedNccScanBlockedAuthority<ImmediatePhase>);
+    assert_linear_non_wire!(PhaseScopedNccResolutionFailure<PrecommitPhase>);
+    assert_linear_non_wire!(PhaseScopedNccResolutionFailure<ImmediatePhase>);
+    assert_linear_non_wire!(PointerCheckedPostMergeCommitGuardCompletion);
+    assert_linear_non_wire!(PointerCheckedPostMergeCommitGuardObservation);
+    assert_linear_non_wire!(PostMergeNoNccHistoryAuthority);
+    assert_linear_non_wire!(PostMergeScopedNccHistoryAuthority);
+    assert_linear_non_wire!(PostMergeCommitHistorySafetyAuthority);
+    assert_linear_non_wire!(PostMergeCommitGuardObservationOutcome);
+    assert_linear_non_wire!(PostMergeScopedNccPendingAuthority);
+    assert_linear_non_wire!(PostMergeScopedNccFailureEvidence);
+    assert_linear_non_wire!(PostMergeScopedNccBlockedAuthority);
+    assert_linear_non_wire!(PointerCheckedCommitImmediateRecheckCompletion);
+    assert_linear_non_wire!(PointerCheckedCommitImmediateRecheckObservation);
+    assert_linear_non_wire!(CommitImmediateHistorySafetyAuthority);
+    assert_linear_non_wire!(CommitImmediateScopedNccPendingAuthority);
+    assert_linear_non_wire!(CommitImmediateScopedNccFailureEvidence);
+    assert_linear_non_wire!(CommitImmediateBoundHistoryFailureEvidence);
+    assert_linear_non_wire!(CommitImmediateHistorySafetyFailure);
+    assert_linear_non_wire!(CommitImmediateRecheckFailureEvidence);
+    assert_linear_non_wire!(CommitImmediateRecheckOutcome);
+
     const _: fn(ValidatedCommitApplyApprovalAuthority) -> ApprovedCommitPreviewAuthority =
         ApprovedCommitPreviewAuthority::from_validated_request;
     const _: fn(
@@ -18485,6 +20213,28 @@ mod gate_b2_preview_tests {
         ValidatedCommitApplyApprovalAuthority,
         Box<CommitApplyApprovalBlockedAuthority>,
     > = CommitPreviewAuthority::validate_apply;
+    const _: fn(
+        ResolvedCommitLineageConsumedSupportGateAuthority,
+        &mut dyn PostMergeCommitGuardPort,
+    ) -> PostMergeCommitGuardObservationOutcome =
+        PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage;
+    const _: fn(
+        ApprovedCommitPreviewAuthority,
+        &mut dyn CommitImmediateRecheckPort,
+    ) -> CommitImmediateRecheckOutcome =
+        ApprovedCommitPreviewAuthority::recheck_before_commit_intent;
+    const _: fn(
+        CommitImmediateScopedNccPendingAuthority,
+        &mut dyn ScopedNccHistoryScanPort,
+    ) -> CommitImmediateRecheckOutcome =
+        CommitImmediateScopedNccPendingAuthority::resolve_scoped_ncc;
+    const _: for<'a> fn(
+        ScopedNccPlannerResolutionRequest<'a>,
+        &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<
+        PlannerBoundScopedNccHistoryScanCore,
+        ScopedNccPlannerCoreResolutionFailure,
+    > = PlannerBoundScopedNccHistoryScanCore::resolve;
     const _: fn(
         CommitScopedAtomicSafetyAuthority,
         CommitObjectPostStateObservationAuthority,
@@ -18720,7 +20470,7 @@ mod gate_b2_preview_tests {
         task_id: &str,
         operation_id: &str,
     ) -> Value {
-        let lineage = guard.source.lineage();
+        let lineage = guard.source().lineage();
         json!({
             "cwd": cwd,
             "taskId": task_id,
@@ -18813,7 +20563,9 @@ mod gate_b2_preview_tests {
         partition: ValidatedRepositoryHistoryPartition,
         repository_identity: Option<Sha256Digest>,
         configuration_identity: Option<ConfigurationIdentity>,
+        observed_original_fingerprint: Option<Sha256Digest>,
         configuration_fingerprint: Option<Sha256Digest>,
+        reference_closure_digest: Option<Sha256Digest>,
     }
 
     impl TestInitialHistoryPort {
@@ -18822,7 +20574,23 @@ mod gate_b2_preview_tests {
                 partition,
                 repository_identity: None,
                 configuration_identity: None,
+                observed_original_fingerprint: None,
                 configuration_fingerprint: None,
+                reference_closure_digest: None,
+            }
+        }
+
+        fn exact_with_terminal_closure(
+            partition: ValidatedRepositoryHistoryPartition,
+            reference_closure_digest: Sha256Digest,
+        ) -> Self {
+            Self {
+                partition,
+                repository_identity: None,
+                configuration_identity: None,
+                observed_original_fingerprint: None,
+                configuration_fingerprint: None,
+                reference_closure_digest: Some(reference_closure_digest),
             }
         }
     }
@@ -18835,14 +20603,20 @@ mod gate_b2_preview_tests {
             let authority = PostMergeHistoryGuardAuthority::from_capability_adapter(
                 &self.partition,
                 request.merge_receipt_cursor().clone(),
-                request.reference_closure_digest().clone(),
+                self.reference_closure_digest
+                    .clone()
+                    .unwrap_or_else(|| request.reference_closure_digest().clone()),
                 CapabilityRowId::parse(ATOMIC_COMMIT_CAPABILITY_ID).unwrap(),
             )
             .map_err(|_| RepositoryResultContractError("initial history authority failed"))?;
             let history = PostMergeHistoryGuardEvidence::new(self.partition.clone(), &authority)
                 .map_err(|_| RepositoryResultContractError("initial history evidence failed"))?;
             let expected_root = request.expected_plan_root_anchor();
-            let observed_fingerprint = self
+            let observed_original_fingerprint = self
+                .observed_original_fingerprint
+                .clone()
+                .unwrap_or_else(|| request.authorized_result_fingerprint().clone());
+            let observed_anchor_fingerprint = self
                 .configuration_fingerprint
                 .clone()
                 .unwrap_or_else(|| request.authorized_result_fingerprint().clone());
@@ -18854,18 +20628,48 @@ mod gate_b2_preview_tests {
                 self.configuration_identity
                     .clone()
                     .unwrap_or_else(|| expected_root.configuration_identity().clone()),
-                observed_fingerprint.clone(),
+                observed_anchor_fingerprint,
             )?;
             let lineage_witness = request.commit_safety_lineage_witness();
             Ok(request.complete(Box::new(TestPostMergeGuardLease {
                 lineage_witness,
                 history,
-                observed_fingerprint,
+                observed_fingerprint: observed_original_fingerprint,
                 observed_repository_anchor,
                 capability_id: CapabilityRowId::parse("repository.original-fingerprint.gate-b2")
                     .unwrap(),
                 binds: true,
             })))
+        }
+    }
+
+    struct CountingInitialHistoryPort {
+        inner: TestInitialHistoryPort,
+        calls: usize,
+    }
+
+    impl PostMergeCommitGuardPort for CountingInitialHistoryPort {
+        fn observe_post_merge_commit_guard(
+            &mut self,
+            request: PostMergeCommitGuardRequest<'_>,
+        ) -> Result<PostMergeCommitGuardCompletion, RepositoryResultContractError> {
+            self.calls += 1;
+            self.inner.observe_post_merge_commit_guard(request)
+        }
+    }
+
+    struct FailingPhaseScopedNccPort {
+        calls: usize,
+    }
+
+    impl ScopedNccHistoryScanPort for FailingPhaseScopedNccPort {
+        fn observe_scoped_ncc_history(
+            &mut self,
+            _request: ScopedNccHistoryScanRequest<'_>,
+        ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError> {
+            self.calls += 1;
+            let root = RepositoryTargetIdentity::configuration_root();
+            Err(CanonicalRepositoryTargetSet::new(vec![root.clone(), root]).unwrap_err())
         }
     }
 
@@ -18885,11 +20689,82 @@ mod gate_b2_preview_tests {
             classifications,
             order_capability_id,
         );
-        let guard = PostMergeCommitGuardAuthority::from_authoritative_consumed_lineage(
+        let guard = match PostMergeCommitGuardAuthority::from_authoritative_consumed_lineage(
             source,
             &mut TestInitialHistoryPort::exact(partition.clone()),
-        )?;
+        ) {
+            PostMergeCommitGuardObservationOutcome::NoNcc(guard) => *guard,
+            PostMergeCommitGuardObservationOutcome::Recovery(blocked) => return Err(blocked),
+            PostMergeCommitGuardObservationOutcome::ScopedRequired(_) => {
+                panic!("generic initial-guard helper does not accept an NCC scan port")
+            }
+        };
         Ok((guard, partition))
+    }
+
+    struct TestPhaseScopedNccLease {
+        witness: ScopedNccHistoryScanBatchWitness,
+        observation:
+            crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation,
+    }
+
+    impl ScopedNccHistoryScanLease for TestPhaseScopedNccLease {
+        fn batch_witness(&self) -> &ScopedNccHistoryScanBatchWitness {
+            &self.witness
+        }
+
+        fn binds(&self, _request: &ScopedNccHistoryScanRequest<'_>) -> bool {
+            true
+        }
+
+        fn into_observation(
+            self: Box<Self>,
+        ) -> crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation
+        {
+            self.observation
+        }
+    }
+
+    struct TestPhaseScopedNccPort {
+        row_facts: Vec<Option<ScopedNccRowFacts>>,
+        calls: usize,
+    }
+
+    impl ScopedNccHistoryScanPort for TestPhaseScopedNccPort {
+        fn observe_scoped_ncc_history(
+            &mut self,
+            request: ScopedNccHistoryScanRequest<'_>,
+        ) -> Result<ScopedNccHistoryScanCompletion, RepositoryContractError> {
+            self.calls += 1;
+            let mut rows = Vec::with_capacity(request.row_count());
+            for index in 0..request.row_count() {
+                let row = request.row(index).expect("scoped fixture row must exist");
+                rows.push(ScopedNccHistoryRowObservation::from_capability_adapter(
+                    &request,
+                    ScopedNccHistoryRowObservationInput::new(
+                        row.position(),
+                        row.cursor().clone(),
+                        row.repository_version().clone(),
+                        self.row_facts[index].clone(),
+                    ),
+                )?);
+            }
+            let witness = request.batch_witness();
+            let observation =
+                crate::domain::branched_development::contracts::repository::ScopedNccHistoryScanObservation::from_capability_adapter(
+                    &request,
+                    ScopedNccHistoryScanBatchInput::new(
+                        request.start_cursor().clone(),
+                        request.through_inclusive().clone(),
+                        request.partition_digest().clone(),
+                        rows,
+                    ),
+                )?;
+            Ok(request.complete(Box::new(TestPhaseScopedNccLease {
+                witness,
+                observation,
+            })))
+        }
     }
 
     fn approved_preview_with_history(
@@ -18925,6 +20800,638 @@ mod gate_b2_preview_tests {
             preview.validate_apply(apply).unwrap(),
         );
         (approved, partition, preview_request)
+    }
+
+    fn approved_preview_with_scoped_ncc() -> (
+        ApprovedCommitPreviewAuthority,
+        ScopedNccHistoryFixtureTestOnly,
+    ) {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000133");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.approved-scoped-ncc",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let source =
+            validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                fixture.planned_initial_reference_closure_digest.clone(),
+            );
+        let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                fixture.partition.clone(),
+                fixture.terminal_reference_closure_digest.clone(),
+            ),
+        );
+        let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+            panic!("scoped preview fixture must require the precommit scan")
+        };
+        let mut precommit_scan = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts.clone(),
+            calls: 0,
+        };
+        let guard = pending.resolve_scoped_ncc(&mut precommit_scan).unwrap();
+        assert_eq!(precommit_scan.calls, 1);
+        let preview_request = commit_preview_request_value(
+            &guard,
+            "/original/project",
+            "PR-137",
+            PREVIEW_OPERATION_ID,
+        );
+        let preview = CommitPreviewAuthority::from_validated_post_merge_guard(
+            validated_commit_preview_request(preview_request.clone()),
+            guard,
+            validated_comment_policy(),
+        )
+        .unwrap();
+        let approved_digest = preview.commit_digest().clone();
+        let apply = serde_json::from_value(commit_apply_request_value(
+            preview_request,
+            APPLY_OPERATION_ID,
+            &approved_digest,
+        ))
+        .unwrap();
+        (
+            ApprovedCommitPreviewAuthority::from_validated_request(
+                preview.validate_apply(apply).unwrap(),
+            ),
+            fixture,
+        )
+    }
+
+    #[test]
+    fn gate_b3_phase_bound_scoped_ncc_precommit_observes_then_scans_once() {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000124");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.precommit-scoped",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let source =
+            validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                fixture.planned_initial_reference_closure_digest.clone(),
+            );
+        let outer_partition = fixture.partition.clone();
+        let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                outer_partition,
+                fixture.terminal_reference_closure_digest.clone(),
+            ),
+        );
+        let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+            panic!("an NCC outer observation must return its owning scoped pending authority")
+        };
+        let mut scan_port = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts,
+            calls: 0,
+        };
+
+        let guard = pending.resolve_scoped_ncc(&mut scan_port).unwrap();
+
+        assert_eq!(scan_port.calls, 1);
+        assert_eq!(
+            guard
+                .history_guard_evidence
+                .recomputed_reference_closure_digest(),
+            &fixture.terminal_reference_closure_digest
+        );
+    }
+
+    #[test]
+    fn gate_b3_precommit_no_ncc_observes_outer_once_and_never_scans_scoped_history() {
+        let source = context(id("b3100000-0000-4000-8000-000000000128"), digest('9'));
+        let partition = history_partition(
+            source.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.precommit-no-ncc",
+        );
+        let mut outer = CountingInitialHistoryPort {
+            inner: TestInitialHistoryPort::exact(partition),
+            calls: 0,
+        };
+
+        let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+            source, &mut outer,
+        );
+
+        assert!(matches!(
+            outcome,
+            PostMergeCommitGuardObservationOutcome::NoNcc(_)
+        ));
+        assert_eq!(outer.calls, 1);
+    }
+
+    #[test]
+    fn gate_b3_precommit_rejects_original_and_anchor_fingerprints_independently_before_scan() {
+        for case in 0..3 {
+            let source = context(
+                id(match case {
+                    0 => "b3100000-0000-4000-8000-000000000129",
+                    1 => "b3100000-0000-4000-8000-000000000130",
+                    2 => "b3100000-0000-4000-8000-000000000132",
+                    _ => unreachable!(),
+                }),
+                digest('9'),
+            );
+            let partition = history_partition(
+                source.lineage().merge_receipt_cursor().clone(),
+                &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+                "repository.history-order.precommit-fingerprint-negative",
+            );
+            let mut inner = TestInitialHistoryPort::exact(partition);
+            match case {
+                0 => inner.observed_original_fingerprint = Some(digest('1')),
+                1 => inner.configuration_fingerprint = Some(digest('2')),
+                2 => {
+                    inner.observed_original_fingerprint = Some(digest('3'));
+                    inner.configuration_fingerprint = Some(digest('3'));
+                }
+                _ => unreachable!(),
+            }
+            let mut outer = CountingInitialHistoryPort { inner, calls: 0 };
+
+            let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+                source, &mut outer,
+            );
+
+            let PostMergeCommitGuardObservationOutcome::Recovery(blocked) = outcome else {
+                panic!("either independently foreign fingerprint must block precommit")
+            };
+            assert!(matches!(
+                blocked.failure(),
+                PostMergeCommitGuardFailureEvidence::PostMergeDrift { .. }
+            ));
+            assert_eq!(outer.calls, 1);
+        }
+    }
+
+    #[test]
+    fn gate_b3_precommit_scoped_scan_failure_is_nested_and_owning() {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000131");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.precommit-nested-scan-failure",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let source =
+            validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                fixture.planned_initial_reference_closure_digest,
+            );
+        let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                fixture.partition,
+                fixture.terminal_reference_closure_digest,
+            ),
+        );
+        let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+            panic!("NCC outer observation must produce a scoped pending authority")
+        };
+        let mut scan = FailingPhaseScopedNccPort { calls: 0 };
+
+        let blocked = pending.resolve_scoped_ncc(&mut scan).unwrap_err();
+
+        assert_eq!(scan.calls, 1);
+        assert!(matches!(
+            blocked.failure(),
+            PostMergeScopedNccFailureEvidence::ScopedNccScanBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_planner_scope_derivation_rejects_exact_receipt_matrix_before_scan() {
+        let cases = [
+            (
+                ScopedNccReceiptFixtureMutation::Missing,
+                ExactOrderedLockReceiptFailure::MissingReceipt {
+                    expected_count: 3,
+                    observed_count: 2,
+                },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::Extra,
+                ExactOrderedLockReceiptFailure::ExtraReceipt { position: 4 },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::Duplicate,
+                ExactOrderedLockReceiptFailure::DuplicateTarget {
+                    first_position: 2,
+                    duplicate_position: 3,
+                },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::Reordered,
+                ExactOrderedLockReceiptFailure::ReorderedReceipt {
+                    position: 2,
+                    expected_position: 3,
+                },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::WrongTarget,
+                ExactOrderedLockReceiptFailure::WrongTarget { position: 3 },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::WrongLockSet,
+                ExactOrderedLockReceiptFailure::WrongLockSet { position: 2 },
+            ),
+            (
+                ScopedNccReceiptFixtureMutation::RootReceiptMismatch,
+                ExactOrderedLockReceiptFailure::RootReceiptMismatch,
+            ),
+        ];
+        for (index, (mutation, expected_failure)) in cases.into_iter().enumerate() {
+            let receipt_id = id(&format!("b3100000-0000-4000-8000-0000000002{}", 10 + index));
+            let fingerprint = digest('9');
+            let baseline = context(receipt_id.clone(), fingerprint.clone());
+            let root = RepositoryTargetIdentity::configuration_root();
+            let object_a = RepositoryTargetIdentity::development_object(
+                MetadataObjectId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+            );
+            let object_b = RepositoryTargetIdentity::development_object(
+                MetadataObjectId::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+            );
+            let fixture = scoped_ncc_history_fixture_test_only(
+                baseline.lineage().merge_receipt_cursor().clone(),
+                &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+                "repository.history-order.precommit-receipt-matrix",
+                ATOMIC_COMMIT_CAPABILITY_ID,
+                vec![root.clone(), object_a.clone(), object_b.clone()],
+                vec![root, object_a, object_b],
+                Vec::new(),
+            )
+            .unwrap();
+            let source =
+                validated_main_integration_commit_context_with_scoped_ncc_receipt_fixture_test_only(
+                    receipt_id,
+                    fingerprint,
+                    fixture.planned_initial_reference_closure_digest.clone(),
+                    mutation,
+                );
+            let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+                source,
+                &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                    fixture.partition.clone(),
+                    fixture.terminal_reference_closure_digest,
+                ),
+            );
+            let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+                panic!("receipt mutation {mutation:?} must reach scoped derivation")
+            };
+            let mut scan_port = TestPhaseScopedNccPort {
+                row_facts: fixture.row_facts,
+                calls: 0,
+            };
+
+            let blocked = pending.resolve_scoped_ncc(&mut scan_port).unwrap_err();
+
+            assert_eq!(scan_port.calls, 0, "receipt mutation {mutation:?}");
+            let PostMergeScopedNccFailureEvidence::PlannerScopeDerivation {
+                failure: ScopedNccPlannerScopeDerivationFailure::LockReceipts(actual_failure),
+                ..
+            } = blocked.failure()
+            else {
+                panic!("receipt mutation {mutation:?} must retain exact derivation failure")
+            };
+            assert_eq!(actual_failure, &expected_failure, "{mutation:?}");
+        }
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_planner_binding_rejects_broken_intermediate_closure_chain() {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000127");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_broken_intermediate_closure_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            "repository.history-order.precommit-broken-intermediate",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let source =
+            validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                fixture.planned_initial_reference_closure_digest.clone(),
+            );
+        let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                fixture.partition.clone(),
+                fixture.terminal_reference_closure_digest,
+            ),
+        );
+        let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+            panic!("broken closure fixture must reach scoped binding")
+        };
+        let mut scan_port = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts,
+            calls: 0,
+        };
+
+        let blocked = pending.resolve_scoped_ncc(&mut scan_port).unwrap_err();
+
+        assert_eq!(scan_port.calls, 1);
+        let PostMergeScopedNccFailureEvidence::ScopedNccPlannerBindingBlocked { blocked } =
+            blocked.failure()
+        else {
+            panic!("broken intermediate closure must be a planner binding failure")
+        };
+        assert!(matches!(
+            blocked.failure(),
+            ScopedNccPlannerBindingFailure::IntermediateReferenceClosureMismatch {
+                previous_position: 1,
+                position: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn gate_b3_precommit_terminal_mint_rejects_foreign_outer_completion() {
+        let source = CommitSafetyLineageBinding::new(context(
+            id("b3100000-0000-4000-8000-000000000125"),
+            digest('9'),
+        ));
+        let partition = history_partition(
+            source.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.precommit-terminal-mint",
+        );
+        let invocation_a = PostMergeCommitGuardInvocationCapability::mint();
+        let invocation_b = PostMergeCommitGuardInvocationCapability::mint();
+        let request_b = PostMergeCommitGuardRequest {
+            source: &source,
+            invocation: &invocation_b,
+        };
+        let completion_b = TestInitialHistoryPort::exact(partition)
+            .observe_post_merge_commit_guard(request_b)
+            .unwrap();
+
+        assert!(invocation_a.bind_completion(completion_b).is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_phase_binding_rejects_equal_scalar_terminal_observation_splice() {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000126");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.precommit-phase-splice",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let make_pending = || {
+            let source =
+                validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                    receipt_id.clone(),
+                    fingerprint.clone(),
+                    fixture.planned_initial_reference_closure_digest.clone(),
+                );
+            let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+                source,
+                &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                    fixture.partition.clone(),
+                    fixture.terminal_reference_closure_digest.clone(),
+                ),
+            );
+            let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+                panic!("phase-splice fixture must produce a scoped pending authority")
+            };
+            pending
+        };
+        let pending_a = make_pending();
+        let pending_b = make_pending();
+        let scope = derive_scoped_ncc_planner_scope(&pending_b.source).unwrap();
+        let mut scan_port = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts,
+            calls: 0,
+        };
+        let core = PlannerBoundScopedNccHistoryScanCore::resolve_test_only(
+            pending_b.terminal_observation.partition(),
+            pending_b
+                .terminal_observation
+                .atomic_commit_safety_capability_id(),
+            scope,
+            pending_b.terminal_observation.terminal_repository_anchor(),
+            pending_b
+                .terminal_observation
+                .terminal_reference_closure_digest(),
+            &mut scan_port,
+        )
+        .unwrap();
+        let (_terminal_a, binding_a) = pending_a.terminal_observation.into_phase_binding();
+        let (terminal_b, _binding_b) = pending_b.terminal_observation.into_phase_binding();
+
+        let blocked = PlannerBoundScopedNccHistoryScanAuthority::bind(core, terminal_b, binding_a)
+            .unwrap_err();
+
+        assert!(matches!(
+            blocked.failure(),
+            ScopedNccPlannerBindingFailure::PhaseBindingMismatch
+        ));
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_core_rechecks_partition_capability_anchor_and_terminal_closure_from_phase(
+    ) {
+        let receipt_id = id("b3100000-0000-4000-8000-000000000135");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.phase-core-rebind",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+        let make_pending = |partition, terminal_closure| {
+            let source =
+                validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                    receipt_id.clone(),
+                    fingerprint.clone(),
+                    fixture.planned_initial_reference_closure_digest.clone(),
+                );
+            let outcome = PostMergeCommitGuardAuthority::observe_authoritative_consumed_lineage(
+                source,
+                &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                    partition,
+                    terminal_closure,
+                ),
+            );
+            let PostMergeCommitGuardObservationOutcome::ScopedRequired(pending) = outcome else {
+                panic!("phase core rebind fixture must produce scoped pending")
+            };
+            pending
+        };
+        let pending_a = make_pending(
+            fixture.partition.clone(),
+            fixture.terminal_reference_closure_digest.clone(),
+        );
+        let scope = derive_scoped_ncc_planner_scope(&pending_a.source).unwrap();
+        let mut scan = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts.clone(),
+            calls: 0,
+        };
+        let core = PlannerBoundScopedNccHistoryScanCore::resolve_test_only(
+            pending_a.terminal_observation.partition(),
+            pending_a
+                .terminal_observation
+                .atomic_commit_safety_capability_id(),
+            scope,
+            pending_a.terminal_observation.terminal_repository_anchor(),
+            pending_a
+                .terminal_observation
+                .terminal_reference_closure_digest(),
+            &mut scan,
+        )
+        .unwrap();
+        assert_eq!(scan.calls, 1);
+
+        let alternate = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
+            &[
+                RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            ],
+            "repository.history-order.phase-core-rebind",
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let pending_partition_b = make_pending(
+            alternate.partition,
+            alternate.terminal_reference_closure_digest,
+        );
+        assert!(matches!(
+            core.terminal_binding_failure(
+                pending_partition_b.terminal_observation.partition(),
+                pending_partition_b
+                    .terminal_observation
+                    .atomic_commit_safety_capability_id(),
+                pending_partition_b
+                    .terminal_observation
+                    .terminal_repository_anchor(),
+                pending_partition_b
+                    .terminal_observation
+                    .terminal_reference_closure_digest(),
+            ),
+            Some(ScopedNccPlannerBindingFailure::PhasePartitionMismatch)
+        ));
+
+        let foreign_capability =
+            CapabilityRowId::parse("repository.atomic-commit.foreign").unwrap();
+        assert!(matches!(
+            core.terminal_binding_failure(
+                pending_a.terminal_observation.partition(),
+                &foreign_capability,
+                pending_a.terminal_observation.terminal_repository_anchor(),
+                pending_a
+                    .terminal_observation
+                    .terminal_reference_closure_digest(),
+            ),
+            Some(ScopedNccPlannerBindingFailure::PhaseCapabilityMismatch)
+        ));
+
+        let wrong_cursor_anchor = RepositoryAnchor::from_guarded_observation(
+            pending_a
+                .terminal_observation
+                .terminal_repository_anchor()
+                .repository_identity()
+                .clone(),
+            RepositoryHistoryCursor::new(RepositoryVersion::parse("999").unwrap(), digest('f')),
+            pending_a
+                .terminal_observation
+                .terminal_repository_anchor()
+                .configuration_identity()
+                .clone(),
+            pending_a
+                .terminal_observation
+                .terminal_repository_anchor()
+                .configuration_fingerprint()
+                .clone(),
+        )
+        .unwrap();
+        assert!(matches!(
+            core.terminal_binding_failure(
+                pending_a.terminal_observation.partition(),
+                pending_a
+                    .terminal_observation
+                    .atomic_commit_safety_capability_id(),
+                &wrong_cursor_anchor,
+                pending_a
+                    .terminal_observation
+                    .terminal_reference_closure_digest(),
+            ),
+            Some(ScopedNccPlannerBindingFailure::TerminalAnchorCursorMismatch)
+        ));
+
+        let foreign_terminal_closure = digest('f');
+        assert!(matches!(
+            core.terminal_binding_failure(
+                pending_a.terminal_observation.partition(),
+                pending_a
+                    .terminal_observation
+                    .atomic_commit_safety_capability_id(),
+                pending_a.terminal_observation.terminal_repository_anchor(),
+                &foreign_terminal_closure,
+            ),
+            Some(ScopedNccPlannerBindingFailure::LastReferenceClosureMismatch { position: 1 })
+        ));
+
+        let pending_closure_b = make_pending(fixture.partition.clone(), foreign_terminal_closure);
+        let (terminal_b, binding_b) = pending_closure_b.terminal_observation.into_phase_binding();
+        let blocked = PlannerBoundScopedNccHistoryScanAuthority::bind(core, terminal_b, binding_b)
+            .unwrap_err();
+        assert!(matches!(
+            blocked.failure(),
+            ScopedNccPlannerBindingFailure::LastReferenceClosureMismatch { position: 1 }
+        ));
     }
 
     fn approved_preview_with_lock_identity(
@@ -19587,12 +22094,12 @@ mod gate_b2_preview_tests {
     ) -> CommitPreviewFailureExpectation {
         CommitPreviewFailureExpectation {
             request: serde_json::to_value(request.request()).unwrap(),
-            receipt_id: guard.source.lineage().merge_receipt_id().clone(),
-            lock_set_id: guard.source.lineage().lock_set_id().clone(),
-            rollback_checkpoint_id: guard.source.lineage().rollback_checkpoint_id().clone(),
-            journaled_lock_receipts: guard.source.lineage().journaled_lock_receipts().to_vec(),
+            receipt_id: guard.source().lineage().merge_receipt_id().clone(),
+            lock_set_id: guard.source().lineage().lock_set_id().clone(),
+            rollback_checkpoint_id: guard.source().lineage().rollback_checkpoint_id().clone(),
+            journaled_lock_receipts: guard.source().lineage().journaled_lock_receipts().to_vec(),
             consumed_state_revision: guard
-                .source
+                .source()
                 .consumed_gate_observation()
                 .consumed_state_revision()
                 .clone(),
@@ -19612,21 +22119,24 @@ mod gate_b2_preview_tests {
             expected.request
         );
         assert_eq!(
-            guard.source.lineage().merge_receipt_id(),
+            guard.source().lineage().merge_receipt_id(),
             &expected.receipt_id
         );
-        assert_eq!(guard.source.lineage().lock_set_id(), &expected.lock_set_id);
         assert_eq!(
-            guard.source.lineage().rollback_checkpoint_id(),
+            guard.source().lineage().lock_set_id(),
+            &expected.lock_set_id
+        );
+        assert_eq!(
+            guard.source().lineage().rollback_checkpoint_id(),
             &expected.rollback_checkpoint_id
         );
         assert_eq!(
-            guard.source.lineage().journaled_lock_receipts(),
+            guard.source().lineage().journaled_lock_receipts(),
             expected.journaled_lock_receipts
         );
         assert_eq!(
             guard
-                .source
+                .source()
                 .consumed_gate_observation()
                 .consumed_state_revision(),
             &expected.consumed_state_revision
@@ -19818,7 +22328,7 @@ mod gate_b2_preview_tests {
                 "request field {field} was not retained"
             );
             assert_eq!(
-                retained_guard.source.lineage().merge_receipt_id(),
+                retained_guard.source().lineage().merge_receipt_id(),
                 &id("b3100000-0000-4000-8000-000000000014")
             );
             assert_eq!(
@@ -20140,9 +22650,13 @@ mod gate_b2_preview_tests {
             let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
                 panic!("unsafe tail {classification:?} must require recovery")
             };
+            let CommitImmediateRecheckFailureEvidence::BoundHistory(blocked) = recovery.failure()
+            else {
+                panic!("unsafe no-NCC history must retain its terminal authority")
+            };
             assert!(matches!(
-                recovery.failure(),
-                CommitImmediateRecheckFailureEvidence::UnsafeHistoryAdvance { .. }
+                blocked.failure(),
+                CommitImmediateHistorySafetyFailure::UnsafeHistoryAdvance
             ));
             assert!(!recovery.approved_commit_digest().as_str().is_empty());
         }
@@ -20236,7 +22750,9 @@ mod gate_b2_preview_tests {
                 partition,
                 repository_identity: Some(digest('f')),
                 configuration_identity: None,
+                observed_original_fingerprint: None,
                 configuration_fingerprint: None,
+                reference_closure_digest: None,
             },
         )
         .unwrap_err();
@@ -20301,47 +22817,266 @@ mod gate_b2_preview_tests {
             let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
                 panic!("history shape case {case} must require recovery")
             };
+            let CommitImmediateRecheckFailureEvidence::BoundHistory(blocked) = recovery.failure()
+            else {
+                panic!("rejected no-NCC history must retain its terminal authority")
+            };
             assert!(matches!(
-                recovery.failure(),
-                CommitImmediateRecheckFailureEvidence::HistoryLineageChanged { .. }
-                    | CommitImmediateRecheckFailureEvidence::UnsafeHistoryAdvance { .. }
+                blocked.failure(),
+                CommitImmediateHistorySafetyFailure::HistoryLineageChanged
+                    | CommitImmediateHistorySafetyFailure::UnsafeHistoryAdvance
             ));
         }
     }
 
     #[test]
-    fn gate_b3_commit_immediate_recheck_unscoped_ncc_never_reaches_ready_or_fresh_preview() {
-        let initial = initial_guard_with_history(
-            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
-            "repository.history-order.initial-ncc",
-        )
-        .unwrap_err();
-        assert!(matches!(
-            initial.failure(),
-            PostMergeCommitGuardFailureEvidence::UnscopedNonConflictingConcurrent { .. }
-        ));
+    fn gate_b3_commit_immediate_exact_scoped_ncc_observes_then_scans_once_ready() {
+        let (approved, fixture) = approved_preview_with_scoped_ncc();
+        let mut port = TestImmediateRecheckPort::exact(fixture.partition);
+        port.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        let outcome = approved.recheck_before_commit_intent(&mut port);
+        let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
+            panic!("immediate NCC observation must return its owning scoped pending authority")
+        };
+        let mut scan = TestPhaseScopedNccPort {
+            row_facts: fixture.row_facts,
+            calls: 0,
+        };
 
-        let (approved, old_partition, _) = approved_preview_with_history(
-            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
-            "repository.history-order.initial",
-        );
-        let current = history_partition(
-            old_partition.start_cursor().clone(),
+        let outcome = pending.resolve_scoped_ncc(&mut scan);
+
+        assert!(matches!(outcome, CommitImmediateRecheckOutcome::Ready(_)));
+        assert_eq!(scan.calls, 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_no_ncc_preview_plus_ncc_extension_scans_once_then_requires_fresh_preview(
+    ) {
+        let order_capability = "repository.history-order.immediate-no-ncc-plus-ncc";
+        let receipt_id = id("b3100000-0000-4000-8000-000000000134");
+        let fingerprint = digest('9');
+        let baseline = context(receipt_id.clone(), fingerprint.clone());
+        let root = RepositoryTargetIdentity::configuration_root();
+        let current = scoped_ncc_history_fixture_test_only(
+            baseline.lineage().merge_receipt_cursor().clone(),
             &[
                 RepositoryHistoryPartitionClassification::UnrelatedRoutine,
                 RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
             ],
-            "repository.history-order.immediate-ncc",
+            order_capability,
+            ATOMIC_COMMIT_CAPABILITY_ID,
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let source =
+            validated_main_integration_commit_context_with_reference_closure_fixture_test_only(
+                receipt_id,
+                fingerprint,
+                current.planned_initial_reference_closure_digest.clone(),
+            );
+        let preview_partition = history_partition(
+            source.lineage().merge_receipt_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            order_capability,
         );
-        let mut port = TestImmediateRecheckPort::exact(current);
-        let outcome = approved.recheck_before_commit_intent(&mut port);
+        let guard = PostMergeCommitGuardAuthority::from_authoritative_consumed_lineage(
+            source,
+            &mut TestInitialHistoryPort::exact_with_terminal_closure(
+                preview_partition.clone(),
+                current.planned_initial_reference_closure_digest.clone(),
+            ),
+        )
+        .unwrap();
+        let preview_request = commit_preview_request_value(
+            &guard,
+            "/original/project",
+            "PR-137",
+            PREVIEW_OPERATION_ID,
+        );
+        let preview = CommitPreviewAuthority::from_validated_post_merge_guard(
+            validated_commit_preview_request(preview_request.clone()),
+            guard,
+            validated_comment_policy(),
+        )
+        .unwrap();
+        let approved_digest = preview.commit_digest().clone();
+        let apply = serde_json::from_value(commit_apply_request_value(
+            preview_request,
+            APPLY_OPERATION_ID,
+            &approved_digest,
+        ))
+        .unwrap();
+        let approved = ApprovedCommitPreviewAuthority::from_validated_request(
+            preview.validate_apply(apply).unwrap(),
+        );
+        assert!(current.partition.has_exact_entry_prefix(&preview_partition));
+        let mut outer = TestImmediateRecheckPort::exact(current.partition);
+        outer.overrides.closure = Some(current.terminal_reference_closure_digest);
+        let outcome = approved.recheck_before_commit_intent(&mut outer);
+        let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
+            panic!("a fresh NCC tail must choose the scoped branch from the outer observation")
+        };
+        let mut scan = TestPhaseScopedNccPort {
+            row_facts: current.row_facts,
+            calls: 0,
+        };
+
+        let outcome = pending.resolve_scoped_ncc(&mut scan);
+
+        let CommitImmediateRecheckOutcome::FreshPreviewRequired(_) = outcome else {
+            panic!("validated NCC strict extension must require fresh preview: {outcome:?}")
+        };
+        assert_eq!(scan.calls, 1);
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_scoped_preview_safe_extension_rescans_full_partition_then_requires_fresh_preview(
+    ) {
+        for tail in [
+            RepositoryHistoryPartitionClassification::UnrelatedRoutine,
+            RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+        ] {
+            let (approved, preview) = approved_preview_with_scoped_ncc();
+            let root = RepositoryTargetIdentity::configuration_root();
+            let current = scoped_ncc_history_fixture_test_only(
+                preview.partition.start_cursor().clone(),
+                &[
+                    RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                    tail,
+                ],
+                "repository.history-order.approved-scoped-ncc",
+                ATOMIC_COMMIT_CAPABILITY_ID,
+                vec![root.clone()],
+                vec![root],
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(current.partition.has_exact_entry_prefix(&preview.partition));
+            let mut outer = TestImmediateRecheckPort::exact(current.partition);
+            outer.overrides.closure = Some(current.terminal_reference_closure_digest);
+            let outcome = approved.recheck_before_commit_intent(&mut outer);
+            let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
+                panic!("a partition retaining NCC must always choose the scoped branch")
+            };
+            let mut scan = TestPhaseScopedNccPort {
+                row_facts: current.row_facts,
+                calls: 0,
+            };
+
+            let outcome = pending.resolve_scoped_ncc(&mut scan);
+
+            assert!(matches!(
+                outcome,
+                CommitImmediateRecheckOutcome::FreshPreviewRequired(_)
+            ));
+            assert_eq!(scan.calls, 1, "tail {tail:?}");
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_ncc_fingerprints_are_independent_outer_checks_before_scan() {
+        for case in 0..3 {
+            let (approved, fixture) = approved_preview_with_scoped_ncc();
+            let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
+            outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+            match case {
+                0 => outer.overrides.fingerprint = Some(digest('1')),
+                1 => outer.overrides.anchor_fingerprint = Some(digest('2')),
+                2 => {
+                    outer.overrides.fingerprint = Some(digest('3'));
+                    outer.overrides.anchor_fingerprint = Some(digest('3'));
+                }
+                _ => unreachable!(),
+            }
+            let outcome = approved.recheck_before_commit_intent(&mut outer);
+
+            let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
+                panic!("either independently foreign fingerprint must block immediate NCC")
+            };
+            assert!(matches!(
+                recovery.failure(),
+                CommitImmediateRecheckFailureEvidence::PostMergeStateChanged { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_ncc_capability_mismatch_recovers_before_scan() {
+        let (approved, fixture) = approved_preview_with_scoped_ncc();
+        let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
+        outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        outer.overrides.atomic_capability =
+            Some(CapabilityRowId::parse("repository.atomic-commit.foreign").unwrap());
+        let outcome = approved.recheck_before_commit_intent(&mut outer);
+
         let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
-            panic!("unscoped immediate NCC must not authorize commit or fresh preview")
+            panic!("foreign immediate atomic capability must recover before scoped scan")
         };
         assert!(matches!(
             recovery.failure(),
-            CommitImmediateRecheckFailureEvidence::UnscopedNonConflictingConcurrent { .. }
+            CommitImmediateRecheckFailureEvidence::ConsumedGateOrCapabilityChanged { .. }
         ));
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_scoped_scan_failure_is_nested_owning_and_consumable() {
+        let (approved, fixture) = approved_preview_with_scoped_ncc();
+        let expected_digest = approved.0.commit_digest().clone();
+        let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
+        outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        let outcome = approved.recheck_before_commit_intent(&mut outer);
+        let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
+            panic!("NCC outer observation must produce a scoped pending authority")
+        };
+        let mut scan = FailingPhaseScopedNccPort { calls: 0 };
+
+        let outcome = pending.resolve_scoped_ncc(&mut scan);
+
+        let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
+            panic!("a scoped scan failure must enter owning immediate recovery")
+        };
+        assert_eq!(scan.calls, 1);
+        assert!(matches!(
+            recovery.failure(),
+            CommitImmediateRecheckFailureEvidence::ScopedNcc {
+                failure,
+                ..
+            } if matches!(
+                failure.as_ref(),
+                CommitImmediateScopedNccFailureEvidence::ScopedNccScanBlocked { .. }
+            )
+        ));
+        let (approved, failure) = recovery.into_recovery_parts();
+        assert_eq!(approved.0.commit_digest(), &expected_digest);
+        assert!(matches!(
+            failure,
+            CommitImmediateRecheckFailureEvidence::ScopedNcc { .. }
+        ));
+    }
+
+    #[test]
+    fn gate_b3_commit_immediate_terminal_mint_rejects_foreign_outer_completion() {
+        let (approved, partition, _) = approved_preview_with_history(
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.immediate-terminal-mint",
+        );
+        let invocation_a = CommitImmediateRecheckInvocationCapability::mint();
+        let invocation_b = CommitImmediateRecheckInvocationCapability::mint();
+        let request_b = CommitImmediateRecheckRequest {
+            approved: &approved,
+            invocation: &invocation_b,
+        };
+        let completion_b = complete_immediate_recheck(
+            request_b,
+            partition,
+            &ImmediateObservationOverrides::default(),
+            Rc::new(ImmediateLeaseCounters::default()),
+        )
+        .unwrap();
+
+        assert!(invocation_a.bind_completion(completion_b).is_err());
     }
 
     #[test]

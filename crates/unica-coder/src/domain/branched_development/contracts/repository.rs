@@ -3,9 +3,11 @@ use super::instructions::{
     decode_historical_support_conflict_instruction, SupportConflictInstruction,
     SupportCorrectiveInstruction,
 };
-use super::results::repository::CommitObjectHistoryBinding;
 #[cfg(test)]
 use super::results::repository::ValidatedCommitObjectAuthority;
+use super::results::repository::{
+    CommitObjectHistoryBinding, ScopedNccPlannerResolutionRequest, ScopedNccPlannerScope,
+};
 use super::scalars::{
     NormalizedUtcInstant, RepositoryIdentityComponent, RepositoryTargetDisplay, RepositoryUsername,
     RepositoryVersion, RequiredNullable,
@@ -3731,7 +3733,7 @@ pub(crate) struct ScopedNccHistoryScanAuthority {
 }
 
 impl ScopedNccHistoryScanAuthority {
-    pub(crate) fn resolve(
+    fn resolve(
         partition: ValidatedRepositoryHistoryPartition,
         expected_capability_id: CapabilityRowId,
         port: &mut dyn ScopedNccHistoryScanPort,
@@ -3985,6 +3987,287 @@ impl ScopedNccHistoryScanAuthority {
 
     pub(crate) const fn expected_capability_id(&self) -> &CapabilityRowId {
         &self.expected_capability_id
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ScopedNccPlannerBindingFailure {
+    PhaseBindingMismatch,
+    PhasePartitionMismatch,
+    PhaseCapabilityMismatch,
+    TerminalAnchorCursorMismatch,
+    NonTransparentHistoryPosition {
+        position: usize,
+        classification: RepositoryHistoryPartitionClassification,
+    },
+    LockedTargetsMismatch {
+        position: usize,
+    },
+    IntegrationContentTargetsMismatch {
+        position: usize,
+    },
+    ApprovedDeletionTargetsMismatch {
+        position: usize,
+    },
+    ReferenceClosureDigest {
+        position: usize,
+        error: RepositoryContractError,
+    },
+    FirstReferenceClosureMismatch {
+        position: usize,
+    },
+    IntermediateReferenceClosureMismatch {
+        previous_position: usize,
+        position: usize,
+    },
+    LastReferenceClosureMismatch {
+        position: usize,
+    },
+}
+
+/// Owning failure for the phase-neutral planner checks. This value does not
+/// authorize preview or commit; only a result-layer outer-phase wrapper may
+/// consume it into a control authority.
+#[derive(Debug)]
+pub(crate) struct ScopedNccPlannerBindingBlockedCore {
+    scan: ScopedNccHistoryScanAuthority,
+    scope: ScopedNccPlannerScope,
+    failure: ScopedNccPlannerBindingFailure,
+}
+
+impl ScopedNccPlannerBindingBlockedCore {
+    pub(crate) const fn failure(&self) -> &ScopedNccPlannerBindingFailure {
+        &self.failure
+    }
+}
+
+/// Phase-neutral proof that one fresh scan matches the exact planner scope and
+/// terminal scalar facts. It is deliberately non-authorizing on its own.
+#[derive(Debug)]
+pub(crate) struct PlannerBoundScopedNccHistoryScanCore {
+    scan: ScopedNccHistoryScanAuthority,
+    scope: ScopedNccPlannerScope,
+}
+
+#[derive(Debug)]
+pub(crate) enum ScopedNccPlannerCoreResolutionFailure {
+    ScanBlocked {
+        scope: ScopedNccPlannerScope,
+        blocked: Box<ScopedNccHistoryScanBlockedAuthority>,
+    },
+    PlannerBindingBlocked(Box<ScopedNccPlannerBindingBlockedCore>),
+}
+
+impl PlannerBoundScopedNccHistoryScanCore {
+    pub(crate) fn resolve(
+        request: ScopedNccPlannerResolutionRequest<'_>,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<Self, ScopedNccPlannerCoreResolutionFailure> {
+        let (
+            partition,
+            atomic_commit_safety_capability_id,
+            scope,
+            terminal_repository_anchor,
+            terminal_reference_closure_digest,
+        ) = request.into_repository_parts();
+        Self::resolve_raw(
+            partition,
+            atomic_commit_safety_capability_id,
+            scope,
+            terminal_repository_anchor,
+            terminal_reference_closure_digest,
+            port,
+        )
+    }
+
+    fn resolve_raw(
+        partition: &ValidatedRepositoryHistoryPartition,
+        atomic_commit_safety_capability_id: &CapabilityRowId,
+        scope: ScopedNccPlannerScope,
+        terminal_repository_anchor: &RepositoryAnchor,
+        terminal_reference_closure_digest: &Sha256Digest,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<Self, ScopedNccPlannerCoreResolutionFailure> {
+        let scan = match ScopedNccHistoryScanAuthority::resolve(
+            partition.clone(),
+            atomic_commit_safety_capability_id.clone(),
+            port,
+        ) {
+            Ok(scan) => scan,
+            Err(blocked) => {
+                return Err(ScopedNccPlannerCoreResolutionFailure::ScanBlocked { scope, blocked });
+            }
+        };
+        let failure = scoped_ncc_planner_binding_failure(
+            &scan,
+            &scope,
+            partition,
+            atomic_commit_safety_capability_id,
+            terminal_repository_anchor,
+            terminal_reference_closure_digest,
+        );
+        if let Some(failure) = failure {
+            return Err(
+                ScopedNccPlannerCoreResolutionFailure::PlannerBindingBlocked(Box::new(
+                    ScopedNccPlannerBindingBlockedCore {
+                        scan,
+                        scope,
+                        failure,
+                    },
+                )),
+            );
+        }
+        Ok(Self { scan, scope })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolve_test_only(
+        partition: &ValidatedRepositoryHistoryPartition,
+        atomic_commit_safety_capability_id: &CapabilityRowId,
+        scope: ScopedNccPlannerScope,
+        terminal_repository_anchor: &RepositoryAnchor,
+        terminal_reference_closure_digest: &Sha256Digest,
+        port: &mut dyn ScopedNccHistoryScanPort,
+    ) -> Result<Self, ScopedNccPlannerCoreResolutionFailure> {
+        Self::resolve_raw(
+            partition,
+            atomic_commit_safety_capability_id,
+            scope,
+            terminal_repository_anchor,
+            terminal_reference_closure_digest,
+            port,
+        )
+    }
+
+    pub(crate) fn history_entry_count(&self) -> usize {
+        self.scan.history_entry_count()
+    }
+
+    pub(crate) const fn ncc_entry_count(&self) -> usize {
+        self.scan.ncc_entry_count()
+    }
+
+    /// Re-runs the neutral terminal predicate when a result-layer phase wrapper
+    /// is assembled. This prevents a validated core from observation A being
+    /// paired with a field-different terminal/binding from observation B.
+    pub(crate) fn terminal_binding_failure(
+        &self,
+        terminal_partition: &ValidatedRepositoryHistoryPartition,
+        terminal_capability_id: &CapabilityRowId,
+        terminal_repository_anchor: &RepositoryAnchor,
+        terminal_reference_closure_digest: &Sha256Digest,
+    ) -> Option<ScopedNccPlannerBindingFailure> {
+        scoped_ncc_planner_binding_failure(
+            &self.scan,
+            &self.scope,
+            terminal_partition,
+            terminal_capability_id,
+            terminal_repository_anchor,
+            terminal_reference_closure_digest,
+        )
+    }
+}
+
+fn scoped_ncc_planner_binding_failure(
+    scan: &ScopedNccHistoryScanAuthority,
+    scope: &ScopedNccPlannerScope,
+    terminal_partition: &ValidatedRepositoryHistoryPartition,
+    terminal_capability_id: &CapabilityRowId,
+    terminal_repository_anchor: &RepositoryAnchor,
+    terminal_reference_closure_digest: &Sha256Digest,
+) -> Option<ScopedNccPlannerBindingFailure> {
+    if &scan.partition != terminal_partition {
+        return Some(ScopedNccPlannerBindingFailure::PhasePartitionMismatch);
+    }
+    if &scan.expected_capability_id != terminal_capability_id {
+        return Some(ScopedNccPlannerBindingFailure::PhaseCapabilityMismatch);
+    }
+    if terminal_repository_anchor.history_cursor() != terminal_partition.through_inclusive() {
+        return Some(ScopedNccPlannerBindingFailure::TerminalAnchorCursorMismatch);
+    }
+
+    let mut previous_after: Option<(usize, Sha256Digest)> = None;
+    for (index, (entry, observed)) in scan
+        .partition
+        .wire
+        .entries
+        .0
+        .iter()
+        .zip(scan.rows.iter())
+        .enumerate()
+    {
+        let position = index + 1;
+        let Some(facts) = observed.facts.as_ref() else {
+            let classification = entry.classification();
+            if classification != RepositoryHistoryPartitionClassification::UnrelatedRoutine {
+                return Some(
+                    ScopedNccPlannerBindingFailure::NonTransparentHistoryPosition {
+                        position,
+                        classification,
+                    },
+                );
+            }
+            continue;
+        };
+        if &facts.target_sets.locked_targets != scope.locked_targets() {
+            return Some(ScopedNccPlannerBindingFailure::LockedTargetsMismatch { position });
+        }
+        if &facts.target_sets.integration_content_targets != scope.integration_content_targets() {
+            return Some(
+                ScopedNccPlannerBindingFailure::IntegrationContentTargetsMismatch { position },
+            );
+        }
+        if &facts.target_sets.approved_deletion_targets != scope.approved_deletion_targets() {
+            return Some(
+                ScopedNccPlannerBindingFailure::ApprovedDeletionTargetsMismatch { position },
+            );
+        }
+        let before = match facts.reference_sets.before_reference_closure.digest() {
+            Ok(digest) => digest,
+            Err(error) => {
+                return Some(ScopedNccPlannerBindingFailure::ReferenceClosureDigest {
+                    position,
+                    error,
+                });
+            }
+        };
+        let after = match facts.reference_sets.after_reference_closure.digest() {
+            Ok(digest) => digest,
+            Err(error) => {
+                return Some(ScopedNccPlannerBindingFailure::ReferenceClosureDigest {
+                    position,
+                    error,
+                });
+            }
+        };
+        if let Some((previous_position, previous_after)) = previous_after.as_ref() {
+            if previous_after != &before {
+                return Some(
+                    ScopedNccPlannerBindingFailure::IntermediateReferenceClosureMismatch {
+                        previous_position: *previous_position,
+                        position,
+                    },
+                );
+            }
+        } else if &before != scope.planned_initial_reference_closure_digest() {
+            return Some(
+                ScopedNccPlannerBindingFailure::FirstReferenceClosureMismatch { position },
+            );
+        }
+        previous_after = Some((position, after));
+    }
+
+    match previous_after {
+        Some((position, after)) if &after != terminal_reference_closure_digest => {
+            Some(ScopedNccPlannerBindingFailure::LastReferenceClosureMismatch { position })
+        }
+        Some(_) => None,
+        None => Some(
+            ScopedNccPlannerBindingFailure::NonTransparentHistoryPosition {
+                position: 0,
+                classification: RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+            },
+        ),
     }
 }
 
@@ -4333,6 +4616,303 @@ pub(crate) fn repository_history_partition_fixture_test_only(
         },
         source_index_proofs,
         order_evidence,
+    })
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ScopedNccHistoryFixtureTestOnly {
+    pub(crate) partition: ValidatedRepositoryHistoryPartition,
+    pub(crate) row_facts: Vec<Option<ScopedNccRowFacts>>,
+    pub(crate) planned_initial_reference_closure_digest: Sha256Digest,
+    pub(crate) terminal_reference_closure_digest: Sha256Digest,
+}
+
+#[cfg(test)]
+struct ScopedNccHistoryFixtureTargetSetsTestOnly {
+    locked_targets: Vec<RepositoryTargetIdentity>,
+    integration_content_targets: Vec<RepositoryTargetIdentity>,
+    approved_deletion_targets: Vec<RepositoryTargetIdentity>,
+}
+
+/// Builds real internally consistent NCC evidence/facts for result-layer
+/// phase tests. Unlike the generic partition fixture, every NCC digest is
+/// derived from the exact canonical observations consumed by the scan.
+#[cfg(test)]
+pub(crate) fn scoped_ncc_history_fixture_test_only(
+    from_exclusive: RepositoryHistoryCursor,
+    classifications: &[RepositoryHistoryPartitionClassification],
+    order_capability_id: &str,
+    atomic_commit_safety_capability_id: &str,
+    locked_targets: Vec<RepositoryTargetIdentity>,
+    integration_content_targets: Vec<RepositoryTargetIdentity>,
+    approved_deletion_targets: Vec<RepositoryTargetIdentity>,
+) -> Result<ScopedNccHistoryFixtureTestOnly, RepositoryContractError> {
+    scoped_ncc_history_fixture_internal_test_only(
+        from_exclusive,
+        classifications,
+        order_capability_id,
+        atomic_commit_safety_capability_id,
+        ScopedNccHistoryFixtureTargetSetsTestOnly {
+            locked_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+        },
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn scoped_ncc_history_broken_intermediate_closure_fixture_test_only(
+    from_exclusive: RepositoryHistoryCursor,
+    order_capability_id: &str,
+    atomic_commit_safety_capability_id: &str,
+    locked_targets: Vec<RepositoryTargetIdentity>,
+    integration_content_targets: Vec<RepositoryTargetIdentity>,
+    approved_deletion_targets: Vec<RepositoryTargetIdentity>,
+) -> Result<ScopedNccHistoryFixtureTestOnly, RepositoryContractError> {
+    scoped_ncc_history_fixture_internal_test_only(
+        from_exclusive,
+        &[
+            RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+            RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+        ],
+        order_capability_id,
+        atomic_commit_safety_capability_id,
+        ScopedNccHistoryFixtureTargetSetsTestOnly {
+            locked_targets,
+            integration_content_targets,
+            approved_deletion_targets,
+        },
+        Some(1),
+    )
+}
+
+#[cfg(test)]
+fn scoped_ncc_history_fixture_internal_test_only(
+    from_exclusive: RepositoryHistoryCursor,
+    classifications: &[RepositoryHistoryPartitionClassification],
+    order_capability_id: &str,
+    atomic_commit_safety_capability_id: &str,
+    target_sets: ScopedNccHistoryFixtureTargetSetsTestOnly,
+    break_before_ncc_index: Option<usize>,
+) -> Result<ScopedNccHistoryFixtureTestOnly, RepositoryContractError> {
+    let ScopedNccHistoryFixtureTargetSetsTestOnly {
+        locked_targets,
+        integration_content_targets,
+        approved_deletion_targets,
+    } = target_sets;
+    let locked_targets = NonEmptyCanonicalRepositoryTargetSet::new(locked_targets)?;
+    let integration_content_targets =
+        NonEmptyCanonicalRepositoryTargetSet::new(integration_content_targets)?;
+    let approved_deletion_targets = CanonicalRepositoryTargetSet::new(approved_deletion_targets)?;
+    let mut partition = repository_history_partition_fixture_test_only(
+        from_exclusive,
+        classifications
+            .iter()
+            .enumerate()
+            .map(|(index, classification)| {
+                (
+                    RepositoryVersion::parse(&(101 + index).to_string())
+                        .expect("fixture repository version must be valid"),
+                    *classification,
+                )
+            })
+            .collect(),
+        order_capability_id,
+        atomic_commit_safety_capability_id,
+    )?;
+    let empty_edges = CanonicalRepositoryReferenceEdgeSet::new(Vec::new())?;
+    let planned_initial_reference_closure_digest = empty_edges.digest()?;
+    let mut current_reference_closure = Vec::new();
+    let mut row_facts = Vec::with_capacity(classifications.len());
+    let root_states: RepositoryTargetStates = serde_json::from_value(serde_json::json!([{
+        "targetKind": "configurationRoot",
+        "state": "present",
+        "repositoryVersion": "root-v1",
+        "targetFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }]))
+    .map_err(|_| RepositoryContractError("scoped NCC root-state fixture failed"))?;
+    let locked_state_values = locked_targets
+        .as_slice()
+        .iter()
+        .map(|target| match target {
+            RepositoryTargetIdentity::ConfigurationRoot(_) => serde_json::json!({
+                "targetKind": "configurationRoot",
+                "state": "present",
+                "repositoryVersion": "root-v1",
+                "targetFingerprint":
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }),
+            RepositoryTargetIdentity::DevelopmentObject(target) => serde_json::json!({
+                "targetKind": "developmentObject",
+                "state": "present",
+                "objectId": target.object_id(),
+                "repositoryVersion": "locked-v1",
+                "targetFingerprint":
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }),
+        })
+        .collect::<Vec<_>>();
+    let locked_states: RepositoryTargetStates =
+        serde_json::from_value(serde_json::Value::Array(locked_state_values))
+            .map_err(|_| RepositoryContractError("scoped NCC locked-state fixture failed"))?;
+    let validation_inputs: RepositoryTargetStates =
+        serde_json::from_value(serde_json::json!([]))
+            .map_err(|_| RepositoryContractError("scoped NCC validation-input fixture failed"))?;
+    let mut ncc_index = 0usize;
+
+    for (position, classification) in classifications.iter().enumerate() {
+        if *classification != RepositoryHistoryPartitionClassification::NonConflictingConcurrent {
+            row_facts.push(None);
+            continue;
+        }
+        let changed_id =
+            MetadataObjectId::parse(&format!("00000000-0000-0000-0000-{:012}", 100 + ncc_index))
+                .map_err(|_| RepositoryContractError("scoped NCC changed-target fixture failed"))?;
+        let referenced_id =
+            MetadataObjectId::parse(&format!("00000000-0000-0000-0000-{:012}", 900 + ncc_index))
+                .map_err(|_| {
+                    RepositoryContractError("scoped NCC referenced-target fixture failed")
+                })?;
+        let changed_target = RepositoryTargetIdentity::development_object(changed_id);
+        let added_edge = RepositoryReferenceEdge::new(
+            changed_target.clone(),
+            RepositoryTargetIdentity::development_object(referenced_id),
+        );
+        if break_before_ncc_index == Some(ncc_index) {
+            current_reference_closure.push(RepositoryReferenceEdge::new(
+                RepositoryTargetIdentity::development_object(
+                    MetadataObjectId::parse("00000000-0000-0000-0000-000000000700").map_err(
+                        |_| {
+                            RepositoryContractError(
+                                "scoped NCC broken-chain referrer fixture failed",
+                            )
+                        },
+                    )?,
+                ),
+                RepositoryTargetIdentity::development_object(
+                    MetadataObjectId::parse("00000000-0000-0000-0000-000000000800").map_err(
+                        |_| {
+                            RepositoryContractError(
+                                "scoped NCC broken-chain referenced fixture failed",
+                            )
+                        },
+                    )?,
+                ),
+            ));
+            current_reference_closure.sort();
+        }
+        let before_reference_closure =
+            CanonicalRepositoryReferenceEdgeSet::new(current_reference_closure.clone())?;
+        current_reference_closure.push(added_edge.clone());
+        current_reference_closure.sort();
+        let after_reference_closure =
+            CanonicalRepositoryReferenceEdgeSet::new(current_reference_closure.clone())?;
+        let added_reference_edges = CanonicalRepositoryReferenceEdgeSet::new(vec![added_edge])?;
+        let target_sets = ScopedNccObservedTargetSets::new(
+            locked_targets.clone(),
+            NonEmptyCanonicalRepositoryTargetSet::new(vec![changed_target])?,
+            integration_content_targets.clone(),
+            approved_deletion_targets.clone(),
+        );
+        let reference_sets = ScopedNccObservedReferenceSets::new(
+            before_reference_closure,
+            after_reference_closure,
+            added_reference_edges,
+            empty_edges.clone(),
+            empty_edges.clone(),
+        );
+        let states = ScopedNccObservedStateSets::new(
+            validation_inputs.clone(),
+            validation_inputs.clone(),
+            root_states.clone(),
+            root_states.clone(),
+            locked_states.clone(),
+            locked_states.clone(),
+        );
+        let facts = ScopedNccRowFacts::new(
+            CapabilityRowId::parse(atomic_commit_safety_capability_id)
+                .map_err(|_| RepositoryContractError("scoped NCC capability fixture failed"))?,
+            target_sets,
+            reference_sets,
+            states,
+        );
+        let evidence = NonConflictingConcurrentEvidence::new(
+            partition.wire.entries.0[position]
+                .repository_version()
+                .as_str(),
+            atomic_commit_safety_capability_id,
+            facts.target_sets.locked_targets.digest()?.as_str(),
+            facts.target_sets.changed_targets.digest()?.as_str(),
+            facts
+                .reference_sets
+                .before_reference_closure
+                .digest()?
+                .as_str(),
+            facts
+                .reference_sets
+                .after_reference_closure
+                .digest()?
+                .as_str(),
+            facts
+                .reference_sets
+                .added_reference_edges
+                .digest()?
+                .as_str(),
+        )?;
+        let entry = match &mut partition.wire.entries.0[position] {
+            RepositoryHistoryPartitionEntry::NonConflicting(entry) => entry,
+            _ => {
+                return Err(RepositoryContractError(
+                    "scoped NCC fixture position is not NCC",
+                ));
+            }
+        };
+        entry.source_evidence_ref = RepositoryHistorySourceEvidenceRef::new(
+            EvidenceKind::NonConflictingConcurrent,
+            evidence.evidence_digest().as_str(),
+        )?;
+        entry.non_conflicting_concurrent_evidence = evidence;
+        entry.semantic_delta_digest = canonical_contract_digest(
+            &RepositorySemanticDeltaDigestRecord {
+                repository_version: entry.repository_version.clone(),
+                partition_classification:
+                    RepositoryHistoryPartitionClassification::NonConflictingConcurrent,
+                root_delta_digest: RequiredNullable::null(),
+                content_delta_digest: RequiredNullable::null(),
+                classification_digest: RequiredNullable::null(),
+                external_support_disjointness_digest: RequiredNullable::null(),
+                corrective_instruction_digest: RequiredNullable::null(),
+                non_conflicting_concurrent_evidence_digest: RequiredNullable::value(
+                    entry
+                        .non_conflicting_concurrent_evidence
+                        .evidence_digest()
+                        .clone(),
+                ),
+            },
+            None,
+        )
+        .map_err(|_| RepositoryContractError("scoped NCC semantic fixture digest failed"))?;
+        row_facts.push(Some(facts));
+        ncc_index += 1;
+    }
+    partition.wire.partition_digest = canonical_contract_digest(
+        &RepositoryHistoryPartitionDigestRecord {
+            from_exclusive: partition.wire.from_exclusive.clone(),
+            through_inclusive: partition.wire.through_inclusive.clone(),
+            entries: partition.wire.entries.clone(),
+        },
+        None,
+    )
+    .map_err(|_| RepositoryContractError("scoped NCC partition fixture digest failed"))?;
+    let terminal_reference_closure_digest =
+        CanonicalRepositoryReferenceEdgeSet::new(current_reference_closure)?.digest()?;
+    Ok(ScopedNccHistoryFixtureTestOnly {
+        partition,
+        row_facts,
+        planned_initial_reference_closure_digest,
+        terminal_reference_closure_digest,
     })
 }
 
@@ -6098,18 +6678,19 @@ pub(crate) fn validated_task_commit_partition_fixture_test_only(
 #[cfg(test)]
 mod tests {
     use super::{
-        AcquiredRepositoryUpdateLockTargets, CanonicalEmptyDeltaDigest, EvidenceKind,
-        EvidenceSourceIndex, EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow,
-        EvidenceSourceRegistry, FrozenSupportConflictInstructionSourceAuthority,
+        scoped_ncc_history_fixture_test_only, AcquiredRepositoryUpdateLockTargets,
+        CanonicalEmptyDeltaDigest, EvidenceKind, EvidenceSourceIndex, EvidenceSourceIndexCandidate,
+        EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
+        FrozenSupportConflictInstructionSourceAuthority,
         FrozenSupportCorrectiveInstructionSourceAuthority, NonConflictingConcurrentEvidence,
         ReleasedRepositoryUpdateLockTargets, RepositoryActorIdentity, RepositoryAnchor,
         RepositoryAnchorDigestRecord, RepositoryAnchorObservationAuthority,
         RepositoryHistoryCursor, RepositoryHistoryEvidenceBytesResolver,
         RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
-        RepositoryHistoryPartitionResolver, RepositoryHistorySourceEvidenceRef,
-        RepositoryOwnerIdentity, RepositoryPlannedChanges, RepositoryTargetIdentity,
-        RepositoryTargetKind, RepositoryTargetStates, RepositoryUpdateLockReason,
-        RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
+        RepositoryHistoryPartitionClassification, RepositoryHistoryPartitionResolver,
+        RepositoryHistorySourceEvidenceRef, RepositoryOwnerIdentity, RepositoryPlannedChanges,
+        RepositoryTargetIdentity, RepositoryTargetKind, RepositoryTargetStates,
+        RepositoryUpdateLockReason, RepositoryUpdateLockReasons, RepositoryUpdateLockTargets,
         RoutineRepositoryVersionChangeObservation, RoutineRepositoryVersionClassificationEvidence,
         RoutineUpdateHistoryFoldCapabilityToken, RoutineUpdateProjectionResolver,
         SupportCorrectiveEvidenceResolver, UnvalidatedRepositoryHistoryPartition,
@@ -9854,6 +10435,51 @@ mod tests {
     }
 
     #[test]
+    fn slice_5b2_final_task_commit_partition_still_rejects_ncc_before_index_or_order_lookup() {
+        let registry = EvidenceSourceRegistry::task8().unwrap();
+        let capability = CapabilityRowId::parse("repository.atomic-commit-safety.v1").unwrap();
+        let authority = validated_commit_object_authority_fixture_test_only(
+            RepositoryVersion::parse("opaque-v2").unwrap(),
+            capability,
+        );
+        let root = RepositoryTargetIdentity::configuration_root();
+        let fixture = scoped_ncc_history_fixture_test_only(
+            serde_json::from_value(cursor("opaque-v0", SHA_A)).unwrap(),
+            &[RepositoryHistoryPartitionClassification::NonConflictingConcurrent],
+            "repository.history-order.slice-5b2-final-boundary",
+            "repository.atomic-commit-safety.v1",
+            vec![root.clone()],
+            vec![root],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut partition = serde_json::to_value(fixture.partition).unwrap();
+        partition["throughInclusive"] = cursor("opaque-v2", SHA_A);
+        partition["entries"].as_array_mut().unwrap().push(json!({
+            "repositoryVersion": "opaque-v2",
+            "classification": "taskCommit",
+            "semanticDeltaDigest": authority.committed_objects_digest()
+        }));
+        recalculate_partition_digest(&mut partition);
+        let dummy_bytes = FakeEvidenceBytes::default();
+        let resolver = RepositoryHistoryPartitionResolver::new(
+            &registry,
+            &UnexpectedIndex,
+            &UnexpectedOrder,
+            &dummy_bytes,
+        );
+
+        let error = resolver
+            .validate_task_commit_partition(serde_json::from_value(partition).unwrap(), &authority)
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Slice 3 task-commit partition rejects concurrent history"
+        );
+    }
+
+    #[test]
     fn commit_owned_partition_resolves_every_non_task_entry_through_the_source_index() {
         let registry = EvidenceSourceRegistry::task8().unwrap();
         let (routine, source_ref, evidence) = routine_partition_fixture();
@@ -10168,6 +10794,171 @@ mod tests {
         ])
         .is_err());
         assert!(super::CanonicalRepositoryReferenceEdgeSet::new(vec![edge_b, edge_a]).is_err());
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_planner_binding_accepts_exact_precommit_phase_chain() {
+        let facts = scoped_ncc_safe_facts();
+        let partition = scoped_ncc_partition(&facts, ScopedNccEvidenceMutation::None);
+        let mut port = FixtureScopedNccPort {
+            facts: facts.clone(),
+            mutation: ScopedNccScanMutation::None,
+            calls: 0,
+            capture: None,
+        };
+        let scope = super::ScopedNccPlannerScope::new_test_only(
+            facts.target_sets.locked_targets.clone(),
+            facts.target_sets.integration_content_targets.clone(),
+            facts.target_sets.approved_deletion_targets.clone(),
+            facts
+                .reference_sets
+                .before_reference_closure
+                .digest()
+                .unwrap(),
+        );
+        let terminal_anchor = RepositoryAnchorObservationAuthority::test_only(
+            Sha256Digest::parse(SHA_A).unwrap(),
+            partition.through_inclusive().clone(),
+            configuration_identity("8.3.27"),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        )
+        .into_anchor()
+        .unwrap();
+        let capability_id = CapabilityRowId::parse(UUID_A).unwrap();
+        let terminal_closure = facts
+            .reference_sets
+            .after_reference_closure
+            .digest()
+            .unwrap();
+
+        let bound = super::PlannerBoundScopedNccHistoryScanCore::resolve_test_only(
+            &partition,
+            &capability_id,
+            scope,
+            &terminal_anchor,
+            &terminal_closure,
+            &mut port,
+        )
+        .unwrap();
+
+        assert_eq!(bound.history_entry_count(), 2);
+        assert_eq!(bound.ncc_entry_count(), 1);
+        assert_eq!(port.calls, 1);
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScopedNccPlannerMutation {
+        LockedTargets,
+        IntegrationTargets,
+        DeletionTargets,
+        FirstClosure,
+        LastClosure,
+    }
+
+    fn scoped_ncc_planner_binding_failure(
+        mutation: ScopedNccPlannerMutation,
+    ) -> super::ScopedNccPlannerBindingFailure {
+        let facts = scoped_ncc_safe_facts();
+        let partition = scoped_ncc_partition(&facts, ScopedNccEvidenceMutation::None);
+        let locked_targets = if matches!(mutation, ScopedNccPlannerMutation::LockedTargets) {
+            super::NonEmptyCanonicalRepositoryTargetSet::new(vec![scoped_ncc_target(OBJECT_B)])
+                .unwrap()
+        } else {
+            facts.target_sets.locked_targets.clone()
+        };
+        let integration_targets =
+            if matches!(mutation, ScopedNccPlannerMutation::IntegrationTargets) {
+                super::NonEmptyCanonicalRepositoryTargetSet::new(vec![scoped_ncc_target(OBJECT_A)])
+                    .unwrap()
+            } else {
+                facts.target_sets.integration_content_targets.clone()
+            };
+        let deletion_targets = if matches!(mutation, ScopedNccPlannerMutation::DeletionTargets) {
+            super::CanonicalRepositoryTargetSet::new(vec![scoped_ncc_target(OBJECT_A)]).unwrap()
+        } else {
+            facts.target_sets.approved_deletion_targets.clone()
+        };
+        let planned_closure = if matches!(mutation, ScopedNccPlannerMutation::FirstClosure) {
+            Sha256Digest::parse(SHA_A).unwrap()
+        } else {
+            facts
+                .reference_sets
+                .before_reference_closure
+                .digest()
+                .unwrap()
+        };
+        let terminal_closure = if matches!(mutation, ScopedNccPlannerMutation::LastClosure) {
+            Sha256Digest::parse(SHA_B).unwrap()
+        } else {
+            facts
+                .reference_sets
+                .after_reference_closure
+                .digest()
+                .unwrap()
+        };
+        let scope = super::ScopedNccPlannerScope::new_test_only(
+            locked_targets,
+            integration_targets,
+            deletion_targets,
+            planned_closure,
+        );
+        let terminal_anchor = RepositoryAnchorObservationAuthority::test_only(
+            Sha256Digest::parse(SHA_A).unwrap(),
+            partition.through_inclusive().clone(),
+            configuration_identity("8.3.27"),
+            Sha256Digest::parse(SHA_A).unwrap(),
+        )
+        .into_anchor()
+        .unwrap();
+        let capability_id = CapabilityRowId::parse(UUID_A).unwrap();
+        let mut port = FixtureScopedNccPort {
+            facts,
+            mutation: ScopedNccScanMutation::None,
+            calls: 0,
+            capture: None,
+        };
+        let super::ScopedNccPlannerCoreResolutionFailure::PlannerBindingBlocked(blocked) =
+            super::PlannerBoundScopedNccHistoryScanCore::resolve_test_only(
+                &partition,
+                &capability_id,
+                scope,
+                &terminal_anchor,
+                &terminal_closure,
+                &mut port,
+            )
+            .unwrap_err()
+        else {
+            panic!("planner mismatch must retain the exact binding failure")
+        };
+        assert_eq!(port.calls, 1);
+        let super::ScopedNccPlannerBindingBlockedCore { failure, .. } = *blocked;
+        failure
+    }
+
+    #[test]
+    fn gate_b3_scoped_ncc_planner_binding_reports_exact_target_and_terminal_mismatch() {
+        assert!(matches!(
+            scoped_ncc_planner_binding_failure(ScopedNccPlannerMutation::LockedTargets),
+            super::ScopedNccPlannerBindingFailure::LockedTargetsMismatch { position: 2 }
+        ));
+        assert!(matches!(
+            scoped_ncc_planner_binding_failure(ScopedNccPlannerMutation::IntegrationTargets),
+            super::ScopedNccPlannerBindingFailure::IntegrationContentTargetsMismatch {
+                position: 2
+            }
+        ));
+        assert!(matches!(
+            scoped_ncc_planner_binding_failure(ScopedNccPlannerMutation::DeletionTargets),
+            super::ScopedNccPlannerBindingFailure::ApprovedDeletionTargetsMismatch { position: 2 }
+        ));
+        assert!(matches!(
+            scoped_ncc_planner_binding_failure(ScopedNccPlannerMutation::FirstClosure),
+            super::ScopedNccPlannerBindingFailure::FirstReferenceClosureMismatch { position: 2 }
+        ));
+        assert!(matches!(
+            scoped_ncc_planner_binding_failure(ScopedNccPlannerMutation::LastClosure),
+            super::ScopedNccPlannerBindingFailure::LastReferenceClosureMismatch { position: 2 }
+        ));
     }
 
     #[derive(Clone, Copy)]
