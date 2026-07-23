@@ -3946,6 +3946,21 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_cancelled_failed_readiness_maps_to_cancelled_outcome() {
+        let outcome = index_unavailable_outcome(
+            "unica.code.definition",
+            IndexReadiness::Failed(
+                "cancelled: rlm index build stopped; recovery after stale (content)".to_string(),
+            ),
+        );
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        assert!(outcome.errors[0].contains("stale (content)"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
     fn code_grep_does_not_start_rlm_index_side_effect() {
         let root = std::env::temp_dir().join(format!("unica-code-grep-{}", std::process::id()));
         let workspace = root.join("workspace");

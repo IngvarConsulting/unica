@@ -58,7 +58,7 @@ and worker orchestration already form one cohesive boundary in `workspace_index.
 - Produces: `failed_status_for_source(context: &WorkspaceContext, source_root: &Path) -> Option<String>`
 - Consumes: existing `stored_path_matches(stored: Option<&str>, current: &Path) -> bool`
 
-- [ ] **Step 1: Write failing parser tests for exact stale values**
+- [x] **Step 1: Write failing parser tests for exact stale values**
 
 Add beside the existing `cancellation_prefix_is_stable_for_cancelled_index_output` test:
 
@@ -95,7 +95,7 @@ fn only_stale_content_is_recovery_eligible() {
 }
 ```
 
-- [ ] **Step 2: Run the parser tests and verify they fail**
+- [x] **Step 2: Run the parser tests and verify they fail**
 
 Run:
 
@@ -107,7 +107,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests::only_stale_con
 Expected: compilation fails because `IndexReadiness::Stale` has no `status`
 field and `is_stale_content` does not exist.
 
-- [ ] **Step 3: Implement exact stale parsing**
+- [x] **Step 3: Implement exact stale parsing**
 
 Replace the unit variant and add its helpers:
 
@@ -149,7 +149,7 @@ Mechanically update exhaustive matches in `workspace_index.rs`,
 `IndexReadiness::Stale` to `IndexReadiness::Stale { .. }`. Do not change their
 behavior yet.
 
-- [ ] **Step 4: Run the parser tests and verify they pass**
+- [x] **Step 4: Run the parser tests and verify they pass**
 
 Run:
 
@@ -160,7 +160,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests::only_stale_con
 
 Expected: both tests pass.
 
-- [ ] **Step 5: Write failing tests for failed-marker precedence**
+- [x] **Step 5: Write failing tests for failed-marker precedence**
 
 Add these tests near `ready_info_writes_ready_status_and_does_not_start_background_job`:
 
@@ -260,7 +260,7 @@ fn fresh_info_replaces_matching_failed_marker() {
 }
 ```
 
-- [ ] **Step 6: Run the marker tests and verify they fail**
+- [x] **Step 6: Run the marker tests and verify they fail**
 
 Run:
 
@@ -273,7 +273,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests::fresh_info_rep
 Expected: the first two tests fail because startup/readiness ignore the failed
 marker. The fresh-info test should already pass and protects the reset rule.
 
-- [ ] **Step 7: Implement matching failed-marker lookup and precedence**
+- [x] **Step 7: Implement matching failed-marker lookup and precedence**
 
 Add:
 
@@ -312,7 +312,7 @@ other => failed_status_for_source(context, &source_root)
     .unwrap_or(other),
 ```
 
-- [ ] **Step 8: Run the workspace-index tests**
+- [x] **Step 8: Run the workspace-index tests**
 
 Run:
 
@@ -322,7 +322,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests
 
 Expected: all `workspace_index` tests pass.
 
-- [ ] **Step 9: Commit exact-state and marker behavior**
+- [x] **Step 9: Commit exact-state and marker behavior**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/workspace_index.rs crates/unica-coder/src/infrastructure/workspace_services.rs crates/unica-coder/src/infrastructure/internal_adapters.rs
@@ -345,7 +345,7 @@ git commit -m "fix: preserve terminal RLM index state"
 - Produces: `BslIndexRunMetrics::recovery_reason: Option<String>`
 - Produces: `run_background_job_with<F>(job: IndexBackgroundJob, run: F)` where `F: FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>`
 
-- [ ] **Step 1: Write failing job-construction tests**
+- [x] **Step 1: Write failing job-construction tests**
 
 Extend `stale_index_starts_background_update` and
 `first_non_dry_run_starts_background_build_when_index_is_missing`:
@@ -369,7 +369,7 @@ For the missing-index build test add:
 assert!(backgrounds[0].recovery_build.is_none());
 ```
 
-- [ ] **Step 2: Run the construction tests and verify they fail**
+- [x] **Step 2: Run the construction tests and verify they fail**
 
 Run:
 
@@ -380,7 +380,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests::first_non_dry_
 
 Expected: compilation fails because `recovery_build` does not exist.
 
-- [ ] **Step 3: Carry the recovery build only on update jobs**
+- [x] **Step 3: Carry the recovery build only on update jobs**
 
 Add to `IndexBackgroundJob`:
 
@@ -409,13 +409,13 @@ IndexReadiness::Stale { .. } => self.start_background(
 Update direct test construction of `IndexBackgroundJob` with
 `recovery_build: None`.
 
-- [ ] **Step 4: Run the construction tests and verify they pass**
+- [x] **Step 4: Run the construction tests and verify they pass**
 
 Run the two commands from Step 2.
 
 Expected: both tests pass.
 
-- [ ] **Step 5: Write failing scripted-worker recovery tests**
+- [x] **Step 5: Write failing scripted-worker recovery tests**
 
 First extract a testable runner boundary. Then add:
 
@@ -575,7 +575,7 @@ fn test_background_job(context: &WorkspaceContext, action: &str) -> IndexBackgro
 }
 ```
 
-- [ ] **Step 6: Run the scripted-worker tests and verify they fail**
+- [x] **Step 6: Run the scripted-worker tests and verify they fail**
 
 Run:
 
@@ -588,7 +588,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests::recovery_does_
 Expected: compilation fails because the testable worker boundary and recovery
 diagnostics do not exist.
 
-- [ ] **Step 7: Add recovery diagnostics to last-run metrics**
+- [x] **Step 7: Add recovery diagnostics to last-run metrics**
 
 Add:
 
@@ -620,7 +620,7 @@ fn recovered_from(
 Update existing literal `BslIndexRunMetrics` values in tests with
 `recovery_reason: None`.
 
-- [ ] **Step 8: Extract the worker runner boundary and implement one-shot recovery**
+- [x] **Step 8: Extract the worker runner boundary and implement one-shot recovery**
 
 Keep production behavior:
 
@@ -827,7 +827,7 @@ fn command_failure_message(action: &str, output: &IndexOutput) -> String {
 
 This keeps cancellation and timeout wording identical to the existing worker.
 
-- [ ] **Step 9: Run worker and lock tests**
+- [x] **Step 9: Run worker and lock tests**
 
 Run:
 
@@ -838,7 +838,7 @@ cargo test -p unica-coder infrastructure::workspace_index::tests
 Expected: all tests pass, including existing cancellation, timeout, lock
 heartbeat, released-lock, and last-run metrics tests.
 
-- [ ] **Step 10: Commit one-shot recovery**
+- [x] **Step 10: Commit one-shot recovery**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/workspace_index.rs
@@ -861,7 +861,7 @@ git commit -m "fix: rebuild RLM index after stale content"
 - Produces: stable workspace-service round trip for exact stale status
 - Produces: `readiness_warning(IndexReadiness) -> String` that maps only `Building` to `rlm index building`
 
-- [ ] **Step 1: Write failing workspace-service round-trip tests**
+- [x] **Step 1: Write failing workspace-service round-trip tests**
 
 Add in the `workspace_services.rs` test module:
 
@@ -901,7 +901,7 @@ fn service_response_preserves_failed_index_message() {
 }
 ```
 
-- [ ] **Step 2: Run the round-trip tests and verify the stale test fails**
+- [x] **Step 2: Run the round-trip tests and verify the stale test fails**
 
 Run:
 
@@ -913,7 +913,7 @@ cargo test -p unica-coder infrastructure::workspace_services::tests::service_res
 Expected: the stale test fails because exact detail is discarded; failed
 message preservation should pass.
 
-- [ ] **Step 3: Preserve stale detail in the existing response fields**
+- [x] **Step 3: Preserve stale detail in the existing response fields**
 
 Use `error` as the existing optional detail carrier without changing the wire
 schema:
@@ -939,13 +939,13 @@ Some("stale") => IndexReadiness::Stale {
 },
 ```
 
-- [ ] **Step 4: Run the round-trip tests and verify they pass**
+- [x] **Step 4: Run the round-trip tests and verify they pass**
 
 Run the two commands from Step 2.
 
 Expected: both pass.
 
-- [ ] **Step 5: Write failing adapter warning tests**
+- [x] **Step 5: Write failing adapter warning tests**
 
 Add near other internal-adapter helper tests:
 
@@ -975,7 +975,7 @@ fn failed_readiness_reports_original_reason() {
 }
 ```
 
-- [ ] **Step 6: Run the adapter tests and verify the stale test fails**
+- [x] **Step 6: Run the adapter tests and verify the stale test fails**
 
 Run:
 
@@ -987,7 +987,7 @@ cargo test -p unica-coder infrastructure::internal_adapters::tests::failed_readi
 Expected: stale is still rendered as `rlm index building`; failed reason test
 passes.
 
-- [ ] **Step 7: Restrict the building warning to real Building state**
+- [x] **Step 7: Restrict the building warning to real Building state**
 
 Change `readiness_warning`:
 
@@ -1008,7 +1008,7 @@ match readiness {
 }
 ```
 
-- [ ] **Step 8: Run focused service and adapter tests**
+- [x] **Step 8: Run focused service and adapter tests**
 
 Run:
 
@@ -1019,7 +1019,7 @@ cargo test -p unica-coder infrastructure::internal_adapters::tests
 
 Expected: all tests pass.
 
-- [ ] **Step 9: Commit status propagation**
+- [x] **Step 9: Commit status propagation**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/workspace_services.rs crates/unica-coder/src/infrastructure/internal_adapters.rs

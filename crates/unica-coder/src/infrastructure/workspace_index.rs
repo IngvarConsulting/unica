@@ -1,4 +1,4 @@
-use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{
@@ -196,6 +196,7 @@ impl<'a> WorkspaceIndexService<'a> {
                     return IndexStartReport::default();
                 }
             };
+        let matching_failed = failed_status_for_source(context, &source_root);
 
         if active_lock(context, &source_root) {
             return IndexStartReport {
@@ -206,6 +207,11 @@ impl<'a> WorkspaceIndexService<'a> {
         let commands = match self.commands(context, &source_root, cancellation) {
             Ok(commands) => commands,
             Err(error) => {
+                if let Some(message) = matching_failed.as_deref() {
+                    return IndexStartReport {
+                        warnings: vec![format!("rlm index unavailable: {message}")],
+                    };
+                }
                 let _ = write_status(
                     context,
                     BslIndexStatus::unavailable(error.as_str(), Some(&source_root)),
@@ -217,6 +223,11 @@ impl<'a> WorkspaceIndexService<'a> {
         let info = match self.runner.run(&commands.info) {
             Ok(output) => output,
             Err(error) => {
+                if let Some(message) = matching_failed.as_deref() {
+                    return IndexStartReport {
+                        warnings: vec![format!("rlm index unavailable: {message}")],
+                    };
+                }
                 let _ = write_status(
                     context,
                     BslIndexStatus::unavailable(error.as_str(), Some(&source_root)),
@@ -235,7 +246,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 IndexStartReport::default()
             }
             other => {
-                if let Some(message) = failed_status_for_source(context, &source_root) {
+                if let Some(message) = matching_failed {
                     return IndexStartReport {
                         warnings: vec![format!("rlm index unavailable: {message}")],
                     };
@@ -300,6 +311,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 Ok(resolved) => resolved.path,
                 Err(error) => return IndexReadiness::Unavailable(error),
             };
+        let matching_failed = failed_status_for_source(context, &source_root);
 
         if active_lock(context, &source_root) {
             return IndexReadiness::Building;
@@ -307,12 +319,20 @@ impl<'a> WorkspaceIndexService<'a> {
 
         let commands = match self.commands(context, &source_root, cancellation) {
             Ok(commands) => commands,
-            Err(error) => return IndexReadiness::Unavailable(error),
+            Err(error) => {
+                return matching_failed
+                    .map(IndexReadiness::Failed)
+                    .unwrap_or(IndexReadiness::Unavailable(error));
+            }
         };
 
         let output = match self.runner.run(&commands.info) {
             Ok(output) => output,
-            Err(error) => return IndexReadiness::Unavailable(error),
+            Err(error) => {
+                return matching_failed
+                    .map(IndexReadiness::Failed)
+                    .unwrap_or(IndexReadiness::Unavailable(error));
+            }
         };
 
         match readiness_from_info(&output) {
@@ -323,9 +343,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 );
                 IndexReadiness::Ready { db_path }
             }
-            other => failed_status_for_source(context, &source_root)
-                .map(IndexReadiness::Failed)
-                .unwrap_or(other),
+            other => matching_failed.map(IndexReadiness::Failed).unwrap_or(other),
         }
     }
 
@@ -788,8 +806,9 @@ where
             let recovery = match recovery {
                 Ok(output) => output,
                 Err(error) => {
-                    let message = format!(
-                        "rlm index update finished with stale (content) after update; recovery build failed: {error}"
+                    let message = recovery_failure_message(
+                        "rlm index update finished with stale (content) after update; recovery build failed",
+                        &error,
                     );
                     write_background_status(
                         &job,
@@ -801,8 +820,9 @@ where
             };
             if !recovery.status_success || recovery.cancelled || recovery.timed_out {
                 let detail = command_failure_message("build", &recovery);
-                let message = format!(
-                    "rlm index update finished with stale (content) after update; recovery build failed: {detail}"
+                let message = recovery_failure_message(
+                    "rlm index update finished with stale (content) after update; recovery build failed",
+                    &detail,
                 );
                 write_background_status(
                     &job,
@@ -834,8 +854,9 @@ where
             let final_readiness = match final_readiness {
                 Ok(info) => readiness_from_info(&info),
                 Err(error) => {
-                    let message = format!(
-                        "rlm index update finished but info is stale (content); recovery build info failed: {error}"
+                    let message = recovery_failure_message(
+                        "rlm index update finished but info is stale (content); recovery build info failed",
+                        &error,
                     );
                     write_background_status(
                         &job,
@@ -858,9 +879,19 @@ where
                         .stale_status()
                         .map(str::to_string)
                         .unwrap_or_else(|| format!("{other:?}"));
-                    let message = format!(
-                        "rlm index update finished but info is stale (content); recovery build finished but info is still {final_status}"
-                    );
+                    let message = match &other {
+                        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
+                            if error.starts_with(CANCELLED_PREFIX) =>
+                        {
+                            recovery_failure_message(
+                                "rlm index update finished but info is stale (content); recovery build final info was cancelled",
+                                error,
+                            )
+                        }
+                        _ => format!(
+                            "rlm index update finished but info is stale (content); recovery build finished but info is still {final_status}"
+                        ),
+                    };
                     write_background_status(
                         &job,
                         BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
@@ -877,6 +908,14 @@ where
                     .with_last_run(primary_metrics),
             );
         }
+    }
+}
+
+fn recovery_failure_message(context: &str, detail: &str) -> String {
+    if detail.starts_with(CANCELLED_PREFIX) {
+        format!("{detail}; {context}")
+    } else {
+        format!("{context}: {detail}")
     }
 }
 
@@ -1750,6 +1789,95 @@ source-set:
     }
 
     #[test]
+    fn startup_preserves_matching_failed_marker_when_info_runner_errors() {
+        let context = test_context("failed-startup-info-error");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let original_message = "update left stale (content); recovery build failed";
+        write_status(
+            &context,
+            BslIndexStatus::failed(original_message, Some(&context.workspace_root.join("src"))),
+        )
+        .unwrap();
+        let runner = FailingInfoRunner;
+
+        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert_eq!(
+            report.warnings,
+            vec![format!("rlm index unavailable: {original_message}")]
+        );
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "failed");
+        assert_eq!(status.message.as_deref(), Some(original_message));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn readiness_preserves_matching_failed_marker_when_info_runner_errors() {
+        let context = test_context("failed-readiness-info-error");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let original_message = "update left stale (content); recovery build failed";
+        write_status(
+            &context,
+            BslIndexStatus::failed(original_message, Some(&context.workspace_root.join("src"))),
+        )
+        .unwrap();
+        let runner = FailingInfoRunner;
+
+        let readiness =
+            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
+
+        assert_eq!(
+            readiness,
+            IndexReadiness::Failed(original_message.to_string())
+        );
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "failed");
+        assert_eq!(status.message.as_deref(), Some(original_message));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn startup_preserves_matching_failed_marker_when_command_construction_fails() {
+        let context = test_context("failed-startup-command-error");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let original_message = "update left stale (content); recovery build failed";
+        write_status(
+            &context,
+            BslIndexStatus::failed(original_message, Some(&context.workspace_root.join("src"))),
+        )
+        .unwrap();
+        fs::write(
+            context
+                .workspace_root
+                .join("plugins/unica/third-party/manifest.json"),
+            "{not valid json",
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner::default();
+
+        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert_eq!(
+            report.warnings,
+            vec![format!("rlm index unavailable: {original_message}")]
+        );
+        assert!(runner.commands.borrow().is_empty());
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "failed");
+        assert_eq!(status.message.as_deref(), Some(original_message));
+        cleanup(&context);
+    }
+
+    #[test]
     fn fresh_info_replaces_matching_failed_marker() {
         let context = test_context("failed-then-fresh");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
@@ -1779,6 +1907,73 @@ source-set:
         );
 
         assert_eq!(read_bsl_index_status(&context).unwrap().status, "ready");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn failed_marker_for_another_source_root_does_not_block_update() {
+        let context = test_context("failed-other-source");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("other")).unwrap();
+        write_status(
+            &context,
+            BslIndexStatus::failed(
+                "failure for another source root",
+                Some(&context.workspace_root.join("other")),
+            ),
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index: /tmp/bsl_index.db\n  Status:   stale (age)\n",
+            )]),
+            ..Default::default()
+        };
+
+        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
+        assert_eq!(runner.backgrounds.borrow().len(), 1);
+        assert_eq!(
+            runner.backgrounds.borrow()[0].primary.args[0..2],
+            ["index", "update"]
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn equivalent_normalized_source_spelling_matches_failed_marker() {
+        let context = test_context("failed-normalized-source");
+        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let equivalent_source = context
+            .workspace_root
+            .join("src")
+            .join("CommonModules")
+            .join("..");
+        let original_message = "failed marker through equivalent source spelling";
+        write_status(
+            &context,
+            BslIndexStatus::failed(original_message, Some(&equivalent_source)),
+        )
+        .unwrap();
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
+            )]),
+            ..Default::default()
+        };
+
+        let readiness =
+            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
+
+        assert_eq!(
+            readiness,
+            IndexReadiness::Failed(original_message.to_string())
+        );
         cleanup(&context);
     }
 
@@ -1918,6 +2113,37 @@ source-set:
     }
 
     #[test]
+    fn update_followed_by_fresh_info_does_not_run_recovery_build() {
+        let context = test_context("update-fresh-no-recovery");
+        let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "").unwrap();
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
+        ]
+        .into_iter();
+        let mut commands = Vec::new();
+
+        run_background_job_with(job, |command, _lease| {
+            commands.push(command.args[0..2].to_vec());
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        assert_eq!(
+            commands,
+            vec![
+                vec!["index".to_string(), "update".to_string()],
+                vec!["index".to_string(), "info".to_string()],
+            ]
+        );
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "ready");
+        cleanup(&context);
+    }
+
+    #[test]
     fn failed_recovery_preserves_stale_content_cause() {
         let context = test_context("stale-content-recovery-failed");
         let mut job = test_background_job(&context, "update");
@@ -1946,6 +2172,67 @@ source-set:
         let message = status.message.unwrap();
         assert!(message.contains("stale (content) after update"));
         assert!(message.contains("disk full"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cancelled_recovery_build_preserves_prefix_and_stale_content_context() {
+        let context = test_context("stale-content-recovery-cancelled-build");
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+            IndexOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                duration_ms: 4,
+            },
+        ]
+        .into_iter();
+
+        run_background_job_with(job, |_command, _lease| {
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        let message = read_bsl_index_status(&context).unwrap().message.unwrap();
+        assert!(message.starts_with("cancelled:"), "{message}");
+        assert!(message.contains("stale (content)"), "{message}");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn cancelled_final_recovery_info_preserves_prefix_and_stale_content_context() {
+        let context = test_context("stale-content-recovery-cancelled-final-info");
+        let mut job = test_background_job(&context, "update");
+        job.recovery_build = Some(inert_index_command(&context, "build"));
+        let mut outputs = vec![
+            IndexOutput::success("Updated in 0.1s"),
+            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
+            IndexOutput::success("Index built in 1.2s"),
+            IndexOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                duration_ms: 1,
+            },
+        ]
+        .into_iter();
+
+        run_background_job_with(job, |_command, _lease| {
+            Ok(outputs.next().expect("scripted output"))
+        });
+
+        let message = read_bsl_index_status(&context).unwrap().message.unwrap();
+        assert!(message.starts_with("cancelled:"), "{message}");
+        assert!(message.contains("stale (content)"), "{message}");
         cleanup(&context);
     }
 
@@ -2387,6 +2674,18 @@ source-set:
         outputs: RefCell<Vec<IndexOutput>>,
         commands: RefCell<Vec<IndexCommand>>,
         backgrounds: RefCell<Vec<IndexBackgroundJob>>,
+    }
+
+    struct FailingInfoRunner;
+
+    impl IndexRunner for FailingInfoRunner {
+        fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
+            Err("scripted index info failure".to_string())
+        }
+
+        fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
+            panic!("failed marker must prevent background maintenance")
+        }
     }
 
     impl IndexRunner for RecordingIndexRunner {
