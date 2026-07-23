@@ -13,16 +13,18 @@ use crate::domain::branched_development::contracts::recovery::{
     RecoveryAction, RecoveryActionOutcome, RecoveryEffectClass, RecoveryObservation,
     RecoveryPlanStatus, RecoveryTarget, RecoveryUnknown, ValidatedCompletedPreArmTerminalEvidence,
 };
+#[cfg(test)]
+use crate::domain::branched_development::contracts::repository::RepositoryHistoryPartitionResolver;
 use crate::domain::branched_development::contracts::repository::{
-    CanonicalRepositoryTargetSet, DeferredRepositoryAdvance,
+    CanonicalRepositoryReferenceEdgeSet, CanonicalRepositoryTargetSet, DeferredRepositoryAdvance,
     DeferredRepositoryAdvanceConsumptionReceipt, NonEmptyCanonicalRepositoryTargetSet,
     ObjectTargetIdentity, PlannerBoundScopedNccHistoryScanCore, PostMergeHistoryGuardAuthority,
     PostMergeHistoryGuardEvidence, RepositoryActorIdentity, RepositoryAnchor,
     RepositoryContractError, RepositoryHistoryCursor, RepositoryHistoryPartitionClassification,
-    RepositoryHistoryPartitionResolver, RepositoryPlannedChanges, RepositoryTargetIdentity,
-    RepositoryTargetState, RepositoryTargetStateRef, RepositoryTargetStates,
-    RepositoryUpdateLockReason, RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets,
-    RootTargetIdentity, ScopedNccHistoryScanBlockedAuthority, ScopedNccHistoryScanPort,
+    RepositoryPlannedChanges, RepositoryTargetIdentity, RepositoryTargetState,
+    RepositoryTargetStateRef, RepositoryTargetStates, RepositoryUpdateLockReason,
+    RepositoryUpdateLockTargetRef, RepositoryUpdateLockTargets, RootTargetIdentity,
+    ScopedNccHistoryScanBlockedAuthority, ScopedNccHistoryScanPort,
     ScopedNccPlannerBindingBlockedCore, ScopedNccPlannerBindingFailure,
     ScopedNccPlannerCoreResolutionFailure, SelectiveRepositoryUpdatePlan,
     SelectiveRepositoryUpdateProof, SelectiveRepositoryUpdateScope, SupportGateHistoryEvidence,
@@ -77,6 +79,7 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -6147,8 +6150,21 @@ impl ApprovedCommitPreviewAuthority {
             );
         }
 
-        let (completion, observed, terminal_observation) =
-            PhaseTerminalObservation::<ImmediatePhase>::from_checked_immediate(checked_observation);
+        let (completion, observed, terminal_observation, terminal_reference_closure) =
+            match PhaseTerminalObservation::<ImmediatePhase>::from_checked_immediate(
+                checked_observation,
+            ) {
+                Ok(bound) => bound,
+                Err(blocked) => {
+                    return CommitImmediateRecheckOutcome::RecoveryRequired(
+                        CommitImmediateRecoveryRequiredAuthority {
+                            approved: self,
+                            failure: CommitImmediateRecheckFailureEvidence::
+                                TerminalReferenceClosureSiblingMismatch(blocked),
+                        },
+                    );
+                }
+            };
         if contains_ncc {
             return CommitImmediateRecheckOutcome::ScopedRequired(
                 CommitImmediateScopedNccPendingAuthority {
@@ -6156,11 +6172,14 @@ impl ApprovedCommitPreviewAuthority {
                     completion,
                     observed_evidence: Box::new(observed),
                     terminal_observation,
+                    terminal_reference_closure: Box::new(terminal_reference_closure),
                 },
             );
         }
-        let immediate_history_safety =
-            CommitImmediateHistorySafetyAuthority::NoNcc(Box::new(terminal_observation));
+        let immediate_history_safety = CommitImmediateHistorySafetyAuthority::NoNcc {
+            terminal_observation: Box::new(terminal_observation),
+            terminal_reference_closure: Box::new(terminal_reference_closure),
+        };
 
         if observed
             .history_partition
@@ -6603,7 +6622,7 @@ pub(crate) trait CommitImmediateRecheckLease {
     fn commit_safety_lineage_witness(&self) -> &CommitSafetyLineageWitness;
     fn binds(&self, request: &CommitImmediateRecheckRequest<'_>) -> bool;
     fn history_partition(&self) -> &ValidatedRepositoryHistoryPartition;
-    fn recomputed_reference_closure_digest(&self) -> &Sha256Digest;
+    fn recomputed_reference_closure(&self) -> &CanonicalRepositoryReferenceEdgeSet;
     fn observed_original_fingerprint(&self) -> &Sha256Digest;
     fn observed_repository_anchor(&self) -> &RepositoryAnchor;
     fn consumed_state_revision(&self) -> &Sha256Digest;
@@ -6613,6 +6632,10 @@ pub(crate) trait CommitImmediateRecheckLease {
     fn atomic_commit_safety_capability_id(&self) -> &CapabilityRowId;
     fn pre_command_target_states(&self) -> &RepositoryTargetStates;
     fn pre_command_target_snapshot_observation_capability_id(&self) -> &CapabilityRowId;
+    #[cfg(test)]
+    fn terminal_sibling_mismatch_test_only(&self) -> bool {
+        false
+    }
     fn commit_exact_once(
         self: Box<Self>,
         request: CommitAtomicCommitRequest<'_>,
@@ -6629,6 +6652,7 @@ pub(crate) trait CommitImmediateRecheckPort {
 #[derive(Debug)]
 pub(crate) struct CommitImmediateRecheckObservedEvidence {
     history_partition: ValidatedRepositoryHistoryPartition,
+    recomputed_reference_closure: CanonicalRepositoryReferenceEdgeSet,
     recomputed_reference_closure_digest: Sha256Digest,
     observed_original_fingerprint: Sha256Digest,
     observed_repository_anchor: RepositoryAnchor,
@@ -6639,15 +6663,72 @@ pub(crate) struct CommitImmediateRecheckObservedEvidence {
     atomic_commit_safety_capability_id: CapabilityRowId,
     pre_command_target_states: RepositoryTargetStates,
     pre_command_target_snapshot_observation_capability_id: CapabilityRowId,
+    #[cfg(test)]
+    terminal_sibling_mismatch_test_only: bool,
+}
+
+#[derive(Debug)]
+struct CommitImmediateTerminalReferenceClosureBindingMarker {
+    _private: (),
+}
+
+/// Exact full reference-closure observation retained beside the phase
+/// terminal authority. Both siblings share the same pointer-only immediate
+/// observation marker.
+#[derive(Debug)]
+pub(crate) struct CommitImmediateTerminalReferenceClosureAuthority {
+    observation_marker: Arc<PhaseTerminalObservationMarker>,
+    terminal_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    terminal_reference_closure_digest: Sha256Digest,
+    terminal_repository_anchor: RepositoryAnchor,
+    repository_identity: Sha256Digest,
+    configuration_identity: ConfigurationIdentity,
+    terminal_cursor: RepositoryHistoryCursor,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+    unissued_binding_marker:
+        RefCell<Option<Arc<CommitImmediateTerminalReferenceClosureBindingMarker>>>,
+    issued_binding_marker:
+        RefCell<Option<Arc<CommitImmediateTerminalReferenceClosureBindingMarker>>>,
+}
+
+/// One invocation-bound copy of the retained immediate full-set authority.
+/// It intentionally exposes neither its set/digest nor the invocation child
+/// witness.
+#[derive(Debug)]
+pub(crate) struct CommitImmediateTerminalReferenceClosureBinding {
+    source_binding_marker: Arc<CommitImmediateTerminalReferenceClosureBindingMarker>,
+    observation_marker: Arc<PhaseTerminalObservationMarker>,
+    invocation_witness: CommitAtomicInvocationChildWitness,
+    terminal_reference_closure: CanonicalRepositoryReferenceEdgeSet,
+    terminal_reference_closure_digest: Sha256Digest,
+    terminal_repository_anchor: RepositoryAnchor,
+    repository_identity: Sha256Digest,
+    configuration_identity: ConfigurationIdentity,
+    terminal_cursor: RepositoryHistoryCursor,
+    atomic_commit_safety_capability_id: CapabilityRowId,
+}
+
+/// Owns both immediate terminal siblings and their common source observation
+/// when their release-enforced causal binding fails. Neither sibling can enter
+/// a no-NCC or scoped safety branch from this authority.
+#[derive(Debug)]
+pub(crate) struct CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority {
+    completion: CommitImmediateRecheckCompletion,
+    evidence: Box<CommitImmediateRecheckObservedEvidence>,
+    terminal_observation: Box<PhaseTerminalObservation<ImmediatePhase>>,
+    terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
 }
 
 impl CommitImmediateRecheckObservedEvidence {
     fn from_lease(lease: &dyn CommitImmediateRecheckLease) -> Self {
+        let recomputed_reference_closure = lease.recomputed_reference_closure().clone();
+        let recomputed_reference_closure_digest = recomputed_reference_closure
+            .digest()
+            .expect("a canonical reference-edge set has an infallible digest record");
         Self {
             history_partition: lease.history_partition().clone(),
-            recomputed_reference_closure_digest: lease
-                .recomputed_reference_closure_digest()
-                .clone(),
+            recomputed_reference_closure,
+            recomputed_reference_closure_digest,
             observed_original_fingerprint: lease.observed_original_fingerprint().clone(),
             observed_repository_anchor: lease.observed_repository_anchor().clone(),
             consumed_state_revision: lease.consumed_state_revision().clone(),
@@ -6661,31 +6742,182 @@ impl CommitImmediateRecheckObservedEvidence {
             pre_command_target_snapshot_observation_capability_id: lease
                 .pre_command_target_snapshot_observation_capability_id()
                 .clone(),
+            #[cfg(test)]
+            terminal_sibling_mismatch_test_only: lease.terminal_sibling_mismatch_test_only(),
         }
+    }
+}
+
+impl CommitImmediateTerminalReferenceClosureAuthority {
+    fn from_observed(
+        observed: &CommitImmediateRecheckObservedEvidence,
+        observation_marker: Arc<PhaseTerminalObservationMarker>,
+    ) -> Self {
+        let terminal_repository_anchor = observed.observed_repository_anchor.clone();
+        Self {
+            observation_marker,
+            terminal_reference_closure: observed.recomputed_reference_closure.clone(),
+            terminal_reference_closure_digest: observed.recomputed_reference_closure_digest.clone(),
+            repository_identity: terminal_repository_anchor.repository_identity().clone(),
+            configuration_identity: terminal_repository_anchor.configuration_identity().clone(),
+            terminal_cursor: terminal_repository_anchor.history_cursor().clone(),
+            terminal_repository_anchor,
+            atomic_commit_safety_capability_id: observed.atomic_commit_safety_capability_id.clone(),
+            unissued_binding_marker: RefCell::new(Some(Arc::new(
+                CommitImmediateTerminalReferenceClosureBindingMarker { _private: () },
+            ))),
+            issued_binding_marker: RefCell::new(None),
+        }
+    }
+
+    fn matches_terminal_observation(
+        &self,
+        terminal: &PhaseTerminalObservation<ImmediatePhase>,
+    ) -> bool {
+        let terminal_marker = terminal
+            .unissued_binding_marker
+            .as_ref()
+            .or(terminal.issued_binding_marker.as_ref());
+        terminal_marker.is_some_and(|marker| Arc::ptr_eq(marker, &self.observation_marker))
+            && self.terminal_repository_anchor == terminal.terminal_repository_anchor
+            && self.terminal_reference_closure_digest == terminal.terminal_reference_closure_digest
+            && self.atomic_commit_safety_capability_id
+                == terminal.atomic_commit_safety_capability_id
+            && self
+                .terminal_reference_closure
+                .digest()
+                .is_ok_and(|digest| digest == self.terminal_reference_closure_digest)
+    }
+
+    fn mint_binding(
+        &self,
+        request: &CommitAtomicCommitRequest<'_>,
+    ) -> Result<CommitImmediateTerminalReferenceClosureBinding, RepositoryResultContractError> {
+        if self.repository_identity
+            != *request
+                .source
+                .post_merge_repository_anchor
+                .repository_identity()
+            || self.configuration_identity
+                != *request
+                    .source
+                    .post_merge_repository_anchor
+                    .configuration_identity()
+            || self.terminal_cursor != request.source.before_repository_cursor
+            || self.terminal_repository_anchor.history_cursor() != &self.terminal_cursor
+            || self.atomic_commit_safety_capability_id
+                != request
+                    .source
+                    .written_intent
+                    .record
+                    .durable_record
+                    .atomic_commit_safety_capability_id
+            || !self
+                .terminal_reference_closure
+                .digest()
+                .is_ok_and(|digest| digest == self.terminal_reference_closure_digest)
+        {
+            return Err(RepositoryResultContractError(
+                "immediate terminal reference closure differs from the atomic source",
+            ));
+        }
+        let marker = self.unissued_binding_marker.borrow_mut().take().ok_or(
+            RepositoryResultContractError(
+                "immediate terminal reference-closure binding was already issued",
+            ),
+        )?;
+        let binding = CommitImmediateTerminalReferenceClosureBinding {
+            source_binding_marker: Arc::clone(&marker),
+            observation_marker: Arc::clone(&self.observation_marker),
+            invocation_witness: request.invocation.child_witness(),
+            terminal_reference_closure: self.terminal_reference_closure.clone(),
+            terminal_reference_closure_digest: self.terminal_reference_closure_digest.clone(),
+            terminal_repository_anchor: self.terminal_repository_anchor.clone(),
+            repository_identity: self.repository_identity.clone(),
+            configuration_identity: self.configuration_identity.clone(),
+            terminal_cursor: self.terminal_cursor.clone(),
+            atomic_commit_safety_capability_id: self.atomic_commit_safety_capability_id.clone(),
+        };
+        self.issued_binding_marker.replace(Some(marker));
+        Ok(binding)
+    }
+
+    fn owns_binding(
+        &self,
+        request: &CommitAtomicCommitRequest<'_>,
+        binding: &CommitImmediateTerminalReferenceClosureBinding,
+    ) -> bool {
+        self.issued_binding_marker
+            .borrow()
+            .as_ref()
+            .is_some_and(|marker| Arc::ptr_eq(marker, &binding.source_binding_marker))
+            && self.unissued_binding_marker.borrow().is_none()
+            && Arc::ptr_eq(&self.observation_marker, &binding.observation_marker)
+            && request
+                .invocation
+                .owns_child_witness(&binding.invocation_witness)
+            && self.terminal_reference_closure == binding.terminal_reference_closure
+            && self.terminal_reference_closure_digest == binding.terminal_reference_closure_digest
+            && self.terminal_repository_anchor == binding.terminal_repository_anchor
+            && self.repository_identity == binding.repository_identity
+            && self.configuration_identity == binding.configuration_identity
+            && self.terminal_cursor == binding.terminal_cursor
+            && self.atomic_commit_safety_capability_id == binding.atomic_commit_safety_capability_id
     }
 }
 
 impl PhaseTerminalObservation<ImmediatePhase> {
     fn from_checked_immediate(
         checked: PointerCheckedCommitImmediateRecheckObservation,
-    ) -> (
-        CommitImmediateRecheckCompletion,
-        CommitImmediateRecheckObservedEvidence,
-        Self,
-    ) {
+    ) -> Result<
+        (
+            CommitImmediateRecheckCompletion,
+            CommitImmediateRecheckObservedEvidence,
+            Self,
+            CommitImmediateTerminalReferenceClosureAuthority,
+        ),
+        Box<CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority>,
+    > {
         let observed = &checked.observed;
+        let observation_marker = Arc::new(PhaseTerminalObservationMarker { _private: () });
         let terminal = Self {
             partition: observed.history_partition.clone(),
             atomic_commit_safety_capability_id: observed.atomic_commit_safety_capability_id.clone(),
             terminal_repository_anchor: observed.observed_repository_anchor.clone(),
             terminal_reference_closure_digest: observed.recomputed_reference_closure_digest.clone(),
-            unissued_binding_marker: Some(Arc::new(PhaseTerminalObservationMarker {
-                _private: (),
-            })),
+            unissued_binding_marker: Some(Arc::clone(&observation_marker)),
             issued_binding_marker: None,
             _phase: std::marker::PhantomData,
         };
-        (checked.completion, checked.observed, terminal)
+        #[cfg(test)]
+        let terminal_reference_closure_marker = if observed.terminal_sibling_mismatch_test_only {
+            Arc::new(PhaseTerminalObservationMarker { _private: () })
+        } else {
+            Arc::clone(&observation_marker)
+        };
+        #[cfg(not(test))]
+        let terminal_reference_closure_marker = Arc::clone(&observation_marker);
+        let terminal_reference_closure =
+            CommitImmediateTerminalReferenceClosureAuthority::from_observed(
+                observed,
+                terminal_reference_closure_marker,
+            );
+        if !terminal_reference_closure.matches_terminal_observation(&terminal) {
+            return Err(Box::new(
+                CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority {
+                    completion: checked.completion,
+                    evidence: Box::new(checked.observed),
+                    terminal_observation: Box::new(terminal),
+                    terminal_reference_closure: Box::new(terminal_reference_closure),
+                },
+            ));
+        }
+        Ok((
+            checked.completion,
+            checked.observed,
+            terminal,
+            terminal_reference_closure,
+        ))
     }
 }
 
@@ -6706,8 +6938,29 @@ fn rebuild_immediate_history_evidence(
 
 #[derive(Debug)]
 enum CommitImmediateHistorySafetyAuthority {
-    NoNcc(Box<PhaseTerminalObservation<ImmediatePhase>>),
-    Scoped(Box<PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>>),
+    NoNcc {
+        terminal_observation: Box<PhaseTerminalObservation<ImmediatePhase>>,
+        terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
+    },
+    Scoped {
+        planner_bound_history: Box<PlannerBoundScopedNccHistoryScanAuthority<ImmediatePhase>>,
+        terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
+    },
+}
+
+impl CommitImmediateHistorySafetyAuthority {
+    fn terminal_reference_closure(&self) -> &CommitImmediateTerminalReferenceClosureAuthority {
+        match self {
+            Self::NoNcc {
+                terminal_reference_closure,
+                ..
+            }
+            | Self::Scoped {
+                terminal_reference_closure,
+                ..
+            } => terminal_reference_closure,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -6716,6 +6969,7 @@ pub(crate) struct CommitImmediateScopedNccPendingAuthority {
     completion: CommitImmediateRecheckCompletion,
     observed_evidence: Box<CommitImmediateRecheckObservedEvidence>,
     terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+    terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -6745,15 +6999,18 @@ impl CommitImmediateBoundHistoryFailureEvidence {
 pub(crate) enum CommitImmediateScopedNccFailureEvidence {
     PlannerScopeDerivation {
         terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+        terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
         failure: ScopedNccPlannerScopeDerivationFailure,
     },
     ScopedNccScanBlocked {
         scope: ScopedNccPlannerScope,
         terminal_observation: PhaseTerminalObservation<ImmediatePhase>,
+        terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
         blocked: Box<ScopedNccHistoryScanBlockedAuthority>,
     },
     ScopedNccPlannerBindingBlocked {
         blocked: Box<ScopedNccPlannerBindingBlockedAuthority<ImmediatePhase>>,
+        terminal_reference_closure: Box<CommitImmediateTerminalReferenceClosureAuthority>,
     },
 }
 
@@ -6782,6 +7039,9 @@ pub(crate) enum CommitImmediateRecheckFailureEvidence {
         completion: CommitImmediateRecheckCompletion,
         evidence: Box<CommitImmediateRecheckObservedEvidence>,
     },
+    TerminalReferenceClosureSiblingMismatch(
+        Box<CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority>,
+    ),
     BoundHistory(Box<CommitImmediateBoundHistoryFailureEvidence>),
     ScopedNcc {
         completion: CommitImmediateRecheckCompletion,
@@ -6861,6 +7121,7 @@ impl CommitImmediateScopedNccPendingAuthority {
             completion,
             observed_evidence,
             terminal_observation,
+            terminal_reference_closure,
         } = self;
         let observed = *observed_evidence;
         let scope = {
@@ -6880,6 +7141,7 @@ impl CommitImmediateScopedNccPendingAuthority {
                         observed,
                         CommitImmediateScopedNccFailureEvidence::PlannerScopeDerivation {
                             terminal_observation,
+                            terminal_reference_closure,
                             failure,
                         },
                     );
@@ -6901,6 +7163,7 @@ impl CommitImmediateScopedNccPendingAuthority {
                     CommitImmediateScopedNccFailureEvidence::ScopedNccScanBlocked {
                         scope,
                         terminal_observation,
+                        terminal_reference_closure,
                         blocked,
                     },
                 );
@@ -6912,12 +7175,15 @@ impl CommitImmediateScopedNccPendingAuthority {
                     observed,
                     CommitImmediateScopedNccFailureEvidence::ScopedNccPlannerBindingBlocked {
                         blocked,
+                        terminal_reference_closure,
                     },
                 );
             }
         };
-        let immediate_history_safety =
-            CommitImmediateHistorySafetyAuthority::Scoped(Box::new(planner_bound_history));
+        let immediate_history_safety = CommitImmediateHistorySafetyAuthority::Scoped {
+            planner_bound_history: Box::new(planner_bound_history),
+            terminal_reference_closure,
+        };
         let prior_history = &approved.0.record.history_guard_evidence;
         let retained_anchor = &approved
             .0
@@ -8150,6 +8416,129 @@ impl CommitReleasedLocksObservationInput {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitTaskVersionAnchorObservationInput {
+    history_cursor: RepositoryHistoryCursor,
+    repository_identity: Sha256Digest,
+    configuration_identity: ConfigurationIdentity,
+    configuration_fingerprint: Sha256Digest,
+}
+
+impl CommitTaskVersionAnchorObservationInput {
+    pub(crate) const fn from_repository_adapter(
+        history_cursor: RepositoryHistoryCursor,
+        repository_identity: Sha256Digest,
+        configuration_identity: ConfigurationIdentity,
+        configuration_fingerprint: Sha256Digest,
+    ) -> Self {
+        Self {
+            history_cursor,
+            repository_identity,
+            configuration_identity,
+            configuration_fingerprint,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitTerminalRepositoryAnchorObservationInput {
+    history_cursor: RepositoryHistoryCursor,
+    repository_identity: Sha256Digest,
+    configuration_identity: ConfigurationIdentity,
+    configuration_fingerprint: Sha256Digest,
+}
+
+impl CommitTerminalRepositoryAnchorObservationInput {
+    pub(crate) const fn from_repository_adapter(
+        history_cursor: RepositoryHistoryCursor,
+        repository_identity: Sha256Digest,
+        configuration_identity: ConfigurationIdentity,
+        configuration_fingerprint: Sha256Digest,
+    ) -> Self {
+        Self {
+            history_cursor,
+            repository_identity,
+            configuration_identity,
+            configuration_fingerprint,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitRawPostCommandAnchorObservationInputs {
+    task_version: CommitTaskVersionAnchorObservationInput,
+    terminal: CommitTerminalRepositoryAnchorObservationInput,
+}
+
+impl CommitRawPostCommandAnchorObservationInputs {
+    pub(crate) const fn new(
+        task_version: CommitTaskVersionAnchorObservationInput,
+        terminal: CommitTerminalRepositoryAnchorObservationInput,
+    ) -> Self {
+        Self {
+            task_version,
+            terminal,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitRawPostCommandReferenceClosureObservationInputs {
+    task_before: CanonicalRepositoryReferenceEdgeSet,
+    task_after: CanonicalRepositoryReferenceEdgeSet,
+    terminal: CanonicalRepositoryReferenceEdgeSet,
+}
+
+impl CommitRawPostCommandReferenceClosureObservationInputs {
+    pub(crate) const fn new(
+        task_before: CanonicalRepositoryReferenceEdgeSet,
+        task_after: CanonicalRepositoryReferenceEdgeSet,
+        terminal: CanonicalRepositoryReferenceEdgeSet,
+    ) -> Self {
+        Self {
+            task_before,
+            task_after,
+            terminal,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum CommitRawLockReleaseObservation {
+    Released(CommitReleasedLocksObservationInput),
+    Unknown,
+}
+
+/// Non-authorizing bundle created immediately after the physical repository
+/// command. Packaging is infallible and retains every raw observation even
+/// when the first later validation step fails.
+#[derive(Debug)]
+pub(crate) struct CommitRawPostCommandHistorySource {
+    raw_core: CommitCommittedCoreObservationInput,
+    raw_partition: UnvalidatedRepositoryHistoryPartition,
+    raw_anchors: CommitRawPostCommandAnchorObservationInputs,
+    raw_reference_closures: CommitRawPostCommandReferenceClosureObservationInputs,
+    raw_release: CommitRawLockReleaseObservation,
+}
+
+impl CommitRawPostCommandHistorySource {
+    pub(crate) const fn new(
+        raw_core: CommitCommittedCoreObservationInput,
+        raw_partition: UnvalidatedRepositoryHistoryPartition,
+        raw_anchors: CommitRawPostCommandAnchorObservationInputs,
+        raw_reference_closures: CommitRawPostCommandReferenceClosureObservationInputs,
+        raw_release: CommitRawLockReleaseObservation,
+    ) -> Self {
+        Self {
+            raw_core,
+            raw_partition,
+            raw_anchors,
+            raw_reference_closures,
+            raw_release,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CommitLockReleaseObservation {
     Verified(Box<CommitPostCommandLockAuthority>),
     Unknown,
@@ -8201,7 +8590,7 @@ impl CommitCommittedCoreObservationInput {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitCommittedCoreObservation {
     object_history_binding_witness: CommitObjectHistoryBindingWitness,
     commit_receipt_id: UnicaId,
@@ -8231,7 +8620,7 @@ impl CommitObjectHistoryBinding for CommitCommittedCoreObservation {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitCommittedHistoryObservation {
     post_commit_history_partition: ValidatedTaskCommitHistoryPartition,
     task_version_anchor: RepositoryAnchor,
@@ -8253,7 +8642,7 @@ impl CommitCommittedHistoryObservation {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitCommittedObservationInput {
     core: CommitCommittedCoreObservation,
     history: CommitCommittedHistoryObservation,
@@ -8374,7 +8763,7 @@ impl CommitProvenZeroEffectObservationInput {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum CommitAtomicCommitObservation {
     Committed(Box<CommitCommittedObservationInput>),
     ProvenZeroEffect(Box<CommitProvenZeroEffectObservationInput>),
@@ -8444,6 +8833,22 @@ impl CommitAtomicCommitRequest<'_> {
             .record
             .durable_record
             .atomic_commit_safety_capability_id
+    }
+
+    fn bind_immediate_terminal_reference_closure(
+        &self,
+    ) -> Result<CommitImmediateTerminalReferenceClosureBinding, RepositoryResultContractError> {
+        let authority = self
+            .source
+            .immediate_history_safety
+            .terminal_reference_closure();
+        let binding = authority.mint_binding(self)?;
+        if !authority.owns_binding(self, &binding) {
+            return Err(RepositoryResultContractError(
+                "immediate terminal reference-closure binding differs from its source",
+            ));
+        }
+        Ok(binding)
     }
 
     pub(crate) fn exact_objects(&self) -> &CommitExactObjects {
@@ -8640,6 +9045,7 @@ impl CommitAtomicCommitRequest<'_> {
     /// Production bridge from the owning raw post-command partition to the
     /// sole taskCommit-specific resolver. A generic validated partition can
     /// never enter the committed-success path.
+    #[cfg(test)]
     pub(crate) fn resolve_task_commit_history(
         &self,
         core: &CommitCommittedCoreObservation,
@@ -10007,10 +10413,14 @@ pub(crate) fn validated_commit_object_authority_fixture_test_only(
     }
 
     let cursor = RepositoryHistoryCursor::new(repository_version.clone(), digest('a'));
+    let initial_reference_closure_digest = CanonicalRepositoryReferenceEdgeSet::new(Vec::new())
+        .unwrap()
+        .digest()
+        .unwrap();
     let (gate_history, history_guard) = empty_commit_history_evidence_fixture_test_only(
         cursor.clone(),
         digest('b'),
-        digest('3'),
+        initial_reference_closure_digest.clone(),
         atomic_commit_safety_capability_id.clone(),
     )
     .unwrap();
@@ -10068,7 +10478,7 @@ pub(crate) fn validated_commit_object_authority_fixture_test_only(
             )])
             .unwrap(),
             compatibility_mode: CompatibilityMode::parse("Version8_3_24").unwrap(),
-            reference_closure_digest: digest('3'),
+            reference_closure_digest: initial_reference_closure_digest,
             settings_digest: digest('4'),
             prevalidation_diagnostics_digest: digest('5'),
             gate_comparison_id: id("88888888-8888-4888-8888-888888888888"),
@@ -12700,7 +13110,7 @@ mod merge_consumer_tests {
 /// post-command history scan. The nested partition must already have been
 /// produced by the taskCommit-specific resolver using the same commit-object
 /// authority later consumed by `CommitData::from_authority`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct CommitCompletionObservationAuthority {
     commit_receipt_id: UnicaId,
     before_repository_cursor: RepositoryHistoryCursor,
@@ -19987,10 +20397,11 @@ mod gate_b2_preview_tests {
         repository_history_partition_fixture_test_only,
         scoped_ncc_history_broken_intermediate_closure_fixture_test_only,
         scoped_ncc_history_fixture_test_only, task_commit_history_partition_fixture_test_only,
-        EvidenceKind, EvidenceSourceIndex, EvidenceSourceIndexCandidate,
-        EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry, RepositoryContractError,
-        RepositoryHistoryEvidenceBytesResolver, RepositoryHistoryOrderEvidence,
-        RepositoryHistoryOrderResolver, RepositoryHistorySourceEvidenceRef,
+        CanonicalRepositoryReferenceEdgeSet, EvidenceKind, EvidenceSourceIndex,
+        EvidenceSourceIndexCandidate, EvidenceSourceIndexCandidateRow, EvidenceSourceRegistry,
+        RepositoryContractError, RepositoryHistoryEvidenceBytesResolver,
+        RepositoryHistoryOrderEvidence, RepositoryHistoryOrderResolver,
+        RepositoryHistorySourceEvidenceRef, RepositoryReferenceEdge,
         RoutineRepositoryVersionClassificationEvidence, ScopedNccHistoryFixtureTestOnly,
         ScopedNccHistoryRowObservation, ScopedNccHistoryRowObservationInput,
         ScopedNccHistoryScanBatchInput, ScopedNccHistoryScanBatchWitness,
@@ -20008,7 +20419,9 @@ mod gate_b2_preview_tests {
         validated_main_integration_commit_context_with_scoped_ncc_receipt_fixture_test_only,
         ResolvedCommitLineageConsumedSupportGateAuthority,
     };
-    use crate::domain::branched_development::contracts::scalars::PositiveGeneration;
+    use crate::domain::branched_development::contracts::scalars::{
+        EmptyOrName, Name, PositiveGeneration,
+    };
     use crate::domain::branched_development::contracts::storage::OperationScope;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -20074,6 +20487,48 @@ mod gate_b2_preview_tests {
                 {
                 }
                 let _ = <$type as AmbiguousIfJsonSchema<_>>::assert_not_json_schema;
+            };
+        };
+    }
+
+    macro_rules! assert_not_copy {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfCopy<Marker> {
+                    fn assert_not_copy() {}
+                }
+                struct ImplementsCopy;
+                impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+                impl<T: ?Sized + Copy> AmbiguousIfCopy<ImplementsCopy> for T {}
+                let _ = <$type as AmbiguousIfCopy<_>>::assert_not_copy;
+            };
+        };
+    }
+
+    macro_rules! assert_not_partial_eq {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfPartialEq<Marker> {
+                    fn assert_not_partial_eq() {}
+                }
+                struct ImplementsPartialEq;
+                impl<T: ?Sized> AmbiguousIfPartialEq<()> for T {}
+                impl<T: ?Sized + PartialEq> AmbiguousIfPartialEq<ImplementsPartialEq> for T {}
+                let _ = <$type as AmbiguousIfPartialEq<_>>::assert_not_partial_eq;
+            };
+        };
+    }
+
+    macro_rules! assert_not_eq {
+        ($type:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfEq<Marker> {
+                    fn assert_not_eq() {}
+                }
+                struct ImplementsEq;
+                impl<T: ?Sized> AmbiguousIfEq<()> for T {}
+                impl<T: ?Sized + Eq> AmbiguousIfEq<ImplementsEq> for T {}
+                let _ = <$type as AmbiguousIfEq<_>>::assert_not_eq;
             };
         };
     }
@@ -20160,6 +20615,49 @@ mod gate_b2_preview_tests {
         };
     }
 
+    macro_rules! assert_identity_non_wire {
+        ($type:ty) => {
+            assert_linear_non_wire!($type);
+            assert_not_copy!($type);
+            assert_not_partial_eq!($type);
+            assert_not_eq!($type);
+        };
+    }
+
+    fn assert_debug<T: std::fmt::Debug>() {}
+    fn assert_copy<T: Copy>() {}
+    fn assert_partial_eq<T: PartialEq>() {}
+    fn assert_eq<T: Eq>() {}
+
+    const _: fn() = || {
+        assert_debug::<ValidatedTaskCommitHistoryPartition>();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateBindingAuthority,
+        >();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditBlockedAuthority,
+        >();
+        assert_debug::<CommitRawPostCommandHistorySource>();
+        assert_debug::<CommitImmediateTerminalReferenceClosureAuthority>();
+        assert_debug::<CommitImmediateTerminalReferenceClosureBinding>();
+        assert_debug::<CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority>();
+        assert_debug::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
+        >();
+        assert_copy::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
+        >();
+        assert_partial_eq::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
+        >();
+        assert_eq::<
+            crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage,
+        >();
+    };
+
     assert_linear_non_wire!(ScopedNccPlannerScope);
     assert_linear_non_wire!(ExactOrderedLockReceiptFailure);
     assert_linear_non_wire!(ScopedNccPlannerScopeDerivationFailure);
@@ -20198,6 +20696,37 @@ mod gate_b2_preview_tests {
     assert_linear_non_wire!(CommitImmediateHistorySafetyFailure);
     assert_linear_non_wire!(CommitImmediateRecheckFailureEvidence);
     assert_linear_non_wire!(CommitImmediateRecheckOutcome);
+    assert_identity_non_wire!(ValidatedTaskCommitHistoryPartition);
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryCandidateBindingAuthority
+    );
+    assert_identity_non_wire!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditBlockedAuthority
+    );
+    assert_identity_non_wire!(CommitRawPostCommandHistorySource);
+    assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureAuthority);
+    assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureBinding);
+    assert_identity_non_wire!(CommitImmediateTerminalReferenceClosureSiblingBlockedAuthority);
+    assert_not_serialize!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
+    );
+    assert_not_deserialize_owned!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
+    );
+    assert_not_json_schema!(
+        crate::domain::branched_development::contracts::repository::TaskCommitHistoryAuditFailureStage
+    );
+    assert_not_partial_eq!(CommitCommittedCoreObservation);
+    assert_not_eq!(CommitCommittedCoreObservation);
+    assert_not_partial_eq!(CommitCommittedHistoryObservation);
+    assert_not_eq!(CommitCommittedHistoryObservation);
+    assert_not_partial_eq!(CommitCommittedObservationInput);
+    assert_not_eq!(CommitCommittedObservationInput);
+    assert_not_partial_eq!(CommitAtomicCommitObservation);
+    assert_not_eq!(CommitAtomicCommitObservation);
 
     const _: fn(ValidatedCommitApplyApprovalAuthority) -> ApprovedCommitPreviewAuthority =
         ApprovedCommitPreviewAuthority::from_validated_request;
@@ -20243,6 +20772,16 @@ mod gate_b2_preview_tests {
 
     fn digest(character: char) -> Sha256Digest {
         Sha256Digest::parse(&character.to_string().repeat(64)).unwrap()
+    }
+
+    fn nonempty_reference_closure() -> CanonicalRepositoryReferenceEdgeSet {
+        CanonicalRepositoryReferenceEdgeSet::new(vec![RepositoryReferenceEdge::new(
+            RepositoryTargetIdentity::configuration_root(),
+            RepositoryTargetIdentity::development_object(
+                MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000ab").unwrap(),
+            ),
+        )])
+        .unwrap()
     }
 
     fn id(value: &str) -> UnicaId {
@@ -21536,7 +22075,7 @@ mod gate_b2_preview_tests {
         binds: bool,
         bound_plan_digest: Sha256Digest,
         partition: ValidatedRepositoryHistoryPartition,
-        recomputed_reference_closure_digest: Sha256Digest,
+        recomputed_reference_closure: CanonicalRepositoryReferenceEdgeSet,
         observed_original_fingerprint: Sha256Digest,
         observed_repository_anchor: RepositoryAnchor,
         consumed_state_revision: Sha256Digest,
@@ -21546,6 +22085,7 @@ mod gate_b2_preview_tests {
         atomic_commit_safety_capability_id: CapabilityRowId,
         pre_command_target_states: RepositoryTargetStates,
         pre_command_target_snapshot_observation_capability_id: CapabilityRowId,
+        terminal_sibling_mismatch: bool,
         counters: Rc<ImmediateLeaseCounters>,
     }
 
@@ -21597,9 +22137,9 @@ mod gate_b2_preview_tests {
             &self.partition
         }
 
-        fn recomputed_reference_closure_digest(&self) -> &Sha256Digest {
+        fn recomputed_reference_closure(&self) -> &CanonicalRepositoryReferenceEdgeSet {
             self.getter();
-            &self.recomputed_reference_closure_digest
+            &self.recomputed_reference_closure
         }
 
         fn observed_original_fingerprint(&self) -> &Sha256Digest {
@@ -21647,6 +22187,10 @@ mod gate_b2_preview_tests {
             &self.pre_command_target_snapshot_observation_capability_id
         }
 
+        fn terminal_sibling_mismatch_test_only(&self) -> bool {
+            self.terminal_sibling_mismatch
+        }
+
         fn commit_exact_once(
             self: Box<Self>,
             _request: CommitAtomicCommitRequest<'_>,
@@ -21660,7 +22204,7 @@ mod gate_b2_preview_tests {
     #[derive(Default)]
     struct ImmediateObservationOverrides {
         binds: Option<bool>,
-        closure: Option<Sha256Digest>,
+        closure: Option<CanonicalRepositoryReferenceEdgeSet>,
         fingerprint: Option<Sha256Digest>,
         repository_identity: Option<Sha256Digest>,
         configuration_identity: Option<ConfigurationIdentity>,
@@ -21673,6 +22217,7 @@ mod gate_b2_preview_tests {
         pre_command_target_states: Option<RepositoryTargetStates>,
         pre_command_target_snapshot_capability: Option<CapabilityRowId>,
         binding_plan_digest: Option<Sha256Digest>,
+        terminal_sibling_mismatch: bool,
     }
 
     fn immediate_recheck_lease(
@@ -21719,10 +22264,10 @@ mod gate_b2_preview_tests {
                 .clone()
                 .unwrap_or_else(|| request.plan_digest().clone()),
             partition,
-            recomputed_reference_closure_digest: overrides
+            recomputed_reference_closure: overrides
                 .closure
                 .clone()
-                .unwrap_or_else(|| request.expected_reference_closure_digest().clone()),
+                .unwrap_or_else(|| CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap()),
             observed_original_fingerprint,
             observed_repository_anchor,
             consumed_state_revision: overrides
@@ -21752,6 +22297,7 @@ mod gate_b2_preview_tests {
                 .unwrap_or_else(|| {
                     CapabilityRowId::parse("repository.commit-target-snapshot.immediate").unwrap()
                 }),
+            terminal_sibling_mismatch: overrides.terminal_sibling_mismatch,
             counters,
         })
     }
@@ -22589,6 +23135,64 @@ mod gate_b2_preview_tests {
     }
 
     #[test]
+    fn gate_b3_commit_final_history_immediate_sibling_mismatch_recovers_before_both_safety_branches(
+    ) {
+        let (no_ncc_approved, initial_partition, _) = approved_preview_with_history(
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.sibling-no-ncc-initial",
+        );
+        let no_ncc_partition = history_partition(
+            initial_partition.start_cursor().clone(),
+            &[RepositoryHistoryPartitionClassification::UnrelatedRoutine],
+            "repository.history-order.sibling-no-ncc-observed",
+        );
+        let mut no_ncc_port = TestImmediateRecheckPort::exact(no_ncc_partition);
+        no_ncc_port.overrides.terminal_sibling_mismatch = true;
+
+        let (scoped_approved, scoped_fixture) = approved_preview_with_scoped_ncc();
+        let mut scoped_port = TestImmediateRecheckPort::exact(scoped_fixture.partition);
+        scoped_port.overrides.closure = Some(scoped_fixture.terminal_reference_closure);
+        scoped_port.overrides.terminal_sibling_mismatch = true;
+
+        for (branch, approved, mut port) in [
+            ("noNcc", no_ncc_approved, no_ncc_port),
+            ("scoped", scoped_approved, scoped_port),
+        ] {
+            let counters = Rc::clone(&port.counters);
+            let outcome = approved.recheck_before_commit_intent(&mut port);
+            let CommitImmediateRecheckOutcome::RecoveryRequired(recovery) = outcome else {
+                panic!("{branch} sibling mismatch must recover before its safety branch")
+            };
+            assert_eq!(counters.drops.get(), 0);
+            let (approved, failure) = recovery.into_recovery_parts();
+            let CommitImmediateRecheckFailureEvidence::TerminalReferenceClosureSiblingMismatch(
+                blocked,
+            ) = failure
+            else {
+                panic!("{branch} sibling mismatch must retain both sibling authorities")
+            };
+            assert!(!blocked
+                .terminal_reference_closure
+                .matches_terminal_observation(&blocked.terminal_observation));
+            assert_eq!(
+                blocked
+                    .terminal_reference_closure
+                    .terminal_reference_closure,
+                blocked.evidence.recomputed_reference_closure
+            );
+            assert_eq!(
+                blocked
+                    .terminal_reference_closure
+                    .terminal_reference_closure_digest,
+                blocked.evidence.recomputed_reference_closure_digest
+            );
+            drop(approved);
+            drop(blocked);
+            assert_eq!(counters.drops.get(), 1);
+        }
+    }
+
+    #[test]
     fn gate_b3_commit_immediate_recheck_unrelated_strict_extension_requires_fresh_preview() {
         let (fresh, preview_request, counters) = unrelated_fresh_outcome();
         assert_eq!(
@@ -22725,7 +23329,7 @@ mod gate_b2_preview_tests {
                 0 => port.overrides.fingerprint = Some(digest('1')),
                 1 => port.overrides.repository_identity = Some(digest('2')),
                 2 => port.overrides.anchor_fingerprint = Some(digest('3')),
-                3 => port.overrides.closure = Some(digest('4')),
+                3 => port.overrides.closure = Some(nonempty_reference_closure()),
                 _ => unreachable!(),
             }
             let outcome = approved.recheck_before_commit_intent(&mut port);
@@ -22833,7 +23437,7 @@ mod gate_b2_preview_tests {
     fn gate_b3_commit_immediate_exact_scoped_ncc_observes_then_scans_once_ready() {
         let (approved, fixture) = approved_preview_with_scoped_ncc();
         let mut port = TestImmediateRecheckPort::exact(fixture.partition);
-        port.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        port.overrides.closure = Some(fixture.terminal_reference_closure);
         let outcome = approved.recheck_before_commit_intent(&mut port);
         let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
             panic!("immediate NCC observation must return its owning scoped pending authority")
@@ -22913,7 +23517,7 @@ mod gate_b2_preview_tests {
         );
         assert!(current.partition.has_exact_entry_prefix(&preview_partition));
         let mut outer = TestImmediateRecheckPort::exact(current.partition);
-        outer.overrides.closure = Some(current.terminal_reference_closure_digest);
+        outer.overrides.closure = Some(current.terminal_reference_closure);
         let outcome = approved.recheck_before_commit_intent(&mut outer);
         let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
             panic!("a fresh NCC tail must choose the scoped branch from the outer observation")
@@ -22955,7 +23559,7 @@ mod gate_b2_preview_tests {
             .unwrap();
             assert!(current.partition.has_exact_entry_prefix(&preview.partition));
             let mut outer = TestImmediateRecheckPort::exact(current.partition);
-            outer.overrides.closure = Some(current.terminal_reference_closure_digest);
+            outer.overrides.closure = Some(current.terminal_reference_closure);
             let outcome = approved.recheck_before_commit_intent(&mut outer);
             let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
                 panic!("a partition retaining NCC must always choose the scoped branch")
@@ -22980,7 +23584,7 @@ mod gate_b2_preview_tests {
         for case in 0..3 {
             let (approved, fixture) = approved_preview_with_scoped_ncc();
             let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
-            outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+            outer.overrides.closure = Some(fixture.terminal_reference_closure);
             match case {
                 0 => outer.overrides.fingerprint = Some(digest('1')),
                 1 => outer.overrides.anchor_fingerprint = Some(digest('2')),
@@ -23006,7 +23610,7 @@ mod gate_b2_preview_tests {
     fn gate_b3_commit_immediate_ncc_capability_mismatch_recovers_before_scan() {
         let (approved, fixture) = approved_preview_with_scoped_ncc();
         let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
-        outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        outer.overrides.closure = Some(fixture.terminal_reference_closure);
         outer.overrides.atomic_capability =
             Some(CapabilityRowId::parse("repository.atomic-commit.foreign").unwrap());
         let outcome = approved.recheck_before_commit_intent(&mut outer);
@@ -23025,7 +23629,7 @@ mod gate_b2_preview_tests {
         let (approved, fixture) = approved_preview_with_scoped_ncc();
         let expected_digest = approved.0.commit_digest().clone();
         let mut outer = TestImmediateRecheckPort::exact(fixture.partition);
-        outer.overrides.closure = Some(fixture.terminal_reference_closure_digest);
+        outer.overrides.closure = Some(fixture.terminal_reference_closure);
         let outcome = approved.recheck_before_commit_intent(&mut outer);
         let CommitImmediateRecheckOutcome::ScopedRequired(pending) = outcome else {
             panic!("NCC outer observation must produce a scoped pending authority")
@@ -23539,6 +24143,121 @@ mod gate_b2_preview_tests {
     assert_not_deserialize_owned!(CommitZeroEffectReleasedAuthority);
     assert_not_deserialize_owned!(CommitAmbiguousAuthority);
 
+    #[test]
+    fn gate_b3_commit_final_history_fixture_bootstrap_uses_a_complete_canonical_set() {
+        let initial_closure = CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let canonical_bytes = serde_json_canonicalizer::to_vec(&initial_closure).unwrap();
+        let expected_digest =
+            Sha256Digest::parse(&format!("{:x}", Sha256::digest(canonical_bytes))).unwrap();
+        let committed = validated_commit_object_authority_fixture_test_only(
+            RepositoryVersion::parse("fixture-integrity-v1").unwrap(),
+            CapabilityRowId::parse("repository.atomic-commit.fixture-integrity").unwrap(),
+        );
+
+        assert_eq!(
+            committed
+                .approved_preview
+                .0
+                .record
+                .history_guard_evidence
+                .recomputed_reference_closure_digest(),
+            &expected_digest
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_raw_source_retains_invalid_post_command_inputs() {
+        let version = RepositoryVersion::parse("raw-source-v1").unwrap();
+        let capability = CapabilityRowId::parse("repository.atomic-commit.raw-source").unwrap();
+        let committed = validated_commit_object_authority_fixture_test_only(
+            version.clone(),
+            capability.clone(),
+        );
+        let cursor = RepositoryHistoryCursor::new(version.clone(), digest('a'));
+        let validated_partition = repository_history_partition_fixture_test_only(
+            cursor.clone(),
+            Vec::new(),
+            "repository.history-order.raw-source",
+            capability.as_str(),
+        )
+        .unwrap();
+        let raw_partition: UnvalidatedRepositoryHistoryPartition =
+            serde_json::from_value(serde_json::to_value(validated_partition).unwrap()).unwrap();
+        let raw_core = CommitCommittedCoreObservationInput::from_atomic_adapter(
+            id("b3300000-0000-4000-8000-0000000000ff"),
+            version,
+            committed.committed_objects().clone(),
+            digest('f'),
+            capability,
+        );
+        let configuration_identity = ConfigurationIdentity::new(
+            MetadataObjectId::parse("b3300000-0000-4000-8000-0000000000aa").unwrap(),
+            Name::parse("Raw source fixture").unwrap(),
+            EmptyOrName::parse("").unwrap(),
+            EmptyOrName::parse("").unwrap(),
+        );
+        let anchors = CommitRawPostCommandAnchorObservationInputs::new(
+            CommitTaskVersionAnchorObservationInput::from_repository_adapter(
+                cursor.clone(),
+                digest('b'),
+                configuration_identity.clone(),
+                digest('c'),
+            ),
+            CommitTerminalRepositoryAnchorObservationInput::from_repository_adapter(
+                cursor,
+                digest('d'),
+                configuration_identity,
+                digest('e'),
+            ),
+        );
+        let empty = CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        let closures = CommitRawPostCommandReferenceClosureObservationInputs::new(
+            empty.clone(),
+            empty.clone(),
+            empty,
+        );
+        let release = CommitRawLockReleaseObservation::Released(
+            CommitReleasedLocksObservationInput::from_repository_adapter(
+                id("b3300000-0000-4000-8000-0000000000ee"),
+                Vec::new(),
+                CanonicalRepositoryTargets::new(Vec::new()).unwrap(),
+                CapabilityRowId::parse("repository.atomic-commit.raw-source.foreign").unwrap(),
+            ),
+        );
+
+        let source = CommitRawPostCommandHistorySource::new(
+            raw_core,
+            raw_partition,
+            anchors,
+            closures,
+            release,
+        );
+
+        let CommitRawPostCommandHistorySource {
+            raw_core,
+            raw_partition: _,
+            raw_anchors,
+            raw_reference_closures,
+            raw_release,
+        } = source;
+        assert_eq!(
+            raw_core.commit_receipt_id,
+            id("b3300000-0000-4000-8000-0000000000ff")
+        );
+        assert_eq!(raw_anchors.task_version.repository_identity, digest('b'));
+        assert_eq!(raw_anchors.terminal.repository_identity, digest('d'));
+        let empty_reference_closure = CanonicalRepositoryReferenceEdgeSet::new(Vec::new()).unwrap();
+        assert_eq!(raw_reference_closures.task_before, empty_reference_closure);
+        assert_eq!(raw_reference_closures.task_after, empty_reference_closure);
+        assert_eq!(raw_reference_closures.terminal, empty_reference_closure);
+        assert!(matches!(
+            raw_release,
+            CommitRawLockReleaseObservation::Released(observation)
+                if observation.lock_set_id
+                    == id("b3300000-0000-4000-8000-0000000000ee")
+        ));
+    }
+
     #[derive(Default)]
     struct Slice3Counters {
         events: RefCell<Vec<&'static str>>,
@@ -23595,6 +24314,7 @@ mod gate_b2_preview_tests {
     #[derive(Clone, Copy)]
     enum Slice3AtomicMode {
         Committed,
+        ImmediateFullSetBindingOneShot,
         PortError,
         ResponseLoss,
         CompletionMismatch,
@@ -24096,8 +24816,19 @@ mod gate_b2_preview_tests {
             } else {
                 request.commit_safety_lineage_witness()
             };
-            let observation = if matches!(self.atomic_mode, Slice3AtomicMode::CaptureLockAuthority)
-            {
+            let observation = if matches!(
+                self.atomic_mode,
+                Slice3AtomicMode::ImmediateFullSetBindingOneShot
+            ) {
+                let binding = request.bind_immediate_terminal_reference_closure()?;
+                assert!(request
+                    .source
+                    .immediate_history_safety
+                    .terminal_reference_closure()
+                    .owns_binding(&request, &binding));
+                assert!(request.bind_immediate_terminal_reference_closure().is_err());
+                request.observe_ambiguous()
+            } else if matches!(self.atomic_mode, Slice3AtomicMode::CaptureLockAuthority) {
                 self.counters
                     .captured_foreign_lock_authority
                     .replace(Some(matching_released_lock_authority(&request)?));
@@ -24188,8 +24919,8 @@ mod gate_b2_preview_tests {
             self.base.history_partition()
         }
 
-        fn recomputed_reference_closure_digest(&self) -> &Sha256Digest {
-            self.base.recomputed_reference_closure_digest()
+        fn recomputed_reference_closure(&self) -> &CanonicalRepositoryReferenceEdgeSet {
+            self.base.recomputed_reference_closure()
         }
 
         fn observed_original_fingerprint(&self) -> &Sha256Digest {
@@ -24913,6 +25644,20 @@ mod gate_b2_preview_tests {
         )
     }
 
+    #[test]
+    fn gate_b3_commit_final_history_immediate_full_set_binding_is_source_bound_and_one_shot() {
+        let (outcome, counters) = run_slice3(
+            Slice3IntentMode::Written,
+            Slice3AtomicMode::ImmediateFullSetBindingOneShot,
+        );
+
+        assert!(matches!(
+            outcome,
+            CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Ambiguous(_))
+        ));
+        assert_eq!(counters.command_calls.get(), 1);
+    }
+
     fn execute_ready_slice3_scope(
         scope: CommitScopedAtomicSafetyAuthority,
         counters: Rc<Slice3Counters>,
@@ -25399,6 +26144,39 @@ mod gate_b2_preview_tests {
         assert_eq!(
             value["repositoryAnchor"],
             serde_json::to_value(&data.repository_anchor).unwrap()
+        );
+    }
+
+    #[test]
+    fn gate_b3_commit_final_history_no_ncc_wire_golden_is_byte_stable() {
+        const EXPECTED_COMMIT_DATA_JCS: &str = r#"{"afterRepositoryCursor":{"historyPrefixDigest":"3333333333333333333333333333333333333333333333333333333333333333","throughVersion":"202"},"atomicCommitSafetyCapabilityId":"repository.atomic-commit.gate-b3","beforeRepositoryCursor":{"historyPrefixDigest":"2222222222222222222222222222222222222222222222222222222222222222","throughVersion":"101"},"commitReceiptId":"b3300000-0000-4000-8000-000000000041","committedObjects":[{"action":"modify","repositoryVersion":"201","targetFingerprint":"8888888888888888888888888888888888888888888888888888888888888888","targetKind":"configurationRoot"}],"committedObjectsDigest":"7bdb14579a9b73034abc5f3566595154463533d086d77f6f5275fcd3259c404e","contentVerified":true,"postCommitHistoryPartition":{"entries":[{"classification":"taskCommit","repositoryVersion":"201","semanticDeltaDigest":"7bdb14579a9b73034abc5f3566595154463533d086d77f6f5275fcd3259c404e"},{"classification":"unrelatedRoutine","repositoryVersion":"202","semanticDeltaDigest":"b07a15fb026a2400ed801051d07579c057845ad2eeb4dbd9b2128706cc73c44d","sourceEvidenceRef":{"evidenceDigest":"92e8805a29033cb6c52f0f311fbfa166fa83ff3155f1b8fcb47b903cf0ca41f2","evidenceKind":"routineClassification","sourceKind":"contentAddressed"}}],"fromExclusive":{"historyPrefixDigest":"2222222222222222222222222222222222222222222222222222222222222222","throughVersion":"101"},"partitionDigest":"155703c9e98cdd6f4ca1ce93dcdfdb1988190f484c543548a87c5a70b7347783","throughInclusive":{"historyPrefixDigest":"3333333333333333333333333333333333333333333333333333333333333333","throughVersion":"202"}},"postMergeHistoryGuardEvidenceDigest":"7836a27c50e04cc74a7db863c21b087083fcfff71e2c575304178a5793fa4cce","releasedGuardLocks":[],"releasedObjects":[{"targetKind":"configurationRoot"}],"repositoryAnchor":{"anchorDigest":"c2c56e0ce2fac516be5970bc89ceac305a0d430186d39899ee55898d50bb7b64","configurationFingerprint":"9999999999999999999999999999999999999999999999999999999999999999","configurationIdentity":{"metadataUuid":"123e4567-e89b-12d3-a456-426614174000","name":"Fixture configuration","vendor":"","version":""},"historyCursor":{"historyPrefixDigest":"3333333333333333333333333333333333333333333333333333333333333333","throughVersion":"202"},"repositoryIdentity":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"repositoryVersion":"201","unlockVerified":true}"#;
+        const EXPECTED_PARTITION_JCS: &str = r#"{"entries":[{"classification":"taskCommit","repositoryVersion":"201","semanticDeltaDigest":"7bdb14579a9b73034abc5f3566595154463533d086d77f6f5275fcd3259c404e"},{"classification":"unrelatedRoutine","repositoryVersion":"202","semanticDeltaDigest":"b07a15fb026a2400ed801051d07579c057845ad2eeb4dbd9b2128706cc73c44d","sourceEvidenceRef":{"evidenceDigest":"92e8805a29033cb6c52f0f311fbfa166fa83ff3155f1b8fcb47b903cf0ca41f2","evidenceKind":"routineClassification","sourceKind":"contentAddressed"}}],"fromExclusive":{"historyPrefixDigest":"2222222222222222222222222222222222222222222222222222222222222222","throughVersion":"101"},"partitionDigest":"155703c9e98cdd6f4ca1ce93dcdfdb1988190f484c543548a87c5a70b7347783","throughInclusive":{"historyPrefixDigest":"3333333333333333333333333333333333333333333333333333333333333333","throughVersion":"202"}}"#;
+        const EXPECTED_PARTITION_DIGEST: &str =
+            "155703c9e98cdd6f4ca1ce93dcdfdb1988190f484c543548a87c5a70b7347783";
+        const EXPECTED_TASK_SEMANTIC_DIGEST: &str =
+            "7bdb14579a9b73034abc5f3566595154463533d086d77f6f5275fcd3259c404e";
+
+        let (outcome, _) = run_slice3(Slice3IntentMode::Written, Slice3AtomicMode::Committed);
+        let CommitEffectIntentOutcome::PostIntent(CommitExactOnceOutcome::Committed(committed)) =
+            outcome
+        else {
+            panic!("exact commit must be committed")
+        };
+        let data = CommitData::from_committed_outcome(committed);
+        let value = serde_json::to_value(&data).unwrap();
+        let canonical_bytes = serde_json_canonicalizer::to_vec(&data).unwrap();
+        let partition = &value["postCommitHistoryPartition"];
+        let partition_bytes = serde_json_canonicalizer::to_vec(partition).unwrap();
+
+        assert_eq!(canonical_bytes, EXPECTED_COMMIT_DATA_JCS.as_bytes());
+        assert_eq!(partition_bytes, EXPECTED_PARTITION_JCS.as_bytes());
+        assert_eq!(
+            partition["partitionDigest"],
+            json!(EXPECTED_PARTITION_DIGEST)
+        );
+        assert_eq!(
+            partition["entries"][0]["semanticDeltaDigest"],
+            json!(EXPECTED_TASK_SEMANTIC_DIGEST)
         );
     }
 
