@@ -129,8 +129,9 @@ Unica адаптирует применимые рекомендации по UX
 - Проверенный baseline: `751a51610d97079b77df71b780c3110ec7507558`
 - Лицензия: [MIT](third-party/licenses/templates-new-object-1c/LICENSE)
 
-Unica адаптирует соглашения по именам, синонимам, представлениям и проверке
-заполнения из чек-листа TemplatesNewObject1C в reference `metadata-conventions`.
+Unica адаптирует из чек-листа TemplatesNewObject1C соглашения по именам,
+синонимам, представлениям, проверке заполнения, длине кода справочников и
+командному интерфейсу регистров сведений в reference `metadata-conventions`.
 
 ### v8-runner-rust как источник runtime-контракта
 

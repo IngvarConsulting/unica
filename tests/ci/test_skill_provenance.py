@@ -106,6 +106,25 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(upstreams["v8-runner-rust"]["toolLockRef"], "v8-runner")
         self.assertNotIn("baselineCommit", upstreams["v8-runner-rust"])
 
+    def test_templates_new_object_scope_names_every_adopted_convention(self) -> None:
+        data = self.load_provenance()
+        upstream = next(
+            item for item in data["upstreams"] if item["id"] == "templates-new-object-1c"
+        )
+        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-validate")
+        notes = entry["notes"].lower()
+
+        for phrase in (
+            "naming",
+            "synonym",
+            "representation",
+            "fill-check",
+            "catalog code",
+            "information-register command-interface",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, notes)
+
     def test_historical_donor_baselines_track_last_local_review_not_current_head(self) -> None:
         data = self.load_provenance()
         upstreams = {item["id"]: item for item in data["upstreams"]}

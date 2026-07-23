@@ -1470,7 +1470,7 @@
         {
           "skill": "meta-validate",
           "status": "adapted",
-          "notes": "Unica adapts the naming, synonym, representation and fill-check conventions from the TemplatesNewObject1C checklist into its metadata-conventions reference.",
+          "notes": "Unica adapts the naming, synonym, representation, fill-check, catalog code, and information-register command-interface conventions from the TemplatesNewObject1C checklist into its metadata-conventions reference.",
           "upstreamPaths": [
             "README.md"
           ],
@@ -1478,7 +1478,8 @@
             "plugins/unica/references/platform/metadata-conventions.md"
           ],
           "contractPaths": [
-            "tests/ci/test_unica_skills.py"
+            "tests/ci/test_unica_skills.py",
+            "tests/ci/test_skill_provenance.py"
           ],
           "decision": "ported"
         }
