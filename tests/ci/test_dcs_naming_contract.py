@@ -96,6 +96,15 @@ class DcsNamingContractTests(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
+    def test_maintainer_provenance_is_not_an_active_naming_surface(self) -> None:
+        active_paths = {
+            path.relative_to(REPO_ROOT).as_posix() for path in self.active_text_paths()
+        }
+
+        self.assertFalse(
+            any(path.startswith("plugins/unica/provenance/") for path in active_paths)
+        )
+
     def test_provenance_names_local_dcs_contract_but_preserves_donor_paths(self) -> None:
         path = REPO_ROOT / "plugins" / "unica" / "provenance" / "skill-upstreams.json"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -149,7 +158,6 @@ class DcsNamingContractTests(unittest.TestCase):
             REPO_ROOT / "tests" / "ci",
         ]
         excluded = {
-            "plugins/unica/provenance/skill-upstreams.json",
             "spec/decisions/0011-canonical-dcs-domain.md",
             "tests/ci/test_dcs_naming_contract.py",
         }
@@ -162,7 +170,7 @@ class DcsNamingContractTests(unittest.TestCase):
                 relative = path.relative_to(REPO_ROOT).as_posix()
                 if relative in excluded:
                     continue
-                if relative.startswith("plugins/unica/provenance/reviews/"):
+                if relative.startswith("plugins/unica/provenance/"):
                     continue
                 if relative.startswith("spec/plans/"):
                     continue

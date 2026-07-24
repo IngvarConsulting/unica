@@ -4,7 +4,7 @@
 
 - Донор: `https://github.com/Nikolay-Shirokov/cc-1c-skills` @ `e01688e764a3cf1c1b4a0ad5069ea885837cfb2e` (`main`).
 - Перегенерация: `python3.12 scripts/ci/generate-donor-skill-matrix.py --repo-root . --write`.
-- Принято: 72 donor skills, 193 scripts, 564 запускаемых JSON cases и 21 JSON snapshots/fixtures; 46 skills с явным `ported-to-unica` provenance.
+- Принято: 72 donor skills, 193 scripts, 564 JSON-кейса в сохранённом donor corpus и 21 JSON snapshots/fixtures; 46 skills с явным `ported-to-unica` provenance.
 - Исполняемый паритет: 152 cases; exact: 4, compatible: 8, intentional_divergence: 88, donor_ahead: 52.
 
 ## Как читать статусы

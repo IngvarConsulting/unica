@@ -218,6 +218,7 @@ class GenerateDonorSkillMatrixTests(unittest.TestCase):
         self.assertIn("Да — `local-a`", document)
         self.assertIn("`unica.local.a` (direct)", document)
         self.assertIn("`skills/donor-a/scripts/donor-a.py`", document)
+        self.assertIn("2 JSON-кейса в сохранённом donor corpus", document)
         self.assertIn("exact: 1", document)
         self.assertIn("1/1 JSON", document)
         self.assertIn("web-test: 1 files", document)

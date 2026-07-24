@@ -167,7 +167,7 @@ def generate_document(repo_root: Path) -> str:
         "`python3.12 scripts/ci/generate-donor-skill-matrix.py "
         "--repo-root . --write`.",
         f"- Принято: {len(rows)} donor skills, {script_count} scripts, "
-        f"{json_case_count} запускаемых JSON cases"
+        f"{json_case_count} JSON-кейса в сохранённом donor corpus"
         + (
             f" и {nested_json_count} JSON snapshots/fixtures"
             if nested_json_count
