@@ -1525,13 +1525,8 @@ mod tests {
         canonical
     }
 
-    fn displayed_path(path: &std::path::Path) -> String {
-        let display = path.display().to_string();
-        if std::path::MAIN_SEPARATOR == '\\' {
-            display.replace('/', "\\")
-        } else {
-            display
-        }
+    fn path_text(path: &std::path::Path) -> String {
+        path.display().to_string().replace('\\', "/")
     }
 
     #[test]
@@ -3717,7 +3712,9 @@ mod tests {
                 assert!(
                     result
                         .changes
-                        .contains(&format!("updated {}", displayed_path(&path))),
+                        .iter()
+                        .map(|change| change.replace('\\', "/"))
+                        .any(|change| change == format!("updated {}", path_text(&path))),
                     "{case}: {result:?}"
                 );
             }

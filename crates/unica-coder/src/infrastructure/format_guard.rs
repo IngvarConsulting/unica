@@ -2423,13 +2423,13 @@ mod tests {
                 "form-add",
                 "path",
                 object_dir,
-                vec![normalized_path(&object_xml)],
+                vec![object_xml.canonicalize().unwrap()],
             ),
             (
                 "subsystem-edit",
                 "Path",
                 subsystem_dir,
-                vec![normalized_path(&subsystem_xml)],
+                vec![subsystem_xml.canonicalize().unwrap()],
             ),
             ("dcs-edit", "path", template_dir, vec![template_xml]),
             ("form-edit", "Path", form_xml.clone(), vec![form_xml]),
@@ -2581,7 +2581,7 @@ mod tests {
         ));
         let configuration = config(&root, Some("2.19"));
         let src = configuration.parent().unwrap().to_path_buf();
-        let canonical_configuration = normalized_path(&configuration);
+        let canonical_configuration = configuration.canonicalize().unwrap();
         let home_page = canonical_configuration
             .parent()
             .unwrap()
@@ -2612,7 +2612,7 @@ mod tests {
                 "cfe-validate",
                 "Path",
                 extension,
-                vec![normalized_path(&extension_configuration)],
+                vec![extension_configuration.canonicalize().unwrap()],
             ),
             ("role-info", "path", role_dir.clone(), vec![rights.clone()]),
             (
@@ -3164,7 +3164,7 @@ mod tests {
         assert_eq!(diagnostic["code"], "formatVersionInvalid");
         assert!(diagnostic["root"]
             .as_str()
-            .is_some_and(|path| path.ends_with("/src/Configuration.xml")));
+            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3215,7 +3215,7 @@ mod tests {
         assert_eq!(diagnostic["code"], "formatVersionInvalid");
         assert!(diagnostic["root"]
             .as_str()
-            .is_some_and(|path| path.ends_with("/src/Configuration.xml")));
+            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3350,7 +3350,7 @@ mod tests {
         assert_eq!(diagnostic["ownerKind"], "external_report");
         assert!(diagnostic["root"]
             .as_str()
-            .is_some_and(|path| path.ends_with("/erf/Sales.xml")));
+            .is_some_and(|path| std::path::Path::new(path).ends_with("erf/Sales.xml")));
         let _ = std::fs::remove_dir_all(root);
     }
 

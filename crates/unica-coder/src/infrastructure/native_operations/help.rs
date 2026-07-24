@@ -388,12 +388,16 @@ mod tests {
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
     use crate::application::UnicaApplication;
-
-    fn displayed_path(path: &Path) -> String {
-        crate::infrastructure::platform::testing::path_display_for_test(path)
-    }
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn normalized_path_text(value: &str) -> String {
+        crate::infrastructure::platform::testing::normalize_path_text_for_test(value)
+    }
+
+    fn path_text(path: &Path) -> String {
+        crate::infrastructure::platform::testing::path_text_for_test(path)
+    }
 
     struct HelpFixture {
         root: PathBuf,
@@ -564,10 +568,8 @@ mod tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(
-            outcome
-                .errors
-                .join("\n")
-                .contains(&displayed_path(&fixture.help_html())),
+            normalized_path_text(&outcome.errors.join("\n"))
+                .contains(&path_text(&fixture.help_html())),
             "{outcome:?}"
         );
         assert!(!fixture.help_xml().exists(), "{outcome:?}");
@@ -587,9 +589,9 @@ mod tests {
         let outcome = add_help(&fixture.args(), &fixture.context);
 
         assert!(!outcome.ok, "{outcome:?}");
-        let errors = outcome.errors.join("\n");
+        let errors = normalized_path_text(&outcome.errors.join("\n"));
         assert!(errors.contains("XML parse error"), "{outcome:?}");
-        assert!(errors.contains(&displayed_path(&form_path)), "{outcome:?}");
+        assert!(errors.contains(&path_text(&form_path)), "{outcome:?}");
         assert_help_absent(&fixture);
         assert_eq!(fs::read(form_path).unwrap(), form_before);
         assert!(outcome.changes.is_empty(), "{outcome:?}");
@@ -631,12 +633,9 @@ mod tests {
         let outcome = add_help(&fixture.args(), &fixture.context);
 
         assert!(!outcome.ok, "{outcome:?}");
-        let errors = outcome.errors.join("\n");
+        let errors = normalized_path_text(&outcome.errors.join("\n"));
         assert!(errors.contains("valid UTF-8"), "{outcome:?}");
-        assert!(
-            errors.contains(&displayed_path(&invalid_path)),
-            "{outcome:?}"
-        );
+        assert!(errors.contains(&path_text(&invalid_path)), "{outcome:?}");
         assert_help_absent(&fixture);
         assert_eq!(fs::read(valid_path).unwrap(), valid_before);
         assert_eq!(fs::read(invalid_path).unwrap(), invalid_before);

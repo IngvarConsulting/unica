@@ -8360,10 +8360,16 @@ mod tests {
         assert!(text.contains("&Перед(\"Run\")"), "{text}");
         assert!(text.contains("Процедура GE_Run()"), "{text}");
         assert_eq!(
-            outcome.artifacts,
+            outcome
+                .artifacts
+                .iter()
+                .map(|path| {
+                    crate::infrastructure::platform::testing::normalize_path_text_for_test(path)
+                })
+                .collect::<Vec<_>>(),
             vec![
-                crate::infrastructure::platform::testing::path_display_for_test(&module),
-                crate::infrastructure::platform::testing::path_display_for_test(&descriptor)
+                crate::infrastructure::platform::testing::path_text_for_test(&module),
+                crate::infrastructure::platform::testing::path_text_for_test(&descriptor)
             ]
         );
         let _ = fs::remove_dir_all(&context.cwd);

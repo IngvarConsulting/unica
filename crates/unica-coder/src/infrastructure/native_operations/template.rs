@@ -895,8 +895,8 @@ mod tests {
     use super::*;
     use crate::application::UnicaApplication;
 
-    fn displayed_path(path: &Path) -> String {
-        crate::infrastructure::platform::testing::path_display_for_test(path)
+    fn path_text(path: &Path) -> String {
+        crate::infrastructure::platform::testing::path_text_for_test(path)
     }
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -1871,12 +1871,15 @@ mod tests {
             .unwrap()
             .starts_with("<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">"));
         assert!(!ext.join("Template.html").exists());
-        assert!(outcome
+        let artifacts = outcome
             .artifacts
-            .contains(&displayed_path(&ext.join("Template.xml"))));
-        assert!(outcome
-            .artifacts
-            .contains(&displayed_path(&ext.join("Template/ru.html"))));
+            .iter()
+            .map(|path| {
+                crate::infrastructure::platform::testing::normalize_path_text_for_test(path)
+            })
+            .collect::<Vec<_>>();
+        assert!(artifacts.contains(&path_text(&ext.join("Template.xml"))));
+        assert!(artifacts.contains(&path_text(&ext.join("Template/ru.html"))));
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

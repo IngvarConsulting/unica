@@ -4524,9 +4524,12 @@ mod cf_init_transaction_tests {
 
             assert!(!outcome.ok, "{relative}: {outcome:?}");
             let existing_display =
-                crate::infrastructure::platform::testing::path_display_for_test(&existing);
+                crate::infrastructure::platform::testing::path_text_for_test(&existing);
+            let errors = crate::infrastructure::platform::testing::normalize_path_text_for_test(
+                &outcome.errors.join("\n"),
+            );
             assert!(
-                outcome.errors.join("\n").contains(&existing_display),
+                errors.contains(&existing_display),
                 "{relative}: {outcome:?}"
             );
             assert_eq!(fs::read(&existing).unwrap(), sentinel, "{relative}");
