@@ -205,6 +205,28 @@ fn support_guard_blocked_outcome(
     requirement: SupportGuardRequirement,
 ) -> AdapterOutcome {
     let target = violation.target_path.display();
+    if violation.code == "support-state-unreadable" {
+        let message = format!(
+            "[support-guard] Редактирование отклонено: состояние поддержки для объекта «{target}» нельзя достоверно прочитать.\nСостояние: {}.\nПроверьте или восстановите {}. Пока состояние поддержки не прочитано, правки заблокированы.",
+            violation.reason,
+            violation
+                .config_dir
+                .join("Ext")
+                .join("ParentConfigurations.bin")
+                .display(),
+        );
+        return AdapterOutcome {
+            ok: false,
+            summary: format!("{} blocked by support guard", spec.name),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![message.clone()],
+            artifacts: vec![violation.target_path.display().to_string()],
+            stdout: None,
+            stderr: Some(format!("{message}\n")),
+            command: None,
+        };
+    }
     let head = "[support-guard] Редактирование отклонено: это объект типовой конфигурации на поддержке поставщика, прямое редактирование молча сломает будущие обновления.";
     let cfe = "Рекомендуемый путь: внести доработку в расширение (навыки cfe-borrow / cfe-patch-method) — состояние поддержки менять не нужно, обновления вендора сохраняются.";
     let off_note =
@@ -247,5 +269,45 @@ fn support_guard_blocked_outcome(
         stdout: None,
         stderr: Some(format!("{message}\n")),
         command: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{support_guard_blocked_outcome, SupportGuardViolation};
+    use crate::application::{ToolHandler, ToolSpec};
+    use crate::domain::cache::CacheAccess;
+    use std::path::PathBuf;
+
+    #[test]
+    fn unreadable_support_state_block_does_not_claim_vendor_lock() {
+        let outcome = support_guard_blocked_outcome(
+            ToolSpec {
+                name: "unica.meta.edit",
+                description: "test",
+                mutating: true,
+                cache_access: CacheAccess::default(),
+                handler: ToolHandler::NativeOperation {
+                    operation: "meta-edit",
+                    event: None,
+                },
+            },
+            &SupportGuardViolation {
+                code: "support-state-unreadable",
+                reason: "не удалось прочитать состояние поддержки".to_string(),
+                target_path: PathBuf::from("/workspace/src/Documents/Shipment.xml"),
+                config_dir: PathBuf::from("/workspace/src"),
+            },
+            crate::application::SupportGuardRequirement::Editable,
+        );
+        let message = outcome.errors.join("\n");
+
+        assert!(message.contains("состояние поддержки"), "{message}");
+        assert!(message.contains("правки заблокированы"), "{message}");
+        assert!(
+            !message.contains("объект типовой конфигурации"),
+            "{message}"
+        );
+        assert!(!message.contains("на замке"), "{message}");
     }
 }

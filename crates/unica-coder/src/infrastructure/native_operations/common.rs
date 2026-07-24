@@ -1324,6 +1324,160 @@ mod mutation_tests {
     }
 }
 
+#[cfg(test)]
+mod support_state_tests {
+    use super::{support_guard_violation, support_status_for_path};
+    use crate::application::SupportGuardRequirement;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn support_fixture(label: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-support-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        let target = root.join("Documents/Shipment.xml");
+        fs::create_dir_all(target.parent().expect("target parent")).expect("create fixture");
+        fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/>",
+        )
+        .expect("write configuration");
+        fs::write(
+            &target,
+            "<MetaDataObject uuid=\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\"/>",
+        )
+        .expect("write target");
+        (root, target)
+    }
+
+    #[test]
+    fn absent_parent_configurations_remains_not_supported_and_unblocked() {
+        let (root, target) = support_fixture("absent");
+
+        assert_eq!(support_status_for_path(&target), "не на поддержке");
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Editable),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[test]
+    fn malformed_parent_configurations_blocks_edits_without_claiming_no_support() {
+        let (root, target) = support_fixture("malformed");
+        let ext = root.join("Ext");
+        fs::create_dir_all(&ext).expect("create Ext");
+        fs::write(
+            ext.join("ParentConfigurations.bin"),
+            "malformed ParentConfigurations.bin content longer than 32 bytes",
+        )
+        .expect("write malformed support state");
+
+        assert_eq!(
+            support_status_for_path(&target),
+            "состояние поддержки не удалось прочитать — правки не подтверждены"
+        );
+        let violation = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("malformed support state must block edits");
+        assert_eq!(violation.code, "support-state-unreadable");
+        assert!(violation.reason.contains("не удалось прочитать"));
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[test]
+    fn short_malformed_parent_configurations_is_not_mistaken_for_removed_support() {
+        let (root, target) = support_fixture("short-malformed");
+        let ext = root.join("Ext");
+        fs::create_dir_all(&ext).expect("create Ext");
+        fs::write(ext.join("ParentConfigurations.bin"), "not a state")
+            .expect("write malformed short support state");
+
+        assert_eq!(
+            support_status_for_path(&target),
+            "состояние поддержки не удалось прочитать — правки не подтверждены"
+        );
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Editable)
+                .expect("short malformed support state must block edits")
+                .code,
+            "support-state-unreadable"
+        );
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[test]
+    fn empty_parent_configurations_remains_removed_support() {
+        let (root, target) = support_fixture("empty");
+        let ext = root.join("Ext");
+        fs::create_dir_all(&ext).expect("create Ext");
+        fs::write(ext.join("ParentConfigurations.bin"), []).expect("write empty support state");
+
+        assert_eq!(
+            support_status_for_path(&target),
+            "снято с поддержки (правки свободны)"
+        );
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Editable),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[test]
+    fn non_regular_parent_configurations_blocks_edits_without_claiming_no_support() {
+        let (root, target) = support_fixture("non-regular");
+        fs::create_dir_all(root.join("Ext/ParentConfigurations.bin"))
+            .expect("create non-regular support state");
+
+        assert_eq!(
+            support_status_for_path(&target),
+            "состояние поддержки не удалось прочитать — правки не подтверждены"
+        );
+        let violation = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("non-regular support state must block edits");
+        assert_eq!(violation.code, "support-state-unreadable");
+        assert!(violation.reason.contains("не удалось прочитать"));
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_target_uses_the_same_locked_support_state_as_the_guard() {
+        use std::os::unix::fs::symlink;
+
+        let (root, target) = support_fixture("symlink");
+        let ext = root.join("Ext");
+        fs::create_dir_all(&ext).expect("create Ext");
+        fs::write(
+            ext.join("ParentConfigurations.bin"),
+            "{6,0,1,0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+        )
+        .expect("write locked support state");
+        let alias = root.with_extension("alias.xml");
+        symlink(&target, &alias).expect("create fixture symlink");
+        let linked_target = alias;
+
+        assert!(support_status_for_path(&linked_target).starts_with("на замке"));
+        let violation = support_guard_violation(&linked_target, SupportGuardRequirement::Editable)
+            .expect("locked symlink target must be blocked");
+        assert_eq!(violation.code, "locked");
+
+        fs::remove_file(&linked_target).expect("remove fixture symlink");
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+}
+
 pub(crate) fn analyze_xml(
     operation: &str,
     tool_name: &str,
@@ -1583,6 +1737,28 @@ pub(crate) fn detect_format_version(start: &Path) -> String {
     "2.17".to_string()
 }
 
+enum ParentConfigurationsState {
+    Absent,
+    Readable(SupportState),
+    Unreadable,
+}
+
+fn parent_configurations_state(bin_path: &Path) -> ParentConfigurationsState {
+    let metadata = match fs::symlink_metadata(bin_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ParentConfigurationsState::Absent;
+        }
+        Err(_) => return ParentConfigurationsState::Unreadable,
+    };
+    if !metadata.file_type().is_file() {
+        return ParentConfigurationsState::Unreadable;
+    }
+    read_support_state(bin_path)
+        .map(ParentConfigurationsState::Readable)
+        .unwrap_or(ParentConfigurationsState::Unreadable)
+}
+
 pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,
@@ -1593,12 +1769,21 @@ pub(crate) fn support_state_lines_for_configuration(
         config_path.parent().unwrap_or_else(|| Path::new(""))
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let Some(state) = read_support_state(&bin_path) else {
-        return vec![if is_extension {
-            "Поддержка:      расширение (CFE), правки свободны".to_string()
-        } else {
-            "Поддержка:      не на поддержке (своя конфигурация)".to_string()
-        }];
+    let state = match parent_configurations_state(&bin_path) {
+        ParentConfigurationsState::Absent => {
+            return vec![if is_extension {
+                "Поддержка:      расширение (CFE), правки свободны".to_string()
+            } else {
+                "Поддержка:      не на поддержке (своя конфигурация)".to_string()
+            }];
+        }
+        ParentConfigurationsState::Unreadable => {
+            return vec![
+                "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
+                    .to_string(),
+            ];
+        }
+        ParentConfigurationsState::Readable(state) => state,
     };
     if state.removed {
         return vec!["Поддержка:      снята с поддержки полностью".to_string()];
@@ -1634,8 +1819,12 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         return "не на поддержке".to_string();
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let Some(state) = read_support_state(&bin_path) else {
-        return "не на поддержке".to_string();
+    let state = match parent_configurations_state(&bin_path) {
+        ParentConfigurationsState::Absent => return "не на поддержке".to_string(),
+        ParentConfigurationsState::Unreadable => {
+            return "состояние поддержки не удалось прочитать — правки не подтверждены".to_string();
+        }
+        ParentConfigurationsState::Readable(state) => state,
     };
     if state.removed {
         return "снято с поддержки (правки свободны)".to_string();
@@ -1672,7 +1861,19 @@ pub(crate) fn support_guard_violation(
         .unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = read_support_state(&bin_path)?;
+    let state = match parent_configurations_state(&bin_path) {
+        ParentConfigurationsState::Absent => return None,
+        ParentConfigurationsState::Unreadable => {
+            return Some(SupportGuardViolation {
+                code: "support-state-unreadable",
+                reason: "не удалось прочитать состояние поддержки (ParentConfigurations.bin); безопасность правки не подтверждена"
+                    .to_string(),
+                target_path,
+                config_dir,
+            });
+        }
+        ParentConfigurationsState::Readable(state) => state,
+    };
     if state.removed {
         return None;
     }
@@ -1750,7 +1951,8 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
-    if data.len() <= 32 {
+    let data = data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data);
+    if data.iter().all(u8::is_ascii_whitespace) {
         return Some(SupportState {
             global_editing_enabled: true,
             vendor_count: 0,
@@ -1760,8 +1962,8 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
             vendors: Vec::new(),
         });
     }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data));
-    let (global_flag, vendor_count) = parse_support_header(&text)?;
+    let text = std::str::from_utf8(data).ok()?;
+    let (global_flag, vendor_count) = parse_support_header(text)?;
     if vendor_count == 0 {
         return Some(SupportState {
             global_editing_enabled: true,
@@ -1883,8 +2085,11 @@ pub(crate) fn is_uuid_text(value: &str) -> bool {
 }
 
 pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
+    let target_path = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.to_path_buf());
     let mut current = if target_path.is_dir() {
-        target_path.to_path_buf()
+        target_path
     } else {
         target_path.parent()?.to_path_buf()
     };

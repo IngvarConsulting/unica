@@ -3516,10 +3516,77 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
+        let navigation = result
+            .data
+            .as_ref()
+            .and_then(|data| data.get("navigation"))
+            .expect("meta.info should expose the object-navigation prototype in result.data");
+        assert!(navigation.is_object(), "{navigation:?}");
+        let root_node = navigation["nodes"]
+            .as_array()
+            .and_then(|nodes| nodes.first())
+            .expect("navigation graph must contain its root node");
+        assert_eq!(
+            root_node["capabilityState"]["authorability"], "support_locked",
+            "support state must constrain modeled capabilities: {root_node:?}"
+        );
+        assert_eq!(
+            root_node["semanticActions"]
+                .as_array()
+                .expect("root node must serialize semantic actions")
+                .len(),
+            1,
+            "locked object must not advertise mutation actions: {root_node:?}"
+        );
+        assert_eq!(
+            root_node["semanticActions"][0]["action"], "inspect",
+            "locked object must retain inspection only: {root_node:?}"
+        );
         let stdout = result.stdout.unwrap();
         assert!(stdout.contains("Поддержка: на замке"));
         assert!(stdout.contains("cfe-*"));
         assert!(!stdout.contains("powershell.exe"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn meta_info_dry_run_keeps_safe_placeholder_without_reading_navigation_target() {
+        let root =
+            std::env::temp_dir().join(format!("unica-meta-info-dry-run-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: edt\n",
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("edt/Configuration/Configuration.mdo".to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.meta.info", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        assert!(result.stdout.is_none(), "{result:?}");
+        assert!(
+            result
+                .summary
+                .contains("dry run: unica.meta.info would execute native XML/DSL operation"),
+            "{}",
+            result.summary
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,6 +1,6 @@
-use super::{code, registry, NativeOperationAdapter};
+use super::{code, meta, registry, NativeOperationAdapter};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 pub(crate) struct NativeOperationResult {
     pub(crate) adapter: AdapterOutcome,
@@ -16,6 +16,17 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
+        if !mutating && !dry_run && operation == "meta-info" {
+            let execution = meta::analyze_meta_info_with_navigation(args, context);
+            let data = execution
+                .navigation
+                .map(|navigation| json!({ "navigation": navigation }));
+            return Ok(NativeOperationResult {
+                adapter: execution.outcome,
+                data,
+            });
+        }
+
         if mutating {
             let execution = match registry::typed_mutation_handler(operation) {
                 Some(registry::TypedMutationHandler::CodePatch) if dry_run => {
