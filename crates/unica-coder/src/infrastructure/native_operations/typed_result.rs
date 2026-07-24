@@ -1,5 +1,6 @@
-use super::{code, registry, NativeOperationAdapter};
+use super::{code, form, registry, NativeOperationAdapter};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub(crate) struct NativeOperationResult {
@@ -17,25 +18,25 @@ impl NativeOperationAdapter {
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
         if mutating {
-            let execution = match registry::typed_mutation_handler(operation) {
-                Some(registry::TypedMutationHandler::CodePatch) if dry_run => {
-                    Some(code::preview_with_data(args, context))
-                }
+            match registry::typed_mutation_handler(operation) {
                 Some(registry::TypedMutationHandler::CodePatch) => {
-                    Some(code::apply_with_data(args, context))
+                    let execution = if dry_run {
+                        code::preview_with_data(args, context)
+                    } else {
+                        code::apply_with_data(args, context)
+                    };
+                    return typed_mutation_result(execution.outcome, execution.data, "code patch");
                 }
-                None => None,
-            };
-            if let Some(execution) = execution {
-                let data = execution
-                    .data
-                    .map(serde_json::to_value)
-                    .transpose()
-                    .map_err(|error| format!("serialize typed code patch result: {error}"))?;
-                return Ok(NativeOperationResult {
-                    adapter: execution.outcome,
-                    data,
-                });
+                Some(registry::TypedMutationHandler::FormEdit) if form::has_edit_payload(args) => {
+                    let execution = if dry_run {
+                        form::preview_with_data(args, context)
+                    } else {
+                        form::apply_with_data(args, context)
+                    };
+                    return typed_mutation_result(execution.outcome, execution.data, "form edit");
+                }
+                Some(registry::TypedMutationHandler::FormEdit) => {}
+                None => {}
             }
         }
 
@@ -46,4 +47,16 @@ impl NativeOperationAdapter {
             }
         })
     }
+}
+
+fn typed_mutation_result<T: Serialize>(
+    adapter: AdapterOutcome,
+    data: Option<T>,
+    operation: &str,
+) -> Result<NativeOperationResult, String> {
+    let data = data
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| format!("serialize typed {operation} result: {error}"))?;
+    Ok(NativeOperationResult { adapter, data })
 }

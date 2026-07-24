@@ -10,6 +10,7 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypedMutationHandler {
     CodePatch,
+    FormEdit,
 }
 
 #[cfg(test)]
@@ -94,6 +95,7 @@ pub(crate) fn native_mutation_file_input_contract(
 pub(crate) fn typed_mutation_handler(operation: &str) -> Option<TypedMutationHandler> {
     match operation {
         "code-patch" => Some(TypedMutationHandler::CodePatch),
+        "form-edit" => Some(TypedMutationHandler::FormEdit),
         _ => None,
     }
 }

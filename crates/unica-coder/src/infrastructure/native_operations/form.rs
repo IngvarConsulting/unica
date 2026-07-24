@@ -8,6 +8,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -4121,14 +4122,28 @@ fn append_form_compile_stats(stdout: &mut String, stats: &FormCompileStats) {
 }
 
 pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    edit_form_with_mode(args, context, FormEditMode::Apply)
+    apply_with_data(args, context).outcome
 }
 
 pub(crate) fn preview_form_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    edit_form_with_mode(args, context, FormEditMode::Preview)
+    preview_with_data(args, context).outcome
+}
+
+pub(crate) fn apply_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormEditExecution {
+    form_edit_with_mode_data(args, context, FormEditMode::Apply)
+}
+
+pub(crate) fn preview_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormEditExecution {
+    form_edit_with_mode_data(args, context, FormEditMode::Preview)
 }
 
 pub(crate) fn has_edit_payload(args: &Map<String, Value>) -> bool {
@@ -4161,7 +4176,48 @@ pub(crate) fn edit_form_with_mode(
     context: &WorkspaceContext,
     mode: FormEditMode,
 ) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
+    form_edit_with_mode_data(args, context, mode).outcome
+}
+
+pub(crate) struct FormEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<FormEditData>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormEditData {
+    changed: bool,
+    removed: Vec<FormEditRemovedElement>,
+    validation: FormEditValidation,
+}
+
+#[derive(Debug, Serialize)]
+struct FormEditRemovedElement {
+    name: String,
+    kind: String,
+    reason: FormEditRemovalReason,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum FormEditRemovalReason {
+    Requested,
+    Contained,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum FormEditValidation {
+    Passed,
+}
+
+fn form_edit_with_mode_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mode: FormEditMode,
+) -> FormEditExecution {
+    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>, Vec<FormEditPlannedRemoval>), String> {
         let form_path_raw = required_path(args, FORM_PATH, "FormPath")?;
         let form_path = absolutize(form_path_raw.clone(), &context.cwd);
         if !form_path.exists() {
@@ -4454,51 +4510,61 @@ pub(crate) fn edit_form_with_mode(
         }
         stdout.push_str("Run /form-validate to verify.\n");
 
-        Ok((stdout, form_path, changed, warnings))
+        Ok((stdout, form_path, changed, warnings, planned_removals))
     })();
 
     match edit_result {
-        Ok((stdout, form_path, changed, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: if mode.is_preview() && !changed {
-                "dry run: unica.form.edit found an idempotent no-op".to_string()
-            } else if !changed {
-                "unica.form.edit completed with idempotent no-op".to_string()
-            } else if mode.is_preview() {
-                "dry run: unica.form.edit planned native managed form changes".to_string()
-            } else {
-                "unica.form.edit completed with native managed form editor".to_string()
+        Ok((stdout, form_path, changed, warnings, removals)) => FormEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: if mode.is_preview() && !changed {
+                    "dry run: unica.form.edit found an idempotent no-op".to_string()
+                } else if !changed {
+                    "unica.form.edit completed with idempotent no-op".to_string()
+                } else if mode.is_preview() {
+                    "dry run: unica.form.edit planned native managed form changes".to_string()
+                } else {
+                    "unica.form.edit completed with native managed form editor".to_string()
+                },
+                changes: if changed {
+                    vec![format!(
+                        "{} {}",
+                        if mode.is_preview() {
+                            "would update"
+                        } else {
+                            "updated"
+                        },
+                        form_path.display()
+                    )]
+                } else {
+                    Vec::new()
+                },
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![form_path.display().to_string()],
+                stdout: Some(stdout),
+                stderr: None,
+                command: None,
             },
-            changes: if changed {
-                vec![format!(
-                    "{} {}",
-                    if mode.is_preview() {
-                        "would update"
-                    } else {
-                        "updated"
-                    },
-                    form_path.display()
-                )]
-            } else {
-                Vec::new()
-            },
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![form_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+            data: Some(FormEditData {
+                changed,
+                removed: form_edit_removed_elements(&removals),
+                validation: FormEditValidation::Passed,
+            }),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.edit failed in native managed form editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.edit failed in native managed form editor".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -4515,6 +4581,24 @@ struct FormEditPlannedRemoval {
     kind: String,
     contained: Vec<FormEditContainedNode>,
     range: Range<usize>,
+}
+
+fn form_edit_removed_elements(removals: &[FormEditPlannedRemoval]) -> Vec<FormEditRemovedElement> {
+    removals
+        .iter()
+        .flat_map(|removal| {
+            std::iter::once(FormEditRemovedElement {
+                name: removal.name.clone(),
+                kind: removal.kind.clone(),
+                reason: FormEditRemovalReason::Requested,
+            })
+            .chain(removal.contained.iter().map(|node| FormEditRemovedElement {
+                name: node.name.clone(),
+                kind: node.kind.clone(),
+                reason: FormEditRemovalReason::Contained,
+            }))
+        })
+        .collect()
 }
 
 fn form_edit_plan_removals(
@@ -17261,7 +17345,7 @@ mod tests {
                 ),
             ]);
 
-            let outcome = NativeOperationAdapter::invoke(
+            let outcome = NativeOperationAdapter::invoke_with_data(
                 "form-edit",
                 "unica.form.edit",
                 &args,
@@ -17269,7 +17353,8 @@ mod tests {
                 true,
                 true,
             )
-            .unwrap();
+            .unwrap()
+            .adapter;
 
             assert_eq!(outcome.ok, expected_ok, "{outcome:?}");
             if expected_ok {

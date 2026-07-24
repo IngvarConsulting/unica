@@ -700,13 +700,13 @@ fn should_emit_events(
     if !spec.mutating || !outcome.ok {
         return false;
     }
-    if dry_run && spec.name == "unica.code.patch" {
-        return false;
-    }
     if !dry_run {
         return !outcome.changes.is_empty();
     }
 
+    if spec.name == "unica.code.patch" {
+        return false;
+    }
     let is_semantic_form_edit_preview = spec.name == "unica.form.edit"
         && args.keys().any(|key| {
             matches!(
@@ -714,7 +714,7 @@ fn should_emit_events(
                 "FormPath" | "formPath" | "Path" | "path" | "JsonPath" | "jsonPath" | "definition"
             )
         });
-    !is_semantic_form_edit_preview || !outcome.changes.is_empty()
+    !is_semantic_form_edit_preview
 }
 
 fn is_successful_detailed_compile_preview(
@@ -1702,6 +1702,138 @@ mod tests {
     }
 
     #[test]
+    fn form_edit_remove_returns_typed_data() {
+        let root = test_workspace_root("unica-form-edit-remove-typed-data");
+        let workspace = root.join("workspace");
+        let form_path = workspace.join("Form.xml");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            &form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="FormCommandBar" id="-1"/>
+	<ChildItems>
+		<Group name="First" id="1">
+			<ChildItems>
+				<InputField name="FirstInput" id="2">
+					<ContextMenu name="FirstInputContextMenu" id="3"/>
+				</InputField>
+			</ChildItems>
+		</Group>
+		<InputField name="Second" id="4">
+			<ContextMenu name="SecondContextMenu" id="5"/>
+			<ExtendedTooltip name="SecondExtendedTooltip" id="6"/>
+		</InputField>
+	</ChildItems>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        )
+        .unwrap();
+        let original = std::fs::read(&form_path).unwrap();
+        let app = UnicaApplication::new();
+        let mut args = json!({
+            "cwd": workspace,
+            "FormPath": form_path,
+            "definition": {
+                "removeElements": [{"name": "Second"}, {"name": "First"}]
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let expected_data = json!({
+            "changed": true,
+            "removed": [
+                {"name": "Second", "kind": "InputField", "reason": "requested"},
+                {"name": "SecondContextMenu", "kind": "ContextMenu", "reason": "contained"},
+                {"name": "SecondExtendedTooltip", "kind": "ExtendedTooltip", "reason": "contained"},
+                {"name": "First", "kind": "Group", "reason": "requested"},
+                {"name": "FirstInput", "kind": "InputField", "reason": "contained"},
+                {"name": "FirstInputContextMenu", "kind": "ContextMenu", "reason": "contained"}
+            ],
+            "validation": "passed"
+        });
+
+        let preview = app.call_tool("unica.form.edit", &args).unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.data, Some(expected_data.clone()));
+        assert!(preview.stdout.is_some());
+        assert!(preview.cache.events.is_empty());
+        assert_eq!(std::fs::read(&form_path).unwrap(), original);
+
+        args.insert("dryRun".to_string(), json!(false));
+        let applied = app.call_tool("unica.form.edit", &args).unwrap();
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(applied.data, Some(expected_data));
+        assert_eq!(applied.cache.events, vec!["FormChanged"]);
+        assert!(applied.stdout.is_some());
+
+        let non_removal_form_path = workspace.join("NonRemoval.xml");
+        std::fs::write(
+            &non_removal_form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="FormCommandBar" id="-1"/>
+	<ChildItems/>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        )
+        .unwrap();
+        let non_removal_args = json!({
+            "cwd": workspace,
+            "dryRun": false,
+            "FormPath": non_removal_form_path,
+            "definition": {"elements": [{"input": "Added"}]}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let non_removal = app.call_tool("unica.form.edit", &non_removal_args).unwrap();
+        assert!(non_removal.ok, "{:?}", non_removal.errors);
+        assert_eq!(
+            non_removal.data,
+            Some(json!({"changed": true, "removed": [], "validation": "passed"}))
+        );
+        assert_eq!(non_removal.cache.events, vec!["FormChanged"]);
+
+        let no_op_form_path = workspace.join("NoOp.xml");
+        std::fs::write(
+            &no_op_form_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+	<AutoCommandBar name="FormCommandBar" id="-1"/>
+	<ChildItems/>
+	<Attributes/>
+	<Commands/>
+</Form>
+"#,
+        )
+        .unwrap();
+        let no_op_args = json!({
+            "cwd": workspace,
+            "dryRun": false,
+            "FormPath": no_op_form_path,
+            "definition": {}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let no_op = app.call_tool("unica.form.edit", &no_op_args).unwrap();
+        assert!(no_op.ok, "{:?}", no_op.errors);
+        assert_eq!(
+            no_op.data,
+            Some(json!({"changed": false, "removed": [], "validation": "passed"}))
+        );
+        assert!(no_op.cache.events.is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn code_patch_apply_is_blocked_for_a_locked_supported_object() {
         let root = test_workspace_root("unica-code-patch-support-guard");
         let workspace = root.join("workspace");
@@ -2183,7 +2315,7 @@ mod tests {
 
         let mut planned = AdapterOutcome::ok("dry run planned change");
         planned.changes.push("would update Form.xml".to_string());
-        assert!(should_emit_events(
+        assert!(!should_emit_events(
             form_edit_spec,
             &semantic_args,
             true,
