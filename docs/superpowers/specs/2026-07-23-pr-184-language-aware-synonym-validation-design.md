@@ -136,10 +136,13 @@ The parity fixture uses `Enum`, not `CommonModule`. It contains valid
 `GeneratedType` entries, is registered in `Configuration.xml`, and uses export
 format `2.20`.
 
-## Exact Read-Set
+## Exact Platform-XML Read-Set
 
 A shared read-plan resolver is used by both the format guard and the validator.
-For each requested non-external object, the deterministic content read-set is:
+This section describes the platform-XML content whose export format PR 188
+must classify; non-XML source reads and existence/directory-membership probes
+used by semantic checks are outside that versioned set. For each requested
+non-external object, the deterministic platform-XML read-set is:
 
 1. the requested metadata descriptor;
 2. its owning `Configuration.xml`;
