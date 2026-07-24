@@ -125,6 +125,37 @@ class SkillProvenanceTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, notes)
 
+    def test_templates_new_object_records_source_scope_and_unica_adoption(self) -> None:
+        data = self.load_provenance()
+        upstream = next(
+            item for item in data["upstreams"] if item["id"] == "templates-new-object-1c"
+        )
+        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-validate")
+        notes = entry["notes"].lower()
+
+        self.assertIn("1c:accounting", notes)
+        self.assertIn("other configurations may differ", notes)
+        self.assertIn("general unica project conventions", notes)
+        self.assertIn("not platform requirements", notes)
+
+        attribution = (
+            self.repo_root() / "plugins" / "unica" / "ATTRIBUTIONS.md"
+        ).read_text(encoding="utf-8")
+        reference = (
+            self.repo_root()
+            / "plugins"
+            / "unica"
+            / "references"
+            / "platform"
+            / "metadata-conventions.md"
+        ).read_text(encoding="utf-8")
+
+        for raw_text in (attribution, reference):
+            text = " ".join(raw_text.split())
+            self.assertIn("«1С:Бухгалтерии предприятия»", text)
+            self.assertIn("общие проектные соглашения Unica", text)
+            self.assertIn("не требования платформы", text)
+
     def test_historical_donor_baselines_track_last_local_review_not_current_head(self) -> None:
         data = self.load_provenance()
         upstreams = {item["id"]: item for item in data["upstreams"]}

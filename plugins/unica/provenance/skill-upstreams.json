@@ -1470,7 +1470,7 @@
         {
           "skill": "meta-validate",
           "status": "adapted",
-          "notes": "Unica adapts the naming, synonym, representation, fill-check, catalog code, and information-register command-interface conventions from the TemplatesNewObject1C checklist into its metadata-conventions reference.",
+          "notes": "Unica adapts the naming, synonym, representation, fill-check, catalog code, and information-register command-interface conventions from the TemplatesNewObject1C checklist into its metadata-conventions reference. The source checklist is scoped to 1C:Accounting and warns that other configurations may differ; Unica deliberately adopts the listed guidance as general Unica project conventions, not platform requirements.",
           "upstreamPaths": [
             "README.md"
           ],

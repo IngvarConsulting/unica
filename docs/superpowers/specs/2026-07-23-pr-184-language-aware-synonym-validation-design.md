@@ -202,9 +202,11 @@ The link in `plugins/unica/references/README.md` is relative to that file:
 
 The provenance entry and `ATTRIBUTIONS.md` enumerate the complete adapted
 scope: naming, synonyms, presentations, fill checks, catalog code conventions,
-and information-register command-interface conventions. No
-1C:Accounting-specific limitation is added because the project deliberately
-adopts these as general conventions.
+and information-register command-interface conventions. The reference and
+provenance disclose that the source checklist is scoped to 1C:Accounting and
+warns about differences in other configurations. Unica does not inherit that
+applicability limit: it deliberately adopts the listed guidance as general
+project conventions rather than platform requirements.
 
 ## Tests
 
