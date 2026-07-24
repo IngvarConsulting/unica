@@ -678,8 +678,8 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexer"
-version = "0.2.55"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=5a02bb44dedaf29e0e29af1f740279d279199854#5a02bb44dedaf29e0e29af1f740279d279199854"
+version = "0.2.62"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
 dependencies = [
  "logos",
  "smol_str",
@@ -893,8 +893,8 @@ dependencies = [
 
 [[package]]
 name = "parser"
-version = "0.2.55"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=5a02bb44dedaf29e0e29af1f740279d279199854#5a02bb44dedaf29e0e29af1f740279d279199854"
+version = "0.2.62"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
 dependencies = [
  "lexer",
  "parser-error",
@@ -906,8 +906,8 @@ dependencies = [
 
 [[package]]
 name = "parser-error"
-version = "0.2.55"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=5a02bb44dedaf29e0e29af1f740279d279199854#5a02bb44dedaf29e0e29af1f740279d279199854"
+version = "0.2.62"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
 dependencies = [
  "lexer",
  "smallvec",
@@ -1280,8 +1280,8 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stdx"
-version = "0.2.55"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=5a02bb44dedaf29e0e29af1f740279d279199854#5a02bb44dedaf29e0e29af1f740279d279199854"
+version = "0.2.62"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
 dependencies = [
  "crossbeam-channel",
  "crossbeam-utils",
@@ -1332,14 +1332,12 @@ dependencies = [
 
 [[package]]
 name = "syntax"
-version = "0.2.55"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=5a02bb44dedaf29e0e29af1f740279d279199854#5a02bb44dedaf29e0e29af1f740279d279199854"
+version = "0.2.62"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
 dependencies = [
  "parser-error",
  "rowan",
- "smol_str",
  "stdx",
- "text-size",
 ]
 
 [[package]]

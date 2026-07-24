@@ -11,8 +11,8 @@ repository = "https://github.com/IngvarConsulting/unica"
 [workspace.dependencies]
 # In-process parser semantics must match the bundled analyzer; a contract test
 # compares these resolved revisions with third-party/tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "5a02bb44dedaf29e0e29af1f740279d279199854" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "5a02bb44dedaf29e0e29af1f740279d279199854" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "9a6cb15d60c0381dce6a3b5e536434adb12da89b" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "9a6cb15d60c0381dce6a3b5e536434adb12da89b" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
