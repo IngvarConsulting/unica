@@ -17,7 +17,8 @@
 - Run at most one recovery build per update job.
 - Return `rlm index building` only while an active Unica index lock exists.
 - Preserve the original `stale (content)` cause in success diagnostics and terminal failure messages.
-- A fresh `index info` result supersedes a failed marker; other non-ready results do not.
+- A fresh `index info` result supersedes a terminal failed marker; other
+  non-ready results do not.
 - Compare marker and requested source roots through normalized path identity.
 
 ---
@@ -534,7 +535,8 @@ fn recovery_does_not_recurse_when_final_info_is_stale() {
     assert_eq!(calls, 4);
     let status = read_bsl_index_status(&context).unwrap();
     assert_eq!(status.status, "failed");
-    assert!(status.message.unwrap().contains("still stale (content)"));
+    assert_eq!(status.failure_class, Some(BslIndexFailureClass::Terminal));
+    assert!(status.message.unwrap().contains("stale (content)"));
     cleanup(&context);
 }
 ```
@@ -1087,28 +1089,26 @@ cargo test -p unica-coder
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run package-contract checks** *(pending the next CI run for the
-  new real mtime-drift contract; the prior PR head passed bundled-tool checks on
-  macOS, Linux, and Windows)*
+- [x] **Step 3: Run package-contract checks** *(the current PR head passed the
+  real packaged-binary mtime-drift contract on macOS, Linux, and Windows)*
 
 Run:
 
 ```powershell
-python -m pytest tests/ci/test_product_contracts.py
+python -m unittest tests.ci.test_product_contracts
 python scripts/ci/check-tool-contracts.py
 ```
 
 Current result:
 
-- local `tests/ci/test_product_contracts.py`: PASS, including the checker
+- local `tests.ci.test_product_contracts`: PASS, including the scripted checker
   orchestration regression;
 - local direct bundled-tool execution on win-x64: PASS using the exact v1.26.0
   release asset whose SHA-256 matches `tools.lock.json`;
-- GitHub build-tools jobs for the prior PR head: PASS on darwin-arm64,
-  linux-x64, and win-x64;
-- next GitHub build-tools run: must execute the new real packaged-binary
-  sequence `fresh -> mtime-only stale -> Changed: 0/Fast path: True -> stale ->
-  build -> fresh`.
+- GitHub build-tools jobs for the current PR head: PASS on darwin-arm64,
+  linux-x64, and win-x64, including the real packaged-binary sequence
+  `fresh -> mtime-only stale -> Changed: 0/Fast path: True -> stale -> build ->
+  fresh`.
 
 Expected: the new packaged-binary recovery contract passes on every build-tools
 target, the public server remains `unica`, and no bundled tool contract changes

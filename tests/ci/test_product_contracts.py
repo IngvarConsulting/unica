@@ -371,7 +371,7 @@ class ProductContractTests(unittest.TestCase):
 
             self.assertEqual(module.check_rlm_schema(db_path), [])
 
-    def test_rlm_mtime_recovery_contract_checks_real_cli_sequence(self) -> None:
+    def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
         module = load_contract_module()
         outputs = iter(
             [
@@ -387,8 +387,14 @@ class ProductContractTests(unittest.TestCase):
         actions = []
 
         def run_rlm(command, cwd, env):
+            action = command[2]
+            self.assertEqual(
+                command,
+                ["rlm-bsl-index", "index", action, str(cwd)],
+            )
             actions.append(command[2])
             self.assertEqual(cwd, Path(command[3]))
+            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parent / "index"))
             self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
             self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
             self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
@@ -480,8 +486,22 @@ class ProductContractTests(unittest.TestCase):
             "-c",
             "tag.gpgSign=false",
         ]
-        for command in git_commands[:5]:
-            self.assertEqual(command[:5], signing_disabled)
+        self.assertEqual(
+            git_commands,
+            [
+                [*signing_disabled, "init", "-q"],
+                [
+                    *signing_disabled,
+                    "config",
+                    "user.email",
+                    "unica-ci@example.invalid",
+                ],
+                [*signing_disabled, "config", "user.name", "Unica CI"],
+                [*signing_disabled, "add", "."],
+                [*signing_disabled, "commit", "-q", "-m", "fixture"],
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+            ],
+        )
 
     def test_rlm_schema_contract_reports_missing_column(self) -> None:
         module = load_contract_module()

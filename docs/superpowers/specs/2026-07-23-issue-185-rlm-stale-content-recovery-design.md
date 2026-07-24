@@ -234,11 +234,11 @@ No MCP request or response schema changes are required.
 ### Marker/readiness regression tests
 
 - A real active lock still returns `rlm index building`.
-- A failed marker without an active lock returns `Failed(message)`.
-- A failed marker is not overwritten by another automatic update.
-- A fresh info result replaces a previous failed marker with `ready`.
-- A failed marker for another normalized source root does not block the current
-  source root.
+- A terminal failed marker without an active lock returns `Failed(message)`.
+- A terminal failed marker is not overwritten by another automatic update.
+- A fresh info result replaces a previous terminal failed marker with `ready`.
+- A terminal failed marker for another normalized source root does not block
+  the current source root.
 
 ### Workspace-service and adapter tests
 
