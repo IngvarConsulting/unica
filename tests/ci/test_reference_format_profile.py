@@ -19,6 +19,7 @@ SUBSYSTEM_EDIT = REFERENCE_SKILLS / "subsystem-edit/scripts/subsystem-edit.py"
 TEMPLATE_ADD = REFERENCE_SKILLS / "template-add/scripts/add-template.py"
 META_VALIDATE = REFERENCE_SKILLS / "meta-validate/scripts/meta-validate.py"
 MXL_COMPILE = REFERENCE_SKILLS / "mxl-compile/scripts/mxl-compile.py"
+DCS_COMPILE = REFERENCE_SKILLS / "dcs-compile/scripts/dcs-compile.py"
 VALIDATOR_SCRIPTS = tuple(
     REFERENCE_SKILLS / relative
     for relative in (
@@ -74,6 +75,14 @@ def subsystem_xml(version: str | None) -> str:
 
 
 class ReferenceFormatProfileTests(unittest.TestCase):
+    def test_dcs_compile_validates_before_printing_success(self) -> None:
+        source = DCS_COMPILE.read_text(encoding="utf-8")
+
+        validation = source.rindex("run_post_validation(output_path)")
+        success = source.rindex('print(f"OK  {args.OutputPath}")')
+
+        self.assertLess(validation, success)
+
     def test_subsystem_edit_rejects_nonexact_owner_before_write(self) -> None:
         for version in (None, "2.19", "2.20.0"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:

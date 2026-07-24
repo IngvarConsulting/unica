@@ -59,10 +59,12 @@ operations use the same bounded owner resolver.
 
 | Resolved input | Read-only operation | Mutation |
 | --- | --- | --- |
-| `< 2.20`, including a missing owner version interpreted as `1.0` | Warn and continue only where the existing parser can safely do so. | Refuse before the first write and propose an explicit user-driven re-export with 1C:Enterprise 8.3.27. |
+| `< 2.20`, including an existing version-owning XML root whose `version` attribute is absent and therefore interpreted as `1.0` | Warn and continue only where the existing parser can safely do so. | Refuse before the first write and propose an explicit user-driven re-export with 1C:Enterprise 8.3.27. |
 | exact raw literal `2.20` | Work normally. | Work normally. |
 | `> 2.20` | Warn that the newer profile is unsupported. | Refuse before the first write; state that platform 8.5 support is not available yet but is planned; never offer a downgrade. |
-| Malformed, numerically equal but not exact (`2.20.0`, `02.20`, or `2.020`), entity-spelled (`2.&#50;0`, `&#x32;.20`, or `2.2&#48;`), unreadable, ambiguous, or missing required owner | Report invalid/ambiguous source evidence. | Refuse before the first write. |
+| Malformed, numerically equal but not exact (`2.20.0`, `02.20`, or `2.020`), entity-spelled (`2.&#50;0`, `&#x32;.20`, or `2.2&#48;`), unreadable, or ambiguous version evidence | Report invalid/ambiguous source evidence. | Refuse before the first write. |
+| Required version-owning XML owner is missing or cannot be resolved | Report missing/unresolvable owner evidence; do not reinterpret it as version `1.0`. | Refuse before the first write. |
+| Existing recognized versionless DCS/MXL root | Follow the fixed operation profile without inventing a version. | Follow the fixed operation profile and preserve the versionless root contract. |
 | Genuinely new output with no containing source set | Not applicable. | Follow the fixed operation profile: write `2.20` only when that document root owns an export version; do not invent `version` on versionless DCS/MXL roots. |
 
 Unica never migrates or downgrades as a side effect and exposes no native
@@ -96,7 +98,12 @@ stop Designer, scripts, or other non-Unica writers; path normalization and
 no-follow checks do not retain permanent open-handle identity across every
 external rename; and a process, operating-system, or power failure can interrupt
 several filesystem renames. Rollback is attempted for reported publication
-failures, while rollback cleanup failures are returned as warnings.
+failures. Failure to restore or remove a published source path is a hard
+transaction error: the result includes `rollback encountered:` integrity
+diagnostics, identifies the affected or preserved recovery paths, and requires
+the caller to treat source-tree integrity as unverified. Only failure to remove
+temporary staging, quarantine, or already-restored recovery residue is
+warning-level cleanup.
 
 ## Resolved deviations and known boundaries
 
@@ -255,7 +262,8 @@ unchanged (1039 files and 90 empty directories), as did the pinned platform
 installation (4337 files, 96 directories, and the recorded installation hash).
 
 The gate accepts only `pass` for all 63 checkpoints. Any rejected import,
-platform-normalized semantic delta, unstable second roundtrip, source error, or
+platform-normalized delta that remains non-equivalent after the documented
+semantic-multiset normalization, unstable second roundtrip, source error, or
 corpus mutation fails the gate.
 
 ## Semantic versus byte canonicality

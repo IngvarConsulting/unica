@@ -26,13 +26,14 @@ def run_post_validation(path):
         encoding="utf-8",
         check=False,
     )
-    print()
-    print("--- Running dcs-validate ---")
-    sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
     if result.returncode != 0:
+        print()
+        print("--- Running dcs-validate ---")
+        sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
+    return result.stdout, result.stderr
 
 
 # ============================================================
@@ -3084,10 +3085,15 @@ def main():
     variant_count = len(defn['settingsVariants']) if defn.get('settingsVariants') else 1
     file_size = os.path.getsize(output_path)
 
+    validation_stdout, validation_stderr = run_post_validation(output_path)
     print(f"OK  {args.OutputPath}")
     print(f"    DataSets: {ds_count}  Fields: {field_count}  Calculated: {calc_count}  Totals: {total_count}  Params: {param_count}  Variants: {variant_count}")
     print(f"    Size: {file_size} bytes")
-    run_post_validation(output_path)
+    print()
+    print("--- Running dcs-validate ---")
+    sys.stdout.write(validation_stdout)
+    if validation_stderr:
+        sys.stderr.write(validation_stderr)
 
 
 if __name__ == '__main__':
