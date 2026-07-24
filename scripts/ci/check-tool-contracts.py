@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 
 TOOL_HELP_CHECKS = [
@@ -468,20 +469,31 @@ fn main() {{
         ]
 
 
-def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
+def run_command(
+    command: list[str],
+    cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> tuple[int, str]:
     suffix = Path(command[0]).suffix.lower()
     if suffix == ".py":
         command = [sys.executable, *command]
     elif os.name == "nt" and suffix in {".bat", ".cmd"}:
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=None if env is None else {**os.environ, **env},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return 1, f"timed out after {timeout}s: {exc}"
     return result.returncode, result.stdout + result.stderr
 
 
@@ -579,6 +591,174 @@ def check_rlm_schema(db_path: Path) -> list[str]:
     return errors
 
 
+def run_rlm_command(
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float = 120.0,
+) -> tuple[int, str]:
+    return run_command(command, cwd, env=env, timeout=timeout)
+
+
+def check_rlm_mtime_recovery_contract(
+    tool: Path,
+    *,
+    run_rlm: Callable[
+        [list[str], Path, dict[str, str]], tuple[int, str]
+    ] = run_rlm_command,
+) -> list[str]:
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="unica-rlm-mtime-") as tmp:
+        root = Path(tmp)
+        workspace = root / "workspace"
+        modules = [
+            workspace / "src" / "CommonModules" / name / "Module.bsl"
+            for name in ("ContractOne", "ContractTwo")
+        ]
+        for number, module in enumerate(modules, start=1):
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                f"Процедура ContractTest{number}() Экспорт\n"
+                "    Возврат;\n"
+                "КонецПроцедуры\n",
+                encoding="utf-8",
+            )
+
+        git_without_signing = [
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgSign=false",
+        ]
+        git_commands = [
+            [*git_without_signing, "init", "-q"],
+            [
+                *git_without_signing,
+                "config",
+                "user.email",
+                "unica-ci@example.invalid",
+            ],
+            [*git_without_signing, "config", "user.name", "Unica CI"],
+            [*git_without_signing, "add", "."],
+            [*git_without_signing, "commit", "-q", "-m", "fixture"],
+        ]
+        for command in git_commands:
+            status, output = run_command(command, workspace)
+            if status != 0:
+                return [
+                    "rlm mtime recovery: failed to prepare clean Git fixture: "
+                    f"{' '.join(command)}: {output.strip()}"
+                ]
+
+        env = {
+            "RLM_INDEX_DIR": str(root / "index"),
+            "RLM_INDEX_SAMPLE_SIZE": "1000",
+            "RLM_INDEX_SAMPLE_THRESHOLD": "0",
+            "RLM_INDEX_SKIP_SAMPLE_HOURS": "0",
+        }
+
+        def invoke(action: str) -> str | None:
+            command = [str(tool), "index", action, str(workspace)]
+            status, output = run_rlm(command, workspace, env)
+            if status != 0:
+                errors.append(
+                    f"rlm mtime recovery: {action} exited with {status}: {output.strip()}"
+                )
+                return None
+            return output
+
+        if invoke("build") is None:
+            return errors
+        initial_info = invoke("info")
+        if initial_info is None:
+            return errors
+        if "fresh" not in initial_info.lower():
+            errors.append("rlm mtime recovery: initial build did not produce fresh info")
+            return errors
+
+        for module in modules:
+            original = module.stat()
+            drifted_mtime_ns = original.st_mtime_ns + 2_000_000_000
+            os.utime(module, ns=(original.st_atime_ns, drifted_mtime_ns))
+            if module.stat().st_size != original.st_size:
+                errors.append("rlm mtime recovery: mtime drift changed fixture size")
+                return errors
+        git_status, git_output = run_command(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            workspace,
+        )
+        if git_status != 0 or git_output.strip():
+            errors.append(
+                "rlm mtime recovery: mtime-only fixture is not Git-clean: "
+                f"{git_output.strip()}"
+            )
+            return errors
+
+        stale_info = invoke("info")
+        if stale_info is None:
+            return errors
+        if "stale (content)" not in stale_info.lower():
+            errors.append(
+                "rlm mtime recovery: mtime drift did not produce stale (content): "
+                f"{stale_info.strip()}"
+            )
+            return errors
+
+        head_status, head_before_update = run_command(
+            ["git", "rev-parse", "HEAD"],
+            workspace,
+        )
+        if head_status != 0 or not head_before_update.strip():
+            errors.append(
+                "rlm mtime recovery: failed to read Git HEAD before update: "
+                f"{head_before_update.strip()}"
+            )
+            return errors
+        update = invoke("update")
+        if update is None:
+            return errors
+        head_status, head_after_update = run_command(
+            ["git", "rev-parse", "HEAD"],
+            workspace,
+        )
+        if head_status != 0 or not head_after_update.strip():
+            errors.append(
+                "rlm mtime recovery: failed to read Git HEAD after update: "
+                f"{head_after_update.strip()}"
+            )
+            return errors
+        if head_after_update.strip() != head_before_update.strip():
+            errors.append(
+                "rlm mtime recovery: Git HEAD changed during update: "
+                f"{head_before_update.strip()} -> {head_after_update.strip()}"
+            )
+            return errors
+        if "Changed: 0" not in update or "Fast path: True" not in update:
+            errors.append(
+                "rlm mtime recovery: update did not report Changed: 0 and Fast path: True"
+            )
+            return errors
+
+        post_update_info = invoke("info")
+        if post_update_info is None:
+            return errors
+        if "stale (content)" not in post_update_info.lower():
+            errors.append(
+                "rlm mtime recovery: fast-path update did not remain stale (content)"
+            )
+            return errors
+
+        if invoke("build") is None:
+            return errors
+        final_info = invoke("info")
+        if final_info is None:
+            return errors
+        if "fresh" not in final_info.lower():
+            errors.append("rlm mtime recovery: full rebuild did not restore fresh info")
+    return errors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default=None)
@@ -589,6 +769,9 @@ def main() -> None:
     target = args.target or detect_target()
     tools_dir = args.tools_dir or Path("plugins/unica/bin") / target
     errors = check_tool_contracts(tools_dir, target)
+    rlm_index = tool_executable(tools_dir.resolve(), "rlm-bsl-index", target)
+    if rlm_index.exists():
+        errors.extend(check_rlm_mtime_recovery_contract(rlm_index))
     if args.rlm_db:
         errors.extend(check_rlm_schema(args.rlm_db))
 

@@ -608,6 +608,173 @@ class ProductContractTests(unittest.TestCase):
 
             self.assertEqual(module.check_rlm_schema(db_path), [])
 
+    def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        actions = []
+
+        def run_rlm(command, cwd, env):
+            action = command[2]
+            self.assertEqual(
+                command,
+                ["rlm-bsl-index", "index", action, str(cwd)],
+            )
+            actions.append(command[2])
+            self.assertEqual(cwd, Path(command[3]))
+            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parent / "index"))
+            self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
+            self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
+            self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
+            return next(outputs)
+
+        errors = module.check_rlm_mtime_recovery_contract(
+            Path("rlm-bsl-index"),
+            run_rlm=run_rlm,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            actions,
+            ["build", "info", "info", "update", "info", "build", "info"],
+        )
+
+    def test_run_rlm_command_times_out_instead_of_hanging(self) -> None:
+        module = load_contract_module()
+        timeout = module.subprocess.TimeoutExpired(["rlm-bsl-index"], 120.0)
+
+        with patch.object(module.subprocess, "run", side_effect=timeout) as run:
+            status, output = module.run_rlm_command(
+                ["rlm-bsl-index"],
+                Path.cwd(),
+                {},
+            )
+
+        self.assertEqual(status, 1)
+        self.assertIn("timed out after 120.0s", output)
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
+    def test_run_rlm_command_reuses_script_wrapping(self) -> None:
+        module = load_contract_module()
+        completed = module.subprocess.CompletedProcess(
+            ["fixture.py"],
+            0,
+            stdout="wrapped stdout\n",
+            stderr="wrapped stderr\n",
+        )
+
+        with patch.object(module.subprocess, "run", return_value=completed) as run:
+            status, output = module.run_rlm_command(
+                ["fixture.py", "index", "info"],
+                Path.cwd(),
+                {"RLM_CONTRACT_TEST": "1"},
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output, "wrapped stdout\nwrapped stderr\n")
+        wrapped_command = run.call_args.args[0]
+        self.assertEqual(wrapped_command[0], module.sys.executable)
+        self.assertEqual(wrapped_command[1:], ["fixture.py", "index", "info"])
+        self.assertEqual(
+            run.call_args.kwargs["env"]["RLM_CONTRACT_TEST"],
+            "1",
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
+    def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        git_commands = []
+
+        def run_git(command, cwd):
+            git_commands.append(command)
+            if command == ["git", "rev-parse", "HEAD"]:
+                return 0, "fixture-head\n"
+            return 0, ""
+
+        with patch.object(module, "run_command", side_effect=run_git):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+                run_rlm=lambda command, cwd, env: next(outputs),
+            )
+
+        self.assertEqual(errors, [])
+        signing_disabled = [
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgSign=false",
+        ]
+        self.assertEqual(
+            git_commands,
+            [
+                [*signing_disabled, "init", "-q"],
+                [
+                    *signing_disabled,
+                    "config",
+                    "user.email",
+                    "unica-ci@example.invalid",
+                ],
+                [*signing_disabled, "config", "user.name", "Unica CI"],
+                [*signing_disabled, "add", "."],
+                [*signing_disabled, "commit", "-q", "-m", "fixture"],
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                ["git", "rev-parse", "HEAD"],
+                ["git", "rev-parse", "HEAD"],
+            ],
+        )
+
+    def test_rlm_mtime_recovery_contract_rejects_changed_git_head(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        heads = iter(["initial-head\n", "changed-head\n"])
+
+        def run_git(command, cwd):
+            if command == ["git", "rev-parse", "HEAD"]:
+                return 0, next(heads)
+            return 0, ""
+
+        with patch.object(module, "run_command", side_effect=run_git):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+                run_rlm=lambda command, cwd, env: next(outputs),
+            )
+
+        self.assertTrue(
+            any("Git HEAD changed during update" in error for error in errors),
+            errors,
+        )
+
     def test_rlm_schema_contract_reports_missing_column(self) -> None:
         module = load_contract_module()
 
