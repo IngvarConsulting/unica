@@ -136,3 +136,147 @@ Expected: every command exits `0`; Rust and Python suites report zero failures.
 Stage only the Rust change, the two skill documents, this plan, and its design
 document. Commit as `fix: derive effective compatibility version`, push
 `agent/fix-effective-compatibility-version`, and open a draft PR to `main`.
+
+### Task 3: Share the compatibility-mode reasoning contract
+
+**Files:**
+- Create: `plugins/unica/references/platform/compatibility-modes.md`
+- Modify: `plugins/unica/skills/platform-help/SKILL.md`
+- Modify: `plugins/unica/skills/release-support/SKILL.md`
+- Modify: `plugins/unica/skills/bsp-patterns/SKILL.md`
+- Test: `tests/ci/test_unica_skills.py`
+
+**Interfaces:**
+- Consumes: public MCP tools already routed by `platform-help`,
+  `release-support`, and `bsp-patterns`.
+- Produces: one shared `references/platform/compatibility-modes.md` reasoning
+  contract, linked from all three scenario skills.
+
+- [x] **Step 1: Add the failing skill-contract test**
+
+Add this test to `UnicaSkillRoutingTests`:
+
+```python
+def test_compatibility_guidance_preserves_effective_version_contract(self) -> None:
+    reference_path = (
+        self.reference_root() / "platform" / "compatibility-modes.md"
+    )
+    self.assertTrue(reference_path.is_file())
+    reference = reference_path.read_text(encoding="utf-8")
+
+    for token in [
+        "runtime platform line",
+        "configured compatibility mode",
+        "effective compatibility version",
+        "`DontUse` -> runtime platform line",
+        "`VersionX` -> `X`",
+        "`CompatibilityMode`",
+        "`ConfigurationExtensionCompatibilityMode`",
+        "`InterfaceCompatibilityMode`",
+        "code location does not select the mode family",
+        "corroborating implementation evidence",
+        "not complete old-platform equivalence",
+    ]:
+        with self.subTest(token=token):
+            self.assertIn(token, reference)
+
+    for skill in ["platform-help", "release-support", "bsp-patterns"]:
+        skill_text = (
+            self.skill_root() / skill / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        with self.subTest(skill=skill):
+            self.assertIn(
+                "references/platform/compatibility-modes.md",
+                skill_text,
+            )
+```
+
+- [x] **Step 2: Run the contract test and verify RED**
+
+Run:
+
+```bash
+python3.12 -m unittest \
+  tests.ci.test_unica_skills.UnicaSkillRoutingTests.test_compatibility_guidance_preserves_effective_version_contract
+```
+
+Expected: FAIL because
+`plugins/unica/references/platform/compatibility-modes.md` does not exist.
+
+- [x] **Step 3: Add the shared reference**
+
+Create `plugins/unica/references/platform/compatibility-modes.md` with these
+sections and exact rules:
+
+```markdown
+# Platform Compatibility Modes
+
+## Terms
+
+- **runtime platform line** — the platform line that actually runs or will run
+  the infobase;
+- **configured compatibility mode** — the literal stored in configuration or
+  extension metadata;
+- **effective compatibility version** — the behavior version used for a
+  feature-specific compatibility decision.
+
+## Normalization
+
+`DontUse` -> runtime platform line
+
+`VersionX` -> `X`
+```
+
+The remaining sections must:
+
+- distinguish `CompatibilityMode`,
+  `ConfigurationExtensionCompatibilityMode`, and
+  `InterfaceCompatibilityMode`;
+- require the feature contract, not code location, to select the applicable
+  mode family;
+- require exact-platform documentation before claiming that a literal such as
+  `Version8_5_4` exists;
+- state that compatibility mode affects more than old method behavior;
+- state that BSP is corroborating implementation evidence, not the platform
+  specification;
+- state that matching effective versions prove compatibility-controlled
+  behavior, not complete old-platform equivalence;
+- prescribe an answer matrix containing runtime platform, literal mode,
+  effective version, feature result, and evidence.
+
+- [x] **Step 4: Route existing skills to the reference**
+
+Add the exact path `references/platform/compatibility-modes.md`:
+
+- to `platform-help` under `## Platform context`, required for any question
+  about a compatibility mode or version-sensitive behavior;
+- to `release-support` under `## References`, required for upgrades,
+  migrations, and configuration/extension compatibility decisions;
+- to `bsp-patterns` in a new `## References` section, required when BSP code
+  gates behavior by a platform version or compatibility mode.
+
+In `bsp-patterns`, explicitly require platform documentation to remain the
+contract source and BSP code to remain implementation evidence.
+
+- [x] **Step 5: Run focused and full skill verification**
+
+Run:
+
+```bash
+python3.12 -m unittest \
+  tests.ci.test_unica_skills.UnicaSkillRoutingTests.test_compatibility_guidance_preserves_effective_version_contract
+python3.12 -m unittest -v \
+  tests.ci.test_unica_skills \
+  tests.ci.test_unica_mcp_script_parity
+git diff --check
+```
+
+Expected: the focused contract passes; the full run reports zero failures
+(Windows-only skips remain allowed); `git diff --check` exits `0`.
+
+- [x] **Step 6: Commit and update PR #196**
+
+Stage only the shared reference, three skill files, contract test, and updated
+plan. Commit as `docs: add compatibility mode guidance` and push
+`agent/fix-effective-compatibility-version`. Verify PR #196 remains open,
+mergeable, and all CI checks return to green.
