@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="99999999-9999-4999-8999-999999999999">
+		<Properties>
+			<Name>SubordinateRegisterParity</Name>
+			<DefaultLanguage>Language.Русский</DefaultLanguage>
+		</Properties>
+		<ChildObjects>
+			<Language>Русский</Language>
+			<Document>Регистратор</Document>
+			<InformationRegister>SubordinateRegister</InformationRegister>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>

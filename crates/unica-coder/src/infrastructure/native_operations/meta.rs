@@ -5407,6 +5407,49 @@ mod edit_tests {
         );
     }
 
+    fn validate_stdout_for_information_register(
+        write_mode: &str,
+        use_standard_commands: &str,
+    ) -> String {
+        let xml = sample_meta_object_xml(
+            "InformationRegister",
+            "SampleRegister",
+            &format!(
+                "\t\t\t<UseStandardCommands>{use_standard_commands}</UseStandardCommands>\n\t\t\t<WriteMode>{write_mode}</WriteMode>"
+            ),
+            "\t\t<ChildObjects>\n\t\t\t<Dimension uuid=\"66666666-6666-4666-8666-666666666666\">\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>SampleDimension</Name>\n\t\t\t\t</Properties>\n\t\t\t</Dimension>\n\t\t</ChildObjects>",
+        );
+        let outcome = validate_registered_object(
+            "InformationRegister",
+            "SampleRegister",
+            &xml,
+            &[("Русский", "ru")],
+        );
+        assert!(outcome.ok, "{outcome:?}");
+        outcome_text(&outcome)
+    }
+
+    const SUBORDINATE_REGISTER_WARNING: &str =
+        "subordinate registers are not shown in the command interface";
+
+    #[test]
+    fn validate_meta_warns_on_subordinate_register_in_command_interface() {
+        let stdout = validate_stdout_for_information_register("RecorderSubordinate", "true");
+        assert!(stdout.contains(SUBORDINATE_REGISTER_WARNING), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_allows_independent_register_in_command_interface() {
+        let stdout = validate_stdout_for_information_register("Independent", "true");
+        assert!(!stdout.contains(SUBORDINATE_REGISTER_WARNING), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_allows_subordinate_register_without_standard_commands() {
+        let stdout = validate_stdout_for_information_register("RecorderSubordinate", "false");
+        assert!(!stdout.contains(SUBORDINATE_REGISTER_WARNING), "{stdout}");
+    }
+
     #[test]
     fn edit_meta_rejects_unknown_modify_attribute_key() {
         let context = temp_context("modify-attribute-unknown-key");
@@ -6937,6 +6980,15 @@ pub(crate) fn meta_validate_check_cross_properties(
                 issues += 1;
             }
         }
+    }
+    if md_type == "InformationRegister"
+        && meta_info_child_text(props_node, "WriteMode").as_deref() == Some("RecorderSubordinate")
+        && meta_info_child_text(props_node, "UseStandardCommands").as_deref() == Some("true")
+    {
+        report.warn(
+            "10. InformationRegister: WriteMode=RecorderSubordinate with UseStandardCommands=true (subordinate registers are not shown in the command interface)",
+        );
+        issues += 1;
     }
     meta_validate_check_document_register_records(
         report,

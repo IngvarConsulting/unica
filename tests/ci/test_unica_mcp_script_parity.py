@@ -925,6 +925,35 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
+        name="meta-validate-subordinate-register",
+        tool="unica.meta.validate",
+        skill="meta-validate",
+        script="meta-validate.py",
+        arguments={
+            "ObjectPath": "src/InformationRegisters/SubordinateRegister.xml",
+            "Detailed": True,
+        },
+        fixtures=(
+            FileFixture(
+                "meta-validate-subordinate-register/Configuration.xml",
+                "src/Configuration.xml",
+            ),
+            FileFixture(
+                "meta-validate-subordinate-register/Languages/Русский.xml",
+                "src/Languages/Русский.xml",
+            ),
+            FileFixture(
+                "meta-validate-subordinate-register/Documents/Регистратор.xml",
+                "src/Documents/Регистратор.xml",
+            ),
+            FileFixture(
+                "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml",
+                "src/InformationRegisters/SubordinateRegister.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
         name="help-add-catalog",
         tool="unica.help.add",
         skill="help-add",
