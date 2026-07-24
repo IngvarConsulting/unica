@@ -4819,9 +4819,9 @@ fn form_edit_validate_surviving_removal_references(
         {
             let value = node.text().unwrap_or("").trim();
             if let Some(target) = form_edit_items_binding_target(value) {
-                if removed_names.contains(target) {
+                if removed_names.contains(target.as_str()) {
                     return Err(form_edit_surviving_reference_diagnostic(
-                        node, property, value, target,
+                        node, property, value, &target,
                     ));
                 }
             }
@@ -4855,12 +4855,16 @@ fn form_edit_validate_surviving_removal_references(
     Ok(())
 }
 
-fn form_edit_items_binding_target(value: &str) -> Option<&str> {
-    let mut segments = value.trim().split('.');
+fn form_edit_items_binding_target(value: &str) -> Option<String> {
+    let canonical = strip_form_binding_prefixes(value.trim());
+    let mut segments = canonical.split('.');
     if segments.next()? != "Items" {
         return None;
     }
-    segments.next().filter(|target| !target.is_empty())
+    segments
+        .next()
+        .filter(|target| !target.is_empty())
+        .map(str::to_string)
 }
 
 fn form_edit_item_standard_command_target(value: &str) -> Option<&str> {
@@ -11997,6 +12001,86 @@ mod tests {
     }
 
     #[test]
+    fn form_edit_remove_rejects_prefixed_items_reference_for_inline_and_json_path() {
+        let child_items = r#"		<InputField name="Target" id="1"/>
+		<InputField name="Dependent" id="2">
+			<DataPath>~Items.Target.CurrentData.Value</DataPath>
+		</InputField>
+"#;
+        let definition = json!({"removeElements": [{"name": "Target"}]});
+
+        for definition_mode in ["definition", "JsonPath"] {
+            let context = temp_context(&format!(
+                "edit-remove-prefixed-items-{}",
+                definition_mode.to_ascii_lowercase()
+            ));
+            let form_path = context.cwd.join("Form.xml");
+            let original_form = form_edit_remove_test_xml(child_items).into_bytes();
+            fs::write(&form_path, &original_form).unwrap();
+            let mut args = Map::from_iter([(
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            )]);
+            let definition_path = context.cwd.join("edit.json");
+            let original_definition = serde_json::to_vec_pretty(&definition).unwrap();
+            if definition_mode == "definition" {
+                args.insert("definition".to_string(), definition.clone());
+            } else {
+                fs::write(&definition_path, &original_definition).unwrap();
+                args.insert(
+                    "JsonPath".to_string(),
+                    json!(definition_path.display().to_string()),
+                );
+            }
+
+            let preview = preview_form_edit(&args, &context);
+            let form_after_preview = fs::read(&form_path).unwrap();
+            let apply = edit_form(&args, &context);
+            let form_after_apply = fs::read(&form_path).unwrap();
+
+            assert!(!preview.ok, "{definition_mode} preview: {preview:?}");
+            assert!(!apply.ok, "{definition_mode} apply: {apply:?}");
+            assert_eq!(
+                preview.errors, apply.errors,
+                "{definition_mode}: preview/apply errors differ"
+            );
+            assert_eq!(
+                preview.stderr, apply.stderr,
+                "{definition_mode}: preview/apply stderr differs"
+            );
+            let expected_diagnostic = "FORM_EDIT_REMOVE_SURVIVING_REFERENCE: surviving element \
+`Dependent` property `DataPath` references removed element `Target` \
+(value `~Items.Target.CurrentData.Value`)";
+            for outcome in [&preview, &apply] {
+                assert!(
+                    outcome
+                        .errors
+                        .iter()
+                        .any(|error| error == expected_diagnostic),
+                    "{definition_mode}: {outcome:?}"
+                );
+            }
+            assert_eq!(
+                form_after_preview, original_form,
+                "{definition_mode}: preview changed source bytes"
+            );
+            assert_eq!(
+                form_after_apply, original_form,
+                "{definition_mode}: apply changed source bytes"
+            );
+            if definition_mode == "JsonPath" {
+                assert_eq!(
+                    fs::read(&definition_path).unwrap(),
+                    original_definition,
+                    "JsonPath definition bytes changed"
+                );
+            }
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
     fn form_edit_remove_rejects_only_exact_surviving_references_outside_removed_subtrees() {
         let context = temp_context("edit-remove-reference-exactness");
         let form_path = context.cwd.join("Form.xml");
@@ -12005,7 +12089,7 @@ mod tests {
 			<DataPath>Items.Target.CurrentData.Value</DataPath>
 		</InputField>
 		<InputField name="Survivor" id="2">
-			<DataPath>Items.TargetDetails.CurrentData.Value</DataPath>
+			<DataPath>~Items.TargetDetails.CurrentData.Value</DataPath>
 		</InputField>
 "#,
         )

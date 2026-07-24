@@ -98,16 +98,15 @@ fn validate_remove_elements(value: &Value) -> Result<(), String> {
             "FORM_EDIT_REMOVE_ELEMENT_MISSING_NAME: removeElements entry requires string `name`"
                 .to_string()
         })?;
-        let normalized_name = name.trim();
-        if normalized_name.is_empty() {
+        if name.trim().is_empty() {
             return Err(
                 "FORM_EDIT_REMOVE_ELEMENT_EMPTY_NAME: removeElements entry name must not be empty"
                     .to_string(),
             );
         }
-        if !names.insert(normalized_name.to_string()) {
+        if !names.insert(name.to_string()) {
             return Err(format!(
-                "FORM_EDIT_REMOVE_ELEMENT_DUPLICATE: duplicate removeElements name `{normalized_name}`"
+                "FORM_EDIT_REMOVE_ELEMENT_DUPLICATE: duplicate removeElements name `{name}`"
             ));
         }
     }
@@ -124,6 +123,34 @@ mod tests {
             validate_form_edit_definition(&json!({"removeElements": ["Name"]})).unwrap_err();
         assert!(
             error.contains("FORM_EDIT_REMOVE_ELEMENT_INVALID"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn remove_elements_treats_whitespace_distinct_names_as_distinct() {
+        let result = validate_form_edit_definition(&json!({
+            "removeElements": [
+                {"name": "Target"},
+                {"name": "Target "}
+            ]
+        }));
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn remove_elements_rejects_exact_duplicate_names() {
+        let error = validate_form_edit_definition(&json!({
+            "removeElements": [
+                {"name": "Target"},
+                {"name": "Target"}
+            ]
+        }))
+        .unwrap_err();
+
+        assert!(
+            error.contains("FORM_EDIT_REMOVE_ELEMENT_DUPLICATE") && error.contains("`Target`"),
             "{error}"
         );
     }
