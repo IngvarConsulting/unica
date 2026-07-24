@@ -19,6 +19,13 @@ description: "Поиск и применение паттернов БСП. Ис
 4. Use `unica.standards.search` for platform/BSP guidance when the pattern affects security, rights, background jobs, files, or external calls.
 5. Implement the smallest integration point and verify with `unica.runtime.execute` syntax/tests.
 
+## References
+
+- Read `references/platform/compatibility-modes.md` when BSP code gates
+  behavior by a platform version or compatibility mode. Platform guidance
+  remains the contract source; BSP code is corroborating implementation
+  evidence that must be reconciled with that contract.
+
 ## Pattern hints
 
 - Long operations: background job, progress feedback, cancellation, and idempotent restart.

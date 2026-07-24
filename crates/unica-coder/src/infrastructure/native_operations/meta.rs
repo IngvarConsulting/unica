@@ -2,7 +2,9 @@
 
 use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::AdapterOutcome;
-use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::format_profile::{
+    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
@@ -3798,6 +3800,43 @@ mod edit_tests {
             meta_edit_line_number_length_policy_from_mode("Bogus"),
             MetaEditLineNumberLengthPolicy::UnknownCompatibility
         ));
+    }
+
+    #[test]
+    fn line_number_length_policy_uses_effective_platform_version() {
+        for (mode, platform_line) in [
+            ("DontUse", "8.3.27"),
+            ("DontUse", "8.5.4"),
+            ("Version8_3_27", "8.5.4"),
+        ] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform(mode, platform_line),
+                    MetaEditLineNumberLengthPolicy::Editable
+                ),
+                "{mode} on {platform_line}"
+            );
+        }
+
+        for (mode, platform_line) in [("DontUse", "8.3.26"), ("Version8_3_24", "8.5.4")] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform(mode, platform_line),
+                    MetaEditLineNumberLengthPolicy::FixedFive
+                ),
+                "{mode} on {platform_line}"
+            );
+        }
+
+        for platform_line in ["8.3.27.2074", "invalid"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform("DontUse", platform_line),
+                    MetaEditLineNumberLengthPolicy::UnknownCompatibility
+                ),
+                "{platform_line}"
+            );
+        }
     }
 
     #[test]
@@ -16874,23 +16913,38 @@ fn meta_edit_line_number_length_policy(
 pub(crate) fn meta_edit_line_number_length_policy_from_mode(
     mode: &str,
 ) -> MetaEditLineNumberLengthPolicy {
+    meta_edit_line_number_length_policy_for_platform(mode, ACTIVE_FORMAT_PROFILE.platform_line)
+}
+
+pub(crate) fn meta_edit_line_number_length_policy_for_platform(
+    mode: &str,
+    platform_line: &str,
+) -> MetaEditLineNumberLengthPolicy {
     if !cf_validate_enum_allowed("CompatibilityMode").contains(&mode) {
         return MetaEditLineNumberLengthPolicy::UnknownCompatibility;
     }
-    if mode == "DontUse" {
-        return MetaEditLineNumberLengthPolicy::Editable;
-    }
-    let Some(version) = mode
-        .strip_prefix("Version")
-        .and_then(meta_edit_parse_compatibility_version)
-    else {
-        return MetaEditLineNumberLengthPolicy::UnknownCompatibility;
-    };
-    if version > (8, 3, 26) {
-        MetaEditLineNumberLengthPolicy::Editable
+    let version = if mode == "DontUse" {
+        meta_edit_parse_platform_line(platform_line)
     } else {
-        MetaEditLineNumberLengthPolicy::FixedFive
+        mode.strip_prefix("Version")
+            .and_then(meta_edit_parse_compatibility_version)
+    };
+    match version {
+        Some(version) if version > (8, 3, 26) => MetaEditLineNumberLengthPolicy::Editable,
+        Some(_) => MetaEditLineNumberLengthPolicy::FixedFive,
+        None => MetaEditLineNumberLengthPolicy::UnknownCompatibility,
     }
+}
+
+pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {

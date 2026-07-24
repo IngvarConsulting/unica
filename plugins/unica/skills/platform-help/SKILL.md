@@ -21,6 +21,10 @@ description: "Справка платформы 1С и объектной мод
 
 ## Platform context
 
+- Read `references/platform/compatibility-modes.md` for every question about a
+  compatibility mode or version-sensitive behavior. Resolve the runtime
+  platform, literal mode, effective compatibility version, and
+  feature-specific boundary separately.
 - Read `references/platform/platform-mechanics.md` when the answer depends on runtime context, auth, temporary storage, data separation, background jobs, or client/server boundaries.
 - Read `references/platform/runtime-diagnostics.md` when a platform question is really about a startup/runtime failure and needs evidence before an answer.
 - Do not give a platform answer from memory when version, mode, or context can change the behavior. Resolve that first, then answer.

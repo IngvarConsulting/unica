@@ -15,6 +15,8 @@ Support-state checks come from `unica.cf.info` and object-level `unica.meta.info
 
 ## References
 
+- Read `references/platform/compatibility-modes.md` when an upgrade, migration,
+  configuration, or extension change depends on a compatibility mode.
 - Read `references/platform/platform-mechanics.md` for platform behavior that affects compatibility and runtime risk.
 - Read `references/platform/integration-contracts.md` when release changes public integration/API behavior.
 - Read `references/use-cases/code-quality-review.md` for Findings first review output.
