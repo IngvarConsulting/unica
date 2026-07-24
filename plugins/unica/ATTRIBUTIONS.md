@@ -26,7 +26,7 @@ skills — в [`provenance/skill-upstreams.json`](provenance/skill-upstreams.jso
 
 - Репозиторий: [itrous/bsl-analyzer](https://github.com/itrous/bsl-analyzer)
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
-- Закреплённая версия: `0.2.55`, commit `5a02bb44dedaf29e0e29af1f740279d279199854`
+- Закреплённая версия: `0.2.62`, commit `9a6cb15d60c0381dce6a3b5e536434adb12da89b`
 - Лицензия: [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 

@@ -2045,7 +2045,7 @@ mod edit_tests {
     }
 
     fn canonical_path(path: &Path) -> PathBuf {
-        path.canonicalize().unwrap()
+        crate::infrastructure::source_roots::normalize_path_identity(path).unwrap()
     }
 
     const TEST_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -5066,15 +5066,20 @@ mod edit_tests {
                 canonical_path(&src).join("Languages/Russian.xml")
             ]
         );
-        assert!(inspection
+        let error = inspection
             .context
-            .expect_err("missing registered language must fail")
-            .contains(
-                &canonical_path(&src)
-                    .join("Languages/Russian.xml")
-                    .display()
-                    .to_string()
-            ));
+            .expect_err("missing registered language must fail");
+        assert!(
+            error.starts_with("registered language file not found: "),
+            "{error}"
+        );
+        assert!(
+            error.ends_with(&format!(
+                "Languages{}Russian.xml",
+                std::path::MAIN_SEPARATOR
+            )),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

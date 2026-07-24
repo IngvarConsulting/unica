@@ -320,7 +320,7 @@ class SkillProvenanceTests(unittest.TestCase):
                 "dcfff95ce678f49971b14d8acd82b042a6855470",
             )
 
-    def test_bsl_analyzer_review_metadata_follows_tools_lock(self) -> None:
+    def test_bsl_analyzer_contract_is_v0_2_62(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
@@ -329,9 +329,21 @@ class SkillProvenanceTests(unittest.TestCase):
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
 
         analyzer = locked_tools["bsl-analyzer"]
-        self.assertTrue(analyzer["version"])
-        self.assertEqual(analyzer["sourceTag"], f"v{analyzer['version']}")
-        self.assertRegex(analyzer["sourceCommit"], r"^[0-9a-f]{40}$")
+        self.assertEqual(analyzer["version"], "0.2.62")
+        self.assertEqual(analyzer["sourceTag"], "v0.2.62")
+        self.assertEqual(
+            analyzer["sourceCommit"],
+            "9a6cb15d60c0381dce6a3b5e536434adb12da89b",
+        )
+        self.assertEqual(analyzer["assetTag"], "bsl-analyzer-v0.2.62-build.1")
+        self.assertEqual(
+            {target: asset["sha256"] for target, asset in analyzer["assets"].items()},
+            {
+                "darwin-arm64": "97c599b2be9e8c4e267d7a8567b21d01d5d6939060d28084ae1f598d15c084a4",
+                "linux-x64": "070374453c933025c0750d59a658dfe9edd6415f7b5aa80d122268acc08ae8b9",
+                "win-x64": "9c42ef7d6b379b3f80afb525f9cbec757abd2ba1877bbdcfb5db49df9972fd22",
+            },
+        )
 
     def test_all_local_and_contract_paths_exist(self) -> None:
         data = self.load_provenance()
@@ -463,7 +475,7 @@ class SkillProvenanceTests(unittest.TestCase):
         backlog = self.load_product_backlog()
         products = {item["id"]: item for item in backlog["products"]}
 
-        self.assertEqual(backlog["generatedAt"], "2026-07-04")
+        self.assertEqual(backlog["generatedAt"], "2026-07-24")
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
