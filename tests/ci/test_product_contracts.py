@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_contract_module():
@@ -403,6 +404,57 @@ class ProductContractTests(unittest.TestCase):
             actions,
             ["build", "info", "info", "update", "info", "build", "info"],
         )
+
+    def test_run_rlm_command_times_out_instead_of_hanging(self) -> None:
+        module = load_contract_module()
+        timeout = module.subprocess.TimeoutExpired(["rlm-bsl-index"], 120.0)
+
+        with patch.object(module.subprocess, "run", side_effect=timeout) as run:
+            status, output = module.run_rlm_command(
+                ["rlm-bsl-index"],
+                Path.cwd(),
+                {},
+            )
+
+        self.assertEqual(status, 1)
+        self.assertIn("timed out after 120.0s", output)
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
+    def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        git_commands = []
+
+        def run_git(command, cwd):
+            git_commands.append(command)
+            return 0, ""
+
+        with patch.object(module, "run_command", side_effect=run_git):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+                run_rlm=lambda command, cwd, env: next(outputs),
+            )
+
+        self.assertEqual(errors, [])
+        signing_disabled = [
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgSign=false",
+        ]
+        for command in git_commands[:5]:
+            self.assertEqual(command[:5], signing_disabled)
 
     def test_rlm_schema_contract_reports_missing_column(self) -> None:
         module = load_contract_module()

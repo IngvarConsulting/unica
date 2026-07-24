@@ -175,16 +175,21 @@ def run_rlm_command(
     command: list[str],
     cwd: Path,
     env: dict[str, str],
+    timeout: float = 120.0,
 ) -> tuple[int, str]:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env={**os.environ, **env},
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env={**os.environ, **env},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return 1, f"timed out after {timeout}s: {exc}"
     return result.returncode, result.stdout + result.stderr
 
 
@@ -212,12 +217,24 @@ def check_rlm_mtime_recovery_contract(
                 encoding="utf-8",
             )
 
+        git_without_signing = [
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgSign=false",
+        ]
         git_commands = [
-            ["git", "init", "-q"],
-            ["git", "config", "user.email", "unica-ci@example.invalid"],
-            ["git", "config", "user.name", "Unica CI"],
-            ["git", "add", "."],
-            ["git", "commit", "-q", "-m", "fixture"],
+            [*git_without_signing, "init", "-q"],
+            [
+                *git_without_signing,
+                "config",
+                "user.email",
+                "unica-ci@example.invalid",
+            ],
+            [*git_without_signing, "config", "user.name", "Unica CI"],
+            [*git_without_signing, "add", "."],
+            [*git_without_signing, "commit", "-q", "-m", "fixture"],
         ]
         for command in git_commands:
             status, output = run_command(command, workspace)
