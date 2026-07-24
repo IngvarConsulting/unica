@@ -134,6 +134,11 @@ allowed-tools:
 
 Группы и таблицы поддерживают `children`/`columns` для вложенных элементов.
 
+### Свойства таблицы в `form.edit`
+
+- `representation`: `List` \| `Tree` \| `HierarchicalList`  
+- `autoInsertNewRow`: `true` \| `false`  
+
 ### Кнопки: command и stdCommand
 
 - `"command": "ИмяКоманды"` → `Form.Command.ИмяКоманды`

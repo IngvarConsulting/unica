@@ -4504,6 +4504,7 @@ pub(crate) fn form_edit_validate_new_element_event_tree(
         };
         let definition_kind = FormEditElementDefinitionKind::from_object(object)?;
         let element_name = definition_kind.name(object)?;
+        form_edit_validate_new_element_properties(object, definition_kind, element_name)?;
         form_edit_validate_element_event_payload_types(object, definition_kind, element_name)?;
         let kind = definition_kind.event_kind();
         let handlers = match object.get("handlers") {
@@ -4610,6 +4611,32 @@ pub(crate) fn form_edit_validate_new_element_event_tree(
             if let Some(children) = object.get(child_key).and_then(Value::as_array) {
                 form_edit_validate_new_element_event_tree(children, context)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn form_edit_validate_new_element_properties(
+    object: &Map<String, Value>,
+    kind: FormEditElementDefinitionKind,
+    element_name: &str,
+) -> Result<(), String> {
+    if let FormEditElementDefinitionKind::Table = kind {
+        if let Some(representation) = object.get("representation").and_then(Value::as_str) {
+            let normalized = representation.trim().to_lowercase();
+            if !matches!(normalized.as_str(), "list" | "tree" | "hierarchicallist") {
+                return Err(format!(
+                    "Form edit table '{element_name}' has unsupported representation '{representation}'"
+                ));
+            }
+        }
+        if object
+            .get("autoInsertNewRow")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(format!(
+                "Form edit table '{element_name}': autoInsertNewRow must be boolean"
+            ));
         }
     }
     Ok(())
@@ -6692,6 +6719,22 @@ pub(crate) fn emit_form_table(
     let inner = format!("{indent}\t");
     if let Some(path) = element.get("path").and_then(Value::as_str) {
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
+    }
+    if let Some(value) = element.get("representation").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<Representation>{}</Representation>",
+            escape_xml(value)
+        ));
+    }
+    if element.contains_key("autoInsertNewRow") {
+        let value = if element.get("autoInsertNewRow").and_then(Value::as_bool) == Some(true) {
+            "true"
+        } else {
+            "false"
+        };
+        lines.push(format!(
+            "{inner}<AutoInsertNewRow>{value}</AutoInsertNewRow>"
+        ));
     }
     emit_form_common_flags(lines, element, &inner);
     if let Some(value) = element.get("commandBarLocation").and_then(Value::as_str) {
@@ -9877,6 +9920,190 @@ mod tests {
         assert!(table_event_pos < child_items_pos, "{table_xml}");
         let validation = validate_form(&args, &context);
         assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_emits_table_representation_and_auto_insert_new_row() {
+        let context = temp_context("edit-table-presentation-autoinsert");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", "", false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{"name": "Rows", "type": "ValueTable"}],
+                    "elements": [{
+                        "table": "Rows",
+                        "path": "Rows",
+                        "representation": "Tree",
+                        "autoInsertNewRow": true
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&form_path).unwrap();
+        assert!(
+            updated.contains("<Representation>Tree</Representation>"),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("<AutoInsertNewRow>true</AutoInsertNewRow>"),
+            "{updated}"
+        );
+        let table_start = updated.find("<Table name=\"Rows\"").unwrap();
+        let table_end = updated[table_start..].find("</Table>").unwrap() + table_start;
+        let table_xml = &updated[table_start..table_end];
+        let repr_pos = table_xml.find("<Representation>").unwrap();
+        let insert_pos = table_xml.find("<AutoInsertNewRow>").unwrap();
+        assert!(repr_pos < insert_pos, "{table_xml}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_dry_run_plans_table_representation_and_auto_insert_new_row() {
+        let context = temp_context("edit-table-presentation-autoinsert-dry-run");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", "", false),
+        );
+        let original = fs::read(&form_path).unwrap();
+        let definition = json!({
+            "attributes": [{"name": "Rows", "type": "ValueTable"}],
+            "elements": [{
+                "table": "Rows",
+                "path": "Rows",
+                "representation": "Tree",
+                "autoInsertNewRow": true
+            }]
+        });
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            ("definition".to_string(), definition),
+        ]);
+
+        let outcome = NativeOperationAdapter::invoke(
+            "form-edit",
+            "unica.form.edit",
+            &args,
+            &context,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .changes
+                .iter()
+                .any(|change| change.contains("would update")),
+            "{outcome:?}"
+        );
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(stdout.contains("Planned elements:"), "{stdout}");
+        assert!(stdout.contains("[Table] Rows"), "{stdout}");
+        assert_eq!(fs::read(&form_path).unwrap(), original, "{form_path:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_invalid_table_representation() {
+        let context = temp_context("edit-table-bad-representation");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", "", false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{"name": "Rows", "type": "ValueTable"}],
+                    "elements": [{
+                        "table": "Rows",
+                        "path": "Rows",
+                        "representation": "Unknown",
+                        "autoInsertNewRow": true
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("unsupported representation")),
+            "{outcome:?}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_rejects_non_bool_auto_insert_new_row() {
+        let context = temp_context("edit-table-bad-autoinsert");
+        let form_path = context.cwd.join("Form.xml");
+        write_file(
+            &form_path,
+            &event_form_xml(Some("CatalogObject.Goods"), "", "", false),
+        );
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes": [{"name": "Rows", "type": "ValueTable"}],
+                    "elements": [{
+                        "table": "Rows",
+                        "path": "Rows",
+                        "autoInsertNewRow": 123
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("autoInsertNewRow must be boolean")),
+            "{outcome:?}"
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
