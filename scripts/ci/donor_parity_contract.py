@@ -34,6 +34,12 @@ OBSERVATION_KEYS = {
     "donorExpectedFiles",
     "unicaExpectedFiles",
 }
+CASE_EXECUTION_PROFILE = {
+    "schemaVersion": 1,
+    "platformVersion": "8.3.27",
+    "exportFormat": "2.20",
+    "emptyConfigProjection": {"from": "2.17", "to": "2.20"},
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -140,7 +146,12 @@ def case_content_digest(snapshot_root: Path, case_id: str) -> str:
                 "sha256": sha256_file(path),
             }
         )
-    return sha256_json(records)
+    return sha256_json(
+        {
+            "executionProfile": CASE_EXECUTION_PROFILE,
+            "files": records,
+        }
+    )
 
 
 def scope_content_digest(
@@ -270,9 +281,7 @@ def validate_baseline(
                 f"scope {scope!r} ownerSkill is missing from provenance: {owner!r}"
             )
         elif isinstance(entry, dict):
-            provenance_commit = entry.get(
-                "baselineCommit", upstream.get("baselineCommit")
-            )
+            provenance_commit = entry.get("parityBaselineCommit")
             if provenance_commit != commit:
                 errors.append(
                     f"scope {scope!r} provenance commit mismatch: "

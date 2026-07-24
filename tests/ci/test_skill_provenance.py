@@ -498,6 +498,26 @@ class SkillProvenanceTests(unittest.TestCase):
         ]
         self.assertEqual(sorted(uncovered), [])
 
+    def test_donor_case_scopes_are_watched_by_provenance(self) -> None:
+        data = self.load_provenance()
+        cc = next(
+            item for item in data["upstreams"] if item["id"] == "cc-1c-skills"
+        )
+        entries = {entry["skill"]: entry for entry in cc["entries"]}
+        expected = {
+            "cfe-borrow": ["tests/skills/cases/cfe-borrow/**"],
+            "dcs-compile": ["tests/skills/cases/skd-compile/**"],
+            "form-compile": [
+                "tests/skills/cases/form-compile/**",
+                "tests/skills/cases/form-compile-from-object/**",
+            ],
+            "meta-compile": ["tests/skills/cases/meta-compile/**"],
+        }
+        for skill, paths in expected.items():
+            with self.subTest(skill=skill):
+                for path in paths:
+                    self.assertIn(path, entries[skill]["upstreamPaths"])
+
     def test_donor_urls_do_not_enter_prompt_visible_skills_or_references(self) -> None:
         forbidden = [
             "https://github.com/Nikolay-Shirokov/cc-1c-skills",

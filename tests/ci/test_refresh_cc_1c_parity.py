@@ -163,6 +163,7 @@ class RefreshFixture:
                         {
                             "skill": self.owner,
                             "baselineCommit": commit,
+                            "parityBaselineCommit": commit,
                             "upstreamPaths": [
                                 f".claude/skills/{self.owner}/scripts/**",
                                 f"tests/skills/cases/{self.case_scope}/**",
@@ -421,6 +422,9 @@ class RefreshCc1cParityTests(unittest.TestCase):
         self.assertEqual(
             baseline["scopes"][fixture.owner]["acceptedCommit"], target
         )
+        entry = provenance["upstreams"][0]["entries"][0]
+        self.assertEqual(entry["baselineCommit"], fixture.initial_commit)
+        self.assertEqual(entry["parityBaselineCommit"], target)
         tracked_review = fixture.reviews_root / "test-refresh.json"
         self.assertTrue(tracked_review.is_file())
         self.assertEqual(

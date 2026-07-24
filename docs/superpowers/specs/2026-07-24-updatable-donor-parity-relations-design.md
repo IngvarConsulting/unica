@@ -169,6 +169,13 @@ steps, fixtures, and relevant skill configuration. Changing any bound input
 invalidates the relation even if the accepted baseline commit changes for other
 reasons.
 
+The digest also binds the execution profile. For the current profile, the
+pristine donor `empty-config` script still creates export format `2.17`; the
+test harness projects that newly created empty owner to `2.20` before either
+side executes the case, so both implementations are evaluated as an 8.3.27
+project. The projection changes no donor snapshot bytes. Changing this
+projection or the target platform invalidates all affected relations.
+
 The observation fingerprint prevents an arbitrary new `snapshot_diff` from
 silently replacing the reviewed `snapshot_diff`.
 
@@ -180,7 +187,8 @@ silently replacing the reviewed `snapshot_diff`.
 
 - donor repository;
 - tracking ref;
-- accepted global or per-skill baseline commits;
+- accepted global or per-skill upstream-review baseline commits;
+- a separate concrete `parityBaselineCommit` for each copied parity scope;
 - watched upstream paths;
 - local and contract paths; and
 - review decisions.
@@ -197,7 +205,10 @@ accepted snapshot:
 - SHA-256 for every copied regular file; and
 - aggregate content digest per skill and case.
 
-CI verifies that manifest commits match the corresponding provenance entries.
+CI verifies that manifest commits match `parityBaselineCommit` on the
+corresponding provenance entries. A parity refresh must not advance the general
+`baselineCommit`, because that would also accept unreviewed documentation or
+other watched upstream paths.
 
 ### New relation registry
 
@@ -257,7 +268,7 @@ Each refresh creates
    - record `donor_ahead` when the donor moved ahead;
    - port donor behavior in a separate or same change when selected;
    - retain a platform override only while its cited evidence still passes.
-8. Apply the reviewed snapshot and update baseline commits, relations,
+8. Apply the reviewed snapshot and update parity baseline commits, relations,
    provenance, and the refresh artifact together.
 9. Run focused parity, provenance, and refresh-contract tests.
 

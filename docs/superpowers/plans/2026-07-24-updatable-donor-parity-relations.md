@@ -366,7 +366,8 @@ Require:
 - removed cases have `decision: remove`;
 - the candidate manifest validates before accepted files change.
 
-Update snapshot, baseline manifest, relations, provenance baseline commits, and
+Update snapshot, baseline manifest, relations, provenance
+`parityBaselineCommit` values, and
 the tracked review artifact. Use a backup directory and restore accepted files
 if any publication step fails.
 
@@ -575,7 +576,8 @@ Expected: FAIL until watched case paths and refresh-review assertions exist.
 
 Add exact `tests/skills/cases/<scope>/**` patterns. Make
 `check-skill-upstreams.py --validate-only` verify that an operation-parity
-upstream with a donor baseline manifest has matching concrete accepted commits.
+upstream with a donor baseline manifest has matching concrete
+`parityBaselineCommit` values.
 Do not perform network operations in validation.
 
 Update ADR-0004 so donor snapshots and adapted Unica models are distinct.

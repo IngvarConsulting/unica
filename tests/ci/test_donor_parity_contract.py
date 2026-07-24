@@ -112,6 +112,7 @@ class DonorParityFixture:
                         {
                             "skill": "demo",
                             "baselineCommit": COMMIT,
+                            "parityBaselineCommit": COMMIT,
                             "upstreamPaths": [
                                 ".claude/skills/demo/**",
                                 "tests/skills/cases/demo/**",
@@ -192,7 +193,7 @@ class DonorParityContractTests(unittest.TestCase):
         manifest = fixture.manifest()
         (fixture.snapshot_root / "extra.txt").write_text("extra\n", encoding="utf-8")
         provenance = fixture.provenance()
-        provenance["upstreams"][0]["entries"][0]["baselineCommit"] = "9" * 40
+        provenance["upstreams"][0]["entries"][0]["parityBaselineCommit"] = "9" * 40
 
         errors = contract.validate_baseline(
             fixture.snapshot_root, manifest, provenance

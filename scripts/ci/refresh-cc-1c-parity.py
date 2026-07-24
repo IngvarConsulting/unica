@@ -18,10 +18,18 @@ import donor_parity_contract as contract
 
 CASE_SCOPE_OWNERS = {
     "cfe-borrow": "cfe-borrow",
+    # Legacy local scope, removed by the first pristine refresh.
     "dcs-compile": "dcs-compile",
     "form-compile": "form-compile",
     "form-compile-from-object": "form-compile",
     "meta-compile": "meta-compile",
+    "skd-compile": "dcs-compile",
+}
+DONOR_SKILL_OWNERS = {
+    "skd-compile": "dcs-compile",
+    "skd-edit": "dcs-edit",
+    "skd-info": "dcs-info",
+    "skd-validate": "dcs-validate",
 }
 UPSTREAM_ID = "cc-1c-skills"
 FIXTURES_RELATIVE = Path("tests/fixtures/unica_mcp_script_parity")
@@ -162,31 +170,42 @@ def prepare_refresh(
         )
         _validate_watched_paths(upstream, CASE_SCOPE_OWNERS[scope], copied)
 
-    dependency_skills = _case_dependency_skills(
+    dependency_donor_skills = _case_dependency_skills(
         candidate_snapshot, selected_case_scopes
     )
-    affected_skills = requested_owners | dependency_skills
-    for skill in sorted(affected_skills):
-        if skill not in available_owners:
+    affected_skills = requested_owners | {
+        donor_skill_owner(skill) for skill in dependency_donor_skills
+    }
+    donor_skills_to_copy = set(dependency_donor_skills)
+    for owner in requested_owners:
+        if not any(
+            donor_skill_owner(donor_skill) == owner
+            for donor_skill in dependency_donor_skills
+        ):
+            donor_skills_to_copy.add(owner)
+    for donor_skill in sorted(donor_skills_to_copy):
+        owner = donor_skill_owner(donor_skill)
+        if owner not in available_owners:
             raise RefreshError(
-                f"donor dependency skill is missing from provenance: {skill}"
+                f"donor dependency skill is missing from provenance: "
+                f"{donor_skill} -> {owner}"
             )
-        destination = candidate_snapshot / "skills" / skill
+        destination = candidate_snapshot / "skills" / donor_skill
         if destination.exists():
             shutil.rmtree(destination)
         copied = copy_skill_scripts(
             upstream_cache,
             target_commit,
-            skill,
+            donor_skill,
             candidate_snapshot,
         )
-        _validate_watched_paths(upstream, skill, copied)
+        _validate_watched_paths(upstream, owner, copied)
 
     candidate_provenance = copy.deepcopy(provenance)
     candidate_upstream = _find_upstream(candidate_provenance)
     for entry in candidate_upstream.get("entries") or []:
         if entry.get("skill") in affected_skills:
-            entry["baselineCommit"] = target_commit
+            entry["parityBaselineCommit"] = target_commit
 
     old_baseline_path = repo_root / FIXTURES_RELATIVE / BASELINE_NAME
     old_relations_path = repo_root / FIXTURES_RELATIVE / RELATIONS_NAME
@@ -806,9 +825,13 @@ def _snapshot_file_source(local_path: str) -> tuple[str, str]:
             raise RefreshError(f"case scope has no explicit owner: {case_scope}")
         return owner, f"tests/skills/{local_path}"
     if len(path.parts) >= 4 and path.parts[0] == "skills":
-        skill = path.parts[1]
-        return skill, f".claude/{local_path}"
+        donor_skill = path.parts[1]
+        return donor_skill_owner(donor_skill), f".claude/{local_path}"
     raise RefreshError(f"unsupported donor snapshot path: {local_path}")
+
+
+def donor_skill_owner(donor_skill: str) -> str:
+    return DONOR_SKILL_OWNERS.get(donor_skill, donor_skill)
 
 
 def _changed_snapshot_paths(before: Path, after: Path) -> list[str]:
@@ -901,7 +924,7 @@ def _publish_atomically(
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 

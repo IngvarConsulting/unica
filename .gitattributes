@@ -3,6 +3,9 @@
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace
 
+# The donor parity snapshot is byte-for-byte upstream evidence, including CRLF.
+tests/fixtures/unica_mcp_script_parity/cc-1c-skills/** -text -whitespace
+
 # The 8.3.27 support fixture and its CFE module are raw platform evidence.
 # Their BOM and CRLF bytes are part of the assertions and must not be normalized.
 tests/fixtures/platform_8_3_27/support-edit-bin-only/** -text -whitespace

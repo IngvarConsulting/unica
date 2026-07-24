@@ -49,7 +49,7 @@
         "typeLink": "ПолеПодсказка"
       },
       { "check": "Флаг", "path": "Флаг", "title": "Включено", "warningOnEdit": { "ru": "Изменение флага требует подтверждения", "en": "Confirm flag change" }, "extendedTooltip": { "width": 45 } },
-      { "check": "ФлагПлатформенный", "path": "ФлагПлатформенный", "title": "Слева" },
+      { "check": "ФлагПлатформенный", "path": "ФлагПлатформенный", "title": "Слева", "titleLocation": "" },
       { "check": "ФлагЯвный", "path": "ФлагЯвный", "title": "Сверху", "titleLocation": "top" },
       { "check": "ФлагТумблер", "path": "ФлагТумблер", "title": "Тумблер", "checkBoxType": "switcher", "format": "БЛ=Нет; БИ=Да" },
       { "input": "ПолеСоставное", "path": "ПолеСоставное", "title": "Ограничение типов", "typeDomainEnabled": false, "availableTypes": "string | boolean" }

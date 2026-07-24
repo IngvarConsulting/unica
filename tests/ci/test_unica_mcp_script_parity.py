@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import hashlib
 import json
@@ -8,6 +9,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -16,13 +18,25 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(MODULE_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_REPO_ROOT))
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from scripts.ci import donor_parity_contract as donor_contract
+
+
+REPO_ROOT = MODULE_REPO_ROOT
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "unica"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "unica_mcp_script_parity"
 UNICA_REFERENCE_MODELS_ROOT = FIXTURES_ROOT / "unica_reference_models"
-CC_1C_CASES_ROOT = FIXTURES_ROOT / "cc-1c-skills" / "cases"
+DONOR_SNAPSHOT_ROOT = Path(
+    os.environ.get("UNICA_DONOR_SNAPSHOT_ROOT", FIXTURES_ROOT / "cc-1c-skills")
+).resolve()
+DONOR_SKILLS_ROOT = DONOR_SNAPSHOT_ROOT / "skills"
+CC_1C_CASES_ROOT = DONOR_SNAPSHOT_ROOT / "cases"
+DONOR_BASELINE_PATH = FIXTURES_ROOT / "donor-baseline.json"
+DONOR_RELATIONS_PATH = FIXTURES_ROOT / "donor-relations.json"
 BSP_DCS_QUERY_FIXTURE = (
     "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__"
     "СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
@@ -4724,7 +4738,23 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             with self.subTest(scenario=scenario.name, tool=scenario.tool):
                 self.assert_parity(scenario)
 
-    def test_cc_1c_skill_cases_match_reference_python_scripts(self) -> None:
+    def test_every_donor_case_has_one_reviewed_relation(self) -> None:
+        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
+        relations = load_donor_relations()
+        self.assertEqual(set(relations), cases)
+
+    def test_donor_snapshot_integrity_and_provenance(self) -> None:
+        errors = donor_contract.validate_repository_contract(REPO_ROOT)
+        self.assertEqual(errors, [])
+
+    def test_category_only_expected_gap_allowlist_is_removed(self) -> None:
+        legacy_name = "CC_1C_" + "EXPECTED_GAPS"
+        self.assertNotIn(
+            legacy_name,
+            Path(__file__).read_text(encoding="utf-8"),
+        )
+
+    def test_donor_cases_match_reviewed_relations(self) -> None:
         for case in iter_cc_1c_skill_cases():
             with self.subTest(case=case.case_id, tool=cc_case_tool(case)):
                 self.assert_cc_1c_case_parity(case)
@@ -4774,6 +4804,25 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertEqual(snapshot_workspace(direct_ws), snapshot_workspace(mcp_ws))
 
     def assert_cc_1c_case_parity(self, case: CcSkillCase) -> None:
+        observation, message = self.observe_cc_1c_case(case)
+        relation = load_donor_relations()[case.case_id]
+        errors = donor_contract.validate_relation_observation(
+            relation=relation,
+            content_digest=donor_contract.case_content_digest(
+                DONOR_SNAPSHOT_ROOT, case.case_id
+            ),
+            observation=observation,
+        )
+        self.assertEqual(
+            errors,
+            [],
+            f"{case.case_id}: {message}\n"
+            + json.dumps(observation, ensure_ascii=False, indent=2),
+        )
+
+    def observe_cc_1c_case(
+        self, case: CcSkillCase
+    ) -> tuple[dict[str, Any], str]:
         with tempfile.TemporaryDirectory(prefix=f"unica-cc-parity-{case.skill_dir}-{case.case_path.stem}-") as temp:
             temp_root = Path(temp)
             direct_ws = temp_root / "direct"
@@ -4797,12 +4846,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     mcp_input.unlink(missing_ok=True)
 
             expect_error = bool(case.case_data.get("expectError"))
-            gap, message = cc_case_parity_gap(case, direct, mcp, direct_ws, mcp_ws, expect_error)
-            expected_gap = CC_1C_EXPECTED_GAPS.get(case.case_id)
-            if expected_gap is None:
-                self.assertIsNone(gap, message)
-                return
-            self.assertEqual(gap, expected_gap, f"{case.case_id}: expected gap {expected_gap}, got {gap}\n{message}")
+            return cc_case_observation(
+                case,
+                direct,
+                mcp,
+                direct_ws,
+                mcp_ws,
+                expect_error,
+            )
 
     def prepare_workspace(
         self,
@@ -4837,6 +4888,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             result = run_cc_python_script("cf-init", "cf-init.py", {"Name": "TestConfig", "OutputDir": "."}, workspace)
             if result.returncode != 0:
                 raise AssertionError(f"cc setup empty-config failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+            project_empty_config_to_8_3_27(workspace)
         elif isinstance(setup_name, str) and setup_name.startswith("fixture:"):
             fixture = case.case_path.parent / "fixtures" / setup_name.removeprefix("fixture:")
             if not fixture.exists():
@@ -4863,7 +4915,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 pre_input.write_text(json.dumps(step["input"], ensure_ascii=False, indent=2), encoding="utf-8")
             args = cc_step_raw_args(step.get("args") or {}, workspace, pre_input)
             try:
-                result = run_unica_reference_model_raw(script_rel, args, workspace)
+                result = run_donor_skill_raw(script_rel, args, workspace)
             finally:
                 if pre_input is not None:
                     pre_input.unlink(missing_ok=True)
@@ -5001,111 +5053,25 @@ def run_cc_python_script(
     arguments: dict[str, Any],
     workspace: Path,
 ) -> subprocess.CompletedProcess[str]:
-    return run_unica_reference_model(skill, script, arguments, workspace)
+    return run_unica_reference_model(
+        skill,
+        script,
+        arguments,
+        workspace,
+        skills_root=DONOR_SKILLS_ROOT,
+    )
 
 
 CC_CASE_TOOLS = {
     "meta-compile": "unica.meta.compile",
+    # Kept until the first pristine refresh removes the adapted local alias.
     "dcs-compile": "unica.dcs.compile",
+    "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
     "cfe-borrow": "unica.cfe.borrow",
 }
 
-
-CC_1C_EXPECTED_GAPS = {
-    "meta-compile/batch": "snapshot_diff",
-    "form-compile/dup-command-names": "ok_mismatch",
-    "form-compile/dup-element-names": "ok_mismatch",
-    "cfe-borrow/catalog": "snapshot_diff",
-    "cfe-borrow/common-module": "snapshot_diff",
-    "cfe-borrow/document": "snapshot_diff",
-    "cfe-borrow/enum": "snapshot_diff",
-    "cfe-borrow/multiple-objects": "snapshot_diff",
-    "form-compile/dynamic-list-parameters": "snapshot_diff",
-    "form-compile/minimal": "snapshot_diff",
-    "form-compile/namespace-collision-ok": "snapshot_diff",
-    "form-compile/pages": "snapshot_diff",
-    "form-compile/text-edit-flag": "snapshot_diff",
-    "meta-compile/accounting-register": "snapshot_diff",
-    "meta-compile/accumulation-register": "snapshot_diff",
-    "meta-compile/business-process": "snapshot_diff",
-    "meta-compile/calculation-register": "snapshot_diff",
-    "meta-compile/catalog-basic": "snapshot_diff",
-    "meta-compile/catalog-hierarchical": "snapshot_diff",
-    "meta-compile/catalog-minimal": "snapshot_diff",
-    "meta-compile/catalog-mixed-types": "snapshot_diff",
-    "meta-compile/catalog-tabparts": "snapshot_diff",
-    "meta-compile/chart-of-accounts": "snapshot_diff",
-    "meta-compile/chart-of-calculation-types": "snapshot_diff",
-    "meta-compile/chart-of-characteristic-types": "snapshot_diff",
-    "meta-compile/common-module-client": "snapshot_diff",
-    "meta-compile/common-module": "snapshot_diff",
-    "meta-compile/constant": "snapshot_diff",
-    "meta-compile/data-processor": "snapshot_diff",
-    "meta-compile/defined-type": "snapshot_diff",
-    "meta-compile/document-basic": "snapshot_diff",
-    "meta-compile/document-journal": "snapshot_diff",
-    "meta-compile/document-multiple-tabparts": "snapshot_diff",
-    "meta-compile/event-subscription": "snapshot_diff",
-    "meta-compile/exchange-plan": "snapshot_diff",
-    "meta-compile/http-service": "snapshot_diff",
-    "meta-compile/information-register": "snapshot_diff",
-    "meta-compile/report": "snapshot_diff",
-    "meta-compile/scheduled-job": "snapshot_diff",
-    "meta-compile/task": "snapshot_diff",
-    "meta-compile/web-service": "snapshot_diff",
-    "form-compile/commands": "stdout_mismatch_snapshot_diff",
-    "form-compile/dynamic-list-form": "stdout_mismatch_snapshot_diff",
-    "form-compile/groups": "stdout_mismatch_snapshot_diff",
-    "form-compile/input-fields": "stderr_mismatch",
-    "form-compile/table": "stdout_mismatch_snapshot_diff",
-    "meta-compile/error-unknown-type": "stderr_mismatch",
-    "cfe-borrow/form-bindings": "snapshot_diff",
-    "form-compile/attributes-types": "snapshot_diff",
-    "form-compile/auto-cmd-bar": "stdout_mismatch_snapshot_diff",
-    "form-compile/column-group": "stdout_mismatch_snapshot_diff",
-    "form-compile/file-dialog": "stdout_mismatch_snapshot_diff",
-    "form-compile/synonyms": "stdout_mismatch_snapshot_diff",
-    "meta-compile/enum": "snapshot_diff",
-    "dcs-compile/auto-data-parameters": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/available-values-and-folders": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/calc-object-name-restrict-string": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/calc-shorthand-extended": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/empty-param-values": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/field-appearance-and-presentation": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/field-restrictions": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/full-example": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/grouping-and-totals": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/horizontal-merge": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/multi-lang-title": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/orgroup-string-items": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/parameter-title-presentation-synonyms": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/userestriction-object-form": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/with-filters": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/with-parameters": "stdout_mismatch_snapshot_diff",
-    "form-compile/additional-columns": "unsupported_form_element",
-    "form-compile/button-group": "unsupported_form_element",
-    "form-compile/calendar": "unsupported_form_element",
-    "form-compile/chart-fields": "unsupported_form_element",
-    "form-compile/chart-gantt-settings": "unsupported_form_element",
-    "form-compile/chart-settings": "unsupported_form_element",
-    "form-compile/element-appearance": "unsupported_form_element",
-    "form-compile/events": "unsupported_form_element",
-    "form-compile/picture-field": "unsupported_form_element",
-    "form-compile/radio-auto-enum": "unsupported_form_element",
-    "form-compile/radio-synonyms": "unsupported_form_element",
-    "form-compile/radio-tumbler-strings": "unsupported_form_element",
-    "form-compile/special-fields": "unsupported_form_element",
-    "form-compile-from-object/accumreg-list-simple": "unsupported_from_object_type",
-    "form-compile-from-object/ccoct-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/chartofaccounts-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/chartofaccounts-list-simple": "unsupported_from_object_type",
-    "form-compile-from-object/exchangeplan-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-list-periodic": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-record-nonperiodic": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-record-periodic": "unsupported_from_object_type",
-}
 
 
 def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
@@ -5132,6 +5098,48 @@ def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
                 )
             )
     return cases
+
+
+def load_donor_relations() -> dict[str, dict[str, Any]]:
+    registry = donor_contract.load_json(DONOR_RELATIONS_PATH)
+    relations = registry.get("relations")
+    if not isinstance(relations, dict):
+        raise AssertionError("donor relation registry must contain an object")
+    return relations
+
+
+def write_donor_observation_candidates(output_path: Path) -> None:
+    UnicaMcpScriptParityTests.setUpClass()
+    test_case = UnicaMcpScriptParityTests(methodName="runTest")
+    observations = {}
+    cases = iter_cc_1c_skill_cases()
+    for index, case in enumerate(cases, start=1):
+        print(
+            f"[{index}/{len(cases)}] {case.case_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+        observation, message = test_case.observe_cc_1c_case(case)
+        observations[case.case_id] = {
+            "contentDigest": donor_contract.case_content_digest(
+                DONOR_SNAPSHOT_ROOT, case.case_id
+            ),
+            "observation": observation,
+            "observationFingerprint": donor_contract.observation_fingerprint(
+                observation
+            ),
+            "message": message,
+        }
+    payload = {
+        "schemaVersion": 1,
+        "snapshotRoot": str(DONOR_SNAPSHOT_ROOT),
+        "observations": observations,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def cc_case_tool(case: CcSkillCase) -> str:
@@ -5246,13 +5254,13 @@ def cc_step_raw_args(args_map: dict[str, Any], workspace: Path, input_file: Path
     return args
 
 
-def run_unica_reference_model_raw(
+def run_donor_skill_raw(
     script_rel: str,
     args: list[str],
     workspace: Path,
 ) -> subprocess.CompletedProcess[str]:
     skill, script = cc_script_skill_and_script(script_rel)
-    script_path = UNICA_REFERENCE_MODELS_ROOT / skill / "scripts" / script
+    script_path = DONOR_SKILLS_ROOT / skill / "scripts" / script
     result = subprocess.run(
         ["python3", str(script_path), *args],
         cwd=workspace,
@@ -5279,7 +5287,54 @@ def decoded_completed_process(
     )
 
 
-def cc_case_parity_gap(
+def cc_case_observation(
+    case: CcSkillCase,
+    direct: subprocess.CompletedProcess[str],
+    mcp: dict[str, Any],
+    direct_ws: Path,
+    mcp_ws: Path,
+    expect_error: bool,
+) -> tuple[dict[str, Any], str]:
+    mismatch_kind, message = _cc_case_parity_gap(
+        case,
+        direct,
+        mcp,
+        direct_ws,
+        mcp_ws,
+        expect_error,
+    )
+    expected_files = cc_case_expected_files(case)
+    donor_snapshot = snapshot_workspace(direct_ws)
+    unica_snapshot = snapshot_workspace(mcp_ws)
+    observation = {
+        "donorOk": direct.returncode == 0,
+        "unicaOk": bool(mcp.get("ok")),
+        "mismatchKind": mismatch_kind,
+        "donorStdoutSha256": donor_contract.sha256_json(
+            normalize_text(direct.stdout, direct_ws)
+        ),
+        "unicaStdoutSha256": donor_contract.sha256_json(
+            normalize_text(mcp.get("stdout") or "", mcp_ws)
+        ),
+        "donorStderrSha256": donor_contract.sha256_json(
+            normalize_text(direct.stderr, direct_ws)
+        ),
+        "unicaStderrSha256": donor_contract.sha256_json(
+            normalize_text(mcp.get("stderr") or "", mcp_ws)
+        ),
+        "donorWorkspaceSha256": donor_contract.sha256_json(donor_snapshot),
+        "unicaWorkspaceSha256": donor_contract.sha256_json(unica_snapshot),
+        "donorExpectedFiles": {
+            path: (direct_ws / path).exists() for path in expected_files
+        },
+        "unicaExpectedFiles": {
+            path: (mcp_ws / path).exists() for path in expected_files
+        },
+    }
+    return observation, message
+
+
+def _cc_case_parity_gap(
     case: CcSkillCase,
     direct: subprocess.CompletedProcess[str],
     mcp: dict[str, Any],
@@ -5348,6 +5403,17 @@ def unified_text_message(label: str, direct: str, mcp: str) -> str:
 def cc_case_expected_files(case: CcSkillCase) -> list[str]:
     files = case.case_data.get("expect", {}).get("files") or []
     return [str(path) for path in files]
+
+
+def project_empty_config_to_8_3_27(workspace: Path) -> None:
+    configuration = workspace / "Configuration.xml"
+    data = configuration.read_bytes()
+    marker = b'version="2.17"'
+    if marker not in data:
+        raise AssertionError(
+            "donor empty-config fixture no longer uses the reviewed 2.17 format"
+        )
+    configuration.write_bytes(data.replace(marker, b'version="2.20"', 1))
 
 
 def copy_tree_contents(source: Path, target: Path) -> None:
@@ -5503,6 +5569,22 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
 
 
 class WindowsParityNormalizationTests(unittest.TestCase):
+    def test_empty_donor_config_is_projected_to_bound_8_3_27_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            configuration = workspace / "Configuration.xml"
+            configuration.write_text(
+                '<MetaDataObject version="2.17"><Configuration/></MetaDataObject>',
+                encoding="utf-8",
+            )
+
+            project_empty_config_to_8_3_27(workspace)
+
+            self.assertIn(
+                'version="2.20"',
+                configuration.read_text(encoding="utf-8"),
+            )
+
     def test_snapshot_ignores_one_optional_terminal_newline(self) -> None:
         workspace = Path("/parity-workspace")
 
@@ -5571,4 +5653,15 @@ def snapshot_workspace(workspace: Path) -> dict[str, str]:
 
 
 if __name__ == "__main__":
-    unittest.main()
+    cli = argparse.ArgumentParser(add_help=False)
+    cli.add_argument("--write-donor-observations", type=Path)
+    cli_args, unittest_args = cli.parse_known_args()
+    if cli_args.write_donor_observations is not None:
+        if unittest_args:
+            cli.error(
+                "unittest arguments cannot be combined with "
+                "--write-donor-observations"
+            )
+        write_donor_observation_candidates(cli_args.write_donor_observations)
+    else:
+        unittest.main(argv=[sys.argv[0], *unittest_args])

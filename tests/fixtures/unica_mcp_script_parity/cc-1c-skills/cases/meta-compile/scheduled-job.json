@@ -1,19 +1,5 @@
 {
   "name": "Регламентное задание",
-  "preRun": [
-    {
-      "script": "meta-compile/scripts/meta-compile",
-      "input": {
-        "type": "CommonModule",
-        "name": "ОбменДаннымиСервер",
-        "context": "server"
-      },
-      "args": {
-        "-JsonPath": "{inputFile}",
-        "-OutputDir": "{workDir}"
-      }
-    }
-  ],
   "input": {
     "type": "ScheduledJob",
     "name": "ОбменДанными",

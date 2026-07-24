@@ -91,7 +91,8 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "cf-validate",
@@ -139,6 +140,7 @@
           "notes": "Reviewed and ported donor cfe-borrow functional drift through cbde49efdaeec190432fdf4a53201a87e83c69de in native Rust: BorrowMainAttribute path enrichment, deep tabular-section paths, DefinedType Type XML, Field path collection, idempotent form metadata, and preserved Module.bsl.",
           "upstreamPaths": [
             ".claude/skills/cfe-borrow/**",
+            "tests/skills/cases/cfe-borrow/**",
             "docs/cfe-guide.md",
             "docs/1c-extension-spec.md"
           ],
@@ -151,7 +153,8 @@
             "tests/ci/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ported"
+          "decision": "ported",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "cfe-diff",
@@ -192,7 +195,8 @@
             "tests/ci/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ported"
+          "decision": "ported",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "cfe-patch-method",
@@ -234,7 +238,8 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "epf-bsp-add-command",
@@ -343,7 +348,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "form-compile",
@@ -351,6 +357,8 @@
           "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/form.rs) behind unica.form.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/form-compile/**",
+            "tests/skills/cases/form-compile/**",
+            "tests/skills/cases/form-compile-from-object/**",
             "docs/form-guide.md",
             "docs/form-dsl-spec.md",
             "docs/form-patterns.md",
@@ -371,7 +379,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "form-edit",
@@ -506,7 +515,8 @@
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
           ],
           "decision": "ported",
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de"
+          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "help-add",
@@ -580,6 +590,7 @@
           "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model uses platform-canonical HierarchyOfItems instead of the donor spelling HierarchyItemsOnly; native compile normalizes the legacy spelling before emitting XML.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
+            "tests/skills/cases/meta-compile/**",
             "docs/meta-guide.md",
             "docs/meta-dsl-spec.md",
             "docs/1c-config-objects-spec.md"
@@ -595,7 +606,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "meta-edit",
@@ -689,7 +701,8 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "mxl-compile",
@@ -857,6 +870,7 @@
           "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
           "upstreamPaths": [
             ".claude/skills/skd-compile/**",
+            "tests/skills/cases/skd-compile/**",
             "docs/skd-guide.md",
             "docs/skd-dsl-spec.md",
             "docs/1c-dcs-spec.md"
@@ -876,7 +890,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "dcs-edit",
@@ -958,7 +973,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "subsystem-compile",
