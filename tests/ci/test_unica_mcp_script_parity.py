@@ -4900,7 +4900,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         for index, step in enumerate(case.case_data.get("preRun") or []):
             if "writeFile" in step:
                 write_file = step["writeFile"]
-                target = workspace / write_file["path"]
+                target = workspace / project_cc_case_path(
+                    case.skill_dir,
+                    write_file["path"],
+                )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 content = write_file.get("content", "")
                 if not isinstance(content, str):
@@ -4913,7 +4916,12 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if "input" in step:
                 pre_input = workspace / f"__cc_pre_input_{index}.json"
                 pre_input.write_text(json.dumps(step["input"], ensure_ascii=False, indent=2), encoding="utf-8")
-            args = cc_step_raw_args(step.get("args") or {}, workspace, pre_input)
+            args = cc_step_raw_args(
+                step.get("args") or {},
+                workspace,
+                pre_input,
+                case.skill_dir,
+            )
             try:
                 result = run_donor_skill_raw(script_rel, args, workspace)
             finally:
@@ -5064,8 +5072,6 @@ def run_cc_python_script(
 
 CC_CASE_TOOLS = {
     "meta-compile": "unica.meta.compile",
-    # Kept until the first pristine refresh removes the adapted local alias.
-    "dcs-compile": "unica.dcs.compile",
     "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
@@ -5170,12 +5176,22 @@ def cc_case_main_arguments(case: CcSkillCase, workspace: Path) -> tuple[dict[str
     arguments: dict[str, Any] = {}
     for mapping in case.skill_config["args"]:
         key = mapping["flag"].lstrip("-")
-        value = cc_mapping_value(mapping, case.case_data, workspace, input_file)
+        value = cc_mapping_value(
+            mapping,
+            case.case_data,
+            workspace,
+            input_file,
+            case.skill_dir,
+        )
         if value is CC_OMIT:
             continue
         arguments[key] = value
 
-    for key, value in cc_args_extra(case.case_data.get("args_extra") or [], workspace).items():
+    for key, value in cc_args_extra(
+        case.case_data.get("args_extra") or [],
+        workspace,
+        case.skill_dir,
+    ).items():
         arguments[key] = value
     return arguments, input_file
 
@@ -5188,6 +5204,7 @@ def cc_mapping_value(
     case_data: dict[str, Any],
     workspace: Path,
     input_file: Path | None,
+    case_scope: str,
 ) -> Any:
     source = mapping["from"]
     if source == "inputFile":
@@ -5197,12 +5214,17 @@ def cc_mapping_value(
     if source == "workDir":
         return "."
     if source == "outputPath":
-        return cc_workspace_path(workspace, case_data.get("outputPath") or "")
+        raw = project_cc_case_path(
+            case_scope,
+            case_data.get("outputPath") or "",
+        )
+        return cc_workspace_path(workspace, raw)
     if source == "workPath":
         field = mapping.get("field") or "objectPath"
         raw = case_data.get("params", {}).get(field, case_data.get(field))
         if raw in (None, ""):
             return CC_OMIT if mapping.get("optional") else "."
+        raw = project_cc_case_path(case_scope, raw)
         return cc_workspace_path(workspace, raw)
     if source == "switch":
         return case_data.get(mapping["flag"].lstrip("-"), True) is not False
@@ -5218,7 +5240,30 @@ def cc_workspace_path(workspace: Path, raw: str) -> str:
     return (workspace / raw).as_posix()
 
 
-def cc_args_extra(args_extra: list[Any], workspace: Path) -> dict[str, Any]:
+def project_cc_case_path(case_scope: str, raw: str) -> str:
+    projections = donor_contract.CASE_EXECUTION_PATH_PROJECTIONS.get(
+        case_scope,
+        {},
+    )
+    for source, target in projections.items():
+        for prefix in (source, f"{{workDir}}/{source}"):
+            if raw == prefix:
+                return target if prefix == source else f"{{workDir}}/{target}"
+            if raw.startswith(f"{prefix}/"):
+                replacement = (
+                    target
+                    if prefix == source
+                    else f"{{workDir}}/{target}"
+                )
+                return replacement + raw[len(prefix) :]
+    return raw
+
+
+def cc_args_extra(
+    args_extra: list[Any],
+    workspace: Path,
+    case_scope: str,
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     index = 0
     while index < len(args_extra):
@@ -5235,19 +5280,26 @@ def cc_args_extra(args_extra: list[Any], workspace: Path) -> dict[str, Any]:
             continue
         value = args_extra[next_index]
         if isinstance(value, str):
+            value = project_cc_case_path(case_scope, value)
             value = value.replace("{workDir}", workspace.as_posix())
         result[key] = value
         index += 2
     return result
 
 
-def cc_step_raw_args(args_map: dict[str, Any], workspace: Path, input_file: Path | None) -> list[str]:
+def cc_step_raw_args(
+    args_map: dict[str, Any],
+    workspace: Path,
+    input_file: Path | None,
+    case_scope: str,
+) -> list[str]:
     args: list[str] = []
     for flag, raw_value in args_map.items():
         args.append(flag)
         if raw_value is True or raw_value == "":
             continue
-        value = str(raw_value).replace("{workDir}", workspace.as_posix())
+        value = project_cc_case_path(case_scope, str(raw_value))
+        value = value.replace("{workDir}", workspace.as_posix())
         if input_file is not None:
             value = value.replace("{inputFile}", input_file.as_posix())
         args.append(value)
@@ -5569,6 +5621,25 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
 
 
 class WindowsParityNormalizationTests(unittest.TestCase):
+    def test_cfe_borrow_execution_separates_case_colliding_extension_root(
+        self,
+    ) -> None:
+        self.assertEqual(
+            project_cc_case_path("cfe-borrow", "ext"),
+            "extension",
+        )
+        self.assertEqual(
+            project_cc_case_path(
+                "cfe-borrow",
+                "{workDir}/ext/Catalogs/Товары.xml",
+            ),
+            "{workDir}/extension/Catalogs/Товары.xml",
+        )
+        self.assertEqual(
+            project_cc_case_path("meta-compile", "ext"),
+            "ext",
+        )
+
     def test_empty_donor_config_is_projected_to_bound_8_3_27_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

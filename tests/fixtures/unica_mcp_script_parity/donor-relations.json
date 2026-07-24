@@ -4,7 +4,7 @@
   "relations": {
     "cfe-borrow/catalog": {
       "caseId": "cfe-borrow/catalog",
-      "contentDigest": "5b8a060c52304900e67962f6db21c5ad03e1f5b70a4c3a98a0b5c34a76fc7477",
+      "contentDigest": "e60d6bb56d2ed9fc5334bb9a058aa463b389c6f6a803559eb334da7cb364a0d5",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -14,22 +14,22 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "b7aeced916ec8f867d6dc02f7d4ee85956ae8e2507910b6342b60eb5133d302c",
-        "donorWorkspaceSha256": "10231449c87e7e2c23513c51dec50857e644c7a8c65fae59f79717c7f1aecf37",
+        "donorStdoutSha256": "51db76853c60fb9e84f24629e03ef5458c2c546d8d278a001579338b1fbb1b75",
+        "donorWorkspaceSha256": "8b56d412bfcaff45737ae521d68ce7a48a89916e9b0ebe8a24fef9d251b33f5e",
         "mismatchKind": "snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "b7aeced916ec8f867d6dc02f7d4ee85956ae8e2507910b6342b60eb5133d302c",
-        "unicaWorkspaceSha256": "e92650c5977e4f226ead39d6d99e28c1f48948ffb463a6c641e2beed406dbaa6"
+        "unicaStdoutSha256": "51db76853c60fb9e84f24629e03ef5458c2c546d8d278a001579338b1fbb1b75",
+        "unicaWorkspaceSha256": "0f1bfbc19ab224b06d46172ca0782cb8767215792e1790bd310bf31d30b7d779"
       },
-      "observationFingerprint": "fbb900e1e6d2bbc8b0fbaa596ef42105bb22ab178070b0c80a661e0a92e528a7",
+      "observationFingerprint": "0dae045203bc10d29ec2fde33c9170eab40974fa7eca24397d5060fe22d36861",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
     "cfe-borrow/common-module": {
       "caseId": "cfe-borrow/common-module",
-      "contentDigest": "7c575818f61707347809ab69c960378a85ff58e5ef1bcd6cd54f1ee7888becce",
+      "contentDigest": "b9eebf5fd001bb4c16781619413bc3cbdef664cc26af50d738a92745a24afb1a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -39,22 +39,22 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "a2cfee19cfb702d824a4d8c8c1500b806e2d1f2f111390c58f92cca00ea38b13",
-        "donorWorkspaceSha256": "2038e2b26a6c1bf07dbad5e0575df3bd9915bbc391a6000075c7edd7d869d6c2",
+        "donorStdoutSha256": "aff8a39f7235ad8682260c328107e7de9dec9c712c4224fa67fb37798c987edb",
+        "donorWorkspaceSha256": "bc690d05aa2145ee6f4a7b8ba4b380a4ce95154a0b212c6260aaf463a2bb01ac",
         "mismatchKind": "snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "a2cfee19cfb702d824a4d8c8c1500b806e2d1f2f111390c58f92cca00ea38b13",
-        "unicaWorkspaceSha256": "a51468efad5448044d3407fd3d8725becd6c392a0006f7a8ef113f274512d42b"
+        "unicaStdoutSha256": "aff8a39f7235ad8682260c328107e7de9dec9c712c4224fa67fb37798c987edb",
+        "unicaWorkspaceSha256": "b9120f0d6c5f8236bbcd35e4ae24600a057f27934ff198d7cfb5eaca4241a4b7"
       },
-      "observationFingerprint": "a6bcf53344afe01baece9a6f97e9343a722d405a2f300b2eb230fc073d541cde",
+      "observationFingerprint": "7c684b5e9431f7e2b9d8638c31d1d22d98d2691a5a5b089a5ef5fc71b64620c7",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
     "cfe-borrow/document": {
       "caseId": "cfe-borrow/document",
-      "contentDigest": "a6100f52716c9ebbb0da685e489d034dbda5a27d08ee90e56ee7904785361d14",
+      "contentDigest": "848e56d06e73ed75d978602b2fd39750b57d616cb5bf9b560a98d4225b498f97",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -64,22 +64,22 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "98edd273cd3b6c9c786dc5940b19f69f3c2957b384ddc95ebf1eb5c369763306",
-        "donorWorkspaceSha256": "a1ce9d617e965dfab68f86bf567e28176c9242c1603e31f4c8668628041061da",
+        "donorStdoutSha256": "86c59d01d2a26c03b889e09584abc41379b5663d495c822ab399cb123f5594d4",
+        "donorWorkspaceSha256": "00df7941c09d7315edbc7de6d27e5ed0ff63d0f99d030705d5e7af74d666be90",
         "mismatchKind": "snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "98edd273cd3b6c9c786dc5940b19f69f3c2957b384ddc95ebf1eb5c369763306",
-        "unicaWorkspaceSha256": "e7b6d8b4209a9e06fd3f8937ad2dbfffd807dcc142f74d9eea06ed6b367c1387"
+        "unicaStdoutSha256": "86c59d01d2a26c03b889e09584abc41379b5663d495c822ab399cb123f5594d4",
+        "unicaWorkspaceSha256": "c81ad710d095dc5496ad4760b5b08eef077868c066ee99733bd4b08be0d141a5"
       },
-      "observationFingerprint": "93c8ee994d2d63fbe2549be64b06d8ffddb7038a98e01c979e19c029bc0e229a",
+      "observationFingerprint": "13c83da3322c30c0e09e5e58aa2b826ba154fa92ca6807a8aeddb48dc519aa06",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
     "cfe-borrow/enum": {
       "caseId": "cfe-borrow/enum",
-      "contentDigest": "36945bfc0148269a467edafd4e8459dc8651a6d60ba476f8aed6ba9679850673",
+      "contentDigest": "ff0f727e6500a6d4087c45fbbaa038d4b713744c1abfd8fa9cf3f1c2d5d864e2",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -89,22 +89,22 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "6ccdda7785466925fdc5df7830ddb1087c256504ba8bd4053ed263cecd47a8b8",
-        "donorWorkspaceSha256": "8133b49125a5376b7c996601e5182eb77e13c6ca6590f4888a8d61368b262b34",
+        "donorStdoutSha256": "7a0c02228827627e79327584ff6e40bc80a81966f58aed404ec9cd80aa23c9c0",
+        "donorWorkspaceSha256": "2e479bc62897c51e417494a158d756ca1c9ec055bc7639ac144c14e7e70c44b5",
         "mismatchKind": "snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "6ccdda7785466925fdc5df7830ddb1087c256504ba8bd4053ed263cecd47a8b8",
-        "unicaWorkspaceSha256": "363aa509dfd14002a78a0b70b203ec092d047b9ce62a0139a321231be281334e"
+        "unicaStdoutSha256": "7a0c02228827627e79327584ff6e40bc80a81966f58aed404ec9cd80aa23c9c0",
+        "unicaWorkspaceSha256": "8a5a0b6d7e635a6aa3e4cfaffad5d6f0913d6d89ddcae4fa52d1a5fc25ee625f"
       },
-      "observationFingerprint": "ff5fc451899e471f2feea6afd8c4cec0baa6b6fcdd2cbe25839df3aa9cd64260",
+      "observationFingerprint": "6326aae1d593374de3a04880f005208b2532408b69ed1cedb86abb9b359a981a",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
     "cfe-borrow/form-bindings": {
       "caseId": "cfe-borrow/form-bindings",
-      "contentDigest": "ca7d267670b5e1a9e2a0ff786381d9910b4c1b0adf622582da8d9e179b6a039f",
+      "contentDigest": "b916cc30e3ae7feb4ca909ef305971fa76da800ed6a94fdf7f2f5df12cfd21d4",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -114,22 +114,22 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "f040a08e914b83a926c843067d6b15800a62e66136b0e9922370cb0eb8addce7",
-        "donorWorkspaceSha256": "330fbb6ae20c07f2e14a0d9d505d773d48e5bb1ad04b00a342820e71f27ee26d",
+        "donorStdoutSha256": "d44d0a64b7d6ef05d1f69b8a01829fbd7dbc939d97a0db0e193999e17c5fc1ba",
+        "donorWorkspaceSha256": "eb4413d575cb71ed40c7b27042d191db7d560369a5295f395e604e4080886cc4",
         "mismatchKind": "stdout_mismatch_snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "2664c0d42895b5faebddddf5275cfa1012334c71195dba6480abe636705cf93e",
-        "unicaWorkspaceSha256": "d3170b788558ca01bd0a04a5e36179fe23a523e6dbdadd8e650e8f073087e893"
+        "unicaStdoutSha256": "7cdb4e7f800947be6f057aae21fead17d113f6715b4db02b1412a442ec5fc178",
+        "unicaWorkspaceSha256": "37d54fd123e43f80d7e6dccdc6f242e7157d32a3ba33d44cfa3b0cb4e297cbf1"
       },
-      "observationFingerprint": "930d7ae93fde5a1b9e08ec4946904ea19a4b33583abafcc55311cf6a97f085dd",
+      "observationFingerprint": "7a83912082367a7dec35c2aca3288d8839cda4dbf632fd81dc1c5223dcf6d6fb",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
     "cfe-borrow/multiple-objects": {
       "caseId": "cfe-borrow/multiple-objects",
-      "contentDigest": "085d50b5f914fb52943ad58695bdfd3b7c598ecac89bb04def186e32c8b4d2de",
+      "contentDigest": "9553cd9afeaf4e27f5cb3777362930284110c472b2a13b8445dff4c894f5d01f",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
         "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
@@ -139,16 +139,16 @@
         "donorExpectedFiles": {},
         "donorOk": true,
         "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "donorStdoutSha256": "16e67819b3926f3ccd7a55ba1683f97f695f2b6f048961424906d77a0eaafd5b",
-        "donorWorkspaceSha256": "382e46f3c4ef243c5f96da704f0e448692d40bdc2ce17a6cd75f93f98a66cd22",
+        "donorStdoutSha256": "2c894927c72d625fc9d23aed7295b84afbdecee109f89a85fc423ea51c8e4a6a",
+        "donorWorkspaceSha256": "ea458264cdbfa939b0fcb858b3d05b7cc0a33b50adb2f4d24e54201026ec3885",
         "mismatchKind": "snapshot_diff",
         "unicaExpectedFiles": {},
         "unicaOk": true,
         "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaStdoutSha256": "16e67819b3926f3ccd7a55ba1683f97f695f2b6f048961424906d77a0eaafd5b",
-        "unicaWorkspaceSha256": "05718154fcdfdc146871518fcf7aeca42fcefa10e86f1203814e54ad2c5cd9a1"
+        "unicaStdoutSha256": "2c894927c72d625fc9d23aed7295b84afbdecee109f89a85fc423ea51c8e4a6a",
+        "unicaWorkspaceSha256": "225da94193e953987556a61eab93582c4ca8825e01a79e0c687c31bd5ee5d6fa"
       },
-      "observationFingerprint": "2e95a8ea97a1c5f0c96280778e6ff88fecaea8838ab70b4fb0a1a2b48a19f890",
+      "observationFingerprint": "3580a715af21d43ad1a8d4f66b4850892bd67a840a85893481d870fd6804dffe",
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },

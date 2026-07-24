@@ -40,6 +40,9 @@ CASE_EXECUTION_PROFILE = {
     "exportFormat": "2.20",
     "emptyConfigProjection": {"from": "2.17", "to": "2.20"},
 }
+CASE_EXECUTION_PATH_PROJECTIONS = {
+    "cfe-borrow": {"ext": "extension"},
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -79,6 +82,17 @@ def sha256_json(value: object) -> str:
 
 def observation_fingerprint(observation: dict[str, Any]) -> str:
     return sha256_json(observation)
+
+
+def case_execution_profile(case_id: str) -> dict[str, Any]:
+    case_parts = safe_relative_path(case_id).parts
+    if len(case_parts) != 2:
+        raise ValueError(f"case id must be '<scope>/<case>': {case_id}")
+    profile = dict(CASE_EXECUTION_PROFILE)
+    projection = CASE_EXECUTION_PATH_PROJECTIONS.get(case_parts[0])
+    if projection is not None:
+        profile["workspacePathProjection"] = dict(projection)
+    return profile
 
 
 def discover_case_ids(snapshot_root: Path) -> list[str]:
@@ -148,7 +162,7 @@ def case_content_digest(snapshot_root: Path, case_id: str) -> str:
         )
     return sha256_json(
         {
-            "executionProfile": CASE_EXECUTION_PROFILE,
+            "executionProfile": case_execution_profile(case_id),
             "files": records,
         }
     )

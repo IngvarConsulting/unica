@@ -167,6 +167,18 @@ def reviewed_observation() -> dict:
 
 
 class DonorParityContractTests(unittest.TestCase):
+    def test_case_execution_profile_binds_scope_specific_path_projection(
+        self,
+    ) -> None:
+        cfe_profile = contract.case_execution_profile("cfe-borrow/catalog")
+        other_profile = contract.case_execution_profile("meta-compile/catalog")
+
+        self.assertEqual(
+            cfe_profile["workspacePathProjection"],
+            {"ext": "extension"},
+        )
+        self.assertNotIn("workspacePathProjection", other_profile)
+
     def fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

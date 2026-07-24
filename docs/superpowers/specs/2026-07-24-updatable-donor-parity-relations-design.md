@@ -176,6 +176,14 @@ side executes the case, so both implementations are evaluated as an 8.3.27
 project. The projection changes no donor snapshot bytes. Changing this
 projection or the target platform invalidates all affected relations.
 
+The `cfe-borrow` donor cases also name the extension source root `ext` beside
+the main configuration's structural `Ext` directory. A default macOS
+case-insensitive filesystem merges those distinct Linux paths and changes the
+operation being observed. The bound profile therefore projects only that case
+scope's `ext` root to `extension` for both donor and Unica execution. This
+keeps the donor cases pristine, makes the workspace topology portable, and
+invalidates only `cfe-borrow` relations when the projection changes.
+
 The observation fingerprint prevents an arbitrary new `snapshot_diff` from
 silently replacing the reviewed `snapshot_diff`.
 
