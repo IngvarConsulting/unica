@@ -109,6 +109,23 @@ def discover_case_ids(snapshot_root: Path) -> list[str]:
     return result
 
 
+def executable_case_ids(
+    snapshot_root: Path, manifest: dict[str, Any]
+) -> list[str]:
+    discovered = discover_case_ids(snapshot_root)
+    if manifest.get("schemaVersion") == 1:
+        return discovered
+    raw_scopes = manifest.get("executableCaseScopes")
+    if not isinstance(raw_scopes, list):
+        return []
+    scopes = {scope for scope in raw_scopes if isinstance(scope, str)}
+    return [
+        case_id
+        for case_id in discovered
+        if case_id.partition("/")[0] in scopes
+    ]
+
+
 def case_content_digest(snapshot_root: Path, case_id: str) -> str:
     case_parts = safe_relative_path(case_id).parts
     if len(case_parts) != 2:
@@ -190,8 +207,17 @@ def validate_baseline(
     provenance: dict[str, Any],
 ) -> list[str]:
     errors: list[str] = []
-    if manifest.get("schemaVersion") != 1:
-        errors.append("donor baseline schemaVersion must be 1")
+    schema_version = manifest.get("schemaVersion")
+    if schema_version not in {1, 2}:
+        errors.append("donor baseline schemaVersion must be 1 or 2")
+    if schema_version == 2:
+        accepted_commit = manifest.get("acceptedCommit")
+        if not isinstance(accepted_commit, str) or not HEX_40.fullmatch(
+            accepted_commit
+        ):
+            errors.append(
+                "donor baseline acceptedCommit must be a concrete 40-hex commit"
+            )
 
     upstream_id = manifest.get("upstreamId")
     if not isinstance(upstream_id, str) or not upstream_id:
@@ -248,10 +274,16 @@ def validate_baseline(
 
         scope = item.get("scope")
         scope_data = scopes.get(scope) if isinstance(scope, str) else None
-        if not isinstance(scope_data, dict):
+        if not isinstance(scope_data, dict) and not (
+            schema_version == 2 and scope is None
+        ):
             errors.append(f"{label} references unknown scope: {scope!r}")
         else:
-            accepted = scope_data.get("acceptedCommit")
+            accepted = (
+                scope_data.get("acceptedCommit")
+                if isinstance(scope_data, dict)
+                else manifest.get("acceptedCommit")
+            )
             if item.get("acceptedCommit") != accepted:
                 errors.append(f"{label} acceptedCommit differs from its scope")
 
@@ -271,6 +303,15 @@ def validate_baseline(
         errors.append(f"unmanifested snapshot file: {local_path}")
     for local_path in sorted(manifest_paths - actual_files):
         errors.append(f"manifested snapshot file is missing: {local_path}")
+
+    if schema_version == 2:
+        errors.extend(
+            _validate_corpus_inventories(
+                snapshot_root=snapshot_root,
+                manifest=manifest,
+                manifest_paths=manifest_paths,
+            )
+        )
 
     entries = {}
     if upstream is not None:
@@ -335,6 +376,7 @@ def validate_relations(
     repo_root: Path,
     snapshot_root: Path,
     registry: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if registry.get("schemaVersion") != 1:
@@ -343,12 +385,20 @@ def validate_relations(
     if not isinstance(relations, dict):
         return [*errors, "donor relations must be an object"]
 
-    discovered = set(discover_case_ids(snapshot_root))
+    all_discovered = set(discover_case_ids(snapshot_root))
+    discovered = set(
+        executable_case_ids(snapshot_root, manifest)
+        if manifest is not None
+        else all_discovered
+    )
     recorded = set(relations)
     for case_id in sorted(discovered - recorded):
         errors.append(f"missing relation for {case_id}")
     for case_id in sorted(recorded - discovered):
-        errors.append(f"relation for unknown case {case_id}")
+        if case_id in all_discovered:
+            errors.append(f"relation outside executable selection: {case_id}")
+        else:
+            errors.append(f"relation for unknown case {case_id}")
 
     for case_id in sorted(discovered & recorded):
         relation = relations.get(case_id)
@@ -470,7 +520,7 @@ def validate_repository_contract(repo_root: Path) -> list[str]:
     errors.extend(validate_refresh_reviews(repo_root, baseline))
     if relations.get("upstreamId") != baseline.get("upstreamId"):
         errors.append("donor relation upstreamId differs from baseline")
-    errors.extend(validate_relations(repo_root, snapshot_root, relations))
+    errors.extend(validate_relations(repo_root, snapshot_root, relations, baseline))
     return errors
 
 
@@ -541,6 +591,211 @@ def _find_upstream(
         if isinstance(upstream, dict) and upstream.get("id") == upstream_id:
             return upstream
     return None
+
+
+def _validate_corpus_inventories(
+    *,
+    snapshot_root: Path,
+    manifest: dict[str, Any],
+    manifest_paths: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    corpus_skills = manifest.get("corpusSkills")
+    if not isinstance(corpus_skills, dict):
+        errors.append("donor baseline corpusSkills must be an object")
+        corpus_skills = {}
+
+    inventoried_scripts: set[str] = set()
+    for skill, skill_data in sorted(corpus_skills.items()):
+        if (
+            not isinstance(skill, str)
+            or not skill
+            or "/" in skill
+            or "\\" in skill
+        ):
+            errors.append(f"invalid corpus skill name: {skill!r}")
+            continue
+        if not isinstance(skill_data, dict):
+            errors.append(f"corpus skill {skill!r} must be an object")
+            continue
+        scripts = skill_data.get("scripts")
+        if not isinstance(scripts, list):
+            errors.append(f"corpus skill {skill!r} scripts must be an array")
+            continue
+        seen: set[str] = set()
+        for raw in scripts:
+            path = _validated_path(
+                raw, f"corpus skill {skill!r}", "script", errors
+            )
+            if path is None:
+                continue
+            normalized = path.as_posix()
+            if normalized in seen:
+                errors.append(
+                    f"duplicate corpus script for skill {skill}: {normalized}"
+                )
+            seen.add(normalized)
+            expected_prefix = f"skills/{skill}/scripts/"
+            if not normalized.startswith(expected_prefix):
+                errors.append(
+                    f"corpus script is outside skill {skill}: {normalized}"
+                )
+            inventoried_scripts.add(normalized)
+
+    actual_scripts = {
+        path
+        for path in manifest_paths
+        if path.startswith("skills/") and "/scripts/" in path
+    }
+    actual_script_skills = {
+        PurePosixPath(path).parts[1]
+        for path in actual_scripts
+        if len(PurePosixPath(path).parts) >= 4
+    }
+    for skill in sorted(actual_script_skills - set(corpus_skills)):
+        errors.append(f"corpusSkills is missing skill: {skill}")
+    for path in sorted(actual_scripts - inventoried_scripts):
+        errors.append(f"corpusSkills is missing script: {path}")
+    for path in sorted(inventoried_scripts - actual_scripts):
+        errors.append(f"corpusSkills contains unknown script: {path}")
+
+    corpus_tests = manifest.get("corpusTests")
+    if not isinstance(corpus_tests, dict):
+        errors.append("donor baseline corpusTests must be an object")
+        corpus_tests = {}
+    case_scopes = corpus_tests.get("caseScopes")
+    if not isinstance(case_scopes, dict):
+        errors.append("donor baseline corpusTests.caseScopes must be an object")
+        case_scopes = {}
+
+    inventoried_cases: set[str] = set()
+    for scope, scope_data in sorted(case_scopes.items()):
+        if (
+            not isinstance(scope, str)
+            or not scope
+            or "/" in scope
+            or "\\" in scope
+        ):
+            errors.append(f"invalid corpus case scope: {scope!r}")
+            continue
+        if not isinstance(scope_data, dict):
+            errors.append(f"corpus case scope {scope!r} must be an object")
+            continue
+        case_ids = scope_data.get("caseIds")
+        if not isinstance(case_ids, list):
+            errors.append(f"corpus case scope {scope!r} caseIds must be an array")
+            continue
+        seen: set[str] = set()
+        for case_id in case_ids:
+            if not isinstance(case_id, str) or not case_id.startswith(f"{scope}/"):
+                errors.append(
+                    f"corpus case scope {scope!r} has invalid case id: {case_id!r}"
+                )
+                continue
+            if case_id in seen:
+                errors.append(f"duplicate corpus case: {case_id}")
+            seen.add(case_id)
+            inventoried_cases.add(case_id)
+
+    discovered_cases = set(discover_case_ids(snapshot_root))
+    for case_id in sorted(discovered_cases - inventoried_cases):
+        errors.append(f"corpusTests is missing case: {case_id}")
+    for case_id in sorted(inventoried_cases - discovered_cases):
+        errors.append(f"corpusTests contains unknown case: {case_id}")
+
+    _validate_file_inventory(
+        label="corpusTests.sharedFiles",
+        raw_paths=corpus_tests.get("sharedFiles"),
+        expected_paths={
+            path for path in manifest_paths if path.startswith("case-runner/")
+        },
+        errors=errors,
+    )
+
+    suites = corpus_tests.get("suites")
+    if not isinstance(suites, dict):
+        errors.append("donor baseline corpusTests.suites must be an object")
+        suites = {}
+    inventoried_suite_files: set[str] = set()
+    for suite, suite_data in sorted(suites.items()):
+        if (
+            not isinstance(suite, str)
+            or not suite
+            or "/" in suite
+            or "\\" in suite
+        ):
+            errors.append(f"invalid corpus test suite: {suite!r}")
+            continue
+        if not isinstance(suite_data, dict):
+            errors.append(f"corpus test suite {suite!r} must be an object")
+            continue
+        suite_files = suite_data.get("files")
+        expected_prefix = f"suites/{suite}/"
+        if isinstance(suite_files, list):
+            for raw in suite_files:
+                path = _validated_path(
+                    raw, f"corpus test suite {suite!r}", "file", errors
+                )
+                if path is None:
+                    continue
+                normalized = path.as_posix()
+                if not normalized.startswith(expected_prefix):
+                    errors.append(
+                        f"corpus suite file is outside suite {suite}: {normalized}"
+                    )
+                inventoried_suite_files.add(normalized)
+        else:
+            errors.append(f"corpus test suite {suite!r} files must be an array")
+
+    actual_suite_files = {
+        path for path in manifest_paths if path.startswith("suites/")
+    }
+    for path in sorted(actual_suite_files - inventoried_suite_files):
+        errors.append(f"corpusTests suites are missing file: {path}")
+    for path in sorted(inventoried_suite_files - actual_suite_files):
+        errors.append(f"corpusTests suites contain unknown file: {path}")
+
+    executable_scopes = manifest.get("executableCaseScopes")
+    if not isinstance(executable_scopes, list):
+        errors.append("donor baseline executableCaseScopes must be an array")
+    else:
+        seen_scopes: set[str] = set()
+        for scope in executable_scopes:
+            if not isinstance(scope, str) or not scope:
+                errors.append(f"invalid executableCaseScope: {scope!r}")
+                continue
+            if scope in seen_scopes:
+                errors.append(f"duplicate executableCaseScope: {scope}")
+            seen_scopes.add(scope)
+            if scope not in case_scopes:
+                errors.append(f"unknown executableCaseScope: {scope}")
+
+    return errors
+
+
+def _validate_file_inventory(
+    *,
+    label: str,
+    raw_paths: object,
+    expected_paths: set[str],
+    errors: list[str],
+) -> None:
+    if not isinstance(raw_paths, list):
+        errors.append(f"donor baseline {label} must be an array")
+        return
+    inventoried: set[str] = set()
+    for raw in raw_paths:
+        path = _validated_path(raw, label, "file", errors)
+        if path is None:
+            continue
+        normalized = path.as_posix()
+        if normalized in inventoried:
+            errors.append(f"duplicate {label} file: {normalized}")
+        inventoried.add(normalized)
+    for path in sorted(expected_paths - inventoried):
+        errors.append(f"{label} is missing file: {path}")
+    for path in sorted(inventoried - expected_paths):
+        errors.append(f"{label} contains unknown file: {path}")
 
 
 def _validated_path(

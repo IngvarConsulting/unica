@@ -92,15 +92,51 @@ class DonorParityFixture:
                 "contentDigest": contract.scope_content_digest(files, "demo"),
             }
         }
+        corpus_skills = {}
+        for skill_root in sorted((self.snapshot_root / "skills").iterdir()):
+            scripts = [
+                path.relative_to(self.snapshot_root).as_posix()
+                for path in sorted(skill_root.glob("scripts/**/*"))
+                if path.is_file()
+            ]
+            corpus_skills[skill_root.name] = {"scripts": scripts}
+        case_scopes = {}
+        for case_root in sorted((self.snapshot_root / "cases").iterdir()):
+            case_ids = [
+                f"{case_root.name}/{path.stem}"
+                for path in sorted(case_root.glob("*.json"))
+                if not path.name.startswith("_")
+            ]
+            case_scopes[case_root.name] = {"caseIds": case_ids}
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "upstreamId": "cc-1c-skills",
             "repository": "https://example.invalid/donor.git",
             "trackingRef": "main",
+            "acceptedCommit": COMMIT,
+            "corpusSkills": corpus_skills,
+            "corpusTests": {
+                "caseScopes": case_scopes,
+                "sharedFiles": [],
+                "suites": {},
+            },
+            "executableCaseScopes": ["demo"],
             "scopes": scopes,
             "files": files,
             "cases": {"demo/basic": {"scope": "demo", "contentDigest": digest}},
         }
+
+    def add_stored_only_case(self) -> None:
+        case_root = self.snapshot_root / "cases" / "stored-only"
+        case_root.mkdir(parents=True)
+        (case_root / "_skill.json").write_text(
+            json.dumps({"script": "demo/scripts/demo", "setup": "none"}),
+            encoding="utf-8",
+        )
+        (case_root / "future.json").write_text(
+            json.dumps({"name": "future"}),
+            encoding="utf-8",
+        )
 
     def provenance(self) -> dict:
         return {
@@ -290,6 +326,7 @@ class DonorParityContractTests(unittest.TestCase):
 
     def test_relations_require_every_case_and_reject_extras(self) -> None:
         fixture = self.fixture()
+        manifest = fixture.manifest()
         registry = {
             "schemaVersion": 1,
             "upstreamId": "cc-1c-skills",
@@ -297,7 +334,7 @@ class DonorParityContractTests(unittest.TestCase):
         }
 
         errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
+            fixture.repo_root, fixture.snapshot_root, registry, manifest
         )
 
         joined = "\n".join(errors)
@@ -315,7 +352,7 @@ class DonorParityContractTests(unittest.TestCase):
         }
 
         errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
+            fixture.repo_root, fixture.snapshot_root, registry, fixture.manifest()
         )
 
         joined = "\n".join(errors)
@@ -332,7 +369,7 @@ class DonorParityContractTests(unittest.TestCase):
         }
 
         errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
+            fixture.repo_root, fixture.snapshot_root, registry, fixture.manifest()
         )
 
         joined = "\n".join(errors)
@@ -348,10 +385,64 @@ class DonorParityContractTests(unittest.TestCase):
         }
 
         errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
+            fixture.repo_root, fixture.snapshot_root, registry, fixture.manifest()
         )
 
         self.assertEqual(errors, [])
+
+    def test_relations_ignore_cases_outside_executable_scopes(self) -> None:
+        fixture = self.fixture()
+        fixture.add_stored_only_case()
+        manifest = fixture.manifest()
+        registry = {
+            "schemaVersion": 1,
+            "upstreamId": "cc-1c-skills",
+            "relations": {"demo/basic": fixture.relation()},
+        }
+
+        errors = contract.validate_relations(
+            fixture.repo_root, fixture.snapshot_root, registry, manifest
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_baseline_rejects_invalid_executable_case_scopes(self) -> None:
+        fixture = self.fixture()
+        fixture.add_stored_only_case()
+        manifest = fixture.manifest()
+        manifest["executableCaseScopes"] = ["demo", "demo", "unknown"]
+
+        errors = contract.validate_baseline(
+            fixture.snapshot_root, manifest, fixture.provenance()
+        )
+
+        joined = "\n".join(errors)
+        self.assertIn("duplicate executableCaseScope: demo", joined)
+        self.assertIn("unknown executableCaseScope: unknown", joined)
+
+        manifest = fixture.manifest()
+        manifest.pop("executableCaseScopes")
+        errors = contract.validate_baseline(
+            fixture.snapshot_root, manifest, fixture.provenance()
+        )
+        self.assertIn(
+            "executableCaseScopes must be an array",
+            "\n".join(errors),
+        )
+
+    def test_baseline_requires_complete_corpus_inventories(self) -> None:
+        fixture = self.fixture()
+        manifest = fixture.manifest()
+        manifest["corpusSkills"].pop("demo")
+        manifest["corpusTests"]["caseScopes"]["demo"]["caseIds"] = []
+
+        errors = contract.validate_baseline(
+            fixture.snapshot_root, manifest, fixture.provenance()
+        )
+
+        joined = "\n".join(errors)
+        self.assertIn("corpusSkills is missing skill: demo", joined)
+        self.assertIn("corpusTests is missing case: demo/basic", joined)
 
     def test_baseline_scope_requires_matching_applied_refresh_review(self) -> None:
         fixture = self.fixture()
