@@ -3227,6 +3227,52 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_omits_line_number_length_for_external_tabular_sections() {
+        for object_type in ["ExternalReport", "ExternalDataProcessor"] {
+            let context = temp_context(&format!(
+                "add-unbounded-tabular-section-{}",
+                object_type.to_ascii_lowercase()
+            ));
+            let object_path = context.cwd.join(format!("{object_type}.xml"));
+            write_file(
+                &object_path,
+                &sample_meta_named(object_type, "SampleExternalObject"),
+            );
+
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "add-ts",
+                    "SampleItems: SampleValue: String(100)",
+                ),
+                &context,
+            );
+
+            assert!(outcome.ok, "{object_type}: {outcome:?}");
+            let updated = fs::read_to_string(&object_path).unwrap();
+            let document = Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+            let section = document
+                .descendants()
+                .find(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "TabularSection"
+                        && meta_info_child(*node, "Properties")
+                            .and_then(|properties| meta_info_child_text(properties, "Name"))
+                            .as_deref()
+                            == Some("SampleItems")
+                })
+                .expect("SampleItems tabular section");
+            let properties = meta_info_child(section, "Properties").unwrap();
+            assert!(
+                meta_info_child(properties, "LineNumberLength").is_none(),
+                "{object_type}: {updated}"
+            );
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
     fn edit_meta_adds_attribute_to_tabular_section() {
         let context = temp_context("add-tabular-section-attribute");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -15999,7 +16045,7 @@ pub(crate) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<FillChecking>DontCheck</FillChecking>"
     ));
     emit_meta_standard_attributes(lines, &format!("{indent}\t\t"), "TabularSection");
-    if !matches!(object_type, "DataProcessor" | "Report") {
+    if meta_line_number_length_is_applicable(object_type) {
         lines.push(format!(
             "{indent}\t\t<LineNumberLength>9</LineNumberLength>"
         ));
@@ -16025,6 +16071,13 @@ pub(crate) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</ChildObjects>"));
     lines.push(format!("{indent}</TabularSection>"));
+}
+
+fn meta_line_number_length_is_applicable(object_type: &str) -> bool {
+    !matches!(
+        object_type,
+        "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
+    )
 }
 
 pub(crate) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
@@ -16760,10 +16813,7 @@ fn meta_edit_line_number_length_policy(
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<MetaEditLineNumberLengthAuthorization, String> {
-    if matches!(
-        object_type,
-        "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
-    ) {
+    if !meta_line_number_length_is_applicable(object_type) {
         return Ok(MetaEditLineNumberLengthAuthorization {
             policy: MetaEditLineNumberLengthPolicy::NotApplicable,
             provenance: None,
@@ -18919,8 +18969,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
             MetaEditModifyTarget::TabularSection {
                 line_number_length: MetaEditLineNumberLengthPolicy::NotApplicable,
             } => Err(
-                "LineNumberLength is not applicable to Report or DataProcessor tabular sections"
-                    .to_string(),
+                "LineNumberLength is not applicable to Report, DataProcessor, ExternalReport, or ExternalDataProcessor tabular sections".to_string(),
             ),
             MetaEditModifyTarget::TabularSection {
                 line_number_length: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
