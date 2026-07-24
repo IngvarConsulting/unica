@@ -25,8 +25,15 @@ codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
 codex plugin add unica@unica
 ```
 
-При первом MCP-вызове `unica` скачивает только исполнительные файлы текущей платформы из
-релиза `IngvarConsulting/unica`. Архив и каждый файл проверяются по SHA-256.
+После установки откройте new Codex task: список навыков и MCP-конфигурация
+фиксируются на границе новой задачи, а не подменяются в уже работающей сессии.
+
+При первом MCP-вызове `unica` скачивает из релиза `IngvarConsulting/unica`
+только исполнительные файлы для текущей ОС и архитектуры. Архив и каждый файл
+проверяются по SHA-256. Готовый runtime атомарно публикуется в
+`$CODEX_HOME/unica/runtimes/<version>/<target>`; при стандартном `CODEX_HOME`
+это `~/.codex/unica/runtimes/...`. Неполная или повреждённая загрузка не получает
+маркер готовности.
 
 ## Обновление
 
@@ -36,10 +43,11 @@ codex plugin remove unica@unica
 codex plugin add unica@unica
 ```
 
-Затем откройте Codex. 
+Затем откройте new Codex task: уже работающая сессия не загрузит обновлённые
+навыки и MCP-конфигурацию.
 
-Отдельной команды `codex plugin upgrade` в поддерживаемом CLI нет, поэтому переустановка плагина после обновления каталога
-является намеренным шагом.
+Отдельной команды `codex plugin upgrade` в поддерживаемом CLI нет, поэтому
+переустановка плагина после обновления каталога является намеренным шагом.
 
 ## Переход со старых версий
 
@@ -119,7 +127,7 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 - `plugins/unica/skills/` — прикладные навыки 1С;
 - `crates/unica-coder/` — единый MCP runtime `unica`;
 - `crates/unica-bootstrap/` — загрузка, проверка и запуск runtime;
-- `plugins/unica/third-party/tools.lock.json` — версии внутренних инструм
+- `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов.
 
 [Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md).
 Лицензия Unica: LGPL-3.0-or-later.
