@@ -1,0 +1,24 @@
+{
+  "name": "Guard: компиляция макета для объекта на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "input": {
+    "columns": 2,
+    "areas": [
+      {
+        "name": "О",
+        "rows": [
+          {
+            "cells": [
+              {
+                "col": 1,
+                "text": "a"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "outputPath": "Catalogs/Locked/Templates/НовМакет/Ext/Template.xml",
+  "expectError": "support-guard"
+}

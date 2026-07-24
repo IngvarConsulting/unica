@@ -1,0 +1,9 @@
+{
+  "script": "epf-dump/scripts/epf-dump",
+  "setup": "none",
+  "args": [],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  }
+}

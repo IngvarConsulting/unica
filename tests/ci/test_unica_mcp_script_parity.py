@@ -4738,7 +4738,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             with self.subTest(scenario=scenario.name, tool=scenario.tool):
                 self.assert_parity(scenario)
 
-    def test_every_donor_case_has_one_reviewed_relation(self) -> None:
+    def test_every_executable_donor_case_has_one_reviewed_relation(self) -> None:
         cases = {case.case_id for case in iter_cc_1c_skill_cases()}
         relations = load_donor_relations()
         self.assertEqual(set(relations), cases)
@@ -5083,8 +5083,18 @@ CC_CASE_TOOLS = {
 def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
     if not CC_1C_CASES_ROOT.exists():
         return []
+    baseline = donor_contract.load_json(DONOR_BASELINE_PATH)
+    executable_scopes = baseline.get("executableCaseScopes")
+    if not isinstance(executable_scopes, list):
+        raise AssertionError("donor baseline must define executableCaseScopes")
+    unknown_scopes = set(executable_scopes) - set(CC_CASE_TOOLS)
+    if unknown_scopes:
+        raise AssertionError(
+            "executable donor case scope has no Unica tool mapping: "
+            + ", ".join(sorted(unknown_scopes))
+        )
     cases: list[CcSkillCase] = []
-    for skill_dir in sorted(CC_CASE_TOOLS):
+    for skill_dir in sorted(executable_scopes):
         skill_root = CC_1C_CASES_ROOT / skill_dir
         skill_config_path = skill_root / "_skill.json"
         if not skill_config_path.exists():

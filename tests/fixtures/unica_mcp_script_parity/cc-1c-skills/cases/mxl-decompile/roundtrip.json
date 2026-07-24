@@ -1,0 +1,13 @@
+{
+  "name": "Декомпиляция макета в JSON",
+  "preRun": [
+    {
+      "script": "mxl-compile/scripts/mxl-compile",
+      "input": { "columns": 3, "areas": [{ "name": "Test", "rows": [["A", "B", "C"]] }] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "expect": { "stdoutContains": "columns" }
+}

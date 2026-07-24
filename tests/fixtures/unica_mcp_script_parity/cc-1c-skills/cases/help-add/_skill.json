@@ -1,0 +1,12 @@
+{
+  "script": "help-add/scripts/add-help",
+  "setup": "none",
+  "args": [
+    { "flag": "-ObjectName", "from": "case.objectName" },
+    { "flag": "-SrcDir", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

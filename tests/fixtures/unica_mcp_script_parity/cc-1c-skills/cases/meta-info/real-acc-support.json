@@ -1,0 +1,6 @@
+{
+  "name": "Поддержка объекта: acc Номенклатура — конфигурация read-only (G=1)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "objectPath": "Catalogs/Номенклатура" },
+  "expect": { "stdoutContains": "Поддержка: конфигурация read-only" }
+}

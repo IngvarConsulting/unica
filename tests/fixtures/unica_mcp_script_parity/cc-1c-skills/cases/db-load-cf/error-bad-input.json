@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: входной файл не найден",
+  "args_extra": ["-InputFile", "C:\\nonexistent\\config.cf", "-InfoBasePath", "C:\\nonexistent\\db"],
+  "expectError": true
+}

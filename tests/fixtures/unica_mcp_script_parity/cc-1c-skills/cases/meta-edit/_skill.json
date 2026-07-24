@@ -1,0 +1,17 @@
+{
+  "script": "meta-edit/scripts/meta-edit",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-DefinitionFile", "from": "inputFile" },
+    { "flag": "-ObjectPath", "from": "workPath", "field": "objectPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": {
+    "script": "meta-validate/scripts/meta-validate",
+    "flag": "-ObjectPath",
+    "pathFrom": "objectPath"
+  }
+}

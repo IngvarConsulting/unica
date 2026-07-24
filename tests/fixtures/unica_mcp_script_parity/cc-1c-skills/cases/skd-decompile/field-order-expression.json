@@ -1,0 +1,21 @@
+{
+  "name": "Поле: orderExpression (сортировка по выражению)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.ВидыРасчета",
+          "fields": [
+            { "field": "ВидРасчета", "type": "CatalogRef.ВидыРасчета", "orderExpression": { "expression": "ЕстьNULL(ВидРасчета.Порядок, 10000)", "orderType": "Asc", "autoOrder": false } }
+          ]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

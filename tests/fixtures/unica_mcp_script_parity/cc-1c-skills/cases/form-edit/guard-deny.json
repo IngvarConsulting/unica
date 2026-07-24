@@ -1,0 +1,18 @@
+{
+  "name": "Guard: правка формы на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": {
+    "formPath": "Catalogs/Locked/Forms/ТестФорма/Ext/Form.xml"
+  },
+  "input": {
+    "operations": [
+      {
+        "op": "add-attribute",
+        "name": "Рек",
+        "type": "String",
+        "length": 5
+      }
+    ]
+  },
+  "expectError": "support-guard"
+}

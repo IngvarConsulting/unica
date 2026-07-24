@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: исходный файл не найден",
+  "args_extra": ["-SourceFile", "C:\\nonexistent\\source.xml", "-OutputFile", "C:\\tmp\\out.epf"],
+  "expectError": true
+}

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<Title>
+		<v8:item>
+			<v8:lang>ru</v8:lang>
+			<v8:content>Товары</v8:content>
+		</v8:item>
+	</Title>
+	<AutoTitle>false</AutoTitle>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<LabelDecoration name="Внимание!" id="1">
+			<TextColor>web:FireBrick</TextColor>
+			<Font faceName="Arial" height="12" bold="true" italic="false" underline="false" strikeout="false" kind="Absolute" scale="100"/>
+			<Border width="1">
+				<v8ui:style xsi:type="v8ui:ControlBorderType">Single</v8ui:style>
+			</Border>
+			<Title formatted="false">
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Внимание!</v8:content>
+				</v8:item>
+			</Title>
+			<ContextMenu name="Внимание!КонтекстноеМеню" id="2"/>
+			<ExtendedTooltip name="Внимание!РасширеннаяПодсказка" id="3"/>
+		</LabelDecoration>
+		<InputField name="Цена" id="4">
+			<DataPath>Объект.Цена</DataPath>
+			<TextColor>#FF0000</TextColor>
+			<BorderColor>style:BorderColor</BorderColor>
+			<ContextMenu name="ЦенаКонтекстноеМеню" id="5"/>
+			<ExtendedTooltip name="ЦенаРасширеннаяПодсказка" id="6"/>
+		</InputField>
+		<LabelDecoration name="Из стиля" id="7">
+			<TextColor>web:DimGray</TextColor>
+			<Font ref="style:NormalTextFont" kind="StyleItem"/>
+			<Border ref="style:ControlBorder"/>
+			<Title formatted="false">
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Из стиля</v8:content>
+				</v8:item>
+			</Title>
+			<ContextMenu name="Из стиляКонтекстноеМеню" id="8"/>
+			<ExtendedTooltip name="Из стиляРасширеннаяПодсказка" id="9"/>
+		</LabelDecoration>
+		<Button name="ОК" id="10">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ОК</v8:content>
+				</v8:item>
+			</Title>
+			<Shape>Oval</Shape>
+			<PictureLocation>Right</PictureLocation>
+			<BackColor>web:Honeydew</BackColor>
+			<BorderColor>style:BorderColor</BorderColor>
+			<Font ref="style:NormalTextFont" kind="StyleItem"/>
+			<ExtendedTooltip name="ОКРасширеннаяПодсказка" id="11"/>
+		</Button>
+		<UsualGroup name="ГруппаОформление" id="12">
+			<BackColor>web:Honeydew</BackColor>
+			<ExtendedTooltip name="ГруппаОформлениеРасширеннаяПодсказка" id="13"/>
+			<ChildItems>
+				<InputField name="Цена2" id="14">
+					<DataPath>Объект.Цена</DataPath>
+					<TextColor>web:DimGray</TextColor>
+					<ContextMenu name="Цена2КонтекстноеМеню" id="15"/>
+					<ExtendedTooltip name="Цена2РасширеннаяПодсказка" id="16"/>
+				</InputField>
+			</ChildItems>
+		</UsualGroup>
+		<PictureDecoration name="Логотип" id="17">
+			<NonselectedPictureText>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Нет изображения</v8:content>
+				</v8:item>
+			</NonselectedPictureText>
+			<Picture>
+				<xr:Ref>StdPicture.Print</xr:Ref>
+				<xr:LoadTransparent>false</xr:LoadTransparent>
+			</Picture>
+			<ImageScale>150</ImageScale>
+			<Zoomable>true</Zoomable>
+			<TextColor>web:FireBrick</TextColor>
+			<Font ref="style:NormalTextFont" kind="StyleItem"/>
+			<Border width="1">
+				<v8ui:style xsi:type="v8ui:ControlBorderType">Single</v8ui:style>
+			</Border>
+			<ContextMenu name="ЛоготипКонтекстноеМеню" id="18"/>
+			<ExtendedTooltip name="ЛоготипРасширеннаяПодсказка" id="19"/>
+		</PictureDecoration>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="20">
+			<Type>
+				<v8:Type>cfg:CatalogObject.Товары</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+			<SavedData>true</SavedData>
+		</Attribute>
+	</Attributes>
+</Form>

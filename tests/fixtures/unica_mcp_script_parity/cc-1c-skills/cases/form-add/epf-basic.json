@@ -1,0 +1,12 @@
+{
+  "name": "Добавление формы к внешней обработке (EPF)",
+  "setup": "none",
+  "preRun": [
+    {
+      "script": "epf-init/scripts/init",
+      "args": { "-Name": "МояОбработка", "-SrcDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "МояОбработка.xml", "formName": "Форма" },
+  "validatePath": "МояОбработка/Forms/Форма"
+}

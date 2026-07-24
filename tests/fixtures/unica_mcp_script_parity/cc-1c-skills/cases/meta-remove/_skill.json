@@ -1,0 +1,12 @@
+{
+  "script": "meta-remove/scripts/meta-remove",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-ConfigDir", "from": "workDir" },
+    { "flag": "-Object", "from": "case.object" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

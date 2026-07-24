@@ -1,0 +1,14 @@
+{
+  "name": "Set editable: объект на замке → редактируется",
+  "setup": "fixture:g0",
+  "params": {
+    "path": "Catalogs/Locked.xml"
+  },
+  "args_extra": [
+    "-Set",
+    "editable"
+  ],
+  "expect": {
+    "stdoutContains": "редактируется с сохранением поддержки"
+  }
+}

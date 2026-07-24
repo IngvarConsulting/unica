@@ -1,0 +1,6 @@
+{
+  "name": "Валидатор находит ошибку: неверный корневой элемент",
+  "setup": "fixture:catalog-bad-root",
+  "params": { "objectPath": "Catalogs/Bad.xml" },
+  "expectError": true
+}

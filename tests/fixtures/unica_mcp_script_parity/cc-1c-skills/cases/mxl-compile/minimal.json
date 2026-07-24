@@ -1,0 +1,19 @@
+{
+  "name": "Минимальный макет — одна область, одна ячейка",
+  "input": {
+    "columns": 1,
+    "areas": [
+      {
+        "name": "Ячейка",
+        "rows": [
+          { "cells": [{ "col": 1, "text": "Значение" }] }
+        ]
+      }
+    ]
+  },
+  "params": { "outputPath": "Template.xml" },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

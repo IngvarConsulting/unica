@@ -1,0 +1,5 @@
+{
+  "name": "Поддержка: acc на поддержке, возможность изменения выключена",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "expect": { "stdoutContains": ["Поддержка:", "выключена", "read-only"] }
+}

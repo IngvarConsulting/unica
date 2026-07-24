@@ -1,0 +1,5 @@
+{
+  "name": "Валидация реальной подсистемы Администрирование (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "subsystemPath": "Subsystems/Администрирование.xml" }
+}

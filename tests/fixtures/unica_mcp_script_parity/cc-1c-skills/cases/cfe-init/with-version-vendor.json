@@ -1,0 +1,9 @@
+{
+  "name": "Расширение с версией и поставщиком",
+  "params": { "name": "РасшВерсия", "outputDir": "ext" },
+  "args_extra": ["-Version", "1.0.0.1", "-Vendor", "ТестКомпания"],
+  "validatePath": "ext",
+  "expect": {
+    "files": ["ext/Configuration.xml"]
+  }
+}

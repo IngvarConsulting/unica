@@ -1,0 +1,11 @@
+{
+  "script": "mxl-validate/scripts/mxl-validate",
+  "setup": "none",
+  "args": [
+    { "flag": "-TemplatePath", "from": "workPath", "field": "templatePath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  }
+}

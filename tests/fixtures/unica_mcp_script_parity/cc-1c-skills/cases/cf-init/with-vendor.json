@@ -1,0 +1,20 @@
+{
+  "name": "Конфигурация с поставщиком и версией",
+  "params": {
+    "name": "Бухгалтерия"
+  },
+  "args_extra": [
+    "-Vendor",
+    "Тест",
+    "-Version",
+    "2.0.1"
+  ],
+  "expect": {
+    "files": [
+      "Configuration.xml",
+      "Languages/Русский.xml",
+      "Ext/ClientApplicationInterface.xml"
+    ],
+    "stdoutContains": "Бухгалтерия"
+  }
+}

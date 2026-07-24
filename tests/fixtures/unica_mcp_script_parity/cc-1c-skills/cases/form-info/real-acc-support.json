@@ -1,0 +1,6 @@
+{
+  "name": "Поддержка формы: acc — конфигурация read-only (G=1)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "formPath": "Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml" },
+  "expect": { "stdoutContains": "Поддержка: конфигурация read-only" }
+}

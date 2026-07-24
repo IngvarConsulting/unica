@@ -1,0 +1,21 @@
+{
+  "name": "add-parameter: ссылочный тип → xsi:type=dcscor:DesignTimeValue",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Счет ИЗ Регистр КАК Т",
+          "fields": ["Счет: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-parameter",
+    "value": "Контрагент: CatalogRef.Контрагенты = Справочник.Контрагенты.ПустаяСсылка"
+  }
+}

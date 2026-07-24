@@ -1,0 +1,50 @@
+{
+  "name": "Поле: inputParameters (ChoiceParameters, ChoiceParameterLinks, simple typed)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": [
+            {
+              "field": "СегментНоменклатуры",
+              "type": "CatalogRef.СегментыНоменклатуры",
+              "inputParameters": [
+                { "parameter": "ПараметрыВыбора", "choiceParameters": [
+                  { "name": "Отбор.СпособФормирования", "values": [
+                    "Перечисление.СпособыФормированияСегментов.ФормироватьВручную",
+                    "Перечисление.СпособыФормированияСегментов.ПериодическиОбновлять"
+                  ]}
+                ]}
+              ]
+            },
+            {
+              "field": "Сотрудник",
+              "type": "CatalogRef.Сотрудники",
+              "inputParameters": [
+                { "parameter": "СвязиПараметровВыбора", "choiceParameterLinks": [
+                  { "name": "Отбор.ТекущаяОрганизация", "value": "Организация", "mode": "Clear" },
+                  { "name": "Отбор.ТекущееПодразделение", "value": "Подразделение", "mode": "Clear" }
+                ]}
+              ]
+            },
+            {
+              "field": "ПростоЕА",
+              "type": "CatalogRef.Сотрудники",
+              "inputParameters": [
+                { "parameter": "ПараметрыВыбора", "choiceParameters": [] },
+                { "parameter": "БыстрыйВыбор", "use": false, "value": true }
+              ]
+            }
+          ]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

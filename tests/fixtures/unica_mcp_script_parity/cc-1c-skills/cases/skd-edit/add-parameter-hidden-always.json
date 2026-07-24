@@ -1,0 +1,21 @@
+{
+  "name": "add-parameter @hidden @always: useRestriction+availableAsField+use=Always",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле ИЗ Регистр КАК Т",
+          "fields": ["Поле: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-parameter",
+    "value": "Контрагент: CatalogRef.Контрагенты = Справочник.Контрагенты.ПустаяСсылка @hidden @always"
+  }
+}

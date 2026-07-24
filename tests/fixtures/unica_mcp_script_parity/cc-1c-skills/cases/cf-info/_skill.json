@@ -1,0 +1,11 @@
+{
+  "script": "cf-info/scripts/cf-info",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-ConfigPath", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "modify-structure меняет groupItems, сохраняет Selection",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Счет, Т.Сумма, Т.Валюта ИЗ Регистр КАК Т",
+          "fields": ["Счет: string", "Сумма: decimal(15,2)", "Валюта: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "set-structure", "-Value": "Счет @name=ДанныеОтчета" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "add-selection", "-Value": "Счет @group=ДанныеОтчета ;; Сумма @group=ДанныеОтчета" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-structure",
+    "value": "Валюта @name=ДанныеОтчета"
+  }
+}

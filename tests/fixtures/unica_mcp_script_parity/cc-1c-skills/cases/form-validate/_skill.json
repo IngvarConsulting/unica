@@ -1,0 +1,11 @@
+{
+  "script": "form-validate/scripts/form-validate",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-FormPath", "from": "workPath", "field": "formPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

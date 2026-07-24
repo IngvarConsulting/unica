@@ -1,0 +1,6 @@
+{
+  "name": "Реальная роль БазовыеПраваБП (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "rightsPath": "Roles/БазовыеПраваБП/Ext/Rights.xml" },
+  "expect": { "stdoutContains": "БазовыеПраваБП" }
+}

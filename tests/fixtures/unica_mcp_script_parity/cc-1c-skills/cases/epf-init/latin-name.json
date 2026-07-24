@@ -1,0 +1,8 @@
+{
+  "name": "Обработка с латинским именем",
+  "params": { "name": "DataLoader" },
+  "validatePath": "DataLoader",
+  "expect": {
+    "files": ["DataLoader.xml"]
+  }
+}

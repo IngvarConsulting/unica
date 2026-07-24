@@ -1,0 +1,14 @@
+{
+  "script": "template-add/scripts/add-template",
+  "setup": "none",
+  "args": [
+    { "flag": "-ObjectName", "from": "case.objectName" },
+    { "flag": "-TemplateName", "from": "case.templateName" },
+    { "flag": "-TemplateType", "from": "case.templateType" },
+    { "flag": "-SrcDir", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

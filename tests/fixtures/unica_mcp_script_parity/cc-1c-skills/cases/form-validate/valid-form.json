@@ -1,0 +1,20 @@
+{
+  "name": "Корректная форма проходит валидацию",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары.xml", "-FormName": "Форма" }
+    },
+    {
+      "script": "form-compile/scripts/form-compile",
+      "input": { "title": "Тест", "attributes": [{ "name": "Объект", "type": "CatalogObject.Товары", "main": true }], "elements": [{ "type": "InputField", "dataPath": "Объект.Наименование" }] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputPath": "{workDir}/Catalogs/Товары/Forms/Форма/Ext/Form.xml" }
+    }
+  ],
+  "params": { "formPath": "Catalogs/Товары/Forms/Форма" }
+}

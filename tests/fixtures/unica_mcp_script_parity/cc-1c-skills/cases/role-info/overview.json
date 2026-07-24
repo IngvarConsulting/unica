@@ -1,0 +1,37 @@
+{
+  "name": "Обзор роли",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Catalog",
+        "name": "Товары"
+      },
+      "args": {
+        "-JsonPath": "{inputFile}",
+        "-OutputDir": "{workDir}"
+      }
+    },
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": {
+        "name": "Тест",
+        "rights": [
+          {
+            "object": "Catalog.Товары",
+            "rights": [
+              "Read"
+            ]
+          }
+        ]
+      },
+      "args": {
+        "-JsonPath": "{inputFile}",
+        "-OutputDir": "{workDir}"
+      }
+    }
+  ],
+  "params": {
+    "rightsPath": "Roles/Тест/Ext/Rights.xml"
+  }
+}

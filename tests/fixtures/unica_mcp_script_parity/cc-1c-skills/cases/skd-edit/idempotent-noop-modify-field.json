@@ -1,0 +1,13 @@
+{
+  "name": "NO-OP modify-field на отсутствующее поле — файл не трогаем (regression от XML round-trip бага)",
+  "setup": "fixture:roundtrip-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-field",
+    "value": "НесуществующееПоле [Заголовок]"
+  },
+  "expect": {
+    "stdoutContains": "No changes -- file untouched"
+  },
+  "idempotent": true
+}

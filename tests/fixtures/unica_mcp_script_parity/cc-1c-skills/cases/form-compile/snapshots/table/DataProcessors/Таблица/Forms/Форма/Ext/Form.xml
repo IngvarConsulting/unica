@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<Title>
+		<v8:item>
+			<v8:lang>ru</v8:lang>
+			<v8:content>Просмотр данных</v8:content>
+		</v8:item>
+	</Title>
+	<AutoTitle>false</AutoTitle>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<Table name="Данные" id="1">
+			<DataPath>Данные</DataPath>
+			<TitleLocation>Top</TitleLocation>
+			<ChangeRowSet>true</ChangeRowSet>
+			<HeightInTableRows>5</HeightInTableRows>
+			<Autofill>true</Autofill>
+			<MultipleChoice>true</MultipleChoice>
+			<SearchOnInput>Use</SearchOnInput>
+			<AutoMarkIncomplete>true</AutoMarkIncomplete>
+			<HeaderHeight>2</HeaderHeight>
+			<FooterHeight>1</FooterHeight>
+			<CurrentRowUse>SelectionPresentationAndChoice</CurrentRowUse>
+			<ViewStatusLocation>None</ViewStatusLocation>
+			<SearchControlLocation>None</SearchControlLocation>
+			<CommandSet>
+				<ExcludedCommand>Add</ExcludedCommand>
+				<ExcludedCommand>Delete</ExcludedCommand>
+				<ExcludedCommand>MoveUp</ExcludedCommand>
+				<ExcludedCommand>MoveDown</ExcludedCommand>
+			</CommandSet>
+			<Height>80</Height>
+			<SettingsNamedItemDetailedRepresentation>false</SettingsNamedItemDetailedRepresentation>
+			<MaxRowsCount>5</MaxRowsCount>
+			<AutoMaxRowsCount>false</AutoMaxRowsCount>
+			<HeightControlVariant>UseHeightInTableRows</HeightControlVariant>
+			<ContextMenu name="ДанныеКонтекстноеМеню" id="2">
+				<ChildItems>
+					<ButtonGroup name="МенюГруппа" id="3">
+						<ExtendedTooltip name="МенюГруппаРасширеннаяПодсказка" id="4"/>
+						<ChildItems>
+							<Button name="МенюОбновить" id="5">
+								<Type>CommandBarButton</Type>
+								<CommandName>Form.Command.Обновить</CommandName>
+								<ExtendedTooltip name="МенюОбновитьРасширеннаяПодсказка" id="6"/>
+							</Button>
+						</ChildItems>
+					</ButtonGroup>
+				</ChildItems>
+			</ContextMenu>
+			<AutoCommandBar name="ДанныеКоманднаяПанель" id="7">
+				<Autofill>false</Autofill>
+				<ChildItems>
+					<Button name="ПанельОбновить" id="8">
+						<Type>CommandBarButton</Type>
+						<CommandName>Form.Command.Обновить</CommandName>
+						<Check>true</Check>
+						<ExtendedTooltip name="ПанельОбновитьРасширеннаяПодсказка" id="9"/>
+					</Button>
+				</ChildItems>
+			</AutoCommandBar>
+			<ExtendedTooltip name="ДанныеРасширеннаяПодсказка" id="10"/>
+			<SearchStringAddition name="ДанныеСтрокаПоиска" id="11">
+				<AdditionSource>
+					<Item>Данные</Item>
+					<Type>SearchStringRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="ДанныеСтрокаПоискаКонтекстноеМеню" id="12"/>
+				<ExtendedTooltip name="ДанныеСтрокаПоискаРасширеннаяПодсказка" id="13"/>
+			</SearchStringAddition>
+			<ViewStatusAddition name="ДанныеСостояниеПросмотра" id="14">
+				<AdditionSource>
+					<Item>Данные</Item>
+					<Type>ViewStatusRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="ДанныеСостояниеПросмотраКонтекстноеМеню" id="15"/>
+				<ExtendedTooltip name="ДанныеСостояниеПросмотраРасширеннаяПодсказка" id="16"/>
+			</ViewStatusAddition>
+			<SearchControlAddition name="ДанныеУправлениеПоиском" id="17">
+				<AdditionSource>
+					<Item>Данные</Item>
+					<Type>SearchControl</Type>
+				</AdditionSource>
+				<ContextMenu name="ДанныеУправлениеПоискомКонтекстноеМеню" id="18"/>
+				<ExtendedTooltip name="ДанныеУправлениеПоискомРасширеннаяПодсказка" id="19"/>
+			</SearchControlAddition>
+			<ChildItems>
+				<InputField name="Дата" id="20">
+					<DataPath>Данные.Дата</DataPath>
+					<FixingInTable>Left</FixingInTable>
+					<ContextMenu name="ДатаКонтекстноеМеню" id="21"/>
+					<ExtendedTooltip name="ДатаРасширеннаяПодсказка" id="22"/>
+				</InputField>
+				<InputField name="Сумма" id="23">
+					<DataPath>Данные.Сумма</DataPath>
+					<ContextMenu name="СуммаКонтекстноеМеню" id="24"/>
+					<ExtendedTooltip name="СуммаРасширеннаяПодсказка" id="25"/>
+				</InputField>
+				<InputField name="Комментарий" id="26">
+					<DataPath>Данные.Комментарий</DataPath>
+					<ContextMenu name="КомментарийКонтекстноеМеню" id="27"/>
+					<ExtendedTooltip name="КомментарийРасширеннаяПодсказка" id="28"/>
+				</InputField>
+			</ChildItems>
+		</Table>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="29">
+			<Type>
+				<v8:Type>cfg:DataProcessorObject.Таблица</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+		</Attribute>
+		<Attribute name="Данные" id="30">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Данные</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>v8:ValueTable</v8:Type>
+			</Type>
+			<UseAlways>
+				<Field>Данные.Сумма</Field>
+				<Field>Данные.Дата</Field>
+			</UseAlways>
+			<Columns>
+				<Column name="Дата" id="31">
+					<Type>
+						<v8:Type>xs:dateTime</v8:Type>
+						<v8:DateQualifiers>
+							<v8:DateFractions>Date</v8:DateFractions>
+						</v8:DateQualifiers>
+					</Type>
+					<View>
+						<xr:Common>false</xr:Common>
+					</View>
+				</Column>
+				<Column name="Сумма" id="32">
+					<Type>
+						<v8:Type>xs:decimal</v8:Type>
+						<v8:NumberQualifiers>
+							<v8:Digits>15</v8:Digits>
+							<v8:FractionDigits>2</v8:FractionDigits>
+							<v8:AllowedSign>Any</v8:AllowedSign>
+						</v8:NumberQualifiers>
+					</Type>
+					<Edit>
+						<xr:Common>false</xr:Common>
+						<xr:Value name="UUID-001">true</xr:Value>
+					</Edit>
+				</Column>
+				<Column name="Комментарий" id="33">
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>200</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+				</Column>
+				<Column name="Объект" id="34">
+					<Type>
+						<v8:TypeSet>cfg:AnyRef</v8:TypeSet>
+					</Type>
+				</Column>
+				<Column name="Источник" id="35">
+					<Type>
+						<v8:TypeSet>cfg:CatalogRef</v8:TypeSet>
+					</Type>
+				</Column>
+			</Columns>
+		</Attribute>
+	</Attributes>
+	<Commands>
+		<Command name="Обновить" id="36">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОбновитьОбработка</Action>
+			<CurrentRowUse>Use</CurrentRowUse>
+			<AssociatedTableElementId xsi:type="xs:string">Данные</AssociatedTableElementId>
+		</Command>
+	</Commands>
+</Form>

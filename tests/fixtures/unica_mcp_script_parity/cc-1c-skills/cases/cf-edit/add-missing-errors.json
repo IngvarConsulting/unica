@@ -1,0 +1,7 @@
+{
+  "name": "Ошибка при попытке добавить несуществующий объект",
+  "input": [
+    { "operation": "add-childObject", "value": "Catalog.НесуществующийКаталог" }
+  ],
+  "expectError": "Object file not found"
+}

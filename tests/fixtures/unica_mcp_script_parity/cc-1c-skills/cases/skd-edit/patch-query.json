@@ -1,0 +1,21 @@
+{
+  "name": "Точечная замена в тексте запроса",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ 1 КАК Поле",
+          "fields": ["Поле"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "patch-query",
+    "value": "1 КАК Поле => Т.Наименование КАК Имя"
+  }
+}

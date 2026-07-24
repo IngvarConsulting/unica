@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<Title>
+		<v8:item>
+			<v8:lang>ru</v8:lang>
+			<v8:content>Группы кнопок</v8:content>
+		</v8:item>
+	</Title>
+	<AutoTitle>false</AutoTitle>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<Autofill>false</Autofill>
+	</AutoCommandBar>
+	<ChildItems>
+		<CommandBar name="Панель" id="1">
+			<ExtendedTooltip name="ПанельРасширеннаяПодсказка" id="2"/>
+			<ChildItems>
+				<Button name="Выполнить" id="3">
+					<Type>CommandBarButton</Type>
+					<CommandName>Form.Command.Выполнить</CommandName>
+					<DefaultButton>true</DefaultButton>
+					<ExtendedTooltip name="ВыполнитьРасширеннаяПодсказка" id="4"/>
+				</Button>
+				<ButtonGroup name="ГруппаПереместить" id="5">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Переместить</v8:content>
+						</v8:item>
+					</Title>
+					<ExtendedTooltip name="ГруппаПереместитьРасширеннаяПодсказка" id="6"/>
+					<ChildItems>
+						<Button name="Вверх" id="7">
+							<Type>CommandBarButton</Type>
+							<CommandName>Form.Command.Вверх</CommandName>
+							<ExtendedTooltip name="ВверхРасширеннаяПодсказка" id="8"/>
+						</Button>
+						<Button name="Вниз" id="9">
+							<Type>CommandBarButton</Type>
+							<CommandName>Form.Command.Вниз</CommandName>
+							<ExtendedTooltip name="ВнизРасширеннаяПодсказка" id="10"/>
+						</Button>
+					</ChildItems>
+				</ButtonGroup>
+				<ButtonGroup name="ГруппаГлобальныеКоманды" id="11">
+					<CommandSource>FormCommandPanelGlobalCommands</CommandSource>
+					<ExtendedTooltip name="ГруппаГлобальныеКомандыРасширеннаяПодсказка" id="12"/>
+				</ButtonGroup>
+				<Popup name="ПодменюПечать" id="13">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Печать</v8:content>
+						</v8:item>
+					</Title>
+					<Picture>
+						<xr:Ref>StdPicture.Print</xr:Ref>
+						<xr:LoadTransparent>false</xr:LoadTransparent>
+					</Picture>
+					<Representation>PictureAndText</Representation>
+					<TitleTextColor>style:ButtonTextColor</TitleTextColor>
+					<TitleFont ref="style:ВажнаяНадписьШрифт" kind="StyleItem"/>
+					<ExtendedTooltip name="ПодменюПечатьРасширеннаяПодсказка" id="14"/>
+					<ChildItems>
+						<Button name="ПечатьСчёта" id="15">
+							<Type>CommandBarButton</Type>
+							<CommandName>Form.Command.Выполнить</CommandName>
+							<ExtendedTooltip name="ПечатьСчётаРасширеннаяПодсказка" id="16"/>
+						</Button>
+					</ChildItems>
+				</Popup>
+			</ChildItems>
+		</CommandBar>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="17">
+			<Type>
+				<v8:Type>cfg:DataProcessorObject.ГруппыКнопок</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+		</Attribute>
+	</Attributes>
+	<Commands>
+		<Command name="Выполнить" id="18">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Выполнить</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Запустить обработку</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Action>ВыполнитьОбработка</Action>
+			<Shortcut>Ctrl+Enter</Shortcut>
+		</Command>
+		<Command name="Вверх" id="19">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Вверх</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВверхОбработка</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="Вниз" id="20">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Вниз</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВнизОбработка</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+	</Commands>
+</Form>

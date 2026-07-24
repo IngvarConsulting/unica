@@ -1,0 +1,9 @@
+{
+  "script": "epf-build/scripts/epf-build",
+  "setup": "none",
+  "args": [],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  }
+}

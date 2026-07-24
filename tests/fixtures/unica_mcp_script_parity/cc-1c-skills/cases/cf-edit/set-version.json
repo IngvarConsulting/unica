@@ -1,0 +1,6 @@
+{
+  "name": "Установка версии конфигурации",
+  "input": [
+    { "operation": "modify-property", "value": "Version=3.0.0" }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "modify-parameter value=... обновляет существующий <value> (не дублирует)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Счет ИЗ Регистр КАК Т",
+          "fields": ["Счет: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "add-parameter", "-Value": "Контрагент: CatalogRef.Контрагенты = Справочник.Контрагенты.ПустаяСсылка" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-parameter",
+    "value": "Контрагент value=Справочник.Контрагенты.НашаОрганизация"
+  }
+}

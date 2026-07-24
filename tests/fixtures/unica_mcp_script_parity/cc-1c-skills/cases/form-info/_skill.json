@@ -1,0 +1,11 @@
+{
+  "script": "form-info/scripts/form-info",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-FormPath", "from": "workPath", "field": "formPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Добавление формы к справочнику",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "Catalogs/Товары.xml", "formName": "ФормаЭлемента" },
+  "validatePath": "Catalogs/Товары/Forms/ФормаЭлемента"
+}

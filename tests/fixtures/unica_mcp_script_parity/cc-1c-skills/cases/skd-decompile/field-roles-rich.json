@@ -1,0 +1,24 @@
+{
+  "name": "Поле: shorthand-роль с @-флагами и KV (balanceGroupName/balanceType)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ РегистрНакопления.Остатки",
+          "fields": [
+            "Период: date @period",
+            "Контрагент: CatalogRef.Контрагенты @dimension @required",
+            "СуммаНач: decimal(15,2) @balance balanceGroupName=Сумма balanceType=OpeningBalance",
+            "СуммаКон: decimal(15,2) @balance balanceGroupName=Сумма balanceType=ClosingBalance"
+          ]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

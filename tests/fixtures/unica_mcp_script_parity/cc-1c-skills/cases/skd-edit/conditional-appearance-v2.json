@@ -1,0 +1,22 @@
+{
+  "name": "conditionalAppearance: DesignTimeValue, Format, OrGroup",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }],
+        "parameters": ["ПорядокОкругления: string"]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-conditionalAppearance",
+    "value": "Формат = ЧЦ=15; ЧДЦ=2 when ПараметрыДанных.ПорядокОкругления = Перечисление.Округления.Окр1_00 ;; Формат = ЧЦ=15; ЧДЦ=0 when ПараметрыДанных.ПорядокОкругления = Перечисление.Округления.Окр1 or ПараметрыДанных.ПорядокОкругления = Перечисление.Округления.Окр1000"
+  }
+}

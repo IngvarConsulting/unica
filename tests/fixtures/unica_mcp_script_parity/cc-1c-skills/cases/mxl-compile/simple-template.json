@@ -1,0 +1,19 @@
+{
+  "name": "Простой макет с одной областью",
+  "input": {
+    "columns": 3,
+    "areas": [
+      {
+        "name": "Заголовок",
+        "rows": [
+          ["Наименование", "Количество", "Сумма"]
+        ]
+      }
+    ]
+  },
+  "params": { "outputPath": "Template.xml" },
+  "validatePath": "Template.xml",
+  "expect": {
+    "files": ["Template.xml"]
+  }
+}

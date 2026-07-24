@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: файл шаблона не найден",
+  "args_extra": ["-InfoBasePath", "C:\\nonexistent\\testdb", "-UseTemplate", "C:\\nonexistent\\template.cf"],
+  "expectError": true
+}

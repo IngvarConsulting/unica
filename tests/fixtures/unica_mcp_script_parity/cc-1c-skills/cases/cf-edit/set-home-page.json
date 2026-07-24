@@ -1,0 +1,71 @@
+{
+  "name": "Установить начальную страницу (template + left/right + visibility/roles)",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Товары", "-FormName": "ФормаЭлемента", "-Purpose": "Object" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Контрагенты" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Контрагенты", "-FormName": "ФормаСписка", "-Purpose": "List" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Контрагенты", "-FormName": "ФормаОбъекта", "-Purpose": "Object" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "Поиск" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/Поиск", "-FormName": "ФормаПоиска", "-Purpose": "Object" }
+    },
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": { "name": "Оператор", "objects": [] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": { "name": "ПолныеПрава", "objects": [] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "input": [
+    {
+      "operation": "set-home-page",
+      "value": {
+        "template": "TwoColumnsVariableWidth",
+        "left": [
+          "Catalog.Товары.Form.ФормаСписка",
+          { "form": "Catalog.Товары.Form.ФормаЭлемента", "height": 100, "visibility": false },
+          { "form": "Справочник.Контрагенты.ФормаСписка", "height": 50 },
+          {
+            "form": "Catalog.Контрагенты.Form.ФормаОбъекта",
+            "visibility": false,
+            "roles": { "Role.Оператор": true, "ПолныеПрава": false }
+          }
+        ],
+        "right": [
+          { "form": "DataProcessor.Поиск.Form.ФормаПоиска", "height": 30 }
+        ]
+      }
+    }
+  ]
+}

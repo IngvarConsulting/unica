@@ -1,0 +1,31 @@
+{
+  "name": "Перехватчик Перед для модуля менеджера документа",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Document", "name": "ПриходТоваров" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "writeFile": {
+        "path": "Documents/ПриходТоваров/Ext/ManagerModule.bsl",
+        "content": "#Область ОбработчикиСобытий\n\nПроцедура ОбработкаПолученияДанныхВыбора(ДанныеВыбора, Параметры, СтандартнаяОбработка)\n\tСтандартнаяОбработка = Ложь;\nКонецПроцедуры\n\n#КонецОбласти\n"
+      }
+    },
+    {
+      "script": "cfe-init/scripts/cfe-init",
+      "args": { "-Name": "Тест", "-OutputDir": "{workDir}/ext", "-ConfigPath": "{workDir}" }
+    },
+    {
+      "script": "cfe-borrow/scripts/cfe-borrow",
+      "args": { "-ExtensionPath": "{workDir}/ext", "-ConfigPath": "{workDir}", "-Object": "Document.ПриходТоваров" }
+    }
+  ],
+  "params": {
+    "extensionPath": "ext",
+    "modulePath": "Document.ПриходТоваров.ManagerModule",
+    "methodName": "ОбработкаПолученияДанныхВыбора",
+    "interceptorType": "Before"
+  },
+  "expect": { "stdoutContains": "ОбработкаПолученияДанныхВыбора" }
+}

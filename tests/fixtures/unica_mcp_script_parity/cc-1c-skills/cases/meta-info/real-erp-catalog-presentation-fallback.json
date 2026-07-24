@@ -1,0 +1,10 @@
+{
+  "name": "Представление типа = синоним при пустом ObjectPresentation — ERP СтатьиБюджетов",
+  "setup": "external:C:/WS/tasks/cfsrc/erp_8.3.24",
+  "params": { "objectPath": "Catalogs/СтатьиБюджетов" },
+  "args_extra": ["-Mode", "full"],
+  "expect": {
+    "stdoutContains": "Представление типа: Статьи бюджетов",
+    "stdoutNotContains": "Представление объекта:"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "Добавление элемента с уже существующим именем → [ERROR] exit 1",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "ТестЕдитДубль" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/DataProcessors/ТестЕдитДубль.xml", "-FormName": "Форма" }
+    },
+    {
+      "script": "form-compile/scripts/form-compile",
+      "input": {
+        "title": "Тест",
+        "attributes": [
+          { "name": "Объект", "type": "DataProcessorObject.ТестЕдитДубль", "main": true },
+          { "name": "Поле1", "type": "string(100)" }
+        ],
+        "elements": [
+          { "input": "Поле1", "path": "Поле1", "title": "Поле 1" }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputPath": "{workDir}/DataProcessors/ТестЕдитДубль/Forms/Форма/Ext/Form.xml" }
+    }
+  ],
+  "params": { "formPath": "DataProcessors/ТестЕдитДубль/Forms/Форма/Ext/Form.xml" },
+  "expectError": true,
+  "input": {
+    "elements": [
+      { "input": "Поле1", "path": "Поле1", "title": "Дубль имени" }
+    ]
+  }
+}

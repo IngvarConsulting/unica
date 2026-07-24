@@ -1,0 +1,1 @@
+{ "dataSets": [{ "name": "Тест", "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники", "fields": ["Поле: string"] }], "templates": [{ "name": "Заголовок", "style": "myHeader", "rows": [["A"]] }], "settingsVariants": [{ "name": "Основной", "settings": { "selection": ["Auto"], "structure": "details" } }] }

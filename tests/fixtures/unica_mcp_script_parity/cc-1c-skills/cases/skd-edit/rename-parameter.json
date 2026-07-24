@@ -1,0 +1,33 @@
+{
+  "name": "rename-parameter: переименование с обновлением expressions и dataParameters",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }],
+        "parameters": [
+          "Период: StandardPeriod = LastMonth @autoDates",
+          "Организация: string"
+        ],
+        "settingsVariants": [{
+          "name": "Основной",
+          "settings": {
+            "selection": ["Auto"],
+            "dataParameters": ["Период = LastMonth @user", "Организация @off"],
+            "structure": "details"
+          }
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "rename-parameter",
+    "value": "Период => ПериодОтчета"
+  }
+}

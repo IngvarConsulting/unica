@@ -1,0 +1,8 @@
+{
+  "name": "Guard: добавление подсистемы при закрытом корне (f1=0) запрещено",
+  "setup": "fixture:on-support",
+  "input": {
+    "name": "НовПодсистема"
+  },
+  "expectError": "support-guard"
+}

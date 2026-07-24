@@ -1,0 +1,21 @@
+{
+  "name": "patch-query ;;-batch: сегменты триммятся по краям",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.СтароеИмя1, Т.СтароеИмя2 ИЗ Регистр КАК Т",
+          "fields": ["СтароеИмя1: string", "СтароеИмя2: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "patch-query",
+    "value": "СтароеИмя1 => НовоеИмя1 ;; СтароеИмя2 => НовоеИмя2"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: Partial без списка объектов",
+  "args_extra": ["-ConfigDir", "C:\\tmp", "-InfoBasePath", "C:\\nonexistent\\db", "-Mode", "Partial"],
+  "expectError": true
+}

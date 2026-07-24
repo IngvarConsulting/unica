@@ -1,0 +1,12 @@
+{
+  "name": "Добавление формы к обработке",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "DataProcessor", "name": "МояОбработка" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "DataProcessors/МояОбработка.xml", "formName": "Форма" },
+  "validatePath": "DataProcessors/МояОбработка/Forms/Форма"
+}

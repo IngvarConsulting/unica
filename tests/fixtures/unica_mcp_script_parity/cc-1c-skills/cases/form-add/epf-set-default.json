@@ -1,0 +1,17 @@
+{
+  "name": "Добавление основной формы к внешней обработке с -SetDefault",
+  "setup": "none",
+  "preRun": [
+    {
+      "script": "epf-init/scripts/init",
+      "args": { "-Name": "МояОбработка", "-SrcDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/МояОбработка.xml", "-FormName": "Форма1" }
+    }
+  ],
+  "params": { "objectPath": "МояОбработка.xml", "formName": "ФормаОсновная" },
+  "args_extra": ["-SetDefault"],
+  "validatePath": "МояОбработка/Forms/ФормаОсновная"
+}

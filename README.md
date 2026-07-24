@@ -129,5 +129,9 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 - `crates/unica-bootstrap/` — загрузка, проверка и запуск runtime;
 - `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов.
 
+Поддерживаемая [матрица паритета donor skills](docs/donor-skill-parity.md)
+показывает, какие навыки Николая заимствованы, где есть только related
+возможность Unica, и какой test corpus принят для последующего review.
+
 [Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md).
 Лицензия Unica: LGPL-3.0-or-later.

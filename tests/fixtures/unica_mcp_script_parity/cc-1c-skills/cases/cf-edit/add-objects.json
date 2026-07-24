@@ -1,0 +1,23 @@
+{
+  "name": "Повторная регистрация объектов после отката Configuration.xml",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Document", "name": "ПриходТоваров" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "cf-edit/scripts/cf-edit",
+      "input": [{ "operation": "remove-childObject", "value": "Catalog.Товары ;; Document.ПриходТоваров" }],
+      "args": { "-ConfigPath": "{workDir}", "-DefinitionFile": "{inputFile}" }
+    }
+  ],
+  "input": [
+    { "operation": "add-childObject", "value": "Catalog.Товары ;; Document.ПриходТоваров" }
+  ]
+}

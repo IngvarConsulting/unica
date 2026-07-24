@@ -1,0 +1,6 @@
+{
+  "name": "Ошибка: Configuration.xml уже существует",
+  "setup": "empty-config",
+  "params": { "name": "Дубль" },
+  "expectError": true
+}

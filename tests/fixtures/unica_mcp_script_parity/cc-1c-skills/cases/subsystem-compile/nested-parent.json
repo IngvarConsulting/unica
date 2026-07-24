@@ -1,0 +1,24 @@
+{
+  "name": "Вложенная подсистема через -Parent (bottom-up flow)",
+  "preRun": [
+    {
+      "script": "subsystem-compile/scripts/subsystem-compile",
+      "input": { "name": "Продажи", "synonym": "Продажи" },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "parent": "Subsystems/Продажи.xml" },
+  "input": {
+    "name": "Настройки",
+    "synonym": "Настройки раздела",
+    "explanation": "Настройки подсистемы продаж",
+    "includeInCommandInterface": true
+  },
+  "validatePath": "Subsystems/Продажи/Subsystems/Настройки",
+  "expect": {
+    "files": [
+      "Subsystems/Продажи.xml",
+      "Subsystems/Продажи/Subsystems/Настройки.xml"
+    ]
+  }
+}

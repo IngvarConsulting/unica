@@ -1,0 +1,22 @@
+{
+  "name": "Изменение типа и имени реквизита",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Catalog",
+        "name": "Контрагенты",
+        "attributes": ["Телефон: String(20)"]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "Catalogs/Контрагенты" },
+  "input": {
+    "modify": {
+      "attributes": {
+        "Телефон": { "name": "НомерТелефона", "type": "String(50)" }
+      }
+    }
+  }
+}

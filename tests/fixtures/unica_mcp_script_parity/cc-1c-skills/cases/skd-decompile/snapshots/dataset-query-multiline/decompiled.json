@@ -1,0 +1,1 @@
+{ "dataSets": [{ "name": "ПродажиПоПериодам", "query": "@decompiled-ПродажиПоПериодам.sql", "fields": ["Номенклатура: CatalogRef.Номенклатура @dimension", "Количество: decimal(15,3)", "Сумма: decimal(15,2)"] }], "settingsVariants": [{ "name": "Основной", "settings": { "selection": ["Auto"], "structure": "details" } }] }

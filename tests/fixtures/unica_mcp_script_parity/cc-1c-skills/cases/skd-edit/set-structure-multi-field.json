@@ -1,0 +1,21 @@
+{
+  "name": "set-structure: запятая в shorthand → несколько GroupItemField",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Валюта, Т.Банк, Т.ИНН ИЗ Регистр КАК Т",
+          "fields": ["Валюта: string", "Банк: string", "ИНН: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "set-structure",
+    "value": "Валюта, Банк, ИНН @name=ДанныеОтчета"
+  }
+}

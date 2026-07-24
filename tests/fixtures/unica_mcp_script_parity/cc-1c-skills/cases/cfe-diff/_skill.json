@@ -1,0 +1,12 @@
+{
+  "script": "cfe-diff/scripts/cfe-diff",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-ExtensionPath", "from": "workPath", "field": "extensionPath" },
+    { "flag": "-ConfigPath", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

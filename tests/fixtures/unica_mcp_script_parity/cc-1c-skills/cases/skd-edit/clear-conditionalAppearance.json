@@ -1,0 +1,25 @@
+{
+  "name": "clear-conditionalAppearance: очистить все правила оформления варианта",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "add-conditionalAppearance", "-Value": "ЦветТекста = web:Red when Сумма < 0 ;; ЦветФона = web:LightGreen when Сумма > 1000" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "clear-conditionalAppearance",
+    "value": "*"
+  }
+}

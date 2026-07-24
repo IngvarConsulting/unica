@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: каталог конфигурации не найден",
+  "args_extra": ["-ConfigDir", "C:\\nonexistent\\config", "-InfoBasePath", "C:\\nonexistent\\db"],
+  "expectError": true
+}

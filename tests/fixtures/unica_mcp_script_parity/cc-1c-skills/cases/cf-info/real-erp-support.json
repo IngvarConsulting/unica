@@ -1,0 +1,5 @@
+{
+  "name": "Поддержка: erp снята с поддержки (16-байт bin)",
+  "setup": "external:C:/WS/tasks/cfsrc/erp_8.3.24",
+  "expect": { "stdoutContains": "снята с поддержки полностью" }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Реальный документ РеализацияТоваровУслуг (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "objectPath": "Documents/РеализацияТоваровУслуг" },
+  "expect": { "stdoutContains": "РеализацияТоваровУслуг" }
+}

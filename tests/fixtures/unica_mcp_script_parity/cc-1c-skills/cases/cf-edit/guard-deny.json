@@ -1,0 +1,14 @@
+{
+  "name": "Guard: правка корня конфигурации на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "input": {
+    "operations": [
+      {
+        "op": "set-property",
+        "property": "Comment",
+        "value": "x"
+      }
+    ]
+  },
+  "expectError": "support-guard"
+}

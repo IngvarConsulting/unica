@@ -134,6 +134,16 @@ def generate_document(repo_root: Path) -> str:
     json_case_count = sum(
         len(data["caseIds"]) for data in case_scopes.values()
     )
+    corpus_json_file_count = sum(
+        1
+        for item in baseline.get("files") or []
+        if isinstance(item, dict)
+        and isinstance(item.get("localPath"), str)
+        and item["localPath"].startswith("cases/")
+        and item["localPath"].endswith(".json")
+        and not item["localPath"].endswith("/_skill.json")
+    )
+    nested_json_count = max(corpus_json_file_count - json_case_count, 0)
     executable_case_count = sum(
         len(case_scopes[scope]["caseIds"])
         for scope in executable_scopes
@@ -157,7 +167,13 @@ def generate_document(repo_root: Path) -> str:
         "`python3.12 scripts/ci/generate-donor-skill-matrix.py "
         "--repo-root . --write`.",
         f"- Принято: {len(rows)} donor skills, {script_count} scripts, "
-        f"{json_case_count} JSON cases; {adopted} skills с явным "
+        f"{json_case_count} запускаемых JSON cases"
+        + (
+            f" и {nested_json_count} JSON snapshots/fixtures"
+            if nested_json_count
+            else ""
+        )
+        + f"; {adopted} skills с явным "
         "`ported-to-unica` provenance.",
         f"- Исполняемый паритет: {executable_case_count} cases; "
         + relation_summary(relation_counts)
@@ -321,11 +337,22 @@ def discover_unica_tools(repo_root: Path) -> set[str]:
 def donor_provenance_entries(provenance: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for upstream in provenance.get("upstreams") or []:
         if isinstance(upstream, dict) and upstream.get("id") == UPSTREAM_ID:
-            return {
-                entry["skill"]: entry
-                for entry in upstream.get("entries") or []
-                if isinstance(entry, dict) and isinstance(entry.get("skill"), str)
-            }
+            result = {}
+            for entry in upstream.get("entries") or []:
+                if not isinstance(entry, dict) or not isinstance(
+                    entry.get("skill"), str
+                ):
+                    continue
+                result.setdefault(entry["skill"], entry)
+                for path in entry.get("upstreamPaths") or []:
+                    if not isinstance(path, str):
+                        continue
+                    matched = re.fullmatch(
+                        r"\.claude/skills/([^/]+)/\*\*", path
+                    )
+                    if matched:
+                        result.setdefault(matched.group(1), entry)
+            return result
     return {}
 
 

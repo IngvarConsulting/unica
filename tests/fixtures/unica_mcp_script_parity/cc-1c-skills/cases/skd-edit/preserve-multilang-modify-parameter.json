@@ -1,0 +1,10 @@
+{
+  "name": "modify-parameter сохраняет en title (multi-lang) при ru-override",
+  "setup": "fixture:multilang-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-parameter",
+    "value": "Период [Новый период]"
+  },
+  "idempotent": true
+}

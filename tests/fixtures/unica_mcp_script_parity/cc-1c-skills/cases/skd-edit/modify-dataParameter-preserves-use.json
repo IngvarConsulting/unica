@@ -1,0 +1,30 @@
+{
+  "name": "modify-dataParameter: сохраняет существующий <use>false</use> когда @off не задан",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }],
+        "parameters": ["ПериодОтчета: StandardPeriod = LastMonth"],
+        "settingsVariants": [{
+          "name": "Основной",
+          "settings": {
+            "selection": ["Auto"],
+            "dataParameters": ["ПериодОтчета = LastMonth @off"],
+            "structure": "details"
+          }
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-dataParameter",
+    "value": "ПериодОтчета = Custom"
+  }
+}

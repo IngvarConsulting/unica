@@ -1,0 +1,11 @@
+{
+  "script": "interface-validate/scripts/interface-validate",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-CIPath", "from": "workPath", "field": "ciPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

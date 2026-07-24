@@ -1,0 +1,13 @@
+{
+  "name": "Минимальная роль (только name)",
+  "input": {
+    "name": "Пустая"
+  },
+  "validatePath": "Roles/Пустая",
+  "expect": {
+    "files": [
+      "Roles/Пустая.xml",
+      "Roles/Пустая/Ext/Rights.xml"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Валидатор: файл не найден",
+  "params": { "objectPath": "Catalogs/Несуществующий.xml" },
+  "expectError": true
+}

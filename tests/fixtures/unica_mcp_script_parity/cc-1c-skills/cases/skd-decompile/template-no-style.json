@@ -1,0 +1,27 @@
+{
+  "name": "Шаблон без стилевых атрибутов (style=none) — только per-cell width",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": ["Поле1: string", "Поле2: string"]
+        }],
+        "templates": [
+          {
+            "name": "БезСтиля",
+            "style": "none",
+            "widths": [7, 7],
+            "rows": [["A", "B"]]
+          }
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

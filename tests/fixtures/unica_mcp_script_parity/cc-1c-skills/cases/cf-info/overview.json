@@ -1,0 +1,4 @@
+{
+  "name": "Обзор пустой конфигурации",
+  "expect": { "stdoutContains": "TestConfig" }
+}

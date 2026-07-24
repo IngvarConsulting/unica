@@ -1,0 +1,10 @@
+{
+  "name": "Guard: правка СКД на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": {
+    "templatePath": "Catalogs/Locked/Templates/ТестСхема/Ext/Template.xml"
+  },
+  "operation": "add-parameter",
+  "value": "П: Строка",
+  "expectError": "support-guard"
+}

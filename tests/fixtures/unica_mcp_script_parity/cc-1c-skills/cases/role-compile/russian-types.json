@@ -1,0 +1,30 @@
+{
+  "name": "Роль с русскими типами и правами",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Catalog",
+        "name": "Контрагенты"
+      },
+      "args": {
+        "-JsonPath": "{inputFile}",
+        "-OutputDir": "{workDir}"
+      }
+    }
+  ],
+  "input": {
+    "name": "ЧтениеКонтрагентов",
+    "synonym": "Чтение контрагентов",
+    "objects": [
+      "Справочник.Контрагенты: Чтение, Просмотр"
+    ]
+  },
+  "validatePath": "Roles/ЧтениеКонтрагентов",
+  "expect": {
+    "files": [
+      "Roles/ЧтениеКонтрагентов.xml",
+      "Roles/ЧтениеКонтрагентов/Ext/Rights.xml"
+    ]
+  }
+}

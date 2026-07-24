@@ -1,0 +1,14 @@
+{
+  "script": "subsystem-compile/scripts/subsystem-compile",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-DefinitionFile", "from": "inputFile" },
+    { "flag": "-OutputDir", "from": "workDir" },
+    { "flag": "-Parent", "from": "workPath", "field": "parent", "optional": true }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": { "script": "subsystem-validate/scripts/subsystem-validate", "flag": "-SubsystemPath", "pathFrom": "validatePath" }
+}

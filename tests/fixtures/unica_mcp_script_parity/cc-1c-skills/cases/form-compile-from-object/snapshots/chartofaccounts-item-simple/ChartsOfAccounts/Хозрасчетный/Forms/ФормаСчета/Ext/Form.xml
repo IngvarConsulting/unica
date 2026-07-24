@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<Title>
+		<v8:item>
+			<v8:lang>ru</v8:lang>
+			<v8:content>Хозрасчетный</v8:content>
+		</v8:item>
+	</Title>
+	<AutoTitle>false</AutoTitle>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<ChildItems>
+		<UsualGroup name="ГруппаШапка" id="1">
+			<Group>Horizontal</Group>
+			<Representation>None</Representation>
+			<ShowTitle>false</ShowTitle>
+			<ExtendedTooltip name="ГруппаШапкаРасширеннаяПодсказка" id="2"/>
+			<ChildItems>
+				<UsualGroup name="ГруппаШапкаЛево" id="3">
+					<Group>Vertical</Group>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаШапкаЛевоРасширеннаяПодсказка" id="4"/>
+					<ChildItems>
+						<InputField name="Код" id="5">
+							<DataPath>Объект.Code</DataPath>
+							<ContextMenu name="КодКонтекстноеМеню" id="6"/>
+							<ExtendedTooltip name="КодРасширеннаяПодсказка" id="7"/>
+						</InputField>
+					</ChildItems>
+				</UsualGroup>
+				<UsualGroup name="ГруппаШапкаПраво" id="8">
+					<Group>Vertical</Group>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаШапкаПравоРасширеннаяПодсказка" id="9"/>
+					<ChildItems>
+						<InputField name="Родитель" id="10">
+							<DataPath>Объект.Parent</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Подчинен счету</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="РодительКонтекстноеМеню" id="11"/>
+							<ExtendedTooltip name="РодительРасширеннаяПодсказка" id="12"/>
+						</InputField>
+					</ChildItems>
+				</UsualGroup>
+			</ChildItems>
+		</UsualGroup>
+		<InputField name="Наименование" id="13">
+			<DataPath>Объект.Description</DataPath>
+			<ContextMenu name="НаименованиеКонтекстноеМеню" id="14"/>
+			<ExtendedTooltip name="НаименованиеРасширеннаяПодсказка" id="15"/>
+		</InputField>
+		<CheckBoxField name="Забалансовый" id="16">
+			<DataPath>Объект.OffBalance</DataPath>
+			<CheckBoxType>Auto</CheckBoxType>
+			<TitleLocation>Right</TitleLocation>
+			<ContextMenu name="ЗабалансовыйКонтекстноеМеню" id="17"/>
+			<ExtendedTooltip name="ЗабалансовыйРасширеннаяПодсказка" id="18"/>
+		</CheckBoxField>
+		<UsualGroup name="ГруппаПризнакиУчета" id="19">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Признаки учета</v8:content>
+				</v8:item>
+			</Title>
+			<Group>Vertical</Group>
+			<ExtendedTooltip name="ГруппаПризнакиУчетаРасширеннаяПодсказка" id="20"/>
+			<ChildItems>
+				<CheckBoxField name="Валютный" id="21">
+					<DataPath>Объект.Валютный</DataPath>
+					<CheckBoxType>Auto</CheckBoxType>
+					<TitleLocation>Right</TitleLocation>
+					<ContextMenu name="ВалютныйКонтекстноеМеню" id="22"/>
+					<ExtendedTooltip name="ВалютныйРасширеннаяПодсказка" id="23"/>
+				</CheckBoxField>
+				<CheckBoxField name="Количественный" id="24">
+					<DataPath>Объект.Количественный</DataPath>
+					<CheckBoxType>Auto</CheckBoxType>
+					<TitleLocation>Right</TitleLocation>
+					<ContextMenu name="КоличественныйКонтекстноеМеню" id="25"/>
+					<ExtendedTooltip name="КоличественныйРасширеннаяПодсказка" id="26"/>
+				</CheckBoxField>
+			</ChildItems>
+		</UsualGroup>
+		<Table name="ВидыСубконто" id="27">
+			<DataPath>Объект.ExtDimensionTypes</DataPath>
+			<ContextMenu name="ВидыСубконтоКонтекстноеМеню" id="28"/>
+			<AutoCommandBar name="ВидыСубконтоКоманднаяПанель" id="29"/>
+			<ExtendedTooltip name="ВидыСубконтоРасширеннаяПодсказка" id="30"/>
+			<SearchStringAddition name="ВидыСубконтоСтрокаПоиска" id="31">
+				<AdditionSource>
+					<Item>ВидыСубконто</Item>
+					<Type>SearchStringRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="ВидыСубконтоСтрокаПоискаКонтекстноеМеню" id="32"/>
+				<ExtendedTooltip name="ВидыСубконтоСтрокаПоискаРасширеннаяПодсказка" id="33"/>
+			</SearchStringAddition>
+			<ViewStatusAddition name="ВидыСубконтоСостояниеПросмотра" id="34">
+				<AdditionSource>
+					<Item>ВидыСубконто</Item>
+					<Type>ViewStatusRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="ВидыСубконтоСостояниеПросмотраКонтекстноеМеню" id="35"/>
+				<ExtendedTooltip name="ВидыСубконтоСостояниеПросмотраРасширеннаяПодсказка" id="36"/>
+			</ViewStatusAddition>
+			<SearchControlAddition name="ВидыСубконтоУправлениеПоиском" id="37">
+				<AdditionSource>
+					<Item>ВидыСубконто</Item>
+					<Type>SearchControl</Type>
+				</AdditionSource>
+				<ContextMenu name="ВидыСубконтоУправлениеПоискомКонтекстноеМеню" id="38"/>
+				<ExtendedTooltip name="ВидыСубконтоУправлениеПоискомРасширеннаяПодсказка" id="39"/>
+			</SearchControlAddition>
+			<ChildItems>
+				<InputField name="ВидыСубконтоВидСубконто" id="40">
+					<DataPath>Объект.ExtDimensionTypes.ExtDimensionType</DataPath>
+					<ContextMenu name="ВидыСубконтоВидСубконтоКонтекстноеМеню" id="41"/>
+					<ExtendedTooltip name="ВидыСубконтоВидСубконтоРасширеннаяПодсказка" id="42"/>
+				</InputField>
+				<CheckBoxField name="ВидыСубконтоТолькоОбороты" id="43">
+					<DataPath>Объект.ExtDimensionTypes.TurnoversOnly</DataPath>
+					<CheckBoxType>Auto</CheckBoxType>
+					<TitleLocation>Right</TitleLocation>
+					<ContextMenu name="ВидыСубконтоТолькоОборотыКонтекстноеМеню" id="44"/>
+					<ExtendedTooltip name="ВидыСубконтоТолькоОборотыРасширеннаяПодсказка" id="45"/>
+				</CheckBoxField>
+				<CheckBoxField name="ВидыСубконтоВалютный" id="46">
+					<DataPath>Объект.ExtDimensionTypes.Валютный</DataPath>
+					<CheckBoxType>Auto</CheckBoxType>
+					<TitleLocation>Right</TitleLocation>
+					<ContextMenu name="ВидыСубконтоВалютныйКонтекстноеМеню" id="47"/>
+					<ExtendedTooltip name="ВидыСубконтоВалютныйРасширеннаяПодсказка" id="48"/>
+				</CheckBoxField>
+				<CheckBoxField name="ВидыСубконтоКоличественный" id="49">
+					<DataPath>Объект.ExtDimensionTypes.Количественный</DataPath>
+					<CheckBoxType>Auto</CheckBoxType>
+					<TitleLocation>Right</TitleLocation>
+					<ContextMenu name="ВидыСубконтоКоличественныйКонтекстноеМеню" id="50"/>
+					<ExtendedTooltip name="ВидыСубконтоКоличественныйРасширеннаяПодсказка" id="51"/>
+				</CheckBoxField>
+			</ChildItems>
+		</Table>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="52">
+			<Type>
+				<v8:Type>cfg:ChartOfAccountsObject.Хозрасчетный</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+			<SavedData>true</SavedData>
+		</Attribute>
+	</Attributes>
+</Form>

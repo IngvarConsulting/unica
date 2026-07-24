@@ -31,11 +31,12 @@ The current accepted parity commit is
 `e01688e764a3cf1c1b4a0ad5069ea885837cfb2e`. At design time upstream `main`
 still resolves to that commit, so there is no newer upstream commit to accept.
 The missing work is breadth: the repository has 72 donor skill directories,
-65 skills with scripts, and 585 JSON case-runner cases, while the accepted
+65 skills with scripts, 564 direct JSON case definitions, and 21 nested JSON
+snapshot/fixture records (585 non-`_skill.json` JSON corpus files total), while the accepted
 snapshot contains scripts for 11 skills and 152 cases owned by four parity
 skills.
 
-The 585-case count is not the whole upstream test suite. `web-test` has a
+The 585-file JSON count is not the whole upstream test suite. `web-test` has a
 separate JavaScript test suite and there are shared/integration test assets.
 A public matrix must not report "no tests" merely because a skill does not use
 the JSON case runner.
@@ -95,7 +96,8 @@ At design time:
 | Donor skills with no explicit provenance mapping | 26 |
 | Skills with executable donor parity | 4 |
 | Accepted executable relation records | 152 |
-| Upstream JSON case-runner cases | 585 |
+| Upstream direct JSON case definitions | 564 |
+| Upstream nested JSON snapshots/fixtures | 21 |
 | Accepted JSON cases | 152 |
 
 The 152 reviewed relations contain:

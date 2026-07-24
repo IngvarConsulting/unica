@@ -1,0 +1,12 @@
+{
+  "name": "Добавление формы с произвольным именем к внешней обработке",
+  "setup": "none",
+  "preRun": [
+    {
+      "script": "epf-init/scripts/init",
+      "args": { "-Name": "ЗагрузкаДанных", "-SrcDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "ЗагрузкаДанных.xml", "formName": "ФормаНастроек" },
+  "validatePath": "ЗагрузкаДанных/Forms/ФормаНастроек"
+}

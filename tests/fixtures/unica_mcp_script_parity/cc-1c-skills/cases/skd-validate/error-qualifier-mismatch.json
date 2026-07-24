@@ -1,0 +1,6 @@
+{
+  "name": "Ошибка: xs:string с NumberQualifiers (несоответствие тип/qualifiers)",
+  "setup": "fixture:bad-qualifier-mismatch",
+  "params": { "templatePath": "Template.xml" },
+  "expectError": true
+}

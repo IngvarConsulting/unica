@@ -1,0 +1,6 @@
+{
+  "name": "Ошибка: <v8:Type>decimal</v8:Type> без префикса xs:",
+  "setup": "fixture:bad-decimal-no-xs",
+  "params": { "templatePath": "Template.xml" },
+  "expectError": true
+}

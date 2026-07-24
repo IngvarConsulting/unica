@@ -1,0 +1,5 @@
+{
+  "name": "DataPath с Items.<Table>.CurrentData и ~Атрибут не вызывают ложных ошибок",
+  "setup": "fixture:datapath-currentdata",
+  "params": { "formPath": "DataProcessors/Spec/Forms/Форма" }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "DataSetFieldFolder (поле-папка) + GroupItemAuto в structure",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": [
+            "Период: date",
+            { "field": "СальдоНаНачалоПериода", "folder": true, "title": "Сальдо на начало периода" },
+            "СальдоНаНачалоПериода.Дт: decimal(15,2)",
+            "СальдоНаНачалоПериода.Кт: decimal(15,2)"
+          ]
+        }],
+        "settingsVariants": [
+          {
+            "name": "Основной",
+            "settings": {
+              "structure": "Период > Auto"
+            }
+          }
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

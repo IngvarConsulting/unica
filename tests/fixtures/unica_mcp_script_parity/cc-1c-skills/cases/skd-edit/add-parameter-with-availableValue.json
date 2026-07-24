@@ -1,0 +1,21 @@
+{
+  "name": "add-parameter с initial availableValue list (с запятой в кавычках)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле ИЗ Регистр КАК Т",
+          "fields": ["Поле: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-parameter",
+    "value": "Округление: EnumRef.Округления = Окр1_00 availableValue=Перечисление.Округления.Окр1_00: 'руб., коп.', Перечисление.Округления.Окр1: руб., Перечисление.Округления.Окр1000: тыс. руб."
+  }
+}

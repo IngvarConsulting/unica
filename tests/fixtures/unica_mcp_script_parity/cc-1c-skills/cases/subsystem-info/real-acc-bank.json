@@ -1,0 +1,6 @@
+{
+  "name": "Реальная подсистема БанкИКасса (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "subsystemPath": "Subsystems/БанкИКасса.xml" },
+  "expect": { "stdoutContains": "БанкИКасса" }
+}

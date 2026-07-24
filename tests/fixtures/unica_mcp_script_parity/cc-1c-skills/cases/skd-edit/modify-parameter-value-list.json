@@ -1,0 +1,25 @@
+{
+  "name": "modify-parameter value=список — скаляр заменяется списком + valueListAllowed добавлен",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле ИЗ Регистр КАК Т",
+          "fields": ["Поле: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "add-parameter", "-Value": "Орг: CatalogRef.Организации = Справочник.Организации.X" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-parameter",
+    "value": "Орг value=Справочник.Организации.X, Справочник.Организации.Y"
+  }
+}

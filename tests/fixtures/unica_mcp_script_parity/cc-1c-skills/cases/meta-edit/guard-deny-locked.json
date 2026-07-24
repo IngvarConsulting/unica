@@ -1,0 +1,7 @@
+{
+  "name": "Guard: правка объекта на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": { "objectPath": "Catalogs/Locked.xml" },
+  "input": { "add": { "attributes": ["ТестРеквизит: String(10)"] } },
+  "expectError": "support-guard"
+}

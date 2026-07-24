@@ -1,0 +1,18 @@
+{
+  "name": "Guard: правка подсистемы на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": {
+    "subsystemPath": "Subsystems/ТестПодсистема.xml"
+  },
+  "input": {
+    "operations": [
+      {
+        "op": "set-property",
+        "property": "Comment",
+        "value": "x"
+      }
+    ]
+  },
+  "NoValidate": true,
+  "expectError": "support-guard"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "OutFile: абсолютный путь с кириллическим именем файла",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "query": "ВЫБРАТЬ Т.Поле ИЗ Регистр КАК Т",
+          "fields": ["Поле"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "args_extra": ["-Mode", "query", "-OutFile", "{workDir}/выгрузка.txt"]
+}

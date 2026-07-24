@@ -1,0 +1,37 @@
+[
+  {
+    "name": "License pool exhausted (1C)",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*Не обнаружено свободной лицензии.*"
+  },
+  {
+    "name": "1C application error (modal)",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*(ВызватьИсключение|В поле введены некорректные данные|Произошла ошибка|Ошибка при вызове).*"
+  },
+  {
+    "name": "Section panel icon-only (stand state)",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*icon-only mode.*"
+  },
+  {
+    "name": "Navigation lookup miss",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*(navigateSection|openCommand|navigateLink|switchTab).*not found.*"
+  },
+  {
+    "name": "Element not found",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*(clickElement|fillField|fillFields|selectValue|closeForm|fillTableRow|deleteTableRow).*not found.*"
+  },
+  {
+    "name": "Test timeout",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": "Timeout \\(\\d+ms\\)"
+  },
+  {
+    "name": "Assertion failure",
+    "matchedStatuses": ["failed"],
+    "messageRegex": "(Expected|AssertionError|Field \".*\" not found in form|Form title .*does not contain|No row matching predicate|Form has errors).*"
+  }
+]

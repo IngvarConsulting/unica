@@ -1,0 +1,34 @@
+{
+  "name": "modify-attribute: структурные свойства Format/EditFormat/ToolTip/ChoiceForm",
+  "setup": "empty-config",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Спр", "attributes": ["Дата: Date", "Контр: CatalogRef.Спр", "Сумма: Number(15,2)"] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "form-add/scripts/form-add",
+      "args": { "-ObjectPath": "{workDir}/Catalogs/Спр.xml", "-FormName": "ФормаВыбора" }
+    }
+  ],
+  "params": { "objectPath": "Catalogs/Спр" },
+  "input": {
+    "modify": {
+      "attributes": {
+        "Дата": { "Format": "ДФ=dd.MM.yyyy", "EditFormat": "ДФ=dd.MM.yyyy", "ToolTip": "Дата документа" },
+        "Контр": {
+          "ChoiceForm": "Catalog.Спр.Form.ФормаВыбора",
+          "ChoiceParameterLinks": ["Отбор.Владелец=Ссылка"],
+          "LinkByType": { "dataPath": "Ссылка", "linkItem": 0 },
+          "ChoiceParameters": [
+            { "name": "Отбор.ПометкаУдаления", "value": false },
+            { "name": "Отбор.Ссылка", "value": "Catalog.Спр.EmptyRef" }
+          ],
+          "FillValue": "EmptyRef"
+        },
+        "Сумма": { "MinValue": 0, "MaxValue": 1000000, "FillValue": 0 }
+      }
+    }
+  }
+}

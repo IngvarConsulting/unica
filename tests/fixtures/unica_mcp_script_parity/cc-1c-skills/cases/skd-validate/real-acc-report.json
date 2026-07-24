@@ -1,0 +1,5 @@
+{
+  "name": "Валидация реальной СКД АнализВзносовВФонды (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "templatePath": "Reports/АнализВзносовВФонды/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml" }
+}

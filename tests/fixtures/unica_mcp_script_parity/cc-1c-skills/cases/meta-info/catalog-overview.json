@@ -1,0 +1,22 @@
+{
+  "name": "Обзор справочника с реквизитами",
+  "setup": "empty-config",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "Catalog",
+        "name": "Номенклатура",
+        "attributes": [
+          { "name": "Артикул", "type": "String", "length": 25 },
+          { "name": "Цена", "type": "Number", "length": 15, "precision": 2 }
+        ]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "Catalogs/Номенклатура" },
+  "expect": {
+    "stdoutContains": "Номенклатура"
+  }
+}

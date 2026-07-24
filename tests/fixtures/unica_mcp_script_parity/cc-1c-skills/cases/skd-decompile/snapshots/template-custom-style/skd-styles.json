@@ -1,0 +1,1 @@
+{ "myHeader": { "font": "Calibri", "fontSize": 11, "bold": false, "italic": false, "hAlign": "Center", "vAlign": "Center", "wrap": false, "bgColor": "style:ReportHeaderBackColor", "textColor": null, "borderColor": "style:ReportLineColor", "borders": true } }

@@ -1,0 +1,42 @@
+{
+  "name": "Шаблон с custom стилем (Calibri 11) — переиспользование user preset из skd-styles.json",
+  "preRun": [
+    {
+      "writeFile": {
+        "path": "skd-styles.json",
+        "content": {
+          "myHeader": {
+            "font": "Calibri",
+            "fontSize": 11,
+            "bold": false,
+            "italic": false,
+            "hAlign": "Center",
+            "vAlign": "Center",
+            "wrap": false,
+            "bgColor": "style:ReportHeaderBackColor",
+            "textColor": null,
+            "borderColor": "style:ReportLineColor",
+            "borders": true
+          }
+        }
+      }
+    },
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": ["Поле: string"]
+        }],
+        "templates": [
+          { "name": "Заголовок", "style": "myHeader", "rows": [["A"]] }
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

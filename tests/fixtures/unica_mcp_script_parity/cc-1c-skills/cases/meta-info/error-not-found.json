@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: объект не найден",
+  "params": { "objectPath": "Catalogs/НесуществующийОбъект" },
+  "expectError": true
+}

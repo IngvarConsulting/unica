@@ -128,8 +128,11 @@ class MatrixFixture:
                             "id": "cc-1c-skills",
                             "entries": [
                                 {
-                                    "skill": "donor-a",
+                                    "skill": "local-a",
                                     "status": "ported-to-unica",
+                                    "upstreamPaths": [
+                                        ".claude/skills/donor-a/**"
+                                    ],
                                     "localPaths": [
                                         "plugins/unica/skills/local-a"
                                     ],

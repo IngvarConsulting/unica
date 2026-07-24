@@ -1,0 +1,11 @@
+{
+  "script": "meta-validate/scripts/meta-validate",
+  "setup": "none",
+  "args": [
+    { "flag": "-ObjectPath", "from": "workPath", "field": "objectPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

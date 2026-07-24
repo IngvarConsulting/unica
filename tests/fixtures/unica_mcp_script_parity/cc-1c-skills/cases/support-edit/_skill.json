@@ -1,0 +1,15 @@
+{
+  "script": "support-edit/scripts/support-edit",
+  "setup": "none",
+  "args": [
+    {
+      "flag": "-Path",
+      "from": "workPath",
+      "field": "path"
+    }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

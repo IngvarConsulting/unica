@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,15 @@ class SkillProvenanceTests(unittest.TestCase):
 
     def product_backlog_path(self) -> Path:
         return self.reviews_dir() / "2026-06-18-product-update-backlog.json"
+
+    def donor_skill_map_path(self) -> Path:
+        return (
+            self.repo_root()
+            / "plugins"
+            / "unica"
+            / "provenance"
+            / "donor-skill-map.json"
+        )
 
     def load_provenance(self) -> dict:
         return json.loads(self.provenance_path().read_text(encoding="utf-8"))
@@ -120,6 +130,44 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertIn("plugins/unica/provenance", path.as_posix())
         self.assertNotIn("plugins/unica/skills", path.as_posix())
         self.assertNotIn("plugins/unica/references", path.as_posix())
+
+    def test_donor_skill_map_covers_accepted_corpus_and_matrix_is_current(self) -> None:
+        baseline_path = (
+            self.repo_root()
+            / "tests"
+            / "fixtures"
+            / "unica_mcp_script_parity"
+            / "donor-baseline.json"
+        )
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        skill_map = json.loads(
+            self.donor_skill_map_path().read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(baseline["schemaVersion"], 2)
+        self.assertEqual(skill_map["upstreamId"], "cc-1c-skills")
+        self.assertEqual(
+            set(skill_map["skills"]), set(baseline["corpusSkills"])
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(
+                    self.repo_root()
+                    / "scripts"
+                    / "ci"
+                    / "generate-donor-skill-matrix.py"
+                ),
+                "--repo-root",
+                str(self.repo_root()),
+                "--check",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_required_upstreams_are_present(self) -> None:
         data = self.load_provenance()

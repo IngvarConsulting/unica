@@ -1,0 +1,31 @@
+{
+  "name": "add-selection Auto не дублируется если уже существует",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле1, Т.Поле2 ИЗ Регистр КАК Т",
+          "fields": ["Поле1", "Поле2"]
+        }],
+        "settingsVariants": [{
+          "name": "Основной",
+          "settings": {
+            "selection": ["Auto"],
+            "structure": "details"
+          }
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-selection",
+    "value": "Auto ;; Поле1 ;; Поле2"
+  },
+  "expect": {
+    "stdout": "WARN.*SelectedItemAuto already exists"
+  }
+}

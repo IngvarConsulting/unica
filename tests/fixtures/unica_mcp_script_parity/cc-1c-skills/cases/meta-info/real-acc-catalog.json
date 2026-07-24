@@ -1,0 +1,6 @@
+{
+  "name": "Реальный справочник Номенклатура (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "objectPath": "Catalogs/Номенклатура" },
+  "expect": { "stdoutContains": "Номенклатура" }
+}

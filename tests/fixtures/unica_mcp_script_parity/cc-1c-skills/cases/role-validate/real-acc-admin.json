@@ -1,0 +1,5 @@
+{
+  "name": "Валидация реальной роли АдминистраторСистемы (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "rightsPath": "Roles/АдминистраторСистемы/Ext/Rights.xml" }
+}

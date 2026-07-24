@@ -1,0 +1,14 @@
+{
+  "script": "cfe-init/scripts/cfe-init",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-Name", "from": "case.name" },
+    { "flag": "-OutputDir", "from": "workPath", "field": "outputDir" },
+    { "flag": "-ConfigPath", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  },
+  "postValidate": { "script": "cfe-validate/scripts/cfe-validate", "flag": "-ExtensionPath", "pathFrom": "validatePath" }
+}

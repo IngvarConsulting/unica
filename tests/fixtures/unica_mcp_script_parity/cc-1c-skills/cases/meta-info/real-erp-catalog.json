@@ -1,0 +1,6 @@
+{
+  "name": "Реальный справочник Номенклатура (ERP)",
+  "setup": "external:C:/WS/tasks/cfsrc/erp_8.3.24",
+  "params": { "objectPath": "Catalogs/Номенклатура" },
+  "expect": { "stdoutContains": "Номенклатура" }
+}

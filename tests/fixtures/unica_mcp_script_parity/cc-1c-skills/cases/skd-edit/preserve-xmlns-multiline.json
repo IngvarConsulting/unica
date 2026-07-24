@@ -1,0 +1,10 @@
+{
+  "name": "Многострочный xmlns корня сохраняется после успешной операции",
+  "setup": "fixture:roundtrip-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "set-query",
+    "value": "DS=ВЫБРАТЬ 2 КАК П, &quot;new&quot; КАК Имя"
+  },
+  "idempotent": true
+}

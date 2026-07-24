@@ -1,0 +1,9 @@
+{
+  "script": "db-dump-cf/scripts/db-dump-cf",
+  "setup": "none",
+  "args": [],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Ошибка: xs:decimal с неполными NumberQualifiers (нет Digits/FractionDigits)",
+  "setup": "fixture:bad-decimal-no-qualifiers",
+  "params": { "templatePath": "Template.xml" },
+  "expectError": true
+}

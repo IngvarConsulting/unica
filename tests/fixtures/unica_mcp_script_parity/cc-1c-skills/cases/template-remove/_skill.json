@@ -1,0 +1,13 @@
+{
+  "script": "template-remove/scripts/remove-template",
+  "setup": "none",
+  "args": [
+    { "flag": "-ObjectName", "from": "case.objectName" },
+    { "flag": "-TemplateName", "from": "case.templateName" },
+    { "flag": "-SrcDir", "from": "workDir" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

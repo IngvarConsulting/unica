@@ -1,0 +1,13 @@
+{
+  "name": "Пустая конфигурация",
+  "params": {
+    "name": "ТестоваяКонфигурация"
+  },
+  "expect": {
+    "files": [
+      "Configuration.xml",
+      "Languages/Русский.xml",
+      "Ext/ClientApplicationInterface.xml"
+    ]
+  }
+}

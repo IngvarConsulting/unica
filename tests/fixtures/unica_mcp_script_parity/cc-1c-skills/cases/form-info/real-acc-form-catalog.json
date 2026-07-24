@@ -1,0 +1,6 @@
+{
+  "name": "Реальная форма Банки.ФормаЭлемента (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "formPath": "Catalogs/Банки/Forms/ФормаЭлемента/Ext/Form.xml" },
+  "expect": { "stdoutContains": "ФормаЭлемента" }
+}

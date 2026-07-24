@@ -1,0 +1,5 @@
+{
+  "name": "Ошибка: входной файл не найден",
+  "args_extra": ["-InputFile", "C:\\nonexistent\\file.epf", "-OutputDir", "C:\\tmp\\out"],
+  "expectError": true
+}

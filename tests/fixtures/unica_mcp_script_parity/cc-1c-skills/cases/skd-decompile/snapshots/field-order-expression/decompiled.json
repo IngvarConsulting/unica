@@ -1,0 +1,1 @@
+{ "dataSets": [{ "name": "Тест", "query": "ВЫБРАТЬ * ИЗ Справочник.ВидыРасчета", "fields": [{ "field": "ВидРасчета", "type": "CatalogRef.ВидыРасчета", "orderExpression": { "expression": "ЕстьNULL(ВидРасчета.Порядок, 10000)", "orderType": "Asc", "autoOrder": false } }] }], "settingsVariants": [{ "name": "Основной", "settings": { "selection": ["Auto"], "structure": "details" } }] }

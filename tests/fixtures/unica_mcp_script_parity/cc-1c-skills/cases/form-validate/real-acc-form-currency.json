@@ -1,0 +1,5 @@
+{
+  "name": "Валидация реальной формы Валюты.ФормаЭлемента (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "formPath": "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml" }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Числовые и UUID DataPath не вызывают ложных ошибок",
+  "setup": "fixture:datapath-opaque-refs",
+  "params": { "formPath": "DataProcessors/Opaque/Forms/Форма" }
+}

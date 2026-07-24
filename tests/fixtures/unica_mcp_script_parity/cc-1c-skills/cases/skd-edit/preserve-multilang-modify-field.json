@@ -1,0 +1,10 @@
+{
+  "name": "modify-field сохраняет en/uk title (multi-lang) при ru-override",
+  "setup": "fixture:multilang-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-field",
+    "value": "Контрагент [Имя контрагента]"
+  },
+  "idempotent": true
+}

@@ -1,0 +1,25 @@
+{
+  "name": "modify-parameter availableValue: replace whole list (старый список удалён, новый добавлен)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле ИЗ Регистр КАК Т",
+          "fields": ["Поле: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "add-parameter", "-Value": "Округление: EnumRef.Округления = Окр1_00 availableValue=Перечисление.Округления.Окр1_00: ст1, Перечисление.Округления.Окр1: ст2, Перечисление.Округления.Окр1000: ст3" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-parameter",
+    "value": "Округление availableValue=Перечисление.Округления.Окр1: руб., Перечисление.Округления.Окр1000: тыс., Перечисление.Округления.Окр1000000: млн."
+  }
+}

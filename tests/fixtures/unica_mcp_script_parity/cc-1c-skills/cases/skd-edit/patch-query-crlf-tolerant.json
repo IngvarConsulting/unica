@@ -1,0 +1,21 @@
+{
+  "name": "patch-query: CRLF в -Value матчит LF-текст в InnerText",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ\n\tТ.Поле\nИЗ\n\tРегистр КАК Т",
+          "fields": ["Поле"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "patch-query",
+    "value": "ВЫБРАТЬ\r\n\tТ.Поле => ВЫБРАТЬ\r\n\tТ.Имя"
+  }
+}

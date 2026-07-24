@@ -1,0 +1,22 @@
+{
+  "name": "modify-parameter: use, denyIncompleteValues, availableValue",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }],
+        "parameters": [{"name": "ПорядокОкругления", "type": "string", "value": "Окр1_00"}]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-parameter",
+    "value": "ПорядокОкругления use=Always ;; ПорядокОкругления denyIncompleteValues=true ;; ПорядокОкругления availableValue=Перечисление.Округления.Окр1_00: руб. коп, Перечисление.Округления.Окр1: руб."
+  }
+}

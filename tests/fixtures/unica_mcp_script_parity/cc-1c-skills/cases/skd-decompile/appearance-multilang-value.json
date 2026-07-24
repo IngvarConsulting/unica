@@ -1,0 +1,42 @@
+{
+  "name": "Appearance с multilang значением (Формат={ru,en}) — round-trip",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": [
+            {
+              "field": "ДатаДокумента",
+              "type": "date",
+              "appearance": {
+                "Формат": { "ru": "ДЛФ=D", "en": "DLF=D" }
+              }
+            }
+          ]
+        }],
+        "settingsVariants": [
+          {
+            "name": "Основной",
+            "settings": {
+              "conditionalAppearance": [
+                {
+                  "selection": ["ДатаДокумента"],
+                  "appearance": {
+                    "Формат": { "ru": "ДЛФ=DT", "en": "DLF=DT" }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

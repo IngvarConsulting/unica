@@ -1,0 +1,14 @@
+{
+  "name": "Добавление значений перечисления",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Enum", "name": "Статусы", "values": ["Новый"] },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "Enums/Статусы" },
+  "input": {
+    "add": { "enumValues": ["ВРаботе", "Закрыт"] }
+  }
+}

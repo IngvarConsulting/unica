@@ -454,6 +454,39 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertFalse((dest / "skills" / "web-test" / "screenshot.png").exists())
             self.assertFalse((dest / "skills" / "web-test" / "trace.mp4").exists())
 
+    def test_plugin_source_copy_excludes_maintainer_only_donor_skill_map(self) -> None:
+        module = load_package_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            plugin_src = repo_root / "plugins" / "unica"
+            map_path = plugin_src / "provenance" / "donor-skill-map.json"
+            index_path = plugin_src / "provenance" / "skill-upstreams.json"
+            map_path.parent.mkdir(parents=True)
+            map_path.write_text("{}\n", encoding="utf-8")
+            index_path.write_text("{}\n", encoding="utf-8")
+            destination = root / "destination"
+
+            with patch.object(
+                module,
+                "git_tracked_plugin_files",
+                return_value=[
+                    "provenance/donor-skill-map.json",
+                    "provenance/skill-upstreams.json",
+                ],
+            ):
+                module.copy_tracked_plugin_source(
+                    repo_root, plugin_src, destination
+                )
+
+            self.assertFalse(
+                (destination / "provenance" / "donor-skill-map.json").exists()
+            )
+            self.assertTrue(
+                (destination / "provenance" / "skill-upstreams.json").is_file()
+            )
+
     def test_attribution_page_and_referenced_local_licenses_are_packaged(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
@@ -794,6 +827,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             provenance = plugin / "provenance" / "skill-upstreams.json"
             self.assertTrue(provenance.is_file())
             self.assertIn("v8-runner-rust", provenance.read_text(encoding="utf-8"))
+            self.assertFalse((plugin / "provenance" / "donor-skill-map.json").exists())
             upstream_review = (
                 plugin
                 / "provenance"

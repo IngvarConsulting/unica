@@ -1,0 +1,12 @@
+{
+  "name": "Set при выключенной возможности → отказ-предусловие",
+  "setup": "fixture:g1",
+  "params": {
+    "path": "Catalogs/Locked.xml"
+  },
+  "args_extra": [
+    "-Set",
+    "editable"
+  ],
+  "expectError": "Capability on"
+}

@@ -1,0 +1,14 @@
+{
+  "dataSets": [
+    {
+      "name": "Тест",
+      "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+      "fields": [
+        { "field": "СегментНоменклатуры", "type": "CatalogRef.СегментыНоменклатуры", "inputParameters": [{ "parameter": "ПараметрыВыбора", "choiceParameters": [{ "name": "Отбор.СпособФормирования", "values": ["Перечисление.СпособыФормированияСегментов.ФормироватьВручную", "Перечисление.СпособыФормированияСегментов.ПериодическиОбновлять"] }] }] },
+        { "field": "Сотрудник", "type": "CatalogRef.Сотрудники", "inputParameters": [{ "parameter": "СвязиПараметровВыбора", "choiceParameterLinks": [{ "name": "Отбор.ТекущаяОрганизация", "value": "Организация", "mode": "Clear" }, { "name": "Отбор.ТекущееПодразделение", "value": "Подразделение", "mode": "Clear" }] }] },
+        { "field": "ПростоЕА", "type": "CatalogRef.Сотрудники", "inputParameters": [{ "parameter": "ПараметрыВыбора", "choiceParameters": [] }, { "parameter": "БыстрыйВыбор", "use": false, "value": true }] }
+      ]
+    }
+  ],
+  "settingsVariants": [{ "name": "Основной", "settings": { "selection": ["Auto"], "structure": "details" } }]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Поддержка объекта: erp Валюты — снято с поддержки",
+  "setup": "external:C:/WS/tasks/cfsrc/erp_8.3.24",
+  "params": { "objectPath": "Catalogs/Валюты" },
+  "expect": { "stdoutContains": "Поддержка: снято с поддержки" }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Guard: добавление роли при закрытом корне (f1=0) запрещено",
+  "setup": "fixture:on-support",
+  "input": {
+    "name": "НовРоль",
+    "rights": {}
+  },
+  "expectError": "support-guard"
+}

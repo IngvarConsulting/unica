@@ -1,0 +1,9 @@
+{
+  "name": "Добавление расшифровки ресурсов в шаблоны",
+  "setup": "fixture:drilldown-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-drilldown",
+    "value": "Ресурс1, Ресурс2"
+  }
+}

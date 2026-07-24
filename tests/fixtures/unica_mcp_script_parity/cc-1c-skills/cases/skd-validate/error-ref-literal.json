@@ -1,0 +1,6 @@
+{
+  "name": "Ошибка: DesignTimeValue со значением '_' (BUG-2 от titan)",
+  "setup": "fixture:bad-ref-literal",
+  "params": { "templatePath": "Template.xml" },
+  "expectError": true
+}

@@ -1,0 +1,11 @@
+{
+  "script": "cfe-validate/scripts/cfe-validate",
+  "setup": "empty-config",
+  "args": [
+    { "flag": "-ExtensionPath", "from": "workPath", "field": "extensionPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}

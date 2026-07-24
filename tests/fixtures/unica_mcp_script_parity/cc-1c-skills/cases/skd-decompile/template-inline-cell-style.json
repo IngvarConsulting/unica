@@ -1,0 +1,28 @@
+{
+  "name": "Шаблон с inline cell style (data + per-cell override)",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Тест",
+          "query": "ВЫБРАТЬ * ИЗ Справочник.Сотрудники",
+          "fields": ["Поле: string"]
+        }],
+        "templates": [
+          {
+            "name": "СмешанныйМакет",
+            "style": "data",
+            "rows": [
+              ["A", { "value": "B", "style": "header" }, "C"]
+            ]
+          }
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "Template.xml" },
+      "cwd": "{workDir}"
+    }
+  ],
+  "params": { "templatePath": "Template.xml" },
+  "outputPath": "decompiled.json"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "modify-field сохраняет неизвестные дочерние элементы (<appearance> со всеми вложениями) — структура из ERP",
+  "setup": "fixture:multilang-base",
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "modify-field",
+    "value": "Контрагент @dimension"
+  },
+  "expect": {
+    "stdoutContains": "Field \"Контрагент\" modified"
+  },
+  "idempotent": true
+}

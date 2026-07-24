@@ -1,0 +1,9 @@
+{
+  "name": "Guard: добавление формы к объекту на замке (f1=0) запрещено",
+  "setup": "fixture:on-support",
+  "params": {
+    "objectPath": "Catalogs/Locked.xml"
+  },
+  "formName": "НовФорма",
+  "expectError": "support-guard"
+}

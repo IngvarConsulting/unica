@@ -1,0 +1,4 @@
+{
+  "name": "Валидация реальной конфигурации БП",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24"
+}

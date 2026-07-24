@@ -1,0 +1,18 @@
+{
+  "script": "mxl-compile/scripts/mxl-compile",
+  "setup": "none",
+  "cwd": "workDir",
+  "args": [
+    { "flag": "-JsonPath", "from": "inputFile" },
+    { "flag": "-OutputPath", "from": "case.outputPath" }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  },
+  "postValidate": {
+    "script": "mxl-validate/scripts/mxl-validate",
+    "flag": "-TemplatePath",
+    "pathFrom": "validatePath"
+  }
+}

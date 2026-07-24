@@ -1,0 +1,8 @@
+{
+  "name": "Представление типа (ед.ч.) у ПВХ — ERP ВидыСубконтоХозрасчетные",
+  "setup": "external:C:/WS/tasks/cfsrc/erp_8.3.24",
+  "params": { "objectPath": "ChartsOfCharacteristicTypes/ВидыСубконтоХозрасчетные" },
+  "expect": {
+    "stdoutContains": "Представление типа: Вид субконто"
+  }
+}

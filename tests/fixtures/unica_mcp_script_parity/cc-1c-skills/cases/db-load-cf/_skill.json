@@ -1,0 +1,9 @@
+{
+  "script": "db-load-cf/scripts/db-load-cf",
+  "setup": "none",
+  "args": [],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": false
+  }
+}

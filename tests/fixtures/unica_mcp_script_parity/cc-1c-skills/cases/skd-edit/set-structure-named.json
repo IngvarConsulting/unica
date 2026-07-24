@@ -1,0 +1,25 @@
+{
+  "name": "set-structure с @name= и Folder в selection + @group=",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Счет, Т.Поступление1, Т.Поступление2, Т.Выбытие1 ИЗ Регистр КАК Т",
+          "fields": ["Счет: string", "Поступление1: decimal(15,2)", "Поступление2: decimal(15,2)", "Выбытие1: decimal(15,2)"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    },
+    {
+      "script": "skd-edit/scripts/skd-edit",
+      "args": { "-TemplatePath": "{workDir}/Template.xml", "-Operation": "set-structure", "-Value": "Счет @name=ДанныеОтчета" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "add-selection",
+    "value": "Auto @group=ДанныеОтчета ;; Счет @group=ДанныеОтчета ;; Folder(Поступление: Поступление1, Поступление2) @group=ДанныеОтчета ;; Выбытие1 @group=ДанныеОтчета"
+  }
+}

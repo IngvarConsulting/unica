@@ -1,0 +1,6 @@
+{
+  "name": "Реальный макет ВводНачальныхОстатков.Справка — поддержка (БП)",
+  "setup": "external:C:/WS/tasks/cfsrc/acc_8.3.24",
+  "params": { "templatePath": "DataProcessors/ВводНачальныхОстатков/Templates/Справка/Ext/Template.xml" },
+  "expect": { "stdoutContains": "Поддержка: конфигурация read-only" }
+}

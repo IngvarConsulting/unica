@@ -1,0 +1,12 @@
+{
+  "name": "Ошибка: ни DefinitionFile ни Operation не указаны",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Тест" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectPath": "Catalogs/Тест" },
+  "expectError": true
+}

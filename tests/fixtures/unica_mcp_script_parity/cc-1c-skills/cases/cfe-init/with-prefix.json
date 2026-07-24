@@ -1,0 +1,9 @@
+{
+  "name": "Расширение с явным префиксом",
+  "params": { "name": "РасшПрефикс", "outputDir": "ext" },
+  "args_extra": ["-NamePrefix", "РП_"],
+  "validatePath": "ext",
+  "expect": {
+    "files": ["ext/Configuration.xml"]
+  }
+}

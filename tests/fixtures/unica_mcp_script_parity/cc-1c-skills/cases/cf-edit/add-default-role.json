@@ -1,0 +1,13 @@
+{
+  "name": "Добавление роли по умолчанию",
+  "preRun": [
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": { "name": "ПолныеПрава" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "input": [
+    { "operation": "add-defaultRole", "value": "ПолныеПрава" }
+  ]
+}

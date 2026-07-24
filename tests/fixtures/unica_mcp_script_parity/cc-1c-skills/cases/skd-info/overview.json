@@ -1,0 +1,11 @@
+{
+  "name": "Обзор СКД",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": { "dataSets": [{ "name": "Основной", "type": "Query", "query": "SELECT 1 AS Поле" }] },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": { "templatePath": "Template.xml" }
+}

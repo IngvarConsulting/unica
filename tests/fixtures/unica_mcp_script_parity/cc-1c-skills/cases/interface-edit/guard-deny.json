@@ -1,0 +1,12 @@
+{
+  "name": "Guard: правка командного интерфейса подсистемы на замке (f1=0) запрещена",
+  "setup": "fixture:on-support",
+  "params": {
+    "ciPath": "Subsystems/ТестПодсистема/Ext/CommandInterface.xml"
+  },
+  "input": {
+    "operations": []
+  },
+  "CreateIfMissing": true,
+  "expectError": "support-guard"
+}

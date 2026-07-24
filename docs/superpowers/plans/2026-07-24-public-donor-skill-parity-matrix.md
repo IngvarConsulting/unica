@@ -117,7 +117,7 @@ tools, and a checked generator projects all authorities into public Markdown.
 - Create: `docs/donor-skill-parity.md`
 - Create: `docs/research/2026-07-24-cc-1c-skills-gap-analysis.md`
 - Modify: `README.md`
-- Modify: `.github/workflows/build-unica-plugin.yml`
+- Modify: `.github/workflows/unica-plugin-release.yml`
 - Modify: `tests/ci/test_package_unica_plugin.py`
 
 - [ ] Generate the public matrix and inspect all donor rows and headline totals.

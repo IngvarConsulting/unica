@@ -1,0 +1,22 @@
+{
+  "name": "patch-query @once: множественные вхождения — ошибка",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Поле1, Т.Поле2 ИЗ Регистр КАК Т ГДЕ Т.Поле1 = Т.Поле2",
+          "fields": ["Поле1: string", "Поле2: string"]
+        }]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "patch-query",
+    "value": "Поле1 => Новое @once"
+  },
+  "expectError": "expected 1 occurrence"
+}

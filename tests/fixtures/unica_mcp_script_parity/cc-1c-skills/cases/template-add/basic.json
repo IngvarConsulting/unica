@@ -1,0 +1,10 @@
+{
+  "name": "Добавление макета к обработке",
+  "preRun": [
+    {
+      "script": "epf-init/scripts/init",
+      "args": { "-Name": "МояОбработка", "-SrcDir": "{workDir}" }
+    }
+  ],
+  "params": { "objectName": "МояОбработка", "templateName": "Макет", "templateType": "SpreadsheetDocument" }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "reorder-parameters: явный частичный список + остальные сохраняют порядок",
+  "preRun": [
+    {
+      "script": "skd-compile/scripts/skd-compile",
+      "input": {
+        "dataSets": [{
+          "name": "Основной",
+          "query": "ВЫБРАТЬ Т.Сумма ИЗ Регистр КАК Т",
+          "fields": ["Сумма: decimal(15,2)"]
+        }],
+        "parameters": [
+          "Организация: string",
+          "ПрекращаемаяДеятельность: boolean",
+          "ПериодОтчета: StandardPeriod = LastMonth",
+          "ПланСчетовМеждународный: string",
+          "ПорядокОкругленияСумм: string"
+        ]
+      },
+      "args": { "-DefinitionFile": "{inputFile}", "-OutputPath": "{workDir}/Template.xml" }
+    }
+  ],
+  "params": {
+    "templatePath": "Template.xml",
+    "operation": "reorder-parameters",
+    "value": "ПериодОтчета, ПланСчетовМеждународный, ПорядокОкругленияСумм"
+  }
+}

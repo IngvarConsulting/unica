@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+	<WorkingAreaTemplate>TwoColumnsVariableWidth</WorkingAreaTemplate>
+	<LeftColumn>
+		<Item>
+			<Form>Catalog.Товары.Form.ФормаСписка</Form>
+			<Height>10</Height>
+			<Visibility>
+				<xr:Common>true</xr:Common>
+			</Visibility>
+		</Item>
+		<Item>
+			<Form>Catalog.Товары.Form.ФормаЭлемента</Form>
+			<Height>100</Height>
+			<Visibility>
+				<xr:Common>false</xr:Common>
+			</Visibility>
+		</Item>
+		<Item>
+			<Form>Catalog.Контрагенты.Form.ФормаСписка</Form>
+			<Height>50</Height>
+			<Visibility>
+				<xr:Common>true</xr:Common>
+			</Visibility>
+		</Item>
+		<Item>
+			<Form>Catalog.Контрагенты.Form.ФормаОбъекта</Form>
+			<Height>10</Height>
+			<Visibility>
+				<xr:Common>false</xr:Common>
+				<xr:Value name="Role.Оператор">true</xr:Value>
+				<xr:Value name="Role.ПолныеПрава">false</xr:Value>
+			</Visibility>
+		</Item>
+	</LeftColumn>
+	<RightColumn>
+		<Item>
+			<Form>DataProcessor.Поиск.Form.ФормаПоиска</Form>
+			<Height>30</Height>
+			<Visibility>
+				<xr:Common>true</xr:Common>
+			</Visibility>
+		</Item>
+	</RightColumn>
+</HomePageWorkArea>

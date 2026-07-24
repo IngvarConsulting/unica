@@ -1,0 +1,18 @@
+{
+  "name": "Замена списка ролей по умолчанию",
+  "preRun": [
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": { "name": "ПолныеПрава" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    },
+    {
+      "script": "role-compile/scripts/role-compile",
+      "input": { "name": "Администратор" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "input": [
+    { "operation": "set-defaultRoles", "value": "ПолныеПрава ;; Администратор" }
+  ]
+}

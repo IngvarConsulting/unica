@@ -1,0 +1,19 @@
+{
+  "name": "Подсистема с объектами",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Товары" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "input": {
+    "name": "Склад",
+    "synonym": "Склад",
+    "content": ["Catalogs.Товары"]
+  },
+  "validatePath": "Subsystems/Склад",
+  "expect": {
+    "files": ["Subsystems/Склад.xml"]
+  }
+}

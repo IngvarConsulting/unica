@@ -15,6 +15,9 @@ from pathlib import Path
 PLUGIN_ID = "unica"
 DISPLAY_NAME = "Unica"
 SOURCE_PACKAGE_IGNORES = {"bin", ".DS_Store", "__pycache__", ".pytest_cache"}
+MAINTAINER_ONLY_PLUGIN_PATHS = {
+    Path("provenance/donor-skill-map.json"),
+}
 DISALLOWED_ARCHIVE_PARTS = {".build", "dist", "__pycache__", ".pytest_cache"}
 SUPPORTED_TARGETS = {
     "darwin-arm64": ("aarch64-apple-darwin", "unica-bootstrap"),
@@ -75,6 +78,8 @@ def copy_tracked_plugin_source(repo_root: Path, plugin_src: Path, dst: Path) -> 
     for rel in git_tracked_plugin_files(repo_root, plugin_src):
         rel_path = Path(rel)
         validate_tracked_plugin_source_path(rel_path)
+        if rel_path in MAINTAINER_ONLY_PLUGIN_PATHS:
+            continue
         source = plugin_src / rel_path
         if source.is_symlink():
             raise SystemExit(f"tracked plugin source symlink is not allowed: {rel_path.as_posix()}")

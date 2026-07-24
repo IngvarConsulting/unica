@@ -1,0 +1,12 @@
+{
+  "name": "Удаление справочника из конфигурации",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": { "type": "Catalog", "name": "Удалить" },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
+  "params": { "object": "Catalog.Удалить" },
+  "args_extra": ["-Force"]
+}
