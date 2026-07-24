@@ -5,7 +5,10 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::{
+    resolve_platform_xml_owners_with_provenance, root_version_literal, PlatformXmlOwnerKind,
+    PlatformXmlOwnerProvenance,
+};
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -32,6 +35,9 @@ type MetaCompileAfterOwnerValidationHook = Box<dyn FnOnce(&Path)>;
 type MetaCompileAfterFormatPlanHook = Box<dyn FnOnce()>;
 
 #[cfg(test)]
+type MetaEditAfterLineNumberLengthPolicyHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 type MetaRemoveSubsystemChildInspectionHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
@@ -41,6 +47,9 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static META_COMPILE_AFTER_FORMAT_PLAN_HOOK:
         std::cell::RefCell<Option<MetaCompileAfterFormatPlanHook>> =
+        const { std::cell::RefCell::new(None) };
+    static META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK:
+        std::cell::RefCell<Option<MetaEditAfterLineNumberLengthPolicyHook>> =
         const { std::cell::RefCell::new(None) };
     static META_REMOVE_FORCED_REPARSE_PATHS:
         std::cell::RefCell<HashSet<PathBuf>> =
@@ -102,6 +111,35 @@ fn with_meta_compile_after_format_plan_hook<T>(
 #[cfg(test)]
 fn run_meta_compile_after_format_plan_hook() {
     if let Some(hook) = META_COMPILE_AFTER_FORMAT_PLAN_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn with_meta_edit_after_line_number_length_policy_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaEditAfterLineNumberLengthPolicyHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_edit_after_line_number_length_policy_hook() {
+    if let Some(hook) =
+        META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| slot.borrow_mut().take())
+    {
         hook();
     }
 }
@@ -2182,6 +2220,55 @@ mod edit_tests {
         )
     }
 
+    fn sample_object_with_line_number_length(
+        object_type: &str,
+        line_number_length: &str,
+    ) -> String {
+        sample_meta_object_xml(
+            object_type,
+            "SampleObject",
+            "",
+            &format!(
+                "\t\t<ChildObjects>
+\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>SampleItems</Name>
+\t\t\t\t\t<Synonym/>
+\t\t\t\t\t<Comment/>
+\t\t\t\t\t<ToolTip/>
+\t\t\t\t\t<FillChecking>DontCheck</FillChecking>
+\t\t\t\t\t<LineNumberLength>{line_number_length}</LineNumberLength>
+\t\t\t\t</Properties>
+\t\t\t\t<ChildObjects/>
+\t\t\t</TabularSection>
+\t\t</ChildObjects>"
+            ),
+        )
+    }
+
+    fn write_owner_with_compatibility(
+        source_dir: &Path,
+        object_type: &str,
+        object_name: &str,
+        compatibility_mode: &str,
+    ) {
+        fs::create_dir_all(source_dir).unwrap();
+        write_file(
+            &source_dir.join("Configuration.xml"),
+            &format!(
+                r#"<MetaDataObject xmlns="{TEST_MD_NS}" version="2.20">
+<Configuration uuid="11111111-1111-4111-8111-111111111111">
+<Properties>
+<Name>Owner</Name>
+<CompatibilityMode>{compatibility_mode}</CompatibilityMode>
+</Properties>
+<ChildObjects><{object_type}>{object_name}</{object_type}></ChildObjects>
+</Configuration>
+</MetaDataObject>"#
+            ),
+        );
+    }
+
     fn register_record_args(object_path: &Path) -> Map<String, Value> {
         let mut args = Map::new();
         args.insert(
@@ -3140,6 +3227,52 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_omits_line_number_length_for_external_tabular_sections() {
+        for object_type in ["ExternalReport", "ExternalDataProcessor"] {
+            let context = temp_context(&format!(
+                "add-unbounded-tabular-section-{}",
+                object_type.to_ascii_lowercase()
+            ));
+            let object_path = context.cwd.join(format!("{object_type}.xml"));
+            write_file(
+                &object_path,
+                &sample_meta_named(object_type, "SampleExternalObject"),
+            );
+
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "add-ts",
+                    "SampleItems: SampleValue: String(100)",
+                ),
+                &context,
+            );
+
+            assert!(outcome.ok, "{object_type}: {outcome:?}");
+            let updated = fs::read_to_string(&object_path).unwrap();
+            let document = Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+            let section = document
+                .descendants()
+                .find(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "TabularSection"
+                        && meta_info_child(*node, "Properties")
+                            .and_then(|properties| meta_info_child_text(properties, "Name"))
+                            .as_deref()
+                            == Some("SampleItems")
+                })
+                .expect("SampleItems tabular section");
+            let properties = meta_info_child(section, "Properties").unwrap();
+            assert!(
+                meta_info_child(properties, "LineNumberLength").is_none(),
+                "{object_type}: {updated}"
+            );
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
     fn edit_meta_adds_attribute_to_tabular_section() {
         let context = temp_context("add-tabular-section-attribute");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -3423,6 +3556,379 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_modifies_line_number_length_without_reformatting_xml() {
+        let context = temp_context("modify-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = format!(
+            "\u{feff}{}",
+            sample_object_with_line_number_length("Document", "5").replace('\n', "\r\n")
+        );
+        write_file(&object_path, &original);
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert_eq!(
+            updated,
+            original.replace(
+                "<LineNumberLength>5</LineNumberLength>",
+                "<LineNumberLength>9</LineNumberLength>"
+            )
+        );
+        assert!(updated.starts_with('\u{feff}'));
+        assert!(updated.contains("\r\n"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_definition_file_modifies_line_number_length() {
+        let context = temp_context("definition-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        write_file(
+            &object_path,
+            &sample_object_with_line_number_length("Document", "5"),
+        );
+        write_file(
+            &definition_path,
+            r#"{
+  "modify": {
+    "tabularSections": {
+      "SampleItems": {
+        "lineNumberLength": 9
+      }
+    }
+  }
+}"#,
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(fs::read_to_string(&object_path)
+            .unwrap()
+            .contains("<LineNumberLength>9</LineNumberLength>"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_accepts_line_number_length_key_aliases() {
+        let context = temp_context("line-number-length-aliases");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+
+        for key in [
+            "lineNumberLength",
+            "line_number_length",
+            "line-number-length",
+        ] {
+            write_file(&object_path, &original);
+            let outcome = edit_meta(
+                &meta_edit_args(&object_path, "modify-ts", &format!("SampleItems: {key}=9")),
+                &context,
+            );
+
+            assert!(outcome.ok, "{key}: {outcome:?}");
+            assert!(
+                fs::read_to_string(&object_path)
+                    .unwrap()
+                    .contains("<LineNumberLength>9</LineNumberLength>"),
+                "{key}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_line_number_length_without_writing() {
+        let context = temp_context("invalid-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+
+        for value in ["", "4", "10", "5.5", "text", "-1"] {
+            write_file(&object_path, &original);
+            let before = fs::read(&object_path).unwrap();
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "modify-ts",
+                    &format!("SampleItems: lineNumberLength={value}"),
+                ),
+                &context,
+            );
+
+            assert!(!outcome.ok, "{value}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("LineNumberLength")
+                        && error.contains("integer")
+                        && error.contains("5..=9")
+                }),
+                "{value}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read(&object_path).unwrap(), before, "{value}");
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_for_unbounded_tabular_sections() {
+        for object_type in [
+            "Report",
+            "DataProcessor",
+            "ExternalReport",
+            "ExternalDataProcessor",
+        ] {
+            let context = temp_context(&format!(
+                "line-number-length-{}",
+                object_type.to_ascii_lowercase()
+            ));
+            let object_path = if let Some(directory) = meta_compile_type_plural(object_type) {
+                let source_dir = context.cwd.join("src");
+                write_owner_with_compatibility(
+                    &source_dir,
+                    object_type,
+                    "SampleObject",
+                    "Version8_3_27",
+                );
+                source_dir.join(directory).join("SampleObject.xml")
+            } else {
+                context.cwd.join(format!("{object_type}.xml"))
+            };
+            let original = sample_object_with_line_number_length(object_type, "5");
+            write_file(&object_path, &original);
+            let before = fs::read(&object_path).unwrap();
+
+            let outcome = edit_meta(
+                &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+                &context,
+            );
+
+            assert!(!outcome.ok, "{object_type}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("LineNumberLength") && error.contains("not applicable")
+                }),
+                "{object_type}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read(&object_path).unwrap(), before, "{object_type}");
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_fixed_by_compatibility_mode() {
+        let context = temp_context("fixed-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_26");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("LineNumberLength")
+                    && error.contains("fixed at 5")
+                    && error.contains("Version8_3_26")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn line_number_length_policy_covers_supported_compatibility_generations() {
+        for fixed in [
+            "Version8_1",
+            "Version8_2_13",
+            "Version8_3_1",
+            "Version8_3_25",
+            "Version8_3_26",
+        ] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(fixed),
+                    MetaEditLineNumberLengthPolicy::FixedFive
+                ),
+                "{fixed}"
+            );
+        }
+        for editable in ["DontUse", "Version8_3_27"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(editable),
+                    MetaEditLineNumberLengthPolicy::Editable
+                ),
+                "{editable}"
+            );
+        }
+        assert!(matches!(
+            meta_edit_line_number_length_policy_from_mode("Bogus"),
+            MetaEditLineNumberLengthPolicy::UnknownCompatibility
+        ));
+    }
+
+    #[test]
+    fn line_number_length_policy_rejects_unsupported_future_mode() {
+        for unsupported in ["Version8_5_1", "Version999_0_0"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(unsupported),
+                    MetaEditLineNumberLengthPolicy::UnknownCompatibility
+                ),
+                "{unsupported}"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_meta_rejects_source_map_remap_after_line_number_length_authorization() {
+        let context = temp_context("line-number-length-source-map-race");
+        let project_map = context.cwd.join("v8project.yaml");
+        let source_dir = context.cwd.join("src");
+        write_file(
+            &project_map,
+            "format: DESIGNER\nsource-set:\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
+        );
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        write_owner_with_compatibility(
+            &source_dir.join("Documents"),
+            "Document",
+            "SampleObject",
+            "Version8_3_26",
+        );
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+        let project_map_for_hook = project_map.clone();
+
+        let outcome = with_meta_edit_after_line_number_length_policy_hook(
+            move || {
+                fs::write(
+                    project_map_for_hook,
+                    "format: DESIGNER\nsource-set:\n  - name: remapped\n    type: CONFIGURATION\n    path: src/Documents\n",
+                )
+                .unwrap();
+            },
+            || {
+                edit_meta(
+                    &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+                    &context,
+                )
+            },
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("v8project.yaml") && error.contains("changed")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn line_number_length_owner_policy_is_requested_only_for_matching_changes() {
+        assert!(meta_edit_inline_requests_line_number_length(
+            "modify-ts",
+            "Items: line-number-length=9"
+        ));
+        assert!(!meta_edit_inline_requests_line_number_length(
+            "modify-ts",
+            "Items: synonym=lineNumberLength"
+        ));
+        assert!(!meta_edit_inline_requests_line_number_length(
+            "modify-attribute",
+            "LineNumberLength: synonym=Length"
+        ));
+
+        assert!(meta_edit_definition_requests_line_number_length(&json!({
+            "modify": {
+                "tabularSections": {
+                    "Items": {"line_number_length": 9}
+                }
+            }
+        })));
+        assert!(!meta_edit_definition_requests_line_number_length(&json!({
+            "modify": {
+                "tabularSections": {
+                    "Items": {
+                        "modify": {
+                            "LineNumberLength": {"synonym": "Length"}
+                        }
+                    }
+                }
+            }
+        })));
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_without_compatibility_context() {
+        let context = temp_context("unknown-line-number-length-compatibility");
+        let object_path = context.cwd.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("LineNumberLength")
+                    && error.contains("CompatibilityMode")
+                    && error.contains("cannot be determined")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_adds_register_dimensions_and_resources() {
         let context = temp_context("add-register-fields");
         let object_path = context
@@ -3551,7 +4057,9 @@ mod edit_tests {
             MetaEditModifyTarget::RegisterField,
             MetaEditModifyTarget::EnumValue,
             MetaEditModifyTarget::Column,
-            MetaEditModifyTarget::TabularSection,
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::Editable,
+            },
         ];
 
         for target in targets {
@@ -15537,7 +16045,7 @@ pub(crate) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<FillChecking>DontCheck</FillChecking>"
     ));
     emit_meta_standard_attributes(lines, &format!("{indent}\t\t"), "TabularSection");
-    if object_type != "DataProcessor" {
+    if meta_line_number_length_is_applicable(object_type) {
         lines.push(format!(
             "{indent}\t\t<LineNumberLength>9</LineNumberLength>"
         ));
@@ -15563,6 +16071,13 @@ pub(crate) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</ChildObjects>"));
     lines.push(format!("{indent}</TabularSection>"));
+}
+
+fn meta_line_number_length_is_applicable(object_type: &str) -> bool {
+    !matches!(
+        object_type,
+        "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
+    )
 }
 
 pub(crate) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
@@ -16012,6 +16527,19 @@ struct MetaEditSourceFormat {
     eol: MetaEditEol,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum MetaEditLineNumberLengthPolicy {
+    Editable,
+    FixedFive,
+    NotApplicable,
+    UnknownCompatibility,
+}
+
+struct MetaEditLineNumberLengthAuthorization {
+    policy: MetaEditLineNumberLengthPolicy,
+    provenance: Option<PlatformXmlOwnerProvenance>,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -16043,7 +16571,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let mut counts = MetaEditCounts::default();
         let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
         let mut transaction = CompileTransaction::new();
-        if let Some(definition_file) = definition_file {
+        let line_number_length_provenance = if let Some(definition_file) = definition_file {
             let definition_path = absolutize(definition_file.clone(), &context.cwd);
             if !definition_path.exists() {
                 return Err(format!(
@@ -16055,24 +16583,58 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                 format!("DefinitionFile JSON parse error: {err}")
             })?
             .bind_to(&mut transaction)?;
+            let authorization = if meta_edit_definition_requests_line_number_length(&definition) {
+                meta_edit_line_number_length_policy(
+                    &object_type,
+                    &object_path,
+                    context,
+                    &mut transaction,
+                )?
+            } else {
+                MetaEditLineNumberLengthAuthorization {
+                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                    provenance: None,
+                }
+            };
             meta_edit_apply_definition(
                 &mut xml_text,
                 &object_type,
                 &object_name,
                 &definition,
+                authorization.policy,
                 &mut counts,
             )?;
             info_lines.extend(meta_edit_definition_info_lines(&definition));
+            authorization.provenance
         } else {
+            let operation = operation.expect("checked above");
+            let authorization = if meta_edit_inline_requests_line_number_length(operation, value) {
+                meta_edit_line_number_length_policy(
+                    &object_type,
+                    &object_path,
+                    context,
+                    &mut transaction,
+                )?
+            } else {
+                MetaEditLineNumberLengthAuthorization {
+                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                    provenance: None,
+                }
+            };
             meta_edit_apply_inline_operation(
                 &mut xml_text,
                 &object_type,
                 &object_name,
-                operation.expect("checked above"),
+                operation,
                 value,
+                authorization.policy,
                 &mut counts,
             )?;
-        }
+            authorization.provenance
+        };
+
+        #[cfg(test)]
+        run_meta_edit_after_line_number_length_policy_hook();
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
@@ -16082,6 +16644,9 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let mut warnings = Vec::new();
         if changed {
             transaction.replace_bytes(&object_path, &original_bytes, serialized_bytes)?;
+            if let Some(provenance) = line_number_length_provenance {
+                provenance.bind_to(&mut transaction)?;
+            }
             guard_active_format_owner(&mut transaction, &object_path, context)?;
             let validation_path = object_path.clone();
             warnings = transaction
@@ -16242,6 +16807,154 @@ pub(crate) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, Strin
     Ok((object_type, object_name))
 }
 
+fn meta_edit_line_number_length_policy(
+    object_type: &str,
+    object_path: &Path,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+) -> Result<MetaEditLineNumberLengthAuthorization, String> {
+    if !meta_line_number_length_is_applicable(object_type) {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::NotApplicable,
+            provenance: None,
+        });
+    }
+
+    let resolution = match resolve_platform_xml_owners_with_provenance(object_path, context) {
+        Ok(resolution) => resolution,
+        Err(_) => {
+            return Ok(MetaEditLineNumberLengthAuthorization {
+                policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                provenance: None,
+            })
+        }
+    };
+    let Some(owner) = resolution.owners.iter().find(|owner| {
+        matches!(
+            owner.kind,
+            PlatformXmlOwnerKind::Configuration | PlatformXmlOwnerKind::Extension
+        )
+    }) else {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            provenance: None,
+        });
+    };
+    if owner.path != object_path {
+        transaction.guard_or_verify_exact_preimage(&owner.path, &owner.raw)?;
+    }
+    let property_name = match owner.kind {
+        PlatformXmlOwnerKind::Configuration => "CompatibilityMode",
+        PlatformXmlOwnerKind::Extension => "ConfigurationExtensionCompatibilityMode",
+        _ => unreachable!("configuration-like owners were filtered above"),
+    };
+    let owner_text = std::str::from_utf8(&owner.raw)
+        .map_err(|error| format!("failed to read {}: {error}", owner.path.display()))?;
+    let document = Document::parse(owner_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("failed to parse {}: {error}", owner.path.display()))?;
+    let Some(mode) = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == property_name)
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+    else {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            provenance: None,
+        });
+    };
+
+    Ok(MetaEditLineNumberLengthAuthorization {
+        policy: meta_edit_line_number_length_policy_from_mode(mode),
+        provenance: Some(resolution.provenance),
+    })
+}
+
+pub(crate) fn meta_edit_line_number_length_policy_from_mode(
+    mode: &str,
+) -> MetaEditLineNumberLengthPolicy {
+    if !cf_validate_enum_allowed("CompatibilityMode").contains(&mode) {
+        return MetaEditLineNumberLengthPolicy::UnknownCompatibility;
+    }
+    if mode == "DontUse" {
+        return MetaEditLineNumberLengthPolicy::Editable;
+    }
+    let Some(version) = mode
+        .strip_prefix("Version")
+        .and_then(meta_edit_parse_compatibility_version)
+    else {
+        return MetaEditLineNumberLengthPolicy::UnknownCompatibility;
+    };
+    if version > (8, 3, 26) {
+        MetaEditLineNumberLengthPolicy::Editable
+    } else {
+        MetaEditLineNumberLengthPolicy::FixedFive
+    }
+}
+
+pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split('_');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+pub(crate) fn meta_edit_is_line_number_length_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "linenumberlength" | "line_number_length" | "line-number-length"
+    )
+}
+
+pub(crate) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
+    split_meta_edit_commas_outside_parens(raw_changes)
+        .into_iter()
+        .filter_map(|change| change.split_once('='))
+        .any(|(key, _)| meta_edit_is_line_number_length_key(key))
+}
+
+pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
+    if !operation.eq_ignore_ascii_case("modify-ts") {
+        return false;
+    }
+    split_meta_edit_batch_items(value, operation)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.split_once(':'))
+        .any(|(_, changes)| meta_edit_changes_request_line_number_length(changes))
+}
+
+pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
+    let Some(definition) = definition.as_object() else {
+        return false;
+    };
+    definition.iter().any(|(operation, operation_value)| {
+        if meta_edit_operation_key(operation).as_deref() != Some("modify") {
+            return false;
+        }
+        let Some(modify) = operation_value.as_object() else {
+            return false;
+        };
+        modify.iter().any(|(child_type, child_value)| {
+            if meta_edit_child_type_key(child_type) != Some("tabularSections") {
+                return false;
+            }
+            child_value
+                .as_object()
+                .into_iter()
+                .flat_map(|sections| sections.values())
+                .filter_map(Value::as_object)
+                .flat_map(|changes| changes.keys())
+                .any(|key| meta_edit_is_line_number_length_key(key))
+        })
+    })
+}
+
 pub(crate) fn split_meta_edit_batch_items<'a>(
     raw_value: &'a str,
     operation: &str,
@@ -16263,6 +16976,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
     object_name: &str,
     operation: &str,
     value: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let (action, target) = operation
@@ -16347,6 +17061,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
                     child_type,
                     name.trim(),
                     raw_changes.trim(),
+                    line_number_length_policy,
                 )?;
             }
         }
@@ -16361,6 +17076,7 @@ pub(crate) fn meta_edit_apply_definition(
     object_type: &str,
     object_name: &str,
     definition: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let definition = definition
@@ -16407,6 +17123,7 @@ pub(crate) fn meta_edit_apply_definition(
                 object_type,
                 object_name,
                 value,
+                line_number_length_policy,
                 counts,
             )?,
             Some(other) => return Err(format!("Unsupported definition operation: {other}")),
@@ -16462,6 +17179,7 @@ pub(crate) fn meta_edit_apply_definition_modify(
     object_type: &str,
     object_name: &str,
     value: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let object = value
@@ -16479,15 +17197,25 @@ pub(crate) fn meta_edit_apply_definition_modify(
                 counts,
             )?;
         } else if child_type == "tabularSections" {
-            meta_edit_modify_tabular_sections_from_definition(xml_text, items, counts)?;
+            meta_edit_modify_tabular_sections_from_definition(
+                xml_text,
+                items,
+                line_number_length_policy,
+                counts,
+            )?;
         } else {
             let item_object = items
                 .as_object()
                 .ok_or_else(|| format!("modify {child_type} must be an object"))?;
             for (name, changes) in item_object {
                 let raw_changes = meta_edit_changes_to_inline(changes)?;
-                counts.modified +=
-                    meta_edit_modify_top_child(xml_text, child_type, name, &raw_changes)?;
+                counts.modified += meta_edit_modify_top_child(
+                    xml_text,
+                    child_type,
+                    name,
+                    &raw_changes,
+                    line_number_length_policy,
+                )?;
             }
         }
     }
@@ -16954,6 +17682,7 @@ pub(crate) fn meta_edit_modify_top_child(
     child_type: &str,
     name: &str,
     raw_changes: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let tag = meta_edit_child_xml_tag(child_type)
         .ok_or_else(|| format!("Unsupported modify child type: {child_type}"))?;
@@ -16967,7 +17696,9 @@ pub(crate) fn meta_edit_modify_top_child(
         "dimensions" | "resources" => MetaEditModifyTarget::RegisterField,
         "enumValues" => MetaEditModifyTarget::EnumValue,
         "columns" => MetaEditModifyTarget::Column,
-        "tabularSections" => MetaEditModifyTarget::TabularSection,
+        "tabularSections" => MetaEditModifyTarget::TabularSection {
+            line_number_length: line_number_length_policy,
+        },
         _ => return Err(format!("Unsupported modify child type: {child_type}")),
     };
     meta_edit_modify_top_child_properties(xml_text, tag, name, raw_changes, target)
@@ -16976,6 +17707,7 @@ pub(crate) fn meta_edit_modify_top_child(
 pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
     xml_text: &mut String,
     value: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let object = value
@@ -17035,7 +17767,12 @@ pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
         if !section_property_changes.is_empty() {
             let raw_changes =
                 meta_edit_changes_to_inline(&Value::Object(section_property_changes))?;
-            meta_edit_modify_tabular_section_properties(xml_text, section_name, &raw_changes)?;
+            meta_edit_modify_tabular_section_properties(
+                xml_text,
+                section_name,
+                &raw_changes,
+                line_number_length_policy,
+            )?;
             counts.modified += 1;
         }
     }
@@ -17868,6 +18605,7 @@ pub(crate) fn meta_edit_modify_attribute(
 pub(crate) fn meta_edit_modify_tabular_section(
     xml_text: &mut String,
     raw_value: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let mut modified = 0usize;
     for item in raw_value
@@ -17882,8 +18620,12 @@ pub(crate) fn meta_edit_modify_tabular_section(
         if section_name.is_empty() || raw_changes.trim().is_empty() {
             return Err("modify-ts requires Value like TabularSection: key=value".to_string());
         }
-        modified +=
-            meta_edit_modify_tabular_section_properties(xml_text, section_name, raw_changes)?;
+        modified += meta_edit_modify_tabular_section_properties(
+            xml_text,
+            section_name,
+            raw_changes,
+            line_number_length_policy,
+        )?;
     }
     if modified == 0 {
         return Err("modify-ts requires non-empty Value".to_string());
@@ -17990,6 +18732,7 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
     xml_text: &mut String,
     section_name: &str,
     raw_changes: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
@@ -18000,9 +18743,10 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
         .into_iter()
         .find(|section| meta_edit_child_object_name(*section).as_deref() == Some(section_name))
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
-    if let Some(new_name) =
-        meta_edit_requested_name(raw_changes, MetaEditModifyTarget::TabularSection)?
-    {
+    let target = MetaEditModifyTarget::TabularSection {
+        line_number_length: line_number_length_policy,
+    };
+    if let Some(new_name) = meta_edit_requested_name(raw_changes, target)? {
         meta_edit_ensure_sibling_name_free(
             child_objects,
             "TabularSection",
@@ -18015,12 +18759,7 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
         .ok_or_else(|| format!("TabularSection '{section_name}' has no Properties"))?;
     let range = props.range();
     drop(doc);
-    meta_edit_modify_properties_range(
-        xml_text,
-        range,
-        raw_changes,
-        MetaEditModifyTarget::TabularSection,
-    )
+    meta_edit_modify_properties_range(xml_text, range, raw_changes, target)
 }
 
 pub(crate) fn meta_edit_modify_tabular_attribute_properties(
@@ -18061,11 +18800,15 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetaEditModifyTarget {
-    Attribute { fill_value_allowed: bool },
+    Attribute {
+        fill_value_allowed: bool,
+    },
     RegisterField,
     EnumValue,
     Column,
-    TabularSection,
+    TabularSection {
+        line_number_length: MetaEditLineNumberLengthPolicy,
+    },
 }
 
 pub(crate) fn meta_edit_modify_properties_range(
@@ -18169,6 +18912,23 @@ pub(crate) fn meta_edit_modify_properties_range(
                     &child_indent,
                 )?;
             }
+            "LineNumberLength" => {
+                if !meta_edit_property_exists(&properties, "LineNumberLength")? {
+                    return Err(
+                        "Property 'LineNumberLength' is not available in this tabular section"
+                            .to_string(),
+                    );
+                }
+                let value = meta_edit_line_number_length_value(value)?;
+                let replacement =
+                    format!("{child_indent}<LineNumberLength>{value}</LineNumberLength>");
+                meta_edit_replace_or_insert_property(
+                    &mut properties,
+                    "LineNumberLength",
+                    &replacement,
+                    &child_indent,
+                )?;
+            }
             _ => {
                 let replacement = format!(
                     "{child_indent}<{canonical}>{}</{canonical}>",
@@ -18194,7 +18954,33 @@ pub(crate) fn meta_edit_canonical_attribute_property(
     target: MetaEditModifyTarget,
 ) -> Result<String, String> {
     let trimmed = key.trim();
-    let canonical = match trimmed.to_ascii_lowercase().as_str() {
+    let normalized = trimmed.to_ascii_lowercase();
+    if meta_edit_is_line_number_length_key(trimmed) {
+        return match target {
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::Editable,
+            } => Ok("LineNumberLength".to_string()),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::FixedFive,
+            } => Err(
+                "LineNumberLength is fixed at 5 when CompatibilityMode is Version8_3_26 or earlier"
+                    .to_string(),
+            ),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::NotApplicable,
+            } => Err(
+                "LineNumberLength is not applicable to Report, DataProcessor, ExternalReport, or ExternalDataProcessor tabular sections".to_string(),
+            ),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            } => Err(
+                "LineNumberLength cannot be changed because CompatibilityMode cannot be determined"
+                    .to_string(),
+            ),
+            _ => Err(format!("Unsupported modify property key '{trimmed}'")),
+        };
+    }
+    let canonical = match normalized.as_str() {
         "name" | "имя" => Ok("Name".to_string()),
         "synonym" | "синоним" => Ok("Synonym".to_string()),
         "comment" | "комментарий" => Ok("Comment".to_string()),
@@ -18203,7 +18989,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
                 target,
                 MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
-                    | MetaEditModifyTarget::TabularSection
+                    | MetaEditModifyTarget::TabularSection { .. }
             ) =>
         {
             Ok("FillChecking".to_string())
@@ -18213,7 +18999,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
                 target,
                 MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
-                    | MetaEditModifyTarget::TabularSection
+                    | MetaEditModifyTarget::TabularSection { .. }
             ) =>
         {
             Ok("Use".to_string())
@@ -18257,6 +19043,21 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         _ => Err(format!("Unsupported modify property key '{trimmed}'")),
     }?;
     Ok(canonical)
+}
+
+pub(crate) fn meta_edit_line_number_length_value(raw_value: &str) -> Result<String, String> {
+    let parsed = raw_value.parse::<u8>().map_err(|_| {
+        format!(
+            "LineNumberLength must be an integer in 5..=9, got '{}'",
+            raw_value
+        )
+    })?;
+    if !(5..=9).contains(&parsed) {
+        return Err(format!(
+            "LineNumberLength must be an integer in 5..=9, got '{raw_value}'"
+        ));
+    }
+    Ok(parsed.to_string())
 }
 
 fn meta_edit_fill_value_xml(indent: &str, raw_value: &str) -> String {
@@ -20083,20 +20884,22 @@ mod tests {
     }
 
     #[test]
-    fn processor_tabular_section_omits_line_number_length() {
-        let xml = test_compile_meta_xml(
-            "DataProcessor",
-            "CorpusDataProcessor",
-            json!({"tabularSections": {"Rows": ["Value:String(100)"]}}),
-        );
-        let document = Document::parse(&xml).unwrap();
-        let section = test_meta_named_object(&document, "TabularSection", "Rows");
-        let properties = meta_info_child(section, "Properties").unwrap();
+    fn unbounded_tabular_sections_omit_line_number_length() {
+        for object_type in ["DataProcessor", "Report"] {
+            let xml = test_compile_meta_xml(
+                object_type,
+                &format!("Corpus{object_type}"),
+                json!({"tabularSections": {"Rows": ["Value:String(100)"]}}),
+            );
+            let document = Document::parse(&xml).unwrap();
+            let section = test_meta_named_object(&document, "TabularSection", "Rows");
+            let properties = meta_info_child(section, "Properties").unwrap();
 
-        assert!(
-            meta_info_child(properties, "LineNumberLength").is_none(),
-            "{xml}"
-        );
+            assert!(
+                meta_info_child(properties, "LineNumberLength").is_none(),
+                "{object_type}: {xml}"
+            );
+        }
     }
 
     #[test]
