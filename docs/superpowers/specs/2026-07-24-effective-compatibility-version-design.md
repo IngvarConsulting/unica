@@ -50,6 +50,44 @@ Public skill documentation will describe the effective compatibility version
 instead of listing `DontUse` as a separate semantic case. It will also state
 that `DontUse` is resolved to the active Unica platform profile.
 
+The same distinction is useful outside `meta-edit`, but it does not justify a
+new public skill. Compatibility questions are already owned by `platform-help`;
+upgrade risk is owned by `release-support`; BSP implementations are inspected
+through `bsp-patterns`. A new prose-only skill would overlap all three routes
+without adding a new MCP capability.
+
+Add one shared reference at
+`plugins/unica/references/platform/compatibility-modes.md` and route the three
+existing skills to it:
+
+- `platform-help` reads it for every platform compatibility question;
+- `release-support` reads it when an upgrade, migration, configuration, or
+  extension change depends on a compatibility mode;
+- `bsp-patterns` reads it when BSP code contains platform-version or
+  compatibility-mode gates.
+
+The reference will define:
+
+1. the runtime platform version, configured mode literal, and effective
+   compatibility version as separate values;
+2. `DontUse -> runtime platform line` and `VersionX -> X`;
+3. `CompatibilityMode`,
+   `ConfigurationExtensionCompatibilityMode`, and
+   `InterfaceCompatibilityMode` as distinct contracts;
+4. a verification workflow that checks which literals the exact target
+   platform supports before applying a feature-specific version boundary;
+5. BSP code as corroborating implementation evidence, not as a replacement for
+   the platform contract;
+6. a limit on equivalence claims: an explicit mode reproduces documented
+   compatibility-controlled behavior, not the complete behavior or bug set of
+   an older platform release.
+
+The reference must not predict that a literal such as `Version8_5_4` exists
+merely because platform 8.5.4 exists. It must also correct the common
+misstatement that compatibility mode concerns only old methods: it can affect
+multiple platform and metadata behaviors covered by the platform's
+compatibility contract.
+
 ## Verification
 
 Unit tests will cover:
@@ -62,3 +100,7 @@ Unit tests will cover:
 
 Focused policy tests, the full `unica-coder` suite, clippy, formatting, skill
 guardrails, and diff validation must pass before publication.
+
+Skill guardrails will additionally require the shared reference links and the
+core normalization statements, so later prose edits cannot silently restore
+the incorrect `DontUse` shortcut or claim complete old-platform equivalence.
