@@ -420,6 +420,33 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("timed out after 120.0s", output)
         self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
 
+    def test_run_rlm_command_reuses_script_wrapping(self) -> None:
+        module = load_contract_module()
+        completed = module.subprocess.CompletedProcess(
+            ["fixture.py"],
+            0,
+            stdout="wrapped stdout\n",
+            stderr="wrapped stderr\n",
+        )
+
+        with patch.object(module.subprocess, "run", return_value=completed) as run:
+            status, output = module.run_rlm_command(
+                ["fixture.py", "index", "info"],
+                Path.cwd(),
+                {"RLM_CONTRACT_TEST": "1"},
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output, "wrapped stdout\nwrapped stderr\n")
+        wrapped_command = run.call_args.args[0]
+        self.assertEqual(wrapped_command[0], module.sys.executable)
+        self.assertEqual(wrapped_command[1:], ["fixture.py", "index", "info"])
+        self.assertEqual(
+            run.call_args.kwargs["env"]["RLM_CONTRACT_TEST"],
+            "1",
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
     def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
         module = load_contract_module()
         outputs = iter(

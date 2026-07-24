@@ -73,20 +73,31 @@ RLM_REQUIRED_META = {
 }
 
 
-def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
+def run_command(
+    command: list[str],
+    cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> tuple[int, str]:
     suffix = Path(command[0]).suffix.lower()
     if suffix == ".py":
         command = [sys.executable, *command]
     elif os.name == "nt" and suffix in {".bat", ".cmd"}:
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=None if env is None else {**os.environ, **env},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return 1, f"timed out after {timeout}s: {exc}"
     return result.returncode, result.stdout + result.stderr
 
 
@@ -177,20 +188,7 @@ def run_rlm_command(
     env: dict[str, str],
     timeout: float = 120.0,
 ) -> tuple[int, str]:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            env={**os.environ, **env},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return 1, f"timed out after {timeout}s: {exc}"
-    return result.returncode, result.stdout + result.stderr
+    return run_command(command, cwd, env=env, timeout=timeout)
 
 
 def check_rlm_mtime_recovery_contract(
