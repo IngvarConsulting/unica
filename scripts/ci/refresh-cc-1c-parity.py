@@ -18,8 +18,6 @@ import donor_parity_contract as contract
 
 CASE_SCOPE_OWNERS = {
     "cfe-borrow": "cfe-borrow",
-    # Legacy local scope, removed by the first pristine refresh.
-    "dcs-compile": "dcs-compile",
     "form-compile": "form-compile",
     "form-compile-from-object": "form-compile",
     "meta-compile": "meta-compile",
@@ -230,6 +228,7 @@ def prepare_refresh(
         target_commit=target_commit,
         affected_skills=affected_skills,
         old_baseline=old_baseline,
+        review_id=review_id,
     )
     baseline_errors = contract.validate_baseline(
         candidate_snapshot, candidate_baseline, candidate_provenance
@@ -477,6 +476,7 @@ def build_baseline(
     target_commit: str,
     affected_skills: set[str],
     old_baseline: dict[str, Any],
+    review_id: str,
 ) -> dict[str, Any]:
     repository = upstream.get("repository")
     tracking_ref = upstream.get("trackingRef")
@@ -534,6 +534,11 @@ def build_baseline(
             "ownerSkill": scope,
             "caseScopes": sorted(case_scopes_by_owner.get(scope, set())),
             "acceptedCommit": commit,
+            "reviewId": (
+                review_id
+                if scope in affected_skills
+                else old_scope.get("reviewId")
+            ),
             "contentDigest": contract.scope_content_digest(
                 file_records, scope
             ),

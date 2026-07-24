@@ -728,6 +728,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 path.relative_to(plugin).as_posix()
                 for path in plugin.rglob("*")
             }
+            self.assertFalse(
+                any(
+                    path == "cc-1c-skills"
+                    or path.startswith("cc-1c-skills/")
+                    or "/cc-1c-skills/" in path
+                    for path in packaged_paths
+                ),
+                "pristine donor scripts and cases must remain test-only",
+            )
             forbidden_script_skills = {
                 path
                 for path in packaged_paths

@@ -1,7 +1,7 @@
 {
-  "acceptedBaselineSha256": "f4a06597624916233b32f3e1ac0f572f26984b4db5439e473256ae8557daaba1",
+  "acceptedBaselineSha256": "bfa5cc6956db5ff2a0a5dc0c53bf7764683d11f5eeca3a47f65f31e674093ad8",
   "acceptedProvenanceSha256": "fef61e832feb2f4364ff869c481ba8a66193057d3132ed31d2daafb9902131b8",
-  "acceptedRelationsSha256": "66351c630010e3276199565b3781e50d4aa4da5b65240b4f5408562d9a9d8c99",
+  "acceptedRelationsSha256": "a1e3eb68524035717cdcd5e92d4a8f4cebd7ddc3bb84116da696c49137f486fb",
   "addedCases": [
     "form-compile/collapsible-control-representation",
     "meta-compile/catalog-attr-choice-params",
@@ -86,7 +86,7 @@
     "meta-compile",
     "meta-validate"
   ],
-  "candidateBaselineSha256": "f4a06597624916233b32f3e1ac0f572f26984b4db5439e473256ae8557daaba1",
+  "candidateBaselineSha256": "bfa5cc6956db5ff2a0a5dc0c53bf7764683d11f5eeca3a47f65f31e674093ad8",
   "candidatePath": ".build/donor-parity-refresh/2026-07-24-cc-1c-parity-refresh/candidate",
   "candidateProvenanceSha256": "fef61e832feb2f4364ff869c481ba8a66193057d3132ed31d2daafb9902131b8",
   "candidateSnapshotSha256": "12b10374c6779ad6b3a1d9c16303b372eeb9654bae61d34f254e565fd9ef1677",

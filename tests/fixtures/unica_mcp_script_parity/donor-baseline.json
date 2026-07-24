@@ -1955,7 +1955,8 @@
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "0bede6f4de494abb9b8f64e69a6bb7ba7ecef8cdb6e8452724caa91457541fd5",
-      "ownerSkill": "cf-init"
+      "ownerSkill": "cf-init",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "cfe-borrow": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
@@ -1963,19 +1964,22 @@
         "cfe-borrow"
       ],
       "contentDigest": "8971044341e547d70cf42ce484d0cdc44131484912a81d7289baccdf098477ae",
-      "ownerSkill": "cfe-borrow"
+      "ownerSkill": "cfe-borrow",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "cfe-init": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "7ab72a417d56c7da691b22fec2e8d12fe88339986deb075a8eccc2ac52527965",
-      "ownerSkill": "cfe-init"
+      "ownerSkill": "cfe-init",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "cfe-validate": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "9b99afb988c17d72831c3cba76751545580d22291561f50c8a7d11e4911356bb",
-      "ownerSkill": "cfe-validate"
+      "ownerSkill": "cfe-validate",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "dcs-compile": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
@@ -1983,19 +1987,22 @@
         "skd-compile"
       ],
       "contentDigest": "9e80ab12f02af458183548f59065f142566d8a0ef45a3cb4dbdfbfd23337f790",
-      "ownerSkill": "dcs-compile"
+      "ownerSkill": "dcs-compile",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "dcs-validate": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "cd8881e166e35c7de718319237dc4e2fda99f4e1c17bf957b52851254d4dc6b4",
-      "ownerSkill": "dcs-validate"
+      "ownerSkill": "dcs-validate",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "form-add": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "8f8d9fd8905eba94ff35258af84e442c58cbafbe7ff48b3979cdc9d73fa7e1e7",
-      "ownerSkill": "form-add"
+      "ownerSkill": "form-add",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "form-compile": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
@@ -2004,13 +2011,15 @@
         "form-compile-from-object"
       ],
       "contentDigest": "80e542991d3f23a3cf3c19cf496311e68057b45770c8c3aef9e3671c325926f5",
-      "ownerSkill": "form-compile"
+      "ownerSkill": "form-compile",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "form-validate": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "8fa028e6e935c898969fcfd83d651eebb626d9b6d47ebd436210072e4f0dee36",
-      "ownerSkill": "form-validate"
+      "ownerSkill": "form-validate",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "meta-compile": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
@@ -2018,13 +2027,15 @@
         "meta-compile"
       ],
       "contentDigest": "1fe772bec92d4ef2e636579780db81d6ba2bc3227379b03b55b8ae6e7ef5b6a1",
-      "ownerSkill": "meta-compile"
+      "ownerSkill": "meta-compile",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     },
     "meta-validate": {
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "caseScopes": [],
       "contentDigest": "71cff59835d290d22f7a5a2838781afc8510e362621316b83507b722fd03ca2f",
-      "ownerSkill": "meta-validate"
+      "ownerSkill": "meta-validate",
+      "reviewId": "2026-07-24-cc-1c-parity-refresh"
     }
   },
   "trackingRef": "main",

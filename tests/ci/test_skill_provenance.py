@@ -184,18 +184,40 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertIn("общие проектные соглашения Unica", text)
             self.assertIn("не требования платформы", text)
 
-    def test_historical_donor_baselines_track_last_local_review_not_current_head(self) -> None:
+    def test_general_and_parity_baselines_are_independent_concrete_commits(self) -> None:
         data = self.load_provenance()
         upstreams = {item["id"]: item for item in data["upstreams"]}
+        cc = upstreams["cc-1c-skills"]
+        self.assertRegex(cc["baselineCommit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(
+            cc["lastAdaptedLocalCommit"], r"^[0-9a-f]{40}$"
+        )
+        baseline = json.loads(
+            (
+                self.repo_root()
+                / "tests"
+                / "fixtures"
+                / "unica_mcp_script_parity"
+                / "donor-baseline.json"
+            ).read_text(encoding="utf-8")
+        )
+        entries = {entry["skill"]: entry for entry in cc["entries"]}
+        for scope, scope_data in baseline["scopes"].items():
+            with self.subTest(scope=scope):
+                commit = scope_data["acceptedCommit"]
+                self.assertRegex(commit, r"^[0-9a-f]{40}$")
+                self.assertEqual(entries[scope]["parityBaselineCommit"], commit)
+                self.assertNotEqual(entries[scope]["baselineCommit"], commit)
+                review = json.loads(
+                    (
+                        self.reviews_dir()
+                        / f"{scope_data['reviewId']}.json"
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(review["reviewStatus"], "reviewed")
+                self.assertTrue(review["applied"])
+                self.assertEqual(review["targetCommit"], commit)
 
-        self.assertEqual(
-            upstreams["cc-1c-skills"]["baselineCommit"],
-            "f3466e19fdc37954c030e48daabcc192f0098fe7",
-        )
-        self.assertEqual(
-            upstreams["cc-1c-skills"]["lastAdaptedLocalCommit"],
-            "795505f2243cf3c93a95918467f99135af758e1b",
-        )
         self.assertEqual(
             upstreams["ai-rules-1c"]["baselineCommit"],
             "484e550043a4cb749d59d0671329f3112e3ae668",

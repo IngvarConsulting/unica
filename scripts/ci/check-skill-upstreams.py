@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import donor_parity_contract
 
 
 DEFAULT_INDEX = Path("plugins/unica/provenance/skill-upstreams.json")
@@ -37,6 +45,7 @@ ALLOWED_DECISIONS = {
     "needs-tool-update",
     "needs-review",
 }
+CONCRETE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ValidationReport:
@@ -188,6 +197,13 @@ def validate_index(
                 errors.append(f"{entry_label}: baselineCommit must not be set on entries for toolLockRef upstreams")
             if "baselineCommit" in entry and not isinstance(entry.get("baselineCommit"), str):
                 errors.append(f"{entry_label}: baselineCommit must be a string when set")
+            if "parityBaselineCommit" in entry and not CONCRETE_COMMIT.fullmatch(
+                str(entry.get("parityBaselineCommit") or "")
+            ):
+                errors.append(
+                    f"{entry_label}: parityBaselineCommit must be a concrete "
+                    "lowercase 40-hex commit"
+                )
             if "primarySource" in entry and not isinstance(entry.get("primarySource"), str):
                 errors.append(f"{entry_label}: primarySource must be a string when set")
 
@@ -236,6 +252,13 @@ def validate_index(
             errors.append(f"{index_file}: missing provenance entry for skill: {skill}")
         for skill in sorted(indexed_skills - local_skills):
             errors.append(f"{index_file}: provenance entry does not match a packaged skill: {skill}")
+
+    if any(
+        upstream.get("id") == "cc-1c-skills"
+        and upstream.get("role") == "operation-parity"
+        for upstream in upstreams
+    ):
+        errors.extend(donor_parity_contract.validate_repository_contract(repo_root))
 
     return ValidationReport(errors=errors, warnings=warnings)
 
