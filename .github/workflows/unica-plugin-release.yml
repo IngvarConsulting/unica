@@ -276,7 +276,7 @@ jobs:
     needs: build-tools
     if: ${{ always() && needs.build-tools.result == 'success' }}
     env:
-      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.8.1' }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.9.1' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
