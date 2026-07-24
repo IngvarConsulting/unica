@@ -236,8 +236,8 @@ Current real-platform proofs are narrower and explicit:
   `StandardPeriod` start/end dates are emitted only for the `Custom` variant;
   and an empty details-group `groupItems` container is omitted.
 
-These focused real-platform probes do not substitute for the pending
-63-checkpoint gate.
+These focused real-platform probes were the precursor to the complete
+63-checkpoint gate recorded below and in the deviation matrix.
 
 Managed Form, DCS, and MXL consumers now enforce their exact proven root QNames.
 Form QName text must resolve through in-scope namespace bindings. These
@@ -352,9 +352,11 @@ public call. Other regular files under `.build`, and every regular workspace
 payload outside the selected platform roots, remain in scope as auxiliary
 evidence and must be byte-identical.
 
-Final exact-platform result: `PENDING_FINAL_PLATFORM_GATE`. The gate requires
-`pass` for all 63 checkpoints; static validation and a pinned corpus do not
-substitute for that run.
+Final exact-platform result: `PASS`. The gate recorded 63 passed, with zero
+rejections, normalized semantic deltas, source errors, or unstable roundtrips.
+The run executed 432 platform commands and reverified the unchanged corpus and
+pinned platform installation. Static validation and a pinned corpus did not
+substitute for that run; the detailed evidence remains in the deviation matrix.
 
 There are no native migration orchestration, migration receipt, or migration
 provenance tests in the current scope because that feature does not exist. The

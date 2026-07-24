@@ -4,6 +4,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "spec/0126-platform-8-3-27-deviation-matrix.md"
+DESIGN = (
+    ROOT
+    / "docs/superpowers/specs/2026-07-23-platform-8-3-27-format-2-20-design.md"
+)
+FULL_DUMP_PUBLICATION = (
+    ROOT
+    / "crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs"
+)
 ACTIVE_SPEC_BANNER = (
     "> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`."
 )
@@ -47,6 +55,26 @@ def without_legacy_format_references(text: str) -> str:
 
 
 class FormatProfileContractTests(unittest.TestCase):
+    def test_full_dump_uses_the_shared_active_profile(self):
+        text = FULL_DUMP_PUBLICATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;",
+            text,
+        )
+        self.assertIn(
+            "const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;",
+            text,
+        )
+        self.assertNotIn('const TARGET_PLATFORM_LINE: &str = "8.3.27";', text)
+        self.assertNotIn('const TARGET_EXPORT_FORMAT: &str = "2.20";', text)
+
+    def test_design_records_the_completed_platform_gate(self):
+        text = DESIGN.read_text(encoding="utf-8")
+        self.assertNotIn("PENDING_FINAL_PLATFORM_GATE", text)
+        self.assertIn("Final exact-platform result: `PASS`.", text)
+        self.assertIn("63 passed", text)
+        self.assertIn("432 platform commands", text)
+
     def test_format_matrix_covers_native_xml_operations(self):
         text = MATRIX.read_text(encoding="utf-8")
         required = {

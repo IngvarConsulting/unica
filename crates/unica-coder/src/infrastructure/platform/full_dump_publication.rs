@@ -11,6 +11,7 @@
 
 use crate::application::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -20,9 +21,10 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::native_operations::single_file_publisher::{
     with_publication_locks_mode, PublicationTreeLockMode,
 };
+#[cfg(unix)]
+use crate::infrastructure::platform::filesystem::hard_link_count;
 use crate::infrastructure::platform::filesystem::{
-    file_identity, hard_link_count, metadata_is_link_or_reparse_point, restrict_stage_to_owner,
-    FileIdentity,
+    file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
 };
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -36,9 +38,13 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::RefCell;
 use std::env;
-use std::ffi::{CString, OsStr, OsString};
+#[cfg(unix)]
+use std::ffi::CString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
@@ -48,8 +54,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
-const TARGET_PLATFORM_LINE: &str = "8.3.27";
-const TARGET_EXPORT_FORMAT: &str = "2.20";
+const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;
+const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -2551,37 +2557,35 @@ impl TreeSnapshot {
 fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>, String> {
     let normalized = normalize_leaf_path(root)?;
     let (parent_path, name) = split_parent_and_name(&normalized)?;
-    #[cfg(unix)]
-    let directory = {
-        let parent = open_directory_nofollow(&parent_path).map_err(|error| {
-            format!(
-                "failed to securely open directory parent {}: {error}",
-                parent_path.display()
-            )
-        })?;
-        open_directory_child_nofollow(&parent, &name).map_err(|error| {
-            format!(
-                "failed to securely open directory {}: {error}",
-                root.display()
-            )
-        })?
-    };
     #[cfg(not(unix))]
     {
         let _ = (parent_path, name);
-        return Err(format!(
+        Err(format!(
             "secure no-follow directory snapshots are unavailable on this host: {}",
             root.display()
-        ));
+        ))
     }
     #[cfg(unix)]
-    let mut entries = {
+    {
+        let directory = {
+            let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+                format!(
+                    "failed to securely open directory parent {}: {error}",
+                    parent_path.display()
+                )
+            })?;
+            open_directory_child_nofollow(&parent, &name).map_err(|error| {
+                format!(
+                    "failed to securely open directory {}: {error}",
+                    root.display()
+                )
+            })?
+        };
         let mut entries = Vec::new();
         capture_directory_snapshot_recursive(&directory, Path::new(""), root, &mut entries)?;
-        entries
-    };
-    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(entries)
+        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(entries)
+    }
 }
 
 #[cfg(unix)]
@@ -4529,25 +4533,89 @@ fn normalize_infobase_connection(root: &mut YamlValue, config_dir: &Path) -> Res
     let normalized = if trimmed.starts_with('/') || trimmed.starts_with('-') {
         normalize_raw_connection_args(trimmed, config_dir)
     } else {
-        normalize_key_value_connection(&connection, config_dir)
+        normalize_key_value_connection(&connection, config_dir)?
     };
     set_nested_yaml_string(root, &["infobase", "connection"], &normalized)
 }
 
-fn normalize_key_value_connection(connection: &str, config_dir: &Path) -> String {
-    connection
-        .split(';')
+fn normalize_key_value_connection(connection: &str, config_dir: &Path) -> Result<String, String> {
+    split_key_value_connection(connection)?
+        .into_iter()
         .map(|part| {
             let trimmed = part.trim();
-            if trimmed.to_ascii_lowercase().starts_with("file=") {
-                let normalized = normalize_connection_file_path(&trimmed[5..], config_dir);
-                format!("{}{}", &trimmed[..5], normalized)
-            } else {
-                trimmed.to_string()
+            if !trimmed.to_ascii_lowercase().starts_with("file=") {
+                return Ok(trimmed.to_string());
             }
+            let normalized = normalize_quoted_connection_file_path(&trimmed[5..], config_dir)?;
+            Ok(format!("{}{}", &trimmed[..5], normalized))
         })
-        .collect::<Vec<_>>()
-        .join(";")
+        .collect::<Result<Vec<_>, String>>()
+        .map(|parts| parts.join(";"))
+}
+
+fn split_key_value_connection(connection: &str) -> Result<Vec<&str>, String> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut characters = connection.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        if let Some(active_quote) = quote {
+            if character == active_quote {
+                if characters
+                    .peek()
+                    .is_some_and(|(_, next)| *next == active_quote)
+                {
+                    characters.next();
+                } else {
+                    quote = None;
+                }
+            }
+            continue;
+        }
+        if character == '"' {
+            quote = Some(character);
+        } else if character == ';' {
+            parts.push(&connection[start..index]);
+            start = index + character.len_utf8();
+        }
+    }
+    if let Some(quote) = quote {
+        return Err(format!(
+            "infobase.connection contains an unterminated {quote} quote"
+        ));
+    }
+    parts.push(&connection[start..]);
+    Ok(parts)
+}
+
+fn normalize_quoted_connection_file_path(path: &str, config_dir: &Path) -> Result<String, String> {
+    let trimmed = path.trim();
+    let quote = match (trimmed.chars().next(), trimmed.chars().last()) {
+        (Some('"'), Some('"')) => Some('"'),
+        (Some('"'), _) => {
+            return Err("infobase.connection File value has mismatched quotes".to_string());
+        }
+        (_, Some('"')) => {
+            return Err("infobase.connection File value has mismatched quotes".to_string());
+        }
+        _ => None,
+    };
+    let unquoted = quote
+        .map(|_| &trimmed[1..trimmed.len() - 1])
+        .unwrap_or(trimmed);
+    let normalized = normalize_connection_file_path(unquoted, config_dir);
+    if let Some(quote) = quote {
+        if normalized.contains(quote) {
+            return Err(format!(
+                "normalized infobase.connection File path contains its {quote} delimiter"
+            ));
+        }
+        return Ok(format!("{quote}{normalized}{quote}"));
+    }
+    if normalized.contains(';') || normalized.chars().any(char::is_whitespace) {
+        return Ok(format!("\"{}\"", normalized.replace('"', "\"\"")));
+    }
+    Ok(normalized)
 }
 
 fn normalize_raw_connection_args(connection: &str, config_dir: &Path) -> String {
@@ -4865,11 +4933,12 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::{
-        validate_staged_dump, with_private_create_hook, with_publication_failpoint,
-        with_publication_hook, with_secure_read_hook, with_target_parent_capture_hook,
-        with_targeted_read_hooks, with_tree_open_hook, FullDumpInvocation, PlatformResolver,
-        PlatformUtility, PublicationCheckpoint, SystemPlatformResolver, TreeSnapshot,
-        VerifiedFullDumpAdapter, VerifiedPlatform, TARGET_EXPORT_FORMAT,
+        normalize_key_value_connection, validate_staged_dump, with_private_create_hook,
+        with_publication_failpoint, with_publication_hook, with_secure_read_hook,
+        with_target_parent_capture_hook, with_targeted_read_hooks, with_tree_open_hook,
+        FullDumpInvocation, PlatformResolver, PlatformUtility, PublicationCheckpoint,
+        SystemPlatformResolver, TreeSnapshot, VerifiedFullDumpAdapter, VerifiedPlatform,
+        TARGET_EXPORT_FORMAT,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::project_sources::SourceSetKind;
@@ -4878,6 +4947,19 @@ mod tests {
     use serde_json::{Map, Value};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn key_value_connection_preserves_quoted_file_path_and_semicolons() {
+        let config_dir = Path::new("/workspace/project");
+        let connection = r#"File="build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#;
+
+        let normalized = normalize_key_value_connection(connection, config_dir).unwrap();
+
+        assert_eq!(
+            normalized,
+            r#"File="/workspace/project/build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#
+        );
+    }
 
     struct FixedPlatform {
         executable: PathBuf,

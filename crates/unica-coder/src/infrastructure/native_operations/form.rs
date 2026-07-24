@@ -7232,10 +7232,8 @@ const FORM_ROOT_SCALAR_PROPERTY_ORDER: &[&str] = &[
 
 fn form_root_xml_property(name: &str) -> Option<(usize, &'static str)> {
     let mut characters = name.chars();
-    let candidate = match characters.next() {
-        Some(first) => format!("{}{}", first.to_uppercase(), characters.as_str()),
-        None => return None,
-    };
+    let first = characters.next()?;
+    let candidate = format!("{}{}", first.to_uppercase(), characters.as_str());
     FORM_ROOT_SCALAR_PROPERTY_ORDER
         .iter()
         .position(|property| *property == candidate)
