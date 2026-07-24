@@ -54,6 +54,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     prepare.add_argument("--target", required=True)
     prepare.add_argument("--review-id", required=True)
     prepare.add_argument("--skill", action="append", default=[])
+    prepare.add_argument("--full-corpus", action="store_true")
 
     apply = subparsers.add_parser("apply")
     apply.add_argument("--repo-root", type=Path, required=True)
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                 target=args.target,
                 review_id=args.review_id,
                 selected_skills=args.skill,
+                full_corpus=args.full_corpus,
             )
             print(review_path)
         else:
@@ -98,6 +100,7 @@ def prepare_refresh(
     target: str,
     review_id: str,
     selected_skills: list[str],
+    full_corpus: bool = False,
 ) -> Path:
     _validate_review_id(review_id)
     _require_git_repository(upstream_cache)
@@ -150,23 +153,35 @@ def prepare_refresh(
         shutil.rmtree(staging_root)
     staging_root.mkdir(parents=True)
     candidate_snapshot = staging_root / SNAPSHOT_NAME
-    if accepted_snapshot.is_dir():
+    copied_upstream_paths: set[str] = set()
+    corpus_skill_names: set[str] = set()
+    if full_corpus:
+        candidate_snapshot.mkdir()
+        corpus_skill_names, copied = copy_full_corpus(
+            upstream_cache,
+            target_commit,
+            candidate_snapshot,
+        )
+        copied_upstream_paths.update(copied)
+    elif accepted_snapshot.is_dir():
         _reject_filesystem_symlinks(accepted_snapshot)
         shutil.copytree(accepted_snapshot, candidate_snapshot)
     else:
         candidate_snapshot.mkdir()
 
-    for scope in sorted(selected_case_scopes):
-        destination = candidate_snapshot / "cases" / scope
-        if destination.exists():
-            shutil.rmtree(destination)
-        copied = copy_case_scope(
-            upstream_cache,
-            target_commit,
-            scope,
-            candidate_snapshot,
-        )
-        _validate_watched_paths(upstream, CASE_SCOPE_OWNERS[scope], copied)
+    if not full_corpus:
+        for scope in sorted(selected_case_scopes):
+            destination = candidate_snapshot / "cases" / scope
+            if destination.exists():
+                shutil.rmtree(destination)
+            copied = copy_case_scope(
+                upstream_cache,
+                target_commit,
+                scope,
+                candidate_snapshot,
+            )
+            copied_upstream_paths.update(copied)
+            _validate_watched_paths(upstream, CASE_SCOPE_OWNERS[scope], copied)
 
     dependency_donor_skills = _case_dependency_skills(
         candidate_snapshot, selected_case_scopes
@@ -188,6 +203,8 @@ def prepare_refresh(
                 f"donor dependency skill is missing from provenance: "
                 f"{donor_skill} -> {owner}"
             )
+        if full_corpus:
+            continue
         destination = candidate_snapshot / "skills" / donor_skill
         if destination.exists():
             shutil.rmtree(destination)
@@ -197,6 +214,7 @@ def prepare_refresh(
             donor_skill,
             candidate_snapshot,
         )
+        copied_upstream_paths.update(copied)
         _validate_watched_paths(upstream, owner, copied)
 
     candidate_provenance = copy.deepcopy(provenance)
@@ -222,14 +240,25 @@ def prepare_refresh(
         }
     )
     old_relations = old_relations_registry.get("relations") or {}
-    candidate_baseline = build_baseline(
-        candidate_snapshot,
-        candidate_upstream,
-        target_commit=target_commit,
-        affected_skills=affected_skills,
-        old_baseline=old_baseline,
-        review_id=review_id,
-    )
+    if full_corpus:
+        candidate_baseline = build_full_corpus_baseline(
+            candidate_snapshot,
+            candidate_upstream,
+            target_commit=target_commit,
+            affected_skills=affected_skills,
+            executable_case_scopes=selected_case_scopes,
+            corpus_skill_names=corpus_skill_names,
+            review_id=review_id,
+        )
+    else:
+        candidate_baseline = build_baseline(
+            candidate_snapshot,
+            candidate_upstream,
+            target_commit=target_commit,
+            affected_skills=affected_skills,
+            old_baseline=old_baseline,
+            review_id=review_id,
+        )
     baseline_errors = contract.validate_baseline(
         candidate_snapshot, candidate_baseline, candidate_provenance
     )
@@ -238,8 +267,14 @@ def prepare_refresh(
             "candidate baseline is invalid:\n" + "\n".join(baseline_errors)
         )
 
-    previous_cases = set(contract.discover_case_ids(accepted_snapshot))
-    next_cases = set(contract.discover_case_ids(candidate_snapshot))
+    previous_corpus_cases = set(contract.discover_case_ids(accepted_snapshot))
+    next_corpus_cases = set(contract.discover_case_ids(candidate_snapshot))
+    previous_cases = set(
+        contract.executable_case_ids(accepted_snapshot, old_baseline)
+    )
+    next_cases = set(
+        contract.executable_case_ids(candidate_snapshot, candidate_baseline)
+    )
     old_case_digests = {
         case_id: data.get("contentDigest")
         for case_id, data in (old_baseline.get("cases") or {}).items()
@@ -301,8 +336,10 @@ def prepare_refresh(
         "reviewStatus": "needs-review",
         "targetRef": target,
         "targetCommit": target_commit,
+        "fullCorpus": full_corpus,
         "upstreamCache": _portable_path(repo_root, upstream_cache),
         "candidatePath": candidate_root.relative_to(repo_root).as_posix(),
+        "copiedUpstreamPaths": sorted(copied_upstream_paths),
         "selectedSkills": sorted(requested_owners),
         "selectedCaseScopes": sorted(selected_case_scopes),
         "affectedSkills": sorted(affected_skills),
@@ -314,6 +351,8 @@ def prepare_refresh(
             if isinstance(data, dict)
         },
         "changedPaths": changed_paths,
+        "corpusAddedCases": sorted(next_corpus_cases - previous_corpus_cases),
+        "corpusRemovedCases": sorted(previous_corpus_cases - next_corpus_cases),
         "addedCases": added_cases,
         "removedCases": removed_cases,
         "changedCases": changed_cases,
@@ -442,7 +481,7 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
         candidate_snapshot, baseline, provenance
     )
     relation_errors = contract.validate_relations(
-        repo_root, candidate_snapshot, registry
+        repo_root, candidate_snapshot, registry, baseline
     )
     if baseline_errors or relation_errors:
         raise RefreshError(
@@ -564,6 +603,130 @@ def build_baseline(
     }
 
 
+def build_full_corpus_baseline(
+    snapshot_root: Path,
+    upstream: dict[str, Any],
+    *,
+    target_commit: str,
+    affected_skills: set[str],
+    executable_case_scopes: set[str],
+    corpus_skill_names: set[str],
+    review_id: str,
+) -> dict[str, Any]:
+    repository = upstream.get("repository")
+    tracking_ref = upstream.get("trackingRef")
+    discovered_cases = contract.discover_case_ids(snapshot_root)
+    case_scopes_by_owner: dict[str, set[str]] = {}
+    for case_scope in sorted(executable_case_scopes):
+        owner = CASE_SCOPE_OWNERS.get(case_scope)
+        if owner is None:
+            raise RefreshError(
+                f"executable case scope has no explicit owner: {case_scope}"
+            )
+        case_scopes_by_owner.setdefault(owner, set()).add(case_scope)
+
+    file_records = []
+    for path in _filesystem_regular_files(snapshot_root):
+        local_path = path.relative_to(snapshot_root).as_posix()
+        scope, upstream_path = _full_corpus_file_source(
+            local_path,
+            affected_skills=affected_skills,
+            executable_case_scopes=executable_case_scopes,
+        )
+        file_records.append(
+            {
+                "scope": scope,
+                "upstreamPath": upstream_path,
+                "localPath": local_path,
+                "acceptedCommit": target_commit,
+                "sha256": contract.sha256_file(path),
+            }
+        )
+    file_records.sort(key=lambda item: item["localPath"])
+
+    scopes = {}
+    for scope in sorted(affected_skills):
+        scopes[scope] = {
+            "ownerSkill": scope,
+            "caseScopes": sorted(case_scopes_by_owner.get(scope, set())),
+            "acceptedCommit": target_commit,
+            "reviewId": review_id,
+            "contentDigest": contract.scope_content_digest(
+                file_records, scope
+            ),
+        }
+
+    scripts_by_skill = {skill: [] for skill in sorted(corpus_skill_names)}
+    for item in file_records:
+        path = item["localPath"]
+        parts = Path(path).parts
+        if len(parts) >= 4 and parts[0] == "skills" and parts[2] == "scripts":
+            scripts_by_skill.setdefault(parts[1], []).append(path)
+    corpus_skills = {
+        skill: {"scripts": sorted(scripts)}
+        for skill, scripts in sorted(scripts_by_skill.items())
+    }
+
+    cases_by_scope: dict[str, list[str]] = {}
+    cases = {}
+    for case_id in discovered_cases:
+        case_scope = case_id.split("/", 1)[0]
+        cases_by_scope.setdefault(case_scope, []).append(case_id)
+        if case_scope in executable_case_scopes:
+            owner = CASE_SCOPE_OWNERS[case_scope]
+            digest_kind = "execution"
+            content_digest = contract.case_content_digest(
+                snapshot_root, case_id
+            )
+        else:
+            owner = None
+            digest_kind = "corpus"
+            content_digest = contract.corpus_case_content_digest(
+                snapshot_root, case_id
+            )
+        cases[case_id] = {
+            "scope": owner,
+            "digestKind": digest_kind,
+            "contentDigest": content_digest,
+        }
+
+    shared_files = sorted(
+        item["localPath"]
+        for item in file_records
+        if item["localPath"].startswith("case-runner/")
+    )
+    suite_files: dict[str, list[str]] = {}
+    for item in file_records:
+        path = item["localPath"]
+        parts = Path(path).parts
+        if len(parts) >= 2 and parts[0] == "suites":
+            suite_files.setdefault(parts[1], []).append(path)
+    corpus_tests = {
+        "caseScopes": {
+            scope: {"caseIds": sorted(case_ids)}
+            for scope, case_ids in sorted(cases_by_scope.items())
+        },
+        "sharedFiles": shared_files,
+        "suites": {
+            suite: {"files": sorted(paths)}
+            for suite, paths in sorted(suite_files.items())
+        },
+    }
+    return {
+        "schemaVersion": 2,
+        "upstreamId": UPSTREAM_ID,
+        "repository": repository,
+        "trackingRef": tracking_ref,
+        "acceptedCommit": target_commit,
+        "corpusSkills": corpus_skills,
+        "corpusTests": corpus_tests,
+        "executableCaseScopes": sorted(executable_case_scopes),
+        "scopes": scopes,
+        "files": file_records,
+        "cases": dict(sorted(cases.items())),
+    }
+
+
 def maybe_fetch(repository: Path) -> None:
     probe = subprocess.run(
         ["git", "remote", "get-url", "origin"],
@@ -660,6 +823,72 @@ def copy_skill_scripts(
     if not copied:
         raise RefreshError(f"donor scripts are missing for skill: {skill}")
     return copied
+
+
+def copy_full_corpus(
+    repository: Path,
+    commit: str,
+    snapshot_root: Path,
+) -> tuple[set[str], list[str]]:
+    donor_skills: set[str] = set()
+    copied: list[str] = []
+    for mode, object_type, upstream_path in git_tree_entries(
+        repository, commit, ".claude/skills"
+    ):
+        parts = contract.safe_relative_path(upstream_path).parts
+        if len(parts) < 3:
+            continue
+        donor_skills.add(parts[2])
+        if len(parts) < 5 or parts[3] != "scripts":
+            continue
+        relative = Path(*parts[4:])
+        destination = (
+            snapshot_root
+            / "skills"
+            / parts[2]
+            / "scripts"
+            / relative
+        )
+        _copy_git_blob(
+            repository,
+            commit,
+            mode,
+            object_type,
+            upstream_path,
+            destination,
+        )
+        copied.append(upstream_path)
+
+    for mode, object_type, upstream_path in git_tree_entries(
+        repository, commit, "tests"
+    ):
+        parts = contract.safe_relative_path(upstream_path).parts
+        if len(parts) >= 5 and parts[:3] == ("tests", "skills", "cases"):
+            destination = (
+                snapshot_root
+                / "cases"
+                / parts[3]
+                / Path(*parts[4:])
+            )
+        elif len(parts) >= 3 and parts[:2] == ("tests", "skills"):
+            destination = snapshot_root / "case-runner" / Path(*parts[2:])
+        elif len(parts) >= 2 and parts[0] == "tests":
+            destination = snapshot_root / "suites" / Path(*parts[1:])
+        else:
+            continue
+        _copy_git_blob(
+            repository,
+            commit,
+            mode,
+            object_type,
+            upstream_path,
+            destination,
+        )
+        copied.append(upstream_path)
+
+    if not donor_skills:
+        raise RefreshError("donor skill corpus is empty")
+    return donor_skills, copied
 
 
 def git_tree_entries(
@@ -832,6 +1061,40 @@ def _snapshot_file_source(local_path: str) -> tuple[str, str]:
     if len(path.parts) >= 4 and path.parts[0] == "skills":
         donor_skill = path.parts[1]
         return donor_skill_owner(donor_skill), f".claude/{local_path}"
+    raise RefreshError(f"unsupported donor snapshot path: {local_path}")
+
+
+def _full_corpus_file_source(
+    local_path: str,
+    *,
+    affected_skills: set[str],
+    executable_case_scopes: set[str],
+) -> tuple[str | None, str]:
+    path = contract.safe_relative_path(local_path)
+    if len(path.parts) >= 3 and path.parts[0] == "cases":
+        case_scope = path.parts[1]
+        owner = (
+            CASE_SCOPE_OWNERS.get(case_scope)
+            if case_scope in executable_case_scopes
+            else None
+        )
+        if case_scope in executable_case_scopes and owner is None:
+            raise RefreshError(
+                f"executable case scope has no explicit owner: {case_scope}"
+            )
+        return owner, f"tests/skills/{local_path}"
+    if len(path.parts) >= 4 and path.parts[0] == "skills":
+        owner = donor_skill_owner(path.parts[1])
+        return (
+            owner if owner in affected_skills else None,
+            f".claude/{local_path}",
+        )
+    if len(path.parts) >= 2 and path.parts[0] == "case-runner":
+        relative = Path(*path.parts[1:]).as_posix()
+        return None, f"tests/skills/{relative}"
+    if len(path.parts) >= 3 and path.parts[0] == "suites":
+        relative = Path(*path.parts[1:]).as_posix()
+        return None, f"tests/{relative}"
     raise RefreshError(f"unsupported donor snapshot path: {local_path}")
 
 

@@ -185,6 +185,28 @@ def case_content_digest(snapshot_root: Path, case_id: str) -> str:
     )
 
 
+def corpus_case_content_digest(snapshot_root: Path, case_id: str) -> str:
+    case_parts = safe_relative_path(case_id).parts
+    if len(case_parts) != 2:
+        raise ValueError(f"case id must be '<scope>/<case>': {case_id}")
+    scope, case_name = case_parts
+    case_root = snapshot_root / "cases" / scope
+    dependencies = [
+        case_root / "_skill.json",
+        case_root / f"{case_name}.json",
+    ]
+    records = []
+    for path in dependencies:
+        _require_regular_file(path)
+        records.append(
+            {
+                "path": path.relative_to(snapshot_root).as_posix(),
+                "sha256": sha256_file(path),
+            }
+        )
+    return sha256_json({"files": records})
+
+
 def scope_content_digest(
     files: Iterable[dict[str, Any]], scope: str
 ) -> str:
@@ -351,6 +373,7 @@ def validate_baseline(
         errors.append("donor baseline cases must be an object")
         cases = {}
     discovered_cases = set(discover_case_ids(snapshot_root))
+    executable_cases = set(executable_case_ids(snapshot_root, manifest))
     manifest_cases = set(cases)
     for case_id in sorted(discovered_cases - manifest_cases):
         errors.append(f"missing baseline case: {case_id}")
@@ -362,10 +385,19 @@ def validate_baseline(
             errors.append(f"baseline case {case_id} must be an object")
             continue
         try:
-            digest = case_content_digest(snapshot_root, case_id)
+            if schema_version == 2 and case_id not in executable_cases:
+                digest = corpus_case_content_digest(snapshot_root, case_id)
+                expected_kind = "corpus"
+            else:
+                digest = case_content_digest(snapshot_root, case_id)
+                expected_kind = "execution"
         except (FileNotFoundError, ValueError) as error:
             errors.append(f"cannot digest baseline case {case_id}: {error}")
             continue
+        if schema_version == 2 and case_data.get("digestKind") != expected_kind:
+            errors.append(
+                f"baseline case digestKind mismatch: {case_id}"
+            )
         if case_data.get("contentDigest") != digest:
             errors.append(f"baseline case contentDigest mismatch: {case_id}")
 

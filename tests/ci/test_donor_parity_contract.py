@@ -123,7 +123,13 @@ class DonorParityFixture:
             "executableCaseScopes": ["demo"],
             "scopes": scopes,
             "files": files,
-            "cases": {"demo/basic": {"scope": "demo", "contentDigest": digest}},
+            "cases": {
+                "demo/basic": {
+                    "scope": "demo",
+                    "digestKind": "execution",
+                    "contentDigest": digest,
+                }
+            },
         }
 
     def add_stored_only_case(self) -> None:

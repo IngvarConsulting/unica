@@ -114,6 +114,50 @@ class RefreshFixture:
         (scripts / "linked.py").symlink_to(f"{self.owner}.py")
         return self.commit("symlink")
 
+    def add_unselected_corpus(self) -> str:
+        future_skill = (
+            self.upstream / ".claude" / "skills" / "future" / "scripts"
+        )
+        future_skill.mkdir(parents=True)
+        (future_skill / "future.py").write_text(
+            "print('future')\n",
+            encoding="utf-8",
+        )
+        empty_skill = self.upstream / ".claude" / "skills" / "empty"
+        empty_skill.mkdir(parents=True)
+        (empty_skill / "SKILL.md").write_text(
+            "# Empty donor skill\n",
+            encoding="utf-8",
+        )
+        future_cases = (
+            self.upstream / "tests" / "skills" / "cases" / "future"
+        )
+        (future_cases / "fixtures" / "sample").mkdir(parents=True)
+        (future_cases / "_skill.json").write_text(
+            json.dumps(
+                {
+                    "script": "future/scripts/future",
+                    "setup": "none",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (future_cases / "future.json").write_text(
+            json.dumps({"name": "future"}),
+            encoding="utf-8",
+        )
+        (future_cases / "fixtures" / "sample" / "input.txt").write_text(
+            "fixture\n",
+            encoding="utf-8",
+        )
+        shared = self.upstream / "tests" / "skills" / "runner.js"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("export const run = () => {};\n", encoding="utf-8")
+        suite = self.upstream / "tests" / "web-test" / "smoke.test.js"
+        suite.parent.mkdir(parents=True)
+        suite.write_text("test('smoke', () => {});\n", encoding="utf-8")
+        return self.commit("add complete donor corpus")
+
     def _write_accepted_snapshot(self, commit: str) -> None:
         case_source = self.upstream / "tests" / "skills" / "cases" / self.case_scope
         script_source = self.upstream / ".claude" / "skills" / self.owner / "scripts"
@@ -306,6 +350,71 @@ class RefreshCc1cParityTests(unittest.TestCase):
         review = fixture.load_review()
         self.assertEqual(review["carriedRelations"], [fixture.case_id])
         self.assertEqual(review["needsReview"], [])
+
+    def test_full_corpus_prepare_copies_unselected_scripts_cases_and_suites(
+        self,
+    ) -> None:
+        fixture = self.fixture()
+        target = fixture.add_unselected_corpus()
+
+        result = fixture.prepare(target, "--full-corpus")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = fixture.load_review()
+        candidate_root = fixture.repo_root / review["candidatePath"]
+        candidate_snapshot = candidate_root / "cc-1c-skills"
+        self.assertTrue(
+            (candidate_snapshot / "skills/future/scripts/future.py").is_file()
+        )
+        self.assertTrue(
+            (candidate_snapshot / "cases/future/fixtures/sample/input.txt").is_file()
+        )
+        self.assertTrue(
+            (candidate_snapshot / "case-runner/runner.js").is_file()
+        )
+        self.assertTrue(
+            (candidate_snapshot / "suites/web-test/smoke.test.js").is_file()
+        )
+        baseline = contract.load_json(candidate_root / "donor-baseline.json")
+        self.assertEqual(baseline["schemaVersion"], 2)
+        self.assertEqual(
+            set(baseline["corpusSkills"]),
+            {"empty", "future", fixture.owner},
+        )
+        self.assertEqual(
+            baseline["executableCaseScopes"],
+            [fixture.case_scope],
+        )
+        self.assertIn("future", baseline["corpusTests"]["caseScopes"])
+        self.assertIn("web-test", baseline["corpusTests"]["suites"])
+        self.assertEqual(review["needsReview"], [])
+        relations = contract.load_json(
+            fixture.fixtures_root / "donor-relations.json"
+        )
+        self.assertEqual(
+            contract.validate_relations(
+                fixture.repo_root,
+                candidate_snapshot,
+                relations,
+                baseline,
+            ),
+            [],
+        )
+
+    def test_focused_prepare_does_not_expand_to_unselected_corpus(self) -> None:
+        fixture = self.fixture()
+        target = fixture.add_unselected_corpus()
+
+        result = fixture.prepare(target)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = fixture.load_review()
+        candidate_snapshot = (
+            fixture.repo_root / review["candidatePath"] / "cc-1c-skills"
+        )
+        self.assertFalse((candidate_snapshot / "skills/future").exists())
+        self.assertFalse((candidate_snapshot / "cases/future").exists())
+        self.assertFalse((candidate_snapshot / "suites").exists())
 
     def test_prepare_invalidates_relation_when_script_changes(self) -> None:
         fixture = self.fixture()
