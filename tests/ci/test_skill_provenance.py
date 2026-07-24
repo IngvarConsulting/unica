@@ -335,6 +335,15 @@ class SkillProvenanceTests(unittest.TestCase):
             analyzer["sourceCommit"],
             "9a6cb15d60c0381dce6a3b5e536434adb12da89b",
         )
+        self.assertEqual(analyzer["assetTag"], "bsl-analyzer-v0.2.62-build.1")
+        self.assertEqual(
+            {target: asset["sha256"] for target, asset in analyzer["assets"].items()},
+            {
+                "darwin-arm64": "97c599b2be9e8c4e267d7a8567b21d01d5d6939060d28084ae1f598d15c084a4",
+                "linux-x64": "070374453c933025c0750d59a658dfe9edd6415f7b5aa80d122268acc08ae8b9",
+                "win-x64": "9c42ef7d6b379b3f80afb525f9cbec757abd2ba1877bbdcfb5db49df9972fd22",
+            },
+        )
 
     def test_all_local_and_contract_paths_exist(self) -> None:
         data = self.load_provenance()
