@@ -836,7 +836,7 @@ def copy_full_corpus(
         repository, commit, ".claude/skills"
     ):
         parts = contract.safe_relative_path(upstream_path).parts
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
         donor_skills.add(parts[2])
         if len(parts) < 5 or parts[3] != "scripts":

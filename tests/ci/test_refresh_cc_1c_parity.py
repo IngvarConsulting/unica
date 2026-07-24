@@ -115,6 +115,10 @@ class RefreshFixture:
         return self.commit("symlink")
 
     def add_unselected_corpus(self) -> str:
+        (self.upstream / ".claude" / "skills" / ".gitignore").write_text(
+            "generated/\n",
+            encoding="utf-8",
+        )
         future_skill = (
             self.upstream / ".claude" / "skills" / "future" / "scripts"
         )
