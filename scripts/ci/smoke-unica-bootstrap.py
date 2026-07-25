@@ -4,11 +4,46 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+
+# Valid as a manifest value, but no archive can ever hash to it.
+UNMATCHABLE_SHA256 = "0" * 64
+
+
+def neutralise_published_checksums(manifest_path: Path) -> str:
+    """Make the manifest describe runtime bytes that cannot exist, and return the original text.
+
+    A pull-request package is built with the release tag of the version in the
+    tree, and the manifest is self-consistent by design: `release.tag` must equal
+    `v{pluginVersion}` and the asset URL must match that tag, so the probe cannot
+    simply point it at an unpublished tag.
+
+    Once that version is released, a pull request that does not change the
+    runtime rebuilds byte-identical archives, the checksums match the published
+    assets, and the download the probe expects to fail succeeds instead. Only
+    hosts whose builds are not byte-reproducible, currently win-x64, kept
+    failing by accident.
+
+    Replacing the archive checksum removes that dependency on release state: the
+    bootstrap either cannot fetch the asset or rejects the bytes it fetched, and
+    both are the controlled failure this probe asserts.
+    """
+    if not manifest_path.is_file():
+        raise SystemExit(f"packaged runtime manifest is missing: {manifest_path}")
+    original = manifest_path.read_text(encoding="utf-8")
+    manifest = json.loads(original)
+    for runtime in manifest.get("targets", {}).values():
+        runtime["asset"]["sha256"] = UNMATCHABLE_SHA256
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return original
 
 
 def consumer_path(target: str) -> str:
@@ -39,6 +74,11 @@ def smoke(
     if target != "win-x64":
         bootstrap.chmod(bootstrap.stat().st_mode | 0o755)
 
+    manifest_path = plugin_root / "runtime-manifest.json"
+    original_manifest = (
+        neutralise_published_checksums(manifest_path) if expect_download_failure else None
+    )
+
     with tempfile.TemporaryDirectory(prefix="unica-bootstrap-smoke-") as directory:
         root = Path(directory)
         environment = os.environ.copy()
@@ -60,13 +100,20 @@ def smoke(
             raise SystemExit(
                 f"packaged bootstrap smoke timed out after {timeout_seconds:g}s"
             ) from error
+        finally:
+            # The payload is a shared CI artifact; later jobs must still see the
+            # manifest the packaging step produced.
+            if original_manifest is not None:
+                manifest_path.write_text(original_manifest, encoding="utf-8")
 
     detail = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
     if "overflowed its stack" in detail:
         raise SystemExit(f"packaged bootstrap overflowed its stack: {detail}")
     if expect_download_failure:
         if result.returncode == 0:
-            raise SystemExit("packaged bootstrap unexpectedly downloaded an unpublished runtime")
+            raise SystemExit(
+                "packaged bootstrap accepted a runtime archive whose checksum was neutralised"
+            )
         controlled_failure = any(
             marker in detail
             for marker in ("failed to download", "runtime archive sha256")
