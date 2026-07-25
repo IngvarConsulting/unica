@@ -338,12 +338,23 @@ class ProductContractTests(unittest.TestCase):
         release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
             encoding="utf-8"
         )
-        # Any concrete version, however quoted, is a location no contract check
-        # covers, and packaging fails on every later pull request once it drifts.
-        literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+        # A hardcoded release version is a location no contract check covers, and
+        # packaging fails on every later pull request once it drifts. A tag-shaped
+        # literal is wrong anywhere in the file, however quoted, and this also
+        # catches suffixed forms such as v1.2.3-rc1 by matching their prefix.
+        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+        # An unprefixed literal is only wrong inside the step that derives the
+        # tag, including in an intermediate variable it reads. The file elsewhere
+        # pins other tools by bare version, so this cannot be a whole-file rule.
+        step_name = "Resolve the release tag for non-tag builds"
+        start = release.find(step_name)
+        self.assertNotEqual(start, -1, "the workflow no longer derives the release tag")
+        following = re.search(r"(?m)^      - (name|uses|run):", release[start:])
+        step = release[start : start + following.start()] if following else release[start:]
+        unprefixed = sorted(set(re.findall(r"\d+\.\d+\.\d+", step)))
 
-        self.assertEqual(literals, [])
-        self.assertIn("Resolve the release tag for non-tag builds", release)
+        self.assertEqual(tag_literals, [])
+        self.assertEqual(unprefixed, [])
 
     def test_bump_version_writes_every_contract_location(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
