@@ -948,7 +948,7 @@ pub(crate) fn decompile_mxl(
     const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
     const NS_V8: &str = "http://v8.1c.ru/8.1/data/core";
 
-    let result = (|| -> Result<(String, String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, String, PathBuf), String> {
         let template_path_raw = required_path(
             args,
             &["templatePath", "TemplatePath", "path", "Path"],
@@ -958,11 +958,6 @@ pub(crate) fn decompile_mxl(
         if !template_path.is_file() {
             return Err(format!("File not found: {}", template_path_raw.display()));
         }
-        let output_path_raw = path_arg(args, &["outputPath", "OutputPath"]);
-        let output_path = output_path_raw
-            .as_ref()
-            .map(|path| absolutize(path.clone(), &context.cwd));
-
         let text = read_utf8_sig(&template_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", template_path.display()))?;
@@ -1130,17 +1125,7 @@ pub(crate) fn decompile_mxl(
         result_fields.push(("areas".to_string(), OrderedJson::Arr(areas)));
         let json_text = render_ordered_json(&OrderedJson::Obj(result_fields));
 
-        let stdout = if let Some(output_path) = &output_path {
-            fs::write(output_path, &json_text)
-                .map_err(|err| format!("failed to write {}: {err}", output_path.display()))?;
-            let label = output_path_raw
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| output_path.display().to_string());
-            format!("[OK] Decompiled: {label}\n")
-        } else {
-            format!("{json_text}\n")
-        };
+        let stdout = format!("{json_text}\n");
         let stderr = format!(
             "     Areas: {}, Rows: {logical_height}, Columns: {total_columns}\n     Fonts: {}, Styles: {}, Merges: {}\n",
             named_areas.len(),
@@ -1149,15 +1134,12 @@ pub(crate) fn decompile_mxl(
             merge_map.len()
         );
 
-        Ok((stdout, stderr, output_path, template_path))
+        Ok((stdout, stderr, template_path))
     })();
 
     match result {
-        Ok((stdout, stderr, output_path, template_path)) => {
-            let mut artifacts = vec![template_path.display().to_string()];
-            if let Some(output_path) = output_path {
-                artifacts.push(output_path.display().to_string());
-            }
+        Ok((stdout, stderr, template_path)) => {
+            let artifacts = vec![template_path.display().to_string()];
             AdapterOutcome {
                 ok: true,
                 summary: "unica.mxl.decompile completed with native spreadsheet decompiler"

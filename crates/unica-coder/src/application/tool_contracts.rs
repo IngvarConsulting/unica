@@ -1493,6 +1493,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
+    if tool.name == "unica.mxl.decompile" {
+        names.retain(|name| *name != "OutputPath" && *name != "outputPath");
+    }
     names.sort_unstable();
     names.dedup();
     names
