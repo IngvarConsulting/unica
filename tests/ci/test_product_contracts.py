@@ -338,13 +338,11 @@ class ProductContractTests(unittest.TestCase):
         release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
             encoding="utf-8"
         )
-        version = json.loads(
-            (repo_root / "plugins/unica/.codex-plugin/plugin.json").read_text(encoding="utf-8")
-        )["version"]
+        # Any concrete version, however quoted, is a location no contract check
+        # covers, and packaging fails on every later pull request once it drifts.
+        literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
 
-        # A literal here would be a version location no contract check covers,
-        # and packaging fails on every later pull request when it drifts.
-        self.assertNotIn(f"'v{version}'", release)
+        self.assertEqual(literals, [])
         self.assertIn("Resolve the release tag for non-tag builds", release)
 
     def test_bump_version_writes_every_contract_location(self) -> None:
@@ -374,11 +372,51 @@ class ProductContractTests(unittest.TestCase):
                 target.write_text(
                     (repo_root / relative).read_text(encoding="utf-8"), encoding="utf-8"
                 )
+            # Synthesised rather than copied so the Claude manifest is covered on
+            # branches that do not carry it yet.
+            claude = work / "plugins/unica/.claude-plugin/plugin.json"
+            claude.parent.mkdir(parents=True, exist_ok=True)
+            claude.write_text(
+                json.dumps({"name": "unica", "version": "0.0.0"}) + "\n", encoding="utf-8"
+            )
 
-            module.bump(work, "9.8.7")
+            changed = module.bump(work, "9.8.7")
             values = contract_module.read_version_contract(work)
+            claude_version = json.loads(claude.read_text(encoding="utf-8"))["version"]
 
         self.assertEqual(set(values.values()), {"9.8.7"}, values)
+        self.assertEqual(claude_version, "9.8.7")
+        self.assertIn("plugins/unica/.claude-plugin/plugin.json", changed)
+
+    def test_bump_version_writes_nothing_when_a_later_file_is_malformed(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "repo"
+            cargo = work / "Cargo.toml"
+            cargo.parent.mkdir(parents=True, exist_ok=True)
+            cargo.write_text(
+                (repo_root / "Cargo.toml").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            lock = work / "plugins/unica/third-party/tools.lock.json"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            # Two unica entries: valid JSON, but no single version to set.
+            lock.write_text(
+                json.dumps({"tools": [{"name": "unica"}, {"name": "unica"}]}), encoding="utf-8"
+            )
+            before = cargo.read_text(encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                module.bump(work, "9.8.7")
+
+            # Straddling two versions is the exact state the contract forbids, so
+            # a failure part-way through has to leave everything untouched.
+            self.assertEqual(cargo.read_text(encoding="utf-8"), before)
 
     def test_promotion_pr_points_the_tag_at_the_staging_merge(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

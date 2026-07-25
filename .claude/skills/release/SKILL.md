@@ -28,23 +28,33 @@ one rather than start one. Check in this order and enter the runbook at the
 first unfinished step:
 
 ```bash
-gh release list --repo IngvarConsulting/unica --limit 3
-gh api repos/IngvarConsulting/unica-marketplace/tags --jq '.[0].name'
+version=vX.Y.Z   # the version the user named, if they named one
+gh release view "$version" --repo IngvarConsulting/unica --json tagName,isPrerelease
+gh api "repos/IngvarConsulting/unica-marketplace/git/ref/tags/$version" || echo "no marketplace tag yet"
 gh pr list --repo IngvarConsulting/unica-marketplace --state open
 gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketplace.json \
   --jq '.content' | base64 -d | grep '"ref"'
 ```
+
+If the user named a version, act on that one and stop if the open pull requests
+belong to a different version — resuming the wrong release is worse than asking.
+Without a named version, take the newest release that is not a prerelease.
 
 A source release whose tag is newer than the catalog `ref` means the release is
 live for nobody. That is the common stall, and it is silent.
 
 ## When something goes wrong
 
-Only the promotion merge is visible to consumers, so before it aborting just
-means closing a pull request. After step 1 a version is burnt: never re-cut it
-with different bytes, take the next patch instead. Rolling back a live release is
-a revert of the promotion commit, which is safe because published bytes never
-move. See the runbook's abort and rollback tables.
+Only the promotion merge is visible to consumers, so nothing before it needs
+undoing on their behalf. What cleanup is required depends on how far the release
+got, and the runbook's abort table is per step: closing a pull request is enough
+only while one is open, whereas a merged staging commit may need reverting and a
+published tag is left alone.
+
+Once assets are published the version is burnt. Never re-cut it with different
+bytes; take the next patch, and mark the abandoned release a prerelease so the
+warden stops reporting it as stalled. Rolling back a live release is a revert of
+the promotion commit, which is safe because published bytes never move.
 
 ## Rules
 

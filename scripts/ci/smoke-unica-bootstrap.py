@@ -79,32 +79,34 @@ def smoke(
         neutralise_published_checksums(manifest_path) if expect_download_failure else None
     )
 
-    with tempfile.TemporaryDirectory(prefix="unica-bootstrap-smoke-") as directory:
-        root = Path(directory)
-        environment = os.environ.copy()
-        environment["CODEX_HOME"] = str(root / "codex-home")
-        environment["UNICA_RUNTIME_CACHE_DIR"] = str(root / "runtime-cache")
-        environment["PATH"] = consumer_path(target)
-        if shutil.which("node", path=environment["PATH"]):
-            raise SystemExit("Node.js leaked into the bootstrap consumer PATH")
-        try:
-            result = subprocess.run(
-                [str(bootstrap), "verify", "--plugin-root", str(plugin_root)],
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-                env=environment,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise SystemExit(
-                f"packaged bootstrap smoke timed out after {timeout_seconds:g}s"
-            ) from error
-        finally:
-            # The payload is a shared CI artifact; later jobs must still see the
-            # manifest the packaging step produced.
-            if original_manifest is not None:
-                manifest_path.write_text(original_manifest, encoding="utf-8")
+    # Every exit from here restores the manifest, including the consumer-PATH
+    # guard below, which raises before the probe ever starts. The payload is a
+    # build artifact other steps read, so it must not be left neutralised.
+    try:
+        with tempfile.TemporaryDirectory(prefix="unica-bootstrap-smoke-") as directory:
+            root = Path(directory)
+            environment = os.environ.copy()
+            environment["CODEX_HOME"] = str(root / "codex-home")
+            environment["UNICA_RUNTIME_CACHE_DIR"] = str(root / "runtime-cache")
+            environment["PATH"] = consumer_path(target)
+            if shutil.which("node", path=environment["PATH"]):
+                raise SystemExit("Node.js leaked into the bootstrap consumer PATH")
+            try:
+                result = subprocess.run(
+                    [str(bootstrap), "verify", "--plugin-root", str(plugin_root)],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                    env=environment,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise SystemExit(
+                    f"packaged bootstrap smoke timed out after {timeout_seconds:g}s"
+                ) from error
+    finally:
+        if original_manifest is not None:
+            manifest_path.write_text(original_manifest, encoding="utf-8")
 
     detail = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
     if "overflowed its stack" in detail:

@@ -134,6 +134,19 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
 
             self.assertEqual(self.manifest_sha(plugin), self.PUBLISHED_SHA)
 
+    def test_the_manifest_is_restored_even_when_the_probe_never_starts(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self.plugin(Path(directory))
+
+            # The consumer-PATH guard raises before the probe runs, and it must
+            # not leave the packaged artifact holding a neutralised checksum.
+            with patch.object(module.shutil, "which", return_value="/usr/bin/node"):
+                with self.assertRaisesRegex(SystemExit, "Node.js leaked"):
+                    module.smoke(plugin, "linux-x64", 2, expect_download_failure=True)
+
+            self.assertEqual(self.manifest_sha(plugin), self.PUBLISHED_SHA)
+
     def test_probe_requires_a_packaged_runtime_manifest(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:

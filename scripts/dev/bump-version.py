@@ -24,8 +24,7 @@ from pathlib import Path
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
-def set_cargo_version(path: Path, version: str) -> bool:
-    original = path.read_text(encoding="utf-8")
+def render_cargo_version(original: str, version: str, path: Path) -> str:
     # Only the workspace package version, never a dependency's version field.
     updated, count = re.subn(
         r'(?m)^(\[workspace\.package\](?:\n(?!\[).*)*?\nversion = ")[^"]+(")',
@@ -35,49 +34,53 @@ def set_cargo_version(path: Path, version: str) -> bool:
     )
     if count != 1:
         raise SystemExit(f"could not locate workspace.package.version in {path}")
-    return write_if_changed(path, original, updated)
+    return updated
 
 
-def set_json_version(path: Path, version: str) -> bool:
-    original = path.read_text(encoding="utf-8")
+def render_json_version(original: str, version: str, path: Path) -> str:
     data = json.loads(original)
     data["version"] = version
-    return write_if_changed(path, original, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
-def set_tools_lock_version(path: Path, version: str) -> bool:
-    original = path.read_text(encoding="utf-8")
+def render_tools_lock_version(original: str, version: str, path: Path) -> str:
     data = json.loads(original)
     entries = [tool for tool in data.get("tools", []) if tool.get("name") == "unica"]
     if len(entries) != 1:
         raise SystemExit(f"expected exactly one unica entry in {path}, found {len(entries)}")
     entries[0]["version"] = version
-    return write_if_changed(path, original, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-
-
-def write_if_changed(path: Path, original: str, updated: str) -> bool:
-    if original == updated:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def bump(repo_root: Path, version: str) -> list[str]:
+    """Render every file first, then write.
+
+    A malformed file part-way through the list would otherwise leave the
+    repository straddling two versions, which is the exact state the version
+    contract exists to forbid. Rendering everything before touching disk keeps a
+    failure a no-op.
+    """
     plugin = repo_root / "plugins" / "unica"
     targets = [
-        (repo_root / "Cargo.toml", set_cargo_version),
-        (plugin / ".codex-plugin" / "plugin.json", set_json_version),
-        (plugin / ".claude-plugin" / "plugin.json", set_json_version),
-        (plugin / "third-party" / "tools.lock.json", set_tools_lock_version),
+        (repo_root / "Cargo.toml", render_cargo_version),
+        (plugin / ".codex-plugin" / "plugin.json", render_json_version),
+        (plugin / ".claude-plugin" / "plugin.json", render_json_version),
+        (plugin / "third-party" / "tools.lock.json", render_tools_lock_version),
     ]
-    changed = []
-    for path, setter in targets:
+
+    pending = []
+    for path, render in targets:
         if not path.is_file():
             # A host manifest may legitimately not exist yet on older branches.
             continue
-        if setter(path, version):
-            changed.append(path.relative_to(repo_root).as_posix())
-    return changed
+        original = path.read_text(encoding="utf-8")
+        updated = render(original, version, path)
+        if original != updated:
+            pending.append((path, updated))
+
+    for path, updated in pending:
+        path.write_text(updated, encoding="utf-8")
+    return [path.relative_to(repo_root).as_posix() for path, _ in pending]
 
 
 def main() -> int:

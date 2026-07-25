@@ -27,8 +27,12 @@ So publication is split, per
 Between the two sits an immutable tag. The catalog pins `git-subdir` to a semver
 tag, which `scripts/verify_marketplace.py` in the marketplace repo enforces, and
 the promotion checks install exactly as a consumer would. Those checks cannot
-pass until the tag exists, which makes the tag the natural approval gate: it is
-the one step that needs a human signing key.
+pass until the tag exists, which makes the tag the approval gate.
+
+A release signs two tags, and they do different jobs. The **source tag** in
+`unica` (step 1) starts the build and fixes the version the artifacts declare.
+The **marketplace tag** (step 4) is the one the catalog resolves, and it is the
+gate: nothing reaches consumers until it exists.
 
 ## What you do, and what runs itself
 
@@ -57,11 +61,12 @@ are what you follow by hand if the warden is disabled or itself broken.
 
 ## Preconditions
 
-- Write access to both repositories, and `gh` authenticated.
+- Write access to both repositories, and `gh` authenticated. The tag steps push
+  over HTTPS, so run `gh auth setup-git` once in a fresh checkout.
 - A GPG key able to sign tags. If signing fails with `Operation cancelled` in a
   non-interactive shell, run `gpg-connect-agent updatestartuptty /bye` first, then
   `echo test | gpg --clearsign > /dev/null` to unlock the agent.
-- The version to release is already merged to `main` and green.
+- `main` is green, and the version bump is ready to verify and merge.
 
 ## Step 0 — prepare the version
 
@@ -169,6 +174,11 @@ gh api "repos/IngvarConsulting/unica-marketplace/contents/plugins/unica/.codex-p
 **The warden does this** immediately after it merges staging, deriving the run id
 and the release tag from the staging branch name and the merge commit from the
 merge itself. Run it by hand only if the warden is disabled or failing.
+
+Order differs between the two paths, and both are fine. By hand, tagging first
+means the promotion pull request is green on its first run. The warden opens it
+as soon as staging lands, so it sits red until you publish the tag and then goes
+green on the next run. Either way nothing merges before the tag exists.
 
 ```bash
 gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
