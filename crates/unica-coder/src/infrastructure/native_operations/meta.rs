@@ -3867,6 +3867,51 @@ fn meta_info_native_lines(
     Ok(lines)
 }
 
+#[cfg(test)]
+mod native_legacy_rendering_tests {
+    use std::collections::BTreeMap;
+
+    use super::meta_info_native_lines;
+    use crate::infrastructure::source_adapters::platform_xml::{
+        native_model::{
+            NativeMetadataClass, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
+            NativeProperty, NativePropertyProvenance, NativePropertyValue,
+            NativeScalarAnnotationIssue,
+        },
+        schema::MetadataClassRole,
+    };
+
+    #[test]
+    fn unresolved_scalar_is_rendered_as_a_non_raw_marker() {
+        let root = NativeMetadataNode {
+            class: NativeMetadataClass {
+                canonical_name: "Document",
+                role: MetadataClassRole::TopLevelObject,
+            },
+            uuid: None,
+            name: "Order".to_string(),
+            state: NativeNodeState::ResolvedInline,
+            properties: BTreeMap::from([(
+                "FillValue".to_string(),
+                NativeProperty {
+                    canonical_id: "FillValue".to_string(),
+                    value: NativePropertyValue::UnresolvedScalar {
+                        issue: NativeScalarAnnotationIssue::InvalidLexical,
+                    },
+                    provenance: NativePropertyProvenance::Unresolved,
+                },
+            )]),
+            children: Vec::new(),
+            backing: NativeNodeBacking::None,
+        };
+
+        let rendered = meta_info_native_lines(&root, "", "full").unwrap().join("\n");
+        assert!(rendered.contains("FillValue: <unresolved>"));
+        assert!(!rendered.contains("1e1000"));
+        assert!(!rendered.contains("xsi:type"));
+    }
+}
+
 fn resolve_native_node<'a>(
     root: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
     selector: &str,

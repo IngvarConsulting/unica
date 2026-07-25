@@ -684,6 +684,47 @@ mod tests {
     }
 
     #[test]
+    fn empty_annotated_fill_value_preserves_string_but_not_invalid_decimal() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::{
+            NativeScalarAnnotationIssue, NativeScalarType,
+        };
+
+        let mut string = document_fixture();
+        string.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::AnnotatedScalar {
+                    value: String::new(),
+                    type_annotation: NativeScalarType::String,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+        let mut decimal = string.clone();
+        decimal.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::UnresolvedScalar {
+                    issue: NativeScalarAnnotationIssue::InvalidLexical,
+                },
+                provenance: NativePropertyProvenance::Unresolved,
+            },
+        );
+
+        let string = project_fixture(string).unwrap();
+        assert_eq!(
+            string.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            Some(PropertyValue::String(String::new())),
+        );
+        let decimal = project_fixture(decimal).unwrap();
+        let property = &decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+        assert_eq!(property.value_state, PropertyValueState::Unresolved);
+        assert_eq!(property.value, None);
+    }
+
+    #[test]
     fn fill_value_accepts_only_lossless_decimal_or_string_annotations() {
         use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType;
 

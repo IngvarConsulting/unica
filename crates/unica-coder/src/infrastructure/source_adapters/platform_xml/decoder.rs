@@ -540,20 +540,15 @@ fn decode_properties(
             )
         } else {
             let value = property.text().unwrap_or_default().trim();
-            if value.is_empty() {
-                (
-                    NativePropertyValue::Absent,
-                    NativePropertyProvenance::Absent,
-                )
+            let scalar = scalar_property_value(&canonical_id, property, value);
+            let provenance = if matches!(scalar, NativePropertyValue::Absent) {
+                NativePropertyProvenance::Absent
+            } else if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
+                NativePropertyProvenance::Unresolved
             } else {
-                let scalar = scalar_property_value(&canonical_id, property, value);
-                let provenance = if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
-                    NativePropertyProvenance::Unresolved
-                } else {
-                    NativePropertyProvenance::Explicit
-                };
-                (scalar, provenance)
-            }
+                NativePropertyProvenance::Explicit
+            };
+            (scalar, provenance)
         };
         decoded.insert(
             canonical_id.clone(),
@@ -580,6 +575,9 @@ fn scalar_property_value(
         if property.attribute("type").is_some() {
             return unresolved_scalar(NativeScalarAnnotationIssue::Unqualified);
         }
+        if value.is_empty() {
+            return NativePropertyValue::Absent;
+        }
         if matches!(
             scalar_property_kind_2_20(canonical_id),
             Some(ScalarPropertyKind::PolymorphicFillValue)
@@ -604,6 +602,9 @@ fn scalar_property_value(
         "stringUuid" => NativeScalarType::Uuid,
         _ => return unresolved_scalar(NativeScalarAnnotationIssue::Unknown),
     };
+    if value.is_empty() && !matches!(type_annotation, NativeScalarType::String) {
+        return unresolved_scalar(NativeScalarAnnotationIssue::InvalidLexical);
+    }
     NativePropertyValue::AnnotatedScalar {
         value: value.to_string(),
         type_annotation,
@@ -1605,6 +1606,61 @@ mod tests {
             NativePropertyValue::UnresolvedScalar {
                 issue: NativeScalarAnnotationIssue::Unqualified,
             },
+        );
+    }
+
+    #[test]
+    fn scalar_annotations_classify_empty_values_before_absence() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::{
+            NativeScalarAnnotationIssue, NativeScalarType,
+        };
+
+        let string = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="http://www.w3.org/2001/XMLSchema" xsi:type="x:string"></FillValue><Description>Sibling</Description></Properties>"#,
+        );
+        let decimal = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="http://www.w3.org/2001/XMLSchema" xsi:type="x:decimal"></FillValue><Description>Sibling</Description></Properties>"#,
+        );
+        let alien = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="urn:alien" xsi:type="x:decimal"></FillValue></Properties>"#,
+        );
+        let unbound = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="x:decimal"></FillValue></Properties>"#,
+        );
+        let conflicting = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="http://www.w3.org/2001/XMLSchema" xsi:type="x:string" type="x:decimal"></FillValue></Properties>"#,
+        );
+        let unsupported = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="http://www.w3.org/2001/XMLSchema" xsi:type="x:float"></FillValue></Properties>"#,
+        );
+        let absent = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue></FillValue></Properties>"#,
+        );
+
+        let decoded = decode(&string.provider, &string.descriptor).unwrap();
+        assert_eq!(
+            decoded.root.properties["FillValue"].value,
+            NativePropertyValue::AnnotatedScalar {
+                value: String::new(),
+                type_annotation: NativeScalarType::String,
+            },
+        );
+        assert_eq!(decoded.root.properties["Description"].value, NativePropertyValue::Scalar("Sibling".to_string()));
+        let decoded = decode(&decimal.provider, &decimal.descriptor).unwrap();
+        assert_eq!(
+            decoded.root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar { issue: NativeScalarAnnotationIssue::InvalidLexical },
+        );
+        assert_eq!(decoded.root.properties["Description"].value, NativePropertyValue::Scalar("Sibling".to_string()));
+        for fixture in [&alien, &unbound, &conflicting, &unsupported] {
+            assert!(matches!(
+                decode(&fixture.provider, &fixture.descriptor).unwrap().root.properties["FillValue"].value,
+                NativePropertyValue::UnresolvedScalar { .. },
+            ));
+        }
+        assert_eq!(
+            decode(&absent.provider, &absent.descriptor).unwrap().root.properties["FillValue"].value,
+            NativePropertyValue::Absent,
         );
     }
 

@@ -259,7 +259,12 @@ fn parse_qualifier_group(
     if !groups.insert(group) {
         return Err(projection_error("duplicate Platform XML type qualifier group"));
     }
-    parse_qualifiers(node, qualifiers, allowed)
+    let validated_children = qualifiers.len();
+    parse_qualifiers(node, qualifiers, allowed)?;
+    if qualifiers.len() == validated_children {
+        return Err(projection_error("empty Platform XML type qualifier group"));
+    }
+    Ok(())
 }
 
 fn parse_qualifiers(
@@ -370,6 +375,19 @@ mod tests {
             "<DataType><Type>xs:string</Type><StringQualifiers/><StringQualifiers><Length>12</Length></StringQualifiers></DataType>",
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_empty_compatible_qualifier_groups_without_raw_error_content() {
+        for input in [
+            "<DataType><Type>xs:string</Type><StringQualifiers/></DataType>",
+            "<DataType><Type>xs:decimal</Type><NumberQualifiers/></DataType>",
+            "<DataType><Type>xs:date</Type><DateQualifiers/></DataType>",
+        ] {
+            let error = parse_type_description_2_20(input).unwrap_err();
+            assert!(!error.message.contains("Qualifiers"));
+            assert!(!error.message.contains("xs:"));
+        }
     }
 
     #[test]

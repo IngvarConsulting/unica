@@ -129,3 +129,28 @@
 ### Concerns
 
 - The scalar and qualifier grammar remains intentionally bounded to certified 2.20 forms. Future XML Schema local names or qualifier groups require an explicit shared-schema extension; they must not be inferred from text or promoted to canonical values.
+## Fix Round 4
+
+### RED
+
+- Legacy `meta.info` rendering had the safe unresolved marker branch but no focused regression proof against exposing rejected scalar lexical content.
+- Declared compatible qualifier groups with no children passed because parser tracked group identity but did not require a validated child.
+- Decoder classified empty scalar text as `Absent` before examining `xsi:type`, losing valid empty strings and hiding invalid/unsupported annotations.
+
+### GREEN
+
+- Legacy native rendering covers `UnresolvedScalar` with the fixed `<unresolved>` marker and no canonical/raw scalar data. No Task 8 public rendering switch was made.
+- Every declared `StringQualifiers`, `NumberQualifiers`, or `DateQualifiers` group must contribute at least one validated child; duplicate group detection remains prior to child parsing and errors expose no input XML.
+- Decoder resolves scalar annotation before empty-body handling: valid XML Schema string remains explicit empty String; valid decimal empty body is `InvalidLexical`; alien, unbound, conflicting and unsupported annotations remain local unresolved states; unannotated empty scalar remains Absent.
+- Empty annotation failures preserve sibling projection; projector serializes unresolved decimal without a canonical value.
+
+### Tests
+
+- `cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture` -- 27 passed.
+- `cargo test -p unica-coder source_adapters::platform_xml::projector::tests -- --nocapture` -- 19 passed.
+- `cargo test -p unica-coder source_adapters::platform_xml::schema -- --nocapture` -- 5 passed.
+- `cargo test -p unica-coder native_operations::meta::native_legacy_rendering_tests -- --nocapture` -- 1 passed.
+
+### Concerns
+
+- The bounded grammar intentionally rejects declared qualifier groups that carry no validated information. Future platform grammar variants must be added as explicit certified groups rather than treated as empty/defaulted state.

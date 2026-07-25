@@ -138,6 +138,7 @@ pub(crate) enum NativeScalarAnnotationIssue {
     Unknown,
     Conflicting,
     Unqualified,
+    InvalidLexical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
