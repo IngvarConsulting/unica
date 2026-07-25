@@ -73,6 +73,12 @@ impl PlatformXmlProvider {
         let bytes = self.read_relative(raw)?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
     }
+
+    pub(super) fn snapshot_files(&self) -> impl Iterator<Item = (&str, Arc<[u8]>)> + '_ {
+        self.files
+            .iter()
+            .map(|(relative, bytes)| (relative.as_str(), Arc::clone(bytes)))
+    }
 }
 
 fn ensure_directory(path: &Path) -> Result<(), SourceAdapterError> {

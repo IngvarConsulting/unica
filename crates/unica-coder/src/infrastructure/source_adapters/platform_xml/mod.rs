@@ -4,6 +4,8 @@ use crate::domain::source_adapters::{
     AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SourceAccess, SourceFamily,
 };
 
+pub(crate) mod decoder;
+pub(crate) mod native_model;
 pub(crate) mod probe;
 pub(crate) mod provider;
 pub(crate) mod schema;

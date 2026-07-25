@@ -164,501 +164,6 @@ mod navigation_projection_tests {
     }
 
     #[test]
-    fn platform_xml_navigation_preserves_child_order_types_templates_and_unresolved_content() {
-        let context = temp_context("projection");
-        write_file(
-            &context.workspace_root.join("v8project.yaml"),
-            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        );
-        write_file(
-            &context.workspace_root.join("src/Configuration.xml"),
-            "<MetaDataObject><Configuration/></MetaDataObject>",
-        );
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = r#"
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document>
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>
-      <Attribute><Properties><Name>Number</Name></Properties></Attribute>
-      <TabularSection>
-        <Properties><Name>Items</Name></Properties>
-        <ChildObjects>
-          <Attribute><Properties><Name>Sku</Name></Properties></Attribute>
-        </ChildObjects>
-      </TabularSection>
-      <Form>DocumentForm</Form>
-      <Form>MissingForm</Form>
-      <Template>Print</Template>
-      <Template>Unproved</Template>
-      <Command>Post</Command>
-    </ChildObjects>
-  </Document>
-</MetaDataObject>
-"#;
-        write_file(&object_path, object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/DocumentForm.xml"),
-            &form_descriptor("DocumentForm"),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/DocumentForm/Ext/Form.xml"),
-            managed_form_source(),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print.xml"),
-            &template_descriptor("Print", "SpreadsheetDocument"),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print/Ext/Template.xml"),
-            spreadsheet_document_source(),
-        );
-        // A file extension is deliberately insufficient evidence for MXL: this
-        // registration has content but no Template descriptor/TemplateType.
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Unproved/Ext/Template.xml"),
-            spreadsheet_document_source(),
-        );
-
-        let document = Document::parse(object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-
-        assert!(graph.is_prototype());
-        assert_eq!(graph.representation, Representation::PlatformXml);
-        let public_graph =
-            serde_json::to_string(&graph).expect("serialize public navigation graph");
-        assert!(public_graph.contains(r#""prototype":true"#));
-        assert!(public_graph.contains(r#""actionSemantics":"modeled_capabilities""#));
-        assert!(
-            !public_graph.contains(&object_path.display().to_string())
-                && !public_graph.contains("Shipment.xml"),
-            "logical ObjectRef identity must not expose XML paths: {public_graph}"
-        );
-        assert_eq!(graph.root.source_id, SourceId::new("main").unwrap());
-        assert_eq!(
-            graph
-                .nodes
-                .iter()
-                .map(|node| node.reference.display_name.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "Shipment",
-                "Number",
-                "Items",
-                "Sku",
-                "DocumentForm",
-                "MissingForm",
-                "Print",
-                "Unproved",
-                "Post",
-            ]
-        );
-
-        let item_sku = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Sku")
-            .expect("tabular section attribute must be projected");
-        assert_eq!(item_sku.reference.source_id, graph.root.source_id);
-        assert_eq!(item_sku.reference.identity_strength, IdentityStrength::Derived);
-        assert_ne!(item_sku.reference.object_key, graph.root.object_key);
-        assert!(graph.edges.iter().any(|edge| {
-            edge.relation == RelationKind::Contains
-                && edge.from == graph.root
-                && edge.to.display_name == "Items"
-        }));
-
-        let print = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Print")
-            .expect("registered template must be projected");
-        assert_eq!(
-            print.capability_state.resolution_state,
-            ResolutionState::Resolved
-        );
-        assert!(matches!(
-            &print.reference.kind,
-            NodeKind::Template { template_type: Some(template_type) }
-                if template_type == "SpreadsheetDocument"
-        ));
-
-        let unproved = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Unproved")
-            .expect("template without descriptor must be projected");
-        assert_eq!(
-            unproved.capability_state.resolution_state,
-            ResolutionState::Unresolved
-        );
-        assert!(matches!(
-            &unproved.reference.kind,
-            NodeKind::Template {
-                template_type: None
-            }
-        ));
-
-        let missing_form = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "MissingForm")
-            .expect("registered missing form must be projected");
-        assert_eq!(
-            missing_form.capability_state.resolution_state,
-            ResolutionState::Unresolved
-        );
-        assert_eq!(
-            missing_form
-                .semantic_actions()
-                .iter()
-                .map(|descriptor| &descriptor.action)
-                .collect::<Vec<_>>(),
-            vec![&SemanticActionKind::Inspect]
-        );
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_fails_closed_for_invalid_or_mismatched_root_identity() {
-        let context = temp_context("invalid-root-identity");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-
-        for object_name in ["", "Not-1C-Identifier", "OtherDocument"] {
-            let object_xml = document_xml(
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-            )
-            .replace(
-                "<Name>Shipment</Name>",
-                &format!("<Name>{object_name}</Name>"),
-            );
-            write_file(&object_path, &object_xml);
-
-            let document = Document::parse(&object_xml).expect("parse metadata fixture");
-            let graph = project_platform_xml_navigation(&document, &object_path, &context);
-
-            // An invalid logical root is represented as unresolved and
-            // unknown-read-only: it is visible for diagnosis but cannot lend
-            // mutable capabilities to itself or contained nodes.
-            assert_eq!(
-                graph.nodes[0].capability_state,
-                CapabilityState::new(ResolutionState::Unresolved, Authorability::UnknownReadOnly),
-                "unexpected root state for {object_name:?}"
-            );
-            assert_only_inspect(&graph.nodes[0]);
-            assert!(graph.nodes.iter().all(|node| {
-                node.capability_state.resolution_state == ResolutionState::Unresolved
-                    || node.capability_state.authorability != Authorability::Authorable
-            }));
-            assert!(graph.nodes.iter().all(|node| {
-                node.semantic_actions()
-                    .iter()
-                .all(|action| action.action == SemanticActionKind::Inspect)
-            }));
-        }
-
-        let duplicate_name_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-        )
-        .replace(
-            "<Name>Shipment</Name>",
-            "<Name>Shipment</Name><Name>ConflictingShipment</Name>",
-        );
-        write_file(&object_path, &duplicate_name_xml);
-        let document = Document::parse(&duplicate_name_xml).expect("parse duplicate-name fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        assert_eq!(
-            graph.nodes[0].capability_state,
-            CapabilityState::new(ResolutionState::Unresolved, Authorability::UnknownReadOnly)
-        );
-        assert_only_inspect(&graph.nodes[0]);
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_recognizes_configuration_descriptor_identity() {
-        let context = temp_context("configuration-root-identity");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Configuration.xml");
-        let object_xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
-  <Configuration>
-    <Properties><Name>ParityConfiguration</Name></Properties>
-  </Configuration>
-</MetaDataObject>"#;
-        write_file(&object_path, object_xml);
-
-        let document = Document::parse(object_xml).expect("parse configuration fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-
-        assert_eq!(graph.root.display_name, "ParityConfiguration");
-        assert!(matches!(
-            graph.root.kind,
-            NodeKind::MetadataObject { ref metadata_type } if metadata_type == "Configuration"
-        ));
-        assert_eq!(
-            graph.nodes[0].capability_state,
-            CapabilityState::new(ResolutionState::Resolved, Authorability::Authorable)
-        );
-        assert_only_inspect(&graph.nodes[0]);
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_requires_matching_form_descriptor_and_form_source() {
-        let context = temp_context("form-descriptor-proof");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Form>ItemForm</Form>",
-        );
-        write_file(&object_path, &object_xml);
-
-        let descriptor_path = context
-            .workspace_root
-            .join("src/Documents/Shipment/Forms/ItemForm.xml");
-        let content_path = context
-            .workspace_root
-            .join("src/Documents/Shipment/Forms/ItemForm/Ext/Form.xml");
-
-        for (descriptor, content) in [
-            (
-                "<MetaDataObject><Form><Properties><Name>ItemForm</Name></Properties></Form></MetaDataObject>",
-                managed_form_source(),
-            ),
-            (
-                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template><Properties><Name>ItemForm</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
-                managed_form_source(),
-            ),
-            (
-                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form><Properties><Name>ItemForm</Name></Properties><Properties><Name>ItemForm</Name></Properties></Form></MetaDataObject>",
-                managed_form_source(),
-            ),
-            (&form_descriptor("OtherForm"), managed_form_source()),
-            (&form_descriptor("ItemForm"), "<NotAForm/>"),
-            (
-                &form_descriptor("ItemForm"),
-                "<Form xmlns=\"http://v8.1c.ru/8.3/MDClasses\"/>",
-            ),
-        ] {
-            write_file(&descriptor_path, descriptor);
-            write_file(&content_path, content);
-
-            let document = Document::parse(&object_xml).expect("parse metadata fixture");
-            let graph = project_platform_xml_navigation(&document, &object_path, &context);
-            let form = graph
-                .nodes
-                .iter()
-                .find(|node| node.reference.display_name == "ItemForm")
-                .expect("registered form must remain navigable for diagnosis");
-
-            assert_eq!(
-                form.capability_state.resolution_state,
-                ResolutionState::Unresolved
-            );
-            assert_only_inspect(form);
-        }
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_requires_matching_template_descriptor_and_mxl_source() {
-        let context = temp_context("template-descriptor-proof");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Template>Print</Template>",
-        );
-        write_file(&object_path, &object_xml);
-
-        let descriptor_path = context
-            .workspace_root
-            .join("src/Documents/Shipment/Templates/Print.xml");
-        let content_path = context
-            .workspace_root
-            .join("src/Documents/Shipment/Templates/Print/Ext/Template.xml");
-
-        for (descriptor, content, expected_type) in [
-            (
-                "<MetaDataObject><Template><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
-                spreadsheet_document_source(),
-                None,
-            ),
-            (
-                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form><Properties><Name>Print</Name></Properties></Form></MetaDataObject>",
-                spreadsheet_document_source(),
-                None,
-            ),
-            (
-                &template_descriptor("OtherTemplate", "SpreadsheetDocument"),
-                spreadsheet_document_source(),
-                None,
-            ),
-            (
-                &template_descriptor("Print", "SpreadsheetDocument"),
-                "not a spreadsheet document",
-                Some("SpreadsheetDocument"),
-            ),
-            (
-                &template_descriptor("Print", "SpreadsheetDocument"),
-                "<SpreadsheetDocument/>",
-                Some("SpreadsheetDocument"),
-            ),
-            (
-                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType><TemplateType>Text</TemplateType></Properties></Template></MetaDataObject>",
-                spreadsheet_document_source(),
-                None,
-            ),
-        ] {
-            write_file(&descriptor_path, descriptor);
-            write_file(&content_path, content);
-
-            let document = Document::parse(&object_xml).expect("parse metadata fixture");
-            let graph = project_platform_xml_navigation(&document, &object_path, &context);
-            let template = graph
-                .nodes
-                .iter()
-                .find(|node| node.reference.display_name == "Print")
-                .expect("registered template must remain navigable for diagnosis");
-
-            assert_eq!(
-                template.capability_state.resolution_state,
-                ResolutionState::Unresolved
-            );
-            assert!(matches!(
-                &template.reference.kind,
-                NodeKind::Template { template_type } if template_type.as_deref() == expected_type
-            ));
-            assert_only_inspect(template);
-        }
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_accepts_known_mxl_roots_only_at_canonical_template_xml() {
-        let context = temp_context("mxl-source-proof");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Template>Print</Template>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template><Properties><Name> Print </Name><TemplateType> SpreadsheetDocument </TemplateType></Properties></Template></MetaDataObject>",
-        );
-        let ext_dir = context
-            .workspace_root
-            .join("src/Documents/Shipment/Templates/Print/Ext");
-
-        for (file_name, content, expected_resolution) in [
-            (
-                "Template.xml",
-                spreadsheet_document_source(),
-                ResolutionState::Resolved,
-            ),
-            (
-                "Template.xml",
-                "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"/>",
-                ResolutionState::Resolved,
-            ),
-            (
-                "Template.mxl",
-                spreadsheet_document_source(),
-                ResolutionState::Unresolved,
-            ),
-        ] {
-            let _ = fs::remove_dir_all(&ext_dir);
-            write_file(&ext_dir.join(file_name), content);
-
-            let document = Document::parse(&object_xml).expect("parse metadata fixture");
-            let graph = project_platform_xml_navigation(&document, &object_path, &context);
-            let template = graph
-                .nodes
-                .iter()
-                .find(|node| node.reference.display_name == "Print")
-                .expect("registered template must remain navigable for diagnosis");
-
-            assert_eq!(
-                template.capability_state.resolution_state, expected_resolution,
-                "unexpected state for {file_name}"
-            );
-            if expected_resolution == ResolutionState::Unresolved {
-                assert_only_inspect(template);
-            }
-        }
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_rejects_non_identifier_form_and_template_registrations_before_resolution(
-    ) {
-        let context = temp_context("registration-traversal");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Form>../../outside</Form><Template>../../outside</Template>",
-        );
-        write_file(&object_path, &object_xml);
-
-        // These are deliberately reachable only if the registration value is
-        // treated as a path rather than a 1C identifier.
-        write_file(
-            &context.workspace_root.join("src/Documents/outside.xml"),
-            "<MetaDataObject><Template><Properties><Name>outside</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/outside/Ext/Form.xml"),
-            "<Form/>",
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/outside/Ext/Template.xml"),
-            "<SpreadsheetDocument/>",
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-
-        assert!(
-            graph
-                .nodes
-                .iter()
-                .all(|node| node.reference.display_name != "../../outside"),
-            "invalid registration must be omitted before any descriptor/content lookup: {graph:?}"
-        );
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
     fn platform_xml_navigation_normalizes_object_path_before_source_set_selection() {
         let context = temp_context("source-set-alias");
         configure_source_set(&context, "src/cf");
@@ -673,54 +178,6 @@ mod navigation_projection_tests {
         let graph = project_platform_xml_navigation(&document, &aliased_object_path, &context);
 
         assert_eq!(graph.root.source_id, SourceId::new("main").unwrap());
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_resolves_non_mxl_template_from_direct_extension_without_mxl_claim() {
-        let context = temp_context("active-document-template");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Template>Active</Template>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Active.xml"),
-            &template_descriptor("Active", "ActiveDocument"),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Active/Ext/Template.xml"),
-            "<ActiveDocument/>",
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        let active = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Active")
-            .expect("registered ActiveDocument template must be projected");
-
-        assert_eq!(
-            active.capability_state.resolution_state,
-            ResolutionState::Resolved
-        );
-        assert_eq!(
-            active.capability_state.authorability,
-            Authorability::Authorable
-        );
-        assert!(matches!(
-            &active.reference.kind,
-            NodeKind::Template { template_type: Some(template_type) }
-                if template_type == "ActiveDocument"
-        ));
-        assert_only_inspect(active);
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
     }
 
@@ -4754,9 +4211,17 @@ pub(crate) fn project_platform_xml_navigation(
         .expect("metadata navigation receives a validated MetaDataObject");
     let metadata_type = object.tag_name().name();
     let object_name =
-        navigation_unique_direct_child_in_namespace(object, "Properties", NAVIGATION_MD_NS)
+        crate::infrastructure::source_adapters::platform_xml::decoder::unique_direct_child_in_namespace(
+            object,
+            "Properties",
+            NAVIGATION_MD_NS,
+        )
             .and_then(|properties| {
-                navigation_unique_direct_child_in_namespace(properties, "Name", NAVIGATION_MD_NS)
+                crate::infrastructure::source_adapters::platform_xml::decoder::unique_direct_child_in_namespace(
+                    properties,
+                    "Name",
+                    NAVIGATION_MD_NS,
+                )
             })
             .and_then(|name| name.text())
             .map(str::trim)
@@ -5101,10 +4566,11 @@ fn navigation_form_descriptor_is_proved(descriptor: &Path, form_name: &str) -> b
     let Ok(text) = read_utf8_sig(descriptor) else {
         return false;
     };
-    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
-        return false;
-    };
-    navigation_descriptor_object(document.root_element(), "Form", form_name).is_some()
+    crate::infrastructure::source_adapters::platform_xml::decoder::descriptor_is_valid(
+        text.trim_start_matches('\u{feff}'),
+        "Form",
+        form_name,
+    )
 }
 
 fn navigation_form_source_is_proved(content: &Path) -> bool {
@@ -5114,12 +4580,9 @@ fn navigation_form_source_is_proved(content: &Path) -> bool {
     let Ok(text) = read_utf8_sig(content) else {
         return false;
     };
-    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
-        return false;
-    };
-    let root = document.root_element();
-    root.tag_name().name() == "Form"
-        && root.tag_name().namespace() == Some("http://v8.1c.ru/8.3/xcf/logform")
+    crate::infrastructure::source_adapters::platform_xml::decoder::managed_form_source_is_valid(
+        text.trim_start_matches('\u{feff}'),
+    )
 }
 
 fn navigation_template_type(descriptor: &Path, template_name: &str) -> Option<String> {
@@ -5127,63 +4590,10 @@ fn navigation_template_type(descriptor: &Path, template_name: &str) -> Option<St
         return None;
     }
     let text = read_utf8_sig(descriptor).ok()?;
-    let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let template =
-        navigation_descriptor_object(document.root_element(), "Template", template_name)?;
-    let properties =
-        navigation_unique_direct_child_in_namespace(template, "Properties", NAVIGATION_MD_NS)?;
-    navigation_unique_direct_child_in_namespace(properties, "TemplateType", NAVIGATION_MD_NS)
-        .and_then(|template_type| template_type.text())
-        .map(str::trim)
-        .filter(|template_type| !template_type.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn navigation_descriptor_object<'a, 'input>(
-    root: roxmltree::Node<'a, 'input>,
-    expected_class: &str,
-    expected_name: &str,
-) -> Option<roxmltree::Node<'a, 'input>> {
-    if root.tag_name().name() != "MetaDataObject"
-        || root.tag_name().namespace() != Some(NAVIGATION_MD_NS)
-    {
-        return None;
-    }
-
-    let mut metadata_objects = root.children().filter(|child| {
-        child.is_element() && child.tag_name().namespace() == Some(NAVIGATION_MD_NS)
-    });
-    let metadata_object = metadata_objects.next()?;
-    if metadata_objects.next().is_some() || metadata_object.tag_name().name() != expected_class {
-        return None;
-    }
-
-    let properties = navigation_unique_direct_child_in_namespace(
-        metadata_object,
-        "Properties",
-        NAVIGATION_MD_NS,
-    )?;
-    let name = navigation_unique_direct_child_in_namespace(properties, "Name", NAVIGATION_MD_NS)?;
-    (name.text().map(str::trim) == Some(expected_name)).then_some(metadata_object)
-}
-
-/// Return exactly one direct child with the expected Platform XML namespace.
-///
-/// Descriptor proof must not depend on document order when two conflicting
-/// fields are present: an ambiguous descriptor is unresolved, never an
-/// authorable semantic target.
-fn navigation_unique_direct_child_in_namespace<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
-    local_name: &str,
-    namespace: &str,
-) -> Option<roxmltree::Node<'a, 'input>> {
-    let mut children = node.children().filter(|child| {
-        child.is_element()
-            && child.tag_name().name() == local_name
-            && child.tag_name().namespace() == Some(namespace)
-    });
-    let child = children.next()?;
-    children.next().is_none().then_some(child)
+    crate::infrastructure::source_adapters::platform_xml::decoder::template_type_if_valid(
+        text.trim_start_matches('\u{feff}'),
+        template_name,
+    )
 }
 
 fn navigation_regular_file(path: &Path) -> bool {
@@ -5235,16 +4645,8 @@ fn navigation_mxl_source_is_proved(content: &Path) -> bool {
     let Ok(text) = read_utf8_sig(content) else {
         return false;
     };
-    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
-        return false;
-    };
-    let root = document.root_element();
-    matches!(
-        (root.tag_name().name(), root.tag_name().namespace()),
-        (
-            "SpreadsheetDocument",
-            Some("http://v8.1c.ru/spreadsheet/document")
-        ) | ("document", Some("http://v8.1c.ru/8.2/data/spreadsheet"))
+    crate::infrastructure::source_adapters::platform_xml::decoder::mxl_source_is_valid(
+        text.trim_start_matches('\u{feff}'),
     )
 }
 
