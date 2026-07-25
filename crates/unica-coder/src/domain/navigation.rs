@@ -217,6 +217,7 @@ pub(crate) enum CapabilityBlockReason {
     SourceReadOnly,
     NotAuthorable,
     OwningRelationMissing,
+    OperationBindingInvalid,
 }
 
 /// All preconditions that must hold before a semantic mutation can execute.
@@ -342,6 +343,16 @@ pub(crate) struct OperationBinding {
     pub(crate) schema_version: String,
 }
 
+impl OperationBinding {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.tool.starts_with("unica.")
+            && self.tool.len() > "unica.".len()
+            && !self.tool.chars().any(char::is_control)
+            && !self.schema_version.is_empty()
+            && !self.schema_version.chars().any(char::is_control)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SemanticActionKind {
@@ -386,7 +397,9 @@ pub(crate) struct SemanticAction {
 impl SemanticAction {
     pub(crate) fn modeled_clone(target: ObjectRef, owning_relation: Option<RelationRef>) -> Self {
         let mut blocking_reasons = Vec::new();
-        if owning_relation.is_none() {
+        if !owning_relation.as_ref().is_some_and(|relation| {
+            relation.source_id == target.source_id && matches!(relation.kind, RelationKind::Contains)
+        }) {
             blocking_reasons.push(CapabilityBlockReason::OwningRelationMissing);
         }
         Self {
@@ -413,8 +426,13 @@ impl SemanticAction {
         atomicity: Atomicity,
     ) -> Self {
         let mut blocking_reasons = capability.blocking_reasons();
-        if matches!(kind, SemanticActionKind::Clone) && owning_relation.is_none() {
+        if matches!(kind, SemanticActionKind::Clone) && !owning_relation.as_ref().is_some_and(|relation| {
+            relation.source_id == target.source_id && matches!(relation.kind, RelationKind::Contains)
+        }) {
             blocking_reasons.push(CapabilityBlockReason::OwningRelationMissing);
+        }
+        if operation_binding.as_ref().is_some_and(|binding| !binding.is_valid()) {
+            blocking_reasons.push(CapabilityBlockReason::OperationBindingInvalid);
         }
         let availability = if blocking_reasons.is_empty() {
             if operation_binding.is_some() {
@@ -836,8 +854,21 @@ impl Serialize for PropertyValue {
 pub(crate) enum PropertyValueState { Explicit, Defaulted, Inherited, Computed, Absent, Unresolved }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProjectorProfile {
+    PlatformXmlV1,
+    EdtV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertyProvenance { Descriptor, ProjectorDefault, Inherited, Computed, Unknown }
+pub(crate) enum PropertyProvenance {
+    Descriptor,
+    ProjectorDefault { profile: ProjectorProfile },
+    Inherited,
+    Computed,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -871,11 +902,11 @@ impl SemanticProperty {
         Self { value_type, value_state: PropertyValueState::Unresolved, value: None, provenance, capability: PropertyCapability::Unknown }
     }
 
-    pub(crate) fn defaulted(value_type: PropertyType, value: PropertyValue, projector_profile: &str) -> Result<Self, SourceAdapterError> {
-        if projector_profile.is_empty() || !property_value_matches(&value_type, &value) {
+    pub(crate) fn defaulted(value_type: PropertyType, value: PropertyValue, projector_profile: ProjectorProfile) -> Result<Self, SourceAdapterError> {
+        if !property_value_matches(&value_type, &value) {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "defaulted property requires an exact projector profile and compatible value"));
         }
-        Ok(Self { value_type, value_state: PropertyValueState::Defaulted, value: Some(value), provenance: PropertyProvenance::ProjectorDefault, capability: PropertyCapability::Unknown })
+        Ok(Self { value_type, value_state: PropertyValueState::Defaulted, value: Some(value), provenance: PropertyProvenance::ProjectorDefault { profile: projector_profile }, capability: PropertyCapability::Unknown })
     }
 }
 
@@ -960,9 +991,26 @@ pub(crate) struct NavigationCursor {
 impl NavigationCursor {
     pub(crate) const SCHEMA_VERSION: u16 = 1;
 
-    pub(crate) fn issue(source_id: SourceId, snapshot_revision: SourceRevision, relation: RelationRef, page_size: u16) -> Self {
-        let target = ObjectKey::new(format!("cursor-target:{}", relation.relation_key.as_str())).expect("generated cursor target is opaque");
-        Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, selection_hash: normalized_selection_hash(relation.relation_key.as_str(), page_size), relation: relation.relation_key, next_position: 0 }
+    pub(crate) fn issue(
+        source_id: SourceId,
+        snapshot_revision: SourceRevision,
+        target: ObjectKey,
+        relation: RelationRef,
+        selection: NavigationSelection,
+        next_position: u64,
+    ) -> Result<Self, SourceAdapterError> {
+        if source_id != relation.source_id {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor relation belongs to another source"));
+        }
+        Ok(Self {
+            schema_version: Self::SCHEMA_VERSION,
+            source_id,
+            snapshot_revision,
+            target,
+            relation: relation.relation_key,
+            selection_hash: normalized_selection_hash(&selection)?,
+            next_position,
+        })
     }
 
     pub(crate) fn resume(&self, current_revision: &SourceRevision) -> Result<(), SourceAdapterError> {
@@ -975,6 +1023,7 @@ impl NavigationCursor {
     pub(crate) fn decode<F>(
         value: serde_json::Value,
         current_revision: &SourceRevision,
+        expected_selection: &NavigationSelection,
         re_resolve: F,
     ) -> Result<Self, SourceAdapterError>
     where
@@ -1002,7 +1051,7 @@ impl NavigationCursor {
         let target = ObjectKey::new(string("target")?)?;
         let relation = RelationKey::new(string("relation")?)?;
         let selection_hash = string("selectionHash")?.to_string();
-        if !is_normalized_selection_hash(&selection_hash) {
+        if selection_hash != normalized_selection_hash(expected_selection)? {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor selectionHash is not normalized"));
         }
         let next_position = object.get("nextPosition").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(
@@ -1018,19 +1067,43 @@ impl NavigationCursor {
     }
 }
 
-fn normalized_selection_hash(relation_key: &str, page_size: u16) -> String {
+fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {
+    let properties = match &selection.properties {
+        PropertySelection::All => "all".to_string(),
+        PropertySelection::Named(names) => format!(
+            "named:{}",
+            names.iter().map(|name| normalize_selection_token(name)).collect::<Result<Vec<_>, _>>()?.join(","),
+        ),
+    };
+    let facets = match selection.facets {
+        FacetSelection::None => "none",
+        FacetSelection::Summary => "summary",
+        FacetSelection::Full => "full",
+    };
+    let mut relations = selection.relations.iter().map(|relation| {
+        let kind = match relation.kind {
+            Some(RelationKind::Contains) => "contains",
+            Some(RelationKind::References) => "references",
+            None => "any",
+        };
+        Ok(format!("{kind}:{}:{}", normalize_selection_token(&relation.role)?, relation.page_size))
+    }).collect::<Result<Vec<_>, SourceAdapterError>>()?;
+    relations.sort();
     let mut digest = Sha256::new();
     digest.update(b"unica.navigation.selection.v1\0");
-    digest.update(relation_key.as_bytes());
+    digest.update(properties.as_bytes());
     digest.update([0]);
-    digest.update(page_size.to_le_bytes());
-    format!("sha256:{:x}", digest.finalize())
+    digest.update(facets.as_bytes());
+    digest.update([0]);
+    digest.update(relations.join("|").as_bytes());
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
-fn is_normalized_selection_hash(value: &str) -> bool {
-    value.len() == 71
-        && value.starts_with("sha256:")
-        && value[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn normalize_selection_token(value: &str) -> Result<String, SourceAdapterError> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "selection contains an invalid token"));
+    }
+    Ok(value.to_string())
 }
 
 #[cfg(test)]
@@ -1043,6 +1116,13 @@ mod tests {
         ObjectRef::new(source_id("workspace:main"), object_key("uuid:11111111-1111-1111-1111-111111111111"), IdentityStrength::Persistent, NodeKind::Document, "Order")
     }
     fn relation_ref() -> RelationRef { RelationRef::new(source_id("workspace:main"), "contains:document-attributes", RelationKind::Contains).unwrap() }
+    fn selection() -> NavigationSelection {
+        NavigationSelection {
+            properties: PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+        }
+    }
 
     #[test]
     fn object_identity_is_not_derived_from_display_name_alone() {
@@ -1064,6 +1144,14 @@ mod tests {
         let action = SemanticAction::modeled_clone(node_ref(), None);
         assert_eq!(action.availability, ActionAvailability::Blocked);
         assert_eq!(action.blocking_reasons, vec![CapabilityBlockReason::OwningRelationMissing]);
+
+        let reference_relation = RelationRef::new(source_id("workspace:main"), "reference:document-owner", RelationKind::References).unwrap();
+        let wrong_kind = SemanticAction::modeled_clone(node_ref(), Some(reference_relation));
+        assert_eq!(wrong_kind.availability, ActionAvailability::Blocked);
+
+        let foreign_relation = RelationRef::new(source_id("workspace:other"), "contains:foreign-owner", RelationKind::Contains).unwrap();
+        let wrong_source = SemanticAction::modeled_clone(node_ref(), Some(foreign_relation));
+        assert_eq!(wrong_source.availability, ActionAvailability::Blocked);
     }
 
     #[test]
@@ -1098,20 +1186,68 @@ mod tests {
 
     #[test]
     fn cursor_is_bound_to_snapshot_revision() {
-        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), relation_ref(), 25);
+        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
         let error = cursor.resume(&SourceRevision::new("sha256:two").unwrap()).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
     }
 
     #[test]
     fn cursor_decode_validates_schema_hash_and_semantic_resolution() {
-        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), relation_ref(), 25);
+        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
         let decoded = NavigationCursor::decode(
             serde_json::to_value(cursor).unwrap(),
             &SourceRevision::new("sha256:one").unwrap(),
+            &selection(),
             |_source, _target, _relation| true,
         ).unwrap();
         assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn cursor_rejects_relation_from_another_source_and_preserves_target() {
+        let target = object_key("uuid:11111111-1111-1111-1111-111111111111");
+        let foreign_relation = RelationRef::new(source_id("workspace:other"), "contains:foreign-owner", RelationKind::Contains).unwrap();
+        let error = NavigationCursor::issue(
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            target.clone(),
+            foreign_relation,
+            selection(),
+            44,
+        ).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
+
+        let cursor = NavigationCursor::issue(
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            target.clone(),
+            relation_ref(),
+            selection(),
+            44,
+        ).unwrap();
+        assert_eq!(cursor.target, target);
+        assert_eq!(cursor.next_position, 44);
+    }
+
+    #[test]
+    fn cursor_rejects_well_formed_hash_for_a_different_selection() {
+        let cursor = NavigationCursor::issue(
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_ref(),
+            selection(),
+            0,
+        ).unwrap();
+        let mut value = serde_json::to_value(cursor).unwrap();
+        value["selectionHash"] = serde_json::Value::String(format!("sha256:{}", "0".repeat(64)));
+        let error = NavigationCursor::decode(
+            value,
+            &SourceRevision::new("sha256:one").unwrap(),
+            &selection(),
+            |_source, _target, _relation| true,
+        ).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
 
     #[test]
@@ -1129,6 +1265,22 @@ mod tests {
         assert_eq!(modeled.availability, ActionAvailability::Modeled);
         let executable = SemanticAction::mutation(SemanticActionKind::EditProperties, node_ref(), capability, None, Some(OperationBinding { tool: "unica.meta.edit".to_string(), schema_version: "1".to_string() }), Atomicity::SingleFileAtomicReplace);
         assert_eq!(executable.availability, ActionAvailability::Executable);
+
+        let invalid = SemanticAction::mutation(SemanticActionKind::EditProperties, node_ref(), CapabilityVector { resolution: ResolutionState::Resolved, identity: IdentityStrength::Persistent, consistency: SnapshotConsistency::Consistent, coverage: CoverageState::Complete, format: FormatCompatibility::Compatible, source_access: SourceAccess::ReadWrite, authorability: Authorability::Authorable }, None, Some(OperationBinding { tool: "other.meta.edit".to_string(), schema_version: "".to_string() }), Atomicity::SingleFileAtomicReplace);
+        assert_eq!(invalid.availability, ActionAvailability::Blocked);
+        assert_eq!(invalid.blocking_reasons, vec![CapabilityBlockReason::OperationBindingInvalid]);
+    }
+
+    #[test]
+    fn defaulted_property_keeps_a_typed_exact_projector_profile() {
+        let property = SemanticProperty::defaulted(
+            PropertyType::Integer,
+            PropertyValue::Integer(11),
+            ProjectorProfile::PlatformXmlV1,
+        ).unwrap();
+        let value = serde_json::to_value(property).unwrap();
+        assert_eq!(value["valueState"], "defaulted");
+        assert_eq!(value["provenance"]["projectorDefault"]["profile"], "platform_xml_v1");
     }
 
     #[test]
