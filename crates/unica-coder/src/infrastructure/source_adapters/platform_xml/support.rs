@@ -154,6 +154,13 @@ impl SupportFacts {
     }
 
     pub(crate) fn authorability_for(&self, object: &str) -> Authorability {
+        if matches!(
+            &self.source,
+            SupportSourceState::Unreadable { error }
+                if error.kind == SupportParseErrorKind::InputTooLarge
+        ) {
+            return Authorability::UnknownReadOnly;
+        }
         self.effective_rule_for(object).authorability()
     }
 
@@ -227,9 +234,14 @@ pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
 /// Parse support evidence already captured by a Platform XML provider.  An
 /// absent file in an immutable snapshot is a removed support state, not an
 /// invitation to inspect the live filesystem again.
-pub(crate) fn read_support_facts_from_snapshot(bytes: Option<&[u8]>) -> SupportFacts {
+pub(crate) fn read_support_facts_bytes(bytes: Option<&[u8]>) -> SupportFacts {
     match bytes {
-        Some(bytes) => parse_parent_configurations(bytes),
+        Some(bytes) if bytes.len() <= 1024 * 1024 => parse_parent_configurations(bytes),
+        Some(_) => unreadable(SupportParseError::new(
+            SupportParseErrorKind::InputTooLarge,
+            1024 * 1024,
+            "ParentConfigurations.bin",
+        )),
         None => removed(),
     }
 }
@@ -733,9 +745,17 @@ mod tests {
 
     #[test]
     fn missing_snapshot_support_is_consistently_removed() {
-        let facts = super::read_support_facts_from_snapshot(None);
+        let facts = super::read_support_facts_bytes(None);
 
         assert!(matches!(facts.source, SupportSourceState::Removed));
+    }
+
+    #[test]
+    fn oversized_snapshot_whitespace_is_unreadable_before_parsing() {
+        let facts = super::read_support_facts_bytes(Some(&vec![b' '; 1024 * 1024 + 1]));
+
+        assert_eq!(unreadable_kind(&facts), SupportParseErrorKind::InputTooLarge);
+        assert_eq!(facts.authorability_for(FIRST), Authorability::UnknownReadOnly);
     }
 
     #[test]

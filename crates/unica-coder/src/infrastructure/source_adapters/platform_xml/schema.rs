@@ -145,6 +145,7 @@ pub(crate) enum ScalarPropertyKind {
     Integer,
     Uuid,
     String,
+    PolymorphicFillValue,
 }
 
 /// The scalar subset certified for the exact Platform XML 2.20 projector.
@@ -152,7 +153,7 @@ pub(crate) enum ScalarPropertyKind {
 /// from their lexical representation.
 pub(crate) fn scalar_property_kind_2_20(id: &str) -> Option<ScalarPropertyKind> {
     match id {
-        "UseStandardCommands" | "AutoNumbering" | "FillValue" | "IncludeHelpInContents" => {
+        "UseStandardCommands" | "AutoNumbering" | "IncludeHelpInContents" => {
             Some(ScalarPropertyKind::Boolean)
         }
         "NumberLength" | "Length" | "Digits" | "FractionDigits" => {
@@ -162,6 +163,7 @@ pub(crate) fn scalar_property_kind_2_20(id: &str) -> Option<ScalarPropertyKind> 
         "Name" | "Code" | "Description" | "Comment" | "TemplateType" => {
             Some(ScalarPropertyKind::String)
         }
+        "FillValue" => Some(ScalarPropertyKind::PolymorphicFillValue),
         _ => None,
     }
 }
@@ -221,6 +223,17 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
             .collect::<Vec<_>>();
         if primitive_indexes.len() != 1 {
             return Err(projection_error("type qualifiers require one primitive variant"));
+        }
+        let TypeVariant::Primitive { kind, .. } = &variants[primitive_indexes[0]] else { unreachable!() };
+        let compatible = match kind.as_str() {
+            "String" => qualifiers.keys().all(|key| matches!(key.as_str(), "length" | "allowedLength")),
+            "Number" => qualifiers.keys().all(|key| matches!(key.as_str(), "digits" | "fractionDigits" | "allowedSign")),
+            "Date" => qualifiers.keys().all(|key| key == "dateFractions"),
+            "Boolean" => false,
+            _ => false,
+        };
+        if !compatible {
+            return Err(projection_error("type qualifier group is incompatible with primitive variant"));
         }
         let TypeVariant::Primitive { qualifiers: destination, .. } = &mut variants[primitive_indexes[0]] else { unreachable!() };
         *destination = qualifiers;

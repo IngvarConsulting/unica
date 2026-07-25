@@ -40,6 +40,17 @@ impl PlatformXmlReadAdapter {
     pub(crate) fn new() -> Self {
         Self { manifest: manifest() }
     }
+
+    pub(crate) fn inspect_provider(
+        &self,
+        provider: &provider::PlatformXmlProvider,
+        descriptor: &crate::domain::source_adapters::SourceDescriptor,
+    ) -> Result<NavigationEnvelope, SourceAdapterError> {
+        let native = decoder::decode(provider, descriptor)?;
+        let support_bytes = provider.parent_configurations_bytes();
+        let support = support::read_support_facts_bytes(support_bytes.as_deref());
+        projector::project(&native, &support)
+    }
 }
 
 impl SourceReadAdapter for PlatformXmlReadAdapter {
@@ -59,11 +70,6 @@ impl SourceReadAdapter for PlatformXmlReadAdapter {
             )
         })?;
         let provider = provider::PlatformXmlProvider::open(root)?;
-        let native = decoder::decode(&provider, descriptor)?;
-        // Support evidence is parsed from immutable provider bytes and remains
-        // infrastructure-private in the resulting semantic envelope.
-        let support_bytes = provider.parent_configurations_bytes();
-        let support = support::read_support_facts_from_snapshot(support_bytes.as_deref());
-        projector::project(&native, &support)
+        self.inspect_provider(&provider, descriptor)
     }
 }

@@ -23,7 +23,7 @@ use super::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
         NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
         NativeNodeState,
-        NativeProperty, NativePropertyProvenance, NativePropertyValue,
+        NativeProperty, NativePropertyProvenance, NativePropertyValue, NativeScalarType,
         NativeRegistrationEvidence, NativeTemplate, PlatformXmlNativeSnapshot,
     },
     probe::PlatformXmlProbe,
@@ -38,6 +38,7 @@ const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MANAGED_FORM_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const SPREADSHEET_DOCUMENT_NAMESPACE: &str = "http://v8.1c.ru/spreadsheet/document";
 const LEGACY_SPREADSHEET_NAMESPACE: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+const XML_SCHEMA_INSTANCE_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
 pub(crate) fn decode_path(
     input: &SourceInput,
@@ -544,7 +545,7 @@ fn decode_properties(
                 )
             } else {
                 (
-                    NativePropertyValue::Scalar(value.to_string()),
+                    scalar_property_value(property, value)?,
                     NativePropertyProvenance::Explicit,
                 )
             }
@@ -559,6 +560,31 @@ fn decode_properties(
         );
     }
     Ok(decoded)
+}
+
+fn scalar_property_value(
+    property: Node<'_, '_>,
+    value: &str,
+) -> Result<NativePropertyValue, SourceAdapterError> {
+    let annotation = property.attribute((XML_SCHEMA_INSTANCE_NAMESPACE, "type"));
+    if annotation.is_some() && property.attribute("type").is_some() {
+        return Err(corrupted("Platform XML scalar has conflicting type annotations"));
+    }
+    let Some(annotation) = annotation else {
+        return Ok(NativePropertyValue::Scalar(value.to_string()));
+    };
+    let type_annotation = match annotation {
+        "xs:string" => NativeScalarType::String,
+        "xs:boolean" => NativeScalarType::Boolean,
+        "xs:decimal" => NativeScalarType::Decimal,
+        "xs:integer" => NativeScalarType::Integer,
+        "xs:stringUuid" => NativeScalarType::Uuid,
+        _ => NativeScalarType::Unknown,
+    };
+    Ok(NativePropertyValue::AnnotatedScalar {
+        value: value.to_string(),
+        type_annotation,
+    })
 }
 
 fn synthetic_name_property(name: &str) -> BTreeMap<String, NativeProperty> {
@@ -1470,6 +1496,22 @@ mod tests {
         assert_eq!(
             decoded.root.children[0].uuid.unwrap().to_string(),
             "22222222-2222-2222-2222-222222222222"
+        );
+    }
+
+    #[test]
+    fn scalar_xsi_type_annotation_is_preserved_without_raw_attributes() {
+        let fixture = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:decimal">0</FillValue></Properties>"#,
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+        assert_eq!(
+            decoded.root.properties["FillValue"].value,
+            NativePropertyValue::AnnotatedScalar {
+                value: "0".to_string(),
+                type_annotation: crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType::Decimal,
+            },
         );
     }
 

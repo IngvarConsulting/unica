@@ -107,9 +107,26 @@ pub(crate) struct NativeProperty {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativePropertyValue {
     Scalar(String),
+    AnnotatedScalar {
+        value: String,
+        type_annotation: NativeScalarType,
+    },
     RawXml(String),
     Absent,
     Unresolved,
+}
+
+/// Normalized schema-relevant `xsi:type` evidence for scalar XML values.
+/// Unknown is intentionally opaque: the raw QName is never promoted to the
+/// semantic projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeScalarType {
+    String,
+    Boolean,
+    Decimal,
+    Integer,
+    Uuid,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

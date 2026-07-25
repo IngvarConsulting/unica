@@ -3851,7 +3851,8 @@ fn meta_info_native_lines(
     if mode != "overview" {
         for property in target.properties.values() {
             let value = match &property.value {
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => value.clone(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value)
+                | crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::AnnotatedScalar { value, .. } => value.clone(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::RawXml(value) => value.clone(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Absent => "<absent>".to_string(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Unresolved => "<unresolved>".to_string(),

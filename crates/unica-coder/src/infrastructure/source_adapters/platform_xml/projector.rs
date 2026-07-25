@@ -18,6 +18,7 @@ use super::{
     native_model::{
         NativeEvidenceState, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue, PlatformXmlNativeSnapshot,
+        NativeScalarType,
     },
     schema::{
         is_type_property_2_20, parse_type_description_2_20, scalar_property_kind_2_20,
@@ -201,7 +202,7 @@ impl<'a> GraphBuilder<'a> {
             target: target.clone(),
             capability: CapabilityVector {
                 resolution: ResolutionState::Resolved,
-                identity: target.identity_strength.clone(),
+                identity: IdentityStrength::Derived,
                 consistency: self.native.source.consistency.clone(),
                 coverage: self.native.coverage,
                 format: FormatCompatibility::Compatible,
@@ -417,7 +418,12 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
     let mut projected = match &property.value {
         NativePropertyValue::Absent => SemanticProperty::absent(PropertyType::Unknown, provenance),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(PropertyType::Unknown, provenance),
-        NativePropertyValue::Scalar(value) => scalar_property(&property.canonical_id, value, provenance)?,
+        NativePropertyValue::Scalar(value) => {
+            scalar_property(&property.canonical_id, value, None, provenance)?
+        }
+        NativePropertyValue::AnnotatedScalar { value, type_annotation } => {
+            scalar_property(&property.canonical_id, value, Some(*type_annotation), provenance)?
+        }
         NativePropertyValue::RawXml(xml) if is_type_property_2_20(&property.canonical_id) => {
             SemanticProperty::explicit(
                 PropertyType::TypeSet,
@@ -438,6 +444,7 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
 fn scalar_property(
     canonical_id: &str,
     value: &str,
+    type_annotation: Option<NativeScalarType>,
     provenance: PropertyProvenance,
 ) -> Result<SemanticProperty, SourceAdapterError> {
     let Some(kind) = scalar_property_kind_2_20(canonical_id) else {
@@ -462,6 +469,26 @@ fn scalar_property(
             PropertyValue::Uuid(value.parse().map_err(|_| ambiguous("invalid UUID Platform XML scalar property"))?),
         ),
         ScalarPropertyKind::String => (PropertyType::String, PropertyValue::String(value.to_string())),
+        ScalarPropertyKind::PolymorphicFillValue => match type_annotation {
+            Some(NativeScalarType::Decimal) if value.parse::<f64>().is_ok() => {
+                (PropertyType::Decimal, PropertyValue::Decimal(value.to_string()))
+            }
+            Some(NativeScalarType::String) => {
+                (PropertyType::String, PropertyValue::String(value.to_string()))
+            }
+            Some(NativeScalarType::Boolean) if matches!(value, "true" | "false") => {
+                (PropertyType::Boolean, PropertyValue::Boolean(value == "true"))
+            }
+            Some(NativeScalarType::Integer) if value.parse::<i64>().is_ok() => {
+                (PropertyType::Integer, PropertyValue::Integer(value.parse().expect("integer was checked")))
+            }
+            Some(NativeScalarType::Uuid) if value.parse::<Uuid>().is_ok() => {
+                (PropertyType::Uuid, PropertyValue::Uuid(value.parse().expect("UUID was checked")))
+            }
+            None | Some(NativeScalarType::Unknown) | Some(_) => {
+                return Ok(SemanticProperty::unresolved(PropertyType::Unknown, provenance));
+            }
+        },
     };
     SemanticProperty::explicit(value_type, value, provenance)
 }
@@ -570,6 +597,71 @@ mod tests {
     }
 
     #[test]
+    fn incompatible_type_qualifiers_fail_closed() {
+        for raw in [
+            "<DataType><Type>xs:boolean</Type><StringQualifiers><Length>10</Length></StringQualifiers></DataType>",
+            "<DataType><Type>CatalogRef.Products</Type><NumberQualifiers><Digits>10</Digits></NumberQualifiers></DataType>",
+        ] {
+            assert_eq!(
+                parse_type_description_2_20(raw).unwrap_err().kind,
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+            );
+        }
+    }
+
+    #[test]
+    fn fill_value_uses_exact_native_scalar_annotation_not_text() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType;
+
+        let mut decimal = document_fixture();
+        decimal.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::AnnotatedScalar {
+                    value: "0".to_string(),
+                    type_annotation: NativeScalarType::Decimal,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+        let mut string = decimal.clone();
+        string.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::AnnotatedScalar {
+                    value: "true".to_string(),
+                    type_annotation: NativeScalarType::String,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+
+        let decimal = project_fixture(decimal).unwrap();
+        let string = project_fixture(string).unwrap();
+        assert_eq!(
+            decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            Some(PropertyValue::Decimal("0".to_string())),
+        );
+        assert_eq!(
+            string.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            Some(PropertyValue::String("true".to_string())),
+        );
+    }
+
+    #[test]
+    fn fill_value_without_a_known_annotation_is_unresolved() {
+        let mut root = document_fixture();
+        root.properties.insert("FillValue".to_string(), scalar("FillValue", "true"));
+
+        let envelope = project_fixture(root).unwrap();
+        let property = &envelope.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+        assert_eq!(property.value_state, PropertyValueState::Unresolved);
+        assert_eq!(property.value, None);
+    }
+
+    #[test]
     fn malformed_or_path_like_type_descriptions_fail_closed_without_leakage() {
         let error = parse_type_description_2_20(
             "<DataType><Type>CatalogRef../../tmp/secret</Type></DataType>",
@@ -625,6 +717,7 @@ mod tests {
         let owning = envelope.owning_relation(&attribute.object_ref).unwrap();
 
         assert_eq!(owning.identity_strength, IdentityStrength::Derived);
+        assert_eq!(owning.capability.identity, IdentityStrength::Derived);
     }
 
     #[test]
@@ -637,11 +730,11 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let provider = PlatformXmlProvider::open(&root).unwrap();
-        let captured = support::read_support_facts_from_snapshot(
+        let captured = support::read_support_facts_bytes(
             provider.parent_configurations_bytes().as_deref(),
         );
         std::fs::write(root.join("ParentConfigurations.bin"), b"changed-after-open").unwrap();
-        let after_change = support::read_support_facts_from_snapshot(
+        let after_change = support::read_support_facts_bytes(
             provider.parent_configurations_bytes().as_deref(),
         );
         let snapshot = PlatformXmlNativeSnapshot {
@@ -660,6 +753,63 @@ mod tests {
         assert_eq!(
             before.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
             after.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn adapter_projects_locked_snapshot_support_after_live_file_becomes_editable() {
+        use crate::{
+            domain::source_adapters::{
+                FormatVersion, SnapshotEvidence, SourceDescriptor, SourceFamily,
+            },
+            infrastructure::source_adapters::platform_xml::{
+                provider::PlatformXmlProvider, PlatformXmlReadAdapter,
+            },
+        };
+
+        const UUID: &str = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        const PROVIDER: &str = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        const VENDOR_CONFIGURATION: &str = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        const CONFIGURATION: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        const SECOND: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let root = std::env::temp_dir().join(format!(
+            "unica-platform-xml-projector-toctou-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Order.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Document uuid=\"{UUID}\"><Properties><Name>Order</Name></Properties></Document></MetaDataObject>",
+            ),
+        )
+        .unwrap();
+        let support = |first_state: &str| format!(
+            "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,{CONFIGURATION},{CONFIGURATION},0,{first_state},{UUID},{UUID},2,1,{SECOND},{SECOND}}}"
+        );
+        std::fs::write(root.join("ParentConfigurations.bin"), support("0")).unwrap();
+        let provider = PlatformXmlProvider::open(&root).unwrap();
+        let descriptor = SourceDescriptor {
+            source_id: SourceId::new("workspace:main").unwrap(),
+            family: SourceFamily::PlatformXml,
+            format_version: FormatVersion::parse("2.20").unwrap(),
+            producer_version: None,
+            detected_features: BTreeSet::new(),
+            probe_evidence: Vec::new(),
+            snapshot_evidence: Some(SnapshotEvidence {
+                revision: provider.revision().unwrap(),
+                root_descriptor_digest: provider.digest_relative("Order.xml").unwrap(),
+            }),
+        };
+        std::fs::write(root.join("ParentConfigurations.bin"), support("1")).unwrap();
+
+        let envelope = PlatformXmlReadAdapter::new()
+            .inspect_provider(&provider, &descriptor)
+            .unwrap();
+        assert_eq!(
+            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            Authorability::SupportLocked,
         );
         std::fs::remove_dir_all(root).unwrap();
     }
