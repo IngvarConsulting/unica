@@ -4,7 +4,7 @@
 
 **Goal:** Replace the PR #210 Platform XML navigation prototype with a version-evidenced source adapter core and one fail-closed Platform XML 2.20 read adapter behind `unica.meta.info`.
 
-**Architecture:** Domain contracts describe source descriptors, snapshots, semantic identity, relations, capabilities, and structured failures. Infrastructure supplies deterministic probe/reader selection, then the Platform XML family implements provider, probe, decoder, support-state reader, and semantic projector as separate modules. `unica.meta.info` preserves its legacy text result and adds a versioned navigation envelope; unsupported versions never select a guessed decoder.
+**Architecture:** Domain contracts describe source descriptors, snapshots, semantic identity, relations, capabilities, and structured failures. Infrastructure supplies deterministic probe/reader selection, then the Platform XML family implements provider, probe, decoder, support-state reader, and semantic projector as separate modules. `unica.meta.info` returns only a versioned navigation envelope; unsupported versions never select a guessed decoder and no legacy text analyzer remains.
 
 **Tech Stack:** Rust, serde/serde_json, roxmltree, sha2, uuid, existing `unica-coder` hexagonal boundaries and inline Rust test conventions.
 
@@ -18,10 +18,15 @@
 - Public object and relation references must not contain physical paths, database offsets, or parser handles.
 - A readable source is not automatically writable.
 - Mutation is never `executable` without a specialized tool binding and a compatible mutation adapter.
-- Preserve existing `meta.info` text, pagination, and output-file behavior.
-- Treat `data.navigation` as a versioned additive API contract.
+- Replace the legacy `meta.info` text contract outright; backward compatibility
+  is not a requirement.
+- Remove `Mode`, `Name`, `Limit`, `Offset`, and `OutFile` from the
+  `unica.meta.info` input schema.
+- Return the result only through the versioned `data.navigation` envelope;
+  `meta.info` must not populate `stdout`.
 - Platform XML 2.20 is the only read format certified by this plan.
-- For other formats, preserve legacy `meta.info` text and return an explicit unavailable navigation envelope.
+- For other formats, return an explicit unavailable navigation envelope without
+  invoking a legacy analyzer.
 - Fix source-map, support-state, identity, and relation failures at their source; do not mask them with fallback identities or permissive capabilities.
 - Do not change `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`, or `plugins/unica/third-party/tools.lock.json` in this plan.
 
@@ -101,10 +106,15 @@ this plan proves the shared contracts.
   - delegates navigation to the built-in registry and retains legacy text.
 - `crates/unica-coder/src/infrastructure/native_operations/typed_result.rs`
   - serializes the navigation envelope as typed data.
+- `crates/unica-coder/src/application/operation_descriptors.rs`
+  - removes `OutFile` from the `meta-info` operation descriptor.
 - `crates/unica-coder/src/infrastructure/native_operations/common.rs`
   - removes the duplicated permissive support parser.
 - `crates/unica-coder/src/infrastructure/support_guard.rs`
   - consumes the shared strict support facts.
+- `plugins/unica/skills/meta-info/SKILL.md`
+  - replaces legacy text-mode, drill-down, pagination, and output-file guidance
+    with the typed semantic-navigation contract.
 
 ---
 
@@ -1064,7 +1074,8 @@ cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --noc
 cargo test -p unica-coder native_operations::meta::tests -- --nocapture
 ```
 
-Expected: decoder tests pass and legacy text-analysis tests remain passing.
+Expected: decoder tests pass and obsolete legacy text-analysis tests have been
+removed or replaced by decoder contract tests.
 
 - [ ] **Step 7: Commit the decoder extraction**
 
@@ -1391,12 +1402,14 @@ git commit -m "feat: project Platform XML semantic navigation"
 
 ---
 
-### Task 8: Route `unica.meta.info` through the source-adapter registry
+### Task 8: Replace `unica.meta.info` with the typed navigation contract
 
 **Files:**
 - Modify: `crates/unica-coder/src/infrastructure/native_operations/meta.rs:4616`
 - Modify: `crates/unica-coder/src/infrastructure/native_operations/typed_result.rs:19`
 - Modify: `crates/unica-coder/src/application/mod.rs:3553`
+- Modify: `crates/unica-coder/src/application/operation_descriptors.rs:96`
+- Modify: `plugins/unica/skills/meta-info/SKILL.md`
 - Test: existing inline tests in those modules
 
 **Interfaces:**
@@ -1406,7 +1419,8 @@ git commit -m "feat: project Platform XML semantic navigation"
 - Produces:
   - `data.navigation.schemaVersion = "1"`
   - explicit ready/unavailable navigation status
-  - unchanged legacy `meta.info` text
+  - no legacy `stdout`
+  - no legacy mode, drill-down, pagination, or output-file inputs
 
 - [ ] **Step 1: Add failing public-envelope tests**
 
@@ -1416,18 +1430,18 @@ fn meta_info_returns_ready_navigation_for_platform_xml_2_20() {
     let result = invoke_meta_info(platform_xml_2_20_fixture()).unwrap();
 
     assert!(result.adapter.ok);
-    assert!(result.adapter.stdout.is_some());
+    assert!(result.adapter.stdout.is_none());
     assert_eq!(result.data["navigation"]["schemaVersion"], "1");
     assert_eq!(result.data["navigation"]["status"], "ready");
     assert!(result.data["navigation"]["graph"].is_object());
 }
 
 #[test]
-fn unsupported_version_preserves_text_and_explains_navigation_unavailability() {
+fn unsupported_version_returns_only_navigation_unavailability() {
     let result = invoke_meta_info(platform_xml_2_19_fixture()).unwrap();
 
     assert!(result.adapter.ok);
-    assert!(result.adapter.stdout.is_some());
+    assert!(result.adapter.stdout.is_none());
     assert_eq!(result.data["navigation"]["status"], "unavailable");
     assert_eq!(
         result.data["navigation"]["diagnostics"][0]["code"],
@@ -1449,10 +1463,33 @@ fn project_map_failure_is_not_replaced_with_ad_hoc_identity() {
 }
 
 #[test]
-fn dry_run_preserves_the_existing_no_navigation_contract() {
+fn meta_info_schema_has_no_legacy_text_controls() {
+    let schema = input_schema_for_tool(tool("unica.meta.info"));
+    let properties = schema["properties"].as_object().unwrap();
+
+    for removed in ["Mode", "Name", "Limit", "Offset", "OutFile"] {
+        assert!(!properties.contains_key(removed), "{removed} must be removed");
+    }
+}
+
+#[test]
+fn meta_info_dry_run_uses_the_same_typed_read_contract() {
     let result = invoke_meta_info_dry_run(platform_xml_2_20_fixture()).unwrap();
 
-    assert!(result.data.is_none());
+    assert!(result.adapter.stdout.is_none());
+    assert_eq!(result.data["navigation"]["status"], "ready");
+}
+
+#[test]
+fn meta_info_skill_describes_typed_navigation_only() {
+    let skill =
+        include_str!("../../../../plugins/unica/skills/meta-info/SKILL.md");
+
+    assert!(skill.contains("data.navigation"));
+    assert!(!skill.contains("stdout"));
+    for removed in ["`Mode`", "`Name`", "`Limit`", "`Offset`", "`OutFile`"] {
+        assert!(!skill.contains(removed), "{removed} must be removed");
+    }
 }
 ```
 
@@ -1462,66 +1499,93 @@ Run:
 
 ```bash
 cargo test -p unica-coder meta_info_returns_ready_navigation -- --nocapture
-cargo test -p unica-coder unsupported_version_preserves_text -- --nocapture
+cargo test -p unica-coder unsupported_version_returns_only -- --nocapture
 cargo test -p unica-coder project_map_failure_is_not_replaced -- --nocapture
+cargo test -p unica-coder meta_info_schema_has_no_legacy -- --nocapture
+cargo test -p unica-coder meta_info_dry_run_uses_the_same -- --nocapture
 ```
 
 Expected: tests fail because `meta.info` still calls the prototype analyzer and
-does not return the versioned envelope.
+still exposes the legacy text contract.
 
-- [ ] **Step 3: Make the prototype analyzer a thin registry facade**
+- [ ] **Step 3: Delete the legacy analyzer and expose one registry facade**
 
-Retain one compatibility entrypoint in `meta.rs`:
+Replace the legacy analysis entrypoint in `meta.rs` with:
 
 ```rust
-pub(crate) fn analyze_meta_info_with_navigation(
+pub(crate) fn inspect_meta_navigation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<(AdapterOutcome, NavigationEnvelope), String>
+) -> Result<NavigationEnvelope, String>
 ```
 
 Its flow is:
 
-1. run the existing legacy text analyzer without changing output behavior;
-2. resolve the target inside the workspace;
-3. construct `SourceInput`;
-4. call `BuiltInSourceAdapterRegistry::new().inspect(input)`;
-5. return a ready or unavailable envelope;
-6. convert corruption, ambiguity, and source-map failures into structured
+1. resolve the target inside the workspace;
+2. construct `SourceInput`;
+3. call `BuiltInSourceAdapterRegistry::new().inspect(input)`;
+4. return a ready or unavailable envelope;
+5. convert corruption, ambiguity, and source-map failures into structured
    unavailable diagnostics without inventing an identity.
 
-Remove the graph-construction, descriptor, support, and source-scope helpers
-that Tasks 5 through 7 moved out of `meta.rs`.
+Delete the old text rendering, `Mode`, `Name`, pagination, output-file, and
+drill-down branches. Also remove graph-construction, descriptor, support, and
+source-scope helpers that Tasks 5 through 7 moved out of `meta.rs`.
 
-- [ ] **Step 4: Serialize the complete navigation envelope**
+- [ ] **Step 4: Return only typed navigation data**
 
 In `typed_result.rs`, keep the operation gate:
 
 ```rust
-if operation == "meta-info" && !dry_run && !mutating {
-    let (adapter, navigation) =
-        meta::analyze_meta_info_with_navigation(args, context)?;
+if operation == "meta-info" && !mutating {
+    let navigation = meta::inspect_meta_navigation(args, context)?;
     return Ok(TypedNativeOperationResult {
-        adapter,
+        adapter: AdapterOutcome::ok("semantic metadata navigation inspected"),
         data: Some(json!({ "navigation": navigation })),
     });
 }
 ```
 
-Do not flatten graph fields into `data`, and do not omit diagnostics for an
-unavailable adapter.
+Do not populate `stdout`, flatten graph fields into `data`, or omit diagnostics
+for an unavailable adapter. `dryRun` does not alter this read-only operation;
+it must use the same typed path rather than falling through to the generic
+native-operation preview.
 
-- [ ] **Step 5: Preserve application result behavior**
+- [ ] **Step 5: Remove legacy input controls from the public schema**
 
-Keep `HandlerOutcome::with_data` and `OperationResult.data` behavior unchanged.
-Update application tests to assert:
+Remove `Mode`, `Name`, `Limit`, `Offset`, and `OutFile` from the `meta.info`
+tool definition in `application/mod.rs`.
 
-- existing text remains byte-for-byte equivalent for the same fixture;
-- typed navigation is separate from stdout;
-- pagination and `outFile` behavior remain unchanged;
-- no new MCP tool is registered.
+Change the operation descriptor to:
 
-- [ ] **Step 6: Run meta, typed-result, and application tests**
+```rust
+descriptor(
+    "meta-info",
+    OBJECT_PATH_REQUIRED,
+    EMPTY,
+    OBJECT_PATH,
+    None,
+),
+```
+
+Delete tests dedicated only to removed arguments or text formatting. Keep
+`ObjectPath` and `cwd` as the first-slice source selector. Do not add a new MCP
+tool.
+
+- [ ] **Step 6: Rewrite the packaged `meta-info` skill**
+
+Update `plugins/unica/skills/meta-info/SKILL.md` so it:
+
+- describes typed semantic navigation rather than compact text;
+- documents only `ObjectPath` plus the standard workspace context;
+- explains `schemaVersion`, `status`, `snapshot`, `graph`, and `diagnostics`;
+- explains node identity, relations, capability availability, and blocking
+  reasons;
+- contains no `Mode`, `Name`, `Limit`, `Offset`, or `OutFile` examples;
+- does not instruct the model to read `stdout`;
+- remains MCP-first through `unica.meta.info`.
+
+- [ ] **Step 7: Run meta, typed-result, application, and skill-contract tests**
 
 Run:
 
@@ -1529,17 +1593,20 @@ Run:
 cargo test -p unica-coder native_operations::meta::tests -- --nocapture
 cargo test -p unica-coder native_operations::typed_result::tests -- --nocapture
 cargo test -p unica-coder application::tests -- --nocapture
+cargo test -p unica-coder meta_info_skill -- --nocapture
 ```
 
-Expected: all tests pass, including legacy text and new envelope assertions.
+Expected: all tests pass; no test expects legacy text or removed inputs.
 
-- [ ] **Step 7: Commit `meta.info` integration**
+- [ ] **Step 8: Commit the breaking `meta.info` contract**
 
 ```bash
 git add crates/unica-coder/src/application/mod.rs \
+  crates/unica-coder/src/application/operation_descriptors.rs \
   crates/unica-coder/src/infrastructure/native_operations/meta.rs \
-  crates/unica-coder/src/infrastructure/native_operations/typed_result.rs
-git commit -m "feat: route meta info through source adapters"
+  crates/unica-coder/src/infrastructure/native_operations/typed_result.rs \
+  plugins/unica/skills/meta-info/SKILL.md
+git commit -m "feat!: replace meta info text with navigation"
 ```
 
 ---
@@ -1679,8 +1746,8 @@ The plan is complete when:
 
 1. Platform XML 2.20 is selected through evidence and a deterministic registry.
 2. Platform XML 2.19 is never routed to the 2.20 reader.
-3. Unsupported versions retain legacy `meta.info` text and expose structured
-   navigation unavailability.
+3. Unsupported versions expose structured navigation unavailability without
+   invoking a legacy analyzer.
 4. Public semantic references contain no physical paths.
 5. Duplicate child identities fail closed.
 6. Root clone discovery names an owning relation.
@@ -1688,9 +1755,11 @@ The plan is complete when:
 8. No mutation action is executable because this plan supplies no writer.
 9. Malformed support bodies block authorability and mutation guards.
 10. Source-map discovery errors cannot become ad-hoc identities.
-11. Existing `meta.info` text, pagination, output-file behavior, and tool names
-    remain compatible.
-12. Platform XML read certification, the full `unica-coder` test suite, and the
+11. `meta.info` emits no legacy text and exposes none of the removed
+    `Mode`, `Name`, `Limit`, `Offset`, or `OutFile` inputs.
+12. The packaged `meta-info` skill describes only the typed navigation
+    contract.
+13. Platform XML read certification, the full `unica-coder` test suite, and the
     crate build pass.
 
 ## Follow-up Plan Boundaries

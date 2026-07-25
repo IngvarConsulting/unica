@@ -38,23 +38,27 @@ semantic operations can therefore evolve independently.
    adapter hierarchy.
 2. Present one source-independent semantic model to navigation and specialized
    `unica.*` operations.
-3. Keep source reading lazy so large CF files and file databases do not require
+3. Replace the legacy `unica.meta.info` text contract with one versioned typed
+   navigation contract instead of maintaining two analysis pipelines.
+4. Keep source reading lazy so large CF files and file databases do not require
    eager full-graph materialization.
-4. Select decoders from evidence and explicit compatibility declarations,
+5. Select decoders from evidence and explicit compatibility declarations,
    never by guessing the nearest known version.
-5. Keep direct CF and file-database access read-only in the initial
+6. Keep direct CF and file-database access read-only in the initial
    architecture.
-6. Advertise mutation only when the complete execution path is available and
+7. Advertise mutation only when the complete execution path is available and
    safe for the exact source state.
-7. Preserve provenance and source-specific evidence without exposing physical
+8. Preserve provenance and source-specific evidence without exposing physical
    paths or backend internals through the public contract.
-8. Provide common certification tests for every adapter and version range.
+9. Provide common certification tests for every adapter and version range.
 
 ## Non-goals
 
 - Direct mutation of CF containers.
 - Direct mutation of 1C file databases.
 - A generic public `execute(action)` MCP tool.
+- Preservation of legacy `unica.meta.info` text, display modes, drill-down,
+  pagination, or output-file behavior.
 - A stable Rust dynamic-library ABI for third-party adapters.
 - Eager normalization of an entire source before any object can be inspected.
 - Silent best-effort decoding of unknown source versions.
@@ -534,9 +538,15 @@ evidence.
 
 The public boundary remains one MCP server named `unica` with `unica.*` tools.
 
-`unica.meta.info` may expose the versioned navigation contract. Existing text
-output can remain compatible, but `data.navigation` is an observable additive
-API and therefore requires an explicit schema version.
+`unica.meta.info` is redefined as a typed semantic-navigation operation. It
+returns the versioned navigation envelope in `data.navigation` and does not
+return the legacy analysis through `stdout`.
+
+The old `Mode`, `Name`, `Limit`, `Offset`, and `OutFile` parameters are removed
+from the tool schema. This is an intentional replacement contract, not an
+additive compatibility layer. The packaged `meta-info` skill must change in the
+same implementation slice so prompt-visible instructions never describe the
+removed text workflow.
 
 Specialized tools consume semantic references and expected revisions. Existing
 compile, decompile, and validate workflows remain available until specialized
@@ -593,6 +603,8 @@ The architecture is established when:
    failure injection.
 9. Equivalent fixtures produce parity for the shared semantic core.
 10. The package preserves the single `unica` MCP server boundary.
+11. `unica.meta.info` exposes only the typed navigation contract and its
+    packaged skill contains no legacy text-mode instructions.
 
 ## Deferred Decisions
 
