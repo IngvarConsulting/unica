@@ -185,6 +185,7 @@ pub(crate) enum Authorability {
     Authorable,
     SupportLocked,
     ConfigurationReadOnly,
+    UnknownSupportState,
     UnknownReadOnly,
     DerivedReadOnly,
 }

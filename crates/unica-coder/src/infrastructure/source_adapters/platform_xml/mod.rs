@@ -9,6 +9,7 @@ pub(crate) mod native_model;
 pub(crate) mod probe;
 pub(crate) mod provider;
 pub(crate) mod schema;
+pub(crate) mod support;
 
 pub(crate) fn manifest() -> AdapterManifest {
     AdapterManifest {

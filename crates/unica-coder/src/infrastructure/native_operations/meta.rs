@@ -12,6 +12,7 @@ use crate::domain::source_adapters::{
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::project_sources::discover_project_source_map;
+use crate::infrastructure::source_adapters::platform_xml::support::read_support_facts;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -4169,27 +4170,10 @@ fn navigation_authorability(object_path: &Path) -> Authorability {
     let Some(config_dir) = find_support_config_dir(object_path) else {
         return Authorability::Authorable;
     };
-    let parent_configurations = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let metadata = match fs::symlink_metadata(&parent_configurations) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Authorability::Authorable;
-        }
-        // Match the shared support guard: an existing but inaccessible support
-        // state is not evidence that mutations are safe.
-        Err(_) => return Authorability::UnknownReadOnly,
-    };
-    if !metadata.file_type().is_file() || read_support_state(&parent_configurations).is_none() {
-        return Authorability::UnknownReadOnly;
-    }
-    match support_guard_violation(object_path, SupportGuardRequirement::Editable) {
-        None => Authorability::Authorable,
-        Some(violation) if violation.code == "locked" => Authorability::SupportLocked,
-        Some(violation) if violation.code == "capability-off" => {
-            Authorability::ConfigurationReadOnly
-        }
-        Some(_) => Authorability::UnknownReadOnly,
-    }
+    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
+    let object_uuid = support_object_uuid_for_path(object_path)
+        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
+    facts.authorability_for(object_uuid.as_deref().unwrap_or(""))
 }
 
 fn navigation_source_set(object_path: &Path, context: &WorkspaceContext) -> String {
@@ -13507,11 +13491,11 @@ mod tests {
         let graph = analyze_fixture_graph(&context, &object_path);
 
         assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::UnknownReadOnly
+            node.capability_state.authorability == Authorability::UnknownSupportState
                 && only_inspect(node)
         }));
         assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::UnknownReadOnly
+            edge.capability_state.authorability == Authorability::UnknownSupportState
         }));
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }

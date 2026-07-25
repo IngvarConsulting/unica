@@ -5,9 +5,13 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, support_guard_violation, SupportGuardViolation,
+    absolutize, find_support_config_dir, path_arg, required_string, support_object_uuid_for_path,
+    support_root_uuid,
 };
 use crate::infrastructure::native_operations::{meta, template};
+use crate::infrastructure::source_adapters::platform_xml::support::{
+    read_support_facts, SupportRule, SupportSourceState,
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -16,6 +20,79 @@ enum SupportGuardMode {
     Deny,
     Warn,
     Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupportGuardViolation {
+    pub code: &'static str,
+    pub reason: String,
+    pub target_path: PathBuf,
+    pub config_dir: PathBuf,
+}
+
+pub(crate) fn support_guard_violation(
+    target_path: &Path,
+    requirement: SupportGuardRequirement,
+) -> Option<SupportGuardViolation> {
+    let target_path = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.to_path_buf());
+    let config_dir = find_support_config_dir(&target_path)?;
+    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
+    match facts.source {
+        SupportSourceState::Absent | SupportSourceState::Removed => return None,
+        SupportSourceState::Unreadable { reason } => {
+            return Some(SupportGuardViolation {
+                code: "support-state-unreadable",
+                reason: format!(
+                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {reason}; безопасность правки не подтверждена"
+                ),
+                target_path,
+                config_dir,
+            });
+        }
+        SupportSourceState::Parsed => {}
+    }
+    if facts.global_editing_enabled() == Some(false) {
+        return Some(SupportGuardViolation {
+            code: "capability-off",
+            reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
+                .to_string(),
+            target_path,
+            config_dir,
+        });
+    }
+    let object_uuid = support_object_uuid_for_path(&target_path)
+        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
+    let rule = object_uuid
+        .as_deref()
+        .and_then(|uuid| facts.object_rules.get(&uuid.to_ascii_lowercase()));
+    match (requirement, rule) {
+        (_, Some(SupportRule::Unknown)) => Some(SupportGuardViolation {
+            code: "support-state-unreadable",
+            reason: "состояние поддержки объекта неизвестно; безопасность правки не подтверждена"
+                .to_string(),
+            target_path,
+            config_dir,
+        }),
+        (SupportGuardRequirement::Removed, Some(rule)) if *rule != SupportRule::Removed => {
+            Some(SupportGuardViolation {
+                code: "not-removed",
+                reason: "объект не снят с поддержки — удаление сломает обновления".to_string(),
+                target_path,
+                config_dir,
+            })
+        }
+        (SupportGuardRequirement::Editable, Some(SupportRule::Locked)) => {
+            Some(SupportGuardViolation {
+                code: "locked",
+                reason: "объект на замке — редактирование сломает обновления".to_string(),
+                target_path,
+                config_dir,
+            })
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn evaluate_support_guard(

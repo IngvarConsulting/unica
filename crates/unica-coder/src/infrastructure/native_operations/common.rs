@@ -2,6 +2,9 @@
 
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::source_adapters::platform_xml::support::{
+    read_support_facts, SupportFacts, SupportRule, SupportSourceState, SupportVendor,
+};
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1326,8 +1329,9 @@ mod mutation_tests {
 
 #[cfg(test)]
 mod support_state_tests {
-    use super::{support_guard_violation, support_status_for_path};
+    use super::support_status_for_path;
     use crate::application::SupportGuardRequirement;
+    use crate::infrastructure::support_guard::support_guard_violation;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1737,28 +1741,6 @@ pub(crate) fn detect_format_version(start: &Path) -> String {
     "2.17".to_string()
 }
 
-enum ParentConfigurationsState {
-    Absent,
-    Readable(SupportState),
-    Unreadable,
-}
-
-fn parent_configurations_state(bin_path: &Path) -> ParentConfigurationsState {
-    let metadata = match fs::symlink_metadata(bin_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return ParentConfigurationsState::Absent;
-        }
-        Err(_) => return ParentConfigurationsState::Unreadable,
-    };
-    if !metadata.file_type().is_file() {
-        return ParentConfigurationsState::Unreadable;
-    }
-    read_support_state(bin_path)
-        .map(ParentConfigurationsState::Readable)
-        .unwrap_or(ParentConfigurationsState::Unreadable)
-}
-
 pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,
@@ -1769,42 +1751,47 @@ pub(crate) fn support_state_lines_for_configuration(
         config_path.parent().unwrap_or_else(|| Path::new(""))
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = match parent_configurations_state(&bin_path) {
-        ParentConfigurationsState::Absent => {
+    let facts = read_support_facts(&bin_path);
+    match facts.source {
+        SupportSourceState::Absent => {
             return vec![if is_extension {
                 "Поддержка:      расширение (CFE), правки свободны".to_string()
             } else {
                 "Поддержка:      не на поддержке (своя конфигурация)".to_string()
             }];
         }
-        ParentConfigurationsState::Unreadable => {
+        SupportSourceState::Unreadable { .. } => {
             return vec![
                 "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
                     .to_string(),
             ];
         }
-        ParentConfigurationsState::Readable(state) => state,
-    };
-    if state.removed {
-        return vec!["Поддержка:      снята с поддержки полностью".to_string()];
+        SupportSourceState::Removed => {
+            return vec!["Поддержка:      снята с поддержки полностью".to_string()];
+        }
+        SupportSourceState::Parsed => {}
     }
-
-    let mut lines = vec!["Поддержка:      на поддержке".to_string()];
-    if state.global_editing_enabled {
-        lines.push("  Возможность изменения: включена".to_string());
-        lines.push(format!(
-            "  Объектов: на замке {} / редактируется {} / снято {}",
-            state.counts[0], state.counts[1], state.counts[2]
-        ));
-    } else {
-        lines.push(
+    let global_editing_enabled = facts
+        .global_editing_enabled()
+        .expect("parsed support facts have a global editing flag");
+    if !global_editing_enabled {
+        return vec![
+            "Поддержка:      на поддержке".to_string(),
             "  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)"
                 .to_string(),
-        );
+            format!("  Конфигураций поставщика: {}", facts.vendors().len()),
+        ];
     }
-    lines.push(format!("  Конфигураций поставщика: {}", state.vendor_count));
-    if state.vendor_count > 1 {
-        for vendor in &state.vendors {
+    let counts = facts.rule_counts();
+    let mut lines = vec!["Поддержка:      на поддержке".to_string()];
+    lines.push("  Возможность изменения: включена".to_string());
+    lines.push(format!(
+        "  Объектов: на замке {} / редактируется {} / снято {}",
+        counts[0], counts[1], counts[2]
+    ));
+    lines.push(format!("  Конфигураций поставщика: {}", facts.vendors().len()));
+    if facts.vendors().len() > 1 {
+        for vendor in facts.vendors() {
             lines.push(format!(
                 "  Поставщик: {} — {} {}",
                 vendor.vendor, vendor.name, vendor.version
@@ -1818,98 +1805,29 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     let Some(config_dir) = find_support_config_dir(target_path) else {
         return "не на поддержке".to_string();
     };
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = match parent_configurations_state(&bin_path) {
-        ParentConfigurationsState::Absent => return "не на поддержке".to_string(),
-        ParentConfigurationsState::Unreadable => {
-            return "состояние поддержки не удалось прочитать — правки не подтверждены".to_string();
+    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
+    match facts.source {
+        SupportSourceState::Absent => "не на поддержке".to_string(),
+        SupportSourceState::Removed => "снято с поддержки (правки свободны)".to_string(),
+        SupportSourceState::Unreadable { .. } => {
+            "состояние поддержки не удалось прочитать — правки не подтверждены".to_string()
         }
-        ParentConfigurationsState::Readable(state) => state,
-    };
-    if state.removed {
-        return "снято с поддержки (правки свободны)".to_string();
-    }
-    if !state.global_editing_enabled {
-        return "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
-            .to_string();
-    }
-    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
-        return "не на поддержке".to_string();
-    };
-    match state.object_rule(&object_uuid) {
-        Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        Some(1) => "редактируется с сохранением поддержки".to_string(),
-        Some(2) => "снято с поддержки (правки свободны)".to_string(),
-        _ => "не на поддержке".to_string(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SupportGuardViolation {
-    pub code: &'static str,
-    pub reason: String,
-    pub target_path: PathBuf,
-    pub config_dir: PathBuf,
-}
-
-pub(crate) fn support_guard_violation(
-    target_path: &Path,
-    requirement: SupportGuardRequirement,
-) -> Option<SupportGuardViolation> {
-    let target_path = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.to_path_buf());
-    let config_dir = find_support_config_dir(&target_path)?;
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let state = match parent_configurations_state(&bin_path) {
-        ParentConfigurationsState::Absent => return None,
-        ParentConfigurationsState::Unreadable => {
-            return Some(SupportGuardViolation {
-                code: "support-state-unreadable",
-                reason: "не удалось прочитать состояние поддержки (ParentConfigurations.bin); безопасность правки не подтверждена"
-                    .to_string(),
-                target_path,
-                config_dir,
-            });
-        }
-        ParentConfigurationsState::Readable(state) => state,
-    };
-    if state.removed {
-        return None;
-    }
-    if !state.global_editing_enabled {
-        return Some(SupportGuardViolation {
-            code: "capability-off",
-            reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
-                .to_string(),
-            target_path,
-            config_dir,
-        });
-    }
-
-    let object_uuid = support_object_uuid_for_path(&target_path)
-        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let object_rule = object_uuid
-        .as_deref()
-        .and_then(|uuid| state.object_rule(uuid));
-    match requirement {
-        SupportGuardRequirement::Removed if object_rule.is_some_and(|rule| rule != 2) => {
-            Some(SupportGuardViolation {
-                code: "not-removed",
-                reason: "объект не снят с поддержки — удаление сломает обновления".to_string(),
-                target_path,
-                config_dir,
-            })
-        }
-        SupportGuardRequirement::Editable if object_rule == Some(0) => {
-            Some(SupportGuardViolation {
-                code: "locked",
-                reason: "объект на замке — редактирование сломает обновления".to_string(),
-                target_path,
-                config_dir,
-            })
-        }
-        _ => None,
+        SupportSourceState::Parsed => match facts.global_editing_enabled() {
+            Some(false) => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
+            Some(true) => {
+                let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
+                    return "не на поддержке".to_string();
+                };
+                match facts.object_rules.get(&object_uuid.to_ascii_lowercase()) {
+                    Some(SupportRule::Locked) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+                    Some(SupportRule::Editable) => "редактируется с сохранением поддержки".to_string(),
+                    Some(SupportRule::Removed) => "снято с поддержки (правки свободны)".to_string(),
+                    Some(SupportRule::Unknown) => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
+                    None => "не на поддержке".to_string(),
+                }
+            }
+            None => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
+        },
     }
 }
 
@@ -1939,149 +1857,32 @@ impl SupportState {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SupportVendor {
-    version: String,
-    vendor: String,
-    name: String,
-}
-
 pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
-    if !bin_path.is_file() {
+    let facts = read_support_facts(bin_path);
+    let removed = matches!(facts.source, SupportSourceState::Removed);
+    if !removed && !matches!(facts.source, SupportSourceState::Parsed) {
         return None;
     }
-    let data = fs::read(bin_path).ok()?;
-    let data = data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data);
-    if data.iter().all(u8::is_ascii_whitespace) {
-        return Some(SupportState {
-            global_editing_enabled: true,
-            vendor_count: 0,
-            removed: true,
-            counts: [0, 0, 0],
-            object_rules: HashMap::new(),
-            vendors: Vec::new(),
-        });
-    }
-    let text = std::str::from_utf8(data).ok()?;
-    let (global_flag, vendor_count) = parse_support_header(text)?;
-    if vendor_count == 0 {
-        return Some(SupportState {
-            global_editing_enabled: true,
-            vendor_count,
-            removed: true,
-            counts: [0, 0, 0],
-            object_rules: HashMap::new(),
-            vendors: Vec::new(),
-        });
-    }
-    let (counts, object_rules) = parse_support_object_rules(&text);
     Some(SupportState {
-        global_editing_enabled: global_flag == 0,
-        vendor_count,
-        removed: false,
-        counts,
-        object_rules,
-        vendors: parse_support_vendors(&text),
+        global_editing_enabled: facts.global_editing_enabled().unwrap_or(true),
+        vendor_count: facts.vendors().len(),
+        removed,
+        counts: facts.rule_counts(),
+        object_rules: facts
+            .object_rules
+            .iter()
+            .filter_map(|(uuid, rule)| rule.flag().map(|flag| (uuid.clone(), flag)))
+            .collect(),
+        vendors: facts.vendors().to_vec(),
     })
 }
 
-pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    let mut parts = text
-        .trim_start_matches('\u{feff}')
-        .trim_start()
-        .strip_prefix('{')?
-        .split(',')
-        .map(str::trim);
-    if parts.next()? != "6" {
-        return None;
-    }
-    let global_flag = parts.next()?.parse::<u8>().ok()?;
-    let vendor_count = parts.next()?.parse::<usize>().ok()?;
-    Some((global_flag, vendor_count))
-}
-
-pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8>) {
-    let mut counts = [0usize; 3];
-    let mut object_rules = HashMap::<String, u8>::new();
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        let flag = bytes[i];
-        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
-            let uuid_start = i + 4;
-            let uuid_end = uuid_start + 36;
-            if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
-                    let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
-                    let entry = object_rules
-                        .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
-                    }
-                    i = uuid_end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    (counts, object_rules)
-}
-
-pub(crate) fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
-    let quoted = parse_quoted_support_strings(text);
-    quoted
-        .chunks(3)
-        .filter_map(|chunk| {
-            if chunk.len() == 3 {
-                Some(SupportVendor {
-                    version: chunk[0].clone(),
-                    vendor: chunk[1].clone(),
-                    name: chunk[2].clone(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn parse_quoted_support_strings(text: &str) -> Vec<String> {
-    let mut result = Vec::<String>::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
-            continue;
-        }
-        let mut value = String::new();
-        while let Some(next) = chars.next() {
-            if next == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    value.push('"');
-                    continue;
-                }
-                break;
-            }
-            value.push(next);
-        }
-        result.push(value);
-    }
-    result
-}
-
+/*
+ * The native support-edit operation still consumes this compatibility view, but
+ * all parsing is performed by platform_xml::support above.
+ */
 pub(crate) fn is_uuid_text(value: &str) -> bool {
-    value.len() == 36
-        && value.chars().enumerate().all(|(index, ch)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                ch == '-'
-            } else {
-                ch.is_ascii_hexdigit()
-            }
-        })
+    uuid::Uuid::parse_str(value).is_ok()
 }
 
 pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
