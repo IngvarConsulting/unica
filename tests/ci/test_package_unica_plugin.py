@@ -448,6 +448,29 @@ class PackageUnicaPluginTests(unittest.TestCase):
         # Older clients only read the description from metadata.
         self.assertIn("description", catalog["metadata"])
 
+    def test_claude_catalog_names_the_missing_manifest_field(self) -> None:
+        module = load_package_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "unica"
+            (plugin_dir / ".claude-plugin").mkdir(parents=True)
+            (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "0.9.1", "author": {"name": "n"}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                module.write_claude_marketplace(
+                    plugin_dir,
+                    Path(tmp) / "marketplace.json",
+                    source=module.claude_plugin_source(release_tag="v0.9.1"),
+                )
+
+        # The packaging failure has to name the field, not surface as a KeyError
+        # from whichever line reached it first.
+        self.assertIn("description", str(raised.exception))
+        self.assertIn("license", str(raised.exception))
+
     def test_claude_catalog_pins_the_release_tag(self) -> None:
         module = load_package_module()
 

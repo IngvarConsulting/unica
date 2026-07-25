@@ -313,6 +313,15 @@ def write_claude_marketplace(plugin_dir: Path, dest_path: Path, *, source: dict 
     author = manifest.get("author", {})
     if not author.get("name"):
         raise SystemExit("Claude plugin manifest must declare author.name")
+    # Named up front so a manifest missing one fails with the field rather than a
+    # KeyError from whichever line happened to reach it first.
+    missing = [
+        key
+        for key in ("description", "homepage", "repository", "license", "keywords", "version")
+        if not manifest.get(key)
+    ]
+    if missing:
+        raise SystemExit(f"Claude plugin manifest is missing: {', '.join(missing)}")
 
     # Only fields every supported Claude Code release accepts: newer optional
     # keys such as displayName are rejected outright by older clients rather
