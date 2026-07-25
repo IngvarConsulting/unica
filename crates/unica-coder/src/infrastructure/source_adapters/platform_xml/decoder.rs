@@ -22,6 +22,7 @@ use super::{
     native_model::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
         NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
+        NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue,
         NativeRegistrationEvidence, NativeTemplate, PlatformXmlNativeSnapshot,
     },
@@ -129,7 +130,15 @@ pub(crate) fn decode(
     let base_key = root_key
         .strip_suffix(".xml")
         .ok_or_else(|| corrupted("Platform XML root descriptor is not an XML file"))?;
-    let decoded = decode_inline_node(provider, class, profile, base_key, xml)?;
+    let mut context = DecodeContext::default();
+    let decoded = decode_inline_node(
+        provider,
+        class,
+        profile,
+        base_key,
+        xml,
+        &mut context,
+    )?;
 
     Ok(PlatformXmlNativeSnapshot {
         source: SourceSnapshot {
@@ -153,17 +162,20 @@ fn decode_inline_node(
     profile: &'static MetadataClassProfile,
     base_key: &str,
     source_xml: &str,
+    context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let properties_node = required_properties(node)?;
     let name = required_name(properties_node)?;
     let properties = decode_properties(properties_node, source_xml)?;
     let uuid = parse_optional_uuid(node)?;
-    let children = decode_children(provider, node, profile, base_key, source_xml)?;
+    context.register_uuid(uuid)?;
+    let children = decode_children(provider, node, profile, base_key, source_xml, context)?;
     Ok(DecodedNode {
         node: NativeMetadataNode {
             class: native_class(profile),
             uuid,
             name,
+            state: NativeNodeState::ResolvedInline,
             properties,
             children: children.nodes,
             backing: NativeNodeBacking::None,
@@ -178,6 +190,7 @@ fn decode_children(
     owner_profile: &'static MetadataClassProfile,
     base_key: &str,
     source_xml: &str,
+    context: &mut DecodeContext,
 ) -> Result<DecodedChildren, SourceAdapterError> {
     let Some(child_objects) = optional_unique_child(owner, "ChildObjects")? else {
         return Ok(DecodedChildren {
@@ -203,11 +216,18 @@ fn decode_children(
                 corrupted("Platform XML child class is not allowed by the schema registry")
             })?;
         let decoded = if matches!(profile.role, MetadataClassRole::Form | MetadataClassRole::Template) {
-            decode_backed_registration(provider, child, profile, base_key, source_xml)?
+            decode_backed_registration(provider, child, profile, base_key, source_xml, context)?
         } else if direct_children(child, "Properties").is_empty() {
-            decode_unresolved_registration(child, profile)?
+            if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
+                || profile.role != MetadataClassRole::TopLevelObject
+            {
+                return Err(corrupted(
+                    "inline Platform XML child is missing required Properties",
+                ));
+            }
+            decode_unresolved_registration(child, profile, context)?
         } else {
-            decode_inline_node(provider, child, profile, base_key, source_xml)?
+            decode_inline_node(provider, child, profile, base_key, source_xml, context)?
         };
         let identity = (profile.class_name, decoded.node.name.clone());
         if !identities.insert(identity) {
@@ -225,13 +245,18 @@ fn decode_children(
 fn decode_unresolved_registration(
     node: Node<'_, '_>,
     profile: &'static MetadataClassProfile,
+    context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
+    context.register_uuid(registration.uuid)?;
     Ok(DecodedNode {
         node: NativeMetadataNode {
             class: native_class(profile),
             uuid: registration.uuid,
             name: registration.name.clone(),
+            state: NativeNodeState::UnresolvedRegistration {
+                registration: registration.clone(),
+            },
             properties: synthetic_name_property(&registration.name),
             children: Vec::new(),
             backing: NativeNodeBacking::None,
@@ -246,8 +271,10 @@ fn decode_backed_registration(
     profile: &'static MetadataClassProfile,
     base_key: &str,
     source_xml: &str,
+    context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
+    context.register_uuid(registration.uuid)?;
     let properties = match optional_unique_child(node, "Properties")? {
         Some(properties) => decode_properties(properties, source_xml)?,
         None => synthetic_name_property(&registration.name),
@@ -284,11 +311,13 @@ fn decode_backed_registration(
             };
             let complete = descriptor.state == NativeEvidenceState::Validated
                 && managed_content.state == NativeEvidenceState::Validated;
+            let state = registration_state(&registration, complete);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
                     uuid: registration.uuid,
                     name: registration.name.clone(),
+                    state,
                     properties,
                     children: Vec::new(),
                     backing: NativeNodeBacking::Form(NativeForm {
@@ -382,11 +411,13 @@ fn decode_backed_registration(
             let complete = descriptor.state == NativeEvidenceState::Validated
                 && !matches!(descriptor_type, NativePropertyValue::Absent | NativePropertyValue::Unresolved)
                 && canonical_content.state == NativeEvidenceState::Validated;
+            let state = registration_state(&registration, complete);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
                     uuid: registration.uuid,
                     name: registration.name.clone(),
+                    state,
                     properties,
                     children: Vec::new(),
                     backing: NativeNodeBacking::Template(NativeTemplate {
@@ -715,6 +746,21 @@ fn native_class(profile: &'static MetadataClassProfile) -> NativeMetadataClass {
     }
 }
 
+fn registration_state(
+    registration: &NativeRegistrationEvidence,
+    resolved: bool,
+) -> NativeNodeState {
+    if resolved {
+        NativeNodeState::ResolvedRegistration {
+            registration: registration.clone(),
+        }
+    } else {
+        NativeNodeState::UnresolvedRegistration {
+            registration: registration.clone(),
+        }
+    }
+}
+
 fn descriptor_evidence(
     state: NativeEvidenceState,
     relative_key: impl Into<String>,
@@ -753,6 +799,23 @@ struct DecodedNode {
     complete: bool,
 }
 
+#[derive(Default)]
+struct DecodeContext {
+    uuids: BTreeSet<Uuid>,
+}
+
+impl DecodeContext {
+    fn register_uuid(&mut self, uuid: Option<Uuid>) -> Result<(), SourceAdapterError> {
+        if uuid.is_some_and(|uuid| !self.uuids.insert(uuid)) {
+            return Err(error(
+                SourceAdapterErrorKind::IdentityCollision,
+                "Platform XML snapshot contains duplicate native UUID identity",
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct DecodedChildren {
     nodes: Vec<NativeMetadataNode>,
     complete: bool,
@@ -782,14 +845,17 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use crate::domain::source_adapters::{
-        FormatVersion, SnapshotEvidence, SourceAdapterErrorKind, SourceDescriptor, SourceFamily,
-        SourceId, SourceRevision,
+    use crate::domain::{
+        navigation::CoverageState,
+        source_adapters::{
+            FormatVersion, SnapshotEvidence, SourceAdapterErrorKind, SourceDescriptor,
+            SourceFamily, SourceId, SourceRevision,
+        },
     };
 
     use super::{
         decode, NativeEvidenceState, NativeMxlRootKind, NativePropertyProvenance,
-        NativeNodeBacking, NativePropertyValue, PlatformXmlProvider,
+        NativeNodeBacking, NativeNodeState, NativePropertyValue, PlatformXmlProvider,
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -1173,6 +1239,108 @@ mod tests {
         let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+    }
+
+    #[test]
+    fn fully_materialized_recursive_tree_has_complete_coverage() {
+        let fixture = document_fixture(
+            r#"
+            <ChildObjects>
+              <TabularSection uuid="22222222-2222-2222-2222-222222222222">
+                <Properties><Name>Lines</Name></Properties>
+                <ChildObjects>
+                  <Attribute uuid="33333333-3333-3333-3333-333333333333">
+                    <Properties><Name>Sku</Name></Properties>
+                  </Attribute>
+                </ChildObjects>
+              </TabularSection>
+            </ChildObjects>
+            "#,
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+
+        assert_eq!(decoded.coverage, CoverageState::Complete);
+        assert!(matches!(decoded.root.state, NativeNodeState::ResolvedInline));
+        assert!(matches!(
+            decoded.root.children[0].children[0].state,
+            NativeNodeState::ResolvedInline
+        ));
+    }
+
+    #[test]
+    fn valid_configuration_registration_is_unresolved_and_partial() {
+        let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+          <Configuration uuid="11111111-1111-1111-1111-111111111111">
+            <Properties><Name>Application</Name></Properties>
+            <ChildObjects>
+              <Document uuid="22222222-2222-2222-2222-222222222222">Shipment</Document>
+            </ChildObjects>
+          </Configuration>
+        </MetaDataObject>"#;
+        let fixture = fixture(
+            "Configuration.xml",
+            &[("Configuration.xml", xml.to_string())],
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+
+        assert_eq!(decoded.coverage, CoverageState::Partial);
+        assert!(matches!(
+            decoded.root.children[0].state,
+            NativeNodeState::UnresolvedRegistration { .. }
+        ));
+    }
+
+    #[test]
+    fn inline_child_without_properties_is_corrupted() {
+        let fixture = document_fixture(
+            r#"
+            <ChildObjects>
+              <TabularSection uuid="22222222-2222-2222-2222-222222222222">
+                <ChildObjects>
+                  <Attribute uuid="33333333-3333-3333-3333-333333333333">
+                    <Properties><Name>Sku</Name></Properties>
+                  </Attribute>
+                </ChildObjects>
+              </TabularSection>
+            </ChildObjects>
+            "#,
+        );
+
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+    }
+
+    #[test]
+    fn duplicate_uuid_is_rejected_source_wide() {
+        let fixture = document_fixture(
+            r#"
+            <ChildObjects>
+              <TabularSection uuid="22222222-2222-2222-2222-222222222222">
+                <Properties><Name>First</Name></Properties>
+                <ChildObjects>
+                  <Attribute uuid="44444444-4444-4444-4444-444444444444">
+                    <Properties><Name>Code</Name></Properties>
+                  </Attribute>
+                </ChildObjects>
+              </TabularSection>
+              <TabularSection uuid="33333333-3333-3333-3333-333333333333">
+                <Properties><Name>Second</Name></Properties>
+                <ChildObjects>
+                  <Attribute uuid="44444444-4444-4444-4444-444444444444">
+                    <Properties><Name>OtherCode</Name></Properties>
+                  </Attribute>
+                </ChildObjects>
+              </TabularSection>
+            </ChildObjects>
+            "#,
+        );
+
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::IdentityCollision);
     }
 
     fn document_fixture(body: &str) -> Fixture {

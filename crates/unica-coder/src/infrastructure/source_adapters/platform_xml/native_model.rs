@@ -18,6 +18,7 @@ pub(crate) struct NativeMetadataNode {
     pub(crate) class: NativeMetadataClass,
     pub(crate) uuid: Option<Uuid>,
     pub(crate) name: String,
+    pub(crate) state: NativeNodeState,
     pub(crate) properties: BTreeMap<String, NativeProperty>,
     pub(crate) children: Vec<NativeMetadataNode>,
     pub(crate) backing: NativeNodeBacking,
@@ -40,6 +41,17 @@ pub(crate) enum NativeNodeBacking {
 pub(crate) struct NativeRegistrationEvidence {
     pub(crate) uuid: Option<Uuid>,
     pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativeNodeState {
+    ResolvedInline,
+    ResolvedRegistration {
+        registration: NativeRegistrationEvidence,
+    },
+    UnresolvedRegistration {
+        registration: NativeRegistrationEvidence,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

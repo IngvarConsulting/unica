@@ -207,3 +207,128 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 772 filtered out; fi
 
 Both commands emitted the repository's existing `dead_code` warnings. No broad
 test suite was run, per the fix-round instruction.
+
+## Fix Round 2
+
+### Files
+
+- `crates/unica-coder/src/infrastructure/source_adapters/platform_xml/native_model.rs`
+  - Added explicit per-node `NativeNodeState` with `ResolvedInline`, `ResolvedRegistration`, and `UnresolvedRegistration` variants.
+  - Registration variants retain typed `NativeRegistrationEvidence`.
+- `crates/unica-coder/src/infrastructure/source_adapters/platform_xml/decoder.rs`
+  - Added source-wide UUID indexing for every decoded native node.
+  - Restricted unresolved scalar registrations to schema-declared Configuration top-level children.
+  - Made missing `Properties` on inline nodes a typed `DecodeCorrupted` failure.
+  - Derived aggregate coverage from explicit recursive node resolution and backing completeness.
+  - Added focused Complete/Partial, malformed inline, and cross-owner UUID collision tests.
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+  - Removed the `Document`-ignoring/panicking legacy projection wrapper and its duplicate test module.
+  - Added typed ObjectKey, qualified owner/class/name path, and ambiguity-aware bare-name resolution.
+  - Derived temporary navigation capability from each node's native state; unresolved registrations serialize as unresolved and `unknown_read_only` with no mutation actions.
+  - Added actual adapter-path tests under `infrastructure::native_operations::meta::tests`.
+
+### Decisions
+
+- `NativeNodeBacking` remains content evidence only. Resolution is no longer inferred from backing or inherited from an owner; `NativeNodeState` is the sole node-resolution contract.
+- A Configuration scalar child is a valid unresolved registration and makes coverage `Partial`. An object-level child with neither inline `Properties` nor a schema-backed Form/Template registration is corrupted.
+- UUID identity is source-wide because `ObjectRef` uses `uuid:<uuid>` independently of owner/class. Name uniqueness remains scoped to owner plus class.
+- Canonical navigation selectors use `Class:Name/Class:Name/...` from the root. `uuid:<uuid>` is accepted as an ObjectKey selector. Bare names are compatibility input only and require exactly one source-wide match.
+- The shared `platform_xml::schema` profile still decides child vocabulary; no parallel class list was introduced.
+
+### Migration
+
+- Legacy callers can no longer use `project_platform_xml_navigation(Document, ...)`; typed decode plus `project_native_platform_xml_navigation` is the only Platform XML adapter path in `meta.rs`.
+- Bare recursive drill-down that previously selected the first match now returns `ProjectionAmbiguous` for multiple matches and `SourceUnavailable` for no match.
+- Consumers of `NativeMetadataNode` must inspect `state`; `NativeNodeBacking::None` no longer implies resolution.
+
+### Self-review
+
+- Recursive completeness is monotonic: any unresolved registration or incomplete schema-backed Form/Template propagates `Partial`; fully inline recursive trees remain `Complete`.
+- Every non-null node UUID is inserted once into a decoder-wide index before descendants are decoded, so collisions across owners/classes are rejected.
+- Present malformed XML, UUID, inline structure, registered descriptors, managed Form content, and MXL remain typed failures; only genuinely absent registered backing remains partial/unresolved.
+- Navigation capability tests assert the serialized unresolved/read-only contract through the real meta adapter, not a hand-built graph.
+- No plan, ledger, package metadata, or unrelated production files were changed.
+
+### RED
+
+Command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Exact failure evidence:
+
+```text
+error[E0432]: unresolved import `crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeState`
+  --> crates/unica-coder/src/infrastructure/source_adapters/platform_xml/decoder.rs:65:24
+   |
+65 |         CoverageState, NativeNodeState,
+   |                        ^^^^^^^^^^^^^^^ no `NativeNodeState` in `infrastructure::source_adapters::platform_xml::native_model`
+
+error[E0425]: cannot find function `resolve_native_node` in this scope
+     --> crates/unica-coder/src/infrastructure/native_operations/meta.rs:13471:21
+
+error[E0425]: cannot find function `native_node_capability` in this scope
+     --> crates/unica-coder/src/infrastructure/native_operations/meta.rs:13500:26
+
+error: could not compile `unica-coder` (lib test) due to 17 previous errors
+```
+
+The initial RED harness also reported temporary test-helper/import compilation errors. Those harness errors were corrected before production implementation; the missing native-state and typed-navigation contracts above were the intended RED signal.
+
+### GREEN
+
+Command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Exact result:
+
+```text
+running 19 tests
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 756 filtered out; finished in 0.02s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+```
+
+Command:
+
+```text
+cargo test -p unica-coder infrastructure::native_operations::meta::tests -- --nocapture
+```
+
+Exact result:
+
+```text
+running 5 tests
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 770 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+```
+
+Both GREEN runs emitted only the repository's existing `dead_code` warnings.

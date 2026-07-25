@@ -6,7 +6,9 @@ use crate::domain::navigation::{
     NavigationNode, NodeKind, ObjectKey, ObjectRef, RelationKind, Representation,
     ResolutionState, SemanticActionKind,
 };
-use crate::domain::source_adapters::SourceId;
+use crate::domain::source_adapters::{
+    SourceAdapterError, SourceAdapterErrorKind, SourceId,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -58,353 +60,6 @@ mod enum_contract_tests {
             normalize_meta_enum_value("HierarchyItemsOnly"),
             "HierarchyOfItems"
         );
-    }
-}
-
-#[cfg(test)]
-mod navigation_projection_tests {
-    use super::*;
-    use crate::domain::navigation::{
-        Authorability, NodeKind, RelationKind, Representation, ResolutionState, SemanticAction,
-    };
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_context(name: &str) -> WorkspaceContext {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must be after UNIX epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-navigation-{name}-{nanos}"));
-        fs::create_dir_all(&root).expect("create temporary navigation workspace");
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build").join("unica"),
-            workspace_epoch: 1,
-        }
-    }
-
-    fn write_file(path: &Path, text: &str) {
-        fs::create_dir_all(path.parent().expect("test fixture parent"))
-            .expect("create test fixture parent");
-        fs::write(path, text).expect("write test fixture");
-    }
-
-    fn configure_source_set(context: &WorkspaceContext, source_path: &str) {
-        write_file(
-            &context.workspace_root.join("v8project.yaml"),
-            &format!(
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
-            ),
-        );
-        write_file(
-            &context.workspace_root.join(source_path).join("Configuration.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/></MetaDataObject>",
-        );
-    }
-
-    fn document_xml(uuid: &str, child_objects: &str) -> String {
-        format!(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document uuid="{uuid}">
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>{child_objects}</ChildObjects>
-  </Document>
-</MetaDataObject>"#
-        )
-    }
-
-    fn form_descriptor(name: &str) -> String {
-        format!(
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form><Properties><Name>{name}</Name></Properties></Form></MetaDataObject>"
-        )
-    }
-
-    fn template_descriptor(name: &str, template_type: &str) -> String {
-        format!(
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template><Properties><Name>{name}</Name><TemplateType>{template_type}</TemplateType></Properties></Template></MetaDataObject>"
-        )
-    }
-
-    fn managed_form_source() -> &'static str {
-        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"/>"
-    }
-
-    fn spreadsheet_document_source() -> &'static str {
-        "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"/>"
-    }
-
-    fn assert_only_inspect(node: &crate::domain::navigation::NavigationNode) {
-        assert_eq!(
-            node.semantic_actions()
-                .iter()
-                .map(|descriptor| &descriptor.action)
-                .collect::<Vec<_>>(),
-            vec![&SemanticActionKind::Inspect],
-            "unexpected modeled mutation for {:?}",
-            node.reference
-        );
-    }
-
-    fn locked_support_bin(config_uuid: &str, object_uuid: &str) -> String {
-        format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{object_uuid},{object_uuid},2,0,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}}"
-        )
-    }
-
-    fn support_bin_with_locked_objects(locked_objects: &[&str]) -> String {
-        let object_rules = locked_objects
-            .iter()
-            .map(|uuid| format!("0,0,{uuid},{uuid}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,{object_rules}}}"
-        )
-    }
-
-    #[test]
-    fn platform_xml_navigation_normalizes_object_path_before_source_set_selection() {
-        let context = temp_context("source-set-alias");
-        configure_source_set(&context, "src/cf");
-        let object_path = context.workspace_root.join("src/cf/Documents/Shipment.xml");
-        let object_xml = document_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "");
-        write_file(&object_path, &object_xml);
-
-        let aliased_object_path = context
-            .workspace_root
-            .join("src/other/../cf/Documents/Shipment.xml");
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &aliased_object_path, &context);
-
-        assert_eq!(graph.root.source_id, SourceId::new("main").unwrap());
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_propagates_locked_support_as_read_only_capabilities() {
-        let context = temp_context("locked-support");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &locked_support_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            ),
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        for node in &graph.nodes {
-            assert_eq!(
-                node.capability_state.authorability,
-                Authorability::SupportLocked
-            );
-            assert_only_inspect(node);
-        }
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::SupportLocked
-                && edge
-                    .semantic_actions()
-                    .iter()
-                    .all(|action| action.action == SemanticActionKind::Inspect)
-        }));
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_propagates_global_support_disable_as_configuration_read_only() {
-        let context = temp_context("global-support-disable");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &locked_support_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            )
-            .replace("{6,0,", "{6,1,"),
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::ConfigurationReadOnly
-        }));
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::ConfigurationReadOnly
-        }));
-        for node in &graph.nodes {
-            assert_only_inspect(node);
-        }
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_combines_locked_form_and_template_descriptors_with_parent_support() {
-        let context = temp_context("child-support");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Form>ItemForm</Form><Template>Print</Template>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/ItemForm.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form uuid=\"cccccccc-cccc-cccc-cccc-cccccccccccc\"><Properties><Name>ItemForm</Name></Properties></Form></MetaDataObject>",
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/ItemForm/Ext/Form.xml"),
-            managed_form_source(),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template uuid=\"dddddddd-dddd-dddd-dddd-dddddddddddd\"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print/Ext/Template.xml"),
-            spreadsheet_document_source(),
-        );
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &support_bin_with_locked_objects(&[
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "dddddddd-dddd-dddd-dddd-dddddddddddd",
-            ]),
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        let root = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Shipment")
-            .expect("root document");
-        assert_eq!(
-            root.capability_state.authorability,
-            Authorability::Authorable
-        );
-        for child_name in ["ItemForm", "Print"] {
-            let child = graph
-                .nodes
-                .iter()
-                .find(|node| node.reference.display_name == child_name)
-                .expect("registered child node");
-            assert_eq!(
-                child.capability_state.authorability,
-                Authorability::SupportLocked,
-                "{child_name} must use its descriptor support state"
-            );
-            assert_only_inspect(child);
-            let edge = graph
-                .edges
-                .iter()
-                .find(|edge| edge.to.display_name == child_name)
-                .expect("containment edge for child");
-            assert_eq!(
-                edge.capability_state.authorability,
-                Authorability::SupportLocked
-            );
-            assert!(edge
-                .semantic_actions()
-                .iter()
-                .all(|action| action.action == SemanticActionKind::Inspect));
-        }
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_fails_closed_for_unreadable_parent_configurations() {
-        let context = temp_context("unreadable-support");
-        configure_source_set(&context, "src");
-        let object_path = context.workspace_root.join("src/Documents/Shipment.xml");
-        let object_xml = document_xml(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-        );
-        write_file(&object_path, &object_xml);
-        write_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            "this ParentConfigurations.bin is malformed and intentionally longer than 32 bytes",
-        );
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let graph = project_platform_xml_navigation(&document, &object_path, &context);
-        for node in &graph.nodes {
-            assert_eq!(
-                node.capability_state.authorability,
-                Authorability::UnknownReadOnly
-            );
-            assert_only_inspect(node);
-        }
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::UnknownReadOnly
-                && edge
-                    .semantic_actions()
-                    .iter()
-                    .all(|action| action.action == SemanticActionKind::Inspect)
-        }));
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
-    }
-
-    #[test]
-    fn platform_xml_navigation_uses_distinct_opaque_scopes_for_ad_hoc_objects() {
-        let context = temp_context("ad-hoc-scope");
-        configure_source_set(&context, "src");
-        let object_xml = document_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "");
-        let first_path = context.workspace_root.join("scratch-one/Shipment.xml");
-        let second_path = context.workspace_root.join("scratch-two/Shipment.xml");
-        write_file(&first_path, &object_xml);
-        write_file(&second_path, &object_xml);
-
-        let document = Document::parse(&object_xml).expect("parse metadata fixture");
-        let first = project_platform_xml_navigation(&document, &first_path, &context);
-        let second = project_platform_xml_navigation(&document, &second_path, &context);
-        let first_again = project_platform_xml_navigation(&document, &first_path, &context);
-
-        assert_ne!(first.root.source_id, second.root.source_id);
-        assert_eq!(first.root.source_id, first_again.root.source_id);
-        assert!(serde_json::to_value(&first.root).unwrap()["sourceId"]
-            .as_str()
-            .unwrap()
-            .starts_with("ad-hoc:"));
-        let serialized = serde_json::to_string(&first).expect("serialize graph");
-        assert!(!serialized.contains(&first_path.display().to_string()));
-        assert!(!serialized.contains("scratch-one"));
-
-        fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
     }
 }
 
@@ -4185,8 +3840,8 @@ fn meta_info_native_lines(
     let target = if drill_name.is_empty() {
         root
     } else {
-        find_native_node(root, drill_name)
-            .ok_or_else(|| format!("[ERROR] Native metadata node `{drill_name}` was not found"))?
+        resolve_native_node(root, drill_name)
+            .map_err(|error| format!("[ERROR] {}: {}", error.code(), error.message))?
     };
     let mut lines = vec![format!(
         "{}: {}",
@@ -4209,33 +3864,123 @@ fn meta_info_native_lines(
     Ok(lines)
 }
 
-fn find_native_node<'a>(
-    node: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    name: &str,
-) -> Option<&'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode> {
-    if node.name == name {
-        return Some(node);
+fn resolve_native_node<'a>(
+    root: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    selector: &str,
+) -> Result<
+    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    SourceAdapterError,
+> {
+    if let Some(raw_uuid) = selector.strip_prefix("uuid:") {
+        let uuid = uuid::Uuid::parse_str(raw_uuid).map_err(|_| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+                "native metadata ObjectKey UUID is invalid",
+            )
+        })?;
+        let mut matches = Vec::new();
+        collect_native_matches(root, &mut matches, &|node| node.uuid == Some(uuid));
+        return unique_native_match(matches, selector);
     }
-    node.children
-        .iter()
-        .find_map(|child| find_native_node(child, name))
+    if selector.contains('/') || selector.contains(':') {
+        return resolve_qualified_native_node(root, selector);
+    }
+
+    let mut matches = Vec::new();
+    collect_native_matches(root, &mut matches, &|node| node.name == selector);
+    unique_native_match(matches, selector)
 }
 
-pub(crate) fn project_platform_xml_navigation(
-    _document: &Document<'_>,
-    object_path: &Path,
-    context: &WorkspaceContext,
-) -> NavigationGraph {
-    let source_set = navigation_source_set(object_path, context);
-    let configured_source_set = (!source_set.starts_with("opaque:")).then_some(source_set);
-    let input = crate::infrastructure::source_adapters::SourceInput {
-        workspace_root: context.workspace_root.clone(),
-        target: object_path.to_path_buf(),
-        configured_source_set,
-    };
-    let native = crate::infrastructure::source_adapters::platform_xml::decoder::decode_path(&input)
-        .expect("legacy navigation wrapper requires a valid Platform XML native snapshot");
-    project_native_platform_xml_navigation(&native, object_path, context)
+fn collect_native_matches<'a, F>(
+    node: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    matches: &mut Vec<
+        &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    >,
+    predicate: &F,
+) where
+    F: Fn(
+        &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    ) -> bool,
+{
+    if predicate(node) {
+        matches.push(node);
+    }
+    for child in &node.children {
+        collect_native_matches(child, matches, predicate);
+    }
+}
+
+fn unique_native_match<'a>(
+    matches: Vec<
+        &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    >,
+    selector: &str,
+) -> Result<
+    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    SourceAdapterError,
+> {
+    match matches.as_slice() {
+        [node] => Ok(*node),
+        [] => Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            format!("native metadata node `{selector}` was not found"),
+        )),
+        _ => Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            format!("native metadata selector `{selector}` matches multiple nodes"),
+        )),
+    }
+}
+
+fn resolve_qualified_native_node<'a>(
+    root: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    selector: &str,
+) -> Result<
+    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    SourceAdapterError,
+> {
+    let mut segments = selector.split('/');
+    let first = segments.next().ok_or_else(|| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            "native metadata qualified selector is empty",
+        )
+    })?;
+    let (class, name) = qualified_native_segment(first)?;
+    if root.class.canonical_name != class || root.name != name {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            format!("native metadata qualified root `{first}` was not found"),
+        ));
+    }
+
+    let mut current = root;
+    for segment in segments {
+        let (class, name) = qualified_native_segment(segment)?;
+        let matches = current
+            .children
+            .iter()
+            .filter(|node| node.class.canonical_name == class && node.name == name)
+            .collect::<Vec<_>>();
+        current = unique_native_match(matches, segment)?;
+    }
+    Ok(current)
+}
+
+fn qualified_native_segment(segment: &str) -> Result<(&str, &str), SourceAdapterError> {
+    let (class, name) = segment.split_once(':').ok_or_else(|| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            format!("native metadata qualified segment `{segment}` has no class"),
+        )
+    })?;
+    if class.is_empty() || name.is_empty() {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            format!("native metadata qualified segment `{segment}` is incomplete"),
+        ));
+    }
+    Ok((class, name))
 }
 
 fn project_native_platform_xml_navigation(
@@ -4243,10 +3988,12 @@ fn project_native_platform_xml_navigation(
     object_path: &Path,
     _context: &WorkspaceContext,
 ) -> NavigationGraph {
-    let root_capability_state = CapabilityState::new(
+    let root_owner_capability = CapabilityState::new(
         ResolutionState::Resolved,
         navigation_authorability(object_path),
     );
+    let root_capability_state =
+        native_node_capability(&snapshot.root, root_owner_capability);
     let root_reference = native_object_ref(
         &snapshot.source.source_id,
         None,
@@ -4280,25 +4027,7 @@ fn project_native_children(
             Some(owner_reference),
             child,
         );
-        let resolution_state = match &child.backing {
-            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Form(form)
-                if form.descriptor.state
-                    == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated
-                    && form.managed_content.state
-                        == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated => ResolutionState::Resolved,
-            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(template)
-                if template.descriptor.state
-                    == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated
-                    && template.canonical_content.state
-                        == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated => ResolutionState::Resolved,
-            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Form(_)
-            | crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(_) => ResolutionState::Unresolved,
-            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::None => owner_capability.resolution_state,
-        };
-        let capability = CapabilityState::new(
-            resolution_state,
-            owner_capability.authorability,
-        );
+        let capability = native_node_capability(child, owner_capability);
         edges.push(NavigationEdge::new(
             owner_reference.clone(),
             reference.clone(),
@@ -4307,6 +4036,23 @@ fn project_native_children(
         ));
         nodes.push(NavigationNode::new(reference.clone(), capability));
         project_native_children(child, &reference, capability, nodes, edges);
+    }
+}
+
+fn native_node_capability(
+    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    owner_capability: CapabilityState,
+) -> CapabilityState {
+    use crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeState;
+
+    match &node.state {
+        NativeNodeState::ResolvedInline | NativeNodeState::ResolvedRegistration { .. } => {
+            CapabilityState::new(ResolutionState::Resolved, owner_capability.authorability)
+        }
+        NativeNodeState::UnresolvedRegistration { .. } => CapabilityState::new(
+            ResolutionState::Unresolved,
+            Authorability::UnknownReadOnly,
+        ),
     }
 }
 
@@ -13423,6 +13169,157 @@ mod tests {
         assert!(!result.outcome.ok);
         assert!(result.outcome.errors[0].contains("Platform XML"));
         fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn meta_adapter_rejects_ambiguous_bare_child_lookup() {
+        let (context, object_path) = fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Document uuid="11111111-1111-1111-1111-111111111111">
+    <Properties><Name>Shipment</Name></Properties>
+    <ChildObjects>
+      <TabularSection uuid="22222222-2222-2222-2222-222222222222">
+        <Properties><Name>First</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="44444444-4444-4444-4444-444444444444">
+            <Properties><Name>Code</Name><Comment>first</Comment></Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+      <TabularSection uuid="33333333-3333-3333-3333-333333333333">
+        <Properties><Name>Second</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="55555555-5555-5555-5555-555555555555">
+            <Properties><Name>Code</Name><Comment>second</Comment></Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>"#,
+        );
+        let args = json!({"objectPath": object_path, "name": "Code"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = analyze_meta_info_with_navigation(&args, &context);
+
+        assert!(!result.outcome.ok);
+        assert!(result.outcome.errors[0].contains("projection_ambiguous"));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn meta_adapter_resolves_canonical_qualified_child_lookup() {
+        let (context, object_path) = fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Document uuid="11111111-1111-1111-1111-111111111111">
+    <Properties><Name>Shipment</Name></Properties>
+    <ChildObjects>
+      <TabularSection uuid="22222222-2222-2222-2222-222222222222">
+        <Properties><Name>First</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="44444444-4444-4444-4444-444444444444">
+            <Properties><Name>Code</Name><Comment>first</Comment></Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+      <TabularSection uuid="33333333-3333-3333-3333-333333333333">
+        <Properties><Name>Second</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="55555555-5555-5555-5555-555555555555">
+            <Properties><Name>Code</Name><Comment>second</Comment></Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>"#,
+        );
+        let args = json!({
+            "objectPath": object_path,
+            "name": "Document:Shipment/TabularSection:Second/Attribute:Code",
+            "mode": "full"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = analyze_meta_info_with_navigation(&args, &context);
+
+        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
+        assert!(result.outcome.stdout.unwrap().contains("Comment: second"));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn unresolved_registration_serializes_blocked_non_authorable_capability() {
+        let (context, object_path) = configuration_fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+    <Properties><Name>Configuration</Name></Properties>
+    <ChildObjects>
+      <Document uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">Shipment</Document>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>"#,
+        );
+        let args = json!({"objectPath": object_path})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = analyze_meta_info_with_navigation(&args, &context);
+
+        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
+        let graph = result.navigation.unwrap();
+        let unresolved = graph
+            .nodes
+            .iter()
+            .find(|node| node.reference.display_name == "Shipment")
+            .unwrap();
+        assert_eq!(
+            unresolved.capability_state.resolution_state,
+            ResolutionState::Unresolved
+        );
+        assert_eq!(
+            unresolved.capability_state.authorability,
+            Authorability::UnknownReadOnly
+        );
+        let serialized = serde_json::to_value(unresolved).unwrap().to_string();
+        assert!(serialized.contains("\"resolutionState\":\"unresolved\""));
+        assert!(serialized.contains("\"authorability\":\"unknown_read_only\""));
+        assert!(!serialized.contains("edit_properties"));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    fn configuration_fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-native-configuration-{}-{nanos}",
+            std::process::id()
+        ));
+        let object_path = root.join("src/Configuration.xml");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(&object_path, xml).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        (
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            object_path,
+        )
     }
 
     fn fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
