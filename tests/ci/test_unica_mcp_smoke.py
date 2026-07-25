@@ -11,6 +11,23 @@ import unittest
 from pathlib import Path
 
 
+MCP_HANDSHAKE_ID = "unica-ci-handshake"
+MCP_INITIALIZE_PARAMS = {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {"name": "unica-ci", "version": "1"},
+}
+MCP_HANDSHAKE = [
+    {
+        "jsonrpc": "2.0",
+        "id": MCP_HANDSHAKE_ID,
+        "method": "initialize",
+        "params": MCP_INITIALIZE_PARAMS,
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+]
+
+
 class UnicaMcpSmokeTests(unittest.TestCase):
     def repo_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
@@ -44,6 +61,10 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         reader = threading.Thread(target=read_stdout, daemon=True)
         reader.start()
         try:
+            # The rmcp-based server requires the MCP handshake first; prepend it
+            # unless the scenario drives initialize itself.
+            if messages and messages[0].get("method") != "initialize":
+                messages = MCP_HANDSHAKE + messages
             for message in messages:
                 process.stdin.write(json.dumps(message) + "\n")
             process.stdin.flush()
@@ -77,7 +98,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             stderr = process.stderr.read()
             self.assertEqual(return_code, 0, stderr)
-            return responses
+            return [r for r in responses if r.get("id") != MCP_HANDSHAKE_ID]
         finally:
             if not process.stdin.closed:
                 process.stdin.close()
@@ -93,7 +114,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
     def test_initialize_lists_single_unica_server(self) -> None:
         responses = self.call_mcp(
             [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": MCP_INITIALIZE_PARAMS},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             ]
         )
@@ -112,7 +133,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(
             [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": MCP_INITIALIZE_PARAMS},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
                 {
                     "jsonrpc": "2.0",
