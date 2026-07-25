@@ -2,9 +2,11 @@
 
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::navigation::{
-    Authorability, CapabilityState, NavigationEdge, NavigationGraph, NavigationNode, NodeKind,
-    ObjectRef, OwnerSegment, RelationKind, Representation, ResolutionState,
+    Authorability, CapabilityState, IdentityStrength, NavigationEdge, NavigationGraph,
+    NavigationNode, NodeKind, ObjectKey, ObjectRef, RelationKind, Representation,
+    ResolutionState, SemanticActionKind,
 };
+use crate::domain::source_adapters::SourceId;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -138,7 +140,7 @@ mod navigation_projection_tests {
                 .iter()
                 .map(|descriptor| &descriptor.action)
                 .collect::<Vec<_>>(),
-            vec![&SemanticAction::Inspect],
+            vec![&SemanticActionKind::Inspect],
             "unexpected modeled mutation for {:?}",
             node.reference
         );
@@ -242,12 +244,12 @@ mod navigation_projection_tests {
                 && !public_graph.contains("Shipment.xml"),
             "logical ObjectRef identity must not expose XML paths: {public_graph}"
         );
-        assert_eq!(graph.root.source_set, "main");
+        assert_eq!(graph.root.source_id, SourceId::new("main").unwrap());
         assert_eq!(
             graph
                 .nodes
                 .iter()
-                .map(|node| node.reference.name.as_str())
+                .map(|node| node.reference.display_name.as_str())
                 .collect::<Vec<_>>(),
             vec![
                 "Shipment",
@@ -265,21 +267,21 @@ mod navigation_projection_tests {
         let item_sku = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "Sku")
+            .find(|node| node.reference.display_name == "Sku")
             .expect("tabular section attribute must be projected");
-        assert_eq!(item_sku.reference.owner_chain.len(), 2);
-        assert_eq!(item_sku.reference.owner_chain[0].name, "Shipment");
-        assert_eq!(item_sku.reference.owner_chain[1].name, "Items");
+        assert_eq!(item_sku.reference.source_id, graph.root.source_id);
+        assert_eq!(item_sku.reference.identity_strength, IdentityStrength::Derived);
+        assert_ne!(item_sku.reference.object_key, graph.root.object_key);
         assert!(graph.edges.iter().any(|edge| {
             edge.relation == RelationKind::Contains
                 && edge.from == graph.root
-                && edge.to.name == "Items"
+                && edge.to.display_name == "Items"
         }));
 
         let print = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "Print")
+            .find(|node| node.reference.display_name == "Print")
             .expect("registered template must be projected");
         assert_eq!(
             print.capability_state.resolution_state,
@@ -294,7 +296,7 @@ mod navigation_projection_tests {
         let unproved = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "Unproved")
+            .find(|node| node.reference.display_name == "Unproved")
             .expect("template without descriptor must be projected");
         assert_eq!(
             unproved.capability_state.resolution_state,
@@ -310,7 +312,7 @@ mod navigation_projection_tests {
         let missing_form = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "MissingForm")
+            .find(|node| node.reference.display_name == "MissingForm")
             .expect("registered missing form must be projected");
         assert_eq!(
             missing_form.capability_state.resolution_state,
@@ -322,7 +324,7 @@ mod navigation_projection_tests {
                 .iter()
                 .map(|descriptor| &descriptor.action)
                 .collect::<Vec<_>>(),
-            vec![&SemanticAction::Inspect]
+            vec![&SemanticActionKind::Inspect]
         );
 
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
@@ -364,7 +366,7 @@ mod navigation_projection_tests {
             assert!(graph.nodes.iter().all(|node| {
                 node.semantic_actions()
                     .iter()
-                    .all(|action| action.action == SemanticAction::Inspect)
+                .all(|action| action.action == SemanticActionKind::Inspect)
             }));
         }
 
@@ -403,7 +405,7 @@ mod navigation_projection_tests {
         let document = Document::parse(object_xml).expect("parse configuration fixture");
         let graph = project_platform_xml_navigation(&document, &object_path, &context);
 
-        assert_eq!(graph.root.name, "ParityConfiguration");
+        assert_eq!(graph.root.display_name, "ParityConfiguration");
         assert!(matches!(
             graph.root.kind,
             NodeKind::MetadataObject { ref metadata_type } if metadata_type == "Configuration"
@@ -463,7 +465,7 @@ mod navigation_projection_tests {
             let form = graph
                 .nodes
                 .iter()
-                .find(|node| node.reference.name == "ItemForm")
+                .find(|node| node.reference.display_name == "ItemForm")
                 .expect("registered form must remain navigable for diagnosis");
 
             assert_eq!(
@@ -534,7 +536,7 @@ mod navigation_projection_tests {
             let template = graph
                 .nodes
                 .iter()
-                .find(|node| node.reference.name == "Print")
+                .find(|node| node.reference.display_name == "Print")
                 .expect("registered template must remain navigable for diagnosis");
 
             assert_eq!(
@@ -596,7 +598,7 @@ mod navigation_projection_tests {
             let template = graph
                 .nodes
                 .iter()
-                .find(|node| node.reference.name == "Print")
+                .find(|node| node.reference.display_name == "Print")
                 .expect("registered template must remain navigable for diagnosis");
 
             assert_eq!(
@@ -649,7 +651,7 @@ mod navigation_projection_tests {
             graph
                 .nodes
                 .iter()
-                .all(|node| node.reference.name != "../../outside"),
+                .all(|node| node.reference.display_name != "../../outside"),
             "invalid registration must be omitted before any descriptor/content lookup: {graph:?}"
         );
 
@@ -670,7 +672,7 @@ mod navigation_projection_tests {
         let document = Document::parse(&object_xml).expect("parse metadata fixture");
         let graph = project_platform_xml_navigation(&document, &aliased_object_path, &context);
 
-        assert_eq!(graph.root.source_set, "main");
+        assert_eq!(graph.root.source_id, SourceId::new("main").unwrap());
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
     }
 
@@ -702,7 +704,7 @@ mod navigation_projection_tests {
         let active = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "Active")
+            .find(|node| node.reference.display_name == "Active")
             .expect("registered ActiveDocument template must be projected");
 
         assert_eq!(
@@ -756,7 +758,7 @@ mod navigation_projection_tests {
                 && edge
                     .semantic_actions()
                     .iter()
-                    .all(|action| action.action == SemanticAction::Inspect)
+                    .all(|action| action.action == SemanticActionKind::Inspect)
         }));
 
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
@@ -847,7 +849,7 @@ mod navigation_projection_tests {
         let root = graph
             .nodes
             .iter()
-            .find(|node| node.reference.name == "Shipment")
+            .find(|node| node.reference.display_name == "Shipment")
             .expect("root document");
         assert_eq!(
             root.capability_state.authorability,
@@ -857,7 +859,7 @@ mod navigation_projection_tests {
             let child = graph
                 .nodes
                 .iter()
-                .find(|node| node.reference.name == child_name)
+                .find(|node| node.reference.display_name == child_name)
                 .expect("registered child node");
             assert_eq!(
                 child.capability_state.authorability,
@@ -868,7 +870,7 @@ mod navigation_projection_tests {
             let edge = graph
                 .edges
                 .iter()
-                .find(|edge| edge.to.name == child_name)
+                .find(|edge| edge.to.display_name == child_name)
                 .expect("containment edge for child");
             assert_eq!(
                 edge.capability_state.authorability,
@@ -877,7 +879,7 @@ mod navigation_projection_tests {
             assert!(edge
                 .semantic_actions()
                 .iter()
-                .all(|action| action.action == SemanticAction::Inspect));
+                .all(|action| action.action == SemanticActionKind::Inspect));
         }
 
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
@@ -914,7 +916,7 @@ mod navigation_projection_tests {
                 && edge
                     .semantic_actions()
                     .iter()
-                    .all(|action| action.action == SemanticAction::Inspect)
+                    .all(|action| action.action == SemanticActionKind::Inspect)
         }));
 
         fs::remove_dir_all(&context.workspace_root).expect("clean temporary navigation workspace");
@@ -935,9 +937,12 @@ mod navigation_projection_tests {
         let second = project_platform_xml_navigation(&document, &second_path, &context);
         let first_again = project_platform_xml_navigation(&document, &first_path, &context);
 
-        assert_ne!(first.root.source_set, second.root.source_set);
-        assert_eq!(first.root.source_set, first_again.root.source_set);
-        assert!(first.root.source_set.starts_with("ad-hoc:"));
+        assert_ne!(first.root.source_id, second.root.source_id);
+        assert_eq!(first.root.source_id, first_again.root.source_id);
+        assert!(serde_json::to_value(&first.root).unwrap()["sourceId"]
+            .as_str()
+            .unwrap()
+            .starts_with("ad-hoc:"));
         let serialized = serde_json::to_string(&first).expect("serialize graph");
         assert!(!serialized.contains(&first_path.display().to_string()));
         assert!(!serialized.contains("scratch-one"));
@@ -4761,9 +4766,11 @@ pub(crate) fn project_platform_xml_navigation(
     let object_path = navigation_normalize_lexical(object_path);
     let root_capability_state =
         navigation_root_capability_state(document_root, object, &object_name, &object_path);
+    let source_set = navigation_source_set(&object_path, context);
     let root_reference = ObjectRef::new(
-        navigation_source_set(&object_path, context),
-        Vec::new(),
+        SourceId::new(source_set).expect("navigation source set is a valid source id"),
+        navigation_semantic_object_key(&["root", metadata_type, &object_name]),
+        IdentityStrength::Derived,
         NodeKind::metadata_object(metadata_type),
         object_name,
     );
@@ -4900,9 +4907,19 @@ fn navigation_add_contained_node(
     name: String,
     capability_state: CapabilityState,
 ) -> ObjectRef {
-    let mut owner_chain = parent.owner_chain.clone();
-    owner_chain.push(OwnerSegment::new(parent.kind.clone(), parent.name.clone()));
-    let reference = ObjectRef::new(parent.source_set.clone(), owner_chain, kind, name);
+    let kind_key = format!("{kind:?}");
+    let object_key = navigation_semantic_object_key(&[
+        parent.object_key.as_str(),
+        kind_key.as_str(),
+        name.as_str(),
+    ]);
+    let reference = ObjectRef::new(
+        parent.source_id.clone(),
+        object_key,
+        IdentityStrength::Derived,
+        kind,
+        name,
+    );
     edges.push(NavigationEdge::new(
         parent.clone(),
         reference.clone(),
@@ -4911,6 +4928,17 @@ fn navigation_add_contained_node(
     ));
     nodes.push(NavigationNode::new(reference.clone(), capability_state));
     reference
+}
+
+fn navigation_semantic_object_key(parts: &[&str]) -> ObjectKey {
+    let mut digest = Sha256::new();
+    digest.update(b"unica.navigation.object.v1\0");
+    for part in parts {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    ObjectKey::new(format!("semantic:{:x}", digest.finalize()))
+        .expect("hash-derived navigation object key is opaque")
 }
 
 fn navigation_metadata_child_name(node: roxmltree::Node<'_, '_>) -> Option<String> {

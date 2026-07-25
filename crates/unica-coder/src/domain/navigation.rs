@@ -1,73 +1,149 @@
-//! Prototype ontology for navigating 1C metadata as semantic objects.
+//! JSON navigation contracts for semantic 1C metadata projections.
 
-use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// A logical reference to a metadata object or a semantic child of one.
-///
-/// `ObjectRef` is deliberately independent of XML paths, filenames, and other
-/// storage details. Its identity is exactly the source set, owner chain, node
-/// kind, and name. This lets a client keep a stable semantic target while the
-/// representation changes from platform XML to EDT or another adapter.
+use serde::{ser::SerializeStruct, Serialize, Serializer};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use super::source_adapters::{
+    SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
+    SourceRevision, SourceSnapshot,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ObjectKey(String);
+
+impl ObjectKey {
+    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+        let raw = raw.into();
+        validate_opaque_key(&raw, "object key")?;
+        Ok(Self(raw))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for ObjectKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RelationKey(String);
+
+impl RelationKey {
+    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+        let raw = raw.into();
+        validate_opaque_key(&raw, "relation key")?;
+        Ok(Self(raw))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for RelationKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+fn validate_opaque_key(raw: &str, name: &str) -> Result<(), SourceAdapterError> {
+    let windows_drive = raw.len() >= 2
+        && raw.as_bytes()[0].is_ascii_alphabetic()
+        && raw.as_bytes()[1] == b':';
+    if raw.is_empty()
+        || raw.chars().any(char::is_control)
+        || raw.starts_with('/')
+        || raw.starts_with(r"\\")
+        || windows_drive
+    {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            format!("invalid opaque {name}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Stability of a semantic key supplied by an adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ObjectRef {
-    /// Name of the configured source set that owns this logical object.
-    pub source_set: String,
-    /// Logical ancestors, ordered from the top-level owner to the immediate owner.
-    pub owner_chain: Vec<OwnerSegment>,
-    /// Semantic class of the referenced object.
-    pub kind: NodeKind,
-    /// Object name within its owner scope.
-    pub name: String,
+pub(crate) enum IdentityStrength {
+    Persistent,
+    Derived,
+    SnapshotOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObjectIdentity {
+    pub(crate) source_id: SourceId,
+    pub(crate) object_key: ObjectKey,
+}
+
+/// A path-free, versioned semantic object reference.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectRef {
+    pub(crate) source_id: SourceId,
+    pub(crate) object_key: ObjectKey,
+    pub(crate) identity_strength: IdentityStrength,
+    pub(crate) kind: NodeKind,
+    pub(crate) display_name: String,
 }
 
 impl ObjectRef {
-    pub fn new(
-        source_set: impl Into<String>,
-        owner_chain: Vec<OwnerSegment>,
+    pub(crate) fn new(
+        source_id: SourceId,
+        object_key: ObjectKey,
+        identity_strength: IdentityStrength,
         kind: NodeKind,
-        name: impl Into<String>,
+        display_name: impl Into<String>,
     ) -> Self {
         Self {
-            source_set: source_set.into(),
-            owner_chain,
+            source_id,
+            object_key,
+            identity_strength,
             kind,
-            name: name.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub(crate) fn identity(&self) -> ObjectIdentity {
+        ObjectIdentity {
+            source_id: self.source_id.clone(),
+            object_key: self.object_key.clone(),
         }
     }
 }
 
-/// One logical ancestor in [`ObjectRef::owner_chain`].
-///
-/// The source set is inherited from the enclosing [`ObjectRef`], so it is not
-/// repeated here. Like [`ObjectRef`], this contains no representation path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OwnerSegment {
-    pub kind: NodeKind,
-    pub name: String,
-}
-
-impl OwnerSegment {
-    pub fn new(kind: NodeKind, name: impl Into<String>) -> Self {
-        Self {
-            kind,
-            name: name.into(),
-        }
+impl PartialEq for ObjectRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
     }
 }
 
-/// Semantic class of a graph node.
-///
-/// `MetadataObject` deliberately stores the platform metadata type as data
-/// instead of duplicating the canonical metadata-kind registry in the domain
-/// layer. Adapters validate that type against their source-specific registry.
+impl Eq for ObjectRef {}
+
+/// Semantic class of a graph node. Source representation is intentionally not
+/// encoded here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub enum NodeKind {
-    MetadataObject {
-        metadata_type: String,
-    },
+pub(crate) enum NodeKind {
+    SourceRoot,
+    Document,
+    MetadataObject { metadata_type: String },
     Attribute,
     TabularSection,
     Command,
@@ -82,42 +158,30 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub fn metadata_object(metadata_type: impl Into<String>) -> Self {
+    pub(crate) fn metadata_object(metadata_type: impl Into<String>) -> Self {
         Self::MetadataObject {
             metadata_type: metadata_type.into(),
         }
     }
 }
 
-/// The physical representation from which this graph was projected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Representation {
+pub(crate) enum Representation {
     PlatformXml,
     Edt,
 }
 
-/// Whether the adapter resolved a semantic target to a backing source object.
-///
-/// This describes source resolution only. Whether that resolved source may be
-/// authored is represented separately by [`Authorability`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ResolutionState {
-    /// The adapter found the backing source object.
+pub(crate) enum ResolutionState {
     Resolved,
-    /// The parent declares the target, but its backing source object is absent.
     Unresolved,
 }
 
-/// Whether an independently resolved aggregate may be authored in this scope.
-///
-/// Read-only authorability is explicit rather than inferred from source
-/// resolution. A source can be present but locked by support or the active
-/// configuration, and such a source must not advertise mutation semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Authorability {
+pub(crate) enum Authorability {
     Authorable,
     SupportLocked,
     ConfigurationReadOnly,
@@ -125,65 +189,165 @@ pub enum Authorability {
     DerivedReadOnly,
 }
 
-/// Source resolution and authorability needed to derive action capabilities.
-///
-/// A node or relation is mutable only when the source is both resolved and
-/// explicitly [`Authorability::Authorable`]. This state is deliberately shared
-/// by node and relation models so a resolved reference cannot bypass a support
-/// or configuration lock through a relation-level mutation.
+/// Compatibility state of the source format with the selected adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CapabilityState {
-    pub resolution_state: ResolutionState,
-    pub authorability: Authorability,
+pub(crate) enum FormatCompatibility {
+    Compatible,
+    Incompatible,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CoverageState {
+    Complete,
+    Partial,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CapabilityBlockReason {
+    ResolutionUnresolved,
+    IdentitySnapshotOnly,
+    SnapshotInconsistent,
+    CoverageIncomplete,
+    FormatIncompatible,
+    SourceReadOnly,
+    NotAuthorable,
+    OwningRelationMissing,
+}
+
+/// All preconditions that must hold before a semantic mutation can execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CapabilityVector {
+    pub(crate) resolution: ResolutionState,
+    pub(crate) identity: IdentityStrength,
+    pub(crate) consistency: SnapshotConsistency,
+    pub(crate) coverage: CoverageState,
+    pub(crate) format: FormatCompatibility,
+    pub(crate) source_access: SourceAccess,
+    pub(crate) authorability: Authorability,
+}
+
+impl CapabilityVector {
+    pub(crate) const fn permits_mutation(&self) -> bool {
+        matches!(self.resolution, ResolutionState::Resolved)
+            && !matches!(self.identity, IdentityStrength::SnapshotOnly)
+            && matches!(self.consistency, SnapshotConsistency::Consistent)
+            && matches!(self.coverage, CoverageState::Complete)
+            && matches!(self.format, FormatCompatibility::Compatible)
+            && matches!(self.source_access, SourceAccess::ReadWrite)
+            && matches!(self.authorability, Authorability::Authorable)
+    }
+
+    pub(crate) fn blocking_reasons(&self) -> Vec<CapabilityBlockReason> {
+        let mut reasons = Vec::new();
+        if !matches!(self.resolution, ResolutionState::Resolved) {
+            reasons.push(CapabilityBlockReason::ResolutionUnresolved);
+        }
+        if matches!(self.identity, IdentityStrength::SnapshotOnly) {
+            reasons.push(CapabilityBlockReason::IdentitySnapshotOnly);
+        }
+        if !matches!(self.consistency, SnapshotConsistency::Consistent) {
+            reasons.push(CapabilityBlockReason::SnapshotInconsistent);
+        }
+        if !matches!(self.coverage, CoverageState::Complete) {
+            reasons.push(CapabilityBlockReason::CoverageIncomplete);
+        }
+        if !matches!(self.format, FormatCompatibility::Compatible) {
+            reasons.push(CapabilityBlockReason::FormatIncompatible);
+        }
+        if !matches!(self.source_access, SourceAccess::ReadWrite) {
+            reasons.push(CapabilityBlockReason::SourceReadOnly);
+        }
+        if !matches!(self.authorability, Authorability::Authorable) {
+            reasons.push(CapabilityBlockReason::NotAuthorable);
+        }
+        reasons
+    }
+}
+
+/// Compatibility view retained for the Task 8 projection migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CapabilityState {
+    pub(crate) resolution_state: ResolutionState,
+    pub(crate) authorability: Authorability,
 }
 
 impl CapabilityState {
-    pub const fn new(resolution_state: ResolutionState, authorability: Authorability) -> Self {
-        Self {
-            resolution_state,
-            authorability,
-        }
+    pub(crate) const fn new(resolution_state: ResolutionState, authorability: Authorability) -> Self {
+        Self { resolution_state, authorability }
     }
 
-    pub const fn resolved_authorable() -> Self {
+    pub(crate) const fn resolved_authorable() -> Self {
         Self::new(ResolutionState::Resolved, Authorability::Authorable)
     }
 
-    pub const fn is_resolved_authorable(self) -> bool {
+    pub(crate) const fn is_resolved_authorable(self) -> bool {
         matches!(self.resolution_state, ResolutionState::Resolved)
             && matches!(self.authorability, Authorability::Authorable)
     }
 }
 
-/// A semantic relationship between two graph nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RelationKind {
+pub(crate) enum RelationKind {
     Contains,
     References,
 }
 
-/// A semantic user intention, independent of any current MCP tool.
-///
-/// These are ontology/prototype declarations. They are not tool names, do not
-/// expose a direct script path, and do not promise that an implementation is
-/// already callable. A later capability-to-tool mapping may make a modeled
-/// action executable for a particular representation and node instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelationRef {
+    pub(crate) source_id: SourceId,
+    pub(crate) relation_key: RelationKey,
+    pub(crate) kind: RelationKind,
+}
+
+impl RelationRef {
+    pub(crate) fn new(
+        source_id: SourceId,
+        relation_key: impl Into<String>,
+        kind: RelationKind,
+    ) -> Result<Self, SourceAdapterError> {
+        Ok(Self { source_id, relation_key: RelationKey::new(relation_key)?, kind })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SemanticAction {
+pub(crate) enum ActionAvailability {
+    Modeled,
+    Executable,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Atomicity {
+    SingleFileAtomicReplace,
+    AggregateSwapWithRecovery,
+    BackendTransaction,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OperationBinding {
+    pub(crate) tool: String,
+    pub(crate) schema_version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SemanticActionKind {
     Inspect,
     EditProperties,
-    /// Creates a new sibling through the source node's owning `contains` or
-    /// registration relation. The action is discovered on its source node, but
-    /// its mutation target is that relation plus sibling creation, so it must
-    /// use [`ActionExecutionPolicy::AtomicRelationMutation`].
     Clone,
-    /// Reserved for a future profile that carries action-specific support
-    /// removal eligibility. `Authorable` alone is insufficient: native
-    /// removal requires the target to be off support/removed from support.
-    /// The current prototype intentionally never advertises this action.
     Remove,
     AddAttribute,
     AddTabularSection,
@@ -200,87 +364,110 @@ pub enum SemanticAction {
     BindCommand,
     RebindCommand,
     UnbindCommand,
-    /// Creates or updates the handler in the enclosing form's module. It is
-    /// exposed on a form element, but its mutation target is the one semantic
-    /// `Form` aggregate (form source, module, and children). Therefore this is
-    /// an [`ActionExecutionPolicy::AtomicNodeMutation`], not an element plus
-    /// unrelated-module cross-action.
     CreateHandler,
     EditMxl,
 }
 
-/// Transaction contract of a modeled semantic action.
-///
-/// Every mutation is independently atomic at exactly one node or relation
-/// aggregate. Implementations must validate the affected aggregate before the
-/// commit and never rely on a cross-action changeset. This is a model contract,
-/// not a claim about the availability of a transport endpoint.
+/// A capability-qualified semantic action, independent from a particular MCP
+/// transport. Mutation actions are only executable with every capability
+/// precondition and an explicit native operation binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SemanticAction {
+    pub(crate) kind: SemanticActionKind,
+    pub(crate) target: Option<ObjectRef>,
+    pub(crate) owning_relation: Option<RelationRef>,
+    pub(crate) availability: ActionAvailability,
+    pub(crate) blocking_reasons: Vec<CapabilityBlockReason>,
+    pub(crate) operation_binding: Option<OperationBinding>,
+    pub(crate) atomicity: Atomicity,
+}
+
+impl SemanticAction {
+    pub(crate) fn modeled_clone(target: ObjectRef, owning_relation: Option<RelationRef>) -> Self {
+        let mut blocking_reasons = Vec::new();
+        if owning_relation.is_none() {
+            blocking_reasons.push(CapabilityBlockReason::OwningRelationMissing);
+        }
+        Self {
+            kind: SemanticActionKind::Clone,
+            target: Some(target),
+            owning_relation,
+            availability: if blocking_reasons.is_empty() {
+                ActionAvailability::Modeled
+            } else {
+                ActionAvailability::Blocked
+            },
+            blocking_reasons,
+            operation_binding: None,
+            atomicity: Atomicity::AggregateSwapWithRecovery,
+        }
+    }
+
+    pub(crate) fn mutation(
+        kind: SemanticActionKind,
+        target: ObjectRef,
+        capability: CapabilityVector,
+        owning_relation: Option<RelationRef>,
+        operation_binding: Option<OperationBinding>,
+        atomicity: Atomicity,
+    ) -> Self {
+        let mut blocking_reasons = capability.blocking_reasons();
+        if matches!(kind, SemanticActionKind::Clone) && owning_relation.is_none() {
+            blocking_reasons.push(CapabilityBlockReason::OwningRelationMissing);
+        }
+        let availability = if blocking_reasons.is_empty() {
+            if operation_binding.is_some() {
+                ActionAvailability::Executable
+            } else {
+                ActionAvailability::Modeled
+            }
+        } else {
+            ActionAvailability::Blocked
+        };
+        Self { kind, target: Some(target), owning_relation, availability, blocking_reasons, operation_binding, atomicity }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionExecutionPolicy {
+pub(crate) enum ActionExecutionPolicy {
     ReadOnly,
     AtomicNodeMutation,
     AtomicRelationMutation,
 }
 
 impl ActionExecutionPolicy {
-    pub const fn is_mutation(self) -> bool {
-        matches!(
-            self,
-            Self::AtomicNodeMutation | Self::AtomicRelationMutation
-        )
+    pub(crate) const fn is_mutation(self) -> bool {
+        matches!(self, Self::AtomicNodeMutation | Self::AtomicRelationMutation)
     }
 
-    pub const fn validates_before_commit(self) -> bool {
-        self.is_mutation()
-    }
-
-    pub const fn allows_cross_action_changeset(self) -> bool {
-        false
-    }
+    pub(crate) const fn validates_before_commit(self) -> bool { self.is_mutation() }
+    pub(crate) const fn allows_cross_action_changeset(self) -> bool { false }
 }
 
-/// A modeled action paired with its atomicity contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SemanticActionDescriptor {
-    pub action: SemanticAction,
-    pub execution_policy: ActionExecutionPolicy,
+pub(crate) struct SemanticActionDescriptor {
+    pub(crate) action: SemanticActionKind,
+    pub(crate) execution_policy: ActionExecutionPolicy,
 }
 
 impl SemanticActionDescriptor {
-    const fn read(action: SemanticAction) -> Self {
-        Self {
-            action,
-            execution_policy: ActionExecutionPolicy::ReadOnly,
-        }
+    const fn read(action: SemanticActionKind) -> Self {
+        Self { action, execution_policy: ActionExecutionPolicy::ReadOnly }
     }
-
-    const fn node_mutation(action: SemanticAction) -> Self {
-        Self {
-            action,
-            execution_policy: ActionExecutionPolicy::AtomicNodeMutation,
-        }
+    const fn node_mutation(action: SemanticActionKind) -> Self {
+        Self { action, execution_policy: ActionExecutionPolicy::AtomicNodeMutation }
     }
-
-    const fn relation_mutation(action: SemanticAction) -> Self {
-        Self {
-            action,
-            execution_policy: ActionExecutionPolicy::AtomicRelationMutation,
-        }
+    const fn relation_mutation(action: SemanticActionKind) -> Self {
+        Self { action, execution_policy: ActionExecutionPolicy::AtomicRelationMutation }
     }
 }
 
-/// Explicit semantic-action coverage modeled by this prototype.
-///
-/// A `GenericMetadataObject` intentionally exposes only inspection. The
-/// adapter must opt into a named profile before the model advertises any
-/// mutation, so an unknown metadata type never inherits `Document` actions by
-/// accident. This is serialized on every [`NavigationNode`] to make the
-/// prototype boundary visible to graph consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionProfile {
+pub(crate) enum ActionProfile {
     DocumentMetadataObject,
     GenericMetadataObject,
     Form,
@@ -291,777 +478,674 @@ pub enum ActionProfile {
     UnmodeledChild,
 }
 
-/// Return the explicit semantic-action coverage profile for a node class.
-pub fn action_profile_for(kind: &NodeKind) -> ActionProfile {
+pub(crate) fn action_profile_for(kind: &NodeKind) -> ActionProfile {
     match kind {
-        NodeKind::MetadataObject { metadata_type } if metadata_type == "Document" => {
-            ActionProfile::DocumentMetadataObject
-        }
-        NodeKind::MetadataObject { .. } => ActionProfile::GenericMetadataObject,
+        NodeKind::Document => ActionProfile::DocumentMetadataObject,
+        NodeKind::MetadataObject { metadata_type } if metadata_type == "Document" => ActionProfile::DocumentMetadataObject,
+        NodeKind::MetadataObject { .. } | NodeKind::SourceRoot => ActionProfile::GenericMetadataObject,
         NodeKind::Form => ActionProfile::Form,
         NodeKind::FormElement => ActionProfile::FormElement,
         NodeKind::TabularSection => ActionProfile::TabularSection,
-        NodeKind::Template {
-            template_type: Some(template_type),
-        } if template_type == "SpreadsheetDocument" => ActionProfile::MxlTemplate,
+        NodeKind::Template { template_type: Some(template_type) } if template_type == "SpreadsheetDocument" => ActionProfile::MxlTemplate,
         NodeKind::Template { .. } => ActionProfile::UnmodeledTemplate,
-        NodeKind::Attribute
-        | NodeKind::Command
-        | NodeKind::FormAttribute
-        | NodeKind::FormCommand => ActionProfile::UnmodeledChild,
+        NodeKind::Attribute | NodeKind::Command | NodeKind::FormAttribute | NodeKind::FormCommand => ActionProfile::UnmodeledChild,
     }
 }
 
-/// Return modeled semantic actions for a node class in its current state.
-///
-/// The returned descriptors are a pure ontology decision. They deliberately do
-/// not consult the MCP registry or advertise a callable tool. Unresolved or
-/// non-authorable nodes retain only inspection: exposing a mutation for either
-/// state would falsely promise an authorable aggregate.
-pub fn semantic_actions_for(
-    kind: &NodeKind,
-    capability_state: CapabilityState,
-) -> Vec<SemanticActionDescriptor> {
+pub(crate) fn semantic_actions_for(kind: &NodeKind, capability_state: CapabilityState) -> Vec<SemanticActionDescriptor> {
     if !capability_state.is_resolved_authorable() {
-        return vec![SemanticActionDescriptor::read(SemanticAction::Inspect)];
+        return vec![SemanticActionDescriptor::read(SemanticActionKind::Inspect)];
     }
-
     match action_profile_for(kind) {
         ActionProfile::DocumentMetadataObject => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::node_mutation(SemanticAction::EditProperties),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Clone),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddAttribute),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddTabularSection),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddForm),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddMxl),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddCommand),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::EditProperties),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Clone),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddAttribute),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddTabularSection),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddForm),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddMxl),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddCommand),
         ],
         ActionProfile::Form => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::node_mutation(SemanticAction::EditProperties),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Clone),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddFormAttribute),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddFormCommand),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddFormElement),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::EditProperties),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Clone),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddFormAttribute),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddFormCommand),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddFormElement),
         ],
         ActionProfile::FormElement => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::node_mutation(SemanticAction::EditProperties),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Clone),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddFormElement),
-            SemanticActionDescriptor::node_mutation(SemanticAction::CreateHandler),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::EditProperties),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Clone),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddFormElement),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::CreateHandler),
         ],
         ActionProfile::TabularSection => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::node_mutation(SemanticAction::EditProperties),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Clone),
-            SemanticActionDescriptor::node_mutation(SemanticAction::AddAttribute),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::EditProperties),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Clone),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::AddAttribute),
         ],
         ActionProfile::MxlTemplate => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::node_mutation(SemanticAction::EditMxl),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Clone),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::node_mutation(SemanticActionKind::EditMxl),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Clone),
         ],
-        ActionProfile::GenericMetadataObject
-        | ActionProfile::UnmodeledTemplate
-        | ActionProfile::UnmodeledChild => {
-            vec![SemanticActionDescriptor::read(SemanticAction::Inspect)]
-        }
+        ActionProfile::GenericMetadataObject | ActionProfile::UnmodeledTemplate | ActionProfile::UnmodeledChild => vec![SemanticActionDescriptor::read(SemanticActionKind::Inspect)],
     }
 }
 
-/// Return modeled actions for an existing semantic relation.
-///
-/// Relation actions are intentionally not exposed through the endpoint node:
-/// moving containment and changing a binding must mutate the relation
-/// aggregate, not the serialized representation of either endpoint. An
-/// unresolved or read-only relation is always inspection-only.
-pub fn semantic_actions_for_relation(
+pub(crate) fn semantic_actions_for_relation(
     from_kind: &NodeKind,
     to_kind: &NodeKind,
     relation: RelationKind,
     capability_state: CapabilityState,
 ) -> Vec<SemanticActionDescriptor> {
     if !capability_state.is_resolved_authorable() {
-        return vec![SemanticActionDescriptor::read(SemanticAction::Inspect)];
+        return vec![SemanticActionDescriptor::read(SemanticActionKind::Inspect)];
     }
-
     match (relation, from_kind, to_kind) {
         (RelationKind::Contains, NodeKind::Form, NodeKind::FormElement) => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::Move),
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::Move),
         ],
-        (
-            RelationKind::References,
-            NodeKind::FormElement,
-            NodeKind::Attribute | NodeKind::FormAttribute,
-        ) => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::BindData),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::RebindData),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::UnbindData),
+        (RelationKind::References, NodeKind::FormElement, NodeKind::Attribute | NodeKind::FormAttribute) => vec![
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::BindData),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::RebindData),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::UnbindData),
         ],
-        (
-            RelationKind::References,
-            NodeKind::FormElement,
-            NodeKind::Command | NodeKind::FormCommand,
-        ) => vec![
-            SemanticActionDescriptor::read(SemanticAction::Inspect),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::BindCommand),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::RebindCommand),
-            SemanticActionDescriptor::relation_mutation(SemanticAction::UnbindCommand),
+        (RelationKind::References, NodeKind::FormElement, NodeKind::Command | NodeKind::FormCommand) => vec![
+            SemanticActionDescriptor::read(SemanticActionKind::Inspect),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::BindCommand),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::RebindCommand),
+            SemanticActionDescriptor::relation_mutation(SemanticActionKind::UnbindCommand),
         ],
-        _ => vec![SemanticActionDescriptor::read(SemanticAction::Inspect)],
+        _ => vec![SemanticActionDescriptor::read(SemanticActionKind::Inspect)],
     }
 }
 
-/// One semantic node and its currently modeled actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NavigationNode {
-    pub reference: ObjectRef,
-    pub capability_state: CapabilityState,
-    pub action_profile: ActionProfile,
+pub(crate) struct NavigationNode {
+    pub(crate) reference: ObjectRef,
+    pub(crate) capability_state: CapabilityState,
+    pub(crate) action_profile: ActionProfile,
     semantic_actions: Vec<SemanticActionDescriptor>,
 }
 
 impl NavigationNode {
-    pub fn new(reference: ObjectRef, capability_state: CapabilityState) -> Self {
+    pub(crate) fn new(reference: ObjectRef, capability_state: CapabilityState) -> Self {
         let action_profile = action_profile_for(&reference.kind);
         let semantic_actions = semantic_actions_for(&reference.kind, capability_state);
-        Self {
-            reference,
-            capability_state,
-            action_profile,
-            semantic_actions,
-        }
+        Self { reference, capability_state, action_profile, semantic_actions }
     }
-
-    pub fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
-        &self.semantic_actions
-    }
+    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] { &self.semantic_actions }
 }
 
-/// A directed semantic relationship in a navigation graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NavigationEdge {
-    pub from: ObjectRef,
-    pub to: ObjectRef,
-    pub relation: RelationKind,
-    pub capability_state: CapabilityState,
+pub(crate) struct NavigationEdge {
+    pub(crate) from: ObjectRef,
+    pub(crate) to: ObjectRef,
+    pub(crate) relation: RelationKind,
+    pub(crate) capability_state: CapabilityState,
     semantic_actions: Vec<SemanticActionDescriptor>,
 }
 
 impl NavigationEdge {
-    pub fn new(
-        from: ObjectRef,
-        to: ObjectRef,
-        relation: RelationKind,
-        capability_state: CapabilityState,
-    ) -> Self {
-        let semantic_actions =
-            semantic_actions_for_relation(&from.kind, &to.kind, relation, capability_state);
-        Self {
-            from,
-            to,
-            relation,
-            capability_state,
-            semantic_actions,
-        }
+    pub(crate) fn new(from: ObjectRef, to: ObjectRef, relation: RelationKind, capability_state: CapabilityState) -> Self {
+        let semantic_actions = semantic_actions_for_relation(&from.kind, &to.kind, relation, capability_state);
+        Self { from, to, relation, capability_state, semantic_actions }
     }
-
-    pub fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
-        &self.semantic_actions
-    }
+    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] { &self.semantic_actions }
 }
 
-/// Declares how `semanticActions` in a graph must be interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionSemantics {
-    ModeledCapabilities,
-}
+pub(crate) enum ActionSemantics { ModeledCapabilities }
 
-/// A representation-specific projection of semantic metadata nodes and links.
-///
-/// The model is intentionally marked as a prototype. `semanticActions` are
-/// modeled capabilities with an atomicity contract, not an assertion that a
-/// corresponding public command exists today.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NavigationGraph {
-    pub prototype_version: u32,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NavigationGraph {
+    pub(crate) prototype_version: u32,
     prototype: bool,
     action_semantics: ActionSemantics,
-    pub representation: Representation,
-    pub root: ObjectRef,
-    pub nodes: Vec<NavigationNode>,
-    pub edges: Vec<NavigationEdge>,
+    pub(crate) representation: Representation,
+    pub(crate) root: ObjectRef,
+    pub(crate) nodes: Vec<NavigationNode>,
+    pub(crate) edges: Vec<NavigationEdge>,
 }
 
 impl NavigationGraph {
-    pub const PROTOTYPE_VERSION: u32 = 1;
+    pub(crate) const PROTOTYPE_VERSION: u32 = 1;
+    pub(crate) fn new(representation: Representation, root: ObjectRef, nodes: Vec<NavigationNode>, edges: Vec<NavigationEdge>) -> Self {
+        Self { prototype_version: Self::PROTOTYPE_VERSION, prototype: true, action_semantics: ActionSemantics::ModeledCapabilities, representation, root, nodes, edges }
+    }
+    pub(crate) const fn is_prototype(&self) -> bool { self.prototype }
+    pub(crate) const fn action_semantics(&self) -> ActionSemantics { self.action_semantics }
+}
 
-    pub fn new(
-        representation: Representation,
-        root: ObjectRef,
-        nodes: Vec<NavigationNode>,
-        edges: Vec<NavigationEdge>,
-    ) -> Self {
-        Self {
-            prototype_version: Self::PROTOTYPE_VERSION,
-            prototype: true,
-            action_semantics: ActionSemantics::ModeledCapabilities,
-            representation,
-            root,
-            nodes,
-            edges,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyGraphObjectRef {
+    source_set: String,
+    owner_chain: Vec<LegacyOwnerSegment>,
+    kind: NodeKind,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyOwnerSegment {
+    kind: NodeKind,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyNavigationNode {
+    reference: LegacyGraphObjectRef,
+    capability_state: CapabilityState,
+    action_profile: ActionProfile,
+    semantic_actions: Vec<SemanticActionDescriptor>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyNavigationEdge {
+    from: LegacyGraphObjectRef,
+    to: LegacyGraphObjectRef,
+    relation: RelationKind,
+    capability_state: CapabilityState,
+    semantic_actions: Vec<SemanticActionDescriptor>,
+}
+
+impl NavigationGraph {
+    fn legacy_reference(&self, reference: &ObjectRef) -> LegacyGraphObjectRef {
+        let mut owner_chain = Vec::new();
+        let mut current = reference;
+        while let Some(parent) = self.edges.iter().find_map(|edge| {
+            (matches!(edge.relation, RelationKind::Contains) && edge.to == *current)
+                .then_some(&edge.from)
+        }) {
+            owner_chain.push(LegacyOwnerSegment {
+                kind: parent.kind.clone(),
+                name: parent.display_name.clone(),
+            });
+            current = parent;
+        }
+        owner_chain.reverse();
+        let source_set = serde_json::to_value(&reference.source_id)
+            .expect("source id is serializable")
+            .as_str()
+            .expect("source id serializes as a string")
+            .to_string();
+        LegacyGraphObjectRef {
+            source_set,
+            owner_chain,
+            kind: reference.kind.clone(),
+            name: reference.display_name.clone(),
         }
     }
+}
 
-    pub const fn is_prototype(&self) -> bool {
-        self.prototype
+impl Serialize for NavigationGraph {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let nodes = self.nodes.iter().map(|node| LegacyNavigationNode {
+            reference: self.legacy_reference(&node.reference),
+            capability_state: node.capability_state,
+            action_profile: node.action_profile,
+            semantic_actions: node.semantic_actions.clone(),
+        }).collect::<Vec<_>>();
+        let edges = self.edges.iter().map(|edge| LegacyNavigationEdge {
+            from: self.legacy_reference(&edge.from),
+            to: self.legacy_reference(&edge.to),
+            relation: edge.relation,
+            capability_state: edge.capability_state,
+            semantic_actions: edge.semantic_actions.clone(),
+        }).collect::<Vec<_>>();
+        let mut state = serializer.serialize_struct("NavigationGraph", 7)?;
+        state.serialize_field("prototypeVersion", &self.prototype_version)?;
+        state.serialize_field("prototype", &self.prototype)?;
+        state.serialize_field("actionSemantics", &self.action_semantics)?;
+        state.serialize_field("representation", &self.representation)?;
+        state.serialize_field("root", &self.legacy_reference(&self.root))?;
+        state.serialize_field("nodes", &nodes)?;
+        state.serialize_field("edges", &edges)?;
+        state.end()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum NavigationStatus { Available, Unavailable }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceAdapterDiagnostic {
+    pub(crate) code: String,
+    pub(crate) message: String,
+}
+
+impl From<SourceAdapterError> for SourceAdapterDiagnostic {
+    fn from(error: SourceAdapterError) -> Self {
+        Self { code: error.code().to_string(), message: error.message }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationRelationPage {
+    pub(crate) relation: RelationRef,
+    pub(crate) nodes: Vec<NavigationNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_cursor: Option<NavigationCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationEnvelope {
+    pub(crate) schema_version: String,
+    pub(crate) status: NavigationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot: Option<SourceSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) root: Option<ObjectRef>,
+    pub(crate) nodes: Vec<NavigationNode>,
+    pub(crate) relations: Vec<NavigationRelationPage>,
+    pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
+}
+
+impl NavigationEnvelope {
+    pub(crate) fn unavailable(error: SourceAdapterError) -> Self {
+        Self { schema_version: "1".to_string(), status: NavigationStatus::Unavailable, snapshot: None, root: None, nodes: Vec::new(), relations: Vec::new(), diagnostics: vec![error.into()] }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PropertyType {
+    Boolean,
+    Integer,
+    Decimal,
+    String,
+    LocalizedString,
+    Uuid,
+    Enum { enum_type: String },
+    Date,
+    TypeSet,
+    ObjectRef,
+    List,
+    Structure,
+    Null,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TypeSetValue { pub(crate) types: BTreeSet<String> }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PropertyValue {
+    Boolean(bool),
+    Integer(i64),
+    Decimal(String),
+    String(String),
+    LocalizedString(BTreeMap<String, String>),
+    Uuid(Uuid),
+    EnumSymbol(String),
+    Date(String),
+    TypeSet(TypeSetValue),
+    ObjectRef(ObjectRef),
+    List(Vec<PropertyValue>),
+    Structure(BTreeMap<String, PropertyValue>),
+    Null,
+    Unknown { summary: String },
+}
+
+impl Serialize for PropertyValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        match self {
+            Self::Boolean(value) => serializer.serialize_bool(*value),
+            Self::Integer(value) => serializer.serialize_i64(*value),
+            Self::Decimal(value) | Self::String(value) | Self::EnumSymbol(value) | Self::Date(value) => serializer.serialize_str(value),
+            Self::LocalizedString(value) => value.serialize(serializer),
+            Self::Uuid(value) => serializer.serialize_str(&value.to_string()),
+            Self::TypeSet(value) => value.serialize(serializer),
+            Self::ObjectRef(value) => value.serialize(serializer),
+            Self::List(value) => value.serialize(serializer),
+            Self::Structure(value) => value.serialize(serializer),
+            Self::Null => serializer.serialize_none(),
+            Self::Unknown { summary } => {
+                let mut map = BTreeMap::new();
+                map.insert("summary", summary);
+                map.serialize(serializer)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PropertyValueState { Explicit, Defaulted, Inherited, Computed, Absent, Unresolved }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PropertyProvenance { Descriptor, ProjectorDefault, Inherited, Computed, Unknown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PropertyCapability { ReadOnly, Authorable, Unknown }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SemanticProperty {
+    #[serde(rename = "type")]
+    pub(crate) value_type: PropertyType,
+    pub(crate) value_state: PropertyValueState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) value: Option<PropertyValue>,
+    pub(crate) provenance: PropertyProvenance,
+    pub(crate) capability: PropertyCapability,
+}
+
+impl SemanticProperty {
+    pub(crate) fn explicit(value_type: PropertyType, value: PropertyValue, provenance: PropertyProvenance) -> Result<Self, SourceAdapterError> {
+        if !property_value_matches(&value_type, &value) {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "property type does not match its value"));
+        }
+        Ok(Self { value_type, value_state: PropertyValueState::Explicit, value: Some(value), provenance, capability: PropertyCapability::Unknown })
     }
 
-    pub const fn action_semantics(&self) -> ActionSemantics {
-        self.action_semantics
+    pub(crate) fn absent(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
+        Self { value_type, value_state: PropertyValueState::Absent, value: None, provenance, capability: PropertyCapability::Unknown }
     }
+
+    pub(crate) fn unresolved(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
+        Self { value_type, value_state: PropertyValueState::Unresolved, value: None, provenance, capability: PropertyCapability::Unknown }
+    }
+
+    pub(crate) fn defaulted(value_type: PropertyType, value: PropertyValue, projector_profile: &str) -> Result<Self, SourceAdapterError> {
+        if projector_profile.is_empty() || !property_value_matches(&value_type, &value) {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "defaulted property requires an exact projector profile and compatible value"));
+        }
+        Ok(Self { value_type, value_state: PropertyValueState::Defaulted, value: Some(value), provenance: PropertyProvenance::ProjectorDefault, capability: PropertyCapability::Unknown })
+    }
+}
+
+fn property_value_matches(value_type: &PropertyType, value: &PropertyValue) -> bool {
+    matches!((value_type, value),
+        (PropertyType::Boolean, PropertyValue::Boolean(_)) |
+        (PropertyType::Integer, PropertyValue::Integer(_)) |
+        (PropertyType::Decimal, PropertyValue::Decimal(_)) |
+        (PropertyType::String, PropertyValue::String(_)) |
+        (PropertyType::LocalizedString, PropertyValue::LocalizedString(_)) |
+        (PropertyType::Uuid, PropertyValue::Uuid(_)) |
+        (PropertyType::Enum { .. }, PropertyValue::EnumSymbol(_)) |
+        (PropertyType::Date, PropertyValue::Date(_)) |
+        (PropertyType::TypeSet, PropertyValue::TypeSet(_)) |
+        (PropertyType::ObjectRef, PropertyValue::ObjectRef(_)) |
+        (PropertyType::List, PropertyValue::List(_)) |
+        (PropertyType::Structure, PropertyValue::Structure(_)) |
+        (PropertyType::Null, PropertyValue::Null) |
+        (PropertyType::Unknown, PropertyValue::Unknown { .. })
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum NavigationTarget {
+    ObjectPath(String),
+    ObjectRef { object_ref: ObjectRef, snapshot_revision: SourceRevision },
+    Cursor(NavigationCursor),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationQuery { pub(crate) target: NavigationTarget, pub(crate) select: NavigationSelection }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationSelection {
+    pub(crate) properties: PropertySelection,
+    pub(crate) facets: FacetSelection,
+    pub(crate) relations: Vec<RelationSelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PropertySelection { All, Named(BTreeSet<String>) }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FacetSelection { None, Summary, Full }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelationSelection {
+    pub(crate) kind: Option<RelationKind>,
+    pub(crate) role: String,
+    pub(crate) page_size: u16,
+}
+
+impl RelationSelection {
+    pub(crate) fn new(role: impl Into<String>, page_size: Option<u16>) -> Result<Self, SourceAdapterError> {
+        let role = role.into();
+        let page_size = page_size.unwrap_or(25);
+        if role.is_empty() || role.chars().any(char::is_control) || page_size == 0 || page_size > 100 {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation selection"));
+        }
+        Ok(Self { kind: None, role, page_size })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavigationCursor {
+    pub(crate) schema_version: u16,
+    pub(crate) source_id: SourceId,
+    pub(crate) snapshot_revision: SourceRevision,
+    pub(crate) target: ObjectKey,
+    pub(crate) relation: RelationKey,
+    pub(crate) selection_hash: String,
+    pub(crate) next_position: u64,
+}
+
+impl NavigationCursor {
+    pub(crate) const SCHEMA_VERSION: u16 = 1;
+
+    pub(crate) fn issue(source_id: SourceId, snapshot_revision: SourceRevision, relation: RelationRef, page_size: u16) -> Self {
+        let target = ObjectKey::new(format!("cursor-target:{}", relation.relation_key.as_str())).expect("generated cursor target is opaque");
+        Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, selection_hash: normalized_selection_hash(relation.relation_key.as_str(), page_size), relation: relation.relation_key, next_position: 0 }
+    }
+
+    pub(crate) fn resume(&self, current_revision: &SourceRevision) -> Result<(), SourceAdapterError> {
+        if &self.snapshot_revision != current_revision {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::SnapshotStale, "navigation cursor snapshot revision is stale"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn decode<F>(
+        value: serde_json::Value,
+        current_revision: &SourceRevision,
+        re_resolve: F,
+    ) -> Result<Self, SourceAdapterError>
+    where
+        F: FnOnce(&SourceId, &ObjectKey, &RelationKey) -> bool,
+    {
+        let object = value.as_object().ok_or_else(|| SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor must be a JSON object",
+        ))?;
+        let string = |name: &str| -> Result<&str, SourceAdapterError> {
+            object.get(name).and_then(serde_json::Value::as_str).ok_or_else(|| SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                format!("navigation cursor has no valid {name}"),
+            ))
+        };
+        let schema_version = object.get("schemaVersion").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor has no valid schemaVersion",
+        ))?;
+        if schema_version != u64::from(Self::SCHEMA_VERSION) {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "unsupported navigation cursor schema version"));
+        }
+        let source_id = SourceId::new(string("sourceId")?)?;
+        let snapshot_revision = SourceRevision::new(string("snapshotRevision")?)?;
+        let target = ObjectKey::new(string("target")?)?;
+        let relation = RelationKey::new(string("relation")?)?;
+        let selection_hash = string("selectionHash")?.to_string();
+        if !is_normalized_selection_hash(&selection_hash) {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor selectionHash is not normalized"));
+        }
+        let next_position = object.get("nextPosition").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor has no valid nextPosition",
+        ))?;
+        let cursor = Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, relation, selection_hash, next_position };
+        cursor.resume(current_revision)?;
+        if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation) {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor target or relation cannot be re-resolved"));
+        }
+        Ok(cursor)
+    }
+}
+
+fn normalized_selection_hash(relation_key: &str, page_size: u16) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"unica.navigation.selection.v1\0");
+    digest.update(relation_key.as_bytes());
+    digest.update([0]);
+    digest.update(page_size.to_le_bytes());
+    format!("sha256:{:x}", digest.finalize())
+}
+
+fn is_normalized_selection_hash(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        action_profile_for, semantic_actions_for, semantic_actions_for_relation,
-        ActionExecutionPolicy, ActionProfile, ActionSemantics, Authorability, CapabilityState,
-        NavigationEdge, NavigationGraph, NavigationNode, NodeKind, ObjectRef, OwnerSegment,
-        RelationKind, Representation, ResolutionState, SemanticAction,
-    };
-    use serde_json::Value;
+    use super::*;
 
-    fn document_reference() -> ObjectRef {
-        ObjectRef::new(
-            "main",
-            Vec::new(),
-            NodeKind::metadata_object("Document"),
-            "Order",
-        )
+    fn source_id(raw: &str) -> SourceId { SourceId::new(raw).unwrap() }
+    fn object_key(raw: &str) -> ObjectKey { ObjectKey::new(raw).unwrap() }
+    fn node_ref() -> ObjectRef {
+        ObjectRef::new(source_id("workspace:main"), object_key("uuid:11111111-1111-1111-1111-111111111111"), IdentityStrength::Persistent, NodeKind::Document, "Order")
     }
+    fn relation_ref() -> RelationRef { RelationRef::new(source_id("workspace:main"), "contains:document-attributes", RelationKind::Contains).unwrap() }
 
-    fn resolved_authorable() -> CapabilityState {
-        CapabilityState::resolved_authorable()
-    }
-
-    fn action_is_present(
-        actions: &[super::SemanticActionDescriptor],
-        action: SemanticAction,
-        policy: ActionExecutionPolicy,
-    ) -> bool {
-        actions
-            .iter()
-            .any(|descriptor| descriptor.action == action && descriptor.execution_policy == policy)
+    #[test]
+    fn object_identity_is_not_derived_from_display_name_alone() {
+        let left = node_ref();
+        let renamed = ObjectRef::new(source_id("workspace:main"), object_key("uuid:11111111-1111-1111-1111-111111111111"), IdentityStrength::Persistent, NodeKind::Document, "CustomerOrder");
+        assert_eq!(left.identity(), renamed.identity());
+        assert_eq!(left, renamed);
     }
 
     #[test]
-    fn object_reference_identity_is_logical_and_path_free() {
-        let reference = ObjectRef::new(
-            "main",
-            vec![OwnerSegment::new(
-                NodeKind::metadata_object("Document"),
-                "Order",
-            )],
-            NodeKind::Form,
-            "ItemForm",
-        );
-        let same_identity = ObjectRef::new(
-            "main",
-            vec![OwnerSegment::new(
-                NodeKind::metadata_object("Document"),
-                "Order",
-            )],
-            NodeKind::Form,
-            "ItemForm",
-        );
-        let another_owner = ObjectRef::new(
-            "main",
-            vec![OwnerSegment::new(
-                NodeKind::metadata_object("Document"),
-                "Invoice",
-            )],
-            NodeKind::Form,
-            "ItemForm",
-        );
-
-        assert_eq!(reference, same_identity);
-        assert_ne!(reference, another_owner);
-
-        let serialized = serde_json::to_value(&reference).expect("reference is serializable");
-        assert_eq!(serialized["sourceSet"], "main");
-        assert_eq!(serialized["name"], "ItemForm");
-        assert!(serialized.get("ownerChain").is_some());
-        assert!(!contains_key(&serialized, "path"));
-        assert!(!contains_key(&serialized, "xmlPath"));
+    fn resolved_authorable_but_format_incompatible_is_not_executable() {
+        let capability = CapabilityVector { resolution: ResolutionState::Resolved, identity: IdentityStrength::Persistent, consistency: SnapshotConsistency::Consistent, coverage: CoverageState::Complete, format: FormatCompatibility::Incompatible, source_access: SourceAccess::ReadWrite, authorability: Authorability::Authorable };
+        assert!(!capability.permits_mutation());
+        assert_eq!(capability.blocking_reasons(), vec![CapabilityBlockReason::FormatIncompatible]);
     }
 
     #[test]
-    fn semantic_actions_are_specific_to_object_form_and_form_element() {
-        let object_actions = semantic_actions_for(
-            &NodeKind::metadata_object("Document"),
-            resolved_authorable(),
-        );
-        assert!(action_is_present(
-            &object_actions,
-            SemanticAction::AddAttribute,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        assert!(action_is_present(
-            &object_actions,
-            SemanticAction::AddForm,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        assert!(!object_actions
-            .iter()
-            .any(|descriptor| descriptor.action == SemanticAction::AddFormElement));
-        assert_eq!(
-            action_profile_for(&NodeKind::metadata_object("Document")),
-            ActionProfile::DocumentMetadataObject
-        );
-
-        let generic_object_actions = semantic_actions_for(
-            &NodeKind::metadata_object("Configuration"),
-            resolved_authorable(),
-        );
-        assert_eq!(
-            action_profile_for(&NodeKind::metadata_object("Configuration")),
-            ActionProfile::GenericMetadataObject
-        );
-        assert!(!generic_object_actions
-            .iter()
-            .any(|descriptor| descriptor.action == SemanticAction::AddAttribute));
-        assert!(!generic_object_actions
-            .iter()
-            .any(|descriptor| descriptor.action == SemanticAction::AddForm));
-        assert_eq!(generic_object_actions.len(), 1);
-        assert!(action_is_present(
-            &generic_object_actions,
-            SemanticAction::Inspect,
-            ActionExecutionPolicy::ReadOnly,
-        ));
-        assert!(generic_object_actions
-            .iter()
-            .all(|descriptor| !descriptor.execution_policy.is_mutation()));
-
-        let form_actions = semantic_actions_for(&NodeKind::Form, resolved_authorable());
-        assert!(action_is_present(
-            &form_actions,
-            SemanticAction::AddFormAttribute,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        assert!(action_is_present(
-            &form_actions,
-            SemanticAction::AddFormElement,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        assert!(!form_actions
-            .iter()
-            .any(|descriptor| descriptor.action == SemanticAction::AddAttribute));
-
-        let element_actions = semantic_actions_for(&NodeKind::FormElement, resolved_authorable());
-        assert!(action_is_present(
-            &element_actions,
-            SemanticAction::CreateHandler,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        assert!(!element_actions
-            .iter()
-            .any(|descriptor| descriptor.action == SemanticAction::AddFormAttribute));
+    fn clone_requires_an_explicit_owning_relation() {
+        let action = SemanticAction::modeled_clone(node_ref(), None);
+        assert_eq!(action.availability, ActionAvailability::Blocked);
+        assert_eq!(action.blocking_reasons, vec![CapabilityBlockReason::OwningRelationMissing]);
     }
 
     #[test]
-    fn unresolved_and_read_only_nodes_expose_only_read_semantics() {
-        for state in [
-            CapabilityState::new(ResolutionState::Unresolved, Authorability::Authorable),
-            CapabilityState::new(ResolutionState::Resolved, Authorability::DerivedReadOnly),
-        ] {
-            let actions = semantic_actions_for(&NodeKind::FormElement, state);
+    fn navigation_envelope_always_has_a_schema_version_and_status() {
+        let envelope = NavigationEnvelope::unavailable(SourceAdapterError::new(SourceAdapterErrorKind::FormatUnsupported, "Platform XML 2.19 has no certified reader"));
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["schemaVersion"], "1");
+        assert_eq!(value["status"], "unavailable");
+        assert_eq!(value["diagnostics"][0]["code"], "format_unsupported");
+    }
 
-            assert_eq!(actions.len(), 1);
-            assert!(action_is_present(
-                &actions,
-                SemanticAction::Inspect,
-                ActionExecutionPolicy::ReadOnly,
-            ));
-            assert!(actions
-                .iter()
-                .all(|descriptor| !descriptor.execution_policy.is_mutation()));
+    #[test]
+    fn properties_preserve_type_value_and_value_state() {
+        let property = SemanticProperty::explicit(PropertyType::Integer, PropertyValue::Integer(11), PropertyProvenance::Descriptor).unwrap();
+        let value = serde_json::to_value(property).unwrap();
+        assert_eq!(value["type"], "integer");
+        assert_eq!(value["value"], 11);
+        assert_eq!(value["valueState"], "explicit");
+    }
+
+    #[test]
+    fn incompatible_property_type_and_value_are_rejected() {
+        let error = SemanticProperty::explicit(PropertyType::Integer, PropertyValue::String("11".to_string()), PropertyProvenance::Descriptor).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+
+    #[test]
+    fn relation_page_size_is_bounded() {
+        assert_eq!(RelationSelection::new("attributes", None).unwrap().page_size, 25);
+        assert!(RelationSelection::new("attributes", Some(101)).is_err());
+    }
+
+    #[test]
+    fn cursor_is_bound_to_snapshot_revision() {
+        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), relation_ref(), 25);
+        let error = cursor.resume(&SourceRevision::new("sha256:two").unwrap()).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
+    }
+
+    #[test]
+    fn cursor_decode_validates_schema_hash_and_semantic_resolution() {
+        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), relation_ref(), 25);
+        let decoded = NavigationCursor::decode(
+            serde_json::to_value(cursor).unwrap(),
+            &SourceRevision::new("sha256:one").unwrap(),
+            |_source, _target, _relation| true,
+        ).unwrap();
+        assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn opaque_keys_reject_path_shaped_values() {
+        for value in ["", "/tmp/object", r"\\server\\share", "C:\\object", "line\nfeed"] {
+            assert!(ObjectKey::new(value).is_err(), "{value:?} must not be an object key");
+            assert!(RelationKey::new(value).is_err(), "{value:?} must not be a relation key");
         }
     }
 
     #[test]
-    fn graph_serializes_modeled_actions_and_atomicity_contract() {
-        let document = document_reference();
-        let form = ObjectRef::new(
-            "main",
-            vec![OwnerSegment::new(
-                document.kind.clone(),
-                document.name.clone(),
-            )],
-            NodeKind::Form,
-            "ItemForm",
-        );
-        let graph = NavigationGraph::new(
-            Representation::PlatformXml,
-            document.clone(),
-            vec![
-                NavigationNode::new(document.clone(), resolved_authorable()),
-                NavigationNode::new(form.clone(), resolved_authorable()),
-            ],
-            vec![
-                NavigationEdge::new(
-                    document.clone(),
-                    form.clone(),
-                    RelationKind::Contains,
-                    resolved_authorable(),
-                ),
-                NavigationEdge::new(
-                    form,
-                    document,
-                    RelationKind::References,
-                    resolved_authorable(),
-                ),
-            ],
-        );
-
-        assert!(graph.is_prototype());
-        assert_eq!(
-            graph.action_semantics(),
-            ActionSemantics::ModeledCapabilities
-        );
-
-        let edit = graph.nodes[0]
-            .semantic_actions()
-            .iter()
-            .find(|descriptor| descriptor.action == SemanticAction::EditProperties)
-            .expect("resolved object has an edit semantic action");
-        assert_eq!(
-            edit.execution_policy,
-            ActionExecutionPolicy::AtomicNodeMutation
-        );
-        assert!(edit.execution_policy.validates_before_commit());
-        assert!(!edit.execution_policy.allows_cross_action_changeset());
-
-        let serialized = serde_json::to_value(&graph).expect("graph is serializable");
-        assert_eq!(serialized["prototype"], true);
-        assert_eq!(serialized["actionSemantics"], "modeled_capabilities");
-        assert_eq!(serialized["representation"], "platform_xml");
-        assert_eq!(
-            serialized["nodes"][0]["actionProfile"],
-            "document_metadata_object"
-        );
-        assert_eq!(serialized["edges"][0]["relation"], "contains");
-        assert_eq!(serialized["edges"][1]["relation"], "references");
-        assert_eq!(
-            serialized["edges"][0]["capabilityState"]["authorability"],
-            "authorable"
-        );
-        assert!(serialized["edges"][0]["semanticActions"]
-            .as_array()
-            .expect("edge actions are included in the graph output")
-            .iter()
-            .any(|action| action["action"] == "inspect"));
-        assert!(serialized["nodes"][0]["semanticActions"]
-            .as_array()
-            .expect("actions are included in the graph output")
-            .iter()
-            .any(|action| {
-                action["action"] == "add_attribute"
-                    && action["executionPolicy"] == "atomic_node_mutation"
-            }));
+    fn action_is_executable_only_with_capability_and_binding() {
+        let capability = CapabilityVector { resolution: ResolutionState::Resolved, identity: IdentityStrength::Persistent, consistency: SnapshotConsistency::Consistent, coverage: CoverageState::Complete, format: FormatCompatibility::Compatible, source_access: SourceAccess::ReadWrite, authorability: Authorability::Authorable };
+        let modeled = SemanticAction::mutation(SemanticActionKind::EditProperties, node_ref(), capability.clone(), None, None, Atomicity::SingleFileAtomicReplace);
+        assert_eq!(modeled.availability, ActionAvailability::Modeled);
+        let executable = SemanticAction::mutation(SemanticActionKind::EditProperties, node_ref(), capability, None, Some(OperationBinding { tool: "unica.meta.edit".to_string(), schema_version: "1".to_string() }), Atomicity::SingleFileAtomicReplace);
+        assert_eq!(executable.availability, ActionAvailability::Executable);
     }
 
     #[test]
-    fn node_mutations_require_both_resolved_source_and_authorability() {
-        let document_kind = NodeKind::metadata_object("Document");
-        let authorable = CapabilityState::resolved_authorable();
-        let unresolved =
-            CapabilityState::new(ResolutionState::Unresolved, Authorability::Authorable);
-
-        assert!(action_is_present(
-            &semantic_actions_for(&document_kind, authorable),
-            SemanticAction::AddAttribute,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-        for state in [
-            CapabilityState::new(ResolutionState::Resolved, Authorability::SupportLocked),
-            CapabilityState::new(
-                ResolutionState::Resolved,
-                Authorability::ConfigurationReadOnly,
-            ),
-            CapabilityState::new(ResolutionState::Resolved, Authorability::UnknownReadOnly),
-            CapabilityState::new(ResolutionState::Resolved, Authorability::DerivedReadOnly),
-            unresolved,
-        ] {
-            let actions = semantic_actions_for(&document_kind, state);
-            assert_eq!(actions.len(), 1);
-            assert!(action_is_present(
-                &actions,
-                SemanticAction::Inspect,
-                ActionExecutionPolicy::ReadOnly,
-            ));
-        }
-
-        let node = NavigationNode::new(
-            document_reference(),
-            CapabilityState::new(ResolutionState::Resolved, Authorability::SupportLocked),
-        );
-        let serialized = serde_json::to_value(node).expect("node is serializable");
-        assert_eq!(serialized["capabilityState"]["resolutionState"], "resolved");
-        assert_eq!(
-            serialized["capabilityState"]["authorability"],
-            "support_locked"
-        );
+    fn action_profiles_keep_remove_unadvertised_and_clone_relation_atomic() {
+        let actions = semantic_actions_for(&NodeKind::Document, CapabilityState::resolved_authorable());
+        assert!(actions.iter().any(|action| action.action == SemanticActionKind::Clone && action.execution_policy == ActionExecutionPolicy::AtomicRelationMutation));
+        assert!(!actions.iter().any(|action| action.action == SemanticActionKind::Remove));
     }
 
     #[test]
-    fn relation_actions_are_stateful_and_not_node_actions() {
-        let authorable = CapabilityState::resolved_authorable();
-        let form_element_actions = semantic_actions_for(&NodeKind::FormElement, authorable);
-        for relation_action in [
-            SemanticAction::Move,
-            SemanticAction::BindData,
-            SemanticAction::RebindData,
-            SemanticAction::UnbindData,
-            SemanticAction::BindCommand,
-            SemanticAction::RebindCommand,
-            SemanticAction::UnbindCommand,
-        ] {
-            assert!(!form_element_actions
-                .iter()
-                .any(|descriptor| descriptor.action == relation_action));
-        }
-
-        let move_actions = semantic_actions_for_relation(
-            &NodeKind::Form,
-            &NodeKind::FormElement,
-            RelationKind::Contains,
-            authorable,
-        );
-        assert!(action_is_present(
-            &move_actions,
-            SemanticAction::Move,
-            ActionExecutionPolicy::AtomicRelationMutation,
-        ));
-
-        for target_kind in [NodeKind::Attribute, NodeKind::FormAttribute] {
-            let data_actions = semantic_actions_for_relation(
-                &NodeKind::FormElement,
-                &target_kind,
-                RelationKind::References,
-                authorable,
-            );
-            for action in [
-                SemanticAction::BindData,
-                SemanticAction::RebindData,
-                SemanticAction::UnbindData,
-            ] {
-                assert!(action_is_present(
-                    &data_actions,
-                    action,
-                    ActionExecutionPolicy::AtomicRelationMutation,
-                ));
-            }
-        }
-
-        for target_kind in [NodeKind::FormCommand, NodeKind::Command] {
-            let command_actions = semantic_actions_for_relation(
-                &NodeKind::FormElement,
-                &target_kind,
-                RelationKind::References,
-                authorable,
-            );
-            for action in [
-                SemanticAction::BindCommand,
-                SemanticAction::RebindCommand,
-                SemanticAction::UnbindCommand,
-            ] {
-                assert!(action_is_present(
-                    &command_actions,
-                    action,
-                    ActionExecutionPolicy::AtomicRelationMutation,
-                ));
-            }
-        }
-
-        let form = ObjectRef::new("main", Vec::new(), NodeKind::Form, "ItemForm");
-        let element = ObjectRef::new(
-            "main",
-            vec![OwnerSegment::new(NodeKind::Form, "ItemForm")],
-            NodeKind::FormElement,
-            "Group",
-        );
-        let edge = NavigationEdge::new(form, element, RelationKind::Contains, authorable);
-        assert!(action_is_present(
-            edge.semantic_actions(),
-            SemanticAction::Move,
-            ActionExecutionPolicy::AtomicRelationMutation,
-        ));
-        let serialized_edge = serde_json::to_value(&edge).expect("edge is serializable");
-        assert_eq!(
-            serialized_edge["capabilityState"]["resolutionState"],
-            "resolved"
-        );
-        assert!(serialized_edge["semanticActions"]
-            .as_array()
-            .expect("edge actions are serialized")
-            .iter()
-            .any(|action| {
-                action["action"] == "move"
-                    && action["executionPolicy"] == "atomic_relation_mutation"
-            }));
-
-        let unrelated_reference_actions = semantic_actions_for_relation(
-            &NodeKind::FormElement,
-            &NodeKind::Template {
-                template_type: Some("TextDocument".to_string()),
-            },
-            RelationKind::References,
-            authorable,
-        );
-        assert_eq!(unrelated_reference_actions.len(), 1);
-        assert!(action_is_present(
-            &unrelated_reference_actions,
-            SemanticAction::Inspect,
-            ActionExecutionPolicy::ReadOnly,
-        ));
-
-        let locked_actions = semantic_actions_for_relation(
-            &NodeKind::Form,
-            &NodeKind::FormElement,
-            RelationKind::Contains,
-            CapabilityState::new(ResolutionState::Resolved, Authorability::SupportLocked),
-        );
-        assert_eq!(locked_actions.len(), 1);
-        assert!(action_is_present(
-            &locked_actions,
-            SemanticAction::Inspect,
-            ActionExecutionPolicy::ReadOnly,
-        ));
-    }
-
-    #[test]
-    fn mxl_is_a_dedicated_profile_and_other_templates_fail_closed() {
-        let authorable = CapabilityState::resolved_authorable();
-        let document_actions =
-            semantic_actions_for(&NodeKind::metadata_object("Document"), authorable);
-        assert!(action_is_present(
-            &document_actions,
-            SemanticAction::AddMxl,
-            ActionExecutionPolicy::AtomicNodeMutation,
-        ));
-
-        let mxl_kind = NodeKind::Template {
-            template_type: Some("SpreadsheetDocument".to_string()),
-        };
-        assert_eq!(action_profile_for(&mxl_kind), ActionProfile::MxlTemplate);
-        let mxl_actions = semantic_actions_for(&mxl_kind, authorable);
-        for action in [
-            SemanticAction::Inspect,
-            SemanticAction::EditMxl,
-            SemanticAction::Clone,
-        ] {
-            let policy = match action {
-                SemanticAction::Inspect => ActionExecutionPolicy::ReadOnly,
-                SemanticAction::Clone => ActionExecutionPolicy::AtomicRelationMutation,
-                _ => ActionExecutionPolicy::AtomicNodeMutation,
-            };
-            assert!(action_is_present(&mxl_actions, action, policy,));
-        }
-
-        let text_template = NodeKind::Template {
-            template_type: Some("TextDocument".to_string()),
-        };
-        assert_eq!(
-            action_profile_for(&text_template),
-            ActionProfile::UnmodeledTemplate
-        );
-        let text_actions = semantic_actions_for(&text_template, authorable);
-        assert_eq!(text_actions.len(), 1);
-        assert!(action_is_present(
-            &text_actions,
-            SemanticAction::Inspect,
-            ActionExecutionPolicy::ReadOnly,
-        ));
-
-        let unproven_child = semantic_actions_for(&NodeKind::Attribute, authorable);
-        assert_eq!(unproven_child.len(), 1);
-        assert!(action_is_present(
-            &unproven_child,
-            SemanticAction::Inspect,
-            ActionExecutionPolicy::ReadOnly,
-        ));
-    }
-
-    #[test]
-    fn remove_is_deferred_until_support_removal_eligibility_is_modeled() {
-        let authorable = CapabilityState::resolved_authorable();
-        let modeled_kinds = [
-            NodeKind::metadata_object("Document"),
-            NodeKind::Form,
-            NodeKind::FormElement,
-            NodeKind::TabularSection,
-            NodeKind::Template {
-                template_type: Some("SpreadsheetDocument".to_string()),
-            },
-        ];
-
-        for kind in modeled_kinds {
-            assert!(
-                !semantic_actions_for(&kind, authorable)
-                    .iter()
-                    .any(|descriptor| descriptor.action == SemanticAction::Remove),
-                "{kind:?} must not advertise removal without support removal eligibility"
-            );
-        }
-    }
-
-    #[test]
-    fn clone_is_discoverable_on_a_node_but_mutates_its_owning_relation() {
-        let authorable = CapabilityState::resolved_authorable();
-        let modeled_kinds = [
-            NodeKind::metadata_object("Document"),
-            NodeKind::Form,
-            NodeKind::FormElement,
-            NodeKind::TabularSection,
-            NodeKind::Template {
-                template_type: Some("SpreadsheetDocument".to_string()),
-            },
-        ];
-
-        for kind in modeled_kinds {
-            let actions = semantic_actions_for(&kind, authorable);
-            assert!(action_is_present(
-                &actions,
-                SemanticAction::Clone,
-                ActionExecutionPolicy::AtomicRelationMutation,
-            ));
-            assert!(!action_is_present(
-                &actions,
-                SemanticAction::Clone,
-                ActionExecutionPolicy::AtomicNodeMutation,
-            ));
-        }
-    }
-
-    fn contains_key(value: &Value, expected_key: &str) -> bool {
-        match value {
-            Value::Object(entries) => entries
-                .iter()
-                .any(|(key, value)| key == expected_key || contains_key(value, expected_key)),
-            Value::Array(entries) => entries
-                .iter()
-                .any(|value| contains_key(value, expected_key)),
-            _ => false,
-        }
+    fn legacy_graph_serialization_keeps_meta_info_contract_until_task_eight() {
+        let root = node_ref();
+        let child = ObjectRef::new(source_id("workspace:main"), object_key("uuid:22222222-2222-2222-2222-222222222222"), IdentityStrength::Derived, NodeKind::Attribute, "Number");
+        let graph = NavigationGraph::new(Representation::PlatformXml, root.clone(), vec![NavigationNode::new(root.clone(), CapabilityState::resolved_authorable()), NavigationNode::new(child.clone(), CapabilityState::resolved_authorable())], vec![NavigationEdge::new(root, child, RelationKind::Contains, CapabilityState::resolved_authorable())]);
+        let value = serde_json::to_value(graph).unwrap();
+        assert_eq!(value["root"]["sourceSet"], "workspace:main");
+        assert_eq!(value["nodes"][1]["reference"]["ownerChain"][0]["name"], "Order");
+        assert!(value["root"].get("objectKey").is_none());
     }
 }
