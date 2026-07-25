@@ -6698,6 +6698,8 @@ source-set:
             .unwrap();
 
         assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.summary.contains("pending"));
         assert!(outcome
             .errors
             .iter()

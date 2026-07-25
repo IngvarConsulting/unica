@@ -3065,6 +3065,14 @@ mod tests {
         assert!(error.contains("does not support `path`"));
 
         let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("does not support `path`"));
+
+        let mut args = Map::new();
         args.insert("mode".to_string(), json!("raw"));
         let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
         assert!(error.contains("must be one of"));
