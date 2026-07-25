@@ -883,7 +883,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/MDClasses" ...>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" ...>
     <Item>
         <Name>ОсновнаяВалюта</Name>
         <Description>Рубль</Description>

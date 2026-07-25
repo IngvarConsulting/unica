@@ -958,6 +958,7 @@ fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
                 "HomePageWorkArea"
             )
             | (Some("http://v8.1c.ru/8.3/xcf/scheme"), "GraphicalSchema")
+            | (Some("http://v8.1c.ru/8.3/xcf/predef"), "PredefinedData")
             | (Some("http://v8.1c.ru/8.2/roles"), "Rights")
             | (
                 Some("http://v8.1c.ru/8.2/managed-application/core"),
@@ -1098,6 +1099,29 @@ mod tests {
             br#"<?xml version="1.0" encoding="UTF-8"?>
 <GraphicalSchema xmlns="http://v8.1c.ru/8.3/xcf/scheme" version="2.20"><Items/></GraphicalSchema>
 "#,
+        )
+        .unwrap();
+
+        let owners = resolve_platform_xml_owners(&path, &context).unwrap();
+
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].path, normalized_path(&path));
+        assert_eq!(owners[0].version.as_deref(), Some("2.20"));
+        assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn predefined_data_is_a_version_owning_standalone_root() {
+        let context = temp_context("predefined-data-owner");
+        let path = context.cwd.join("Catalogs/Items/Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/platform_8_3_27/predefined/Predefined.xml"
+            )),
         )
         .unwrap();
 
