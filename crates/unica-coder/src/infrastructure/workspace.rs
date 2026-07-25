@@ -36,6 +36,9 @@ fn find_workspace_root(cwd: &Path) -> Option<PathBuf> {
         if base.join("v8project.yaml").is_file() {
             return Some(base.to_path_buf());
         }
+        if base.join(".git").exists() {
+            return Some(base.to_path_buf());
+        }
     }
     None
 }
@@ -89,6 +92,24 @@ mod tests {
 
         assert_eq!(context.workspace_root, nested);
         assert_ne!(context.workspace_root, root);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_worktree_boundary_prevents_parent_workspace_discovery() {
+        let root = temp_root("unica-workspace-worktree-boundary");
+        let primary = root.join("primary");
+        let worktree = primary.join("worktrees/feature");
+        let nested = worktree.join("src/catalogs");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(primary.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../../.git/worktrees/feature\n").unwrap();
+
+        let context = discover_workspace(Some(nested)).unwrap();
+
+        assert_eq!(context.workspace_root, worktree);
+        assert_ne!(context.workspace_root, primary);
 
         let _ = std::fs::remove_dir_all(root);
     }
