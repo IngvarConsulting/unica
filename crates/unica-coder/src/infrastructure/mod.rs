@@ -10,6 +10,7 @@ pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod runtime_jobs;
 pub(crate) mod source_roots;
+pub(crate) mod source_adapters;
 pub(crate) mod support_guard;
 pub(crate) mod tool_context;
 pub(crate) mod workspace;

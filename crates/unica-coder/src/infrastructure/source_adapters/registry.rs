@@ -1,0 +1,290 @@
+use crate::{
+    domain::{
+        navigation::NavigationEnvelope,
+        source_adapters::{
+            FormatRange, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
+        },
+    },
+    infrastructure::source_adapters::{ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter},
+};
+
+pub(crate) struct BuiltInSourceAdapterRegistry {
+    probes: Vec<Box<dyn SourceProbe>>,
+    readers: Vec<Box<dyn SourceReadAdapter>>,
+}
+
+impl BuiltInSourceAdapterRegistry {
+    pub(crate) fn new(
+        probes: Vec<Box<dyn SourceProbe>>,
+        readers: Vec<Box<dyn SourceReadAdapter>>,
+    ) -> Self {
+        Self { probes, readers }
+    }
+
+    pub(crate) fn inspect(
+        &self,
+        input: SourceInput,
+    ) -> Result<NavigationEnvelope, SourceAdapterError> {
+        let descriptor = self.probe(&input)?;
+        let candidates = self.compatible_readers(&descriptor);
+
+        let Some(reader) = self.select_narrowest_reader(candidates)? else {
+            return Ok(NavigationEnvelope::unavailable(SourceAdapterError::new(
+                SourceAdapterErrorKind::FormatUnsupported,
+                format!(
+                    "no reader supports {:?} format {}",
+                    descriptor.family, descriptor.format_version
+                ),
+            )));
+        };
+
+        reader.inspect(&input, &descriptor)
+    }
+
+    fn probe(&self, input: &SourceInput) -> Result<SourceDescriptor, SourceAdapterError> {
+        let matches = self
+            .probes
+            .iter()
+            .filter_map(|probe| match probe.probe(input) {
+                Ok(ProbeOutcome::NoMatch) => None,
+                Ok(ProbeOutcome::Match(descriptor)) => Some(Ok(descriptor)),
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let Some(descriptor) = matches.first() else {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "no source probe recognized the target",
+            ));
+        };
+
+        if matches
+            .iter()
+            .skip(1)
+            .any(|other| !same_descriptor(descriptor, other))
+        {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProbeAmbiguous,
+                "source probes identified incompatible source descriptors",
+            ));
+        }
+
+        Ok(descriptor.clone())
+    }
+
+    fn compatible_readers<'a>(&'a self, descriptor: &SourceDescriptor) -> Vec<Candidate<'a>> {
+        self.readers
+            .iter()
+            .enumerate()
+            .flat_map(|(reader_index, reader)| {
+                let manifest = reader.manifest();
+                let compatible = manifest.source_family == descriptor.family
+                    && manifest.required_features.is_subset(&descriptor.detected_features)
+                    && manifest.excluded_features.is_disjoint(&descriptor.detected_features);
+
+                manifest
+                    .supported_formats
+                    .iter()
+                    .filter(move |range| compatible && range.contains(&descriptor.format_version))
+                    .map(move |range| Candidate { reader_index, range })
+            })
+            .collect()
+    }
+
+    fn select_narrowest_reader<'a>(
+        &'a self,
+        candidates: Vec<Candidate<'a>>,
+    ) -> Result<Option<&'a dyn SourceReadAdapter>, SourceAdapterError> {
+        let narrowest = candidates
+            .iter()
+            .filter(|candidate| {
+                candidates.iter().all(|other| {
+                    range_is_no_wider_than(candidate.range, other.range)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut reader_indices = narrowest
+            .iter()
+            .map(|candidate| candidate.reader_index)
+            .collect::<Vec<_>>();
+        reader_indices.sort_unstable();
+        reader_indices.dedup();
+
+        match reader_indices.as_slice() {
+            [] => Ok(None),
+            [reader_index] => Ok(Some(self.readers[*reader_index].as_ref())),
+            _ => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProbeAmbiguous,
+                "multiple readers have equally narrow compatible format ranges",
+            )),
+        }
+    }
+}
+
+struct Candidate<'a> {
+    reader_index: usize,
+    range: &'a FormatRange,
+}
+
+fn same_descriptor(left: &SourceDescriptor, right: &SourceDescriptor) -> bool {
+    left.source_id == right.source_id
+        && left.family == right.family
+        && left.format_version == right.format_version
+        && left.producer_version == right.producer_version
+        && left.detected_features == right.detected_features
+}
+
+fn range_is_no_wider_than(left: &FormatRange, right: &FormatRange) -> bool {
+    left.min_inclusive >= right.min_inclusive && left.max_inclusive <= right.max_inclusive
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeSet, path::PathBuf};
+
+    use crate::{
+        domain::{
+            navigation::{NavigationEnvelope, NavigationStatus},
+            source_adapters::{
+                AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency,
+                SourceAccess, SourceAdapterError, SourceDescriptor, SourceFamily, SourceId,
+                SourceRevision, SourceSnapshot,
+            },
+        },
+        infrastructure::source_adapters::{ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter},
+    };
+
+    use super::BuiltInSourceAdapterRegistry;
+
+    #[test]
+    fn exact_reader_is_selected_for_probe_evidence() {
+        let registry = registry_with(
+            vec![probe_match("2.20")],
+            vec![reader("xml-2.20", exact("2.20"))],
+        );
+
+        let read = registry.inspect(input()).unwrap();
+
+        assert_eq!(read.snapshot.unwrap().adapter_id, "xml-2.20");
+    }
+
+    #[test]
+    fn nearest_reader_is_never_selected() {
+        let registry = registry_with(
+            vec![probe_match("2.19")],
+            vec![reader("xml-2.20", exact("2.20"))],
+        );
+
+        let envelope = registry.inspect(input()).unwrap();
+
+        assert_eq!(envelope.status, NavigationStatus::Unavailable);
+        assert_eq!(envelope.diagnostics[0].code, "format_unsupported");
+    }
+
+    #[test]
+    fn equally_specific_readers_are_ambiguous() {
+        let registry = registry_with(
+            vec![probe_match("2.20")],
+            vec![
+                reader("xml-a", exact("2.20")),
+                reader("xml-b", exact("2.20")),
+            ],
+        );
+
+        let error = registry.inspect(input()).unwrap_err();
+
+        assert_eq!(error.kind, crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous);
+    }
+
+    fn registry_with(
+        probes: Vec<Box<dyn SourceProbe>>,
+        readers: Vec<Box<dyn SourceReadAdapter>>,
+    ) -> BuiltInSourceAdapterRegistry {
+        BuiltInSourceAdapterRegistry::new(probes, readers)
+    }
+
+    fn input() -> SourceInput {
+        SourceInput {
+            workspace_root: PathBuf::from("/workspace"),
+            target: PathBuf::from("/workspace/Configuration.xml"),
+            configured_source_set: None,
+        }
+    }
+
+    fn probe_match(version: &str) -> Box<dyn SourceProbe> {
+        Box::new(FakeProbe { descriptor: descriptor(version) })
+    }
+
+    fn reader(adapter_id: &'static str, range: FormatRange) -> Box<dyn SourceReadAdapter> {
+        Box::new(FakeReader {
+            manifest: AdapterManifest {
+                adapter_id,
+                adapter_version: "1",
+                source_family: SourceFamily::PlatformXml,
+                supported_formats: vec![range],
+                required_features: BTreeSet::new(),
+                excluded_features: BTreeSet::new(),
+                source_access: SourceAccess::ReadOnly,
+                maturity: AdapterMaturity::ReadCompatible,
+            },
+        })
+    }
+
+    fn descriptor(version: &str) -> SourceDescriptor {
+        SourceDescriptor {
+            source_id: SourceId::new("workspace:main").unwrap(),
+            family: SourceFamily::PlatformXml,
+            format_version: FormatVersion::parse(version).unwrap(),
+            producer_version: None,
+            detected_features: BTreeSet::new(),
+            probe_evidence: vec!["configuration.xml".to_string()],
+        }
+    }
+
+    fn exact(version: &str) -> FormatRange {
+        FormatRange::exact(FormatVersion::parse(version).unwrap())
+    }
+
+    struct FakeProbe {
+        descriptor: SourceDescriptor,
+    }
+
+    impl SourceProbe for FakeProbe {
+        fn probe(&self, _input: &SourceInput) -> Result<ProbeOutcome, SourceAdapterError> {
+            Ok(ProbeOutcome::Match(self.descriptor.clone()))
+        }
+    }
+
+    struct FakeReader {
+        manifest: AdapterManifest,
+    }
+
+    impl SourceReadAdapter for FakeReader {
+        fn manifest(&self) -> &AdapterManifest {
+            &self.manifest
+        }
+
+        fn inspect(
+            &self,
+            _input: &SourceInput,
+            descriptor: &SourceDescriptor,
+        ) -> Result<NavigationEnvelope, SourceAdapterError> {
+            Ok(NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Available,
+                snapshot: Some(SourceSnapshot {
+                    source_id: descriptor.source_id.clone(),
+                    revision: SourceRevision::new("sha256:fixture").unwrap(),
+                    consistency: SnapshotConsistency::Consistent,
+                    adapter_id: self.manifest.adapter_id.to_string(),
+                }),
+                root: None,
+                nodes: Vec::new(),
+                relations: Vec::new(),
+                diagnostics: Vec::new(),
+            })
+        }
+    }
+}
