@@ -147,6 +147,7 @@ fn same_descriptor(left: &SourceDescriptor, right: &SourceDescriptor) -> bool {
         && left.format_version == right.format_version
         && left.producer_version == right.producer_version
         && left.detected_features == right.detected_features
+        && left.snapshot_evidence == right.snapshot_evidence
 }
 
 fn range_is_no_wider_than(left: &FormatRange, right: &FormatRange) -> bool {
@@ -384,6 +385,7 @@ mod tests {
             producer_version: None,
             detected_features: BTreeSet::new(),
             probe_evidence: vec!["configuration.xml".to_string()],
+            snapshot_evidence: None,
         }
     }
 

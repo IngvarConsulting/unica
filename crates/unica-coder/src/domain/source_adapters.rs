@@ -156,6 +156,13 @@ fn validate_source_value(raw: &str, value_name: &str) -> Result<(), SourceAdapte
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotEvidence {
+    pub(crate) revision: SourceRevision,
+    pub(crate) root_descriptor_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceDescriptor {
     pub(crate) source_id: SourceId,
     pub(crate) family: SourceFamily,
@@ -163,6 +170,8 @@ pub(crate) struct SourceDescriptor {
     pub(crate) producer_version: Option<FormatVersion>,
     pub(crate) detected_features: BTreeSet<String>,
     pub(crate) probe_evidence: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot_evidence: Option<SnapshotEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

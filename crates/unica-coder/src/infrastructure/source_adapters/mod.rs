@@ -14,6 +14,7 @@ pub(crate) struct SourceInput {
     pub(crate) configured_source_set: Option<String>,
 }
 
+#[derive(Debug)]
 pub(crate) enum ProbeOutcome {
     NoMatch,
     Match(SourceDescriptor),
