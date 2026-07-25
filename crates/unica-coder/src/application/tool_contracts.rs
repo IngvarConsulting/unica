@@ -122,7 +122,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "ObjectPath",
     "Offset",
     "Operation",
-    "OutFile",
     "OutputDir",
     "OutputPath",
     "Parent",
@@ -204,7 +203,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "objectPath",
     "offset",
     "operation",
-    "outFile",
     "outputDir",
     "outputPath",
     "parent",
@@ -2754,6 +2752,53 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn read_only_native_tools_reject_out_file_arguments() {
+        let required_path = |name: &str| match name {
+            "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
+            "unica.cfe.validate" => ("ExtensionPath", "src"),
+            "unica.meta.info" | "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
+            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
+            "unica.subsystem.info" | "unica.subsystem.validate" => {
+                ("SubsystemPath", "src/Subsystems/Main.xml")
+            }
+            "unica.dcs.info" | "unica.dcs.validate" => ("TemplatePath", "src/Template.xml"),
+            "unica.role.info" | "unica.role.validate" => ("RightsPath", "src/Rights.xml"),
+            _ => unreachable!("unexpected read-only tool"),
+        };
+
+        for name in [
+            "unica.cf.info",
+            "unica.cf.validate",
+            "unica.cfe.validate",
+            "unica.meta.info",
+            "unica.meta.validate",
+            "unica.interface.validate",
+            "unica.subsystem.info",
+            "unica.subsystem.validate",
+            "unica.dcs.info",
+            "unica.dcs.validate",
+            "unica.role.info",
+            "unica.role.validate",
+        ] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .expect("read-only tool is registered");
+            let (path_key, path) = required_path(name);
+            let args = Map::from_iter([
+                (path_key.to_string(), json!(path)),
+                ("OutFile".to_string(), json!("report.txt")),
+            ]);
+
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(
+                error.contains("does not accept argument `OutFile`"),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]
