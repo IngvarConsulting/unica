@@ -9,6 +9,18 @@ argument-hint: [version, for example v0.9.2]
 Follow [docs/release-runbook.md](../../../docs/release-runbook.md). It is the
 authoritative procedure; do not improvise an order.
 
+## Most of it is automated
+
+Release Warden merges the staging pull request, requests the promotion, and
+merges the promotion, each once its checks are green. The user's part is two
+tags: the source release tag and the marketplace tag. Before doing any of those
+steps by hand, check whether the warden is simply about to do it:
+
+```bash
+gh workflow run release-warden.yml --repo IngvarConsulting/unica -f dry_run=true
+gh run list --workflow "Release Warden" --repo IngvarConsulting/unica --limit 3
+```
+
 ## Before anything
 
 Establish where the release already is, because most requests are to *resume*

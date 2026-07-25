@@ -30,6 +30,31 @@ the promotion checks install exactly as a consumer would. Those checks cannot
 pass until the tag exists, which makes the tag the natural approval gate: it is
 the one step that needs a human signing key.
 
+## What you do, and what runs itself
+
+**Release Warden** (`.github/workflows/release-warden.yml`) advances the release
+whenever it can. It runs every 20 minutes, merges the staging pull request once
+its checks are green, asks for the promotion, and merges the promotion once its
+checks are green. It cannot skip the tag: the promotion checks install through
+the catalog ref, so they stay red until the tag is published, which keeps the tag
+as the approval rather than a formality.
+
+That leaves two actions, both tags:
+
+| You | Warden |
+| --- | --- |
+| Step 0 — set the version | |
+| Step 1 — tag the source release | Steps 2–3: build, stage, merge staging |
+| Step 4 — tag the marketplace | Steps 5–6: promote, merge, go live |
+
+A scheduled run **fails** when a release is stalled with nothing to advance, so
+an unfinished publication surfaces within twenty minutes instead of sitting
+unnoticed. To see what it would do without acting, run it manually with
+`dry_run`.
+
+The steps below are still the source of truth for what happens and why, and they
+are what you follow by hand if the warden is disabled or itself broken.
+
 ## Preconditions
 
 - Write access to both repositories, and `gh` authenticated.
@@ -100,8 +125,9 @@ Note the run id — it is also encoded in the staging branch name
 
 ## Step 3 — merge the staging pull request
 
-Review that it changes `plugins/unica` only and that the catalog is untouched,
-then merge.
+**The warden does this** once the staging checks are green. Do it by hand only if
+the warden is disabled or failing. Review that it changes `plugins/unica` only
+and that the catalog is untouched, then merge.
 
 ```bash
 gh pr merge <staging-pr> --repo IngvarConsulting/unica-marketplace --merge
@@ -140,6 +166,10 @@ gh api "repos/IngvarConsulting/unica-marketplace/contents/plugins/unica/.codex-p
 
 ## Step 5 — promote
 
+**The warden does this** immediately after it merges staging, deriving the run id
+and the release tag from the staging branch name and the merge commit from the
+merge itself. Run it by hand only if the warden is disabled or failing.
+
 ```bash
 gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
   -f mode=promote \
@@ -154,6 +184,10 @@ previous stable, on macOS, Linux, and Windows. With the tag already pushed they
 pass on the first run.
 
 ## Step 6 — merge and verify
+
+**The warden does this** once the promotion checks are green, which cannot happen
+before step 4. It refuses to merge a promotion that touches anything beyond the
+catalog files. Verify the result either way.
 
 ```bash
 gh pr merge <promotion-pr> --repo IngvarConsulting/unica-marketplace --merge

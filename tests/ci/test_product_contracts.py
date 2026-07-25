@@ -311,9 +311,27 @@ class ProductContractTests(unittest.TestCase):
             "One-way doors",
             "never reuse a version number",
             "Rolling back a live release",
+            "Release Warden",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, text)
+
+    def test_warden_cannot_publish_without_the_human_tag(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        warden = (repo_root / "scripts/ci/release-warden.py").read_text(encoding="utf-8")
+        workflow = (repo_root / ".github/workflows/release-warden.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # The marketplace default branch has no protection rules, so the
+        # greenness check in the warden is the only thing standing between a red
+        # promotion and every consumer.
+        self.assertIn("def is_green", warden)
+        self.assertIn("PASSING_CONCLUSIONS", warden)
+        # A stalled release has to surface rather than sit quietly, which is the
+        # failure this whole workflow exists to prevent.
+        self.assertIn("--alert-is-failure", workflow)
+        self.assertIn("schedule:", workflow)
 
     def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
