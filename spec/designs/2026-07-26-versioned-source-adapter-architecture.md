@@ -40,17 +40,19 @@ semantic operations can therefore evolve independently.
    `unica.*` operations.
 3. Replace the legacy `unica.meta.info` text contract with one versioned typed
    navigation contract instead of maintaining two analysis pipelines.
-4. Keep source reading lazy so large CF files and file databases do not require
+4. Use JSON as the only canonical AI-facing representation, with explicit
+   property types and value states.
+5. Keep source reading lazy so large CF files and file databases do not require
    eager full-graph materialization.
-5. Select decoders from evidence and explicit compatibility declarations,
+6. Select decoders from evidence and explicit compatibility declarations,
    never by guessing the nearest known version.
-6. Keep direct CF and file-database access read-only in the initial
+7. Keep direct CF and file-database access read-only in the initial
    architecture.
-7. Advertise mutation only when the complete execution path is available and
+8. Advertise mutation only when the complete execution path is available and
    safe for the exact source state.
-8. Preserve provenance and source-specific evidence without exposing physical
+9. Preserve provenance and source-specific evidence without exposing physical
    paths or backend internals through the public contract.
-9. Provide common certification tests for every adapter and version range.
+10. Provide common certification tests for every adapter and version range.
 
 ## Non-goals
 
@@ -59,6 +61,7 @@ semantic operations can therefore evolve independently.
 - A generic public `execute(action)` MCP tool.
 - Preservation of legacy `unica.meta.info` text, display modes, drill-down,
   pagination, or output-file behavior.
+- YAML or TOML as an alternative canonical tool-response contract.
 - A stable Rust dynamic-library ABI for third-party adapters.
 - Eager normalization of an entire source before any object can be inspected.
 - Silent best-effort decoding of unknown source versions.
@@ -325,6 +328,60 @@ SemanticRelation:
   provenance
 ```
 
+Every canonical object property is self-describing:
+
+```text
+SemanticProperty:
+  valueType
+  valueState
+  value
+  provenance
+  capability
+```
+
+`valueType` is one of:
+
+```text
+boolean
+integer
+decimal
+string
+localizedString
+uuid
+enum
+date
+typeSet
+objectRef
+list
+structure
+null
+unknown
+```
+
+`valueState` is one of:
+
+```text
+explicit
+defaulted
+inherited
+computed
+absent
+unresolved
+```
+
+Absence is not equivalent to a default value. A projector may return
+`defaulted` only when the exact source/version profile defines that default.
+Otherwise it returns `absent` or `unresolved`.
+
+1C type descriptions are structured values. A `typeSet` contains typed
+variants such as primitive values with qualifiers, metadata references, and
+enumeration references. The AI-facing contract never requires parsing a 1C
+type-expression string.
+
+Child objects are represented as nodes and relations rather than embedded
+property bags. Source-specific fields that have no canonical property remain
+opaque provenance and cannot silently become semantic values.
+
 Canonical relation kinds initially include:
 
 ```text
@@ -353,6 +410,60 @@ unbind, and registration mutate relation aggregates and therefore target a
 
 Clone is discoverable from a source node, but its descriptor must include the
 owning relation that will register the new sibling.
+
+## Navigation Query Contract
+
+`unica.meta.info` is lazy and bounded. It does not serialize an entire large
+configuration object by default.
+
+A request chooses exactly one target mode:
+
+```text
+ObjectPath
+objectRef + snapshotRevision
+cursor
+```
+
+- `ObjectPath` bootstraps navigation from a workspace source.
+- `objectRef + snapshotRevision` expands an already discovered node.
+- `cursor` continues one previously selected relation page.
+
+An optional `select` object chooses:
+
+```text
+properties
+facets
+relations:
+  kind
+  role
+  pageSize
+```
+
+The default selection returns all bounded scalar properties of the target,
+facet summaries, relation counts, and the first page of requested child
+relations. `pageSize` defaults to 25 and cannot exceed 100.
+
+Offset pagination is not supported. Cursors are opaque JSON objects, bind the
+source ID, snapshot revision, target, relation, selection, and next position,
+and fail with `SnapshotStale` when the source revision changes. Clients pass a
+cursor back unchanged and must not construct or edit its fields.
+
+The response is canonical JSON:
+
+```text
+data.navigation:
+  schemaVersion
+  status
+  snapshot
+  root
+  nodes
+  relations
+  diagnostics
+```
+
+YAML, TOML, and Markdown may be generated as human-facing views, but they are
+not accepted as alternative MCP contracts and do not participate in adapter
+certification.
 
 ## Capability Model
 
@@ -543,10 +654,11 @@ returns the versioned navigation envelope in `data.navigation` and does not
 return the legacy analysis through `stdout`.
 
 The old `Mode`, `Name`, `Limit`, `Offset`, and `OutFile` parameters are removed
-from the tool schema. This is an intentional replacement contract, not an
-additive compatibility layer. The packaged `meta-info` skill must change in the
-same implementation slice so prompt-visible instructions never describe the
-removed text workflow.
+from the tool schema. Semantic expansion uses `objectRef`, `snapshotRevision`,
+`select`, and opaque `cursor` instead. This is an intentional replacement
+contract, not an additive compatibility layer. The packaged `meta-info` skill
+must change in the same implementation slice so prompt-visible instructions
+never describe the removed text workflow.
 
 Specialized tools consume semantic references and expected revisions. Existing
 compile, decompile, and validate workflows remain available until specialized
@@ -605,6 +717,11 @@ The architecture is established when:
 10. The package preserves the single `unica` MCP server boundary.
 11. `unica.meta.info` exposes only the typed navigation contract and its
     packaged skill contains no legacy text-mode instructions.
+12. Every returned canonical property has an explicit type and value state.
+13. Large child collections use snapshot-bound cursor pagination with no
+    offset-based fallback.
+14. Canonical tool responses are JSON; YAML and TOML are not parallel API
+    formats.
 
 ## Deferred Decisions
 

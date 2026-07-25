@@ -24,6 +24,11 @@
   `unica.meta.info` input schema.
 - Return the result only through the versioned `data.navigation` envelope;
   `meta.info` must not populate `stdout`.
+- Use JSON as the only canonical tool-response representation.
+- Return every semantic property with an explicit value type and value state.
+- Replace legacy drill-down and offset pagination with `objectRef`,
+  `snapshotRevision`, `select`, and snapshot-bound cursor requests.
+- Default relation page size is 25; maximum page size is 100.
 - Platform XML 2.20 is the only read format certified by this plan.
 - For other formats, return an explicit unavailable navigation envelope without
   invoking a legacy analyzer.
@@ -67,7 +72,8 @@ this plan proves the shared contracts.
     coverage, and structured error categories.
 - `crates/unica-coder/src/domain/navigation.rs`
   - semantic object/relation identity, navigation envelope, graph, capability
-    vector, action availability, atomicity, and operation bindings.
+    vector, typed properties, lazy query selection, cursor pages, action
+    availability, atomicity, and operation bindings.
 - `crates/unica-coder/src/domain/mod.rs`
   - exports the source-adapter domain module.
 
@@ -374,6 +380,9 @@ git commit -m "feat: add source adapter domain contracts"
   - `ObjectRef`
   - `RelationRef`
   - `NavigationEnvelope`
+  - `SemanticProperty`
+  - `NavigationQuery`
+  - `NavigationCursor`
   - `CapabilityVector`
   - `SemanticAction`
 
@@ -443,6 +452,54 @@ fn navigation_envelope_always_has_a_schema_version_and_status() {
     assert_eq!(value["schemaVersion"], "1");
     assert_eq!(value["status"], "unavailable");
     assert_eq!(value["diagnostics"][0]["code"], "format_unsupported");
+}
+
+#[test]
+fn properties_preserve_type_value_and_value_state() {
+    let property = SemanticProperty::explicit(
+        PropertyType::Integer,
+        PropertyValue::Integer(11),
+        PropertyProvenance::Descriptor,
+    )
+    .unwrap();
+    let value = serde_json::to_value(property).unwrap();
+
+    assert_eq!(value["type"], "integer");
+    assert_eq!(value["value"], 11);
+    assert_eq!(value["valueState"], "explicit");
+}
+
+#[test]
+fn incompatible_property_type_and_value_are_rejected() {
+    let error = SemanticProperty::explicit(
+        PropertyType::Integer,
+        PropertyValue::String("11".to_string()),
+        PropertyProvenance::Descriptor,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+}
+
+#[test]
+fn relation_page_size_is_bounded() {
+    assert_eq!(RelationSelection::new("attributes", None).unwrap().page_size, 25);
+    assert!(RelationSelection::new("attributes", Some(101)).is_err());
+}
+
+#[test]
+fn cursor_is_bound_to_snapshot_revision() {
+    let cursor = NavigationCursor::issue(
+        source_id("workspace:main"),
+        SourceRevision::new("sha256:one").unwrap(),
+        relation_ref(),
+        25,
+    );
+
+    let error = cursor
+        .resume(&SourceRevision::new("sha256:two").unwrap())
+        .unwrap_err();
+    assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
 }
 ```
 
@@ -528,7 +585,9 @@ pub(crate) struct NavigationEnvelope {
     pub(crate) schema_version: String,
     pub(crate) status: NavigationStatus,
     pub(crate) snapshot: Option<SourceSnapshot>,
-    pub(crate) graph: Option<NavigationGraph>,
+    pub(crate) root: Option<ObjectRef>,
+    pub(crate) nodes: Vec<NavigationNode>,
+    pub(crate) relations: Vec<NavigationRelationPage>,
     pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
 }
 ```
@@ -552,6 +611,112 @@ reasons.
 
 Migrate the PR #210 action-profile tests to the new assertions. Keep `remove`
 unadvertised because authorability is not sufficient removal eligibility.
+
+Define the typed property contract:
+
+```rust
+pub(crate) enum PropertyType {
+    Boolean,
+    Integer,
+    Decimal,
+    String,
+    LocalizedString,
+    Uuid,
+    Enum { enum_type: String },
+    Date,
+    TypeSet,
+    ObjectRef,
+    List,
+    Structure,
+    Null,
+    Unknown,
+}
+
+pub(crate) enum PropertyValue {
+    Boolean(bool),
+    Integer(i64),
+    Decimal(String),
+    String(String),
+    LocalizedString(BTreeMap<String, String>),
+    Uuid(Uuid),
+    EnumSymbol(String),
+    Date(String),
+    TypeSet(TypeSetValue),
+    ObjectRef(ObjectRef),
+    List(Vec<PropertyValue>),
+    Structure(BTreeMap<String, PropertyValue>),
+    Null,
+    Unknown { summary: String },
+}
+
+pub(crate) enum PropertyValueState {
+    Explicit,
+    Defaulted,
+    Inherited,
+    Computed,
+    Absent,
+    Unresolved,
+}
+
+pub(crate) struct SemanticProperty {
+    pub(crate) value_type: PropertyType,
+    pub(crate) value_state: PropertyValueState,
+    pub(crate) value: Option<PropertyValue>,
+    pub(crate) provenance: PropertyProvenance,
+    pub(crate) capability: PropertyCapability,
+}
+```
+
+Serialize `value_type` as the public `type` field and use camelCase enum names.
+`SemanticProperty` constructors validate that the value variant matches
+`value_type`. `Absent` and `Unresolved` carry no value. `Defaulted` is legal
+only when the exact projector profile supplies the default.
+
+Define the bounded query contract:
+
+```rust
+pub(crate) enum NavigationTarget {
+    ObjectPath(String),
+    ObjectRef {
+        object_ref: ObjectRef,
+        snapshot_revision: SourceRevision,
+    },
+    Cursor(NavigationCursor),
+}
+
+pub(crate) struct NavigationQuery {
+    pub(crate) target: NavigationTarget,
+    pub(crate) select: NavigationSelection,
+}
+
+pub(crate) struct NavigationSelection {
+    pub(crate) properties: PropertySelection,
+    pub(crate) facets: FacetSelection,
+    pub(crate) relations: Vec<RelationSelection>,
+}
+
+pub(crate) struct RelationSelection {
+    pub(crate) kind: Option<RelationKind>,
+    pub(crate) role: String,
+    pub(crate) page_size: u16,
+}
+
+pub(crate) struct NavigationCursor {
+    pub(crate) schema_version: u16,
+    pub(crate) source_id: SourceId,
+    pub(crate) snapshot_revision: SourceRevision,
+    pub(crate) target: ObjectKey,
+    pub(crate) relation: RelationKey,
+    pub(crate) selection_hash: String,
+    pub(crate) next_position: u64,
+}
+```
+
+`NavigationCursor` serializes as an opaque JSON object. Clients pass it back
+unchanged and must not synthesize its fields. It contains no physical path.
+Cursor decoding validates its schema version and normalized selection hash,
+re-resolves its target and relation, and rejects a mismatched revision with
+`SnapshotStale`.
 
 - [ ] **Step 5: Run navigation tests**
 
@@ -1001,12 +1166,19 @@ pub(crate) struct NativeMetadataObject {
     pub(crate) commands: Vec<NativeNamedChild>,
     pub(crate) forms: Vec<NativeForm>,
     pub(crate) templates: Vec<NativeTemplate>,
+    pub(crate) properties: BTreeMap<String, NativeProperty>,
 }
 
 pub(crate) struct NativeNamedChild {
     pub(crate) kind: NativeChildKind,
     pub(crate) uuid: Option<Uuid>,
     pub(crate) name: String,
+}
+
+pub(crate) struct NativeProperty {
+    pub(crate) canonical_id: String,
+    pub(crate) value: NativePropertyValue,
+    pub(crate) provenance: NativePropertyProvenance,
 }
 ```
 
@@ -1049,6 +1221,11 @@ It must:
 
 Keep the existing fail-closed Form and MXL structural checks. Continue requiring
 the single canonical `Ext/Template.xml` for `SpreadsheetDocument`.
+
+Decode scalar metadata properties into `NativeProperty` without formatting
+them as display text. Preserve explicit, absent, and unresolved state. Apply
+version-profile defaults only in the projector, where exact 2.20 semantics are
+known.
 
 - [ ] **Step 5: Move relevant tests from `meta.rs`**
 
@@ -1242,13 +1419,12 @@ git commit -m "fix: parse Platform XML support state strictly"
 #[test]
 fn root_metadata_object_has_an_owning_relation() {
     let envelope = project_fixture(document_fixture()).unwrap();
-    let graph = envelope.graph.unwrap();
-    let document = graph.node_named(NodeKind::Document, "Order").unwrap();
-    let owning = graph.owning_relation(&document.object_ref).unwrap();
+    let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
+    let owning = envelope.owning_relation(&document.object_ref).unwrap();
 
     assert_eq!(owning.kind, RelationKind::Contains);
     assert_eq!(
-        graph.node(&owning.source).unwrap().kind,
+        envelope.node(&owning.source).unwrap().kind,
         NodeKind::SourceRoot
     );
 }
@@ -1267,8 +1443,6 @@ fn serialized_graph_contains_no_physical_paths() {
 fn no_writer_means_mutations_are_modeled_not_executable() {
     let envelope = project_fixture(document_fixture()).unwrap();
     let clone = envelope
-        .graph
-        .unwrap()
         .action(ActionKind::Clone, "Order")
         .unwrap();
 
@@ -1282,11 +1456,50 @@ fn format_compatibility_is_part_of_every_node_capability() {
     let envelope = project_fixture(document_fixture()).unwrap();
 
     assert!(envelope
-        .graph
-        .unwrap()
         .nodes
         .iter()
         .all(|node| node.capability.format == FormatCompatibility::Compatible));
+}
+
+#[test]
+fn document_properties_are_typed_for_ai_consumption() {
+    let envelope = project_fixture(document_fixture()).unwrap();
+    let document = envelope
+        .node_named(NodeKind::Document, "Order")
+        .unwrap();
+
+    assert_eq!(
+        document.properties["numberLength"].value_type,
+        PropertyType::Integer
+    );
+    assert_eq!(
+        document.properties["numberLength"].value,
+        Some(PropertyValue::Integer(11))
+    );
+    assert_eq!(
+        document.properties["numberLength"].value_state,
+        PropertyValueState::Explicit
+    );
+}
+
+#[test]
+fn one_c_type_descriptions_are_structured_not_strings() {
+    let envelope = project_fixture(attribute_fixture()).unwrap();
+    let attribute = envelope
+        .node_named(NodeKind::Attribute, "Product")
+        .unwrap();
+
+    let PropertyValue::TypeSet(type_set) =
+        attribute.properties["dataType"].value.clone().unwrap()
+    else {
+        panic!("expected structured type set");
+    };
+    assert_eq!(
+        type_set.variants[0],
+        TypeVariant::Reference {
+            target: "Catalog.Products".to_string(),
+        }
+    );
 }
 ```
 
@@ -1341,6 +1554,11 @@ serialization.
 
 Form internals are not projected by this plan. Form nodes report partial facet
 coverage and cannot advertise FormElement, move, bind, or handler actions.
+
+Project every known scalar property into `SemanticProperty`. Project 1C type
+descriptions as `TypeSetValue` with structured primitive qualifiers and
+metadata-reference targets. Never expose a raw XML type-expression string as
+the canonical value.
 
 Set each capability from:
 
@@ -1420,7 +1638,10 @@ git commit -m "feat: project Platform XML semantic navigation"
   - `data.navigation.schemaVersion = "1"`
   - explicit ready/unavailable navigation status
   - no legacy `stdout`
-  - no legacy mode, drill-down, pagination, or output-file inputs
+  - typed properties
+  - `ObjectPath`, `objectRef + snapshotRevision`, or `cursor` target modes
+  - semantic `select` and cursor pagination
+  - no legacy mode, drill-down, offset pagination, or output-file inputs
 
 - [ ] **Step 1: Add failing public-envelope tests**
 
@@ -1433,7 +1654,9 @@ fn meta_info_returns_ready_navigation_for_platform_xml_2_20() {
     assert!(result.adapter.stdout.is_none());
     assert_eq!(result.data["navigation"]["schemaVersion"], "1");
     assert_eq!(result.data["navigation"]["status"], "ready");
-    assert!(result.data["navigation"]["graph"].is_object());
+    assert!(result.data["navigation"]["root"].is_object());
+    assert!(result.data["navigation"]["nodes"].is_array());
+    assert!(result.data["navigation"]["relations"].is_array());
 }
 
 #[test]
@@ -1473,6 +1696,35 @@ fn meta_info_schema_has_no_legacy_text_controls() {
 }
 
 #[test]
+fn meta_info_schema_supports_semantic_lazy_navigation() {
+    let schema = input_schema_for_tool(tool("unica.meta.info"));
+    let properties = schema["properties"].as_object().unwrap();
+
+    for field in ["ObjectPath", "objectRef", "snapshotRevision", "select", "cursor"] {
+        assert!(properties.contains_key(field), "{field} must be present");
+    }
+}
+
+#[test]
+fn meta_info_relation_cursor_returns_the_next_snapshot_bound_page() {
+    let first = invoke_meta_info_with_relation_page_size(
+        platform_xml_2_20_fixture(),
+        "attributes",
+        1,
+    )
+    .unwrap();
+    let cursor = first.data["navigation"]["relations"][0]["nextCursor"].clone();
+
+    let second = invoke_meta_info_cursor(cursor).unwrap();
+
+    assert_eq!(second.data["navigation"]["status"], "ready");
+    assert_ne!(
+        first.data["navigation"]["relations"][0]["items"][0],
+        second.data["navigation"]["relations"][0]["items"][0]
+    );
+}
+
+#[test]
 fn meta_info_dry_run_uses_the_same_typed_read_contract() {
     let result = invoke_meta_info_dry_run(platform_xml_2_20_fixture()).unwrap();
 
@@ -1502,6 +1754,8 @@ cargo test -p unica-coder meta_info_returns_ready_navigation -- --nocapture
 cargo test -p unica-coder unsupported_version_returns_only -- --nocapture
 cargo test -p unica-coder project_map_failure_is_not_replaced -- --nocapture
 cargo test -p unica-coder meta_info_schema_has_no_legacy -- --nocapture
+cargo test -p unica-coder meta_info_schema_supports_semantic -- --nocapture
+cargo test -p unica-coder meta_info_relation_cursor -- --nocapture
 cargo test -p unica-coder meta_info_dry_run_uses_the_same -- --nocapture
 ```
 
@@ -1521,11 +1775,14 @@ pub(crate) fn inspect_meta_navigation(
 
 Its flow is:
 
-1. resolve the target inside the workspace;
-2. construct `SourceInput`;
-3. call `BuiltInSourceAdapterRegistry::new().inspect(input)`;
-4. return a ready or unavailable envelope;
-5. convert corruption, ambiguity, and source-map failures into structured
+1. parse exactly one of `ObjectPath`, `objectRef + snapshotRevision`, or
+   `cursor`;
+2. normalize `select` and enforce relation page size 1 through 100;
+3. resolve or resume the target inside the bound snapshot;
+4. construct `SourceInput`;
+5. call `BuiltInSourceAdapterRegistry::new().inspect(input)`;
+6. return a ready or unavailable envelope;
+7. convert corruption, ambiguity, stale cursor, and source-map failures into structured
    unavailable diagnostics without inventing an identity.
 
 Delete the old text rendering, `Mode`, `Name`, pagination, output-file, and
@@ -1554,7 +1811,9 @@ native-operation preview.
 - [ ] **Step 5: Remove legacy input controls from the public schema**
 
 Remove `Mode`, `Name`, `Limit`, `Offset`, and `OutFile` from the `meta.info`
-tool definition in `application/mod.rs`.
+tool definition in `application/mod.rs`. Add `objectRef`,
+`snapshotRevision`, `select`, and `cursor`. The JSON Schema uses `oneOf` so a
+request selects exactly one target mode.
 
 Change the operation descriptor to:
 
@@ -1568,17 +1827,20 @@ descriptor(
 ),
 ```
 
-Delete tests dedicated only to removed arguments or text formatting. Keep
-`ObjectPath` and `cwd` as the first-slice source selector. Do not add a new MCP
-tool.
+Delete tests dedicated only to removed arguments or text formatting.
+`ObjectPath` bootstraps a source, `objectRef + snapshotRevision` expands a known
+node, and `cursor` resumes a relation page. Do not add a new MCP tool.
 
 - [ ] **Step 6: Rewrite the packaged `meta-info` skill**
 
 Update `plugins/unica/skills/meta-info/SKILL.md` so it:
 
 - describes typed semantic navigation rather than compact text;
-- documents only `ObjectPath` plus the standard workspace context;
+- documents `ObjectPath`, `objectRef + snapshotRevision`, `select`, and
+  `cursor`;
 - explains `schemaVersion`, `status`, `snapshot`, `graph`, and `diagnostics`;
+- explains typed properties, value states, structured 1C type sets, relation
+  pages, and stale cursors;
 - explains node identity, relations, capability availability, and blocking
   reasons;
 - contains no `Mode`, `Name`, `Limit`, `Offset`, or `OutFile` examples;
@@ -1759,7 +2021,11 @@ The plan is complete when:
     `Mode`, `Name`, `Limit`, `Offset`, or `OutFile` inputs.
 12. The packaged `meta-info` skill describes only the typed navigation
     contract.
-13. Platform XML read certification, the full `unica-coder` test suite, and the
+13. Every canonical property contains an explicit type and value state.
+14. 1C type descriptions are structured JSON values, not display strings.
+15. Large relations use snapshot-bound cursor pagination with a maximum page
+    size of 100.
+16. Platform XML read certification, the full `unica-coder` test suite, and the
     crate build pass.
 
 ## Follow-up Plan Boundaries
