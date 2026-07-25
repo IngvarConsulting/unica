@@ -283,6 +283,224 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertIn("bootstrap/launch.sh", server["args"][1])
         self.assertEqual(server["args"][2], "unica-bootstrap")
 
+    def resolve_packaged_alias(
+        self, plugin_root: Path, *, claude_root: str | None, cwd: Path | None = None
+    ) -> str:
+        """Run the packaged Git alias and return the plugin root it hands the launcher."""
+        module = load_package_module()
+        alias = module.PACKAGED_MCP_ALIAS
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        env.pop("GIT_PREFIX", None)
+        if claude_root is not None:
+            # Claude Code rewrites the token in the config before the shell runs.
+            alias = alias.replace("${CLAUDE_PLUGIN_ROOT}", claude_root)
+
+        result = subprocess.run(
+            ["git", "-c", alias, "unica-bootstrap"],
+            cwd=cwd or plugin_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    @staticmethod
+    def make_alias_fixture(root: Path) -> Path:
+        """A marketplace clone holding the plugin, with a launcher that echoes its argument."""
+        # Resolved so the expectation matches the physical path Git reports on
+        # platforms where the temporary directory is reached through a symlink.
+        root.mkdir(parents=True)
+        root = root.resolve()
+        plugin_root = root / "plugins" / "unica"
+        launcher = plugin_root / "bootstrap" / "launch.sh"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text('#!/bin/sh\nprintf "resolved=%s\\n" "$1"\n', encoding="utf-8")
+        launcher.chmod(0o755)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        return plugin_root
+
+    @unittest.skipIf(os.name == "nt", "alias fixture uses POSIX test scripts")
+    def test_packaged_alias_resolves_the_plugin_root_for_both_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = self.make_alias_fixture(Path(tmp) / "marketplace")
+
+            # Codex launches with cwd at the plugin directory and no Claude token,
+            # so Git's own PWD/GIT_PREFIX pair has to resolve the root.
+            codex_resolved = self.resolve_packaged_alias(plugin_root, claude_root=None)
+            # Run from the marketplace root, where the Codex fallback would resolve
+            # to the wrong directory and the launcher would not be found at all.
+            # Only the substituted token can produce the plugin root from here, so
+            # this distinguishes the two paths instead of letting them agree by
+            # sharing a working directory.
+            claude_resolved = self.resolve_packaged_alias(
+                plugin_root, cwd=plugin_root.parent.parent, claude_root=str(plugin_root)
+            )
+
+        self.assertEqual(codex_resolved, f"resolved={plugin_root}")
+        self.assertEqual(claude_resolved, f"resolved={plugin_root}")
+
+    @unittest.skipIf(os.name == "nt", "alias fixture uses POSIX test scripts")
+    def test_packaged_alias_keeps_the_codex_root_resolution_unchanged(self) -> None:
+        legacy_alias = (
+            'alias.unica-bootstrap=!f() { root="$PWD/${GIT_PREFIX:-}"; '
+            'exec sh "${root}bootstrap/launch.sh" "$root"; }; f'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = self.make_alias_fixture(Path(tmp) / "marketplace")
+            env = os.environ.copy()
+            env.pop("CLAUDE_PLUGIN_ROOT", None)
+            env.pop("GIT_PREFIX", None)
+            legacy = subprocess.run(
+                ["git", "-c", legacy_alias, "unica-bootstrap"],
+                cwd=plugin_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            ).stdout.strip()
+            current = self.resolve_packaged_alias(plugin_root, claude_root=None)
+
+        # The launcher normalises the trailing separator, so the two forms must
+        # only agree once it is stripped.
+        self.assertEqual(legacy.rstrip("/"), current.rstrip("/"))
+
+    def test_packaged_plugin_serves_both_hosts_from_one_directory(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugins" / "unica"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / ".mcp.json").write_text(
+                (repo_root / "plugins" / "unica" / ".mcp.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            module.write_packaged_mcp_launcher(plugin_dir)
+            server = json.loads((plugin_dir / ".mcp.json").read_text(encoding="utf-8"))[
+                "mcpServers"
+            ]["unica"]
+
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}", server["args"][1])
+        self.assertIn("$PWD/${GIT_PREFIX:-}", server["args"][1])
+        self.assertEqual(
+            server["env"]["UNICA_RUNTIME_CACHE_DIR"], "${CLAUDE_PLUGIN_DATA}/runtimes"
+        )
+
+    def test_source_plugin_carries_a_manifest_for_every_host(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+
+        module.assert_host_manifests_present(repo_root / "plugins" / "unica")
+
+        versions = {
+            host: json.loads(
+                (repo_root / "plugins" / "unica" / manifest_dir / "plugin.json").read_text(
+                    encoding="utf-8"
+                )
+            )["version"]
+            for host, manifest_dir in module.HOST_MANIFEST_DIRS.items()
+        }
+
+        self.assertEqual(len(set(versions.values())), 1, versions)
+
+    def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
+        """Pin the key sets that decide whether an older client loads Unica at all.
+
+        Claude Code rejects an unrecognized manifest or catalog key outright on
+        releases that predate it, so a key added for a newer client makes the
+        plugin unloadable for everyone below that version. A current client only
+        warns, which is why this is asserted here instead of via `validate`.
+        """
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        allowed_manifest_keys = {
+            "name",
+            "version",
+            "description",
+            "author",
+            "homepage",
+            "repository",
+            "license",
+            "keywords",
+        }
+        allowed_entry_keys = allowed_manifest_keys | {"source", "category", "tags"}
+        allowed_catalog_keys = {"name", "owner", "metadata", "plugins"}
+
+        manifest = json.loads(
+            (repo_root / "plugins/unica/.claude-plugin/plugin.json").read_text(encoding="utf-8")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "unica"
+            (plugin_dir / ".claude-plugin").mkdir(parents=True)
+            (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            catalog_path = Path(tmp) / "marketplace.json"
+            module.write_claude_marketplace(
+                plugin_dir,
+                catalog_path,
+                source=module.claude_plugin_source(release_tag="v0.9.1"),
+            )
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(set(manifest) - allowed_manifest_keys, set())
+        self.assertEqual(set(catalog) - allowed_catalog_keys, set())
+        self.assertEqual(set(catalog["plugins"][0]) - allowed_entry_keys, set())
+        # Older clients only read the description from metadata.
+        self.assertIn("description", catalog["metadata"])
+
+    def test_claude_catalog_names_the_missing_manifest_field(self) -> None:
+        module = load_package_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "unica"
+            (plugin_dir / ".claude-plugin").mkdir(parents=True)
+            (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "unica", "version": "0.9.1", "author": {"name": "n"}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                module.write_claude_marketplace(
+                    plugin_dir,
+                    Path(tmp) / "marketplace.json",
+                    source=module.claude_plugin_source(release_tag="v0.9.1"),
+                )
+
+        # The packaging failure has to name every missing field, not surface as a
+        # KeyError from whichever line reached it first.
+        message = str(raised.exception)
+        for field in ("description", "homepage", "repository", "license", "keywords"):
+            with self.subTest(field=field):
+                self.assertIn(field, message)
+
+    def test_claude_catalog_pins_the_release_tag(self) -> None:
+        module = load_package_module()
+
+        source = module.claude_plugin_source(release_tag="v1.2.3")
+
+        # The catalog on the marketplace default branch must keep naming a tag,
+        # so staged plugin bytes are not served before a promotion moves it.
+        self.assertEqual(source["ref"], "v1.2.3")
+        self.assertEqual(source["path"], "./plugins/unica")
+        self.assertEqual(source["source"], "git-subdir")
+
+    def test_claude_manifest_leaves_skill_discovery_to_the_default_scan(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest = json.loads(
+            (repo_root / "plugins/unica/.claude-plugin/plugin.json").read_text(encoding="utf-8")
+        )
+
+        # Claude Code always scans skills/, and a manifest pointer would add the
+        # same directory a second time.
+        self.assertNotIn("skills", manifest)
+        self.assertNotIn("mcpServers", manifest)
+        self.assertEqual(manifest["name"], "unica")
+
     @unittest.skipIf(os.name == "nt", "selector fixture uses POSIX test scripts")
     def test_launch_script_selects_git_for_windows_native_bootstrap(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

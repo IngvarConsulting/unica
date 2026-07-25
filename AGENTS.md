@@ -5,7 +5,7 @@
 When changing Unica, resolve conflicts in this order:
 
 1. code and tests
-2. `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`, and `plugins/unica/third-party/tools.lock.json` are package-contract sources, not background notes.
+2. `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`, `plugins/unica/.claude-plugin/plugin.json`, and `plugins/unica/third-party/tools.lock.json` are package-contract sources, not background notes.
 3. `spec/` is the active architecture layer unless it contradicts live code, tests, or package metadata.
 4. `README.md` and skill prose
 
@@ -48,3 +48,4 @@ must not be generalized to other disallowed paths.
 - Surface contradictions in assumptions, docs, tests, and runtime behavior.
 - Keep the public MCP boundary as one server named `unica` with `unica.*` tools unless an ADR changes that contract.
 - Prompt-visible skills stay MCP-first. Direct packaged-script execution paths must not return once a native `unica.*` tool exists, except for documented utility exceptions.
+- One plugin directory serves Codex and Claude Code. Keep both manifests at the same version, keep `.mcp.json` host-neutral, and do not add optional manifest or catalog keys without checking that the oldest supported client accepts them; an unrecognized key is a load error there, not a warning.
