@@ -300,7 +300,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "dcs-info": ["TemplatePath"],
     "dcs-validate": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
-    "mxl-decompile": ["TemplatePath", "OutputPath"],
+    "mxl-decompile": ["TemplatePath"],
     "mxl-info": ["TemplatePath", "WithText"],
     "mxl-validate": ["TemplatePath"],
     "role-compile": ["JsonPath", "OutputDir"],

@@ -87,6 +87,7 @@ class SetupStep:
     script: str
     arguments: dict[str, Any]
     tool: str | None = None
+    stdout_path: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3374,13 +3375,12 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="mxl-decompile-simple-outfile",
+        name="mxl-decompile-simple-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "templates/MXL.xml",
-            "OutputPath": "mxl.json",
         },
         setup_steps=(
             SetupStep(
@@ -3394,7 +3394,6 @@ SUCCESS_SCENARIOS = [
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="mxl-info-text",
@@ -3477,13 +3476,12 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-mxl-decompile-real-template-outfile",
+        name="bsp-mxl-decompile-real-template-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            "OutputPath": "mxl-bsp.json",
         },
         fixtures=(
             FileFixture(
@@ -3492,7 +3490,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="bsp-mxl-parity-roundtrip-real-template",
@@ -3510,8 +3507,8 @@ SUCCESS_SCENARIOS = [
                 tool="unica.mxl.decompile",
                 arguments={
                     "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-                    "OutputPath": "mxl-bsp.json",
                 },
+                stdout_path="mxl-bsp.json",
             ),
         ),
         fixtures=(
@@ -4044,7 +4041,7 @@ MISSING_INPUT_SCENARIOS = [
         "unica.mxl.decompile",
         "mxl-decompile",
         "mxl-decompile.py",
-        {"TemplatePath": "missing/Template.xml", "OutputPath": "out/mxl.json"},
+        {"TemplatePath": "missing/Template.xml"},
         False,
     ),
     ParityScenario(
@@ -4875,12 +4872,20 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertTrue(mcp["ok"], json.dumps(mcp, ensure_ascii=False, indent=2))
                 if step.tool in NATIVE_PARITY_TOOLS:
                     self.assertIsNone(mcp.get("command"), f"{step.tool} setup must not use script fallback")
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(mcp.get("stdout") or "", encoding="utf-8")
             else:
                 result = run_unica_reference_model(step.skill, step.script, step.arguments, workspace)
                 if result.returncode != 0:
                     raise AssertionError(
                         f"setup step {step.skill}/{step.script} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(result.stdout, encoding="utf-8")
 
     def prepare_cc_1c_workspace(self, workspace: Path, case: CcSkillCase) -> None:
         setup_name = case.case_data.get("setup") or case.skill_config.get("setup") or "none"
