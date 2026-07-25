@@ -26,10 +26,19 @@ gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketp
 A source release whose tag is newer than the catalog `ref` means the release is
 live for nobody. That is the common stall, and it is silent.
 
+## When something goes wrong
+
+Only the promotion merge is visible to consumers, so before it aborting just
+means closing a pull request. After step 1 a version is burnt: never re-cut it
+with different bytes, take the next patch instead. Rolling back a live release is
+a revert of the promotion commit, which is safe because published bytes never
+move. See the runbook's abort and rollback tables.
+
 ## Rules
 
 - Never move or delete a published tag, and never force-push the marketplace
-  default branch.
+  default branch. A catalog naming a missing tag breaks every install, and it is
+  the only genuinely corrupt state this process can reach.
 - Tag the staging merge commit, not the promotion commit. The promotion pull
   request cannot go green before that tag exists.
 - Stop and ask before merging anything in `unica-marketplace` or creating a tag.

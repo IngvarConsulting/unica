@@ -40,27 +40,30 @@ the one step that needs a human signing key.
 
 ## Step 0 — prepare the version
 
-One commit bumps every place the version appears. `check-version-contract.py`
-covers most of them, but not all, so bump all of these together:
-
-| File | What changes |
-| --- | --- |
-| `Cargo.toml` | `workspace.package.version` (then refresh `Cargo.lock`) |
-| `plugins/unica/.codex-plugin/plugin.json` | `version` |
-| `plugins/unica/.claude-plugin/plugin.json` | `version` |
-| `plugins/unica/third-party/tools.lock.json` | the `unica` tool entry `version` |
-| `.github/workflows/unica-plugin-release.yml` | the `RELEASE_TAG` fallback used by non-tag builds |
-
-The workflow fallback is **not** covered by the version contract. If it is left
-behind, packaging fails on every later pull request with
-`release tag vX.Y.Z != vA.B.C`, because the runtime manifest requires
-`release.tag == v{pluginVersion}`.
-
-Verify, then merge through a pull request as usual:
+One command writes the version everywhere the package contract declares it, then
+runs the contract check:
 
 ```bash
-python3.12 scripts/ci/check-version-contract.py
+python3.12 scripts/dev/bump-version.py X.Y.Z
+cargo update --workspace --offline
 ```
+
+The version lives in several files because each is read by a different consumer:
+Cargo compiles it into the binaries, the two host manifests ship it to Codex and
+Claude Code, and the tools lock pins it beside the third-party tools. They are
+separate artifacts, so it cannot live in one file — but it is written by one
+command and enforced by one check,
+`scripts/ci/check-version-contract.py`, which fails the build if any of them
+drift apart.
+
+Tests that assert the current version still need updating by hand; they fail with
+an explicit diff, so run the suite before opening the pull request:
+
+```bash
+python3.12 -m unittest discover -s tests/ci
+```
+
+Then merge through a pull request as usual.
 
 ## Step 1 — tag the source release
 
@@ -160,6 +163,82 @@ gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketp
 
 The release is live once the catalog names the new tag. Claude Code consumers
 read `.claude-plugin/marketplace.json`; check that entry too once it exists.
+
+## What consumers see, and when
+
+Only one step changes anything for consumers. Everything before it is invisible
+to them, which is what makes aborting cheap.
+
+| After step | Visible to consumers |
+| --- | --- |
+| 0 version prepared | nothing |
+| 1 source tag pushed | nothing |
+| 2 assets published | nothing — no catalog names them |
+| 3 staging merged | nothing — the catalog still names the previous tag |
+| 4 marketplace tag pushed | nothing |
+| 5 promotion pull request open | nothing |
+| **6 promotion merged** | **the release is live** |
+
+So this is not a distributed transaction that needs compensating steps. There is
+a single commit point, and before it "abort" means "stop and clean up".
+
+## One-way doors
+
+Two things can never be taken back once published, because other artifacts
+reference them by identity:
+
+- **Release assets** in `unica`. Runtime manifests pin them by SHA-256.
+- **Tags** in either repository. Consumers resolve `git-subdir` against them.
+
+This gives the rule that replaces rollback: **never reuse a version number**. If
+anything is wrong after step 1, abandon that version and release the next patch
+instead. Re-cutting `vX.Y.Z` with different bytes breaks every consumer that
+already resolved it.
+
+## Aborting
+
+| Abort after | What to do | Cost |
+| --- | --- | --- |
+| 0 | Close the version pull request | none |
+| 1–2 | Leave the tag and assets in place, abandon the version, bump to the next patch | a burnt version number |
+| 3 staging pull request open | Close it | none |
+| 4 staging merged | Nothing is served. Either continue, or revert the staging commit on the marketplace default branch and abandon the version | none |
+| 5 marketplace tag pushed | Leave the tag, abandon the version. An unused tag is harmless | a burnt version number |
+| 6 promotion pull request open | Close it. The catalog is untouched | none |
+
+Never delete a tag to "clean up" an abandoned version. An unused tag costs
+nothing; a deleted one that something already resolved costs every consumer.
+
+## Rolling back a live release
+
+Reverting is a one-file change, and it works because published bytes never move,
+so the previous tag still resolves to exactly what it always did.
+
+```bash
+git clone https://github.com/IngvarConsulting/unica-marketplace.git /tmp/unica-marketplace
+cd /tmp/unica-marketplace
+git revert --no-edit <promotion-merge-sha>
+git push origin main   # or open a pull request if the branch is protected
+```
+
+Confirm the catalog names the previous tag again, then treat the bad version as
+burnt and fix forward in the next patch. Consumers move back on their next
+update; those who already installed the bad version keep it until then, so
+prefer fixing forward when the fault is not severe.
+
+## The one state to avoid
+
+A catalog that names a tag which does not exist. Every install then fails with
+`pathspec 'vX.Y.Z' did not match any file(s)`, including for consumers who had
+been working fine.
+
+It has only two causes, both preventable:
+
+- deleting or moving a published tag;
+- merging a promotion pull request whose checks are red, since the consumer
+  install checks are exactly what proves the ref resolves.
+
+Protecting tags in the marketplace repository removes the first cause outright.
 
 ## Failure modes
 
