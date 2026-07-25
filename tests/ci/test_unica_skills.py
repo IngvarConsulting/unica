@@ -109,8 +109,6 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "platform-help": [
-        "unica.standards.search",
-        "unica.standards.explain",
         "unica.code.search",
         "unica.project.map",
         "unica.runtime.execute",
@@ -231,7 +229,11 @@ SCENARIO_REQUIRED_TOKENS = {
     "code-review": ["Findings first", "severity", "file/line"],
     "query-optimize": ["СКД", "virtual", "query-in-loop"],
     "test-authoring": ['"testRunner": "yaxunit"', '"testRunner": "va"'],
-    "platform-help": ["Unica MCP contract gap", "method signatures"],
+    "platform-help": [
+        "platform-help contract gap",
+        "development-standard",
+        "method signatures",
+    ],
     "bsp-patterns": ["БСП", "СведенияОВнешнейОбработке"],
     "integration-implement": ["HTTP-сервис", "webhook", "secrets"],
     "autonomous-server": ["HTTP-сервис", "веб-клиент", "external browser-testing tool"],
