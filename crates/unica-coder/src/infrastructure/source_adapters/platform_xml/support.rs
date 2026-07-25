@@ -415,7 +415,8 @@ enum CertifiedTailLayout {
 
 impl CertifiedTailLayout {
     fn for_values(values: &[AstValue]) -> Self {
-        if values.get(1).is_some_and(is_uuid_atom) && values.get(2).is_some_and(is_uuid_atom) {
+        let object_rule_fields = CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT;
+        if values.len() > object_rule_fields {
             Self::ConfigurationAndObjectRules
         } else {
             Self::ObjectRules
@@ -430,13 +431,6 @@ impl CertifiedTailLayout {
                 CERTIFIED_CONFIGURATION_RULE_FIELDS + object_rules
             }
         }
-    }
-}
-
-fn is_uuid_atom(value: &AstValue) -> bool {
-    match value {
-        AstValue::Atom(atom) => uuid::Uuid::parse_str(&atom.value).is_ok(),
-        AstValue::String(_) | AstValue::List { .. } => false,
     }
 }
 
@@ -824,11 +818,13 @@ mod tests {
 
         let mut extra = compact("6", "0", "0", "0", "0", "0");
         extra.pop();
-        let first_extra = extra.len() + 1;
         extra.push_str(",0,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}");
         let trailing = parse_parent_configurations(extra.as_bytes());
         assert_eq!(unreadable_kind(&trailing), SupportParseErrorKind::TrailingData);
-        assert_eq!(unreadable_error(&trailing).offset, Some(first_extra));
+        assert_eq!(
+            unreadable_error(&trailing).offset,
+            Some(extra.rfind(",aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("tail[11]") + 1)
+        );
 
         let mut configuration_extra = full("1", "1", "1");
         configuration_extra.pop();
@@ -843,7 +839,21 @@ mod tests {
             unreadable_error(&configuration_trailing).offset,
             Some(configuration_first_extra)
         );
+    }
 
+    #[test]
+    fn malformed_configuration_uuid_selects_configuration_layout() {
+        let input = full("1", "1", "1").replacen(CONFIGURATION, "not-a-uuid", 1);
+        let facts = parse_parent_configurations(input.as_bytes());
+        assert_eq!(unreadable_kind(&facts), SupportParseErrorKind::InvalidUuid);
+        assert_eq!(
+            unreadable_error(&facts).offset,
+            Some(input.find("not-a-uuid").expect("invalid UUID is present"))
+        );
+    }
+
+    #[test]
+    fn bom_prefixed_empty_atom_uses_original_input_offset() {
         let empty_atom = parse_parent_configurations(b"\xEF\xBB\xBF{6,,0}");
         assert_eq!(unreadable_kind(&empty_atom), SupportParseErrorKind::UnexpectedToken);
         assert_eq!(unreadable_error(&empty_atom).offset, Some(6));
