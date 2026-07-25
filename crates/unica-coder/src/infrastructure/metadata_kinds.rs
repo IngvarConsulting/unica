@@ -29,7 +29,6 @@ macro_rules! metadata_kind_registry {
             }),+
         ];
 
-        pub(crate) const METADATA_KIND_TAGS: &[&str] = &[$($tag),+];
     };
 }
 
@@ -80,6 +79,8 @@ metadata_kind_registry! {
     "Task" => { directory: "Tasks", display_name_ru: "Задачи", config_dump_prefix: None, config_dump_module_suffix: None },
     "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
 }
+
+pub(crate) const METADATA_KIND_TAGS: &[&str] = LEGACY_TOP_LEVEL_METADATA_CLASSES;
 
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
@@ -192,3 +193,4 @@ mod tests {
         assert_eq!(metadata_kind("SyntheticMetadata"), None);
     }
 }
+use crate::infrastructure::source_adapters::platform_xml::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES;

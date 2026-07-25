@@ -6,6 +6,7 @@ use crate::domain::source_adapters::{
 
 pub(crate) mod probe;
 pub(crate) mod provider;
+pub(crate) mod schema;
 
 pub(crate) fn manifest() -> AdapterManifest {
     AdapterManifest {
