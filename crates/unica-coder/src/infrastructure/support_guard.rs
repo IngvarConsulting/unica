@@ -10,8 +10,9 @@ use crate::infrastructure::native_operations::common::{
 };
 use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, SupportRule, SupportSourceState,
+    read_support_facts, SupportSourceState,
 };
+use crate::domain::navigation::Authorability;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -41,11 +42,13 @@ pub(crate) fn support_guard_violation(
     let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
     match facts.source {
         SupportSourceState::Absent | SupportSourceState::Removed => return None,
-        SupportSourceState::Unreadable { reason } => {
+        SupportSourceState::Unreadable { error } => {
             return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
                 reason: format!(
-                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {reason}; безопасность правки не подтверждена"
+                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {} at byte {}; безопасность правки не подтверждена",
+                    error.context,
+                    error.offset,
                 ),
                 target_path,
                 config_dir,
@@ -53,45 +56,32 @@ pub(crate) fn support_guard_violation(
         }
         SupportSourceState::Parsed => {}
     }
-    if facts.global_editing_enabled() == Some(false) {
-        return Some(SupportGuardViolation {
-            code: "capability-off",
-            reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
-                .to_string(),
-            target_path,
-            config_dir,
-        });
-    }
     let object_uuid = support_object_uuid_for_path(&target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let rule = object_uuid
-        .as_deref()
-        .and_then(|uuid| facts.object_rules.get(&uuid.to_ascii_lowercase()));
-    match (requirement, rule) {
-        (_, Some(SupportRule::Unknown)) => Some(SupportGuardViolation {
-            code: "support-state-unreadable",
-            reason: "состояние поддержки объекта неизвестно; безопасность правки не подтверждена"
-                .to_string(),
+    match facts.authorability_for(object_uuid.as_deref().unwrap_or("")) {
+        Authorability::Authorable => None,
+        Authorability::ConfigurationReadOnly => Some(SupportGuardViolation {
+            code: "capability-off",
+            reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)".to_string(),
             target_path,
             config_dir,
         }),
-        (SupportGuardRequirement::Removed, Some(rule)) if *rule != SupportRule::Removed => {
-            Some(SupportGuardViolation {
-                code: "not-removed",
-                reason: "объект не снят с поддержки — удаление сломает обновления".to_string(),
-                target_path,
-                config_dir,
-            })
-        }
-        (SupportGuardRequirement::Editable, Some(SupportRule::Locked)) => {
-            Some(SupportGuardViolation {
-                code: "locked",
-                reason: "объект на замке — редактирование сломает обновления".to_string(),
-                target_path,
-                config_dir,
-            })
-        }
-        _ => None,
+        Authorability::SupportLocked => Some(SupportGuardViolation {
+            code: if requirement == SupportGuardRequirement::Removed { "not-removed" } else { "locked" },
+            reason: if requirement == SupportGuardRequirement::Removed {
+                "объект или конфигурация не сняты с поддержки — удаление сломает обновления".to_string()
+            } else {
+                "объект или конфигурация на замке — редактирование сломает обновления".to_string()
+            },
+            target_path,
+            config_dir,
+        }),
+        Authorability::UnknownSupportState | Authorability::UnknownReadOnly | Authorability::DerivedReadOnly => Some(SupportGuardViolation {
+            code: "support-state-unreadable",
+            reason: "состояние поддержки объекта или конфигурации неизвестно; безопасность правки не подтверждена".to_string(),
+            target_path,
+            config_dir,
+        }),
     }
 }
 
@@ -351,9 +341,10 @@ fn support_guard_blocked_outcome(
 
 #[cfg(test)]
 mod tests {
-    use super::{support_guard_blocked_outcome, SupportGuardViolation};
-    use crate::application::{ToolHandler, ToolSpec};
+    use super::{support_guard_blocked_outcome, support_guard_violation, SupportGuardViolation};
+    use crate::application::{SupportGuardRequirement, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -386,5 +377,36 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("на замке"), "{message}");
+    }
+
+    #[test]
+    fn configuration_lock_blocks_an_editable_child_rule() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-support-guard-monotonic-{}",
+            std::process::id()
+        ));
+        let target = root.join("Documents/Shipment.xml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/>",
+        )
+        .unwrap();
+        fs::write(
+            &target,
+            "<MetaDataObject uuid=\"cccccccc-cccc-cccc-cccc-cccccccccccc\"/>",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("Ext")).unwrap();
+        fs::write(
+            root.join("Ext/ParentConfigurations.bin"),
+            "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,1,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc,2,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+        )
+        .unwrap();
+
+        let violation = support_guard_violation(&target, SupportGuardRequirement::Editable)
+            .expect("configuration lock must block editable child");
+        assert_eq!(violation.code, "locked");
+        fs::remove_dir_all(root).unwrap();
     }
 }

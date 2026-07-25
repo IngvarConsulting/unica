@@ -1822,7 +1822,6 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
                     Some(SupportRule::Locked) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
                     Some(SupportRule::Editable) => "редактируется с сохранением поддержки".to_string(),
                     Some(SupportRule::Removed) => "снято с поддержки (правки свободны)".to_string(),
-                    Some(SupportRule::Unknown) => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
                     None => "не на поддержке".to_string(),
                 }
             }
@@ -1871,7 +1870,7 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         object_rules: facts
             .object_rules
             .iter()
-            .filter_map(|(uuid, rule)| rule.flag().map(|flag| (uuid.clone(), flag)))
+            .map(|(uuid, rule)| (uuid.clone(), rule.flag()))
             .collect(),
         vendors: facts.vendors().to_vec(),
     })
