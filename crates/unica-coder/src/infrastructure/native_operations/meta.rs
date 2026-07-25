@@ -2628,6 +2628,32 @@ mod edit_tests {
     }
 
     #[test]
+    fn preview_meta_edit_validates_and_describes_inline_change_without_writing() {
+        let context = temp_context("preview-inline-change");
+        let object_path = context.cwd.join("Catalogs/Preview.xml");
+        write_file(&object_path, &sample_catalog_xml());
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = preview_meta_edit(
+            &meta_edit_args(&object_path, "modify-property", "Comment=Previewed"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(outcome.summary.contains("planned native metadata edit"));
+        assert_eq!(
+            outcome.changes,
+            vec![format!("would update {}", object_path.display())]
+        );
+        let stdout = outcome.stdout.as_deref().unwrap_or_default();
+        assert!(stdout.contains("Planned operation: modify-property: Comment=Previewed"));
+        assert!(stdout.contains("Planned update:"));
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_rejects_invalid_boolean_definition_map_without_writing() {
         let context = temp_context("invalid-boolean-definition");
         let object_path = context.cwd.join("Catalogs/BooleanProbe.xml");
@@ -16489,6 +16515,21 @@ struct MetaEditLineNumberLengthAuthorization {
 }
 
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    edit_meta_with_mode(args, context, false)
+}
+
+pub(crate) fn preview_meta_edit(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> AdapterOutcome {
+    edit_meta_with_mode(args, context, true)
+}
+
+fn edit_meta_with_mode(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    dry_run: bool,
+) -> AdapterOutcome {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -16578,6 +16619,9 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                 authorization.policy,
                 &mut counts,
             )?;
+            if dry_run {
+                info_lines.push(format!("[INFO] Planned operation: {operation}: {value}"));
+            }
             authorization.provenance
         };
 
@@ -16590,7 +16634,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
         let changed = serialized_bytes != original_bytes;
         let mut warnings = Vec::new();
-        if changed {
+        if changed && !dry_run {
             transaction.replace_bytes(&object_path, &original_bytes, serialized_bytes)?;
             if let Some(provenance) = line_number_length_provenance {
                 provenance.bind_to(&mut transaction)?;
@@ -16605,6 +16649,8 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                 })?
                 .cleanup_warnings;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
+        } else if changed {
+            info_lines.push(format!("[INFO] Planned update: {}", object_path.display()));
         } else {
             counts = MetaEditCounts::default();
             info_lines.push("[INFO] No changes".to_string());
@@ -16620,9 +16666,17 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
     match edit_result {
         Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
             ok: true,
-            summary: "unica.meta.edit completed with native metadata editor".to_string(),
+            summary: if dry_run {
+                "unica.meta.edit planned native metadata edit".to_string()
+            } else {
+                "unica.meta.edit completed with native metadata editor".to_string()
+            },
             changes: if changed {
-                vec![format!("updated {}", object_path.display())]
+                vec![if dry_run {
+                    format!("would update {}", object_path.display())
+                } else {
+                    format!("updated {}", object_path.display())
+                }]
             } else {
                 Vec::new()
             },
