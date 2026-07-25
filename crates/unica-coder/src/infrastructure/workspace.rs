@@ -104,7 +104,11 @@ mod tests {
         let nested = worktree.join("src/catalogs");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(primary.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        std::fs::write(worktree.join(".git"), "gitdir: ../../.git/worktrees/feature\n").unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../../.git/worktrees/feature\n",
+        )
+        .unwrap();
 
         let context = discover_workspace(Some(nested)).unwrap();
 
