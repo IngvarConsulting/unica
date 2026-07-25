@@ -1068,42 +1068,37 @@ impl NavigationCursor {
 }
 
 fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {
-    let properties = match &selection.properties {
-        PropertySelection::All => "all".to_string(),
-        PropertySelection::Named(names) => format!(
-            "named:{}",
-            names.iter().map(|name| normalize_selection_token(name)).collect::<Result<Vec<_>, _>>()?.join(","),
-        ),
-    };
-    let facets = match selection.facets {
-        FacetSelection::None => "none",
-        FacetSelection::Summary => "summary",
-        FacetSelection::Full => "full",
-    };
-    let mut relations = selection.relations.iter().map(|relation| {
-        let kind = match relation.kind {
-            Some(RelationKind::Contains) => "contains",
-            Some(RelationKind::References) => "references",
-            None => "any",
-        };
-        Ok(format!("{kind}:{}:{}", normalize_selection_token(&relation.role)?, relation.page_size))
-    }).collect::<Result<Vec<_>, SourceAdapterError>>()?;
-    relations.sort();
+    if let PropertySelection::Named(names) = &selection.properties {
+        for name in names {
+            validate_selection_token(name)?;
+        }
+    }
+    let mut normalized = selection.clone();
+    for relation in &normalized.relations {
+        validate_selection_token(&relation.role)?;
+    }
+    normalized.relations.sort_by(|left, right| {
+        serde_json::to_vec(left)
+            .expect("relation selection is serializable")
+            .cmp(&serde_json::to_vec(right).expect("relation selection is serializable"))
+    });
+    let canonical_json = serde_json::to_vec(&normalized).map_err(|error| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            format!("cannot serialize normalized navigation selection: {error}"),
+        )
+    })?;
     let mut digest = Sha256::new();
     digest.update(b"unica.navigation.selection.v1\0");
-    digest.update(properties.as_bytes());
-    digest.update([0]);
-    digest.update(facets.as_bytes());
-    digest.update([0]);
-    digest.update(relations.join("|").as_bytes());
+    digest.update(canonical_json);
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
-fn normalize_selection_token(value: &str) -> Result<String, SourceAdapterError> {
+fn validate_selection_token(value: &str) -> Result<(), SourceAdapterError> {
     if value.is_empty() || value.chars().any(char::is_control) {
         return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "selection contains an invalid token"));
     }
-    Ok(value.to_string())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1245,6 +1240,37 @@ mod tests {
             value,
             &SourceRevision::new("sha256:one").unwrap(),
             &selection(),
+            |_source, _target, _relation| true,
+        ).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+    }
+
+    #[test]
+    fn cursor_hash_is_injective_for_separator_containing_selection_values() {
+        let first = NavigationSelection {
+            properties: PropertySelection::Named(BTreeSet::from(["alpha,beta".to_string()])),
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("role:with|all,delimiters", Some(25)).unwrap()],
+        };
+        let second = NavigationSelection {
+            properties: PropertySelection::Named(BTreeSet::from(["alpha".to_string(), "beta".to_string()])),
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("role:with|all,delimiters", Some(25)).unwrap()],
+        };
+        assert_ne!(normalized_selection_hash(&first).unwrap(), normalized_selection_hash(&second).unwrap());
+
+        let cursor = NavigationCursor::issue(
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_ref(),
+            first,
+            0,
+        ).unwrap();
+        let error = NavigationCursor::decode(
+            serde_json::to_value(cursor).unwrap(),
+            &SourceRevision::new("sha256:one").unwrap(),
+            &second,
             |_source, _target, _relation| true,
         ).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
