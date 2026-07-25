@@ -36,7 +36,7 @@ fn find_workspace_root(cwd: &Path) -> Option<PathBuf> {
         if base.join("v8project.yaml").is_file() {
             return Some(base.to_path_buf());
         }
-        if base.join(".git").exists() {
+        if base.join(".git").is_file() {
             return Some(base.to_path_buf());
         }
     }
