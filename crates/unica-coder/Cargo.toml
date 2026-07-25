@@ -23,7 +23,10 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
 roxmltree.workspace = true
+rmcp.workspace = true
 rusqlite.workspace = true
+schemars.workspace = true
+tokio.workspace = true
 ureq.workspace = true
 uuid.workspace = true
 

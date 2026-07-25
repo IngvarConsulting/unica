@@ -41,5 +41,8 @@ and then use the ordinary marketplace update path.
 - First MCP startup may download one target runtime, while later startups reuse
   the verified ready cache.
 - Runtime stdout remains dedicated to MCP JSON-RPC.
+- The runtime may include supported Rust transport dependencies such as `tokio`
+  and `rmcp` when they replace manually maintained protocol code; thin means
+  verified, host-specific acquisition rather than a ban on those dependencies.
 - Source, runtime, marketplace tag, and catalog promotion have separate proof
   points and cannot be published as one unsafe mutable step.
