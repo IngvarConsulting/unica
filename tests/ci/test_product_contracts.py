@@ -499,6 +499,16 @@ class ProductContractTests(unittest.TestCase):
             "marketplace/.claude-plugin/marketplace.json",
             publish,
         )
+        # Copying is not enough: an unstaged catalog would leave the promotion
+        # PR without the Claude entry while the copy assertion still passed.
+        self.assertIn(
+            "git -C marketplace add .agents/plugins/marketplace.json "
+            ".claude-plugin/marketplace.json",
+            publish,
+        )
+        # The gate is pinned to the compatibility floor, not to the latest CLI.
+        self.assertIn("@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}", release)
+        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
         self.assertIn("claude plugin validate", release)
 
     def test_readme_documents_the_frozen_v078_bridge(self) -> None:

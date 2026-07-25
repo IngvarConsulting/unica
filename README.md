@@ -61,7 +61,7 @@ claude plugin install unica@unica
 | Хост | Каталог кэша |
 | --- | --- |
 | Codex | `$CODEX_HOME/unica/runtimes/<version>/<target>`, при стандартном `CODEX_HOME` — `~/.codex/unica/runtimes/...` |
-| Claude Code | `~/.claude/plugins/data/unica-unica/runtimes/<version>/<target>` — этот каталог переживает обновление плагина |
+| Claude Code | `${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>`, по умолчанию — `~/.claude/plugins/data/unica-unica/...`; этот каталог переживает обновление плагина |
 
 ## Обновление
 
