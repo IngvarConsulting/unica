@@ -4258,6 +4258,22 @@ UUID_RE = re.compile(
 )
 
 
+MCP_HANDSHAKE_ID = "unica-ci-handshake"
+MCP_HANDSHAKE = [
+    {
+        "jsonrpc": "2.0",
+        "id": MCP_HANDSHAKE_ID,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "unica-ci", "version": "1"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+]
+
+
 def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
     operation = arguments.get("Operation") or arguments.get("operation")
     return {operation} if isinstance(operation, str) and operation else set()
@@ -4991,12 +5007,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
         try:
-            for message in messages:
+            # The rmcp-based server requires the MCP handshake before requests.
+            for message in MCP_HANDSHAKE + messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
             responses = []
-            for _ in messages:
+            expected = 1 + sum("id" in message for message in messages)
+            for _ in range(expected):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self.fail("timed out waiting for MCP response")
@@ -5012,7 +5030,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             stderr = process.stderr.read()
             self.assertEqual(return_code, 0, stderr)
-            return responses
+            handshake = [r for r in responses if r.get("id") == MCP_HANDSHAKE_ID]
+            self.assertEqual(len(handshake), 1, responses)
+            self.assertEqual(handshake[0]["result"]["serverInfo"]["name"], "unica")
+            return [r for r in responses if r.get("id") != MCP_HANDSHAKE_ID]
         finally:
             if not process.stdin.closed:
                 process.stdin.close()

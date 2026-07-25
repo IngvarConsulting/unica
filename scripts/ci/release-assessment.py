@@ -164,6 +164,18 @@ def call_mcp(
     timeout_seconds: int,
 ) -> tuple[list[dict[str, Any]], int, str, str, int]:
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # The rmcp-based server requires the MCP handshake before requests; prepend
+    # it unless the scenario drives initialize itself, and strip its response.
+    if not messages or messages[0].get("method") != "initialize":
+        messages = [
+            {
+                "jsonrpc": "2.0",
+                "id": MCP_HANDSHAKE_ID,
+                "method": "initialize",
+                "params": MCP_INITIALIZE_PARAMS,
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        ] + messages
     payload = "\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n"
     payload.encode("utf-8", errors="strict")
     env = os.environ.copy()
@@ -325,7 +337,12 @@ def call_mcp(
         stderr = f"{write_error}\n{stderr}".strip()
     if timed_out:
         return [], duration_ms, stdout, stderr or f"timed out after {timeout_seconds}s", 124
-    responses = [responses_by_key[key] for key in expected_keys if key in responses_by_key]
+    handshake_key = rpc_id_key(MCP_HANDSHAKE_ID)
+    responses = [
+        responses_by_key[key]
+        for key in expected_keys
+        if key in responses_by_key and key != handshake_key
+    ]
     responses.extend(protocol_errors)
     if len(responses_by_key) < len(expected_keys) and not protocol_errors:
         missing = [
@@ -339,6 +356,14 @@ def call_mcp(
     if write_error and returncode == 0:
         returncode = 1
     return responses, duration_ms, stdout, stderr, returncode
+
+
+MCP_HANDSHAKE_ID = "unica-assessment-handshake"
+MCP_INITIALIZE_PARAMS = {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {"name": "unica-release-assessment", "version": "1"},
+}
 
 
 def tool_call_message(message_id: int, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -426,7 +451,8 @@ def scenario_result(
 
 def run_tools_list_scenario(run_unica: Path, bsp_root: Path, cache_dir: Path, timeout_seconds: int) -> dict[str, Any]:
     messages = [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": MCP_INITIALIZE_PARAMS},
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
     responses, duration_ms, stdout, stderr, returncode = call_mcp(

@@ -41,10 +41,10 @@ Unica may start hidden internal services scoped by workspace and source root.
 9. The public stdio dispatcher may execute `tools/call` requests concurrently.
    MCP `notifications/cancelled` flips the same request token that is propagated
    through the application and internal service connector. A cancelled public
-   request completes once with JSON-RPC error `-32800` (`request cancelled`).
-   Public JSONL input is limited to 8 MiB per line and at most 32 tool workers
-   are admitted. An oversized line returns parse error `-32700`; excess work
-   returns deterministic JSON-RPC error `-32603` containing `overloaded`.
+   request gets no response, as the MCP specification prescribes (ADR-0013).
+   At most 32 tool workers are admitted; excess work returns deterministic
+   JSON-RPC error `-32603` containing `overloaded`. Public input line length
+   is delegated to the SDK transport (ADR-0013).
 10. The service accepts each connection independently. `ping`, `cancel`, and
     `shutdown` do not wait for analyzer or RLM work. RLM jobs may run
     independently, while access to the single warm analyzer session remains
@@ -85,7 +85,7 @@ Unica may start hidden internal services scoped by workspace and source root.
     protocol, and successful process-exit races. A best-effort `Cancel` has a
     separate 500 ms aggregate budget for connect, write, and flush and does not
     read a response.
-16. Public and internal request lines are limited to 8 MiB. Workspace-service
+16. Internal request lines are limited to 8 MiB. Workspace-service
     request headers have one 5-second aggregate deadline beginning at accept;
     100 ms read slices do not reset it when a peer drips bytes.
 17. A read-only BSL MCP `diagnostics` or `graph` request is retried at most once
