@@ -1,12 +1,21 @@
 # Unica
 
-Unica (Ю&#x301;ника) — публичный плагин [Codex](https://openai.com/codex/) для разработки на 1С:Предприятии. Он добавляет
-навыки и один MCP-сервер `unica`, через который Codex создаёт и проверяет
-метаданные, формы, роли, СКД, внешние обработки и отчёты, запускает 1С и ищет BSL-код.
+Unica (Ю&#x301;ника) — публичный плагин [Codex](https://openai.com/codex/) и
+[Claude Code](https://code.claude.com/docs/en/overview) для разработки на
+1С:Предприятии. Он добавляет навыки и один MCP-сервер `unica`, через который
+агент создаёт и проверяет метаданные, формы, роли, СКД, внешние обработки и
+отчёты, запускает 1С и ищет BSL-код.
+
+Оба хоста получают один и тот же каталог плагина: манифесты лежат рядом, а
+`.mcp.json` определяет корень плагина по той переменной, которую подставляет
+конкретный хост.
 
 ## Требования
 
-- актуальный [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) с командами `codex plugin`;
+- один из агентов:
+  - актуальный [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) с командами `codex plugin`;
+  - [Claude Code](https://code.claude.com/docs/en/overview) **2.1.69 или новее** — более
+    ранние клиенты не разбирают тип источника `git-subdir` и не загрузят каталог;
 - стандартный Git, включая Git for Windows на Windows;
 - платформа 1С только для операций, которым реально требуется запуск 1С.
 
@@ -20,6 +29,8 @@ Unica (Ю&#x301;ника) — публичный плагин [Codex](https://op
 
 ## Установка
 
+### Codex
+
 ```sh
 codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
 codex plugin add unica@unica
@@ -28,14 +39,33 @@ codex plugin add unica@unica
 После установки откройте new Codex task: список навыков и MCP-конфигурация
 фиксируются на границе новой задачи, а не подменяются в уже работающей сессии.
 
+### Claude Code
+
+```sh
+claude plugin marketplace add IngvarConsulting/unica-marketplace
+claude plugin install unica@unica
+```
+
+Затем выполните `/reload-plugins` либо начните новую сессию. Навыки становятся
+доступны с префиксом плагина, например `/unica:meta-validate`.
+
+### Загрузка runtime
+
 При первом MCP-вызове `unica` скачивает из релиза `IngvarConsulting/unica`
 только исполнительные файлы для текущей ОС и архитектуры. Архив и каждый файл
-проверяются по SHA-256. Готовый runtime атомарно публикуется в
-`$CODEX_HOME/unica/runtimes/<version>/<target>`; при стандартном `CODEX_HOME`
-это `~/.codex/unica/runtimes/...`. Неполная или повреждённая загрузка не получает
-маркер готовности.
+проверяются по SHA-256. Неполная или повреждённая загрузка не получает маркер
+готовности.
+
+Готовый runtime атомарно публикуется в кэше хоста:
+
+| Хост | Каталог кэша |
+| --- | --- |
+| Codex | `$CODEX_HOME/unica/runtimes/<version>/<target>`, при стандартном `CODEX_HOME` — `~/.codex/unica/runtimes/...` |
+| Claude Code | `~/.claude/plugins/data/unica-unica/runtimes/<version>/<target>` — этот каталог переживает обновление плагина |
 
 ## Обновление
+
+### Codex
 
 ```sh
 codex plugin marketplace upgrade unica
@@ -48,6 +78,15 @@ codex plugin add unica@unica
 
 Отдельной команды `codex plugin upgrade` в поддерживаемом CLI нет, поэтому
 переустановка плагина после обновления каталога является намеренным шагом.
+
+### Claude Code
+
+```sh
+claude plugin marketplace update unica
+claude plugin update unica@unica
+```
+
+Затем выполните `/reload-plugins`.
 
 ## Переход со старых версий
 
@@ -93,9 +132,18 @@ codex plugin add unica@unica
 
 ## Удаление
 
+Codex:
+
 ```sh
 codex plugin remove unica@unica
 codex plugin marketplace remove unica
+```
+
+Claude Code:
+
+```sh
+claude plugin uninstall unica@unica
+claude plugin marketplace remove unica
 ```
 
 Проверенные исполняемые-кэши можно оставить для повторной установки. Их ручное
@@ -103,12 +151,18 @@ codex plugin marketplace remove unica
 
 ## Разработка
 
-Для разработки используется отдельный marketplace `unica-dev`:
+Для разработки под Codex используется отдельный marketplace `unica-dev`:
 
 ```sh
 git clone https://github.com/IngvarConsulting/unica.git
 cd unica
 scripts/dev/install-local-unica.sh
+```
+
+Под Claude Code каталог плагина подключается напрямую, без маркетплейса:
+
+```sh
+claude --plugin-dir ./plugins/unica
 ```
 
 На Windows x64 запускайте этот скрипт из **Git Bash**, входящего в 64-битный

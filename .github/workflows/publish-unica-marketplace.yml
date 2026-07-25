@@ -50,9 +50,11 @@ jobs:
       - name: Require package contract files
         run: |
           test -f payload/plugins/unica/.codex-plugin/plugin.json
+          test -f payload/plugins/unica/.claude-plugin/plugin.json
           test -f payload/plugins/unica/.mcp.json
           test -f payload/plugins/unica/runtime-manifest.json
           test -f payload/.agents/plugins/marketplace.json
+          test -f payload/.claude-plugin/marketplace.json
       - name: Read the pinned release identity
         run: |
           release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
@@ -93,8 +95,10 @@ jobs:
         run: gh auth setup-git
       - name: Download catalog candidate
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-      - name: Require stable catalog candidate
-        run: test -f payload/.agents/plugins/marketplace.json
+      - name: Require stable catalog candidates
+        run: |
+          test -f payload/.agents/plugins/marketplace.json
+          test -f payload/.claude-plugin/marketplace.json
       - name: Open catalog-only promotion PR
         run: |
           set -euo pipefail
@@ -105,9 +109,10 @@ jobs:
             "$(git -C marketplace rev-parse "origin/main:plugins/unica")"
           branch="codex/promote-${RELEASE_TAG}-${SOURCE_RUN_ID}"
           git -C marketplace switch -c "$branch"
-          mkdir -p marketplace/.agents/plugins
+          mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
           cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
-          git -C marketplace add .agents/plugins/marketplace.json
+          cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
+          git -C marketplace add .agents/plugins/marketplace.json .claude-plugin/marketplace.json
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "promote: Unica ${RELEASE_TAG}"
           git -C marketplace push -u origin "$branch"

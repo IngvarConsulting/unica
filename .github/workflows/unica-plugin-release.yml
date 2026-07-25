@@ -310,6 +310,21 @@ jobs:
           --release-tag "$RELEASE_TAG"
           --source-commit "${{ github.sha }}"
           --out-dir dist/thin
+      - name: Require both host contracts in the shared plugin directory
+        run: |
+          test -f dist/thin/marketplace/plugins/unica/.codex-plugin/plugin.json
+          test -f dist/thin/marketplace/plugins/unica/.claude-plugin/plugin.json
+          test -f dist/thin/marketplace/.agents/plugins/marketplace.json
+          test -f dist/thin/marketplace/.claude-plugin/marketplace.json
+      # Schema errors are caught here against a current client. The narrower
+      # question of which optional keys older clients still accept is pinned by
+      # tests/ci/test_package_unica_plugin.py, because a current client reports
+      # those as warnings rather than errors.
+      - name: Validate the Claude plugin and catalog
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate dist/thin/marketplace/plugins/unica
+          claude plugin validate dist/thin/marketplace
       - uses: actions/upload-artifact@v7
         with:
           name: unica-thin-marketplace

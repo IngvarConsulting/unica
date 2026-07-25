@@ -29,6 +29,7 @@ class VersionContractTests(unittest.TestCase):
             {
                 "workspace": "0.9.1",
                 "plugin": "0.9.1",
+                "claude-plugin": "0.9.1",
                 "tools-lock-unica": "0.9.1",
             },
         )

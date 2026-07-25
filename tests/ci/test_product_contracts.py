@@ -449,6 +449,58 @@ class ProductContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, readme)
 
+    def test_readme_documents_the_claude_marketplace_lifecycle(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        readme = (repo_root / "README.md").read_text(encoding="utf-8")
+
+        required = (
+            "claude plugin marketplace add IngvarConsulting/unica-marketplace",
+            "claude plugin install unica@unica",
+            "claude plugin marketplace update unica",
+            "claude plugin update unica@unica",
+            "claude plugin uninstall unica@unica",
+            "claude plugin marketplace remove unica",
+            "claude --plugin-dir ./plugins/unica",
+            # The floor is load-bearing: older clients cannot parse git-subdir.
+            "2.1.69",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, readme)
+
+    def test_claude_host_contract_is_recorded_for_agents(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
+        decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+
+        self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
+        self.assertIn("AGENTS.md", claude_md)
+        self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
+        self.assertTrue(
+            (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
+        )
+
+    def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+            encoding="utf-8"
+        )
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # Staging must carry both manifests, and promotion must move both
+        # catalogs together, or one host would be left pointing at a stale tag.
+        self.assertIn("payload/plugins/unica/.claude-plugin/plugin.json", publish)
+        self.assertIn("payload/.claude-plugin/marketplace.json", publish)
+        self.assertIn(
+            "cp payload/.claude-plugin/marketplace.json "
+            "marketplace/.claude-plugin/marketplace.json",
+            publish,
+        )
+        self.assertIn("claude plugin validate", release)
+
     def test_readme_documents_the_frozen_v078_bridge(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")

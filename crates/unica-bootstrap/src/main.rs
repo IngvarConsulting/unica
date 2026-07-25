@@ -68,17 +68,7 @@ fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
 }
 
 fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
-    let metadata_path = plugin_root.join(".codex-plugin").join("plugin.json");
-    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
-    if metadata.get("name").and_then(serde_json::Value::as_str) != Some("unica")
-        || metadata.get("version").and_then(serde_json::Value::as_str) != Some(VERSION)
-        || metadata.get("skills").and_then(serde_json::Value::as_str) != Some("./skills/")
-    {
-        return Err(unica_bootstrap::BootstrapError::new(format!(
-            "installed Unica plugin metadata does not expose version {VERSION} skills: {}",
-            metadata_path.display()
-        )));
-    }
+    verify_installed_plugin_metadata(plugin_root)?;
 
     let skills_root = plugin_root.join("skills");
     let mut visible = std::collections::BTreeSet::new();
@@ -116,6 +106,41 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A package may carry the Codex manifest, the Claude manifest, or both. Every
+/// manifest that is present must agree on the plugin identity, and each host
+/// keeps its own skill-discovery contract: Codex needs the explicit `skills`
+/// pointer, while Claude Code always scans `skills/` and would load the
+/// directory twice if the manifest named it again.
+fn verify_installed_plugin_metadata(plugin_root: &Path) -> Result<()> {
+    let mut hosts = 0;
+    for (dir, expects_skills_pointer) in [(".codex-plugin", true), (".claude-plugin", false)] {
+        let metadata_path = plugin_root.join(dir).join("plugin.json");
+        if !metadata_path.is_file() {
+            continue;
+        }
+        hosts += 1;
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+        let skills = metadata.get("skills").and_then(serde_json::Value::as_str);
+        if metadata.get("name").and_then(serde_json::Value::as_str) != Some("unica")
+            || metadata.get("version").and_then(serde_json::Value::as_str) != Some(VERSION)
+            || (expects_skills_pointer && skills != Some("./skills/"))
+            || (!expects_skills_pointer && skills.is_some())
+        {
+            return Err(unica_bootstrap::BootstrapError::new(format!(
+                "installed Unica plugin metadata does not expose version {VERSION} skills: {}",
+                metadata_path.display()
+            )));
+        }
+    }
+    if hosts == 0 {
+        return Err(unica_bootstrap::BootstrapError::new(format!(
+            "installed Unica plugin has no host manifest: {}",
+            plugin_root.display()
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Run,
@@ -141,8 +166,18 @@ fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
 }
 
 fn runtime_cache_root() -> Result<PathBuf> {
+    // The package points UNICA_RUNTIME_CACHE_DIR at ${CLAUDE_PLUGIN_DATA}, which
+    // only a host that understands the token expands. Hosts that pass it through
+    // literally would otherwise create a directory named after the token, so an
+    // unexpanded value is discarded in favour of the home-directory cache.
     if let Some(value) = env::var_os("UNICA_RUNTIME_CACHE_DIR") {
-        return Ok(PathBuf::from(value));
+        let value = PathBuf::from(value);
+        if !value.to_string_lossy().contains("${") {
+            return Ok(value);
+        }
+    }
+    if let Some(value) = env::var_os("CLAUDE_PLUGIN_DATA") {
+        return Ok(PathBuf::from(value).join("runtimes"));
     }
     Ok(codex_home_root()?.join("unica").join("runtimes"))
 }
