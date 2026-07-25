@@ -6,6 +6,7 @@ use crate::domain::{
 };
 
 pub(crate) mod registry;
+pub(crate) mod platform_xml;
 
 pub(crate) struct SourceInput {
     pub(crate) workspace_root: PathBuf,
