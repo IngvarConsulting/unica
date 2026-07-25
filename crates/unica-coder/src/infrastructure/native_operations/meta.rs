@@ -16522,7 +16522,29 @@ pub(crate) fn preview_meta_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    edit_meta_with_mode(args, context, true)
+    let outcome = edit_meta_with_mode(args, context, true);
+    let Some(error) = outcome.errors.first() else {
+        return outcome;
+    };
+    if !error.starts_with("Object file not found:") {
+        return outcome;
+    }
+
+    let object_path = string_arg(args, OBJECT_PATH).unwrap_or("<missing ObjectPath>");
+    let operation = string_arg(args, &["operation", "Operation"]).unwrap_or("definition file");
+    AdapterOutcome {
+        ok: true,
+        summary: "dry run: unica.meta.edit planned native metadata edit".to_string(),
+        changes: vec![format!("would update {object_path}")],
+        warnings: vec![format!("detailed validation unavailable: {error}")],
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        stdout: Some(format!(
+            "[INFO] Planned operation: {operation}\n[INFO] Planned update: {object_path}\n[WARN] {error}\n"
+        )),
+        stderr: None,
+        command: None,
+    }
 }
 
 fn edit_meta_with_mode(
