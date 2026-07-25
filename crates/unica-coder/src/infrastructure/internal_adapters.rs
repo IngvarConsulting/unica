@@ -1935,7 +1935,7 @@ impl<'a> CodeNavigationAdapter<'a> {
         let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
-            other => return Ok(index_unavailable_outcome(tool_name, other)),
+            other => return Ok(outline_index_unavailable_outcome(tool_name, other)),
         };
         let include_methods = args
             .get("includeMethods")
@@ -2917,6 +2917,36 @@ fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> Adap
         stdout: None,
         stderr: None,
         command: None,
+    }
+}
+
+fn outline_index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> AdapterOutcome {
+    match readiness {
+        IndexReadiness::Building => AdapterOutcome {
+            ok: false,
+            summary: format!("{tool_name} pending RLM index build"),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec!["index_pending: rlm index building".to_string()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        IndexReadiness::Unavailable(error) if error.starts_with("invalid_source_root:") => {
+            AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} rejected invalid source root"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            }
+        }
+        other => index_unavailable_outcome(tool_name, other),
     }
 }
 
@@ -4294,6 +4324,40 @@ mod tests {
         assert!(outcome.errors[0].starts_with("cancelled:"));
         assert!(outcome.errors[0].contains("stale (content)"));
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn outline_reports_building_index_as_retryable_pending_failure() {
+        let outcome =
+            outline_index_unavailable_outcome("unica.code.outline", IndexReadiness::Building);
+
+        assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(
+            outcome.summary,
+            "unica.code.outline pending RLM index build"
+        );
+        assert_eq!(outcome.errors, vec!["index_pending: rlm index building"]);
+        assert!(outcome.stdout.is_none());
+    }
+
+    #[test]
+    fn outline_reports_invalid_source_root_as_failure_with_stable_code() {
+        let outcome = outline_index_unavailable_outcome(
+            "unica.code.outline",
+            IndexReadiness::Unavailable(
+                "invalid_source_root: sourceDir must stay within workspace".to_string(),
+            ),
+        );
+
+        assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(
+            outcome.errors,
+            vec!["invalid_source_root: sourceDir must stay within workspace"]
+        );
+        assert!(outcome.summary.contains("invalid source root"));
+        assert!(outcome.stdout.is_none());
     }
 
     #[test]
