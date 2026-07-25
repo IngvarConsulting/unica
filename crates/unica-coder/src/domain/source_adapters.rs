@@ -1,0 +1,283 @@
+use std::collections::BTreeSet;
+use std::fmt::{Display, Formatter};
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FormatVersion(Vec<u32>);
+
+impl FormatVersion {
+    pub(crate) fn parse(raw: &str) -> Result<Self, SourceAdapterError> {
+        let parts = raw
+            .split('.')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                SourceAdapterError::new(
+                    SourceAdapterErrorKind::FormatUnsupported,
+                    format!("invalid format version `{raw}`"),
+                )
+            })?;
+        if parts.is_empty() || parts.iter().all(|part| *part == 0) {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::FormatUnsupported,
+                format!("invalid format version `{raw}`"),
+            ));
+        }
+        Ok(Self(parts))
+    }
+}
+
+impl Display for FormatVersion {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        let rendered = self
+            .0
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        formatter.write_str(&rendered)
+    }
+}
+
+impl Serialize for FormatVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormatRange {
+    pub(crate) min_inclusive: FormatVersion,
+    pub(crate) max_inclusive: FormatVersion,
+}
+
+impl FormatRange {
+    pub(crate) fn exact(version: FormatVersion) -> Self {
+        Self {
+            min_inclusive: version.clone(),
+            max_inclusive: version,
+        }
+    }
+
+    pub(crate) fn contains(&self, version: &FormatVersion) -> bool {
+        self.min_inclusive <= *version && *version <= self.max_inclusive
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SourceFamily {
+    PlatformXml,
+    Edt,
+    Cf,
+    FileDatabase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SnapshotConsistency {
+    Consistent,
+    Partial,
+    Changed,
+    Unverifiable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AdapterMaturity {
+    Experimental,
+    ProbeComplete,
+    ReadCompatible,
+    SemanticParity,
+    WriteSafe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SourceAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceId(String);
+
+impl SourceId {
+    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+        let raw = raw.into();
+        validate_source_value(&raw, "source id")?;
+        Ok(Self(raw))
+    }
+}
+
+impl Serialize for SourceId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceRevision(String);
+
+impl SourceRevision {
+    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+        let raw = raw.into();
+        validate_source_value(&raw, "source revision")?;
+        Ok(Self(raw))
+    }
+}
+
+impl Serialize for SourceRevision {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+fn validate_source_value(raw: &str, value_name: &str) -> Result<(), SourceAdapterError> {
+    if raw.is_empty() || raw.chars().any(char::is_control) {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            format!("invalid {value_name}"),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceDescriptor {
+    pub(crate) source_id: SourceId,
+    pub(crate) family: SourceFamily,
+    pub(crate) format_version: FormatVersion,
+    pub(crate) producer_version: Option<FormatVersion>,
+    pub(crate) detected_features: BTreeSet<String>,
+    pub(crate) probe_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceSnapshot {
+    pub(crate) source_id: SourceId,
+    pub(crate) revision: SourceRevision,
+    pub(crate) consistency: SnapshotConsistency,
+    pub(crate) adapter_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AdapterManifest {
+    pub(crate) adapter_id: &'static str,
+    pub(crate) adapter_version: &'static str,
+    pub(crate) source_family: SourceFamily,
+    pub(crate) supported_formats: Vec<FormatRange>,
+    pub(crate) required_features: BTreeSet<String>,
+    pub(crate) excluded_features: BTreeSet<String>,
+    pub(crate) source_access: SourceAccess,
+    pub(crate) maturity: AdapterMaturity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SourceAdapterErrorKind {
+    SourceUnavailable,
+    ProbeAmbiguous,
+    FormatUnsupported,
+    SnapshotInconsistent,
+    SnapshotStale,
+    DecodeCorrupted,
+    ProjectionAmbiguous,
+    IdentityCollision,
+    CapabilityBlocked,
+    MutationConflict,
+    ValidationFailed,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceAdapterError {
+    pub(crate) kind: SourceAdapterErrorKind,
+    pub(crate) message: String,
+}
+
+impl SourceAdapterError {
+    pub(crate) fn new(kind: SourceAdapterErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn code(&self) -> &'static str {
+        match self.kind {
+            SourceAdapterErrorKind::SourceUnavailable => "source_unavailable",
+            SourceAdapterErrorKind::ProbeAmbiguous => "probe_ambiguous",
+            SourceAdapterErrorKind::FormatUnsupported => "format_unsupported",
+            SourceAdapterErrorKind::SnapshotInconsistent => "snapshot_inconsistent",
+            SourceAdapterErrorKind::SnapshotStale => "snapshot_stale",
+            SourceAdapterErrorKind::DecodeCorrupted => "decode_corrupted",
+            SourceAdapterErrorKind::ProjectionAmbiguous => "projection_ambiguous",
+            SourceAdapterErrorKind::IdentityCollision => "identity_collision",
+            SourceAdapterErrorKind::CapabilityBlocked => "capability_blocked",
+            SourceAdapterErrorKind::MutationConflict => "mutation_conflict",
+            SourceAdapterErrorKind::ValidationFailed => "validation_failed",
+            SourceAdapterErrorKind::RecoveryRequired => "recovery_required",
+        }
+    }
+}
+
+impl Display for SourceAdapterError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SourceAdapterError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_ranges_are_explicit_and_do_not_select_nearest_versions() {
+        let range = FormatRange::exact(FormatVersion::parse("2.20").unwrap());
+
+        assert!(range.contains(&FormatVersion::parse("2.20").unwrap()));
+        assert!(!range.contains(&FormatVersion::parse("2.19").unwrap()));
+        assert!(!range.contains(&FormatVersion::parse("2.21").unwrap()));
+    }
+
+    #[test]
+    fn invalid_format_versions_are_structured_failures() {
+        let error = FormatVersion::parse("2.latest").unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::FormatUnsupported);
+        assert_eq!(error.code(), "format_unsupported");
+    }
+
+    #[test]
+    fn snapshot_serialization_does_not_expose_physical_locations() {
+        let snapshot = SourceSnapshot {
+            source_id: SourceId::new("workspace:main").unwrap(),
+            revision: SourceRevision::new("sha256:abc").unwrap(),
+            consistency: SnapshotConsistency::Consistent,
+            adapter_id: "platform-xml-2.20".to_string(),
+        };
+        let value = serde_json::to_value(snapshot).unwrap();
+        let text = value.to_string();
+
+        assert!(!text.contains("/Users/"));
+        assert!(!text.contains("C:\\\\"));
+    }
+}
