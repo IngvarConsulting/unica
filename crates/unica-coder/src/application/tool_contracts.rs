@@ -2138,10 +2138,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
     ),
     (
-        "outFile",
-        "Write the tool's text report to this file as UTF-8 with BOM instead of returning it inline; it is a report sink, not a generated artifact — use `outputPath` or `outputDir` for those",
-    ),
-    (
         "output",
         "Workspace-relative destination: the artifact file for make (a publish directory for external source-sets), the conversion directory for convert, and the platform /Out log for a direct-client launch",
     ),
