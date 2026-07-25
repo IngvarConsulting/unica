@@ -4173,7 +4173,9 @@ fn navigation_authorability(object_path: &Path) -> Authorability {
     let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
     let object_uuid = support_object_uuid_for_path(object_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    facts.authorability_for(object_uuid.as_deref().unwrap_or(""))
+    facts
+        .effective_rule_for(object_uuid.as_deref().unwrap_or(""))
+        .authorability()
 }
 
 fn navigation_source_set(object_path: &Path, context: &WorkspaceContext) -> String {
@@ -13403,6 +13405,31 @@ mod tests {
         }));
         assert!(graph.edges.iter().all(|edge| {
             edge.capability_state.authorability == Authorability::ConfigurationReadOnly
+        }));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn configuration_lock_overrides_an_editable_object_through_meta_adapter() {
+        let (context, object_path) = source_set_fixture("src", document_source(""));
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            &locked_support_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            )
+            .replace(
+                "0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "0,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            ),
+        );
+
+        let graph = analyze_fixture_graph(&context, &object_path);
+
+        assert!(graph.nodes.iter().all(|node| {
+            node.capability_state.authorability == Authorability::SupportLocked
         }));
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }

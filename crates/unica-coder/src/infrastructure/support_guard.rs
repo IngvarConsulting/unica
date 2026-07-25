@@ -10,7 +10,7 @@ use crate::infrastructure::native_operations::common::{
 };
 use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, SupportSourceState,
+    read_support_facts, EffectiveSupportRule,
 };
 use crate::domain::navigation::Authorability;
 use serde_json::{Map, Value};
@@ -40,25 +40,45 @@ pub(crate) fn support_guard_violation(
         .unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
     let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
-    match facts.source {
-        SupportSourceState::Absent | SupportSourceState::Removed => return None,
-        SupportSourceState::Unreadable { error } => {
+    let object_uuid = support_object_uuid_for_path(&target_path)
+        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
+    let effective = facts.effective_rule_for(object_uuid.as_deref().unwrap_or(""));
+    if effective == EffectiveSupportRule::Unreadable {
+        let error = facts.parse_error().expect("unreadable facts carry a parse error");
+        let location = error
+            .offset
+            .map(|offset| format!(" at byte {offset}"))
+            .unwrap_or_default();
             return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
                 reason: format!(
-                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {} at byte {}; безопасность правки не подтверждена",
+                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}{}; безопасность правки не подтверждена",
                     error.context,
-                    error.offset,
+                    location,
                 ),
                 target_path,
                 config_dir,
             });
-        }
-        SupportSourceState::Parsed => {}
     }
-    let object_uuid = support_object_uuid_for_path(&target_path)
-        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    match facts.authorability_for(object_uuid.as_deref().unwrap_or("")) {
+    if requirement == SupportGuardRequirement::Removed {
+        return match effective {
+            EffectiveSupportRule::Removed => None,
+            EffectiveSupportRule::ConfigurationReadOnly => Some(SupportGuardViolation {
+                code: "capability-off",
+                reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)".to_string(),
+                target_path,
+                config_dir,
+            }),
+            EffectiveSupportRule::Locked | EffectiveSupportRule::Editable | EffectiveSupportRule::Absent => Some(SupportGuardViolation {
+                code: "not-removed",
+                reason: "объект не снят с поддержки; удаление сломает обновления".to_string(),
+                target_path,
+                config_dir,
+            }),
+            EffectiveSupportRule::Unreadable => unreachable!("unreadable returns before requirement evaluation"),
+        };
+    }
+    match effective.authorability() {
         Authorability::Authorable => None,
         Authorability::ConfigurationReadOnly => Some(SupportGuardViolation {
             code: "capability-off",
@@ -408,5 +428,48 @@ mod tests {
             .expect("configuration lock must block editable child");
         assert_eq!(violation.code, "locked");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removed_requirement_requires_an_exact_removed_object_rule() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-support-guard-removed-{}",
+            std::process::id()
+        ));
+        let target = root.join("Documents/Shipment.xml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/>",
+        )
+        .unwrap();
+        fs::write(
+            &target,
+            "<MetaDataObject uuid=\"cccccccc-cccc-cccc-cccc-cccccccccccc\"/>",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("Ext")).unwrap();
+        let bin = root.join("Ext/ParentConfigurations.bin");
+        fs::write(&bin, support_payload("1")).unwrap();
+
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Removed)
+                .expect("editable is not removed")
+                .code,
+            "not-removed"
+        );
+
+        fs::write(&bin, support_payload("2")).unwrap();
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Removed),
+            None
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn support_payload(object_state: &str) -> String {
+        format!(
+            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,{object_state},cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc,2,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}}"
+        )
     }
 }

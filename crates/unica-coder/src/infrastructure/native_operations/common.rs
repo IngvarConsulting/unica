@@ -3,7 +3,8 @@
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, SupportFacts, SupportRule, SupportSourceState, SupportVendor,
+    read_support_facts, EffectiveSupportRule, SupportFacts, SupportRule, SupportSourceState,
+    SupportVendor,
 };
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1438,6 +1439,28 @@ mod support_state_tests {
     }
 
     #[test]
+    fn zero_vendor_payload_is_not_mistaken_for_removed_support() {
+        let (root, target) = support_fixture("zero-vendor");
+        let ext = root.join("Ext");
+        fs::create_dir_all(&ext).expect("create Ext");
+        fs::write(ext.join("ParentConfigurations.bin"), "{6,1,0}")
+            .expect("write zero-vendor read-only state");
+
+        assert_eq!(
+            support_status_for_path(&target),
+            "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
+        );
+        assert_eq!(
+            support_guard_violation(&target, SupportGuardRequirement::Editable)
+                .expect("global flag must block edits")
+                .code,
+            "capability-off"
+        );
+
+        fs::remove_dir_all(root).expect("clean fixture");
+    }
+
+    #[test]
     fn non_regular_parent_configurations_blocks_edits_without_claiming_no_support() {
         let (root, target) = support_fixture("non-regular");
         fs::create_dir_all(root.join("Ext/ParentConfigurations.bin"))
@@ -1806,27 +1829,15 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         return "не на поддержке".to_string();
     };
     let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
-    match facts.source {
-        SupportSourceState::Absent => "не на поддержке".to_string(),
-        SupportSourceState::Removed => "снято с поддержки (правки свободны)".to_string(),
-        SupportSourceState::Unreadable { .. } => {
-            "состояние поддержки не удалось прочитать — правки не подтверждены".to_string()
-        }
-        SupportSourceState::Parsed => match facts.global_editing_enabled() {
-            Some(false) => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
-            Some(true) => {
-                let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
-                    return "не на поддержке".to_string();
-                };
-                match facts.object_rules.get(&object_uuid.to_ascii_lowercase()) {
-                    Some(SupportRule::Locked) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-                    Some(SupportRule::Editable) => "редактируется с сохранением поддержки".to_string(),
-                    Some(SupportRule::Removed) => "снято с поддержки (правки свободны)".to_string(),
-                    None => "не на поддержке".to_string(),
-                }
-            }
-            None => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
-        },
+    let object_uuid = support_object_uuid_for_path(target_path)
+        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
+    match facts.effective_rule_for(object_uuid.as_deref().unwrap_or("")) {
+        EffectiveSupportRule::Absent => "не на поддержке".to_string(),
+        EffectiveSupportRule::Removed => "снято с поддержки (правки свободны)".to_string(),
+        EffectiveSupportRule::Editable => "редактируется с сохранением поддержки".to_string(),
+        EffectiveSupportRule::Locked => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+        EffectiveSupportRule::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
+        EffectiveSupportRule::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
     }
 }
 

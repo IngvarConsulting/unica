@@ -31,7 +31,7 @@ pub(crate) enum SupportParseErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SupportParseError {
     pub(crate) kind: SupportParseErrorKind,
-    pub(crate) offset: usize,
+    pub(crate) offset: Option<usize>,
     pub(crate) context: &'static str,
 }
 
@@ -39,7 +39,15 @@ impl SupportParseError {
     fn new(kind: SupportParseErrorKind, offset: usize, context: &'static str) -> Self {
         Self {
             kind,
-            offset,
+            offset: Some(offset),
+            context,
+        }
+    }
+
+    fn unknown(kind: SupportParseErrorKind, context: &'static str) -> Self {
+        Self {
+            kind,
+            offset: None,
             context,
         }
     }
@@ -58,6 +66,27 @@ pub(crate) enum SupportRule {
     Locked,
     Editable,
     Removed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffectiveSupportRule {
+    Absent,
+    Removed,
+    Editable,
+    Locked,
+    ConfigurationReadOnly,
+    Unreadable,
+}
+
+impl EffectiveSupportRule {
+    pub(crate) fn authorability(self) -> Authorability {
+        match self {
+            Self::Absent | Self::Removed | Self::Editable => Authorability::Authorable,
+            Self::Locked => Authorability::SupportLocked,
+            Self::ConfigurationReadOnly => Authorability::ConfigurationReadOnly,
+            Self::Unreadable => Authorability::UnknownSupportState,
+        }
+    }
 }
 
 impl SupportRule {
@@ -82,22 +111,53 @@ pub(crate) struct SupportFacts {
     pub(crate) source: SupportSourceState,
     pub(crate) object_rules: BTreeMap<String, SupportRule>,
     global_editing_enabled: Option<bool>,
-    configuration_rule: Option<SupportRule>,
+    configuration_rule: Option<(String, SupportRule)>,
     vendors: Vec<SupportVendor>,
 }
 
 impl SupportFacts {
-    pub(crate) fn authorability_for(&self, object: &str) -> Authorability {
+    pub(crate) fn effective_rule_for(&self, object: &str) -> EffectiveSupportRule {
         match self.source {
-            SupportSourceState::Absent | SupportSourceState::Removed => Authorability::Authorable,
-            SupportSourceState::Unreadable { .. } => Authorability::UnknownSupportState,
-            SupportSourceState::Parsed if self.global_editing_enabled == Some(false) => {
-                Authorability::ConfigurationReadOnly
-            }
-            SupportSourceState::Parsed => most_restrictive(
-                self.configuration_rule,
-                self.object_rules.get(&object.to_ascii_lowercase()).copied(),
-            ),
+            SupportSourceState::Absent => return EffectiveSupportRule::Absent,
+            SupportSourceState::Removed => return EffectiveSupportRule::Removed,
+            SupportSourceState::Unreadable { .. } => return EffectiveSupportRule::Unreadable,
+            SupportSourceState::Parsed => {}
+        }
+        if self.global_editing_enabled == Some(false) {
+            return EffectiveSupportRule::ConfigurationReadOnly;
+        }
+        let object = object.to_ascii_lowercase();
+        let configuration = self.configuration_rule.as_ref().map(|(_, rule)| *rule);
+        let object_rule = self
+            .object_rules
+            .get(&object)
+            .copied()
+            .or_else(|| {
+                self.configuration_rule.as_ref().and_then(|(uuid, rule)| {
+                    (uuid == &object).then_some(*rule)
+                })
+            });
+        if matches!(configuration, Some(SupportRule::Locked))
+            || matches!(object_rule, Some(SupportRule::Locked))
+        {
+            return EffectiveSupportRule::Locked;
+        }
+        match object_rule {
+            Some(SupportRule::Removed) => EffectiveSupportRule::Removed,
+            Some(SupportRule::Editable) => EffectiveSupportRule::Editable,
+            Some(SupportRule::Locked) => unreachable!("locked rules return before this match"),
+            None => EffectiveSupportRule::Absent,
+        }
+    }
+
+    pub(crate) fn authorability_for(&self, object: &str) -> Authorability {
+        self.effective_rule_for(object).authorability()
+    }
+
+    pub(crate) fn parse_error(&self) -> Option<&SupportParseError> {
+        match &self.source {
+            SupportSourceState::Unreadable { error } => Some(error),
+            _ => None,
         }
     }
 
@@ -111,7 +171,7 @@ impl SupportFacts {
 
     pub(crate) fn rule_counts(&self) -> [usize; 3] {
         let mut counts = [0; 3];
-        if let Some(rule) = self.configuration_rule {
+        if let Some((_, rule)) = self.configuration_rule.as_ref() {
             counts[rule.flag() as usize] += 1;
         }
         for rule in self.object_rules.values() {
@@ -121,39 +181,27 @@ impl SupportFacts {
     }
 }
 
-fn most_restrictive(configuration: Option<SupportRule>, object: Option<SupportRule>) -> Authorability {
-    if matches!(configuration, Some(SupportRule::Locked))
-        || matches!(object, Some(SupportRule::Locked))
-    {
-        Authorability::SupportLocked
-    } else {
-        Authorability::Authorable
-    }
-}
-
 pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
     let metadata = match fs::symlink_metadata(bin_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return absent(),
-        Err(_) => return unreadable(SupportParseError::new(SupportParseErrorKind::Io, 0, "metadata")),
+        Err(_) => return unreadable(SupportParseError::unknown(SupportParseErrorKind::Io, "metadata")),
     };
     if !metadata.file_type().is_file() {
-        return unreadable(SupportParseError::new(
+        return unreadable(SupportParseError::unknown(
             SupportParseErrorKind::NotRegularFile,
-            0,
             "support file",
         ));
     }
     if metadata.len() > MAX_PARENT_CONFIGURATIONS_BYTES {
-        return unreadable(SupportParseError::new(
+        return unreadable(SupportParseError::unknown(
             SupportParseErrorKind::InputTooLarge,
-            0,
             "support file",
         ));
     }
     let mut file = match fs::File::open(bin_path) {
         Ok(file) => file,
-        Err(_) => return unreadable(SupportParseError::new(SupportParseErrorKind::Io, 0, "open")),
+        Err(_) => return unreadable(SupportParseError::unknown(SupportParseErrorKind::Io, "open")),
     };
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     if file
@@ -162,12 +210,11 @@ pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
         .read_to_end(&mut bytes)
         .is_err()
     {
-        return unreadable(SupportParseError::new(SupportParseErrorKind::Io, 0, "read"));
+        return unreadable(SupportParseError::unknown(SupportParseErrorKind::Io, "read"));
     }
     if bytes.len() as u64 > MAX_PARENT_CONFIGURATIONS_BYTES {
-        return unreadable(SupportParseError::new(
+        return unreadable(SupportParseError::unknown(
             SupportParseErrorKind::InputTooLarge,
-            0,
             "support file",
         ));
     }
@@ -175,7 +222,11 @@ pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
 }
 
 pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
-    let input = input.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(input);
+    let original_len = input.len();
+    let (input, bom_len) = match input.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        Some(input) => (input, 3),
+        None => (input, 0),
+    };
     if input.iter().all(u8::is_ascii_whitespace) {
         return removed();
     }
@@ -184,22 +235,22 @@ pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
         Err(error) => {
             return unreadable(SupportParseError::new(
                 SupportParseErrorKind::InvalidUtf8,
-                error.valid_up_to(),
+                bom_len + error.valid_up_to(),
                 "input",
             ));
         }
     };
-    let root = match AstParser::new(text).parse_document() {
+    let root = match AstParser::new(text, bom_len).parse_document() {
         Ok(root) => root,
         Err(error) => return unreadable(error),
     };
-    match decode_certified_v6(root) {
+    match decode_certified_v6(root, original_len) {
         Ok(facts) => facts,
         Err(error) => unreadable(error),
     }
 }
 
-fn decode_certified_v6(root: AstValue) -> Result<SupportFacts, SupportParseError> {
+fn decode_certified_v6(root: AstValue, input_len: usize) -> Result<SupportFacts, SupportParseError> {
     let AstValue::List { values, offset } = root else {
         return Err(SupportParseError::new(
             SupportParseErrorKind::UnexpectedToken,
@@ -207,7 +258,7 @@ fn decode_certified_v6(root: AstValue) -> Result<SupportFacts, SupportParseError
             "root list",
         ));
     };
-    let cursor = ProfileCursor::new(&values, offset);
+    let cursor = ProfileCursor::new(&values, offset, input_len);
     let version = cursor.atom(0, "format version")?;
     if version.value != "6" {
         return Err(cursor.error(SupportParseErrorKind::UnsupportedVersion, version.offset, "format version"));
@@ -226,7 +277,13 @@ fn decode_certified_v6(root: AstValue) -> Result<SupportFacts, SupportParseError
             if values.len() != 3 {
                 return Err(cursor.error(SupportParseErrorKind::TrailingData, values[3].offset(), "removed profile"));
             }
-            return Ok(removed());
+            return Ok(SupportFacts {
+                source: SupportSourceState::Parsed,
+                object_rules: BTreeMap::new(),
+                global_editing_enabled: Some(global),
+                configuration_rule: None,
+                vendors: Vec::new(),
+            });
         }
         "1" => {}
         _ => return Err(cursor.error(SupportParseErrorKind::UnsupportedLayout, vendor_count.offset, "vendor count")),
@@ -253,9 +310,7 @@ fn decode_certified_v6(root: AstValue) -> Result<SupportFacts, SupportParseError
     let (configuration_rule, rule_values) = match tail.len() {
         8 => (None, tail),
         11 => (Some(parse_configuration_rule(&tail[..3])?), &tail[3..]),
-        0..=7 => {
-            return Err(cursor.error(SupportParseErrorKind::Truncated, values.last().map(AstValue::offset).unwrap_or(offset), "rule collection"));
-        }
+        0..=7 => return Err(cursor.error(SupportParseErrorKind::Truncated, input_len, "rule collection")),
         _ => return Err(cursor.error(SupportParseErrorKind::TrailingData, tail[8].offset(), "certified rule collection")),
     };
     let mut object_rules = BTreeMap::new();
@@ -280,7 +335,7 @@ fn decode_certified_v6(root: AstValue) -> Result<SupportFacts, SupportParseError
     })
 }
 
-fn parse_configuration_rule(values: &[AstValue]) -> Result<SupportRule, SupportParseError> {
+fn parse_configuration_rule(values: &[AstValue]) -> Result<(String, SupportRule), SupportParseError> {
     let state = parse_rule_state(&values[0], "configuration rule state")?;
     let object = parse_uuid(&values[1], "configuration rule UUID")?;
     let owner = parse_uuid(&values[2], "configuration rule owner UUID")?;
@@ -291,7 +346,7 @@ fn parse_configuration_rule(values: &[AstValue]) -> Result<SupportRule, SupportP
             "configuration rule UUIDs",
         ));
     }
-    Ok(state)
+    Ok((object, state))
 }
 
 fn parse_object_rule(values: &[AstValue]) -> Result<(String, SupportRule), SupportParseError> {
@@ -405,11 +460,12 @@ struct AstAtom {
 struct AstParser<'a> {
     input: &'a str,
     position: usize,
+    base_offset: usize,
 }
 
 impl<'a> AstParser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self { input, position: 0 }
+    fn new(input: &'a str, base_offset: usize) -> Self {
+        Self { input, position: 0, base_offset }
     }
 
     fn parse_document(mut self) -> Result<AstValue, SupportParseError> {
@@ -433,7 +489,7 @@ impl<'a> AstParser<'a> {
     }
 
     fn parse_list(&mut self) -> Result<AstValue, SupportParseError> {
-        let offset = self.position;
+        let offset = self.base_offset + self.position;
         self.position += 1;
         self.skip_whitespace();
         let mut values = Vec::new();
@@ -447,7 +503,12 @@ impl<'a> AstParser<'a> {
                 return Ok(AstValue::List { values, offset });
             }
             if !self.consume(b',') {
-                return Err(self.error(SupportParseErrorKind::UnexpectedToken, "list separator"));
+                let kind = if self.byte().is_none() {
+                    SupportParseErrorKind::Truncated
+                } else {
+                    SupportParseErrorKind::UnexpectedToken
+                };
+                return Err(self.error(kind, "list separator"));
             }
             self.skip_whitespace();
             if self.byte() == Some(b'}') {
@@ -457,7 +518,7 @@ impl<'a> AstParser<'a> {
     }
 
     fn parse_string(&mut self) -> Result<AstValue, SupportParseError> {
-        let offset = self.position;
+        let offset = self.base_offset + self.position;
         self.position += 1;
         let mut value = String::new();
         let mut segment_start = self.position;
@@ -475,20 +536,26 @@ impl<'a> AstParser<'a> {
                     }
                     return Ok(AstValue::String(AstAtom { value, offset }));
                 }
-                _ => self.position += 1,
+                _ => {
+                    self.position += self.input[self.position..]
+                        .chars()
+                        .next()
+                        .expect("position is in bounds")
+                        .len_utf8();
+                }
             }
         }
-        Err(SupportParseError::new(
-            SupportParseErrorKind::UnterminatedString,
-            offset,
-            "string",
-        ))
+        Err(self.error(SupportParseErrorKind::UnterminatedString, "string"))
     }
 
     fn parse_atom(&mut self) -> Result<AstValue, SupportParseError> {
         let start = self.position;
         while matches!(self.byte(), Some(byte) if !matches!(byte, b',' | b'}' | b'{' | b'"')) {
-            self.position += 1;
+            self.position += self.input[self.position..]
+                .chars()
+                .next()
+                .expect("position is in bounds")
+                .len_utf8();
         }
         let raw = self.input[start..self.position].trim();
         if raw.is_empty() {
@@ -501,7 +568,7 @@ impl<'a> AstParser<'a> {
         let offset = start + self.input[start..self.position].find(raw).unwrap_or(0);
         Ok(AstValue::Atom(AstAtom {
             value: raw.to_string(),
-            offset,
+            offset: self.base_offset + offset,
         }))
     }
 
@@ -534,24 +601,25 @@ impl<'a> AstParser<'a> {
     }
 
     fn error(&self, kind: SupportParseErrorKind, context: &'static str) -> SupportParseError {
-        SupportParseError::new(kind, self.position, context)
+        SupportParseError::new(kind, self.base_offset + self.position, context)
     }
 }
 
 struct ProfileCursor<'a> {
     values: &'a [AstValue],
     root_offset: usize,
+    eof_offset: usize,
 }
 
 impl<'a> ProfileCursor<'a> {
-    fn new(values: &'a [AstValue], root_offset: usize) -> Self {
-        Self { values, root_offset }
+    fn new(values: &'a [AstValue], root_offset: usize, eof_offset: usize) -> Self {
+        Self { values, root_offset, eof_offset }
     }
 
     fn atom(&self, index: usize, context: &'static str) -> Result<&'a AstAtom, SupportParseError> {
         let value = self.values.get(index).ok_or_else(|| self.error(
             SupportParseErrorKind::Truncated,
-            self.values.last().map(AstValue::offset).unwrap_or(self.root_offset),
+            self.eof_offset,
             context,
         ))?;
         atom_value(value, context)
@@ -563,7 +631,7 @@ impl<'a> ProfileCursor<'a> {
             Some(value) => Err(self.error(SupportParseErrorKind::UnexpectedToken, value.offset(), context)),
             None => Err(self.error(
                 SupportParseErrorKind::Truncated,
-                self.values.last().map(AstValue::offset).unwrap_or(self.root_offset),
+                self.eof_offset,
                 context,
             )),
         }
@@ -572,7 +640,7 @@ impl<'a> ProfileCursor<'a> {
     fn uuid(&self, index: usize, context: &'static str) -> Result<String, SupportParseError> {
         parse_uuid(self.values.get(index).ok_or_else(|| self.error(
             SupportParseErrorKind::Truncated,
-            self.values.last().map(AstValue::offset).unwrap_or(self.root_offset),
+            self.eof_offset,
             context,
         ))?, context)
     }
@@ -584,7 +652,10 @@ impl<'a> ProfileCursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_parent_configurations, read_support_facts, SupportParseErrorKind, SupportSourceState};
+    use super::{
+        parse_parent_configurations, read_support_facts, EffectiveSupportRule,
+        SupportParseErrorKind, SupportSourceState,
+    };
     use crate::domain::navigation::Authorability;
     use std::fs;
 
@@ -661,6 +732,50 @@ mod tests {
     }
 
     #[test]
+    fn zero_vendor_payload_preserves_global_editing_semantics() {
+        let editable = parse_parent_configurations(b"{6,0,0}");
+        assert!(matches!(editable.source, SupportSourceState::Parsed));
+        assert_eq!(
+            editable.effective_rule_for(FIRST),
+            EffectiveSupportRule::Absent
+        );
+        assert_eq!(editable.authorability_for(FIRST), Authorability::Authorable);
+
+        let read_only = parse_parent_configurations(b"{6,1,0}");
+        assert!(matches!(read_only.source, SupportSourceState::Parsed));
+        assert_eq!(
+            read_only.effective_rule_for(FIRST),
+            EffectiveSupportRule::ConfigurationReadOnly
+        );
+        assert_eq!(
+            read_only.authorability_for(FIRST),
+            Authorability::ConfigurationReadOnly
+        );
+    }
+
+    #[test]
+    fn parse_error_offsets_are_original_input_spans() {
+        let bom = parse_parent_configurations(b"\xEF\xBB\xBF{7,0,0}");
+        assert_eq!(unreadable_error(&bom).offset, Some(4));
+
+        let truncated_input = b"{6,0,1";
+        let truncated = parse_parent_configurations(truncated_input);
+        assert_eq!(unreadable_kind(&truncated), SupportParseErrorKind::Truncated);
+        assert_eq!(
+            unreadable_error(&truncated).offset,
+            Some(truncated_input.len())
+        );
+
+        let mut extra = compact("6", "0", "0", "0", "0", "0");
+        extra.pop();
+        let first_extra = extra.len() + 1;
+        extra.push_str(",0,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}");
+        let trailing = parse_parent_configurations(extra.as_bytes());
+        assert_eq!(unreadable_kind(&trailing), SupportParseErrorKind::TrailingData);
+        assert_eq!(unreadable_error(&trailing).offset, Some(first_extra));
+    }
+
+    #[test]
     fn duplicate_and_conflicting_uuid_evidence_are_typed() {
         assert_kind(compact("6", "0", "0", "0", "0", "0").replace(SECOND, FIRST).as_bytes(), SupportParseErrorKind::DuplicateRule);
         let conflicting = compact("6", "0", "0", "0", "0", "0").replace(",bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}", ",aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}");
@@ -713,8 +828,12 @@ mod tests {
     }
 
     fn unreadable_kind(facts: &super::SupportFacts) -> SupportParseErrorKind {
+        unreadable_error(facts).kind
+    }
+
+    fn unreadable_error(facts: &super::SupportFacts) -> &super::SupportParseError {
         match &facts.source {
-            SupportSourceState::Unreadable { error } => error.kind,
+            SupportSourceState::Unreadable { error } => error,
             source => panic!("expected unreadable state, got {source:?}"),
         }
     }
