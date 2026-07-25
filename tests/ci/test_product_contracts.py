@@ -289,6 +289,40 @@ class ProductContractTests(unittest.TestCase):
             "https://ingvar.pro/products/unica/terms/en",
         )
 
+    def test_release_runbook_is_discoverable_and_names_the_tag_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        runbook = repo_root / "docs/release-runbook.md"
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        skill = (repo_root / ".claude/skills/release/SKILL.md").read_text(encoding="utf-8")
+
+        self.assertTrue(runbook.is_file())
+        # An agent asked to release has to reach the runbook from the entry point
+        # rather than reconstruct the order from the workflows.
+        self.assertIn("docs/release-runbook.md", agents)
+        self.assertIn("docs/release-runbook.md", skill)
+
+        text = runbook.read_text(encoding="utf-8")
+        for value in (
+            "staging merge commit",
+            "RELEASE_TAG",
+            "check-version-contract.py",
+            "publish-unica-marketplace.yml",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+    def test_promotion_pr_points_the_tag_at_the_staging_merge(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # Naming the promotion commit would require tagging a commit that does
+        # not exist until the promotion step has already run, which leaves the
+        # consumer install checks red on their first run every release.
+        self.assertIn("staging merge commit ${STAGING_MERGE_SHA}", publish)
+        self.assertNotIn("tag at commit ${promotion_sha}", publish)
+
     def test_readme_documents_public_marketplace_lifecycle(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")

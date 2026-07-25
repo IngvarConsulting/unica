@@ -405,8 +405,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("codex/stage-", text)
         self.assertIn("codex/promote-", text)
         self.assertIn('git -C marketplace merge-base --is-ancestor "$STAGING_MERGE_SHA" "origin/main"', text)
-        self.assertIn('promotion_sha="$(git -C marketplace rev-parse HEAD)"', text)
-        self.assertIn("Create the signed ${RELEASE_TAG} tag at commit ${promotion_sha}", text)
+        # The tag names the staging merge, which already carries the plugin bytes
+        # and exists before this job runs. The promotion commit does not, so
+        # naming it kept the consumer install checks red on their first run.
+        self.assertIn(
+            "tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR",
+            text,
+        )
+        self.assertNotIn("${promotion_sha}", text)
         self.assertNotIn("git ls-remote", text)
         self.assertNotIn('"refs/tags/${RELEASE_TAG}^{}"', text)
         self.assertIn("payload/plugins/unica/.codex-plugin/plugin.json", text)

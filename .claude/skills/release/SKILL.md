@@ -1,0 +1,40 @@
+---
+name: release
+description: Publish a Unica version to the public marketplace, or resume a release that stalled part-way. Use when asked to cut, ship, promote, or finish a release, or when consumers still see an older version than the latest tag.
+argument-hint: [version, for example v0.9.2]
+---
+
+# Release Unica
+
+Follow [docs/release-runbook.md](../../../docs/release-runbook.md). It is the
+authoritative procedure; do not improvise an order.
+
+## Before anything
+
+Establish where the release already is, because most requests are to *resume*
+one rather than start one. Check in this order and enter the runbook at the
+first unfinished step:
+
+```bash
+gh release list --repo IngvarConsulting/unica --limit 3
+gh api repos/IngvarConsulting/unica-marketplace/tags --jq '.[0].name'
+gh pr list --repo IngvarConsulting/unica-marketplace --state open
+gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketplace.json \
+  --jq '.content' | base64 -d | grep '"ref"'
+```
+
+A source release whose tag is newer than the catalog `ref` means the release is
+live for nobody. That is the common stall, and it is silent.
+
+## Rules
+
+- Never move or delete a published tag, and never force-push the marketplace
+  default branch.
+- Tag the staging merge commit, not the promotion commit. The promotion pull
+  request cannot go green before that tag exists.
+- Stop and ask before merging anything in `unica-marketplace` or creating a tag.
+  Those are the publishing steps and they are the user's call.
+- Signing is the user's: the key is theirs and the passphrase must not be handled
+  for them. If `gpg` fails with `Operation cancelled`, tell them to unlock it and
+  give them the exact tag command to run.
+- Report each step's verification output rather than asserting success.

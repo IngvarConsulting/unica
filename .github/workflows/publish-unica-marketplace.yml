@@ -110,8 +110,11 @@ jobs:
           git -C marketplace add .agents/plugins/marketplace.json
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "promote: Unica ${RELEASE_TAG}"
-          promotion_sha="$(git -C marketplace rev-parse HEAD)"
           git -C marketplace push -u origin "$branch"
+          # The tag has to carry the plugin bytes, and the staging merge already
+          # does. Naming the promotion commit instead would demand a tag on a
+          # commit that does not exist until this step has run, which left the
+          # consumer install checks failing on their first run every release.
           gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
             --title "Promote Unica ${RELEASE_TAG}" \
-            --body "Points the stable catalog at ${RELEASE_TAG}. Create the signed ${RELEASE_TAG} tag at commit ${promotion_sha} before merging this PR."
+            --body "Points the stable catalog at ${RELEASE_TAG}. Publish the signed ${RELEASE_TAG} tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR; until it exists the consumer install checks cannot resolve the catalog ref. See docs/release-runbook.md."
