@@ -1084,11 +1084,17 @@ fn validate_code_arguments(
             validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
             validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
             validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("analyze");
+            if mode == "analyze" && args.contains_key("path") {
+                return Err(format!(
+                    "{} mode `analyze` does not support `path`; use mode `file` for one file",
+                    tool.name
+                ));
+            }
             if args.contains_key("timeoutSeconds") {
-                let mode = args
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("analyze");
                 if mode != "analyze" {
                     return Err(format!(
                         "{} argument `timeoutSeconds` is only supported for mode `analyze`",
@@ -3048,6 +3054,15 @@ mod tests {
         args.insert("mode".to_string(), json!("file"));
         let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
         assert!(error.contains("requires `path`"));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("analyze"));
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("does not support `path`"));
 
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("raw"));
