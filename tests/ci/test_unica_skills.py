@@ -1349,6 +1349,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     plugin_target = self.repo_root() / "plugins" / "unica" / match
                     self.assertTrue(local_target.is_file() or plugin_target.is_file())
 
+    def test_platform_help_reference_paths_are_skill_relative(self) -> None:
+        skill = self.skill_root() / "platform-help"
+        skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        references = [
+            "../../references/platform/compatibility-modes.md",
+            "../../references/platform/platform-mechanics.md",
+            "../../references/platform/runtime-diagnostics.md",
+        ]
+
+        for reference in references:
+            with self.subTest(reference=reference):
+                self.assertIn(f"`{reference}`", skill_text)
+                self.assertTrue((skill / reference).is_file())
+
     def test_skills_do_not_use_model_specific_assistant_names(self) -> None:
         forbidden = ["Claude", "claude", "Anthropic", ".claude", "CLAUDE.md"]
         for skill_doc in self.skill_root().glob("*/**/*.md"):
