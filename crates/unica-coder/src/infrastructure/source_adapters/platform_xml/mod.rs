@@ -60,9 +60,10 @@ impl SourceReadAdapter for PlatformXmlReadAdapter {
         })?;
         let provider = provider::PlatformXmlProvider::open(root)?;
         let native = decoder::decode(&provider, descriptor)?;
-        // Support evidence remains infrastructure-private and is deliberately
-        // excluded from the semantic envelope.
-        let support = support::read_support_facts(&root.join("ParentConfigurations.bin"));
+        // Support evidence is parsed from immutable provider bytes and remains
+        // infrastructure-private in the resulting semantic envelope.
+        let support_bytes = provider.parent_configurations_bytes();
+        let support = support::read_support_facts_from_snapshot(support_bytes.as_deref());
         projector::project(&native, &support)
     }
 }

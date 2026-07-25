@@ -130,3 +130,195 @@ mod tests {
         );
     }
 }
+use std::collections::BTreeMap;
+
+use roxmltree::{Document, Node};
+
+use crate::domain::{
+    navigation::{PropertyValue, TypeSetValue, TypeVariant},
+    source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScalarPropertyKind {
+    Boolean,
+    Integer,
+    Uuid,
+    String,
+}
+
+/// The scalar subset certified for the exact Platform XML 2.20 projector.
+/// Unknown scalar properties remain typed unknown rather than being inferred
+/// from their lexical representation.
+pub(crate) fn scalar_property_kind_2_20(id: &str) -> Option<ScalarPropertyKind> {
+    match id {
+        "UseStandardCommands" | "AutoNumbering" | "FillValue" | "IncludeHelpInContents" => {
+            Some(ScalarPropertyKind::Boolean)
+        }
+        "NumberLength" | "Length" | "Digits" | "FractionDigits" => {
+            Some(ScalarPropertyKind::Integer)
+        }
+        "Uuid" | "UUID" => Some(ScalarPropertyKind::Uuid),
+        "Name" | "Code" | "Description" | "Comment" | "TemplateType" => {
+            Some(ScalarPropertyKind::String)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn is_type_property_2_20(id: &str) -> bool {
+    matches!(id, "Type" | "TypeDescription" | "DataType")
+}
+
+/// Parses the bounded 2.20 type-description grammar.  Only direct `Type`
+/// members and declared qualifier elements are accepted; arbitrary descendant
+/// text can never become a semantic type value.
+pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue, SourceAdapterError> {
+    let document = Document::parse(raw_xml).map_err(|_| projection_error("malformed Platform XML type description"))?;
+    let root = document.root_element();
+    if !matches!(root.tag_name().name(), "TypeDescription" | "DataType" | "Type") {
+        return Err(projection_error("unsupported Platform XML type description root"));
+    }
+    let mut variants = Vec::new();
+    let mut qualifiers = BTreeMap::new();
+    if root.tag_name().name() == "Type" {
+        variants.push(parse_type_variant(&text_only(root)?)?);
+    } else {
+        for child in root.children().filter(Node::is_element) {
+            match child.tag_name().name() {
+                "Type" => variants.push(parse_type_variant(&text_only(child)?)?),
+                "StringQualifiers" => parse_qualifiers(
+                    child,
+                    &mut qualifiers,
+                    &[("Length", QualifierKind::Integer), ("AllowedLength", QualifierKind::AllowedLength)],
+                )?,
+                "NumberQualifiers" => parse_qualifiers(
+                    child,
+                    &mut qualifiers,
+                    &[
+                        ("Digits", QualifierKind::Integer),
+                        ("FractionDigits", QualifierKind::Integer),
+                        ("AllowedSign", QualifierKind::AllowedSign),
+                    ],
+                )?,
+                "DateQualifiers" => parse_qualifiers(
+                    child,
+                    &mut qualifiers,
+                    &[("DateFractions", QualifierKind::DateFractions)],
+                )?,
+                _ => return Err(projection_error("unsupported Platform XML type-description member")),
+            }
+        }
+    }
+    if variants.is_empty() {
+        return Err(projection_error("Platform XML type description has no variants"));
+    }
+    if !qualifiers.is_empty() {
+        let primitive_indexes = variants
+            .iter()
+            .enumerate()
+            .filter_map(|(index, variant)| matches!(variant, TypeVariant::Primitive { .. }).then_some(index))
+            .collect::<Vec<_>>();
+        if primitive_indexes.len() != 1 {
+            return Err(projection_error("type qualifiers require one primitive variant"));
+        }
+        let TypeVariant::Primitive { qualifiers: destination, .. } = &mut variants[primitive_indexes[0]] else { unreachable!() };
+        *destination = qualifiers;
+    }
+    variants.sort_by_key(type_variant_key);
+    variants.dedup();
+    Ok(TypeSetValue { variants })
+}
+
+#[derive(Clone, Copy)]
+enum QualifierKind { Integer, AllowedLength, AllowedSign, DateFractions }
+
+fn parse_qualifiers(
+    node: Node<'_, '_>,
+    qualifiers: &mut BTreeMap<String, PropertyValue>,
+    allowed: &[(&str, QualifierKind)],
+) -> Result<(), SourceAdapterError> {
+    for child in node.children().filter(Node::is_element) {
+        let Some((_, kind)) = allowed.iter().find(|(name, _)| *name == child.tag_name().name()) else {
+            return Err(projection_error("unsupported Platform XML type qualifier"));
+        };
+        let key = lower_camel(child.tag_name().name());
+        if qualifiers.contains_key(&key) {
+            return Err(projection_error("duplicate Platform XML type qualifier"));
+        }
+        let text = text_only(child)?;
+        let value = match kind {
+            QualifierKind::Integer => PropertyValue::Integer(text.parse().map_err(|_| projection_error("invalid numeric type qualifier"))?),
+            QualifierKind::AllowedLength if matches!(text.as_str(), "Fixed" | "Variable") => PropertyValue::EnumSymbol(text.to_string()),
+            QualifierKind::AllowedSign if matches!(text.as_str(), "Any" | "Nonnegative") => PropertyValue::EnumSymbol(text.to_string()),
+            QualifierKind::DateFractions if matches!(text.as_str(), "Date" | "DateTime" | "Time") => PropertyValue::EnumSymbol(text.to_string()),
+            _ => return Err(projection_error("invalid Platform XML type qualifier")),
+        };
+        qualifiers.insert(key, value);
+    }
+    Ok(())
+}
+
+fn parse_type_variant(value: &str) -> Result<TypeVariant, SourceAdapterError> {
+    let value = value.strip_prefix("cfg:").unwrap_or(value);
+    let primitive = match value {
+        "xs:string" | "String" => Some("String"),
+        "xs:boolean" | "Boolean" => Some("Boolean"),
+        "xs:decimal" | "Number" => Some("Number"),
+        "xs:date" | "xs:dateTime" | "Date" => Some("Date"),
+        _ => None,
+    };
+    if let Some(kind) = primitive {
+        return Ok(TypeVariant::Primitive { kind: kind.to_string(), qualifiers: BTreeMap::new() });
+    }
+    let Some((class, name)) = value.split_once('.') else {
+        return Err(projection_error("unsupported Platform XML type variant"));
+    };
+    if value.split('.').count() != 2 || !is_identifier(name) {
+        return Err(projection_error("invalid Platform XML metadata type target"));
+    }
+    let target = match class {
+        "CatalogRef" => format!("Catalog.{name}"),
+        "DocumentRef" => format!("Document.{name}"),
+        "EnumRef" => return Ok(TypeVariant::Enumeration { target: format!("Enum.{name}") }),
+        "ChartOfAccountsRef" => format!("ChartOfAccounts.{name}"),
+        "ChartOfCharacteristicTypesRef" => format!("ChartOfCharacteristicTypes.{name}"),
+        _ => return Err(projection_error("unsupported Platform XML metadata type class")),
+    };
+    Ok(TypeVariant::Reference { target })
+}
+
+fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
+    if node.children().any(|child| child.is_element()) {
+        return Err(projection_error("nested Platform XML type value is unsupported"));
+    }
+    let value = node.text().map(str::trim).filter(|value| !value.is_empty())
+        .ok_or_else(|| projection_error("empty Platform XML type value"))?;
+    if value.contains(['/', '\\']) || value.contains("..") || value.chars().any(char::is_control) {
+        return Err(projection_error("invalid Platform XML type value"));
+    }
+    Ok(value.to_string())
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(first) if first.is_alphabetic() || first == '_')
+        && chars.all(|character| character.is_alphanumeric() || character == '_')
+}
+
+fn lower_camel(value: &str) -> String {
+    let mut chars = value.chars();
+    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
+}
+
+fn type_variant_key(value: &TypeVariant) -> String {
+    match value {
+        TypeVariant::Primitive { kind, .. } => format!("primitive:{kind}"),
+        TypeVariant::Reference { target } => format!("reference:{target}"),
+        TypeVariant::Enumeration { target } => format!("enumeration:{target}"),
+    }
+}
+
+fn projection_error(message: &'static str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, message)
+}

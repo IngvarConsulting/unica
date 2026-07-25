@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use roxmltree::Document;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -11,7 +10,6 @@ use crate::domain::{
         NavigationNode, NodeKind, ObjectKey, ObjectRef, PropertyCapability, PropertyProvenance,
         PropertyType, PropertyValue, RelationKey, RelationKind, RelationRef,
         ResolutionState, SemanticAction, SemanticActionKind, SemanticProperty, SemanticRelation,
-        TypeSetValue, TypeVariant,
     },
     source_adapters::{SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId},
 };
@@ -21,7 +19,10 @@ use super::{
         NativeEvidenceState, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue, PlatformXmlNativeSnapshot,
     },
-    schema::MetadataClassRole,
+    schema::{
+        is_type_property_2_20, parse_type_description_2_20, scalar_property_kind_2_20,
+        MetadataClassRole, ScalarPropertyKind,
+    },
     support::SupportFacts,
 };
 
@@ -194,6 +195,7 @@ impl<'a> GraphBuilder<'a> {
         };
         self.relations.push(SemanticRelation {
             relation_ref: relation_ref.clone(),
+            identity_strength: IdentityStrength::Derived,
             kind: RelationKind::Contains,
             source: owner.clone(),
             target: target.clone(),
@@ -343,6 +345,9 @@ fn node_coverage(node: &NativeMetadataNode, snapshot_coverage: CoverageState) ->
     if !matches!(snapshot_coverage, CoverageState::Complete) {
         return CoverageState::Partial;
     }
+    if matches!(node.class.role, MetadataClassRole::Form) {
+        return CoverageState::Partial;
+    }
     match &node.backing {
         NativeNodeBacking::Form(form)
             if !matches!(form.descriptor.state, NativeEvidenceState::Validated)
@@ -412,11 +417,11 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
     let mut projected = match &property.value {
         NativePropertyValue::Absent => SemanticProperty::absent(PropertyType::Unknown, provenance),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(PropertyType::Unknown, provenance),
-        NativePropertyValue::Scalar(value) => scalar_property(value, provenance)?,
-        NativePropertyValue::RawXml(xml) if is_type_property(&property.canonical_id) => {
+        NativePropertyValue::Scalar(value) => scalar_property(&property.canonical_id, value, provenance)?,
+        NativePropertyValue::RawXml(xml) if is_type_property_2_20(&property.canonical_id) => {
             SemanticProperty::explicit(
                 PropertyType::TypeSet,
-                PropertyValue::TypeSet(parse_type_set(xml)?),
+                PropertyValue::TypeSet(parse_type_description_2_20(xml)?),
                 provenance,
             )?
         }
@@ -430,63 +435,35 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
     Ok(projected)
 }
 
-fn scalar_property(value: &str, provenance: PropertyProvenance) -> Result<SemanticProperty, SourceAdapterError> {
-    let (value_type, value) = if matches!(value, "true" | "false") {
-        (PropertyType::Boolean, PropertyValue::Boolean(value == "true"))
-    } else if let Ok(value) = value.parse::<i64>() {
-        (PropertyType::Integer, PropertyValue::Integer(value))
-    } else if value.parse::<Uuid>().is_ok() {
-        (PropertyType::Uuid, PropertyValue::Uuid(value.parse().expect("UUID was checked")))
-    } else if value.parse::<f64>().is_ok() {
-        (PropertyType::Decimal, PropertyValue::Decimal(value.to_string()))
-    } else {
-        (PropertyType::String, PropertyValue::String(value.to_string()))
+fn scalar_property(
+    canonical_id: &str,
+    value: &str,
+    provenance: PropertyProvenance,
+) -> Result<SemanticProperty, SourceAdapterError> {
+    let Some(kind) = scalar_property_kind_2_20(canonical_id) else {
+        return SemanticProperty::explicit(
+            PropertyType::Unknown,
+            PropertyValue::Unknown { summary: "unrecognized Platform XML scalar property".to_string() },
+            provenance,
+        );
+    };
+    let (value_type, value) = match kind {
+        ScalarPropertyKind::Boolean => match value {
+            "true" => (PropertyType::Boolean, PropertyValue::Boolean(true)),
+            "false" => (PropertyType::Boolean, PropertyValue::Boolean(false)),
+            _ => return Err(ambiguous("invalid boolean Platform XML scalar property")),
+        },
+        ScalarPropertyKind::Integer => (
+            PropertyType::Integer,
+            PropertyValue::Integer(value.parse().map_err(|_| ambiguous("invalid integer Platform XML scalar property"))?),
+        ),
+        ScalarPropertyKind::Uuid => (
+            PropertyType::Uuid,
+            PropertyValue::Uuid(value.parse().map_err(|_| ambiguous("invalid UUID Platform XML scalar property"))?),
+        ),
+        ScalarPropertyKind::String => (PropertyType::String, PropertyValue::String(value.to_string())),
     };
     SemanticProperty::explicit(value_type, value, provenance)
-}
-
-fn is_type_property(id: &str) -> bool {
-    matches!(id, "Type" | "TypeDescription" | "DataType")
-}
-
-fn parse_type_set(raw_xml: &str) -> Result<TypeSetValue, SourceAdapterError> {
-    let document = Document::parse(raw_xml)
-        .map_err(|_| ambiguous("Platform XML type description is malformed"))?;
-    let mut variants = document
-        .descendants()
-        .filter_map(|node| node.text().map(str::trim))
-        .filter(|text| !text.is_empty())
-        .filter_map(type_variant)
-        .collect::<Vec<_>>();
-    variants.sort_by_key(type_variant_key);
-    variants.dedup();
-    if variants.is_empty() {
-        return Err(ambiguous("Platform XML type description has no recognized structured variant"));
-    }
-    Ok(TypeSetValue { variants })
-}
-
-fn type_variant(value: &str) -> Option<TypeVariant> {
-    let reference = value
-        .strip_prefix("CatalogRef.")
-        .map(|name| format!("Catalog.{name}"))
-        .or_else(|| value.strip_prefix("DocumentRef.").map(|name| format!("Document.{name}")))
-        .or_else(|| value.strip_prefix("EnumRef.").map(|name| format!("Enum.{name}")))
-        .or_else(|| value.contains('.').then(|| value.to_string()));
-    reference.map(|target| TypeVariant::Reference { target }).or_else(|| {
-        (!value.contains('<') && !value.contains('>')).then(|| TypeVariant::Primitive {
-            kind: value.to_string(),
-            qualifiers: BTreeMap::new(),
-        })
-    })
-}
-
-fn type_variant_key(value: &TypeVariant) -> String {
-    match value {
-        TypeVariant::Primitive { kind, .. } => format!("primitive:{kind}"),
-        TypeVariant::Reference { target } => format!("reference:{target}"),
-        TypeVariant::Enumeration { target } => format!("enumeration:{target}"),
-    }
 }
 
 fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
@@ -568,6 +545,123 @@ mod tests {
             panic!("expected structured type set");
         };
         assert_eq!(type_set.variants[0], TypeVariant::Reference { target: "Catalog.Products".to_string() });
+    }
+
+    #[test]
+    fn type_descriptions_accept_declared_qualifiers_and_enum_references() {
+        let type_set = parse_type_description_2_20(
+            "<DataType><Type>xs:string</Type><StringQualifiers><Length>10</Length><AllowedLength>Variable</AllowedLength></StringQualifiers><Type>cfg:EnumRef.Statuses</Type></DataType>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            type_set.variants,
+            vec![
+                TypeVariant::Enumeration { target: "Enum.Statuses".to_string() },
+                TypeVariant::Primitive {
+                    kind: "String".to_string(),
+                    qualifiers: BTreeMap::from([
+                        ("allowedLength".to_string(), PropertyValue::EnumSymbol("Variable".to_string())),
+                        ("length".to_string(), PropertyValue::Integer(10)),
+                    ]),
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn malformed_or_path_like_type_descriptions_fail_closed_without_leakage() {
+        let error = parse_type_description_2_20(
+            "<DataType><Type>CatalogRef../../tmp/secret</Type></DataType>",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+        assert!(!error.message.contains("/tmp/"));
+        assert!(!error.message.contains("secret"));
+    }
+
+    #[test]
+    fn form_is_always_partial_and_inspection_only_before_form_internals_exist() {
+        let form = node(
+            "Form",
+            MetadataClassRole::Form,
+            Some("33333333-3333-3333-3333-333333333333"),
+            "OrderForm",
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let mut root = document_fixture();
+        root.children = vec![form];
+
+        let envelope = project_fixture(root).unwrap();
+        let form = envelope.node_named(NodeKind::Form, "OrderForm").unwrap();
+
+        assert_eq!(form.capability.coverage, CoverageState::Partial);
+        assert_eq!(form.capability.resolution, ResolutionState::Resolved);
+        assert_eq!(form.capability.authorability, Authorability::Authorable);
+        assert_eq!(form.actions.len(), 1);
+        assert_eq!(form.actions[0].kind, ActionKind::Inspect);
+    }
+
+    #[test]
+    fn scalar_values_follow_the_property_schema_not_their_text() {
+        let mut root = document_fixture();
+        root.properties.insert("Code".to_string(), scalar("Code", "001"));
+        root.properties.insert("UnknownScalar".to_string(), scalar("UnknownScalar", "42"));
+
+        let envelope = project_fixture(root).unwrap();
+        let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
+
+        assert_eq!(document.properties["code"].value_type, PropertyType::String);
+        assert_eq!(document.properties["code"].value, Some(PropertyValue::String("001".to_string())));
+        assert_eq!(document.properties["unknownScalar"].value_type, PropertyType::Unknown);
+    }
+
+    #[test]
+    fn generated_contains_relations_are_derived_even_for_uuid_targets() {
+        let envelope = project_fixture(document_fixture()).unwrap();
+        let attribute = envelope.node_named(NodeKind::Attribute, "Product").unwrap();
+        let owning = envelope.owning_relation(&attribute.object_ref).unwrap();
+
+        assert_eq!(owning.identity_strength, IdentityStrength::Derived);
+    }
+
+    #[test]
+    fn support_capability_comes_from_immutable_provider_snapshot_bytes() {
+        use crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider;
+
+        let root = std::env::temp_dir().join(format!(
+            "unica-platform-xml-projector-support-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = PlatformXmlProvider::open(&root).unwrap();
+        let captured = support::read_support_facts_from_snapshot(
+            provider.parent_configurations_bytes().as_deref(),
+        );
+        std::fs::write(root.join("ParentConfigurations.bin"), b"changed-after-open").unwrap();
+        let after_change = support::read_support_facts_from_snapshot(
+            provider.parent_configurations_bytes().as_deref(),
+        );
+        let snapshot = PlatformXmlNativeSnapshot {
+            source: SourceSnapshot {
+                source_id: SourceId::new("workspace:main").unwrap(),
+                revision: provider.revision().unwrap(),
+                consistency: SnapshotConsistency::Consistent,
+                adapter_id: PROJECTOR_ID.to_string(),
+            },
+            root: document_fixture(),
+            coverage: CoverageState::Complete,
+        };
+
+        let before = project(&snapshot, &captured).unwrap();
+        let after = project(&snapshot, &after_change).unwrap();
+        assert_eq!(
+            before.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            after.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn project_fixture(root: NativeMetadataNode) -> Result<NavigationEnvelope, SourceAdapterError> {

@@ -316,6 +316,7 @@ pub(crate) struct RelationRef {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SemanticRelation {
     pub(crate) relation_ref: RelationRef,
+    pub(crate) identity_strength: IdentityStrength,
     pub(crate) kind: RelationKind,
     pub(crate) source: ObjectRef,
     pub(crate) target: ObjectRef,

@@ -69,6 +69,12 @@ impl PlatformXmlProvider {
         Ok(self.revision.clone())
     }
 
+    /// Returns support evidence captured with this immutable aggregate.  The
+    /// semantic reader must not reopen this file after snapshot acquisition.
+    pub(crate) fn parent_configurations_bytes(&self) -> Option<Arc<[u8]>> {
+        self.files.get("ParentConfigurations.bin").cloned()
+    }
+
     pub(crate) fn digest_relative(&self, raw: impl AsRef<Path>) -> Result<String, SourceAdapterError> {
         let bytes = self.read_relative(raw)?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
@@ -234,6 +240,17 @@ mod tests {
         fs::remove_file(fixture.root.join("Object.xml")).unwrap();
 
         assert_eq!(fixture.provider.read_relative("Object.xml").unwrap().as_ref(), b"before");
+    }
+
+    #[test]
+    fn support_bytes_are_immutable_after_successful_capture() {
+        let fixture = fixture(&[("ParentConfigurations.bin", b"before" as &[u8])]);
+        fs::write(fixture.root.join("ParentConfigurations.bin"), b"after").unwrap();
+
+        assert_eq!(
+            fixture.provider.parent_configurations_bytes().unwrap().as_ref(),
+            b"before"
+        );
     }
 
     #[test]

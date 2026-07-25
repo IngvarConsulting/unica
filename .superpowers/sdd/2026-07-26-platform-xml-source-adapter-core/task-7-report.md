@@ -37,11 +37,36 @@
 
 ## Concerns
 
-- Support facts are deliberately excluded from the public envelope. The reader
-  currently reads `ParentConfigurations.bin` after creating the immutable XML
-  provider snapshot, so a concurrent support-file change can only make
-  capabilities more conservatively stale; moving support parsing onto provider
-  snapshot bytes is a follow-up hardening task.
 - Form internals remain unprojected and partial form coverage reduces modeled
   actions to inspection. No Task 8 form-element, binding, move, or handler work
   was started.
+
+## Fix Round 1
+
+### RED
+
+- New tests initially failed to compile because the snapshot support reader,
+  provider support-bytes accessor, and derived relation identity field did not
+  exist. The first implementation also exposed two parser-local compile errors
+  (borrowed XML text lifetime and predicate signature).
+
+### GREEN
+
+- Projector tests: 12 passed.
+- Registry tests: 9 passed.
+- Provider tests: 7 passed.
+- Support tests: 20 passed.
+
+### Decisions
+
+- `ParentConfigurations.bin` is read only from immutable
+  `PlatformXmlProvider` snapshot bytes; snapshot absence maps to `Removed`.
+  A post-`open` filesystem change cannot change projected support capability.
+- The shared exact-2.20 schema now owns scalar property IDs and the bounded
+  type-description grammar. It accepts only declared primitive/reference/enum
+  variants and direct declared qualifiers; malformed or path-like values fail
+  closed without becoming canonical output.
+- Forms always advertise partial coverage and inspection only until form
+  internals are projected. Scalar coercion is selected by canonical property
+  ID, never by the text value. Generated relation keys always have derived
+  identity strength.

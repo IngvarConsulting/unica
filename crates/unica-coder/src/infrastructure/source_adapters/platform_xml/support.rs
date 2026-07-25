@@ -224,6 +224,16 @@ pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
     parse_parent_configurations(&bytes)
 }
 
+/// Parse support evidence already captured by a Platform XML provider.  An
+/// absent file in an immutable snapshot is a removed support state, not an
+/// invitation to inspect the live filesystem again.
+pub(crate) fn read_support_facts_from_snapshot(bytes: Option<&[u8]>) -> SupportFacts {
+    match bytes {
+        Some(bytes) => parse_parent_configurations(bytes),
+        None => removed(),
+    }
+}
+
 pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
     let original_len = input.len();
     let (input, bom_len) = match input.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
@@ -719,6 +729,13 @@ mod tests {
     fn valid_header_with_garbage_body_is_unreadable() {
         let facts = parse_parent_configurations(b"{6,0,1,garbage}");
         assert!(matches!(facts.source, SupportSourceState::Unreadable { .. }));
+    }
+
+    #[test]
+    fn missing_snapshot_support_is_consistently_removed() {
+        let facts = super::read_support_facts_from_snapshot(None);
+
+        assert!(matches!(facts.source, SupportSourceState::Removed));
     }
 
     #[test]
