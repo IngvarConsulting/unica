@@ -17,7 +17,49 @@ use crate::{
 };
 
 const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
-const HANDLED_METADATA_CLASSES: &[&str] = &["Document"];
+
+struct MetadataClassProfile {
+    class_name: &'static str,
+    structural_profile: &'static StructuralProfile,
+}
+
+struct StructuralProfile {
+    root_children: &'static [&'static str],
+    child_objects: &'static [&'static str],
+    tabular_section_children: &'static [&'static str],
+}
+
+const LEGACY_NAVIGATION_STRUCTURE: StructuralProfile = StructuralProfile {
+    root_children: &["Properties", "ChildObjects"],
+    child_objects: &["Attribute", "TabularSection", "Form", "Template", "Command"],
+    tabular_section_children: &["Properties", "ChildObjects"],
+};
+
+macro_rules! legacy_metadata_class_profiles {
+    ($($class:literal),+ $(,)?) => {
+        &[$(MetadataClassProfile {
+            class_name: $class,
+            structural_profile: &LEGACY_NAVIGATION_STRUCTURE,
+        }),+]
+    };
+}
+
+// This table mirrors the classes accepted by the legacy generic navigation decoder.
+// Every profile intentionally shares its structural vocabulary because that decoder
+// handles these roots through Properties and ChildObjects rather than class-specific parsing.
+const METADATA_CLASS_PROFILES: &[MetadataClassProfile] = legacy_metadata_class_profiles![
+    "Configuration", "Form", "Template", "Attribute", "TabularSection", "Command", "Language",
+    "Subsystem", "StyleItem", "Style", "CommonPicture", "SessionParameter",
+    "Role", "CommonTemplate", "FilterCriterion", "CommonModule", "Bot", "CommonAttribute",
+    "ExchangePlan", "XDTOPackage", "WebService", "HTTPService", "WSReference",
+    "EventSubscription", "ScheduledJob", "SettingsStorage", "FunctionalOption",
+    "FunctionalOptionsParameter", "DefinedType", "CommonCommand", "CommandGroup", "Constant",
+    "CommonForm", "Catalog", "Document", "DocumentNumerator", "Sequence", "DocumentJournal",
+    "Enum", "Report", "DataProcessor", "InformationRegister", "AccumulationRegister",
+    "ChartOfCharacteristicTypes", "ChartOfAccounts", "AccountingRegister",
+    "ChartOfCalculationTypes", "CalculationRegister", "BusinessProcess", "Task",
+    "IntegrationService",
+];
 
 pub(crate) struct PlatformXmlProbe;
 
@@ -75,9 +117,12 @@ impl PlatformXmlProbe {
             return Err(unsupported("Platform XML metadata class has an unsupported namespace"));
         }
         let class_name = class.tag_name().name();
-        if !HANDLED_METADATA_CLASSES.contains(&class_name) {
-            return Err(unsupported("Platform XML metadata class is not supported"));
-        }
+        let profile = metadata_class_profile(class_name).ok_or_else(|| {
+            unsupported("Platform XML metadata class is not supported")
+        })?;
+        let mut detected_features = BTreeSet::new();
+        detected_features.insert(format!("metadata-class:{class_name}"));
+        inspect_structural_features(*class, profile.structural_profile, &mut detected_features)?;
         let uuid = match class.attribute("uuid") {
             Some(raw) => Some(Uuid::parse_str(raw).map_err(|_| corrupted("Platform XML metadata UUID is invalid"))?),
             None => None,
@@ -90,8 +135,16 @@ impl PlatformXmlProbe {
             .map_err(|_| unsupported("Platform XML format version is invalid"))?;
 
         let source_id = source_id(input, uuid)?;
-        let mut detected_features = BTreeSet::new();
-        detected_features.insert(format!("metadata-class:{class_name}"));
+        let mut probe_evidence = vec![
+            "platform-xml:metadata-namespace".to_string(),
+            format!("platform-xml:metadata-class={class_name}"),
+            format!("platform-xml:format-version={}", version.trim()),
+        ];
+        probe_evidence.extend(
+            detected_features
+                .iter()
+                .map(|feature| format!("platform-xml:feature={feature}")),
+        );
 
         Ok(ProbeOutcome::Match(SourceDescriptor {
             source_id,
@@ -99,14 +152,102 @@ impl PlatformXmlProbe {
             format_version,
             producer_version: None,
             detected_features,
-            probe_evidence: vec![
-                "platform-xml:metadata-namespace".to_string(),
-                format!("platform-xml:metadata-class={class_name}"),
-                format!("platform-xml:format-version={}", version.trim()),
-            ],
+            probe_evidence,
             snapshot_evidence: Some(snapshot_evidence),
         }))
     }
+}
+
+fn metadata_class_profile(class_name: &str) -> Option<&'static MetadataClassProfile> {
+    METADATA_CLASS_PROFILES
+        .iter()
+        .find(|profile| profile.class_name == class_name)
+}
+
+fn inspect_structural_features(
+    class: roxmltree::Node<'_, '_>,
+    profile: &StructuralProfile,
+    features: &mut BTreeSet<String>,
+) -> Result<(), SourceAdapterError> {
+    for child in namespaced_children(class) {
+        let name = child.tag_name().name();
+        if !profile.root_children.contains(&name) {
+            return Err(unsupported("Platform XML root contains an unsupported structural feature"));
+        }
+        features.insert(format!("structural:root:{name}"));
+        if name == "ChildObjects" {
+            inspect_child_objects(child, profile, features)?;
+        }
+    }
+    Ok(())
+}
+
+fn inspect_child_objects(
+    child_objects: roxmltree::Node<'_, '_>,
+    profile: &StructuralProfile,
+    features: &mut BTreeSet<String>,
+) -> Result<(), SourceAdapterError> {
+    for child in namespaced_children(child_objects) {
+        let name = child.tag_name().name();
+        if !profile.child_objects.contains(&name) {
+            return Err(unsupported("Platform XML child objects contain an unsupported structural feature"));
+        }
+        features.insert(format!("structural:child-object:{name}"));
+        match name {
+            "Attribute" | "Form" | "Template" | "Command" => {
+                inspect_leaf_structure(child, features)?;
+            }
+            "TabularSection" => inspect_tabular_section(child, profile, features)?,
+            _ => unreachable!("validated child-object feature"),
+        }
+    }
+    Ok(())
+}
+
+fn inspect_leaf_structure(
+    node: roxmltree::Node<'_, '_>,
+    features: &mut BTreeSet<String>,
+) -> Result<(), SourceAdapterError> {
+    for child in namespaced_children(node) {
+        let name = child.tag_name().name();
+        if name != "Properties" {
+            return Err(unsupported("Platform XML child object contains an unsupported structural feature"));
+        }
+        features.insert("structural:child-object:Properties".to_string());
+    }
+    Ok(())
+}
+
+fn inspect_tabular_section(
+    section: roxmltree::Node<'_, '_>,
+    profile: &StructuralProfile,
+    features: &mut BTreeSet<String>,
+) -> Result<(), SourceAdapterError> {
+    for child in namespaced_children(section) {
+        let name = child.tag_name().name();
+        if !profile.tabular_section_children.contains(&name) {
+            return Err(unsupported("Platform XML tabular section contains an unsupported structural feature"));
+        }
+        features.insert(format!("structural:tabular-section:{name}"));
+        if name == "ChildObjects" {
+            for nested in namespaced_children(child) {
+                if nested.tag_name().name() != "Attribute" {
+                    return Err(unsupported("Platform XML tabular section has an unsupported nested structural feature"));
+                }
+                features.insert("structural:tabular-section:Attribute".to_string());
+                inspect_leaf_structure(nested, features)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn namespaced_children<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+    node.children().filter(|child| {
+        child.is_element() && child.tag_name().namespace() == Some(METADATA_NAMESPACE)
+    })
 }
 
 impl SourceProbe for PlatformXmlProbe {
@@ -248,14 +389,64 @@ mod tests {
     }
 
     #[test]
+    fn supported_legacy_metadata_classes_are_recognized() {
+        for class in ["Configuration", "Catalog", "Document"] {
+            let outcome = probe_fixture(
+                &format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{class}/></MetaDataObject>"#),
+                Some("main"),
+            )
+            .unwrap();
+            let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected {class} match") };
+            assert!(descriptor.detected_features.contains(&format!("metadata-class:{class}")));
+        }
+    }
+
+    #[test]
     fn unknown_metadata_class_fails_closed() {
         let error = probe_fixture(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><SyntheticMetadata/></MetaDataObject>"#,
             Some("main"),
         )
         .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::FormatUnsupported);
+    }
+
+    #[test]
+    fn unknown_nested_structural_features_fail_closed_for_representative_classes() {
+        for xml in [
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><ChildObjects><UnknownFeature/></ChildObjects></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><ChildObjects><TabularSection><ChildObjects><UnknownFeature/></ChildObjects></TabularSection></ChildObjects></Catalog></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><ChildObjects><Attribute><UnknownFeature/></Attribute></ChildObjects></Document></MetaDataObject>"#,
+        ] {
+            let error = probe_fixture(xml, Some("main")).unwrap_err();
+            assert_eq!(error.kind, SourceAdapterErrorKind::FormatUnsupported);
+        }
+    }
+
+    #[test]
+    fn detected_structural_features_are_deterministic() {
+        let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><Properties><Name>Shipment</Name></Properties><ChildObjects><TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects><Attribute><Properties><Name>Item</Name></Properties></Attribute></ChildObjects></TabularSection><Command><Properties><Name>Post</Name></Properties></Command></ChildObjects></Document></MetaDataObject>"#;
+        let first = probe_fixture(xml, Some("main")).unwrap();
+        let second = probe_fixture(xml, Some("main")).unwrap();
+
+        let ProbeOutcome::Match(first) = first else { panic!("expected first match") };
+        let ProbeOutcome::Match(second) = second else { panic!("expected second match") };
+        assert_eq!(first.detected_features, second.detected_features);
+        assert_eq!(
+            first.detected_features.into_iter().collect::<Vec<_>>(),
+            vec![
+                "metadata-class:Document",
+                "structural:child-object:Command",
+                "structural:child-object:Properties",
+                "structural:child-object:TabularSection",
+                "structural:root:ChildObjects",
+                "structural:root:Properties",
+                "structural:tabular-section:Attribute",
+                "structural:tabular-section:ChildObjects",
+                "structural:tabular-section:Properties",
+            ],
+        );
     }
 
     #[test]
