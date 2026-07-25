@@ -283,7 +283,9 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertIn("bootstrap/launch.sh", server["args"][1])
         self.assertEqual(server["args"][2], "unica-bootstrap")
 
-    def resolve_packaged_alias(self, plugin_root: Path, *, claude_root: str | None) -> str:
+    def resolve_packaged_alias(
+        self, plugin_root: Path, *, claude_root: str | None, cwd: Path | None = None
+    ) -> str:
         """Run the packaged Git alias and return the plugin root it hands the launcher."""
         module = load_package_module()
         alias = module.PACKAGED_MCP_ALIAS
@@ -296,7 +298,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         result = subprocess.run(
             ["git", "-c", alias, "unica-bootstrap"],
-            cwd=plugin_root,
+            cwd=cwd or plugin_root,
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -329,10 +331,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             # Codex launches with cwd at the plugin directory and no Claude token,
             # so Git's own PWD/GIT_PREFIX pair has to resolve the root.
             codex_resolved = self.resolve_packaged_alias(plugin_root, claude_root=None)
-            # Claude Code substitutes an absolute plugin root, which wins outright
-            # and stays correct regardless of the working directory.
+            # Run from the marketplace root, where the Codex fallback would resolve
+            # to the wrong directory and the launcher would not be found at all.
+            # Only the substituted token can produce the plugin root from here, so
+            # this distinguishes the two paths instead of letting them agree by
+            # sharing a working directory.
             claude_resolved = self.resolve_packaged_alias(
-                plugin_root, claude_root=str(plugin_root)
+                plugin_root, cwd=plugin_root.parent.parent, claude_root=str(plugin_root)
             )
 
         self.assertEqual(codex_resolved, f"resolved={plugin_root}")
@@ -466,10 +471,12 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     source=module.claude_plugin_source(release_tag="v0.9.1"),
                 )
 
-        # The packaging failure has to name the field, not surface as a KeyError
-        # from whichever line reached it first.
-        self.assertIn("description", str(raised.exception))
-        self.assertIn("license", str(raised.exception))
+        # The packaging failure has to name every missing field, not surface as a
+        # KeyError from whichever line reached it first.
+        message = str(raised.exception)
+        for field in ("description", "homepage", "repository", "license", "keywords"):
+            with self.subTest(field=field):
+                self.assertIn(field, message)
 
     def test_claude_catalog_pins_the_release_tag(self) -> None:
         module = load_package_module()
