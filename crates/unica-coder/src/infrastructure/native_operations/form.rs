@@ -7722,6 +7722,7 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
             "LeftNarrowest",
         ]),
         "CommandBarLocation" => Some(&["None", "Auto", "Top", "Bottom"]),
+        "TableRepresentation" => Some(&["List"]),
         "FormChildrenGroup" => Some(&[
             "Horizontal",
             "Vertical",
@@ -7813,6 +7814,12 @@ fn form_compile_validate_element_enum_tree(elements: &[Value]) -> Result<(), Str
                 form_compile_validate_element_enum(object, "currentRowUse", "CurrentRowUse")?;
             }
             FormEditElementDefinitionKind::Table => {
+                form_compile_validate_normalized_element_enum(
+                    object,
+                    "representation",
+                    "TableRepresentation",
+                    form_compile_table_representation,
+                )?;
                 form_compile_validate_element_enum(
                     object,
                     "commandBarLocation",
@@ -8356,6 +8363,13 @@ pub(crate) fn form_compile_group_representation(value: &str) -> Option<&'static 
     }
 }
 
+fn form_compile_table_representation(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "list" => Some("List"),
+        _ => None,
+    }
+}
+
 fn form_compile_check_box_type(value: &str) -> Option<&'static str> {
     match value.to_lowercase().as_str() {
         "auto" => Some("Auto"),
@@ -8808,6 +8822,20 @@ pub(crate) fn emit_form_table(
     let inner = format!("{indent}\t");
     if let Some(path) = element.get("path").and_then(Value::as_str) {
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
+    }
+    if let Some(representation) = element
+        .get("representation")
+        .and_then(Value::as_str)
+        .and_then(form_compile_table_representation)
+    {
+        lines.push(format!(
+            "{inner}<Representation>{representation}</Representation>"
+        ));
+    }
+    if let Some(auto_insert_new_row) = element.get("autoInsertNewRow").and_then(Value::as_bool) {
+        lines.push(format!(
+            "{inner}<AutoInsertNewRow>{auto_insert_new_row}</AutoInsertNewRow>"
+        ));
     }
     emit_form_common_flags(lines, element, &inner);
     if let Some(value) = element.get("commandBarLocation").and_then(Value::as_str) {
@@ -14010,6 +14038,29 @@ mod tests {
         assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
         assert!(xml.contains("<Page name=\"Main\""), "{xml}");
         assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+    }
+
+    #[test]
+    fn form_compile_emits_supported_table_properties() {
+        let definition = json!({
+            "elements": [{
+                "table": "Rows",
+                "representation": "List",
+                "autoInsertNewRow": true,
+                "columns": []
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+
+        assert!(
+            xml.contains("<Representation>List</Representation>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<AutoInsertNewRow>true</AutoInsertNewRow>"),
+            "{xml}"
+        );
     }
 
     #[test]
