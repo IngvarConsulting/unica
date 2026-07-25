@@ -111,14 +111,18 @@ pub(crate) enum NativePropertyValue {
         value: String,
         type_annotation: NativeScalarType,
     },
+    /// A scalar whose annotation cannot be used safely. The original QName and
+    /// attributes are deliberately discarded before the native snapshot exists.
+    UnresolvedScalar {
+        issue: NativeScalarAnnotationIssue,
+    },
     RawXml(String),
     Absent,
     Unresolved,
 }
 
 /// Normalized schema-relevant `xsi:type` evidence for scalar XML values.
-/// Unknown is intentionally opaque: the raw QName is never promoted to the
-/// semantic projection.
+/// Invalid QNames are represented by `UnresolvedScalar`, never by this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeScalarType {
     String,
@@ -126,7 +130,14 @@ pub(crate) enum NativeScalarType {
     Decimal,
     Integer,
     Uuid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeScalarAnnotationIssue {
+    Missing,
     Unknown,
+    Conflicting,
+    Unqualified,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -115,7 +115,7 @@ pub(crate) fn child_metadata_class_profile(
 }
 
 #[cfg(test)]
-mod tests {
+mod scalar_tests {
     use crate::infrastructure::{
         metadata_kinds::{METADATA_KINDS, METADATA_KIND_TAGS},
         source_adapters::platform_xml::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES,
@@ -130,7 +130,7 @@ mod tests {
         );
     }
 }
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use roxmltree::{Document, Node};
 
@@ -183,29 +183,27 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
     }
     let mut variants = Vec::new();
     let mut qualifiers = BTreeMap::new();
+    let mut qualifier_groups = BTreeSet::new();
     if root.tag_name().name() == "Type" {
         variants.push(parse_type_variant(&text_only(root)?)?);
     } else {
         for child in root.children().filter(Node::is_element) {
             match child.tag_name().name() {
                 "Type" => variants.push(parse_type_variant(&text_only(child)?)?),
-                "StringQualifiers" => parse_qualifiers(
-                    child,
-                    &mut qualifiers,
+                "StringQualifiers" => parse_qualifier_group(
+                    QualifierGroup::String, child, &mut qualifier_groups, &mut qualifiers,
                     &[("Length", QualifierKind::Integer), ("AllowedLength", QualifierKind::AllowedLength)],
                 )?,
-                "NumberQualifiers" => parse_qualifiers(
-                    child,
-                    &mut qualifiers,
+                "NumberQualifiers" => parse_qualifier_group(
+                    QualifierGroup::Number, child, &mut qualifier_groups, &mut qualifiers,
                     &[
                         ("Digits", QualifierKind::Integer),
                         ("FractionDigits", QualifierKind::Integer),
                         ("AllowedSign", QualifierKind::AllowedSign),
                     ],
                 )?,
-                "DateQualifiers" => parse_qualifiers(
-                    child,
-                    &mut qualifiers,
+                "DateQualifiers" => parse_qualifier_group(
+                    QualifierGroup::Date, child, &mut qualifier_groups, &mut qualifiers,
                     &[("DateFractions", QualifierKind::DateFractions)],
                 )?,
                 _ => return Err(projection_error("unsupported Platform XML type-description member")),
@@ -215,7 +213,7 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
     if variants.is_empty() {
         return Err(projection_error("Platform XML type description has no variants"));
     }
-    if !qualifiers.is_empty() {
+    if !qualifier_groups.is_empty() {
         let primitive_indexes = variants
             .iter()
             .enumerate()
@@ -225,14 +223,7 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
             return Err(projection_error("type qualifiers require one primitive variant"));
         }
         let TypeVariant::Primitive { kind, .. } = &variants[primitive_indexes[0]] else { unreachable!() };
-        let compatible = match kind.as_str() {
-            "String" => qualifiers.keys().all(|key| matches!(key.as_str(), "length" | "allowedLength")),
-            "Number" => qualifiers.keys().all(|key| matches!(key.as_str(), "digits" | "fractionDigits" | "allowedSign")),
-            "Date" => qualifiers.keys().all(|key| key == "dateFractions"),
-            "Boolean" => false,
-            _ => false,
-        };
-        if !compatible {
+        if !qualifier_groups.iter().all(|group| group.is_compatible_with(kind)) {
             return Err(projection_error("type qualifier group is incompatible with primitive variant"));
         }
         let TypeVariant::Primitive { qualifiers: destination, .. } = &mut variants[primitive_indexes[0]] else { unreachable!() };
@@ -245,6 +236,31 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
 
 #[derive(Clone, Copy)]
 enum QualifierKind { Integer, AllowedLength, AllowedSign, DateFractions }
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum QualifierGroup { String, Number, Date }
+
+impl QualifierGroup {
+    fn is_compatible_with(self, primitive_kind: &str) -> bool {
+        matches!(
+            (self, primitive_kind),
+            (Self::String, "String") | (Self::Number, "Number") | (Self::Date, "Date")
+        )
+    }
+}
+
+fn parse_qualifier_group(
+    group: QualifierGroup,
+    node: Node<'_, '_>,
+    groups: &mut BTreeSet<QualifierGroup>,
+    qualifiers: &mut BTreeMap<String, PropertyValue>,
+    allowed: &[(&str, QualifierKind)],
+) -> Result<(), SourceAdapterError> {
+    if !groups.insert(group) {
+        return Err(projection_error("duplicate Platform XML type qualifier group"));
+    }
+    parse_qualifiers(node, qualifiers, allowed)
+}
 
 fn parse_qualifiers(
     node: Node<'_, '_>,
@@ -334,4 +350,33 @@ fn type_variant_key(value: &TypeVariant) -> String {
 
 fn projection_error(message: &'static str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_type_description_2_20;
+
+    #[test]
+    fn rejects_empty_alien_qualifier_group() {
+        assert!(parse_type_description_2_20(
+            "<DataType><Type>xs:string</Type><NumberQualifiers/></DataType>",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_qualifier_group_even_when_one_is_empty() {
+        assert!(parse_type_description_2_20(
+            "<DataType><Type>xs:string</Type><StringQualifiers/><StringQualifiers><Length>12</Length></StringQualifiers></DataType>",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_qualifier_child() {
+        assert!(parse_type_description_2_20(
+            "<DataType><Type>xs:decimal</Type><NumberQualifiers><Scale>2</Scale></NumberQualifiers></DataType>",
+        )
+        .is_err());
+    }
 }

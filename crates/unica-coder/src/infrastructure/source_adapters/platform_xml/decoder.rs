@@ -24,13 +24,14 @@ use super::{
         NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
         NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue, NativeScalarType,
-        NativeRegistrationEvidence, NativeTemplate, PlatformXmlNativeSnapshot,
+        NativeRegistrationEvidence, NativeScalarAnnotationIssue, NativeTemplate,
+        PlatformXmlNativeSnapshot,
     },
     probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
     schema::{
         child_metadata_class_profile, metadata_class_profile, ChildObjectsVocabulary,
-        MetadataClassProfile, MetadataClassRole,
+        scalar_property_kind_2_20, MetadataClassProfile, MetadataClassRole, ScalarPropertyKind,
     },
 };
 
@@ -39,6 +40,7 @@ const MANAGED_FORM_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const SPREADSHEET_DOCUMENT_NAMESPACE: &str = "http://v8.1c.ru/spreadsheet/document";
 const LEGACY_SPREADSHEET_NAMESPACE: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 const XML_SCHEMA_INSTANCE_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
+const XML_SCHEMA_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
 
 pub(crate) fn decode_path(
     input: &SourceInput,
@@ -544,10 +546,13 @@ fn decode_properties(
                     NativePropertyProvenance::Absent,
                 )
             } else {
-                (
-                    scalar_property_value(property, value)?,
-                    NativePropertyProvenance::Explicit,
-                )
+                let scalar = scalar_property_value(&canonical_id, property, value);
+                let provenance = if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
+                    NativePropertyProvenance::Unresolved
+                } else {
+                    NativePropertyProvenance::Explicit
+                };
+                (scalar, provenance)
             }
         };
         decoded.insert(
@@ -563,28 +568,50 @@ fn decode_properties(
 }
 
 fn scalar_property_value(
+    canonical_id: &str,
     property: Node<'_, '_>,
     value: &str,
-) -> Result<NativePropertyValue, SourceAdapterError> {
+) -> NativePropertyValue {
     let annotation = property.attribute((XML_SCHEMA_INSTANCE_NAMESPACE, "type"));
     if annotation.is_some() && property.attribute("type").is_some() {
-        return Err(corrupted("Platform XML scalar has conflicting type annotations"));
+        return unresolved_scalar(NativeScalarAnnotationIssue::Conflicting);
     }
     let Some(annotation) = annotation else {
-        return Ok(NativePropertyValue::Scalar(value.to_string()));
+        if property.attribute("type").is_some() {
+            return unresolved_scalar(NativeScalarAnnotationIssue::Unqualified);
+        }
+        if matches!(
+            scalar_property_kind_2_20(canonical_id),
+            Some(ScalarPropertyKind::PolymorphicFillValue)
+        ) {
+            return unresolved_scalar(NativeScalarAnnotationIssue::Missing);
+        }
+        return NativePropertyValue::Scalar(value.to_string());
     };
-    let type_annotation = match annotation {
-        "xs:string" => NativeScalarType::String,
-        "xs:boolean" => NativeScalarType::Boolean,
-        "xs:decimal" => NativeScalarType::Decimal,
-        "xs:integer" => NativeScalarType::Integer,
-        "xs:stringUuid" => NativeScalarType::Uuid,
-        _ => NativeScalarType::Unknown,
+    let Some((prefix, local_name)) = annotation.split_once(':') else {
+        return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
     };
-    Ok(NativePropertyValue::AnnotatedScalar {
+    if prefix.is_empty() || local_name.is_empty() || local_name.contains(':')
+        || property.lookup_namespace_uri(Some(prefix)) != Some(XML_SCHEMA_NAMESPACE)
+    {
+        return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
+    }
+    let type_annotation = match local_name {
+        "string" => NativeScalarType::String,
+        "boolean" => NativeScalarType::Boolean,
+        "decimal" => NativeScalarType::Decimal,
+        "integer" => NativeScalarType::Integer,
+        "stringUuid" => NativeScalarType::Uuid,
+        _ => return unresolved_scalar(NativeScalarAnnotationIssue::Unknown),
+    };
+    NativePropertyValue::AnnotatedScalar {
         value: value.to_string(),
         type_annotation,
-    })
+    }
+}
+
+fn unresolved_scalar(issue: NativeScalarAnnotationIssue) -> NativePropertyValue {
+    NativePropertyValue::UnresolvedScalar { issue }
 }
 
 fn synthetic_name_property(name: &str) -> BTreeMap<String, NativeProperty> {
@@ -1502,7 +1529,7 @@ mod tests {
     #[test]
     fn scalar_xsi_type_annotation_is_preserved_without_raw_attributes() {
         let fixture = document_fixture(
-            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:decimal">0</FillValue></Properties>"#,
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xmlSchema="http://www.w3.org/2001/XMLSchema" xsi:type="xmlSchema:decimal">0</FillValue></Properties>"#,
         );
 
         let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
@@ -1511,6 +1538,72 @@ mod tests {
             NativePropertyValue::AnnotatedScalar {
                 value: "0".to_string(),
                 type_annotation: crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType::Decimal,
+            },
+        );
+    }
+
+    #[test]
+    fn scalar_annotation_failures_are_local_and_do_not_stop_siblings() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+
+        let fixture = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="unknown:decimal">0</FillValue><Description>Still projected</Description></Properties><ChildObjects><Attribute><Properties><Name>Number</Name></Properties></Attribute></ChildObjects>"#,
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+
+        assert_eq!(
+            decoded.root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::Unknown,
+            },
+        );
+        assert_eq!(
+            decoded.root.properties["Description"].value,
+            NativePropertyValue::Scalar("Still projected".to_string()),
+        );
+        assert_eq!(decoded.root.children[0].name, "Number");
+    }
+
+    #[test]
+    fn scalar_annotation_rejects_alien_or_conflicting_qnames_locally() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+
+        let alien = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="urn:alien" xsi:type="xs:decimal">0</FillValue></Properties>"#,
+        );
+        let conflicting = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xsi:type="xs:decimal" type="xs:string">0</FillValue></Properties>"#,
+        );
+        let missing = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue>0</FillValue></Properties>"#,
+        );
+        let unqualified = document_fixture(
+            r#"<Properties><Name>Shipment</Name><FillValue type="xs:decimal">0</FillValue></Properties>"#,
+        );
+
+        assert_eq!(
+            decode(&alien.provider, &alien.descriptor).unwrap().root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::Unknown,
+            },
+        );
+        assert_eq!(
+            decode(&conflicting.provider, &conflicting.descriptor).unwrap().root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::Conflicting,
+            },
+        );
+        assert_eq!(
+            decode(&missing.provider, &missing.descriptor).unwrap().root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::Missing,
+            },
+        );
+        assert_eq!(
+            decode(&unqualified.provider, &unqualified.descriptor).unwrap().root.properties["FillValue"].value,
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::Unqualified,
             },
         );
     }

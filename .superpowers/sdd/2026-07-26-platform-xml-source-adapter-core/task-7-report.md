@@ -101,3 +101,31 @@
 ### Concerns
 
 - The 2.20 scalar/type grammar is deliberately bounded. New platform variants or property IDs must be added to the shared schema explicitly; unknown annotations and incompatible qualifiers stay unresolved or rejected rather than becoming canonical data.
+## Fix Round 3
+
+### RED
+
+- `xsi:type` compared a literal `xs:*` prefix instead of resolving the QName value against its in-scope namespace URI.
+- Unknown, conflicting and unsupported scalar annotations could fail the whole decoder instead of producing a local unresolved property.
+- `FillValue` used `f64` only as a lexical gate and accepted Boolean, Integer and UUID annotations despite its bounded 2.20 contract.
+- Qualifier validation inferred group presence from child keys, so empty alien groups and duplicate empty groups could evade compatibility checks.
+- Initial RED test integration exposed fixture-only defects: an attribute-bearing `Properties` tag made the helper insert a second block, and a duplicated test child produced an artificial UUID collision. Namespace declarations were moved to the scalar element and the existing fixture child retained; product assertions were not weakened.
+
+### GREEN
+
+- Decoder resolves `xsi:type` values as prefixed QNames through `lookup_namespace_uri`; every prefix bound to the XML Schema URI is accepted and normalized to a bounded enum. Alien, unbound, malformed and raw/unqualified annotations expose no raw QName.
+- `Missing`, `Unknown`, `Conflicting` and `Unqualified` are explicit `UnresolvedScalar` states. They retain no scalar lexical value or raw annotation, preserve sibling decode/projection, and project as `valueState=unresolved`, no canonical value, unknown provenance and read-only property capability.
+- `FillValue` accepts only validated XML Schema `decimal` and `string`. Decimal uses a lossless XML Schema lexical parser and canonical normalized string representation; exponent, NaN, INF and invalid lexical values fail closed locally. Boolean, Integer and UUID annotations are unresolved.
+- Qualifier parser records `String`, `Number` and `Date` group identity before children, rejects duplicate groups including empty groups, validates each child, and enforces exact primitive/group compatibility.
+
+### Tests
+
+- `cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture` -- 26 passed.
+- `cargo test -p unica-coder source_adapters::platform_xml::projector::tests -- --nocapture` -- 18 passed.
+- `cargo test -p unica-coder source_adapters::platform_xml::schema -- --nocapture` -- 4 passed.
+- `cargo test -p unica-coder source_adapters::registry::tests -- --nocapture` -- 9 passed.
+- `cargo test -p unica-coder domain::navigation::tests -- --nocapture` -- 17 passed.
+
+### Concerns
+
+- The scalar and qualifier grammar remains intentionally bounded to certified 2.20 forms. Future XML Schema local names or qualifier groups require an explicit shared-schema extension; they must not be inferred from text or promoted to canonical values.

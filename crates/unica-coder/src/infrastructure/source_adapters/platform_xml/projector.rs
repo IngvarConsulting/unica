@@ -418,6 +418,9 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
     let mut projected = match &property.value {
         NativePropertyValue::Absent => SemanticProperty::absent(PropertyType::Unknown, provenance),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(PropertyType::Unknown, provenance),
+        NativePropertyValue::UnresolvedScalar { .. } => {
+            SemanticProperty::unresolved(PropertyType::Unknown, provenance)
+        }
         NativePropertyValue::Scalar(value) => {
             scalar_property(&property.canonical_id, value, None, provenance)?
         }
@@ -470,27 +473,46 @@ fn scalar_property(
         ),
         ScalarPropertyKind::String => (PropertyType::String, PropertyValue::String(value.to_string())),
         ScalarPropertyKind::PolymorphicFillValue => match type_annotation {
-            Some(NativeScalarType::Decimal) if value.parse::<f64>().is_ok() => {
-                (PropertyType::Decimal, PropertyValue::Decimal(value.to_string()))
-            }
+            Some(NativeScalarType::Decimal) => match normalize_xml_schema_decimal(value) {
+                Some(value) => (PropertyType::Decimal, PropertyValue::Decimal(value)),
+                None => return Ok(SemanticProperty::unresolved(PropertyType::Unknown, provenance)),
+            },
             Some(NativeScalarType::String) => {
                 (PropertyType::String, PropertyValue::String(value.to_string()))
             }
-            Some(NativeScalarType::Boolean) if matches!(value, "true" | "false") => {
-                (PropertyType::Boolean, PropertyValue::Boolean(value == "true"))
-            }
-            Some(NativeScalarType::Integer) if value.parse::<i64>().is_ok() => {
-                (PropertyType::Integer, PropertyValue::Integer(value.parse().expect("integer was checked")))
-            }
-            Some(NativeScalarType::Uuid) if value.parse::<Uuid>().is_ok() => {
-                (PropertyType::Uuid, PropertyValue::Uuid(value.parse().expect("UUID was checked")))
-            }
-            None | Some(NativeScalarType::Unknown) | Some(_) => {
+            None | Some(_) => {
                 return Ok(SemanticProperty::unresolved(PropertyType::Unknown, provenance));
             }
         },
     };
     SemanticProperty::explicit(value_type, value, provenance)
+}
+
+fn normalize_xml_schema_decimal(value: &str) -> Option<String> {
+    let (negative, value) = match value.strip_prefix('+') {
+        Some(value) => (false, value),
+        None => match value.strip_prefix('-') {
+            Some(value) => (true, value),
+            None => (false, value),
+        },
+    };
+    let (integer, fraction) = match value.split_once('.') {
+        Some((integer, fraction)) if !fraction.contains('.') => (integer, fraction),
+        None => (value, ""),
+        _ => return None,
+    };
+    if (integer.is_empty() && fraction.is_empty())
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let fraction = fraction.trim_end_matches('0');
+    let fraction = if fraction.is_empty() { "0" } else { fraction };
+    let is_zero = integer == "0" && fraction == "0";
+    Some(format!("{}{}.{}", if negative && !is_zero { "-" } else { "" }, integer, fraction))
 }
 
 fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
@@ -642,7 +664,7 @@ mod tests {
         let string = project_fixture(string).unwrap();
         assert_eq!(
             decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
-            Some(PropertyValue::Decimal("0".to_string())),
+            Some(PropertyValue::Decimal("0.0".to_string())),
         );
         assert_eq!(
             string.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
@@ -657,6 +679,87 @@ mod tests {
 
         let envelope = project_fixture(root).unwrap();
         let property = &envelope.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+        assert_eq!(property.value_state, PropertyValueState::Unresolved);
+        assert_eq!(property.value, None);
+    }
+
+    #[test]
+    fn fill_value_accepts_only_lossless_decimal_or_string_annotations() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType;
+
+        let mut root = document_fixture();
+        root.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::AnnotatedScalar {
+                    value: "+001.2300".to_string(),
+                    type_annotation: NativeScalarType::Decimal,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+        let decimal = project_fixture(root.clone()).unwrap();
+        assert_eq!(
+            decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            Some(PropertyValue::Decimal("1.23".to_string())),
+        );
+
+        for annotation in [NativeScalarType::Boolean, NativeScalarType::Integer, NativeScalarType::Uuid] {
+            root.properties.insert(
+                "FillValue".to_string(),
+                NativeProperty {
+                    canonical_id: "FillValue".to_string(),
+                    value: NativePropertyValue::AnnotatedScalar {
+                        value: "true".to_string(),
+                        type_annotation: annotation,
+                    },
+                    provenance: NativePropertyProvenance::Explicit,
+                },
+            );
+            let envelope = project_fixture(root.clone()).unwrap();
+            let property = &envelope
+                .node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+            assert_eq!(property.value_state, PropertyValueState::Unresolved);
+            assert_eq!(property.value, None);
+        }
+    }
+
+    #[test]
+    fn malformed_decimal_and_local_scalar_failure_remain_property_local() {
+        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+
+        let mut root = document_fixture();
+        root.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::UnresolvedScalar {
+                    issue: NativeScalarAnnotationIssue::Unknown,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+        let envelope = project_fixture(root).unwrap();
+        let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
+        assert_eq!(document.properties["fillValue"].value_state, PropertyValueState::Unresolved);
+        assert!(envelope.node_named(NodeKind::Attribute, "Product").is_some());
+
+        let mut malformed = document_fixture();
+        malformed.properties.insert(
+            "FillValue".to_string(),
+            NativeProperty {
+                canonical_id: "FillValue".to_string(),
+                value: NativePropertyValue::AnnotatedScalar {
+                    value: "1e3".to_string(),
+                    type_annotation: NativeScalarType::Decimal,
+                },
+                provenance: NativePropertyProvenance::Explicit,
+            },
+        );
+        let malformed = project_fixture(malformed).unwrap();
+        let property = &malformed
+            .node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
         assert_eq!(property.value_state, PropertyValueState::Unresolved);
         assert_eq!(property.value, None);
     }

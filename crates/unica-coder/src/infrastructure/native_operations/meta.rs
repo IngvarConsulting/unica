@@ -3855,6 +3855,7 @@ fn meta_info_native_lines(
                 | crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::AnnotatedScalar { value, .. } => value.clone(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::RawXml(value) => value.clone(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Absent => "<absent>".to_string(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::UnresolvedScalar { .. } => "<unresolved>".to_string(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Unresolved => "<unresolved>".to_string(),
             };
             lines.push(format!("{}: {value}", property.canonical_id));
