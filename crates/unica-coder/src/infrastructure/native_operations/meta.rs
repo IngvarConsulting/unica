@@ -16667,7 +16667,7 @@ fn edit_meta_with_mode(
         Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
             ok: true,
             summary: if dry_run {
-                "unica.meta.edit planned native metadata edit".to_string()
+                "dry run: unica.meta.edit planned native metadata edit".to_string()
             } else {
                 "unica.meta.edit completed with native metadata editor".to_string()
             },
