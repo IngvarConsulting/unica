@@ -8,6 +8,9 @@ const MAX_PARENT_CONFIGURATIONS_BYTES: u64 = 1024 * 1024;
 const CERTIFIED_VENDOR_CAPABILITY: &str = "0";
 const CERTIFIED_RULE_SCHEMA: &str = "3";
 const CERTIFIED_RULE_SCOPE: &str = "1";
+const CERTIFIED_OBJECT_RULE_FIELDS: usize = 4;
+const CERTIFIED_OBJECT_RULE_COUNT: usize = 2;
+const CERTIFIED_CONFIGURATION_RULE_FIELDS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SupportParseErrorKind {
@@ -307,11 +310,28 @@ fn decode_certified_v6(root: AstValue, input_len: usize) -> Result<SupportFacts,
         return Err(cursor.error(SupportParseErrorKind::UnknownCode, scope.offset, "rule scope"));
     }
     let tail = values.get(11..).unwrap_or_default();
-    let (configuration_rule, rule_values) = match tail.len() {
-        8 => (None, tail),
-        11 => (Some(parse_configuration_rule(&tail[..3])?), &tail[3..]),
-        0..=7 => return Err(cursor.error(SupportParseErrorKind::Truncated, input_len, "rule collection")),
-        _ => return Err(cursor.error(SupportParseErrorKind::TrailingData, tail[8].offset(), "certified rule collection")),
+    let layout = CertifiedTailLayout::for_values(tail);
+    let expected_fields = layout.field_count();
+    if tail.len() < expected_fields {
+        return Err(cursor.error(
+            SupportParseErrorKind::Truncated,
+            input_len,
+            "rule collection",
+        ));
+    }
+    if tail.len() > expected_fields {
+        return Err(cursor.error(
+            SupportParseErrorKind::TrailingData,
+            tail[expected_fields].offset(),
+            "certified rule collection",
+        ));
+    }
+    let (configuration_rule, rule_values) = match layout {
+        CertifiedTailLayout::ObjectRules => (None, tail),
+        CertifiedTailLayout::ConfigurationAndObjectRules => (
+            Some(parse_configuration_rule(&tail[..CERTIFIED_CONFIGURATION_RULE_FIELDS])?),
+            &tail[CERTIFIED_CONFIGURATION_RULE_FIELDS..],
+        ),
     };
     let mut object_rules = BTreeMap::new();
     for rule in rule_values.chunks_exact(4) {
@@ -324,7 +344,10 @@ fn decode_certified_v6(root: AstValue, input_len: usize) -> Result<SupportFacts,
             ));
         }
     }
-    debug_assert_eq!(rule_values.len(), 8);
+    debug_assert_eq!(
+        rule_values.len(),
+        CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT
+    );
     let _ = provider_id;
     Ok(SupportFacts {
         source: SupportSourceState::Parsed,
@@ -381,6 +404,39 @@ fn parse_rule_state(value: &AstValue, context: &'static str) -> Result<SupportRu
             value.offset(),
             context,
         )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertifiedTailLayout {
+    ObjectRules,
+    ConfigurationAndObjectRules,
+}
+
+impl CertifiedTailLayout {
+    fn for_values(values: &[AstValue]) -> Self {
+        if values.get(1).is_some_and(is_uuid_atom) && values.get(2).is_some_and(is_uuid_atom) {
+            Self::ConfigurationAndObjectRules
+        } else {
+            Self::ObjectRules
+        }
+    }
+
+    fn field_count(self) -> usize {
+        let object_rules = CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT;
+        match self {
+            Self::ObjectRules => object_rules,
+            Self::ConfigurationAndObjectRules => {
+                CERTIFIED_CONFIGURATION_RULE_FIELDS + object_rules
+            }
+        }
+    }
+}
+
+fn is_uuid_atom(value: &AstValue) -> bool {
+    match value {
+        AstValue::Atom(atom) => uuid::Uuid::parse_str(&atom.value).is_ok(),
+        AstValue::String(_) | AstValue::List { .. } => false,
     }
 }
 
@@ -561,7 +617,7 @@ impl<'a> AstParser<'a> {
         if raw.is_empty() {
             return Err(SupportParseError::new(
                 SupportParseErrorKind::UnexpectedToken,
-                start,
+                self.base_offset + start,
                 "atom",
             ));
         }
@@ -773,6 +829,24 @@ mod tests {
         let trailing = parse_parent_configurations(extra.as_bytes());
         assert_eq!(unreadable_kind(&trailing), SupportParseErrorKind::TrailingData);
         assert_eq!(unreadable_error(&trailing).offset, Some(first_extra));
+
+        let mut configuration_extra = full("1", "1", "1");
+        configuration_extra.pop();
+        let configuration_first_extra = configuration_extra.len() + 1;
+        configuration_extra.push_str(",surplus}");
+        let configuration_trailing = parse_parent_configurations(configuration_extra.as_bytes());
+        assert_eq!(
+            unreadable_kind(&configuration_trailing),
+            SupportParseErrorKind::TrailingData
+        );
+        assert_eq!(
+            unreadable_error(&configuration_trailing).offset,
+            Some(configuration_first_extra)
+        );
+
+        let empty_atom = parse_parent_configurations(b"\xEF\xBB\xBF{6,,0}");
+        assert_eq!(unreadable_kind(&empty_atom), SupportParseErrorKind::UnexpectedToken);
+        assert_eq!(unreadable_error(&empty_atom).offset, Some(6));
     }
 
     #[test]
