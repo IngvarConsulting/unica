@@ -289,6 +289,147 @@ class ProductContractTests(unittest.TestCase):
             "https://ingvar.pro/products/unica/terms/en",
         )
 
+    def test_release_runbook_is_discoverable_and_names_the_tag_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        runbook = repo_root / "docs/release-runbook.md"
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        skill = (repo_root / ".claude/skills/release/SKILL.md").read_text(encoding="utf-8")
+
+        self.assertTrue(runbook.is_file())
+        # An agent asked to release has to reach the runbook from the entry point
+        # rather than reconstruct the order from the workflows.
+        self.assertIn("docs/release-runbook.md", agents)
+        self.assertIn("docs/release-runbook.md", skill)
+
+        text = runbook.read_text(encoding="utf-8")
+        for value in (
+            "staging merge commit",
+            "bump-version.py",
+            "check-version-contract.py",
+            "publish-unica-marketplace.yml",
+            # A release that fails part-way has to have a documented way out.
+            "One-way doors",
+            "never reuse a version number",
+            "Rolling back a live release",
+            "Release Warden",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+    def test_warden_cannot_publish_without_the_human_tag(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        warden = (repo_root / "scripts/ci/release-warden.py").read_text(encoding="utf-8")
+        workflow = (repo_root / ".github/workflows/release-warden.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # The marketplace default branch has no protection rules, so the
+        # greenness check in the warden is the only thing standing between a red
+        # promotion and every consumer.
+        self.assertIn("def is_green", warden)
+        self.assertIn("PASSING_CONCLUSIONS", warden)
+        # A stalled release has to surface rather than sit quietly, which is the
+        # failure this whole workflow exists to prevent.
+        self.assertIn("--alert-is-failure", workflow)
+        self.assertIn("schedule:", workflow)
+
+    def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+        # Any concrete version, however quoted, is a location no contract check
+        # covers, and packaging fails on every later pull request once it drifts.
+        literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+
+        self.assertEqual(literals, [])
+        self.assertIn("Resolve the release tag for non-tag builds", release)
+
+    def test_bump_version_writes_every_contract_location(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        contract = importlib.util.spec_from_file_location(
+            "check_version_contract", repo_root / "scripts" / "ci" / "check-version-contract.py"
+        )
+        assert contract is not None and contract.loader is not None
+        contract_module = importlib.util.module_from_spec(contract)
+        contract.loader.exec_module(contract_module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "repo"
+            for relative in (
+                "Cargo.toml",
+                "plugins/unica/.codex-plugin/plugin.json",
+                "plugins/unica/third-party/tools.lock.json",
+            ):
+                target = work / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    (repo_root / relative).read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            # Synthesised rather than copied so the Claude manifest is covered on
+            # branches that do not carry it yet.
+            claude = work / "plugins/unica/.claude-plugin/plugin.json"
+            claude.parent.mkdir(parents=True, exist_ok=True)
+            claude.write_text(
+                json.dumps({"name": "unica", "version": "0.0.0"}) + "\n", encoding="utf-8"
+            )
+
+            changed = module.bump(work, "9.8.7")
+            values = contract_module.read_version_contract(work)
+            claude_version = json.loads(claude.read_text(encoding="utf-8"))["version"]
+
+        self.assertEqual(set(values.values()), {"9.8.7"}, values)
+        self.assertEqual(claude_version, "9.8.7")
+        self.assertIn("plugins/unica/.claude-plugin/plugin.json", changed)
+
+    def test_bump_version_writes_nothing_when_a_later_file_is_malformed(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "repo"
+            cargo = work / "Cargo.toml"
+            cargo.parent.mkdir(parents=True, exist_ok=True)
+            cargo.write_text(
+                (repo_root / "Cargo.toml").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            lock = work / "plugins/unica/third-party/tools.lock.json"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            # Two unica entries: valid JSON, but no single version to set.
+            lock.write_text(
+                json.dumps({"tools": [{"name": "unica"}, {"name": "unica"}]}), encoding="utf-8"
+            )
+            before = cargo.read_text(encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                module.bump(work, "9.8.7")
+
+            # Straddling two versions is the exact state the contract forbids, so
+            # a failure part-way through has to leave everything untouched.
+            self.assertEqual(cargo.read_text(encoding="utf-8"), before)
+
+    def test_promotion_pr_points_the_tag_at_the_staging_merge(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # Naming the promotion commit would require tagging a commit that does
+        # not exist until the promotion step has already run, which leaves the
+        # consumer install checks red on their first run every release.
+        self.assertIn("staging merge commit ${STAGING_MERGE_SHA}", publish)
+        self.assertNotIn("tag at commit ${promotion_sha}", publish)
+
     def test_readme_documents_public_marketplace_lifecycle(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")

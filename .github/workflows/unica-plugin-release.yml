@@ -276,12 +276,22 @@ jobs:
     needs: build-tools
     if: ${{ always() && needs.build-tools.result == 'success' }}
     env:
-      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.9.1' }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # Packaging requires release.tag == v{pluginVersion}, so a non-tag build
+      # has to name the version in the tree. Deriving it keeps the version out of
+      # this file: a literal here is one more place to bump, and the only one no
+      # contract check covers.
+      - name: Resolve the release tag for non-tag builds
+        if: ${{ env.RELEASE_TAG == '' }}
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           pattern: unica-runtime-metadata-*

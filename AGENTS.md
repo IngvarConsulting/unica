@@ -9,6 +9,14 @@ When changing Unica, resolve conflicts in this order:
 3. `spec/` is the active architecture layer unless it contradicts live code, tests, or package metadata.
 4. `README.md` and skill prose
 
+## Releasing
+
+Publishing a version to the public marketplace follows
+`docs/release-runbook.md`. Read it before acting on any request to cut, ship,
+promote, or finish a release; the step order carries the ADR-0008 guarantee that
+the catalog never points at bytes that are not final, and improvising it exposes
+consumers to an unverified package.
+
 ## Search Hygiene
 
 Do not scan local ignored corpora as part of normal repo understanding:
