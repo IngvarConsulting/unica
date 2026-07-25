@@ -4094,8 +4094,6 @@ pub(crate) fn analyze_meta_info_with_navigation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> MetaInfoNavigationResult {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
     let result = (|| -> Result<(String, Option<PathBuf>, PathBuf, NavigationGraph), String> {
         let raw_path = required_path(
             args,
@@ -4103,41 +4101,23 @@ pub(crate) fn analyze_meta_info_with_navigation(
             "ObjectPath",
         )?;
         let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
-        let text = read_utf8_sig(&object_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", object_path.display()))?;
-        let root = doc.root_element();
-        if root.tag_name().name() != "MetaDataObject" {
-            return Err("[ERROR] Not a valid 1C metadata XML file".to_string());
-        }
-
-        let Some(type_node) = root
-            .children()
-            .find(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
-        else {
-            return Err("[ERROR] Cannot detect metadata type".to_string());
+        let source_set = navigation_source_set(&object_path, context);
+        let configured_source_set = (!source_set.starts_with("opaque:")).then_some(source_set);
+        let input = crate::infrastructure::source_adapters::SourceInput {
+            workspace_root: context.workspace_root.clone(),
+            target: object_path.clone(),
+            configured_source_set,
         };
-        let md_type = type_node.tag_name().name();
-        let props = meta_info_child(type_node, "Properties");
-        let child_objs = meta_info_child(type_node, "ChildObjects");
-        let obj_name = props
-            .and_then(|node| meta_info_child_text(node, "Name"))
-            .unwrap_or_default();
-        let synonym = props
-            .and_then(|node| meta_info_child(node, "Synonym"))
-            .map(meta_info_ml_text)
-            .unwrap_or_default();
+        let native =
+            crate::infrastructure::source_adapters::platform_xml::decoder::decode_path(&input)
+                .map_err(|error| format!("[ERROR] {}", error.message))?;
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
         let drill_name = string_arg(args, &["name", "Name"]).unwrap_or("");
         let out_file =
             path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
-        let navigation = project_platform_xml_navigation(&doc, &object_path, context);
-
-        let mut lines = if drill_name.is_empty() {
-            meta_info_main_lines(md_type, props, child_objs, &obj_name, &synonym, mode)?
-        } else {
-            meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
-        };
+        let navigation =
+            project_native_platform_xml_navigation(&native, &object_path, context);
+        let mut lines = meta_info_native_lines(&native.root, drill_name, mode)?;
         if drill_name.is_empty() {
             lines.insert(
                 1,
@@ -4197,202 +4177,195 @@ pub(crate) fn analyze_meta_info_with_navigation(
 /// navigation prototype. This adapter deliberately keeps filesystem layout
 /// private: paths are used only to resolve declared backing content and never
 /// become part of [`ObjectRef`] identity.
+fn meta_info_native_lines(
+    root: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    drill_name: &str,
+    mode: &str,
+) -> Result<Vec<String>, String> {
+    let target = if drill_name.is_empty() {
+        root
+    } else {
+        find_native_node(root, drill_name)
+            .ok_or_else(|| format!("[ERROR] Native metadata node `{drill_name}` was not found"))?
+    };
+    let mut lines = vec![format!(
+        "{}: {}",
+        target.class.canonical_name, target.name
+    )];
+    if mode != "overview" {
+        for property in target.properties.values() {
+            let value = match &property.value {
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => value.clone(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::RawXml(value) => value.clone(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Absent => "<absent>".to_string(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Unresolved => "<unresolved>".to_string(),
+            };
+            lines.push(format!("{}: {value}", property.canonical_id));
+        }
+    }
+    for child in &target.children {
+        lines.push(format!("{}: {}", child.class.canonical_name, child.name));
+    }
+    Ok(lines)
+}
+
+fn find_native_node<'a>(
+    node: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    name: &str,
+) -> Option<&'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode> {
+    if node.name == name {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_native_node(child, name))
+}
+
 pub(crate) fn project_platform_xml_navigation(
-    document: &Document<'_>,
+    _document: &Document<'_>,
     object_path: &Path,
     context: &WorkspaceContext,
 ) -> NavigationGraph {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let source_set = navigation_source_set(object_path, context);
+    let configured_source_set = (!source_set.starts_with("opaque:")).then_some(source_set);
+    let input = crate::infrastructure::source_adapters::SourceInput {
+        workspace_root: context.workspace_root.clone(),
+        target: object_path.to_path_buf(),
+        configured_source_set,
+    };
+    let native = crate::infrastructure::source_adapters::platform_xml::decoder::decode_path(&input)
+        .expect("legacy navigation wrapper requires a valid Platform XML native snapshot");
+    project_native_platform_xml_navigation(&native, object_path, context)
+}
 
-    let document_root = document.root_element();
-    let object = document_root
-        .children()
-        .find(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
-        .expect("metadata navigation receives a validated MetaDataObject");
-    let metadata_type = object.tag_name().name();
-    let object_name =
-        crate::infrastructure::source_adapters::platform_xml::decoder::unique_direct_child_in_namespace(
-            object,
-            "Properties",
-            NAVIGATION_MD_NS,
-        )
-            .and_then(|properties| {
-                crate::infrastructure::source_adapters::platform_xml::decoder::unique_direct_child_in_namespace(
-                    properties,
-                    "Name",
-                    NAVIGATION_MD_NS,
-                )
-            })
-            .and_then(|name| name.text())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_default();
-    let object_path = navigation_normalize_lexical(object_path);
-    let root_capability_state =
-        navigation_root_capability_state(document_root, object, &object_name, &object_path);
-    let source_set = navigation_source_set(&object_path, context);
-    let root_reference = ObjectRef::new(
-        SourceId::new(source_set).expect("navigation source set is a valid source id"),
-        navigation_semantic_object_key(&["root", metadata_type, &object_name]),
-        IdentityStrength::Derived,
-        NodeKind::metadata_object(metadata_type),
-        object_name,
+fn project_native_platform_xml_navigation(
+    snapshot: &crate::infrastructure::source_adapters::platform_xml::native_model::PlatformXmlNativeSnapshot,
+    object_path: &Path,
+    _context: &WorkspaceContext,
+) -> NavigationGraph {
+    let root_capability_state = CapabilityState::new(
+        ResolutionState::Resolved,
+        navigation_authorability(object_path),
+    );
+    let root_reference = native_object_ref(
+        &snapshot.source.source_id,
+        None,
+        &snapshot.root,
     );
     let mut nodes = vec![NavigationNode::new(
         root_reference.clone(),
         root_capability_state,
     )];
     let mut edges = Vec::new();
-    let object_storage_dir = object_path.with_extension("");
-
-    if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
-        for child in child_objects.children().filter(|child| child.is_element()) {
-            match child.tag_name().name() {
-                "Attribute" => {
-                    let Some(name) = navigation_metadata_child_name(child) else {
-                        continue;
-                    };
-                    navigation_add_contained_node(
-                        &mut nodes,
-                        &mut edges,
-                        &root_reference,
-                        NodeKind::Attribute,
-                        name,
-                        root_capability_state,
-                    );
-                }
-                "TabularSection" => {
-                    let Some(name) = navigation_metadata_child_name(child) else {
-                        continue;
-                    };
-                    let section_reference = navigation_add_contained_node(
-                        &mut nodes,
-                        &mut edges,
-                        &root_reference,
-                        NodeKind::TabularSection,
-                        name,
-                        root_capability_state,
-                    );
-                    if let Some(section_children) = meta_info_child(child, "ChildObjects") {
-                        for section_child in section_children
-                            .children()
-                            .filter(|section_child| section_child.is_element())
-                        {
-                            if section_child.tag_name().name() != "Attribute" {
-                                continue;
-                            }
-                            let Some(column_name) = navigation_metadata_child_name(section_child)
-                            else {
-                                continue;
-                            };
-                            navigation_add_contained_node(
-                                &mut nodes,
-                                &mut edges,
-                                &section_reference,
-                                NodeKind::Attribute,
-                                column_name,
-                                root_capability_state,
-                            );
-                        }
-                    }
-                }
-                "Form" => {
-                    // Form registrations are metadata identifiers, never
-                    // storage paths. Reject malformed values before any
-                    // descriptor/content path is constructed.
-                    let Some(name) = navigation_registered_child_name(child)
-                        .filter(|name| is_1c_identifier(name))
-                    else {
-                        continue;
-                    };
-                    let capability_state = navigation_form_capability_state(
-                        &object_storage_dir,
-                        &name,
-                        root_capability_state.authorability,
-                    );
-                    navigation_add_contained_node(
-                        &mut nodes,
-                        &mut edges,
-                        &root_reference,
-                        NodeKind::Form,
-                        name,
-                        capability_state,
-                    );
-                }
-                "Template" => {
-                    // Like forms, a template registration must be an actual
-                    // 1C identifier before it can participate in filesystem
-                    // resolution below.
-                    let Some(name) = navigation_registered_child_name(child)
-                        .filter(|name| is_1c_identifier(name))
-                    else {
-                        continue;
-                    };
-                    let (kind, capability_state) = navigation_template_kind_and_capability_state(
-                        &object_storage_dir,
-                        &name,
-                        root_capability_state.authorability,
-                    );
-                    navigation_add_contained_node(
-                        &mut nodes,
-                        &mut edges,
-                        &root_reference,
-                        kind,
-                        name,
-                        capability_state,
-                    );
-                }
-                "Command" => {
-                    let Some(name) = navigation_registered_child_name(child) else {
-                        continue;
-                    };
-                    navigation_add_contained_node(
-                        &mut nodes,
-                        &mut edges,
-                        &root_reference,
-                        NodeKind::Command,
-                        name,
-                        root_capability_state,
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
+    project_native_children(
+        &snapshot.root,
+        &root_reference,
+        root_capability_state,
+        &mut nodes,
+        &mut edges,
+    );
     NavigationGraph::new(Representation::PlatformXml, root_reference, nodes, edges)
 }
 
-fn navigation_add_contained_node(
+fn project_native_children(
+    owner: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    owner_reference: &ObjectRef,
+    owner_capability: CapabilityState,
     nodes: &mut Vec<NavigationNode>,
     edges: &mut Vec<NavigationEdge>,
-    parent: &ObjectRef,
-    kind: NodeKind,
-    name: String,
-    capability_state: CapabilityState,
+) {
+    for child in &owner.children {
+        let reference = native_object_ref(
+            &owner_reference.source_id,
+            Some(owner_reference),
+            child,
+        );
+        let resolution_state = match &child.backing {
+            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Form(form)
+                if form.descriptor.state
+                    == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated
+                    && form.managed_content.state
+                        == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated => ResolutionState::Resolved,
+            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(template)
+                if template.descriptor.state
+                    == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated
+                    && template.canonical_content.state
+                        == crate::infrastructure::source_adapters::platform_xml::native_model::NativeEvidenceState::Validated => ResolutionState::Resolved,
+            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Form(_)
+            | crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(_) => ResolutionState::Unresolved,
+            crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::None => owner_capability.resolution_state,
+        };
+        let capability = CapabilityState::new(
+            resolution_state,
+            owner_capability.authorability,
+        );
+        edges.push(NavigationEdge::new(
+            owner_reference.clone(),
+            reference.clone(),
+            RelationKind::Contains,
+            capability,
+        ));
+        nodes.push(NavigationNode::new(reference.clone(), capability));
+        project_native_children(child, &reference, capability, nodes, edges);
+    }
+}
+
+fn native_object_ref(
+    source_id: &SourceId,
+    parent: Option<&ObjectRef>,
+    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
 ) -> ObjectRef {
-    let kind_key = format!("{kind:?}");
-    let object_key = navigation_semantic_object_key(&[
-        parent.object_key.as_str(),
-        kind_key.as_str(),
-        name.as_str(),
-    ]);
-    let reference = ObjectRef::new(
-        parent.source_id.clone(),
+    let (object_key, identity_strength) = if let Some(uuid) = node.uuid {
+        (
+            ObjectKey::new(format!("uuid:{uuid}"))
+                .expect("UUID-backed native object key is opaque"),
+            IdentityStrength::Persistent,
+        )
+    } else {
+        let parent_key = parent
+            .map(|parent| parent.object_key.as_str())
+            .unwrap_or("root");
+        (
+            navigation_semantic_object_key(&[
+                parent_key,
+                node.class.canonical_name,
+                node.name.as_str(),
+            ]),
+            IdentityStrength::Derived,
+        )
+    };
+    ObjectRef::new(
+        source_id.clone(),
         object_key,
-        IdentityStrength::Derived,
-        kind,
-        name,
-    );
-    edges.push(NavigationEdge::new(
-        parent.clone(),
-        reference.clone(),
-        RelationKind::Contains,
-        capability_state,
-    ));
-    nodes.push(NavigationNode::new(reference.clone(), capability_state));
-    reference
+        identity_strength,
+        native_node_kind(node),
+        node.name.clone(),
+    )
+}
+
+fn native_node_kind(
+    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+) -> NodeKind {
+    use crate::infrastructure::source_adapters::platform_xml::schema::MetadataClassRole;
+    match node.class.role {
+        MetadataClassRole::Configuration | MetadataClassRole::TopLevelObject => {
+            NodeKind::metadata_object(node.class.canonical_name)
+        }
+        MetadataClassRole::Attribute => NodeKind::Attribute,
+        MetadataClassRole::TabularSection => NodeKind::TabularSection,
+        MetadataClassRole::Form => NodeKind::Form,
+        MetadataClassRole::Command => NodeKind::Command,
+        MetadataClassRole::Template => {
+            let template_type = match &node.backing {
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(template) => match &template.descriptor_type {
+                    crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => Some(value.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            NodeKind::Template { template_type }
+        }
+    }
 }
 
 fn navigation_semantic_object_key(parts: &[&str]) -> ObjectKey {
@@ -4404,259 +4377,6 @@ fn navigation_semantic_object_key(parts: &[&str]) -> ObjectKey {
     }
     ObjectKey::new(format!("semantic:{:x}", digest.finalize()))
         .expect("hash-derived navigation object key is opaque")
-}
-
-fn navigation_metadata_child_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
-    meta_info_child(node, "Properties")
-        .and_then(|properties| meta_info_child_text(properties, "Name"))
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn navigation_registered_child_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
-    navigation_metadata_child_name(node).or_else(|| {
-        let name = meta_info_inner_text(node);
-        let name = name.trim();
-        (!name.is_empty()).then(|| name.to_string())
-    })
-}
-
-fn navigation_form_capability_state(
-    object_storage_dir: &Path,
-    form_name: &str,
-    parent_authorability: Authorability,
-) -> CapabilityState {
-    let forms_dir = object_storage_dir.join("Forms");
-    let metadata = forms_dir.join(format!("{form_name}.xml"));
-    let content = forms_dir.join(form_name).join("Ext").join("Form.xml");
-    let resolution_state = if navigation_form_descriptor_is_proved(&metadata, form_name)
-        && navigation_form_source_is_proved(&content)
-    {
-        ResolutionState::Resolved
-    } else {
-        ResolutionState::Unresolved
-    };
-    CapabilityState::new(
-        resolution_state,
-        navigation_combined_descriptor_authorability(&metadata, parent_authorability),
-    )
-}
-
-fn navigation_template_kind_and_capability_state(
-    object_storage_dir: &Path,
-    template_name: &str,
-    parent_authorability: Authorability,
-) -> (NodeKind, CapabilityState) {
-    let templates_dir = object_storage_dir.join("Templates");
-    let descriptor = templates_dir.join(format!("{template_name}.xml"));
-    let authorability =
-        navigation_combined_descriptor_authorability(&descriptor, parent_authorability);
-    let Some(template_type) = navigation_template_type(&descriptor, template_name) else {
-        return (
-            NodeKind::Template {
-                template_type: None,
-            },
-            CapabilityState::new(ResolutionState::Unresolved, authorability),
-        );
-    };
-    let content =
-        navigation_direct_template_content(&templates_dir.join(template_name).join("Ext"));
-    let content_is_resolved = match template_type.as_str() {
-        // MXL must be identified by its structural XML root and namespace,
-        // not merely by a file called Template.*. Both source shapes below
-        // are emitted by the native template and MXL compilers respectively.
-        "SpreadsheetDocument" => content
-            .as_deref()
-            .is_some_and(navigation_spreadsheet_document_source_is_proved),
-        _ => content.is_some(),
-    };
-    let resolution_state = if content_is_resolved {
-        ResolutionState::Resolved
-    } else {
-        ResolutionState::Unresolved
-    };
-    (
-        NodeKind::Template {
-            template_type: Some(template_type),
-        },
-        CapabilityState::new(resolution_state, authorability),
-    )
-}
-
-fn navigation_combined_descriptor_authorability(
-    descriptor: &Path,
-    parent_authorability: Authorability,
-) -> Authorability {
-    if !navigation_regular_file(descriptor) {
-        return parent_authorability;
-    }
-    navigation_combine_authorability(parent_authorability, navigation_authorability(descriptor))
-}
-
-fn navigation_combine_authorability(
-    parent_authorability: Authorability,
-    child_authorability: Authorability,
-) -> Authorability {
-    use Authorability::{
-        Authorable, ConfigurationReadOnly, DerivedReadOnly, SupportLocked, UnknownReadOnly,
-    };
-
-    match (parent_authorability, child_authorability) {
-        (ConfigurationReadOnly, _) | (_, ConfigurationReadOnly) => ConfigurationReadOnly,
-        (SupportLocked, _) | (_, SupportLocked) => SupportLocked,
-        (UnknownReadOnly, _) | (_, UnknownReadOnly) => UnknownReadOnly,
-        (DerivedReadOnly, _) | (_, DerivedReadOnly) => DerivedReadOnly,
-        (Authorable, Authorable) => Authorable,
-    }
-}
-
-fn navigation_root_capability_state(
-    document_root: roxmltree::Node<'_, '_>,
-    object: roxmltree::Node<'_, '_>,
-    object_name: &str,
-    object_path: &Path,
-) -> CapabilityState {
-    let storage_name_matches = match object.tag_name().name() {
-        // `Configuration` is the one canonical top-level descriptor whose
-        // storage name is fixed while the configuration's logical Name is
-        // user-defined (for example, `Configuration.xml` /
-        // `ParityConfiguration`). Every other modeled top-level object uses
-        // its logical name as the descriptor stem.
-        "Configuration" => {
-            object_path.file_name().and_then(|name| name.to_str()) == Some("Configuration.xml")
-        }
-        _ => object_path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .is_some_and(|storage_name| storage_name == object_name),
-    };
-    let direct_metadata_objects = document_root
-        .children()
-        .filter(|child| {
-            child.is_element() && child.tag_name().namespace() == Some(NAVIGATION_MD_NS)
-        })
-        .count();
-    let is_valid_identity = navigation_regular_file(object_path)
-        && document_root.tag_name().name() == "MetaDataObject"
-        && document_root.tag_name().namespace() == Some(NAVIGATION_MD_NS)
-        && direct_metadata_objects == 1
-        && object.tag_name().namespace() == Some(NAVIGATION_MD_NS)
-        && is_1c_identifier(object_name)
-        && storage_name_matches;
-
-    if is_valid_identity {
-        CapabilityState::new(
-            ResolutionState::Resolved,
-            navigation_authorability(object_path),
-        )
-    } else {
-        // A malformed or storage-mismatched root is retained only as a
-        // diagnostic navigation target. It must not authorize mutations for
-        // itself or be the authorable parent of a child aggregate.
-        CapabilityState::new(ResolutionState::Unresolved, Authorability::UnknownReadOnly)
-    }
-}
-
-fn navigation_form_descriptor_is_proved(descriptor: &Path, form_name: &str) -> bool {
-    if !navigation_regular_file(descriptor) {
-        return false;
-    }
-    let Ok(text) = read_utf8_sig(descriptor) else {
-        return false;
-    };
-    crate::infrastructure::source_adapters::platform_xml::decoder::descriptor_is_valid(
-        text.trim_start_matches('\u{feff}'),
-        "Form",
-        form_name,
-    )
-}
-
-fn navigation_form_source_is_proved(content: &Path) -> bool {
-    if !navigation_regular_file(content) {
-        return false;
-    }
-    let Ok(text) = read_utf8_sig(content) else {
-        return false;
-    };
-    crate::infrastructure::source_adapters::platform_xml::decoder::managed_form_source_is_valid(
-        text.trim_start_matches('\u{feff}'),
-    )
-}
-
-fn navigation_template_type(descriptor: &Path, template_name: &str) -> Option<String> {
-    if !navigation_regular_file(descriptor) {
-        return None;
-    }
-    let text = read_utf8_sig(descriptor).ok()?;
-    crate::infrastructure::source_adapters::platform_xml::decoder::template_type_if_valid(
-        text.trim_start_matches('\u{feff}'),
-        template_name,
-    )
-}
-
-fn navigation_regular_file(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
-}
-
-fn navigation_direct_template_content(ext_dir: &Path) -> Option<PathBuf> {
-    let Ok(metadata) = fs::symlink_metadata(ext_dir) else {
-        return None;
-    };
-    if !metadata.file_type().is_dir() {
-        return None;
-    }
-    let Ok(entries) = fs::read_dir(ext_dir) else {
-        return None;
-    };
-    let mut candidates = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let Ok(file_type) = entry.file_type() else {
-                return None;
-            };
-            if !file_type.is_file() {
-                return None;
-            }
-            let file_name = entry.file_name();
-            let Some(file_name) = file_name.to_str() else {
-                return None;
-            };
-            let path = Path::new(file_name);
-            (path.file_stem().and_then(|stem| stem.to_str()) == Some("Template")
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| !extension.is_empty()))
-            .then(|| entry.path())
-        })
-        .collect::<Vec<_>>();
-    candidates.sort();
-    (candidates.len() == 1).then(|| candidates.remove(0))
-}
-
-fn navigation_mxl_source_is_proved(content: &Path) -> bool {
-    if !navigation_regular_file(content) {
-        return false;
-    }
-    let Ok(text) = read_utf8_sig(content) else {
-        return false;
-    };
-    crate::infrastructure::source_adapters::platform_xml::decoder::mxl_source_is_valid(
-        text.trim_start_matches('\u{feff}'),
-    )
-}
-
-fn navigation_spreadsheet_document_source_is_proved(content: &Path) -> bool {
-    // The native template factory maps SpreadsheetDocument specifically to
-    // Ext/Template.xml. Require that canonical direct file as well as a known
-    // MXL root, while `navigation_direct_template_content` rejects sibling
-    // Template.* candidates that would make the backing source ambiguous.
-    content.file_name().and_then(|name| name.to_str()) == Some("Template.xml")
-        && navigation_mxl_source_is_proved(content)
 }
 
 fn navigation_authorability(object_path: &Path) -> Authorability {
@@ -13643,5 +13363,98 @@ pub(crate) fn invoke_mutation(
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn meta_adapter_decodes_recursive_native_tree_before_navigation_projection() {
+        let (context, object_path) = fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Document uuid="11111111-1111-1111-1111-111111111111">
+    <Properties><Name>Shipment</Name></Properties>
+    <ChildObjects>
+      <TabularSection>
+        <Properties><Name>Lines</Name></Properties>
+        <ChildObjects>
+          <Attribute><Properties><Name>Sku</Name></Properties></Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>"#,
+        );
+        let args = json!({"objectPath": object_path})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = analyze_meta_info_with_navigation(&args, &context);
+
+        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
+        let graph = result.navigation.unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|node| node.reference.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Shipment", "Lines", "Sku"]
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn meta_adapter_rejects_invalid_root_through_decoder() {
+        let (context, object_path) = fixture(
+            r#"<MetaDataObject version="2.20"><Document><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>"#,
+        );
+        let args = json!({"objectPath": object_path})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = analyze_meta_info_with_navigation(&args, &context);
+
+        assert!(!result.outcome.ok);
+        assert!(result.outcome.errors[0].contains("Platform XML"));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    fn fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-native-decoder-{}-{nanos}",
+            std::process::id()
+        ));
+        let object_path = root.join("src/Documents/Shipment.xml");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(&object_path, xml).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>",
+        )
+        .unwrap();
+        (
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            object_path,
+        )
     }
 }

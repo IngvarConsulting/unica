@@ -12,24 +12,51 @@ use crate::{
             SourceFamily, SourceSnapshot,
         },
     },
-    infrastructure::native_operations::common::is_1c_identifier,
+    infrastructure::{
+        native_operations::common::is_1c_identifier,
+        source_adapters::{ProbeOutcome, SourceInput, SourceProbe},
+    },
 };
 
 use super::{
     native_model::{
-        NativeChildKind, NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState,
-        NativeForm, NativeMetadataClass, NativeMetadataObject, NativeMxlRootKind,
-        NativeNamedChild, NativeProperty, NativePropertyProvenance, NativePropertyValue,
+        NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
+        NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
+        NativeProperty, NativePropertyProvenance, NativePropertyValue,
         NativeRegistrationEvidence, NativeTemplate, PlatformXmlNativeSnapshot,
     },
+    probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
-    schema::{metadata_class_profile, ChildObjectsVocabulary},
+    schema::{
+        child_metadata_class_profile, metadata_class_profile, ChildObjectsVocabulary,
+        MetadataClassProfile, MetadataClassRole,
+    },
 };
 
 const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MANAGED_FORM_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const SPREADSHEET_DOCUMENT_NAMESPACE: &str = "http://v8.1c.ru/spreadsheet/document";
 const LEGACY_SPREADSHEET_NAMESPACE: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+
+pub(crate) fn decode_path(
+    input: &SourceInput,
+) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
+    let descriptor = match PlatformXmlProbe::new().probe(input)? {
+        ProbeOutcome::Match(descriptor) => descriptor,
+        ProbeOutcome::NoMatch => {
+            return Err(error(
+                SourceAdapterErrorKind::FormatUnsupported,
+                "source is not Platform XML",
+            ));
+        }
+    };
+    let root = input
+        .target
+        .parent()
+        .ok_or_else(|| corrupted("Platform XML descriptor has no aggregate root"))?;
+    let provider = PlatformXmlProvider::open(root)?;
+    decode(&provider, &descriptor)
+}
 
 pub(crate) fn decode(
     provider: &PlatformXmlProvider,
@@ -76,11 +103,7 @@ pub(crate) fn decode(
     let document = Document::parse(xml)
         .map_err(|_| corrupted("Platform XML root descriptor is malformed"))?;
     let wrapper = document.root_element();
-    if wrapper.tag_name().name() != "MetaDataObject"
-        || wrapper.tag_name().namespace() != Some(METADATA_NAMESPACE)
-    {
-        return Err(corrupted("Platform XML root descriptor identity is invalid"));
-    }
+    validate_metadata_wrapper(wrapper)?;
     if wrapper.attribute("version").map(str::trim) != Some("2.20") {
         return Err(error(
             SourceAdapterErrorKind::FormatUnsupported,
@@ -88,28 +111,11 @@ pub(crate) fn decode(
         ));
     }
 
-    let classes = wrapper
-        .children()
-        .filter(Node::is_element)
-        .collect::<Vec<_>>();
-    let class = match classes.as_slice() {
-        [class] => *class,
-        [] => return Err(corrupted("Platform XML root descriptor has no metadata class")),
-        _ => {
-            return Err(error(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "Platform XML root descriptor has multiple metadata classes",
-            ));
-        }
-    };
-    if class.tag_name().namespace() != Some(METADATA_NAMESPACE) {
-        return Err(corrupted("Platform XML metadata class namespace is invalid"));
-    }
-    let profile = metadata_class_profile(class.tag_name().name())
-        .ok_or_else(|| corrupted("Platform XML metadata class is not in the shared schema registry"))?;
-    let properties_node = required_unique_child(class, "Properties")?;
-    let name = required_name(properties_node)?;
-    let expected_file_name = if profile.class_name == "Configuration" {
+    let class = single_metadata_class(wrapper)?;
+    let profile = profile_for_node(class)?;
+    let properties = required_properties(class)?;
+    let name = required_name(properties)?;
+    let expected_file_name = if profile.role == MetadataClassRole::Configuration {
         "Configuration.xml".to_string()
     } else {
         format!("{name}.xml")
@@ -120,67 +126,10 @@ pub(crate) fn decode(
             "Platform XML root descriptor filename does not match native identity",
         ));
     }
-
-    let uuid = parse_optional_uuid(class)?;
-    let properties = decode_properties(properties_node)?;
-    let child_objects = optional_unique_child(class, "ChildObjects")?;
     let base_key = root_key
         .strip_suffix(".xml")
         .ok_or_else(|| corrupted("Platform XML root descriptor is not an XML file"))?;
-
-    let (attributes, tabular_sections, commands, forms, templates, coverage) =
-        match (profile.child_objects, child_objects) {
-            (_, None) => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                CoverageState::Complete,
-            ),
-            (ChildObjectsVocabulary::ConfigurationTopLevel, Some(children)) => {
-                validate_configuration_children(children)?;
-                (
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    CoverageState::Partial,
-                )
-            }
-            (ChildObjectsVocabulary::Object, Some(children)) => {
-                validate_object_child_namespaces(children)?;
-                let attributes = collect_unique_named_children(
-                    children
-                        .children()
-                        .filter(|node| is_metadata_element(*node, "Attribute")),
-                    NativeChildKind::Attribute,
-                )?;
-                let tabular_sections = collect_unique_named_children(
-                    children
-                        .children()
-                        .filter(|node| is_metadata_element(*node, "TabularSection")),
-                    NativeChildKind::TabularSection,
-                )?;
-                let commands = collect_unique_named_children(
-                    children
-                        .children()
-                        .filter(|node| is_metadata_element(*node, "Command")),
-                    NativeChildKind::Command,
-                )?;
-                let forms = decode_forms(provider, base_key, children)?;
-                let templates = decode_templates(provider, base_key, children)?;
-                (
-                    attributes,
-                    tabular_sections,
-                    commands,
-                    forms,
-                    templates,
-                    CoverageState::Complete,
-                )
-            }
-        };
+    let decoded = decode_inline_node(provider, class, profile, base_key, xml)?;
 
     Ok(PlatformXmlNativeSnapshot {
         source: SourceSnapshot {
@@ -189,109 +138,187 @@ pub(crate) fn decode(
             consistency: SnapshotConsistency::Consistent,
             adapter_id: "platform-xml-2.20".to_string(),
         },
-        root: NativeMetadataObject {
-            class: NativeMetadataClass {
-                canonical_name: profile.class_name,
-            },
-            uuid,
-            name,
-            attributes,
-            tabular_sections,
-            commands,
-            forms,
-            templates,
-            properties,
+        root: decoded.node,
+        coverage: if decoded.complete {
+            CoverageState::Complete
+        } else {
+            CoverageState::Partial
         },
-        coverage,
     })
 }
 
-fn collect_unique_named_children<'a, 'input>(
-    nodes: impl Iterator<Item = Node<'a, 'input>>,
-    kind: NativeChildKind,
-) -> Result<Vec<NativeNamedChild>, SourceAdapterError>
-where
-    'input: 'a,
-{
-    let mut names = BTreeSet::new();
-    let mut children = Vec::new();
-    for node in nodes {
-        let properties = required_unique_child(node, "Properties")?;
-        let name = required_name(properties)?;
-        if !names.insert(name.clone()) {
+fn decode_inline_node(
+    provider: &PlatformXmlProvider,
+    node: Node<'_, '_>,
+    profile: &'static MetadataClassProfile,
+    base_key: &str,
+    source_xml: &str,
+) -> Result<DecodedNode, SourceAdapterError> {
+    let properties_node = required_properties(node)?;
+    let name = required_name(properties_node)?;
+    let properties = decode_properties(properties_node, source_xml)?;
+    let uuid = parse_optional_uuid(node)?;
+    let children = decode_children(provider, node, profile, base_key, source_xml)?;
+    Ok(DecodedNode {
+        node: NativeMetadataNode {
+            class: native_class(profile),
+            uuid,
+            name,
+            properties,
+            children: children.nodes,
+            backing: NativeNodeBacking::None,
+        },
+        complete: children.complete,
+    })
+}
+
+fn decode_children(
+    provider: &PlatformXmlProvider,
+    owner: Node<'_, '_>,
+    owner_profile: &'static MetadataClassProfile,
+    base_key: &str,
+    source_xml: &str,
+) -> Result<DecodedChildren, SourceAdapterError> {
+    let Some(child_objects) = optional_unique_child(owner, "ChildObjects")? else {
+        return Ok(DecodedChildren {
+            nodes: Vec::new(),
+            complete: true,
+        });
+    };
+    if owner_profile.child_objects == ChildObjectsVocabulary::None {
+        return Err(corrupted(
+            "Platform XML class contains ChildObjects forbidden by the schema registry",
+        ));
+    }
+
+    let mut identities = BTreeSet::new();
+    let mut nodes = Vec::new();
+    let mut complete = true;
+    for child in child_objects.children().filter(Node::is_element) {
+        if child.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+            return Err(corrupted("Platform XML child class namespace is invalid"));
+        }
+        let profile = child_metadata_class_profile(owner_profile, child.tag_name().name())
+            .ok_or_else(|| {
+                corrupted("Platform XML child class is not allowed by the schema registry")
+            })?;
+        let decoded = if matches!(profile.role, MetadataClassRole::Form | MetadataClassRole::Template) {
+            decode_backed_registration(provider, child, profile, base_key, source_xml)?
+        } else if direct_children(child, "Properties").is_empty() {
+            decode_unresolved_registration(child, profile)?
+        } else {
+            decode_inline_node(provider, child, profile, base_key, source_xml)?
+        };
+        let identity = (profile.class_name, decoded.node.name.clone());
+        if !identities.insert(identity) {
             return Err(error(
                 SourceAdapterErrorKind::IdentityCollision,
-                "Platform XML owner has duplicate child identities of the same kind",
+                "Platform XML owner has duplicate child identities of the same class",
             ));
         }
-        children.push(NativeNamedChild {
-            kind,
-            uuid: parse_optional_uuid(node)?,
-            name,
-        });
+        complete &= decoded.complete;
+        nodes.push(decoded.node);
     }
-    Ok(children)
+    Ok(DecodedChildren { nodes, complete })
 }
 
-fn decode_forms(
+fn decode_unresolved_registration(
+    node: Node<'_, '_>,
+    profile: &'static MetadataClassProfile,
+) -> Result<DecodedNode, SourceAdapterError> {
+    let registration = registration(node)?;
+    Ok(DecodedNode {
+        node: NativeMetadataNode {
+            class: native_class(profile),
+            uuid: registration.uuid,
+            name: registration.name.clone(),
+            properties: synthetic_name_property(&registration.name),
+            children: Vec::new(),
+            backing: NativeNodeBacking::None,
+        },
+        complete: false,
+    })
+}
+
+fn decode_backed_registration(
     provider: &PlatformXmlProvider,
+    node: Node<'_, '_>,
+    profile: &'static MetadataClassProfile,
     base_key: &str,
-    child_objects: Node<'_, '_>,
-) -> Result<Vec<NativeForm>, SourceAdapterError> {
-    let registrations = collect_registrations(
-        child_objects
-            .children()
-            .filter(|node| is_metadata_element(*node, "Form")),
-    )?;
-    registrations
-        .into_iter()
-        .map(|registration| {
+    source_xml: &str,
+) -> Result<DecodedNode, SourceAdapterError> {
+    let registration = registration(node)?;
+    let properties = match optional_unique_child(node, "Properties")? {
+        Some(properties) => decode_properties(properties, source_xml)?,
+        None => synthetic_name_property(&registration.name),
+    };
+    match profile.role {
+        MetadataClassRole::Form => {
             let descriptor_key = format!("{base_key}/Forms/{}.xml", registration.name);
             let content_key = format!("{base_key}/Forms/{}/Ext/Form.xml", registration.name);
-            let (descriptor, _) = decode_registered_descriptor(
-                provider,
-                &descriptor_key,
-                "Form",
-                &registration.name,
-            )?;
-            let managed_content = match snapshot_file(provider, &content_key) {
-                None => content_evidence(NativeEvidenceState::Absent, content_key, None),
-                Some(bytes) if managed_form_source_is_valid_bytes(&bytes) => content_evidence(
-                    NativeEvidenceState::Validated,
-                    content_key,
-                    Some(digest(&bytes)),
+            let descriptor = match snapshot_file(provider, &descriptor_key) {
+                Some(bytes) => {
+                    let parsed = parse_registered_descriptor(&bytes, profile, &registration.name)?;
+                    descriptor_evidence(
+                        NativeEvidenceState::Validated,
+                        descriptor_key,
+                        parsed.uuid,
+                    )
+                }
+                None => descriptor_evidence(
+                    NativeEvidenceState::Absent,
+                    descriptor_key,
+                    None,
                 ),
-                Some(_) => content_evidence(NativeEvidenceState::Unresolved, content_key, None),
             };
-            Ok(NativeForm {
-                registration,
-                descriptor,
-                managed_content,
+            let managed_content = match snapshot_file(provider, &content_key) {
+                Some(bytes) => {
+                    validate_managed_form(&bytes)?;
+                    content_evidence(
+                        NativeEvidenceState::Validated,
+                        content_key,
+                        Some(digest(&bytes)),
+                    )
+                }
+                None => content_evidence(NativeEvidenceState::Absent, content_key, None),
+            };
+            let complete = descriptor.state == NativeEvidenceState::Validated
+                && managed_content.state == NativeEvidenceState::Validated;
+            Ok(DecodedNode {
+                node: NativeMetadataNode {
+                    class: native_class(profile),
+                    uuid: registration.uuid,
+                    name: registration.name.clone(),
+                    properties,
+                    children: Vec::new(),
+                    backing: NativeNodeBacking::Form(NativeForm {
+                        registration,
+                        descriptor,
+                        managed_content,
+                    }),
+                },
+                complete,
             })
-        })
-        .collect()
-}
-
-fn decode_templates(
-    provider: &PlatformXmlProvider,
-    base_key: &str,
-    child_objects: Node<'_, '_>,
-) -> Result<Vec<NativeTemplate>, SourceAdapterError> {
-    let registrations = collect_registrations(
-        child_objects
-            .children()
-            .filter(|node| is_metadata_element(*node, "Template")),
-    )?;
-    registrations
-        .into_iter()
-        .map(|registration| {
+        }
+        MetadataClassRole::Template => {
             let descriptor_key = format!("{base_key}/Templates/{}.xml", registration.name);
-            let (descriptor, descriptor_type) = decode_registered_descriptor(
-                provider,
-                &descriptor_key,
-                "Template",
-                &registration.name,
-            )?;
+            let (descriptor, descriptor_type) = match snapshot_file(provider, &descriptor_key) {
+                Some(bytes) => {
+                    let parsed = parse_registered_descriptor(&bytes, profile, &registration.name)?;
+                    (
+                        descriptor_evidence(
+                            NativeEvidenceState::Validated,
+                            descriptor_key,
+                            parsed.uuid,
+                        ),
+                        parsed.template_type,
+                    )
+                }
+                None => (
+                    descriptor_evidence(NativeEvidenceState::Absent, descriptor_key, None),
+                    NativePropertyValue::Absent,
+                ),
+            };
             let prefix = format!("{base_key}/Templates/{}/Ext/", registration.name);
             let mut candidates = provider
                 .snapshot_files()
@@ -303,7 +330,6 @@ fn decode_templates(
                     "Platform XML template has multiple direct content candidates",
                 ));
             }
-
             let (canonical_content, mxl_root_kind) = match candidates.pop() {
                 None => (
                     content_evidence(
@@ -314,67 +340,203 @@ fn decode_templates(
                     None,
                 ),
                 Some((key, bytes)) => {
-                    let mxl_root_kind = mxl_root_kind_bytes(&bytes);
-                    let is_spreadsheet = matches!(
+                    if matches!(
                         &descriptor_type,
                         NativePropertyValue::Scalar(value) if value == "SpreadsheetDocument"
-                    );
-                    let validated = if is_spreadsheet {
-                        key == format!("{prefix}Template.xml") && mxl_root_kind.is_some()
+                    ) {
+                        if key != format!("{prefix}Template.xml") {
+                            return Err(corrupted(
+                                "SpreadsheetDocument template content is not canonical Template.xml",
+                            ));
+                        }
+                        let root_kind = parse_mxl_root(&bytes)?;
+                        (
+                            content_evidence(
+                                NativeEvidenceState::Validated,
+                                key.to_string(),
+                                Some(digest(&bytes)),
+                            ),
+                            Some(root_kind),
+                        )
+                    } else if matches!(descriptor_type, NativePropertyValue::Absent) {
+                        (
+                            content_evidence(
+                                NativeEvidenceState::Unresolved,
+                                key.to_string(),
+                                None,
+                            ),
+                            None,
+                        )
                     } else {
-                        true
-                    };
-                    (
-                        content_evidence(
-                            if validated {
-                                NativeEvidenceState::Validated
-                            } else {
-                                NativeEvidenceState::Unresolved
-                            },
-                            key.to_string(),
-                            validated.then(|| digest(&bytes)),
-                        ),
-                        mxl_root_kind,
-                    )
+                        (
+                            content_evidence(
+                                NativeEvidenceState::Validated,
+                                key.to_string(),
+                                Some(digest(&bytes)),
+                            ),
+                            None,
+                        )
+                    }
                 }
             };
-
-            Ok(NativeTemplate {
-                registration,
-                descriptor,
-                descriptor_type,
-                canonical_content,
-                mxl_root_kind,
+            let complete = descriptor.state == NativeEvidenceState::Validated
+                && !matches!(descriptor_type, NativePropertyValue::Absent | NativePropertyValue::Unresolved)
+                && canonical_content.state == NativeEvidenceState::Validated;
+            Ok(DecodedNode {
+                node: NativeMetadataNode {
+                    class: native_class(profile),
+                    uuid: registration.uuid,
+                    name: registration.name.clone(),
+                    properties,
+                    children: Vec::new(),
+                    backing: NativeNodeBacking::Template(NativeTemplate {
+                        registration,
+                        descriptor,
+                        descriptor_type,
+                        canonical_content,
+                        mxl_root_kind,
+                    }),
+                },
+                complete,
             })
-        })
-        .collect()
+        }
+        _ => unreachable!("schema-backed registrations are Form or Template"),
+    }
 }
 
-fn collect_registrations<'a, 'input>(
-    nodes: impl Iterator<Item = Node<'a, 'input>>,
-) -> Result<Vec<NativeRegistrationEvidence>, SourceAdapterError>
-where
-    'input: 'a,
-{
-    let mut names = BTreeSet::new();
-    let mut registrations = Vec::new();
-    for node in nodes {
-        let name = registration_name(node)?;
-        if !names.insert(name.clone()) {
+fn parse_registered_descriptor(
+    bytes: &[u8],
+    expected_profile: &'static MetadataClassProfile,
+    expected_name: &str,
+) -> Result<ParsedDescriptor, SourceAdapterError> {
+    let xml = utf8(bytes, "registered descriptor is not valid UTF-8")?;
+    let document = Document::parse(xml)
+        .map_err(|_| corrupted("registered descriptor is malformed XML"))?;
+    let wrapper = document.root_element();
+    validate_metadata_wrapper(wrapper)?;
+    let class = single_metadata_class(wrapper)?;
+    let actual_profile = profile_for_node(class)?;
+    if actual_profile != expected_profile {
+        return Err(corrupted(
+            "registered descriptor class does not match its registration",
+        ));
+    }
+    let properties = required_properties(class)?;
+    let name = required_name(properties)?;
+    if name != expected_name {
+        return Err(corrupted(
+            "registered descriptor name does not match its registration",
+        ));
+    }
+    let uuid = parse_optional_uuid(class)?;
+    let template_type = if expected_profile.role == MetadataClassRole::Template {
+        unique_scalar(properties, "TemplateType")?
+            .map(NativePropertyValue::Scalar)
+            .unwrap_or(NativePropertyValue::Absent)
+    } else {
+        NativePropertyValue::Absent
+    };
+    Ok(ParsedDescriptor {
+        uuid,
+        template_type,
+    })
+}
+
+fn validate_metadata_wrapper(wrapper: Node<'_, '_>) -> Result<(), SourceAdapterError> {
+    if wrapper.tag_name().name() != "MetaDataObject"
+        || wrapper.tag_name().namespace() != Some(METADATA_NAMESPACE)
+    {
+        return Err(corrupted("Platform XML descriptor root identity is invalid"));
+    }
+    Ok(())
+}
+
+fn single_metadata_class<'a, 'input>(
+    wrapper: Node<'a, 'input>,
+) -> Result<Node<'a, 'input>, SourceAdapterError> {
+    let classes = wrapper
+        .children()
+        .filter(Node::is_element)
+        .collect::<Vec<_>>();
+    match classes.as_slice() {
+        [class] => Ok(*class),
+        [] => Err(corrupted("Platform XML descriptor has no metadata class")),
+        _ => Err(error(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            "Platform XML descriptor has multiple metadata classes",
+        )),
+    }
+}
+
+fn profile_for_node(
+    node: Node<'_, '_>,
+) -> Result<&'static MetadataClassProfile, SourceAdapterError> {
+    if node.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+        return Err(corrupted("Platform XML metadata class namespace is invalid"));
+    }
+    metadata_class_profile(node.tag_name().name())
+        .ok_or_else(|| corrupted("Platform XML metadata class is absent from the schema registry"))
+}
+
+fn decode_properties(
+    properties: Node<'_, '_>,
+    source_xml: &str,
+) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
+    let mut decoded = BTreeMap::new();
+    for property in properties.children().filter(Node::is_element) {
+        if property.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+            return Err(corrupted("Platform XML property namespace is invalid"));
+        }
+        let canonical_id = property.tag_name().name().to_string();
+        if decoded.contains_key(&canonical_id) {
             return Err(error(
-                SourceAdapterErrorKind::IdentityCollision,
-                "Platform XML owner has duplicate registered child identities",
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+                "Platform XML property occurs more than once",
             ));
         }
-        registrations.push(NativeRegistrationEvidence {
-            uuid: parse_optional_uuid(node)?,
-            name,
-        });
+        let (value, provenance) = if property.children().any(|child| child.is_element()) {
+            (
+                NativePropertyValue::RawXml(source_xml[property.range()].to_string()),
+                NativePropertyProvenance::Explicit,
+            )
+        } else {
+            let value = property.text().unwrap_or_default().trim();
+            if value.is_empty() {
+                (
+                    NativePropertyValue::Absent,
+                    NativePropertyProvenance::Absent,
+                )
+            } else {
+                (
+                    NativePropertyValue::Scalar(value.to_string()),
+                    NativePropertyProvenance::Explicit,
+                )
+            }
+        };
+        decoded.insert(
+            canonical_id.clone(),
+            NativeProperty {
+                canonical_id,
+                value,
+                provenance,
+            },
+        );
     }
-    Ok(registrations)
+    Ok(decoded)
 }
 
-fn registration_name(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
+fn synthetic_name_property(name: &str) -> BTreeMap<String, NativeProperty> {
+    BTreeMap::from([(
+        "Name".to_string(),
+        NativeProperty {
+            canonical_id: "Name".to_string(),
+            value: NativePropertyValue::Scalar(name.to_string()),
+            provenance: NativePropertyProvenance::Explicit,
+        },
+    )])
+}
+
+fn registration(node: Node<'_, '_>) -> Result<NativeRegistrationEvidence, SourceAdapterError> {
     let properties = direct_children(node, "Properties");
     let direct_text = node
         .children()
@@ -403,148 +565,16 @@ fn registration_name(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
             ));
         }
     };
-    validate_name(name)
+    Ok(NativeRegistrationEvidence {
+        uuid: parse_optional_uuid(node)?,
+        name: validate_name(name)?,
+    })
 }
 
-fn decode_registered_descriptor(
-    provider: &PlatformXmlProvider,
-    relative_key: &str,
-    expected_class: &str,
-    expected_name: &str,
-) -> Result<(NativeDescriptorEvidence, NativePropertyValue), SourceAdapterError> {
-    let Some(bytes) = snapshot_file(provider, relative_key) else {
-        return Ok((
-            descriptor_evidence(NativeEvidenceState::Absent, relative_key, None),
-            NativePropertyValue::Absent,
-        ));
-    };
-    match parse_registered_descriptor(&bytes, expected_class, expected_name)? {
-        Some(parsed) => Ok((
-            descriptor_evidence(
-                NativeEvidenceState::Validated,
-                relative_key,
-                parsed.uuid,
-            ),
-            parsed.template_type,
-        )),
-        None => Ok((
-            descriptor_evidence(NativeEvidenceState::Unresolved, relative_key, None),
-            NativePropertyValue::Unresolved,
-        )),
-    }
-}
-
-fn parse_registered_descriptor(
-    bytes: &[u8],
-    expected_class: &str,
-    expected_name: &str,
-) -> Result<Option<ParsedDescriptor>, SourceAdapterError> {
-    let Ok(xml) = utf8(bytes, "registered descriptor is not valid UTF-8") else {
-        return Ok(None);
-    };
-    let Ok(document) = Document::parse(xml) else {
-        return Ok(None);
-    };
-    let wrapper = document.root_element();
-    if wrapper.tag_name().name() != "MetaDataObject"
-        || wrapper.tag_name().namespace() != Some(METADATA_NAMESPACE)
-    {
-        return Ok(None);
-    }
-    let classes = wrapper
-        .children()
-        .filter(Node::is_element)
-        .collect::<Vec<_>>();
-    let class = match classes.as_slice() {
-        [class]
-            if class.tag_name().name() == expected_class
-                && class.tag_name().namespace() == Some(METADATA_NAMESPACE) =>
-        {
-            *class
-        }
-        [_] | [] => return Ok(None),
-        _ => {
-            return Err(error(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "registered descriptor has multiple metadata classes",
-            ));
-        }
-    };
-    let Some(properties) = optional_unique_child(class, "Properties")? else {
-        return Ok(None);
-    };
-    let name = match unique_scalar(properties, "Name")? {
-        Some(name) => name,
-        None => return Ok(None),
-    };
-    if name != expected_name || !is_1c_identifier(&name) {
-        return Ok(None);
-    }
-    let uuid = match class.attribute("uuid") {
-        Some(raw) => match Uuid::parse_str(raw) {
-            Ok(uuid) => Some(uuid),
-            Err(_) => return Ok(None),
-        },
-        None => None,
-    };
-    let template_type = if expected_class == "Template" {
-        match unique_scalar(properties, "TemplateType")? {
-            Some(value) => NativePropertyValue::Scalar(value),
-            None => NativePropertyValue::Absent,
-        }
-    } else {
-        NativePropertyValue::Absent
-    };
-    Ok(Some(ParsedDescriptor {
-        uuid,
-        template_type,
-    }))
-}
-
-fn decode_properties(
-    properties: Node<'_, '_>,
-) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
-    let mut decoded = BTreeMap::new();
-    for property in properties.children().filter(Node::is_element) {
-        if property.tag_name().namespace() != Some(METADATA_NAMESPACE) {
-            return Err(corrupted("Platform XML property namespace is invalid"));
-        }
-        let canonical_id = property.tag_name().name().to_string();
-        if decoded.contains_key(&canonical_id) {
-            return Err(error(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "Platform XML property occurs more than once",
-            ));
-        }
-        let (value, provenance) = if property.children().any(|child| child.is_element()) {
-            (
-                NativePropertyValue::Unresolved,
-                NativePropertyProvenance::Unresolved,
-            )
-        } else {
-            let value = property.text().unwrap_or_default().trim();
-            if value.is_empty() {
-                (
-                    NativePropertyValue::Absent,
-                    NativePropertyProvenance::Absent,
-                )
-            } else {
-                (
-                    NativePropertyValue::Scalar(value.to_string()),
-                    NativePropertyProvenance::Explicit,
-                )
-            }
-        };
-        decoded.insert(
-            canonical_id.clone(),
-            NativeProperty {
-                canonical_id,
-                value,
-                provenance,
-            },
-        );
-    }
-    Ok(decoded)
+fn required_properties<'a, 'input>(
+    node: Node<'a, 'input>,
+) -> Result<Node<'a, 'input>, SourceAdapterError> {
+    required_unique_child(node, "Properties")
 }
 
 fn required_name(properties: Node<'_, '_>) -> Result<String, SourceAdapterError> {
@@ -554,7 +584,7 @@ fn required_name(properties: Node<'_, '_>) -> Result<String, SourceAdapterError>
 }
 
 fn validate_name(name: String) -> Result<String, SourceAdapterError> {
-    if name.is_empty() || !is_1c_identifier(&name) {
+    if !is_1c_identifier(&name) {
         return Err(corrupted("Platform XML native identity is not a 1C identifier"));
     }
     Ok(name)
@@ -576,7 +606,9 @@ fn unique_scalar(
         }
     };
     if node.children().any(|child| child.is_element()) {
-        return Ok(None);
+        return Err(corrupted(format!(
+            "Platform XML scalar field `{local_name}` contains nested XML"
+        )));
     }
     let value = node.text().unwrap_or_default().trim();
     Ok((!value.is_empty()).then(|| value.to_string()))
@@ -622,41 +654,6 @@ fn direct_children<'a, 'input>(
         .collect()
 }
 
-fn validate_object_child_namespaces(child_objects: Node<'_, '_>) -> Result<(), SourceAdapterError> {
-    for child in child_objects.children().filter(Node::is_element) {
-        if child.tag_name().namespace() != Some(METADATA_NAMESPACE)
-            || !matches!(
-                child.tag_name().name(),
-                "Attribute" | "TabularSection" | "Form" | "Template" | "Command"
-            )
-        {
-            return Err(corrupted(
-                "Platform XML object contains an unsupported child structure",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_configuration_children(child_objects: Node<'_, '_>) -> Result<(), SourceAdapterError> {
-    for child in child_objects.children().filter(Node::is_element) {
-        if child.tag_name().namespace() != Some(METADATA_NAMESPACE)
-            || metadata_class_profile(child.tag_name().name()).is_none()
-        {
-            return Err(corrupted(
-                "Platform XML configuration contains an unsupported child class",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_metadata_element(node: Node<'_, '_>, local_name: &str) -> bool {
-    node.is_element()
-        && node.tag_name().name() == local_name
-        && node.tag_name().namespace() == Some(METADATA_NAMESPACE)
-}
-
 fn parse_optional_uuid(node: Node<'_, '_>) -> Result<Option<Uuid>, SourceAdapterError> {
     node.attribute("uuid")
         .map(|raw| {
@@ -664,6 +661,35 @@ fn parse_optional_uuid(node: Node<'_, '_>) -> Result<Option<Uuid>, SourceAdapter
                 .map_err(|_| corrupted("Platform XML native UUID is invalid"))
         })
         .transpose()
+}
+
+fn validate_managed_form(bytes: &[u8]) -> Result<(), SourceAdapterError> {
+    let xml = utf8(bytes, "managed Form content is not valid UTF-8")?;
+    let document = Document::parse(xml)
+        .map_err(|_| corrupted("managed Form content is malformed XML"))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "Form"
+        || root.tag_name().namespace() != Some(MANAGED_FORM_NAMESPACE)
+    {
+        return Err(corrupted("managed Form content root identity is invalid"));
+    }
+    Ok(())
+}
+
+fn parse_mxl_root(bytes: &[u8]) -> Result<NativeMxlRootKind, SourceAdapterError> {
+    let xml = utf8(bytes, "MXL content is not valid UTF-8")?;
+    let document = Document::parse(xml)
+        .map_err(|_| corrupted("MXL content is malformed XML"))?;
+    let root = document.root_element();
+    match (root.tag_name().name(), root.tag_name().namespace()) {
+        ("SpreadsheetDocument", Some(SPREADSHEET_DOCUMENT_NAMESPACE)) => {
+            Ok(NativeMxlRootKind::SpreadsheetDocument)
+        }
+        ("document", Some(LEGACY_SPREADSHEET_NAMESPACE)) => {
+            Ok(NativeMxlRootKind::LegacyDocument)
+        }
+        _ => Err(corrupted("MXL content root identity is invalid")),
+    }
 }
 
 fn snapshot_file(provider: &PlatformXmlProvider, key: &str) -> Option<std::sync::Arc<[u8]>> {
@@ -680,6 +706,13 @@ fn direct_template_candidate(key: &str, prefix: &str) -> bool {
         && file_name
             .strip_prefix("Template.")
             .is_some_and(|extension| !extension.is_empty())
+}
+
+fn native_class(profile: &'static MetadataClassProfile) -> NativeMetadataClass {
+    NativeMetadataClass {
+        canonical_name: profile.class_name,
+        role: profile.role,
+    }
 }
 
 fn descriptor_evidence(
@@ -715,71 +748,14 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn managed_form_source_is_valid_bytes(bytes: &[u8]) -> bool {
-    let Ok(xml) = utf8(bytes, "managed form source is not valid UTF-8") else {
-        return false;
-    };
-    let Ok(document) = Document::parse(xml) else {
-        return false;
-    };
-    let root = document.root_element();
-    root.tag_name().name() == "Form"
-        && root.tag_name().namespace() == Some(MANAGED_FORM_NAMESPACE)
+struct DecodedNode {
+    node: NativeMetadataNode,
+    complete: bool,
 }
 
-fn mxl_root_kind_bytes(bytes: &[u8]) -> Option<NativeMxlRootKind> {
-    let xml = utf8(bytes, "MXL source is not valid UTF-8").ok()?;
-    let document = Document::parse(xml).ok()?;
-    let root = document.root_element();
-    match (root.tag_name().name(), root.tag_name().namespace()) {
-        ("SpreadsheetDocument", Some(SPREADSHEET_DOCUMENT_NAMESPACE)) => {
-            Some(NativeMxlRootKind::SpreadsheetDocument)
-        }
-        ("document", Some(LEGACY_SPREADSHEET_NAMESPACE)) => {
-            Some(NativeMxlRootKind::LegacyDocument)
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn descriptor_is_valid(
-    xml: &str,
-    expected_class: &str,
-    expected_name: &str,
-) -> bool {
-    parse_registered_descriptor(xml.as_bytes(), expected_class, expected_name)
-        .is_ok_and(|descriptor| descriptor.is_some())
-}
-
-pub(crate) fn template_type_if_valid(xml: &str, expected_name: &str) -> Option<String> {
-    let descriptor =
-        parse_registered_descriptor(xml.as_bytes(), "Template", expected_name).ok()??;
-    match descriptor.template_type {
-        NativePropertyValue::Scalar(value) => Some(value),
-        NativePropertyValue::Absent | NativePropertyValue::Unresolved => None,
-    }
-}
-
-pub(crate) fn managed_form_source_is_valid(xml: &str) -> bool {
-    managed_form_source_is_valid_bytes(xml.as_bytes())
-}
-
-pub(crate) fn mxl_source_is_valid(xml: &str) -> bool {
-    mxl_root_kind_bytes(xml.as_bytes()).is_some()
-}
-
-pub(crate) fn unique_direct_child_in_namespace<'a, 'input>(
-    node: Node<'a, 'input>,
-    local_name: &str,
-    namespace: &str,
-) -> Option<Node<'a, 'input>> {
-    let mut children = node.children().filter(|child| {
-        child.is_element()
-            && child.tag_name().name() == local_name
-            && child.tag_name().namespace() == Some(namespace)
-    });
-    let child = children.next()?;
-    children.next().is_none().then_some(child)
+struct DecodedChildren {
+    nodes: Vec<NativeMetadataNode>,
+    complete: bool,
 }
 
 struct ParsedDescriptor {
@@ -797,7 +773,6 @@ fn error(
 ) -> SourceAdapterError {
     SourceAdapterError::new(kind, message)
 }
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -814,7 +789,7 @@ mod tests {
 
     use super::{
         decode, NativeEvidenceState, NativeMxlRootKind, NativePropertyProvenance,
-        NativePropertyValue, PlatformXmlProvider,
+        NativeNodeBacking, NativePropertyValue, PlatformXmlProvider,
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -926,19 +901,26 @@ mod tests {
         );
         assert_eq!(decoded.root.name, "Shipment");
         assert_eq!(decoded.source.source_id, fixture.descriptor.source_id);
+        let number = decoded
+            .root
+            .children
+            .iter()
+            .find(|child| child.name == "Number")
+            .unwrap();
         assert_eq!(
-            decoded.root.attributes[0].uuid.unwrap().to_string(),
+            number.uuid.unwrap().to_string(),
             "22222222-2222-2222-2222-222222222222"
         );
-        assert_eq!(decoded.root.attributes[0].name, "Number");
-        assert_eq!(decoded.root.commands[0].name, "Post");
+        assert!(decoded.root.children.iter().any(|child| child.name == "Post"));
         assert_eq!(
             decoded.root.properties["Comment"].provenance,
             NativePropertyProvenance::Absent
         );
         assert_eq!(
             decoded.root.properties["Synonym"].value,
-            NativePropertyValue::Unresolved
+            NativePropertyValue::RawXml(
+                "<Synonym><item>Shipment</item></Synonym>".to_string()
+            )
         );
     }
 
@@ -952,6 +934,61 @@ mod tests {
         let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::IdentityCollision);
+    }
+
+    #[test]
+    fn recursive_tabular_section_children_are_preserved() {
+        let fixture = document_fixture(
+            r#"
+            <ChildObjects>
+              <TabularSection>
+                <Properties><Name>Lines</Name></Properties>
+                <ChildObjects>
+                  <Attribute><Properties><Name>Sku</Name></Properties></Attribute>
+                </ChildObjects>
+              </TabularSection>
+            </ChildObjects>
+            "#,
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+        let lines = &decoded.root.children[0];
+
+        assert_eq!(lines.class.canonical_name, "TabularSection");
+        assert_eq!(lines.name, "Lines");
+        assert_eq!(lines.children[0].class.canonical_name, "Attribute");
+        assert_eq!(lines.children[0].name, "Sku");
+    }
+
+    #[test]
+    fn invalid_root_namespace_and_duplicate_classes_are_typed_failures() {
+        let invalid_namespace = fixture(
+            "Shipment.xml",
+            &[(
+                "Shipment.xml",
+                "<MetaDataObject version=\"2.20\"><Document><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>".to_string(),
+            )],
+        );
+        assert_eq!(
+            decode(&invalid_namespace.provider, &invalid_namespace.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::DecodeCorrupted
+        );
+
+        let duplicate_class = fixture(
+            "Shipment.xml",
+            &[(
+                "Shipment.xml",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Document><Properties><Name>Shipment</Name></Properties></Document><Document><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>".to_string(),
+            )],
+        );
+        assert_eq!(
+            decode(&duplicate_class.provider, &duplicate_class.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::ProjectionAmbiguous
+        );
     }
 
     #[test]
@@ -971,7 +1008,9 @@ mod tests {
         );
 
         let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
-        let form = &decoded.root.forms[0];
+        let NativeNodeBacking::Form(form) = &decoded.root.children[0].backing else {
+            panic!("Form registration must retain Form backing evidence");
+        };
 
         assert_eq!(form.registration.name, "ItemForm");
         assert_eq!(form.descriptor.state, NativeEvidenceState::Validated);
@@ -979,7 +1018,24 @@ mod tests {
     }
 
     #[test]
-    fn malformed_managed_form_content_fails_closed() {
+    fn malformed_registered_descriptor_and_managed_form_are_typed_failures() {
+        let malformed_descriptor = document_fixture_with_files(
+            "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            &[(
+                "Shipment/Forms/ItemForm.xml",
+                "<MetaDataObject".to_string(),
+            )],
+        );
+        assert_eq!(
+            decode(
+                &malformed_descriptor.provider,
+                &malformed_descriptor.descriptor,
+            )
+            .unwrap_err()
+            .kind,
+            SourceAdapterErrorKind::DecodeCorrupted
+        );
+
         let fixture = document_fixture_with_files(
             "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
             &[
@@ -994,11 +1050,11 @@ mod tests {
             ],
         );
 
-        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
-
         assert_eq!(
-            decoded.root.forms[0].managed_content.state,
-            NativeEvidenceState::Unresolved
+            decode(&fixture.provider, &fixture.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::DecodeCorrupted
         );
     }
 
@@ -1017,30 +1073,16 @@ mod tests {
 
     #[test]
     fn spreadsheet_templates_require_canonical_content_and_known_mxl_roots() {
-        for (file_name, content, expected_state, expected_root) in [
+        for (file_name, content, expected_root) in [
             (
                 "Template.xml",
                 spreadsheet_document_source(),
-                NativeEvidenceState::Validated,
                 Some(NativeMxlRootKind::SpreadsheetDocument),
             ),
             (
                 "Template.xml",
                 "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"/>",
-                NativeEvidenceState::Validated,
                 Some(NativeMxlRootKind::LegacyDocument),
-            ),
-            (
-                "Template.mxl",
-                spreadsheet_document_source(),
-                NativeEvidenceState::Unresolved,
-                Some(NativeMxlRootKind::SpreadsheetDocument),
-            ),
-            (
-                "Template.xml",
-                "<SpreadsheetDocument/>",
-                NativeEvidenceState::Unresolved,
-                None,
             ),
         ] {
             let content_key = format!("Shipment/Templates/Print/Ext/{file_name}");
@@ -1056,16 +1098,66 @@ mod tests {
             );
 
             let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
-            let template = &decoded.root.templates[0];
+            let NativeNodeBacking::Template(template) = &decoded.root.children[0].backing else {
+                panic!("Template registration must retain Template backing evidence");
+            };
 
             assert_eq!(template.descriptor.state, NativeEvidenceState::Validated);
             assert_eq!(
                 template.descriptor_type,
                 NativePropertyValue::Scalar("SpreadsheetDocument".to_string())
             );
-            assert_eq!(template.canonical_content.state, expected_state);
+            assert_eq!(
+                template.canonical_content.state,
+                NativeEvidenceState::Validated
+            );
             assert_eq!(template.mxl_root_kind, expected_root);
         }
+
+        for (file_name, content) in [
+            ("Template.mxl", spreadsheet_document_source()),
+            ("Template.xml", "<SpreadsheetDocument/>"),
+        ] {
+            let content_key = format!("Shipment/Templates/Print/Ext/{file_name}");
+            let fixture = document_fixture_with_files(
+                "<ChildObjects><Template>Print</Template></ChildObjects>",
+                &[
+                    (
+                        "Shipment/Templates/Print.xml",
+                        template_descriptor("Print", "SpreadsheetDocument"),
+                    ),
+                    (&content_key, content.to_string()),
+                ],
+            );
+
+            assert_eq!(
+                decode(&fixture.provider, &fixture.descriptor)
+                    .unwrap_err()
+                    .kind,
+                SourceAdapterErrorKind::DecodeCorrupted
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_mxl_content_is_decode_corrupted() {
+        let fixture = document_fixture_with_files(
+            "<ChildObjects><Template>Print</Template></ChildObjects>",
+            &[
+                (
+                    "Shipment/Templates/Print.xml",
+                    template_descriptor("Print", "SpreadsheetDocument"),
+                ),
+                (
+                    "Shipment/Templates/Print/Ext/Template.xml",
+                    "<SpreadsheetDocument".to_string(),
+                ),
+            ],
+        );
+
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
 
     #[test]

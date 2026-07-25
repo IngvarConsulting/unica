@@ -14,9 +14,8 @@ use crate::{
             platform_xml::{
                 provider::PlatformXmlProvider,
                 schema::{
-                    metadata_class_profile, ChildObjectsVocabulary, MetadataClassProfile,
-                    LEGACY_TOP_LEVEL_METADATA_CLASSES, OBJECT_CHILD_OBJECTS,
-                    ROOT_STRUCTURAL_CHILDREN, TABULAR_SECTION_CHILDREN,
+                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
+                    ROOT_STRUCTURAL_CHILDREN,
                 },
             },
             ProbeOutcome, SourceInput, SourceProbe,
@@ -135,7 +134,7 @@ fn inspect_structural_features(
         }
         features.insert(format!("structural:root:{name}"));
         if name == "ChildObjects" {
-            inspect_child_objects(child, profile.child_objects, features)?;
+            inspect_child_objects(child, profile, features)?;
         }
     }
     Ok(())
@@ -143,73 +142,19 @@ fn inspect_structural_features(
 
 fn inspect_child_objects(
     child_objects: roxmltree::Node<'_, '_>,
-    vocabulary: ChildObjectsVocabulary,
+    owner_profile: &MetadataClassProfile,
     features: &mut BTreeSet<String>,
 ) -> Result<(), SourceAdapterError> {
     for child in structural_children(child_objects) {
         let name = structural_child_name(child)?;
-        let allowed = match vocabulary {
-            ChildObjectsVocabulary::ConfigurationTopLevel => LEGACY_TOP_LEVEL_METADATA_CLASSES,
-            ChildObjectsVocabulary::Object => OBJECT_CHILD_OBJECTS,
-        };
-        if !allowed.contains(&name) {
+        let child_profile = child_metadata_class_profile(owner_profile, name).ok_or_else(|| {
+            unsupported("Platform XML child objects contain an unsupported structural feature")
+        })?;
+        if child_profile.class_name != name {
             return Err(unsupported("Platform XML child objects contain an unsupported structural feature"));
         }
-        match vocabulary {
-            ChildObjectsVocabulary::ConfigurationTopLevel => {
-                features.insert(format!("structural:configuration-child:{name}"));
-                let profile = metadata_class_profile(name)
-                    .expect("shared top-level metadata class has a profile");
-                inspect_structural_features(child, profile, features)?;
-            }
-            ChildObjectsVocabulary::Object => {
-                features.insert(format!("structural:child-object:{name}"));
-                match name {
-                    "Attribute" | "Form" | "Template" | "Command" => {
-                        inspect_leaf_structure(child, features)?;
-                    }
-                    "TabularSection" => inspect_tabular_section(child, features)?,
-                    _ => unreachable!("validated object child feature"),
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn inspect_leaf_structure(
-    node: roxmltree::Node<'_, '_>,
-    features: &mut BTreeSet<String>,
-) -> Result<(), SourceAdapterError> {
-    for child in structural_children(node) {
-        let name = structural_child_name(child)?;
-        if name != "Properties" {
-            return Err(unsupported("Platform XML child object contains an unsupported structural feature"));
-        }
-        features.insert("structural:child-object:Properties".to_string());
-    }
-    Ok(())
-}
-
-fn inspect_tabular_section(
-    section: roxmltree::Node<'_, '_>,
-    features: &mut BTreeSet<String>,
-) -> Result<(), SourceAdapterError> {
-    for child in structural_children(section) {
-        let name = structural_child_name(child)?;
-        if !TABULAR_SECTION_CHILDREN.contains(&name) {
-            return Err(unsupported("Platform XML tabular section contains an unsupported structural feature"));
-        }
-        features.insert(format!("structural:tabular-section:{name}"));
-        if name == "ChildObjects" {
-            for nested in structural_children(child) {
-                if structural_child_name(nested)? != "Attribute" {
-                    return Err(unsupported("Platform XML tabular section has an unsupported nested structural feature"));
-                }
-                features.insert("structural:tabular-section:Attribute".to_string());
-                inspect_leaf_structure(nested, features)?;
-            }
-        }
+        features.insert(format!("structural:child-object:{name}"));
+        inspect_structural_features(child, child_profile, features)?;
     }
     Ok(())
 }

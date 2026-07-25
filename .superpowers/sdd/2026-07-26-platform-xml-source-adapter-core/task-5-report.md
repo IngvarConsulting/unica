@@ -108,3 +108,102 @@ Concern: the exact brief filter matches no current test module. The checkout use
 - The exact legacy meta test command exits successfully but executes zero tests.
 - `provider.rs` required a related internal API addition not named in the brief Files list.
 - Only the two focused commands from the brief were run; no full suite was run.
+
+## Fix Round 1
+
+Status: `DONE`
+
+### Corrections
+
+- Replaced parallel non-recursive child vectors with one recursive
+  `NativeMetadataNode.children` tree. Every node retains schema class/role,
+  UUID, name, raw properties, nested `ChildObjects`, and optional Form/Template
+  backing evidence.
+- Preserved `TabularSection -> Attribute` nesting; `Lines -> Sku` is asserted
+  in decoder and actual meta adapter tests.
+- Moved all class and owner/child vocabulary decisions into
+  `platform_xml::schema`. Decoder and probe resolve child profiles through
+  `child_metadata_class_profile`; decoder has no independent metadata-class
+  allowlist or `expected_class` string.
+- Present malformed descriptor, managed Form, and SpreadsheetDocument/MXL
+  content now return `DecodeCorrupted`; duplicate/conflicting fields return
+  `ProjectionAmbiguous`. Only genuinely absent optional evidence remains
+  `Absent`, which makes aggregate coverage `Partial`.
+- `CoverageState::Complete` is emitted only when every recursively supported
+  child is preserved and every referenced Form/Template descriptor/content
+  evidence is validated. Unresolved configuration registrations and missing
+  optional backing evidence produce `Partial`.
+- Added `decode_path(SourceInput)` as the shared probe/provider/decode entrypoint.
+  `meta.rs` no longer parses or selects the root metadata class. Both the actual
+  meta adapter and the temporary legacy navigation wrapper obtain a native
+  snapshot from `decode_path`, then serialize/project the recursive tree.
+- Added the real `infrastructure::native_operations::meta::tests` module. Its
+  focused filter executes two end-to-end tests instead of zero.
+
+### RED
+
+Command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Relevant output:
+
+```text
+error[E0609]: no field `children` on type `NativeMetadataObject`
+   --> crates/unica-coder/src/infrastructure/source_adapters/platform_xml/decoder.rs:973:35
+error: could not compile `unica-coder` (lib test) due to 1 previous error
+```
+
+The recursive-tree test failed because the old native model had only parallel,
+non-recursive child vectors.
+
+### Compile correction
+
+The first implementation attempt exposed one lifetime declaration error:
+
+```text
+error[E0106]: missing lifetime specifiers
+   --> crates/unica-coder/src/infrastructure/source_adapters/platform_xml/decoder.rs:574:59
+error: could not compile `unica-coder` (lib) due to 1 previous error
+```
+
+`required_properties` was corrected to return `Node<'a, 'input>` tied to its
+input node.
+
+### GREEN: decoder
+
+Final command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Exact result:
+
+```text
+running 15 tests
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 759 filtered out; finished in 0.17s
+```
+
+### GREEN: actual meta adapter path
+
+Final corrected command:
+
+```text
+cargo test -p unica-coder infrastructure::native_operations::meta::tests -- --nocapture
+```
+
+Exact result:
+
+```text
+running 2 tests
+test infrastructure::native_operations::meta::tests::meta_adapter_rejects_invalid_root_through_decoder ... ok
+test infrastructure::native_operations::meta::tests::meta_adapter_decodes_recursive_native_tree_before_navigation_projection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 772 filtered out; finished in 0.00s
+```
+
+Both commands emitted the repository's existing `dead_code` warnings. No broad
+test suite was run, per the fix-round instruction.
