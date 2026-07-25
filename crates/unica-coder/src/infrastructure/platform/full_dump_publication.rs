@@ -3079,24 +3079,38 @@ enum StagedRootVersionPolicy {
     Versionless,
 }
 
+/// Closed registry of the XML roots an 8.3.27 / export format 2.20 dump writes.
+///
+/// The registry is fail-closed: an unlisted root discards the staged dump, so a
+/// missing entry makes `mode=full` unusable for every configuration that owns
+/// the artifact. Each entry below is the root of a file the platform itself
+/// produces; the trailing comment names that dump artifact.
 fn staged_root_version_policy(
     namespace: &str,
     local_name: &str,
 ) -> Option<StagedRootVersionPolicy> {
     match (namespace, local_name) {
-        (MD_CLASSES_NS, "MetaDataObject")
-        | ("http://v8.1c.ru/8.3/xcf/logform", "Form")
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "CommandInterface")
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "Help")
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExchangePlanContent")
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "HomePageWorkArea")
-        | ("http://v8.1c.ru/8.3/xcf/scheme", "GraphicalSchema")
+        (MD_CLASSES_NS, "MetaDataObject") // Configuration.xml and every object owner
+        | ("http://v8.1c.ru/8.3/xcf/logform", "Form") // Forms/*/Ext/Form.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "CommandInterface") // Ext/CommandInterface.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "Help") // Ext/Help.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExchangePlanContent") // Ext/Content.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "HomePageWorkArea") // Ext/HomePageWorkArea.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture") // CommonPictures/*/Ext/Picture.xml
+        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule") // ScheduledJobs/*/Ext/Schedule.xml
+        | ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData") // Catalogs/*/Ext/Predefined.xml
+        | ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo") // ConfigDumpInfo.xml
+        | ("http://v8.1c.ru/8.3/xcf/scheme", "GraphicalSchema") // Ext/Flowchart.xml
         | ("http://v8.1c.ru/8.2/roles", "Rights") => {
+            // Roles/*/Ext/Rights.xml
             Some(StagedRootVersionPolicy::ExactRootVersion)
         }
-        ("http://v8.1c.ru/8.1/data-composition-system/schema", "DataCompositionSchema")
-        | ("http://v8.1c.ru/8.2/data/spreadsheet", "document")
+        ("http://v8.1c.ru/8.1/data-composition-system/schema", "DataCompositionSchema") // Ext/Template.xml
+        | ("http://v8.1c.ru/8.1/data-composition-system/appearance-template", "AppearanceTemplate") // Ext/Template.xml
+        | ("http://v8.1c.ru/8.2/data/spreadsheet", "document") // Ext/Template.xml
+        | ("http://schemas.xmlsoap.org/wsdl/", "definitions") // WSReferences/*/Ext/WSDefinition.xml
         | ("http://v8.1c.ru/8.2/managed-application/core", "ClientApplicationInterface") => {
+            // Ext/ClientApplicationInterface.xml
             Some(StagedRootVersionPolicy::Versionless)
         }
         _ => None,
@@ -6516,6 +6530,135 @@ mod tests {
         validate_staged_dump(&root, SourceSetKind::Configuration)
             .expect("registered versionless subordinate family remains allowed");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Roots an 8.3.27 / format 2.20 Designer dump writes, with the fixture that
+    /// pins each one. The fixture bytes keep the platform BOM and CRLF; their
+    /// root elements are the ones observed in 8.3.27.2074 dumps, while bodies
+    /// are reduced to the smallest shape that still parses.
+    const PLATFORM_DUMP_ROOT_FIXTURES: &[(&str, &[u8], bool)] = &[
+        (
+            "Catalogs/Товары/Ext/Predefined.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
+            ),
+            true,
+        ),
+        (
+            "CommonPictures/Логотип/Ext/Picture.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
+            ),
+            true,
+        ),
+        (
+            "ScheduledJobs/ОбновлениеКурсов/Ext/Schedule.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
+            ),
+            true,
+        ),
+        (
+            "ConfigDumpInfo.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
+            ),
+            true,
+        ),
+        (
+            "CommonTemplates/ОформлениеОтчетов/Ext/Template.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
+            ),
+            false,
+        ),
+        (
+            "WSReferences/СлужбаОбмена/Ext/WSDefinition.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
+            ),
+            false,
+        ),
+    ];
+
+    fn staged_root_fixture_tree(case: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-staged-root-fixture-{case}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Configuration.xml"), valid_configuration_owner()).unwrap();
+        root
+    }
+
+    #[test]
+    fn staged_root_registry_publishes_every_platform_8_3_27_dump_root() {
+        let root = staged_root_fixture_tree("accepted");
+        for (relative, bytes, _) in PLATFORM_DUMP_ROOT_FIXTURES {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+        }
+
+        validate_staged_dump(&root, SourceSetKind::Configuration).unwrap_or_else(|error| {
+            panic!("every platform-written dump root must stay publishable: {error}")
+        });
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_root_registry_binds_each_platform_root_to_its_version_policy() {
+        for (relative, bytes, version_bearing) in PLATFORM_DUMP_ROOT_FIXTURES {
+            let name = Path::new(relative).file_name().unwrap().to_str().unwrap();
+            let source = std::str::from_utf8(bytes).unwrap();
+            let declaration_end = source
+                .find("?>")
+                .expect("fixture keeps the XML declaration")
+                + 2;
+            let (declaration, element) = source.split_at(declaration_end);
+            let (mutated, expected) = if *version_bearing {
+                assert!(
+                    element.contains(r#"version="2.20""#),
+                    "{name}: the fixture must carry the exact 2.20 literal"
+                );
+                (
+                    format!(
+                        "{declaration}{}",
+                        element.replace(r#"version="2.20""#, r#"version="2.19""#)
+                    ),
+                    "2.19",
+                )
+            } else {
+                assert!(
+                    !element.contains("version="),
+                    "{name}: the fixture must stay versionless"
+                );
+                let tag_start = element.find('<').expect("fixture has a root element");
+                let tag_name_end = tag_start
+                    + element[tag_start..]
+                        .find(|character: char| character.is_whitespace() || character == '>')
+                        .expect("fixture root element is well formed");
+                (
+                    format!(
+                        "{declaration}{} version=\"2.20\"{}",
+                        &element[..tag_name_end],
+                        &element[tag_name_end..]
+                    ),
+                    "versionless",
+                )
+            };
+            let root = staged_root_fixture_tree(name);
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, mutated).unwrap();
+
+            let error = validate_staged_dump(&root, SourceSetKind::Configuration)
+                .expect_err("a registered root with the wrong version policy must fail closed");
+
+            assert!(error.contains(expected), "{name}: {error}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
