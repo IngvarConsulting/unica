@@ -141,6 +141,22 @@ def decide(state: ReleaseState) -> Action:
     return Action("alert", f"release is stalled with no open pull request; {detail_suffix}")
 
 
+def latest_servable_release(releases: Sequence[dict]) -> str | None:
+    """The newest release that is meant to reach consumers.
+
+    Abandoning a version is a legitimate outcome: once its assets are published
+    the number is burnt and the next patch is cut instead. Without a way to say
+    so, the warden would compare the catalog against a version nobody intends to
+    serve and alert forever. Marking the release as a draft or prerelease is that
+    signal, and it uses a field GitHub already has rather than a marker file.
+    """
+    for release in releases:
+        if release.get("isDraft") or release.get("isPrerelease"):
+            continue
+        return release.get("tagName")
+    return None
+
+
 def gh_json(args: Sequence[str]) -> object:
     result = subprocess.run(
         ["gh", *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -166,8 +182,19 @@ def load_pull_request(entry: dict) -> PullRequest:
 
 
 def observe() -> ReleaseState:
-    releases = gh_json(["release", "list", "--repo", SOURCE, "--limit", "1", "--json", "tagName"])
-    latest = releases[0]["tagName"] if releases else None
+    releases = gh_json(
+        [
+            "release",
+            "list",
+            "--repo",
+            SOURCE,
+            "--limit",
+            "10",
+            "--json",
+            "tagName,isDraft,isPrerelease",
+        ]
+    )
+    latest = latest_servable_release(releases or [])
 
     catalog = subprocess.run(
         [

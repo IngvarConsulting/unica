@@ -130,6 +130,22 @@ class ReleaseWardenTests(unittest.TestCase):
 
         self.assertEqual(action.kind, "merge-promote")
 
+    def test_an_abandoned_release_stops_being_treated_as_pending(self) -> None:
+        releases = [
+            {"tagName": "v0.9.2", "isDraft": False, "isPrerelease": True},
+            {"tagName": "v0.9.1", "isDraft": False, "isPrerelease": False},
+        ]
+
+        # Burning a version is a legitimate outcome. Without this the warden
+        # would compare the catalog against a version nobody intends to serve
+        # and alert on every scheduled run until the next release.
+        self.assertEqual(self.module.latest_servable_release(releases), "v0.9.1")
+
+    def test_a_draft_release_is_not_served_either(self) -> None:
+        releases = [{"tagName": "v0.9.2", "isDraft": True, "isPrerelease": False}]
+
+        self.assertIsNone(self.module.latest_servable_release(releases))
+
     def test_a_release_with_no_open_pull_request_is_reported_as_stalled(self) -> None:
         action = self.module.decide(self.module.ReleaseState("v0.9.2", "v0.9.1"))
 

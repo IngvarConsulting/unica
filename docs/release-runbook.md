@@ -231,14 +231,26 @@ already resolved it.
 
 ## Aborting
 
+Rows are named by the last step that completed.
+
 | Abort after | What to do | Cost |
 | --- | --- | --- |
-| 0 | Close the version pull request | none |
-| 1–2 | Leave the tag and assets in place, abandon the version, bump to the next patch | a burnt version number |
-| 3 staging pull request open | Close it | none |
-| 4 staging merged | Nothing is served. Either continue, or revert the staging commit on the marketplace default branch and abandon the version | none |
-| 5 marketplace tag pushed | Leave the tag, abandon the version. An unused tag is harmless | a burnt version number |
-| 6 promotion pull request open | Close it. The catalog is untouched | none |
+| Step 0 | Close the version pull request | none |
+| Step 1 or 2 | Close the staging pull request. Leave the tag and assets alone, abandon the version | a burnt version number |
+| Step 3 | Nothing is served. Either continue, or revert the staging commit on the marketplace default branch and abandon the version | none |
+| Step 4 | Leave the tag, abandon the version. An unused tag is harmless | a burnt version number |
+| Step 5 | Close the promotion pull request. The catalog is untouched | none |
+| Step 6 | The release is live; see [rolling back](#rolling-back-a-live-release) | consumers saw it |
+
+Whenever you abandon a version whose assets are already published, mark that
+release so the warden stops treating it as a release waiting to be served:
+
+```bash
+gh release edit vX.Y.Z --repo IngvarConsulting/unica --prerelease
+```
+
+Otherwise the scheduled run keeps reporting a stalled release, correctly but
+uselessly, until the next version ships.
 
 Never delete a tag to "clean up" an abandoned version. An unused tag costs
 nothing; a deleted one that something already resolved costs every consumer.
@@ -281,7 +293,8 @@ Protecting tags in the marketplace repository removes the first cause outright.
 | Promotion checks fail with `pathspec 'vX.Y.Z' did not match any file(s)` | The marketplace tag is missing | Do step 4, then `gh run rerun <run-id> --failed` |
 | `regression-policy` reports `consumer-fresh-install is required but concluded failure` | Aggregate gate reflecting the row above | Same as above |
 | Packaging fails with `release tag ... != ...` | Step 0 missed the workflow `RELEASE_TAG` fallback | Bump it and re-run |
-| `probe-thin-bootstrap` fails with `unexpectedly downloaded` | Pre-2026-07 behaviour, fixed by neutralising the checksum in the probe | Rebase onto a branch that contains the fix |
+| Scheduled warden run fails with `release is stalled` | A published release nothing is serving, and nothing open to advance | Finish the release, or mark it a prerelease if it was abandoned |
+| Warden reports `promotion pull request changes more than the catalog` | The promotion diff reached past the catalog files | Inspect it by hand; do not merge until it is explained |
 | Consumers still report the old version | Promotion was never merged | Check for an open promotion pull request |
 
 ## Never
