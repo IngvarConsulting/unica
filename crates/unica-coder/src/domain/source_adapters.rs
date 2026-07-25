@@ -113,6 +113,10 @@ impl SourceId {
         validate_source_value(&raw, "source id")?;
         Ok(Self(raw))
     }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Serialize for SourceId {

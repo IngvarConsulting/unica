@@ -7,7 +7,10 @@ use crate::{
             FormatRange, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
         },
     },
-    infrastructure::source_adapters::{ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter},
+    infrastructure::source_adapters::{
+        platform_xml::{probe::PlatformXmlProbe, PlatformXmlReadAdapter}, ProbeOutcome, SourceInput,
+        SourceProbe, SourceReadAdapter,
+    },
 };
 
 pub(crate) struct BuiltInSourceAdapterRegistry {
@@ -16,7 +19,14 @@ pub(crate) struct BuiltInSourceAdapterRegistry {
 }
 
 impl BuiltInSourceAdapterRegistry {
-    pub(crate) fn new(
+    pub(crate) fn new() -> Self {
+        Self::with_adapters(
+            vec![Box::new(PlatformXmlProbe::new())],
+            vec![Box::new(PlatformXmlReadAdapter::new())],
+        )
+    }
+
+    pub(crate) fn with_adapters(
         probes: Vec<Box<dyn SourceProbe>>,
         readers: Vec<Box<dyn SourceReadAdapter>>,
     ) -> Self {
@@ -185,6 +195,15 @@ mod tests {
     use super::BuiltInSourceAdapterRegistry;
 
     #[test]
+    fn built_in_registry_registers_only_the_platform_xml_probe_and_reader() {
+        let registry = BuiltInSourceAdapterRegistry::new();
+
+        assert_eq!(registry.probes.len(), 1);
+        assert_eq!(registry.readers.len(), 1);
+        assert_eq!(registry.readers[0].manifest().adapter_id, "platform-xml-2.20");
+    }
+
+    #[test]
     fn exact_reader_is_selected_for_probe_evidence() {
         let registry = registry_with(
             vec![probe_match("2.20")],
@@ -311,7 +330,7 @@ mod tests {
         probes: Vec<Box<dyn SourceProbe>>,
         readers: Vec<Box<dyn SourceReadAdapter>>,
     ) -> BuiltInSourceAdapterRegistry {
-        BuiltInSourceAdapterRegistry::new(probes, readers)
+        BuiltInSourceAdapterRegistry::with_adapters(probes, readers)
     }
 
     fn input() -> SourceInput {

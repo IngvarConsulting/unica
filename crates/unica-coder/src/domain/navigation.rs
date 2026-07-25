@@ -310,6 +310,18 @@ pub(crate) struct RelationRef {
     pub(crate) kind: RelationKind,
 }
 
+/// A semantic relation is an independently addressable aggregate.  Its source
+/// and target are opaque semantic references, never native locations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SemanticRelation {
+    pub(crate) relation_ref: RelationRef,
+    pub(crate) kind: RelationKind,
+    pub(crate) source: ObjectRef,
+    pub(crate) target: ObjectRef,
+    pub(crate) capability: CapabilityVector,
+}
+
 impl RelationRef {
     pub(crate) fn new(
         source_id: SourceId,
@@ -379,6 +391,8 @@ pub(crate) enum SemanticActionKind {
     CreateHandler,
     EditMxl,
 }
+
+pub(crate) type ActionKind = SemanticActionKind;
 
 /// A capability-qualified semantic action, independent from a particular MCP
 /// transport. Mutation actions are only executable with every capability
@@ -589,17 +603,39 @@ pub(crate) fn semantic_actions_for_relation(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NavigationNode {
+    pub(crate) object_ref: ObjectRef,
     pub(crate) reference: ObjectRef,
     pub(crate) capability_state: CapabilityState,
+    pub(crate) capability: CapabilityVector,
+    pub(crate) properties: BTreeMap<String, SemanticProperty>,
     pub(crate) action_profile: ActionProfile,
-    semantic_actions: Vec<SemanticActionDescriptor>,
+    pub(crate) semantic_actions: Vec<SemanticActionDescriptor>,
+    pub(crate) actions: Vec<SemanticAction>,
 }
 
 impl NavigationNode {
     pub(crate) fn new(reference: ObjectRef, capability_state: CapabilityState) -> Self {
         let action_profile = action_profile_for(&reference.kind);
         let semantic_actions = semantic_actions_for(&reference.kind, capability_state);
-        Self { reference, capability_state, action_profile, semantic_actions }
+        let capability = CapabilityVector {
+            resolution: capability_state.resolution_state,
+            identity: IdentityStrength::Derived,
+            consistency: SnapshotConsistency::Consistent,
+            coverage: CoverageState::Complete,
+            format: FormatCompatibility::Compatible,
+            source_access: SourceAccess::ReadWrite,
+            authorability: capability_state.authorability,
+        };
+        Self {
+            object_ref: reference.clone(),
+            reference,
+            capability_state,
+            capability,
+            properties: BTreeMap::new(),
+            action_profile,
+            semantic_actions,
+            actions: Vec::new(),
+        }
     }
     pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] { &self.semantic_actions }
 }
@@ -776,13 +812,32 @@ pub(crate) struct NavigationEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) root: Option<ObjectRef>,
     pub(crate) nodes: Vec<NavigationNode>,
-    pub(crate) relations: Vec<NavigationRelationPage>,
+    pub(crate) relations: Vec<SemanticRelation>,
     pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
 }
 
 impl NavigationEnvelope {
     pub(crate) fn unavailable(error: SourceAdapterError) -> Self {
         Self { schema_version: "1".to_string(), status: NavigationStatus::Unavailable, snapshot: None, root: None, nodes: Vec::new(), relations: Vec::new(), diagnostics: vec![error.into()] }
+    }
+
+    pub(crate) fn node_named(&self, kind: NodeKind, name: &str) -> Option<&NavigationNode> {
+        self.nodes.iter().find(|node| {
+            node.object_ref.kind == kind && node.object_ref.display_name == name
+        })
+    }
+
+    pub(crate) fn owning_relation(&self, object: &ObjectRef) -> Option<&SemanticRelation> {
+        self.relations.iter().find(|relation| {
+            matches!(relation.kind, RelationKind::Contains) && relation.target == *object
+        })
+    }
+
+    pub(crate) fn action(&self, kind: ActionKind, name: &str) -> Option<&SemanticAction> {
+        self.nodes
+            .iter()
+            .find(|node| node.object_ref.display_name == name)
+            .and_then(|node| node.actions.iter().find(|action| action.kind == kind))
     }
 }
 
@@ -807,7 +862,22 @@ pub(crate) enum PropertyType {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TypeSetValue { pub(crate) types: BTreeSet<String> }
+pub(crate) struct TypeSetValue {
+    pub(crate) variants: Vec<TypeVariant>,
+}
+
+/// A 1C type description normalized for consumers.  XML type expressions are
+/// adapter-private evidence and never the canonical property value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum TypeVariant {
+    Primitive {
+        kind: String,
+        qualifiers: BTreeMap<String, PropertyValue>,
+    },
+    Reference { target: String },
+    Enumeration { target: String },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PropertyValue {

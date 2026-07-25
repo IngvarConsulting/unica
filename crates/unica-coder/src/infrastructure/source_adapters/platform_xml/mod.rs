@@ -1,13 +1,19 @@
 use std::collections::BTreeSet;
 
 use crate::domain::source_adapters::{
-    AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SourceAccess, SourceFamily,
+    AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SourceAccess, SourceAdapterError,
+    SourceFamily,
+};
+use crate::{
+    domain::navigation::NavigationEnvelope,
+    infrastructure::source_adapters::{SourceInput, SourceReadAdapter},
 };
 
 pub(crate) mod decoder;
 pub(crate) mod native_model;
 pub(crate) mod probe;
 pub(crate) mod provider;
+pub(crate) mod projector;
 pub(crate) mod schema;
 pub(crate) mod support;
 
@@ -22,6 +28,41 @@ pub(crate) fn manifest() -> AdapterManifest {
         required_features: BTreeSet::new(),
         excluded_features: BTreeSet::new(),
         source_access: SourceAccess::ReadOnly,
-        maturity: AdapterMaturity::ProbeComplete,
+        maturity: AdapterMaturity::ReadCompatible,
+    }
+}
+
+pub(crate) struct PlatformXmlReadAdapter {
+    manifest: AdapterManifest,
+}
+
+impl PlatformXmlReadAdapter {
+    pub(crate) fn new() -> Self {
+        Self { manifest: manifest() }
+    }
+}
+
+impl SourceReadAdapter for PlatformXmlReadAdapter {
+    fn manifest(&self) -> &AdapterManifest {
+        &self.manifest
+    }
+
+    fn inspect(
+        &self,
+        input: &SourceInput,
+        descriptor: &crate::domain::source_adapters::SourceDescriptor,
+    ) -> Result<NavigationEnvelope, SourceAdapterError> {
+        let root = input.target.parent().ok_or_else(|| {
+            SourceAdapterError::new(
+                crate::domain::source_adapters::SourceAdapterErrorKind::SourceUnavailable,
+                "Platform XML descriptor has no aggregate root",
+            )
+        })?;
+        let provider = provider::PlatformXmlProvider::open(root)?;
+        let native = decoder::decode(&provider, descriptor)?;
+        // Support evidence remains infrastructure-private and is deliberately
+        // excluded from the semantic envelope.
+        let support = support::read_support_facts(&root.join("ParentConfigurations.bin"));
+        projector::project(&native, &support)
     }
 }
