@@ -581,10 +581,13 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         let mut property = property_schema_for_tool(tool, name);
         // Attached here rather than inside property_schema so that the
         // tool-specific overrides above, which return their own enums and
-        // patterns, are described too.
-        if let Some(description) = description_for_arg(name) {
-            if let Some(object) = property.as_object_mut() {
-                object.insert("description".to_string(), json!(description));
+        // patterns, are described too. A description those overrides set
+        // themselves is narrower than the shared one and wins.
+        if let Some(object) = property.as_object_mut() {
+            if !object.contains_key("description") {
+                if let Some(description) = description_for_arg(name) {
+                    object.insert("description".to_string(), json!(description));
+                }
             }
         }
         properties.insert(name.to_string(), property);
@@ -1593,6 +1596,8 @@ fn property_schema(name: &str) -> Value {
             | "force"
             | "FromObject"
             | "fromObject"
+            | "KeepFiles"
+            | "keepFiles"
             | "NoValidate"
             | "noValidate"
             | "NoRole"
@@ -2015,7 +2020,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "keepFiles",
-        "`unica.meta.remove` only: boolean that deregisters the object from `Configuration.xml` but leaves its files on disk (requires typing `KeepFiles` as boolean in `property_schema`, which currently declares it a string).",
+        "`unica.meta.remove` only: deregisters the object from `Configuration.xml` but leaves its files on disk",
     ),
     ("kind", "Declared string argument that no tool handler reads"),
     (
@@ -2571,6 +2576,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "force"
             | "FromObject"
             | "fromObject"
+            | "KeepFiles"
+            | "keepFiles"
             | "NoValidate"
             | "noValidate"
             | "NoRole"
