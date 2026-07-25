@@ -332,3 +332,155 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; fini
 ```
 
 Both GREEN runs emitted only the repository's existing `dead_code` warnings.
+
+## Fix Round 3
+
+### Correction to Fix Round 2 report
+
+The Fix Round 2 report incorrectly characterized the removed `navigation_projection_tests` module as duplicate/obsolete coverage whose guarantees remained elsewhere. That was false: commit `898bb7db` removed six non-duplicate contract tests without equivalent replacements. This round restores every deleted guarantee under the actual `infrastructure::native_operations::meta::tests` adapter path, without restoring the obsolete `Document` wrapper or legacy text-output assertions.
+
+Restored contract tests:
+
+- `configured_source_set_identity_survives_lexical_path_aliases`
+- `support_locked_object_is_read_only_through_meta_adapter`
+- `global_support_disable_is_configuration_read_only_through_meta_adapter`
+- `registered_descriptor_support_controls_child_authorability`
+- `malformed_support_state_fails_closed_through_meta_adapter`
+- `ad_hoc_source_identity_is_opaque_stable_and_path_free`
+
+### Files
+
+- `crates/unica-coder/src/infrastructure/source_adapters/platform_xml/decoder.rs`
+  - Reconciles registration and descriptor UUID evidence before constructing Form/Template nodes.
+  - Promotes descriptor-only UUIDs to native node/ObjectRef identity.
+  - Inserts one effective UUID per registered node into the source-wide identity index.
+  - Adds four focused effective-UUID tests.
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+  - Restores six deleted navigation contracts through `analyze_meta_info_with_navigation`.
+  - Resolves Form/Template support capability from validated descriptor evidence paths.
+  - Corrects ad-hoc source-set detection so ad-hoc identity falls back to native UUID evidence instead of being passed as an invalid configured token.
+  - Uses deterministic atomic fixture IDs for parallel tests.
+
+### Decisions
+
+- Effective registered-node UUID rules are exact: equal registration/descriptor UUIDs are accepted once; either single source is promoted; conflicting values return `ProjectionAmbiguous`; the resulting UUID is indexed exactly once.
+- Descriptor support is evaluated only for validated Form/Template descriptor evidence. Inline descendants inherit their owner capability; unresolved registrations remain `UnknownReadOnly` regardless of backing path.
+- Configured source identity is `workspace:<source-set>` and is stable across lexical path aliases. Ad-hoc identity is derived from native UUID evidence; tests use distinct native UUIDs to prove distinct identity and explicitly reject path leakage.
+
+### Effective UUID tests
+
+- `descriptor_only_uuid_is_promoted_to_registered_node_identity`
+- `descriptor_only_uuid_collides_with_any_other_native_node`
+- `registration_and_descriptor_uuid_mismatch_is_projection_ambiguous`
+- `matching_registration_and_descriptor_uuid_is_indexed_once`
+
+### RED
+
+Command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Full result summary:
+
+```text
+running 23 tests
+
+failures:
+    infrastructure::source_adapters::platform_xml::decoder::tests::descriptor_only_uuid_collides_with_any_other_native_node
+    infrastructure::source_adapters::platform_xml::decoder::tests::descriptor_only_uuid_is_promoted_to_registered_node_identity
+    infrastructure::source_adapters::platform_xml::decoder::tests::registration_and_descriptor_uuid_mismatch_is_projection_ambiguous
+
+test result: FAILED. 20 passed; 3 failed; 0 ignored; 0 measured; 762 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p unica-coder --lib`
+```
+
+The matching registration/descriptor UUID test passed in RED, proving the pre-existing registration index did not self-collide; the three missing reconciliation behaviors failed.
+
+The first actual meta adapter execution exposed integration corrections before final GREEN:
+
+```text
+cargo test -p unica-coder infrastructure::native_operations::meta::tests -- --nocapture
+```
+
+```text
+running 11 tests
+
+failures:
+    infrastructure::native_operations::meta::tests::ad_hoc_source_identity_is_opaque_stable_and_path_free
+    infrastructure::native_operations::meta::tests::configured_source_set_identity_survives_lexical_path_aliases
+    infrastructure::native_operations::meta::tests::global_support_disable_is_configuration_read_only_through_meta_adapter
+    infrastructure::native_operations::meta::tests::malformed_support_state_fails_closed_through_meta_adapter
+
+test result: FAILED. 7 passed; 4 failed; 0 ignored; 0 measured; 774 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p unica-coder --lib`
+```
+
+This found the stale `opaque:` marker check, corrected the configured identity expectation to `workspace:main`, and motivated deterministic fixture IDs.
+
+### GREEN
+
+Command:
+
+```text
+cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture
+```
+
+Full result summary:
+
+```text
+running 23 tests
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 762 filtered out; finished in 0.03s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+```
+
+Command:
+
+```text
+cargo test -p unica-coder infrastructure::native_operations::meta::tests -- --nocapture
+```
+
+Full result summary:
+
+```text
+running 11 tests
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 774 filtered out; finished in 0.02s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+```
+
+Both final GREEN runs emitted only the repository's existing `dead_code` warnings.
+
+### Self-review
+
+- Registration UUID is no longer inserted before descriptor parsing; only the reconciled effective UUID reaches the global index.
+- Effective UUID is assigned to `NativeMetadataNode.uuid`, so temporary navigation naturally emits persistent `uuid:<uuid>` ObjectKeys for descriptor-only identities.
+- Descriptor-specific authorability uses native descriptor evidence rather than rebuilding or reparsing the metadata tree.
+- The restored tests assert semantic identity/capability contracts only; no deleted wrapper, independent parser, or legacy text-shape assertion was reintroduced.
+- No plan, ledger, schema registry, package metadata, or unrelated files were changed.

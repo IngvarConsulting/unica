@@ -274,7 +274,6 @@ fn decode_backed_registration(
     context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
-    context.register_uuid(registration.uuid)?;
     let properties = match optional_unique_child(node, "Properties")? {
         Some(properties) => decode_properties(properties, source_xml)?,
         None => synthetic_name_property(&registration.name),
@@ -311,11 +310,14 @@ fn decode_backed_registration(
             };
             let complete = descriptor.state == NativeEvidenceState::Validated
                 && managed_content.state == NativeEvidenceState::Validated;
+            let effective_uuid =
+                reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
+            context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
-                    uuid: registration.uuid,
+                    uuid: effective_uuid,
                     name: registration.name.clone(),
                     state,
                     properties,
@@ -411,11 +413,14 @@ fn decode_backed_registration(
             let complete = descriptor.state == NativeEvidenceState::Validated
                 && !matches!(descriptor_type, NativePropertyValue::Absent | NativePropertyValue::Unresolved)
                 && canonical_content.state == NativeEvidenceState::Validated;
+            let effective_uuid =
+                reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
+            context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
-                    uuid: registration.uuid,
+                    uuid: effective_uuid,
                     name: registration.name.clone(),
                     state,
                     properties,
@@ -758,6 +763,20 @@ fn registration_state(
         NativeNodeState::UnresolvedRegistration {
             registration: registration.clone(),
         }
+    }
+}
+
+fn reconcile_registered_uuid(
+    registration_uuid: Option<Uuid>,
+    descriptor_uuid: Option<Uuid>,
+) -> Result<Option<Uuid>, SourceAdapterError> {
+    match (registration_uuid, descriptor_uuid) {
+        (Some(registration), Some(descriptor)) if registration != descriptor => Err(error(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            "registered node UUID differs between registration and descriptor",
+        )),
+        (Some(uuid), _) | (_, Some(uuid)) => Ok(Some(uuid)),
+        (None, None) => Ok(None),
     }
 }
 
@@ -1343,6 +1362,117 @@ mod tests {
         assert_eq!(error.kind, SourceAdapterErrorKind::IdentityCollision);
     }
 
+    #[test]
+    fn descriptor_only_uuid_is_promoted_to_registered_node_identity() {
+        let fixture = document_fixture_with_files(
+            "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            &[
+                (
+                    "Shipment/Forms/ItemForm.xml",
+                    form_descriptor_with_uuid(
+                        "ItemForm",
+                        "22222222-2222-2222-2222-222222222222",
+                    ),
+                ),
+                (
+                    "Shipment/Forms/ItemForm/Ext/Form.xml",
+                    managed_form_source().to_string(),
+                ),
+            ],
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+
+        assert_eq!(
+            decoded.root.children[0].uuid.unwrap().to_string(),
+            "22222222-2222-2222-2222-222222222222"
+        );
+    }
+
+    #[test]
+    fn descriptor_only_uuid_collides_with_any_other_native_node() {
+        let fixture = document_fixture_with_files(
+            r#"<ChildObjects>
+              <Attribute uuid="22222222-2222-2222-2222-222222222222">
+                <Properties><Name>Number</Name></Properties>
+              </Attribute>
+              <Form>ItemForm</Form>
+            </ChildObjects>"#,
+            &[
+                (
+                    "Shipment/Forms/ItemForm.xml",
+                    form_descriptor_with_uuid(
+                        "ItemForm",
+                        "22222222-2222-2222-2222-222222222222",
+                    ),
+                ),
+                (
+                    "Shipment/Forms/ItemForm/Ext/Form.xml",
+                    managed_form_source().to_string(),
+                ),
+            ],
+        );
+
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::IdentityCollision);
+    }
+
+    #[test]
+    fn registration_and_descriptor_uuid_mismatch_is_projection_ambiguous() {
+        let fixture = document_fixture_with_files(
+            r#"<ChildObjects>
+              <Form uuid="22222222-2222-2222-2222-222222222222">ItemForm</Form>
+            </ChildObjects>"#,
+            &[
+                (
+                    "Shipment/Forms/ItemForm.xml",
+                    form_descriptor_with_uuid(
+                        "ItemForm",
+                        "33333333-3333-3333-3333-333333333333",
+                    ),
+                ),
+                (
+                    "Shipment/Forms/ItemForm/Ext/Form.xml",
+                    managed_form_source().to_string(),
+                ),
+            ],
+        );
+
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+
+    #[test]
+    fn matching_registration_and_descriptor_uuid_is_indexed_once() {
+        let fixture = document_fixture_with_files(
+            r#"<ChildObjects>
+              <Form uuid="22222222-2222-2222-2222-222222222222">ItemForm</Form>
+            </ChildObjects>"#,
+            &[
+                (
+                    "Shipment/Forms/ItemForm.xml",
+                    form_descriptor_with_uuid(
+                        "ItemForm",
+                        "22222222-2222-2222-2222-222222222222",
+                    ),
+                ),
+                (
+                    "Shipment/Forms/ItemForm/Ext/Form.xml",
+                    managed_form_source().to_string(),
+                ),
+            ],
+        );
+
+        let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
+
+        assert_eq!(
+            decoded.root.children[0].uuid.unwrap().to_string(),
+            "22222222-2222-2222-2222-222222222222"
+        );
+    }
+
     fn document_fixture(body: &str) -> Fixture {
         fixture(
             "Shipment.xml",
@@ -1377,6 +1507,12 @@ mod tests {
     fn form_descriptor(name: &str) -> String {
         format!(
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form><Properties><Name>{name}</Name></Properties></Form></MetaDataObject>"
+        )
+    }
+
+    fn form_descriptor_with_uuid(name: &str, uuid: &str) -> String {
+        format!(
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form uuid=\"{uuid}\"><Properties><Name>{name}</Name></Properties></Form></MetaDataObject>"
         )
     }
 

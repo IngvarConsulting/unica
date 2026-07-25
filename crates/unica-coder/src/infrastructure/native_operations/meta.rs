@@ -3757,7 +3757,7 @@ pub(crate) fn analyze_meta_info_with_navigation(
         )?;
         let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
         let source_set = navigation_source_set(&object_path, context);
-        let configured_source_set = (!source_set.starts_with("opaque:")).then_some(source_set);
+        let configured_source_set = (!source_set.starts_with("ad-hoc:")).then_some(source_set);
         let input = crate::infrastructure::source_adapters::SourceInput {
             workspace_root: context.workspace_root.clone(),
             target: object_path.clone(),
@@ -3993,7 +3993,7 @@ fn project_native_platform_xml_navigation(
         navigation_authorability(object_path),
     );
     let root_capability_state =
-        native_node_capability(&snapshot.root, root_owner_capability);
+        native_node_capability(&snapshot.root, root_owner_capability, None);
     let root_reference = native_object_ref(
         &snapshot.source.source_id,
         None,
@@ -4004,10 +4004,12 @@ fn project_native_platform_xml_navigation(
         root_capability_state,
     )];
     let mut edges = Vec::new();
+    let aggregate_root = object_path.parent().unwrap_or_else(|| Path::new(""));
     project_native_children(
         &snapshot.root,
         &root_reference,
         root_capability_state,
+        aggregate_root,
         &mut nodes,
         &mut edges,
     );
@@ -4018,6 +4020,7 @@ fn project_native_children(
     owner: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
     owner_reference: &ObjectRef,
     owner_capability: CapabilityState,
+    aggregate_root: &Path,
     nodes: &mut Vec<NavigationNode>,
     edges: &mut Vec<NavigationEdge>,
 ) {
@@ -4027,7 +4030,8 @@ fn project_native_children(
             Some(owner_reference),
             child,
         );
-        let capability = native_node_capability(child, owner_capability);
+        let capability =
+            native_node_capability(child, owner_capability, Some(aggregate_root));
         edges.push(NavigationEdge::new(
             owner_reference.clone(),
             reference.clone(),
@@ -4035,25 +4039,61 @@ fn project_native_children(
             capability,
         ));
         nodes.push(NavigationNode::new(reference.clone(), capability));
-        project_native_children(child, &reference, capability, nodes, edges);
+        project_native_children(
+            child,
+            &reference,
+            capability,
+            aggregate_root,
+            nodes,
+            edges,
+        );
     }
 }
 
 fn native_node_capability(
     node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
     owner_capability: CapabilityState,
+    aggregate_root: Option<&Path>,
 ) -> CapabilityState {
     use crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeState;
 
     match &node.state {
         NativeNodeState::ResolvedInline | NativeNodeState::ResolvedRegistration { .. } => {
-            CapabilityState::new(ResolutionState::Resolved, owner_capability.authorability)
+            let authorability = aggregate_root
+                .and_then(|root| registered_descriptor_path(node, root))
+                .map(|path| navigation_authorability(&path))
+                .unwrap_or(owner_capability.authorability);
+            CapabilityState::new(ResolutionState::Resolved, authorability)
         }
         NativeNodeState::UnresolvedRegistration { .. } => CapabilityState::new(
             ResolutionState::Unresolved,
             Authorability::UnknownReadOnly,
         ),
     }
+}
+
+fn registered_descriptor_path(
+    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
+    aggregate_root: &Path,
+) -> Option<PathBuf> {
+    use crate::infrastructure::source_adapters::platform_xml::native_model::{
+        NativeEvidenceState, NativeNodeBacking,
+    };
+
+    let relative_key = match &node.backing {
+        NativeNodeBacking::Form(form)
+            if form.descriptor.state == NativeEvidenceState::Validated =>
+        {
+            &form.descriptor.relative_key
+        }
+        NativeNodeBacking::Template(template)
+            if template.descriptor.state == NativeEvidenceState::Validated =>
+        {
+            &template.descriptor.relative_key
+        }
+        _ => return None,
+    };
+    Some(aggregate_root.join(relative_key))
 }
 
 fn native_object_ref(
@@ -13115,7 +13155,10 @@ pub(crate) fn invoke_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_SOURCE_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn meta_adapter_decodes_recursive_native_tree_before_navigation_projection() {
@@ -13292,6 +13335,295 @@ mod tests {
         assert!(serialized.contains("\"authorability\":\"unknown_read_only\""));
         assert!(!serialized.contains("edit_properties"));
         fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn configured_source_set_identity_survives_lexical_path_aliases() {
+        let (context, _object_path) = source_set_fixture("src/cf", document_source(""));
+        fs::create_dir_all(context.workspace_root.join("src/other")).unwrap();
+        let aliased = context
+            .workspace_root
+            .join("src/other/../cf/Documents/Shipment.xml");
+
+        let graph = analyze_fixture_graph(&context, &aliased);
+
+        assert_eq!(
+            graph.root.source_id,
+            SourceId::new("workspace:main").unwrap()
+        );
+        assert_eq!(
+            graph.root.object_key.as_str(),
+            "uuid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn support_locked_object_is_read_only_through_meta_adapter() {
+        let (context, object_path) = source_set_fixture(
+            "src",
+            document_source(
+                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
+            ),
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            &locked_support_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            ),
+        );
+
+        let graph = analyze_fixture_graph(&context, &object_path);
+
+        assert!(graph.nodes.iter().all(|node| {
+            node.capability_state.authorability == Authorability::SupportLocked
+                && only_inspect(node)
+        }));
+        assert!(graph.edges.iter().all(|edge| {
+            edge.capability_state.authorability == Authorability::SupportLocked
+                && edge
+                    .semantic_actions()
+                    .iter()
+                    .all(|action| action.action == SemanticActionKind::Inspect)
+        }));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn global_support_disable_is_configuration_read_only_through_meta_adapter() {
+        let (context, object_path) = source_set_fixture(
+            "src",
+            document_source(
+                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
+            ),
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            &locked_support_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            )
+            .replace("{6,0,", "{6,1,"),
+        );
+
+        let graph = analyze_fixture_graph(&context, &object_path);
+
+        assert!(graph.nodes.iter().all(|node| {
+            node.capability_state.authorability == Authorability::ConfigurationReadOnly
+                && only_inspect(node)
+        }));
+        assert!(graph.edges.iter().all(|edge| {
+            edge.capability_state.authorability == Authorability::ConfigurationReadOnly
+        }));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn registered_descriptor_support_controls_child_authorability() {
+        let (context, object_path) = source_set_fixture(
+            "src",
+            document_source("<Form>ItemForm</Form><Template>Print</Template>"),
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Documents/Shipment/Forms/ItemForm.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form uuid=\"cccccccc-cccc-cccc-cccc-cccccccccccc\"><Properties><Name>ItemForm</Name></Properties></Form></MetaDataObject>",
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Documents/Shipment/Forms/ItemForm/Ext/Form.xml"),
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"/>",
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Documents/Shipment/Templates/Print.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template uuid=\"dddddddd-dddd-dddd-dddd-dddddddddddd\"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Documents/Shipment/Templates/Print/Ext/Template.xml"),
+            "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"/>",
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            &support_bin_with_locked_objects(&[
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            ]),
+        );
+
+        let graph = analyze_fixture_graph(&context, &object_path);
+
+        let root = graph
+            .nodes
+            .iter()
+            .find(|node| node.reference.display_name == "Shipment")
+            .unwrap();
+        assert_eq!(
+            root.capability_state.authorability,
+            Authorability::Authorable
+        );
+        for child_name in ["ItemForm", "Print"] {
+            let child = graph
+                .nodes
+                .iter()
+                .find(|node| node.reference.display_name == child_name)
+                .unwrap();
+            assert_eq!(
+                child.capability_state.authorability,
+                Authorability::SupportLocked
+            );
+            assert!(only_inspect(child));
+        }
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn malformed_support_state_fails_closed_through_meta_adapter() {
+        let (context, object_path) = source_set_fixture(
+            "src",
+            document_source(
+                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
+            ),
+        );
+        write_fixture_file(
+            &context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            "this ParentConfigurations.bin is malformed and intentionally longer than 32 bytes",
+        );
+
+        let graph = analyze_fixture_graph(&context, &object_path);
+
+        assert!(graph.nodes.iter().all(|node| {
+            node.capability_state.authorability == Authorability::UnknownReadOnly
+                && only_inspect(node)
+        }));
+        assert!(graph.edges.iter().all(|edge| {
+            edge.capability_state.authorability == Authorability::UnknownReadOnly
+        }));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn ad_hoc_source_identity_is_opaque_stable_and_path_free() {
+        let (context, _) = source_set_fixture("src", document_source(""));
+        let first_path = context.workspace_root.join("scratch-one/Shipment.xml");
+        let second_path = context.workspace_root.join("scratch-two/Shipment.xml");
+        let first_xml = document_source("");
+        let second_xml = first_xml.replace(
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        );
+        write_fixture_file(&first_path, &first_xml);
+        write_fixture_file(&second_path, &second_xml);
+
+        let first = analyze_fixture_graph(&context, &first_path);
+        let second = analyze_fixture_graph(&context, &second_path);
+        let first_again = analyze_fixture_graph(&context, &first_path);
+
+        assert_ne!(first.root.source_id, second.root.source_id);
+        assert_eq!(first.root.source_id, first_again.root.source_id);
+        let serialized = serde_json::to_string(&first).unwrap();
+        assert!(!serialized.contains(&first_path.display().to_string()));
+        assert!(!serialized.contains("scratch-one"));
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    fn analyze_fixture_graph(
+        context: &WorkspaceContext,
+        object_path: &Path,
+    ) -> NavigationGraph {
+        let args = json!({"objectPath": object_path})
+            .as_object()
+            .unwrap()
+            .clone();
+        let result = analyze_meta_info_with_navigation(&args, context);
+        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
+        result.navigation.unwrap()
+    }
+
+    fn only_inspect(node: &NavigationNode) -> bool {
+        node.semantic_actions().len() == 1
+            && node.semantic_actions()[0].action == SemanticActionKind::Inspect
+    }
+
+    fn source_set_fixture(
+        source_path: &str,
+        xml: String,
+    ) -> (WorkspaceContext, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-restored-contract-{}-{}",
+            std::process::id(),
+            NEXT_SOURCE_FIXTURE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let object_path = root
+            .join(source_path)
+            .join("Documents/Shipment.xml");
+        write_fixture_file(&object_path, &xml);
+        write_fixture_file(
+            &root.join(source_path).join("Configuration.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>",
+        );
+        write_fixture_file(
+            &root.join("v8project.yaml"),
+            &format!(
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
+            ),
+        );
+        (
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            object_path,
+        )
+    }
+
+    fn write_fixture_file(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    fn document_source(children: &str) -> String {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Document uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
+    <Properties><Name>Shipment</Name></Properties>
+    <ChildObjects>{children}</ChildObjects>
+  </Document>
+</MetaDataObject>"#
+        )
+    }
+
+    fn locked_support_bin(config_uuid: &str, object_uuid: &str) -> String {
+        format!(
+            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{object_uuid},{object_uuid},2,0,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}}"
+        )
+    }
+
+    fn support_bin_with_locked_objects(locked_objects: &[&str]) -> String {
+        let object_rules = locked_objects
+            .iter()
+            .map(|uuid| format!("0,0,{uuid},{uuid}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,{object_rules}}}"
+        )
     }
 
     fn configuration_fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
