@@ -3437,6 +3437,27 @@ mod tests {
     }
 
     #[test]
+    fn mxl_decompile_ignores_legacy_output_path_without_writing() {
+        let context = test_context("decompile-no-output-file");
+        let output_path = context.cwd.join("decompiled.json");
+        let mut args = path_args(&platform_mxl_fixture());
+        args.insert(
+            "OutputPath".to_string(),
+            json!(output_path.display().to_string()),
+        );
+
+        let outcome = decompile_mxl(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(!output_path.exists());
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.starts_with('{')));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn mxl_decompile_counts_only_exact_platform_sentinel_as_zero_rows() {
         let exact_context = test_context("decompile-platform-empty");
         let exact = decompile_mxl(&path_args(&platform_mxl_fixture()), &exact_context);

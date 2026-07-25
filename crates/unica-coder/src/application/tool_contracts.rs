@@ -2760,6 +2760,19 @@ mod tests {
     }
 
     #[test]
+    fn mxl_decompile_rejects_legacy_output_path() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.mxl.decompile")
+            .unwrap();
+        let args = Map::from_iter([("OutputPath".to_string(), json!("result.json"))]);
+
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+
+        assert!(error.contains("does not accept argument `OutputPath`"));
+    }
+
+    #[test]
     fn code_patch_contract_is_narrow_and_requires_one_typed_selector() {
         let tool = tools()
             .into_iter()
