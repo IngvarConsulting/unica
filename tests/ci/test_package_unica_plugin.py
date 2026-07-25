@@ -875,6 +875,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_generated_marketplace_is_thin_pinned_and_target_neutral(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
+        # Packaging requires the release tag to match the packaged version, so
+        # the fixture reads it rather than pinning a literal that every release
+        # would have to come back and edit.
+        version = module.read_release_version(repo_root / "plugins" / "unica")
+        release_tag = f"v{version}"
         target_triples = {
             "darwin-arm64": "aarch64-apple-darwin",
             "linux-x64": "x86_64-unknown-linux-gnu",
@@ -903,7 +908,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                             "schemaVersion": 1,
                             "target": target,
                             "targetTriple": target_triple,
-                            "pluginVersion": "0.9.1",
+                            "pluginVersion": version,
                             "asset": {
                                 "name": f"unica-runtime-{target}.tar.gz",
                                 "mediaType": "application/gzip",
@@ -932,7 +937,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 "--bootstrap-root",
                 str(bootstrap_root),
                 "--release-tag",
-                "v0.9.1",
+                release_tag,
                 "--source-commit",
                 "a" * 40,
                 "--out-dir",
@@ -987,13 +992,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertFalse(runtime_manifest["development"])
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
-            self.assertEqual(runtime_manifest["release"]["tag"], "v0.9.1")
+            self.assertEqual(runtime_manifest["release"]["tag"], release_tag)
             self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
             for target, target_data in runtime_manifest["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"
-                    f"v0.9.1/unica-runtime-{target}.tar.gz",
+                    f"{release_tag}/unica-runtime-{target}.tar.gz",
                 )
 
             catalog = json.loads(
@@ -1003,7 +1008,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             source = catalog["plugins"][0]["source"]
             self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], "v0.9.1")
+            self.assertEqual(source["ref"], release_tag)
             self.assertEqual(source["path"], "./plugins/unica")
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
