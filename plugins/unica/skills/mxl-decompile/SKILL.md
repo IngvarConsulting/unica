@@ -22,7 +22,7 @@ allowed-tools:
 
 ## Использование
 
-```
+```text
 /mxl-decompile <TemplatePath>
 ```
 
